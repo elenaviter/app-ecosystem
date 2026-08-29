@@ -14,6 +14,9 @@ that concern this repository so the history is discoverable from here.
 | 2026-08-29 | Prokura host ports and delegated automation access | The second implementation slice: focused host capabilities replace platform imports, and Prokura becomes the sole owner of delegated automation-card policy while KDCube supplies adapters. |
 | 2026-08-29 | Connection Hub implementation history archive | The 15 dated app-local records preserved when the built-in KDCube copy was retired. |
 | 2026-08-29 | Prokura package and Connection Hub cutover | The completed offline source cutover, built-in retirement, documentation ownership, and full regression evidence; live Git-loaded verification remains pending. |
+| 2026-08-30 | Standalone Connection Hub architecture and execution baseline | The post-extraction product boundary, `app-foundation` ownership, canonical-app versus standalone-wrapper dependency direction, service-consumer flow, missing contracts, implementation slices, and conformance gates. |
+| 2026-08-30 | Current Connection Hub cross-repository capability map | The verified import/runtime graph after extraction: host-neutral Prokura imports, retained KDCube vocabulary, the KDCube-hosted canonical app, concrete infrastructure bindings, and the standalone-host gap. |
+| 2026-08-30 | Connection Hub uses KDCube as its first supported host | The release-shape decision: KDCube plus the external app descriptor is the supported starter; standalone hosting and infrastructure extraction are deferred. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
