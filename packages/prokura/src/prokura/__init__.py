@@ -7,16 +7,17 @@ built for agents and automations: every caller has its own identity card,
 the authority lives in one central record, and a guarded boundary resolves
 the current authority on every call.
 
-Version 0.0.1 is a development release. The host-neutral authority core is
-present; runtime adapters, per-call admission orchestration, and the
-Connection Hub frontend are moving in subsequent extraction slices. See the
-repository for status: https://github.com/elenaviter/app-ecosystem
+Version 0.0.2 is a development release. It contains the host-neutral authority
+core, delegated card/catalog contracts, OAuth and connected-account policy,
+named-service admission, and direct protected-service admission. Host storage,
+identity, and transport adapters remain explicit integration responsibilities.
+See the repository for status: https://github.com/elenaviter/app-ecosystem
 """
 
 from importlib import import_module
 from typing import Any
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 
 _EXPORTS: dict[str, str] = {}
 for name in (

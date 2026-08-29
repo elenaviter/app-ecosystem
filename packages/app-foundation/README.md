@@ -1,30 +1,36 @@
 # app-foundation
 
-Host-neutral foundation for applications in an ecosystem.
+Host-neutral foundations shared by applications in an ecosystem.
 
-Applications that serve real users keep re-needing the same ground:
-knowing who is calling (a person through a browser session, a service
-through workload identity), resolving secret references without holding
-secrets in code, talking to Postgres and Redis, caching with distributed
-locks, speaking HTTP safely (CSRF, external URL discipline), and emitting
-events and observability signals. This package is that ground, once.
+## Current Status
 
-Scope boundary, deliberately strict:
+`0.0.1` is an installable planning marker that reserves the distribution and
+import names. It currently exposes only `app_foundation.__version__`; the
+runtime primitives described below have not yet been extracted into this
+package. Do not depend on planned symbols until a release names them as
+shipped.
 
-- generic `Principal` and service identity contracts;
+```bash
+python -m pip install app-foundation
+```
+
+## Intended Boundary
+
+Applications serving real users repeatedly need the same host capabilities:
+
+- principal and service-identity contracts;
 - secret-reference resolution and vault adapters;
-- Postgres and Redis clients, cache, compare-and-set, distributed locks;
+- Postgres and Redis clients, cache, compare-and-set, and distributed locks;
 - HTTP, CSRF, and external-URL utilities;
 - events and observability primitives.
 
-app-foundation contains no authority models (those are
-[`prokura`](../prokura/README.md)), no Connection Hub behavior, no
-KDCube bundle concepts, and no deployment orchestration. It is the layer
-both of those stand on.
+`app-foundation` will own those generic capabilities. It will not own delegated
+authority models (those belong to [`prokura`](../prokura/README.md)), Connection
+Hub behavior, KDCube application concepts, or deployment orchestration.
 
-**Version 0.0.1 claims the name.** The modules are being extracted from
-the production implementation inside
-[KDCube](https://github.com/kdcube/kdcube), behind existing host
-adapters, as part of the Prokura extraction.
+The production implementations being separated live in
+[KDCube](https://github.com/kdcube/kdcube). Releases will move one verified
+contract at a time behind compatibility adapters rather than publish a second,
+divergent implementation.
 
-Home: https://github.com/elenaviter/app-ecosystem
+License: MIT. Source: https://github.com/elenaviter/app-ecosystem

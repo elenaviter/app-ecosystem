@@ -1,0 +1,137 @@
+name: Publish Python package
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Package to publish
+        required: true
+        type: choice
+        options:
+          - prokura
+          - app-foundation
+          - service-foundation
+          - harness-foundation
+      expected_version:
+        description: Exact committed PEP 440 version
+        required: true
+        type: string
+
+concurrency:
+  group: publish-${{ inputs.package }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve and verify package
+        id: package
+        env:
+          PACKAGE_NAME: ${{ inputs.package }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+        run: |
+          python -m pip install --upgrade pip packaging
+          python - "$GITHUB_OUTPUT" <<'PY'
+          import os
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          from packaging.version import InvalidVersion, Version
+
+          packages = {
+              "prokura": ("packages/prokura", "prokura"),
+              "app-foundation": ("packages/app-foundation", "app_foundation"),
+              "service-foundation": ("packages/service-foundation", "service_foundation"),
+              "harness-foundation": ("packages/harness-foundation", "harness_foundation"),
+          }
+          name = os.environ["PACKAGE_NAME"]
+          expected = os.environ["EXPECTED_VERSION"].strip()
+          try:
+              Version(expected)
+          except InvalidVersion as exc:
+              raise SystemExit(f"expected_version is not PEP 440 compatible: {expected}") from exc
+          path, import_name = packages[name]
+          metadata = tomllib.loads((Path(path) / "pyproject.toml").read_text())
+          actual = str(metadata["project"]["version"])
+          if actual != expected:
+              raise SystemExit(
+                  f"committed {name} version is {actual}, not requested {expected}"
+              )
+          with open(sys.argv[1], "a", encoding="utf-8") as output:
+              output.write(f"path={path}\n")
+              output.write(f"import_name={import_name}\n")
+              output.write(f"version={actual}\n")
+          PY
+
+      - name: Test package
+        env:
+          PACKAGE_NAME: ${{ inputs.package }}
+          PACKAGE_PATH: ${{ steps.package.outputs.path }}
+          IMPORT_NAME: ${{ steps.package.outputs.import_name }}
+          EXPECTED_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          if [ "$PACKAGE_NAME" = "prokura" ]; then
+            python -m pip install -e "${PACKAGE_PATH}[test]"
+            python -m pytest "${PACKAGE_PATH}/tests"
+          else
+            python -m pip install -e "$PACKAGE_PATH"
+          fi
+          python - <<'PY'
+          import importlib
+          import os
+
+          module = importlib.import_module(os.environ["IMPORT_NAME"])
+          actual = getattr(module, "__version__", "")
+          expected = os.environ["EXPECTED_VERSION"]
+          if actual != expected:
+              raise SystemExit(f"import version is {actual!r}, expected {expected!r}")
+          PY
+
+      - name: Build and inspect artifacts
+        env:
+          PACKAGE_PATH: ${{ steps.package.outputs.path }}
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build "$PACKAGE_PATH" --outdir dist
+          python -m twine check dist/*
+
+      - name: Smoke install wheel
+        env:
+          IMPORT_NAME: ${{ steps.package.outputs.import_name }}
+          EXPECTED_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          python -m venv .release-smoke
+          .release-smoke/bin/python -m pip install --upgrade pip
+          .release-smoke/bin/python -m pip install dist/*.whl
+          .release-smoke/bin/python - <<'PY'
+          import importlib
+          import os
+
+          module = importlib.import_module(os.environ["IMPORT_NAME"])
+          actual = getattr(module, "__version__", "")
+          expected = os.environ["EXPECTED_VERSION"]
+          if actual != expected:
+              raise SystemExit(f"wheel version is {actual!r}, expected {expected!r}")
+          PY
+
+      - name: Preserve release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.package }}-${{ steps.package.outputs.version }}
+          path: dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

@@ -13,6 +13,8 @@ see_also:
   - ./connection-hub-architecture.md
   - ./package/extraction-architecture.md
   - ./frontend/README.md
+  - ./service/README.md
+  - ./recipes/direct-protected-service.md
 ---
 
 # Prokura documentation
@@ -33,8 +35,11 @@ This folder documents two current forms and one planned host:
 - **[`frontend/`](frontend/README.md)** - the Connection Hub application: the
   live frontend built on top of the package, where a user connects accounts,
   issues and edits identity cards, and watches what the callers did.
-- **`service/`** - a future standalone host of the same package and app
-  contracts. It is not implemented yet.
+- **[`service/`](service/README.md)** - the current KDCube-hosted service
+  boundary and the future standalone wrapper boundary.
+- **[`recipes/`](recipes/direct-protected-service.md)** - runnable integration
+  paths, beginning with an external backend that asks Connection Hub for a
+  live delegated operation decision.
 
 KDCube supplies the first runtime host for the package and frontend. The
 standalone service remains planned.
@@ -45,3 +50,4 @@ The package contracts are:
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
 - [Delegated access cards](package/delegated-cards.md)
 - [OAuth delegated credential protocol](package/oauth-delegated-credential-protocol.md)
+- [Protect an external backend with Connection Hub](recipes/direct-protected-service.md)

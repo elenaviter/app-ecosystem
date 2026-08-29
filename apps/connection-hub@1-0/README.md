@@ -252,6 +252,9 @@ kdcube_ai_app.apps.chat.sdk.integrations.prokura
   registered service supplies an independent signed workload proof beside the
   delegated bearer. The route returns a service-scoped subject and current
   operation authority, never an internal user id or provider credential.
+- [Protect an external backend with Connection
+  Hub](../../docs/prokura/recipes/direct-protected-service.md) provides the
+  deployment contract and links a runnable protected-service implementation.
 - The static widget is built from `ui/widgets/connections`; the runtime must be
   refreshed so the new app loads and the widget is built.
 

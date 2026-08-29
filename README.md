@@ -44,8 +44,27 @@ the middle of its run, durable records and workspaces, native agents and
 agents that run their own loop (such as LangGraph or Claude Code) under
 one contract. Its packaging starts after `prokura`.
 
+## Packages
+
+| Distribution | Status | Contract |
+| --- | --- | --- |
+| [`prokura`](packages/prokura/README.md) | Alpha implementation | Delegated cards and catalogs, OAuth and connected-account policy, managed-boundary admission, and direct protected-service admission. |
+| [`app-foundation`](packages/app-foundation/README.md) | `0.0.1` planning marker | Future host-neutral identity, secrets, storage, HTTP, event, and observability primitives. |
+| [`service-foundation`](packages/service-foundation/README.md) | `0.0.1` planning marker | Future standalone service composition, authentication, token, config, health, and migration contracts. |
+| [`harness-foundation`](packages/harness-foundation/README.md) | `0.0.1` planning marker | Future distributed agent-turn, event, record, and workspace harness. |
+
+The planning markers reserve names without pretending their intended APIs have
+shipped. Prokura is the first implemented package and is consumed by the
+Connection Hub application now.
+
+## Examples
+
+- [Direct-admission protected service](examples/direct-admission-service/README.md)
+  shows a backend outside KDCube accepting an opaque delegated bearer and
+  obtaining a live, replay-protected operation decision from Connection Hub.
+
 ## Status
 
-Early. The first package surfaces are being extracted. The design and
-build history is journaled, and the components ship only what already
-runs in production inside KDCube.
+Early and public. Design and build history is journaled, package releases are
+independently versioned, and implementation moves out of KDCube only behind
+verified compatibility boundaries.

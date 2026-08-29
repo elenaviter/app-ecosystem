@@ -6,6 +6,8 @@ component:
 - [`prokura/`](prokura/README.md) — the delegated-access authority: the
   Python package, the frontend application built on it, and, when it
   ships, the standalone runnable service.
+- [Package releases](package-releases.md) — version, test, wheel, smoke, and
+  trusted-publishing contract for every Python distribution in this repo.
 
 Each component folder carries its own structure; this page only routes.
 Documentation lives beside the code it describes and changes in the same

@@ -1,31 +1,33 @@
 # service-foundation
 
-Foundation for standalone runnable services.
+Foundations for standalone runnable services.
 
-An application that also ships as its own service needs a second ground
-beyond [`app-foundation`](../app-foundation/README.md): something has to
-compose the adapters and launch, authenticate a browser session (OIDC)
-and a service workload, issue and verify the service's own opaque tokens,
-read configuration, answer health and readiness, and invoke the
-migrations the application owns. This package is that ground, once, so a
-standalone host of an application (the planned standalone Connection Hub
-among them) is a thin launcher rather than a project.
+## Current Status
 
-Scope boundary, deliberately strict:
+`0.0.1` is an installable planning marker that reserves the distribution and
+import names. It currently exposes only `service_foundation.__version__`; it is
+not yet a service launcher or authentication framework.
 
-- service composition and launcher contracts;
-- browser-session (OIDC) and service-workload authentication surfaces;
-- opaque-token issuance and verification for the service's own sessions;
-- configuration surface, health and readiness;
-- migration invocation (the migrations themselves belong to the app).
+```bash
+python -m pip install service-foundation
+```
 
-service-foundation contains no authority models (those are
-[`prokura`](../prokura/README.md)), no application behavior, and no
-KDCube bundle concepts. It stands on `app-foundation` and is what a
-`services/<name>` launcher stands on.
+## Intended Boundary
 
-**Version 0.0.1 claims the name.** The modules arrive with the standalone
-host work; the running implementation lives inside
-[KDCube](https://github.com/kdcube/kdcube) today.
+A standalone service needs a host layer around its application logic:
 
-Home: https://github.com/elenaviter/app-ecosystem
+- composition and launcher contracts;
+- browser-session OIDC and service-workload authentication surfaces;
+- opaque-token issuance and verification for service-owned sessions;
+- configuration, health, and readiness contracts;
+- migration invocation, while the application owns its migrations.
+
+`service-foundation` will own that layer and stand on
+[`app-foundation`](../app-foundation/README.md). It will not own application
+behavior, Prokura authority policy, or KDCube application concepts.
+
+The Connection Hub currently runs as a KDCube application. A future standalone
+host can compose the same application over this service layer once the required
+host contracts are extracted and verified.
+
+License: MIT. Source: https://github.com/elenaviter/app-ecosystem
