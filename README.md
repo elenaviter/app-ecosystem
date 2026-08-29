@@ -25,11 +25,16 @@ Today the Connection Hub runs inside [KDCube](https://github.com/kdcube/kdcube),
 serving its apps, agents, and MCP surfaces. The packages published from
 here make it available on its own:
 
-- **`connection-hub`** (first): the boundary and client SDK. The actor and
+The packaged, standalone form of the Connection Hub ships under the name
+**Prokura**: the old commercial-law institution of delegated signing
+authority that lives in a register, verified against the register rather
+than any carried letter, revocable at the register.
+
+- **`prokura`** (first): the boundary and client SDK. The actor and
   grant reference format, per-call admission, structured denials a caller
   can act on, and helpers for a service to publish its operations and
   claims, per account where connected accounts are involved.
-- The standalone Hub service follows.
+- The standalone Prokura service follows.
 
 ## Universal harness
 
