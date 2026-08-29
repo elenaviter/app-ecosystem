@@ -19,7 +19,9 @@ that concern this repository so the history is discoverable from here.
 | 2026-08-30 | Connection Hub uses KDCube as its first supported host | The release-shape decision: KDCube plus the external app descriptor is the supported starter; standalone hosting and infrastructure extraction are deferred. |
 | 2026-08-30 | External service integration boundary for Connection Hub | The supported KDCube-managed gateway pattern for non-KDCube backends, and the service registration, workload identity, and admission API still required for direct integration. |
 | 2026-08-30 | Direct external protected-service admission contract | The concrete resource-server contract for direct backend calls: independent bearer and workload proofs, service/resource binding, one shared live decision service, bounded projection, and implementation slices. |
+| 2026-08-30 | Direct external protected-service admission implemented | The shipped KDCube-hosted endpoint, portable Prokura signing and response contract, shared live card/catalog evaluator, pairwise identity projection, canonical architecture and storage map, and offline conformance evidence; live deployment verification remains pending. |
 | 2026-08-30 | Both packages live on PyPI | prokura 0.0.1 (the extracted authority modules) and app-foundation 0.0.1 (the host-neutral foundation layer, name and scope claimed) published; built from a committed snapshot, smoke-tested before upload. |
+| 2026-08-30 | The foundations family published | service-foundation 0.0.1 and harness-foundation 0.0.1 join prokura and app-foundation on PyPI; scope statements in each package README, name and boundaries claimed. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
