@@ -35,9 +35,12 @@ package implementation.
 
 **Current migration state:** the portable authority, persistence orchestration,
 connected-account lifecycle, and admission state machines are owned by
-`prokura`. KDCube reaches them through exact compatibility aliases and focused
-host adapters. The Connection Hub frontend lives in this repository and is
-registered into KDCube by Git repository, ref, and subdirectory.
+`prokura`. KDCube consumers import portable contracts directly from that
+package and use focused host adapters under
+`kdcube_ai_app.apps.chat.sdk.integrations.prokura`. The historical KDCube
+connections implementation has been retired. The Connection Hub frontend
+lives in this repository and is registered into KDCube by Git repository, ref,
+and subdirectory.
 
 ## Ownership boundary
 
@@ -98,8 +101,9 @@ The migration proceeded through continuously testable slices:
    KDCube-hosted frontend.
 4. Make KDCube consume the package and register the application by repository
    path.
-5. Retire the built-in Connection Hub app copy and keep KDCube compatibility
-   imports only where downstream callers still require the historical path.
+5. Retire the built-in Connection Hub app and historical KDCube connections
+   package, then migrate consumers to direct `prokura` imports or the explicit
+   KDCube host-integration namespace.
 
 The package, Connection Hub backend and frontend, KDCube host contracts,
 delegated-card caller-family matrix, and external application bundle contracts

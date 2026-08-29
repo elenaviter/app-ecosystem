@@ -217,7 +217,7 @@ prokura
   delegated_credentials/    # cards, catalog, OAuth, admission policy
   delegated_to_kdcube/      # connected-account lifecycle and provider contracts
 
-kdcube_ai_app.apps.chat.sdk.solutions.connections
+kdcube_ai_app.apps.chat.sdk.integrations.prokura
   hub/provider_impl.py       # KDCube named-service and account-store binding
   hub/authenticators.py      # KDCube provider-proof and session projection
   delegated_credentials/oauth/http/  # FastAPI transport adapter

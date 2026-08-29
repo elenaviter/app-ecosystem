@@ -10,7 +10,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.federated_tokens.data_bus import issue_federated_data_bus_token
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.federated_tokens.data_bus import issue_federated_data_bus_token
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
 from kdcube_ai_app.apps.chat.sdk.integrations.connections import settings as connections_settings
 from kdcube_ai_app.apps.chat.sdk.integrations.email import settings as email_settings
@@ -26,7 +26,9 @@ from prokura.authority_registry_config import (
 from prokura.authority_projection import (
     authority_has_platform_privilege,
 )
-from prokura.authority_registry_client import AuthorityRegistryClient
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.authority_registry_client import (
+    AuthorityRegistryClient,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint import BaseEntrypoint
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     NamedServiceRegistry,
@@ -36,7 +38,7 @@ from kdcube_ai_app.infra.plugin.bundle_loader import api, bundle_entrypoint, bun
 from kdcube_ai_app.infra.service_hub.inventory import Config
 
 from prokura.hub.authenticator_store import AuthenticatorStore
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.hub.authenticators import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.hub.authenticators import (
     authenticate_request as authenticate_request_with_authenticators,
     descriptor_authenticator_rows,
     merged_authenticator_rows,
@@ -49,12 +51,12 @@ from prokura.hub.edges import (
     edge_target,
     resolve_principal_roles,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.hub.provider_impl import ConnectionHubProvider
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.hub.provider_impl import ConnectionHubProvider
 from prokura.hub.resolver import (
     resolve_delegated_identity_scope,
     resolve_identity_family,
 )
-from prokura.delegated_credentials.oauth.config import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.oauth.config import (
     DEFAULT_CLAUDE_REDIRECT_URIS,
     DEFAULT_DCR_REDIRECT_URIS,
     oauth_delegated_config,
@@ -62,16 +64,16 @@ from prokura.delegated_credentials.oauth.config import (
 from prokura.delegated_credentials.access_map import (
     build_delegated_access_map,
 )
-from prokura.delegated_credentials.automation_access import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.automation_access import (
     AutomationAccessService,
 )
 from prokura.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
 )
-from prokura.delegated_credentials.catalog.publisher import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.catalog.publisher import (
     ensure_delegated_catalog,
 )
-from prokura.delegated_credentials.cards.persistence import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.cards.persistence import (
     DurableCardPersistence,
 )
 from prokura.delegated_credentials.cards.store import (
@@ -89,7 +91,7 @@ from prokura.delegated_credentials.catalog.source import (
 from prokura.delegated_credentials.catalog.store import (
     BundleStorageDelegatedCatalogStore,
 )
-from prokura.delegated_to_kdcube import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube import (
     RedisOAuthStateStore,
     DelegatedToKdcubeStore,
     operations_for_user,
@@ -102,7 +104,7 @@ from prokura.delegated_credentials.oauth.metadata import (
     authorization_server_metadata,
     protected_resource_metadata,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.http.routes import (
+from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.oauth.http.routes import (
     authorize as oauth_authorize,
     authorize_consent as oauth_authorize_consent,
     oauth_logout,
@@ -702,7 +704,7 @@ def _delegated_to_kdcube_operations(entrypoint: Any, platform_user_id: str) -> A
         # Author `connections.consent.granted` conversation events for every
         # pending demand this grant satisfies (ingress event inception via the
         # per-conversation lane; passive — never starts a turn).
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.consent_demand import (
+        from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
             author_consent_granted_events,
         )
 
@@ -2191,7 +2193,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
     ) -> None:
         """Best-effort granted-event authoring for a per-agent grant."""
         try:
-            from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.consent_demand import (
+            from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_to_kdcube.consent_demand import (
                 author_consent_granted_events,
             )
 

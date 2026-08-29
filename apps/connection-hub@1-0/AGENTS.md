@@ -76,7 +76,7 @@ Start with these app-local files:
 - [entrypoint.py](entrypoint.py)
 - Prokura authority core: [`prokura`](../../packages/prokura/src/prokura)
 - KDCube host adapters:
-  [`kdcube_ai_app.apps.chat.sdk.solutions.connections`](https://github.com/kdcube/kdcube/tree/main/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections)
+  [`kdcube_ai_app.apps.chat.sdk.integrations.prokura`](https://github.com/kdcube/kdcube/tree/main/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/prokura)
 - [ui/widgets/connections/src/App.tsx](ui/widgets/connections/src/App.tsx)
 
 When changing auth/session behavior, also read the platform docs:
