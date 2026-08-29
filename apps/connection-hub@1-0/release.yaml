@@ -1,0 +1,42 @@
+bundle:
+  repo: "https://github.com/elenaviter/app-ecosystem.git"
+  ref: "main"
+  description: |
+    Release for connection-hub@1-0.
+
+    Highlights
+
+    - Implements the public `connections` named-service contract
+      (prokura plus KDCube host adapters): exposes
+      `connection.catalog`, `connection.status`, `connection.get_token`,
+      `connection.disconnect`, and `oauth.start` over the local and API
+      transports. Serves the whole contract over HTTP via the `named_service`
+      API alias and registers the registry to Redis discovery on bundle load.
+    - Three-level connection model: provider (OAuth mechanics, no creds) ->
+      client app (admin credentials, many per provider, carries the scope
+      ceiling) -> user account (one user token, records its app_id). Tokens are
+      user-scoped via the reusable `integrations/connections` `ConnectionStore`.
+    - Owns the single public `connection_oauth_callback` browser-redirect route
+      shared by all providers (the provider + client app are read from the signed
+      `state`), plus thin `connections_catalog` / `connections_start_oauth` /
+      `connections_disconnect` widget helper ops.
+    - Providers: Slack (user-token OAuth via `user_scope`, for any workspace under
+      Public Distribution) and Gmail (Google OAuth with refresh-on-expiry in
+      `connection.get_token`). Per-connect scope override is clamped to the client
+      app's configured ceiling.
+    - Email integration is iCloud-only (app-password via `email_*` ops); Gmail was
+      migrated onto the connections framework, so a cross-bundle
+      `connection.get_token("google")` resolves the user's Gmail token.
+    - Real React + Redux Connections settings widget (kdcube design system): app
+      picker, per-connect scope checkboxes, connect/disconnect, iCloud app-password
+      form. Builds to a static widget under `ui/widgets/connections`.
+
+    Validation
+
+    - Prokura package suite passes: 117 tests.
+    - Connection Hub backend suite passes: 14 tests.
+    - KDCube bundle contract suite passes: 316 tests, with 50 graph-only
+      contracts skipped because this is a service and UI app rather than an
+      agent-graph app.
+    - Connections widget source contracts pass and the production widget build
+      emits index.html.

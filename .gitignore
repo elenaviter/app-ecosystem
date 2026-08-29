@@ -1,0 +1,11 @@
+.DS_Store
+*.iml
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+node_modules/
+build/
+dist/

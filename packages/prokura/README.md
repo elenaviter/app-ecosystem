@@ -17,11 +17,20 @@ authority on every call. Calls carry only plain facts, the actor identity
 and the wanted grant. Authorization evidence does not travel with calls,
 and an edit or revocation of the card applies on the very next call.
 
-**This is a placeholder release claiming the name.** The boundary/client
-SDK, the actor and grant reference format, per-call admission, structured
-denials a caller can act on, and claim publication for services, is being
-extracted from the production implementation: the Connection Hub that runs
-inside [KDCube](https://github.com/kdcube/kdcube) today. Prokura is its
-packaged, standalone form.
+**Version 0.0.1 is a development release.** The package contains the portable
+authority implementation: authority and authenticator contracts, durable
+identity-card and capability-catalog histories, delegated OAuth and connected-
+account lifecycle, identity-edge resolution, per-call named-service and
+managed-surface admission, structured denial contracts, and explicit ports for
+host storage, dispatch, identity, and live-delivery capabilities. KDCube
+consumes these modules through thin host adapters, and the Connection Hub app
+in this repository is the first frontend over the package.
 
 Home: https://github.com/elenaviter/app-ecosystem
+
+Architecture and contracts:
+
+- [Package boundary and extraction](../../docs/prokura/package/extraction-architecture.md)
+- [Delegated authority and admission](../../docs/prokura/package/delegated-authority-and-admission.md)
+- [Delegated access cards](../../docs/prokura/package/delegated-cards.md)
+- [OAuth delegated credential protocol](../../docs/prokura/package/oauth-delegated-credential-protocol.md)
