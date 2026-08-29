@@ -42,7 +42,7 @@ The harness that wraps agents so they work at scale: ordered event
 delivery per conversation, a stop or a new thought reaching the agent in
 the middle of its run, durable records and workspaces, native agents and
 agents that run their own loop (such as LangGraph or Claude Code) under
-one contract. Its packaging starts after `connection-hub`.
+one contract. Its packaging starts after `prokura`.
 
 ## Status
 
