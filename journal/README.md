@@ -17,6 +17,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-08-30 | Standalone Connection Hub architecture and execution baseline | The post-extraction product boundary, `app-foundation` ownership, canonical-app versus standalone-wrapper dependency direction, service-consumer flow, missing contracts, implementation slices, and conformance gates. |
 | 2026-08-30 | Current Connection Hub cross-repository capability map | The verified import/runtime graph after extraction: host-neutral Prokura imports, retained KDCube vocabulary, the KDCube-hosted canonical app, concrete infrastructure bindings, and the standalone-host gap. |
 | 2026-08-30 | Connection Hub uses KDCube as its first supported host | The release-shape decision: KDCube plus the external app descriptor is the supported starter; standalone hosting and infrastructure extraction are deferred. |
+| 2026-08-30 | External service integration boundary for Connection Hub | The supported KDCube-managed gateway pattern for non-KDCube backends, and the service registration, workload identity, and admission API still required for direct integration. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
