@@ -14,6 +14,7 @@ keywords:
   - KDCube
 see_also:
   - ../README.md
+  - ../connection-hub-architecture.md
   - ../frontend/README.md
   - ./delegated-authority-and-admission.md
   - ./delegated-cards.md
@@ -79,8 +80,10 @@ of every application that presents Prokura through a particular runtime.
 The extraction preserves the production contracts already exercised in
 KDCube:
 
-1. Durable storage is authoritative; caches and indexes are rebuildable
-   projections.
+1. Durable card/catalog revisions and pointers are authoritative; their caches
+   and indexes are rebuildable projections. TTL-bounded OAuth records,
+   credential handles, and replay state are live protocol authority and are
+   not reconstructed from card history.
 2. Admission resolves the current card and catalog for every invocation.
 3. An exact access-card identity is selected before authority is evaluated.
 4. An absent policy and an explicitly empty policy have different meanings.

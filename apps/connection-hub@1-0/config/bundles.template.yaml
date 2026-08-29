@@ -69,6 +69,8 @@ bundles:
                 visibility: *default_visibility
               connections_settings:
                 visibility: *default_visibility
+              delegated_admission:
+                visibility: *default_visibility
           widget:
             connections_settings:
               visibility: *default_visibility
@@ -1410,6 +1412,23 @@ bundles:
                             grants:
                             - "named_services:use"
                             - "linkedin:org:read"
+          # Direct external protected-service admission. A service row binds
+          # workload authentication to resource selectors already published by
+          # the active delegated catalog above; it never declares operations or
+          # grants of its own.
+          admission:
+            enabled: false
+            identity_projection_secret_ref: "connections.delegated_credentials.admission.identity_projection_secret"
+            max_clock_skew_seconds: 300
+            nonce_ttl_seconds: 600
+            services: {}
+            # services:
+            #   crm-api:
+            #     label: "CRM protected service"
+            #     enabled: true
+            #     secret_ref: "connections.delegated_credentials.admission.services.crm-api.signing_secret"
+            #     resources:
+            #     - "https://api.example.test/customers*"
           # Legacy connection-provider app registry. New per-user delegated
           # external credentials live under delegated_to_kdcube below.
         providers: {}

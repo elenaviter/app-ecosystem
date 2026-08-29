@@ -1,11 +1,12 @@
 ---
 id: prokura/package/oauth-delegated-credential-protocol
 title: "OAuth Delegated Credential Protocol Adapter"
-summary: "How the OAuth2 protocol adapter resolves pre-registered, Client ID Metadata Document, and DCR clients, then issues and verifies least-privilege Connection Hub credentials."
+summary: "How the OAuth2 protocol adapter resolves pre-registered, Client ID Metadata Document, and DCR clients, issues least-privilege Connection Hub credentials, and advertises managed or direct protected-resource admission."
 tags: ["sdk", "solutions", "connections", "delegated-credentials", "oauth", "mcp", "descriptor"]
 keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "tool consent", "live grant lookup", "operation csrf protection", "descriptor configuration"]
-updated_at: 2026-08-26
+updated_at: 2026-08-30
 see_also:
+  - ../connection-hub-architecture.md
   - ./delegated-authority-and-admission.md
   - ./delegated-cards.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/service/auth/auth-README.md
@@ -42,7 +43,7 @@ The key split is:
 |---|---|---|
 | Human authentication | Existing platform auth/session provider | A browser request proves a platform user. |
 | Integration authorization | KDCube OAuth2 AS | User consents to descriptor-configured grants and resource tools they are allowed to delegate. |
-| Integration execution | KDCube protected resource server | External client calls allowed resource tools with a least-privilege token. |
+| Integration execution | KDCube managed resource or registered external protected service | External client calls an allowed operation with a least-privilege token; a direct external service obtains a live decision from Connection Hub. |
 
 ## Three Client Registration Paths
 
@@ -296,7 +297,25 @@ registration endpoint:
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/register
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/token
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/jwks
+/api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/delegated_admission
 ```
+
+`delegated_admission` is not an OAuth token-introspection endpoint. It is an
+optional operation-specific resource-server decision surface. When enabled,
+protected-resource metadata includes these extension fields:
+
+```json
+{
+  "prokura_delegated_admission_endpoint": "https://.../public/delegated_admission",
+  "prokura_delegated_admission_schema": "prokura.delegated_admission.v1",
+  "prokura_delegated_admission_signing_alg_values_supported": ["hmac-sha256"]
+}
+```
+
+The registered backend authenticates independently, presents the opaque bearer
+and a concrete resource/operation, and receives a live card/catalog decision.
+See the
+[direct protected-service admission contract](../connection-hub-architecture.md#direct-protected-service-admission).
 
 The authorization-server document is served at both well-known locations. MCP
 clients fetch the OIDC one and treat a 404 there as fatal, so it stays and the

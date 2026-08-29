@@ -1,7 +1,7 @@
 ---
 id: connection-hub-interface
 title: Connection Hub Interface
-summary: Documents the authenticated operations, public proof and OAuth routes, named-service provider, and browser widget exposed by the Connection Hub app.
+summary: Documents the authenticated operations, public proof/OAuth/admission routes, named-service provider, and browser widget exposed by the Connection Hub app.
 tags:
   - prokura
   - connection-hub
@@ -12,13 +12,15 @@ keywords:
   - named-service provider
 see_also:
   - ./connection-hub.openapi.yaml
+  - ../../../docs/prokura/connection-hub-architecture.md
   - ../../../docs/prokura/frontend/application/README.md
 ---
 
 # Connection Hub Interface
 
 `connection-hub@1-0` exposes authenticated `operations` aliases, public
-proof/auth callback routes, one `connections` named-service provider, and one widget.
+proof/auth/OAuth/admission routes, one `connections` named-service provider,
+and one widget.
 The OpenAPI file
 [connection-hub.openapi.yaml](connection-hub.openapi.yaml) documents the
 operations and callback routes in detail; this README is the human contract.
@@ -26,6 +28,10 @@ operations and callback routes in detail; this README is the human contract.
 Every POST `operations` body is wrapped as `{ "data": { ... } }` by frontend
 callers. Responses are platform-wrapped; unwrap the property named by the
 operation alias.
+
+The semantic distinctions, storage authorities, and trust boundaries are
+canonical in the
+[Connection Hub architecture](../../../docs/prokura/connection-hub-architecture.md).
 
 ## Browser surfaces
 
@@ -116,6 +122,51 @@ providers such as Gmail and Slack:
 It accepts `code`, `state`, `error` and completes the hub-owned flow, validating
 `state` with `connections.delegated_to_kdcube.oauth_state_secret`. The
 provider + connector app are read from the signed `state`.
+
+### Direct protected-service admission
+
+`delegated_admission` lets a registered backend that is not behind a KDCube
+REST/MCP door evaluate one opaque delegated bearer against current authority.
+It is disabled by default.
+
+| Alias | Method | Route | Purpose |
+| --- | --- | --- | --- |
+| `delegated_admission` | POST | public | Authenticate the protected service, reject replay, resolve the opaque bearer to its current card, intersect it with the active catalog and optional account scope, then return a bounded allow/deny decision. |
+
+```http
+POST /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/delegated_admission
+Authorization: Bearer <opaque-kst1-token>
+X-Prokura-Service-Id: crm-api
+X-Prokura-Timestamp: 1788048000
+X-Prokura-Nonce: 4b38d173e0864ee891f23f17
+X-Prokura-Signature: <base64url-hmac-sha256>
+Content-Type: application/json
+
+{
+  "resource": "https://api.example.test/customers",
+  "operation": "customers.search",
+  "account": {
+    "provider_id": "salesforce",
+    "account_id": "account-17",
+    "claims": ["contacts:read"]
+  }
+}
+```
+
+The service signature binds its id, timestamp, nonce, SHA-256 of the bearer,
+and SHA-256 of the canonical semantic request. Service secrets contain at
+least 32 bytes. The default timestamp window is 300 seconds and the default
+single-use nonce lifetime is 600 seconds.
+
+The response carries `prokura.delegated_admission.v1`, a correlation id, a
+service-scoped subject, caller client id, effective resource/operation/grants,
+optional account scope, card/catalog provenance, and expiry. It never returns
+the internal platform user id, raw card access id, bearer, identity-family
+scope, or provider credential.
+
+The complete signing input, response schema, registration shape, and trust
+boundary are in
+[Direct Protected-Service Admission](../../../docs/prokura/connection-hub-architecture.md#direct-protected-service-admission).
 
 ### Public Telegram proof route
 
@@ -601,6 +652,13 @@ Non-secret deploy props (see [../config/bundles.template.yaml](../config/bundles
 - `ui.widgets.connections_settings.{enabled, src_folder, build_command}` — the
   widget build.
 - `visibility.api.<alias>.*` / `visibility.widget.connections_settings.*` — access.
+- `connections.delegated_credentials.admission.enabled` — expose direct
+  protected-service admission and advertise it in protected-resource metadata.
+- `connections.delegated_credentials.admission.services.<service_id>` — bind
+  one authenticated service to catalog resource selectors through `secret_ref`.
+  It does not redeclare operations or grants.
+- `connections.delegated_credentials.admission.{max_clock_skew_seconds,nonce_ttl_seconds}`
+  — signed-request freshness and replay retention.
 
 Deploy secret KEYS (see [../config/bundles.secrets.template.yaml](../config/bundles.secrets.template.yaml)):
 
@@ -611,6 +669,10 @@ Deploy secret KEYS (see [../config/bundles.secrets.template.yaml](../config/bund
   `connections.delegated_to_kdcube.providers.google.connector_apps.gmail.client_secret`,
   `connections.delegated_to_kdcube.providers.slack.connector_apps.demo.client_secret`).
 - iCloud needs no deploy secret (the user's app-password is user-scoped state).
+- `connections.delegated_credentials.admission.identity_projection_secret` —
+  derives stable pairwise subjects for registered services.
+- `connections.delegated_credentials.admission.services.<service_id>.signing_secret`
+  — authenticates signed requests from one protected service.
 
 No user credentials live in any descriptor: user OAuth tokens / app-passwords are
 user-scoped app state created through these flows.

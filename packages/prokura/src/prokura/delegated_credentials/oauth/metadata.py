@@ -93,6 +93,7 @@ def protected_resource_metadata(
     capabilities: Iterable[Mapping[str, Any]] | None = None,
     tools: Iterable[Mapping[str, Any]] | None = None,
     named_services: Mapping[str, Any] | None = None,
+    delegated_admission_endpoint: str | None = None,
     logo_uri: str | None = None,
     website_url: str | None = None,
     icons: Iterable[Mapping[str, Any]] | None = None,
@@ -129,6 +130,17 @@ def protected_resource_metadata(
         # MCP resources. This keeps namespace grants separate from generic MCP
         # entry grants while still making the consent catalog discoverable.
         out["kdcube_named_services"] = dict(named_services)
+    if delegated_admission_endpoint:
+        # Prokura extension: an independently authenticated protected service
+        # can evaluate one opaque delegated bearer against current card and
+        # catalog state without placing its backend behind the KDCube gateway.
+        out["prokura_delegated_admission_endpoint"] = str(
+            delegated_admission_endpoint
+        ).rstrip("/")
+        out["prokura_delegated_admission_schema"] = "prokura.delegated_admission.v1"
+        out["prokura_delegated_admission_signing_alg_values_supported"] = [
+            "hmac-sha256"
+        ]
     return out
 
 

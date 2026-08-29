@@ -6,6 +6,13 @@ bundle:
 
     Highlights
 
+    - Adds direct protected-service admission for a registered backend that is
+      not behind a KDCube-managed REST/MCP door. The backend presents the
+      opaque delegated bearer plus a replay-protected HMAC service proof; the
+      app evaluates the same current card and active catalog used by managed
+      guards and returns a service-scoped principal without provider secrets.
+      The surface is disabled by default and is advertised through protected-
+      resource metadata only when enabled.
     - Implements the public `connections` named-service contract
       (prokura plus KDCube host adapters): exposes
       `connection.catalog`, `connection.status`, `connection.get_token`,
@@ -33,9 +40,9 @@ bundle:
 
     Validation
 
-    - Prokura package suite passes: 117 tests.
-    - Connection Hub backend suite passes: 14 tests.
-    - KDCube bundle contract suite passes: 316 tests, with 50 graph-only
+    - Prokura package suite passes: 123 tests.
+    - Connection Hub backend suite passes: 24 tests.
+    - KDCube bundle contract suite passes: 272 tests, with 50 graph-only
       contracts skipped because this is a service and UI app rather than an
       agent-graph app.
     - Connections widget source contracts pass and the production widget build

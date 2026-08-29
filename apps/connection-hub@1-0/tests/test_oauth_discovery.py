@@ -124,3 +124,32 @@ async def test_connection_hub_dispatches_the_advertised_revocation_route(monkeyp
 
     assert response.status_code == 200
     assert json.loads(response.body) == {"routed": True}
+
+
+@pytest.mark.asyncio
+async def test_protected_resource_metadata_advertises_enabled_admission_endpoint():
+    module = _load_entrypoint_module()
+    entrypoint = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    entrypoint.bundle_props = {
+        "connections": {
+            "delegated_credentials": {
+                "oauth": {"enabled": True},
+                "admission": {"enabled": True},
+            }
+        }
+    }
+    entrypoint.runtime_identity = lambda: {"tenant": "tenant-a", "project": "project-a"}
+
+    response = await entrypoint.oauth_get(
+        request=_request(),
+        path_tail=".well-known/oauth-protected-resource",
+    )
+    payload = json.loads(response.body)
+
+    assert payload["prokura_delegated_admission_endpoint"] == (
+        "https://runtime.example.test/api/integrations/bundles/tenant-a/project-a/"
+        "connection-hub@1-0/public/delegated_admission"
+    )
+    assert payload["prokura_delegated_admission_schema"] == (
+        "prokura.delegated_admission.v1"
+    )

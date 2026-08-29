@@ -1,12 +1,13 @@
 ---
 id: prokura/frontend/application
 title: "Connection Hub Design"
-summary: "Design overview of connection-hub@1-0: connection edges, connected provider accounts, delegated client credentials, shared OAuth callbacks, named-service boundaries, and the Connections widget."
+summary: "KDCube-hosted application composition for connection-hub@1-0: connection edges, connected accounts, delegated credentials, direct admission, OAuth callbacks, named-service boundaries, and the Connections widget."
 status: active
 tags: ["app", "connection-hub", "identity", "connections", "named-services", "mcp", "oauth", "delegated-credentials", "email", "design"]
 keywords: ["connection hub app", "delegated access", "connected accounts", "grant mutation csrf", "live grant authority"]
-updated_at: 2026-08-11
+updated_at: 2026-08-30
 see_also:
+  - ../../connection-hub-architecture.md
   - ../../package/extraction-architecture.md
   - ../../package/delegated-cards.md
   - ../../package/oauth-delegated-credential-protocol.md
@@ -19,9 +20,12 @@ see_also:
 external identities and provider accounts to KDCube, and for delegating bounded
 KDCube access back out to external clients.
 
-Prokura owns the storage, rendering-source, edit, enforcement, revocation, and
-descriptor-drift contracts for the **Delegated by KDCube** cards this app
-renders. This page owns the KDCube-hosted application composition.
+Prokura owns the portable storage contracts, rendering source, edit,
+enforcement, revocation, and descriptor-drift semantics for the **Delegated by
+KDCube** cards this app renders. KDCube supplies the concrete storage and
+runtime adapters. This page owns the KDCube-hosted application composition;
+the [Connection Hub architecture](../../connection-hub-architecture.md) owns
+the cross-surface semantic and storage map.
 
 It has three responsibilities that must stay separate:
 
@@ -40,6 +44,10 @@ delegated client credentials
   platform user -> external automation allowed into selected KDCube boundaries
   examples: MCP OAuth connector, manual script/agent bearer
   used by: external clients acting for the approving KDCube user
+
+protected-service admission
+  registered external backend + opaque delegated bearer -> live decision
+  used by: a backend that enforces its own operation without a KDCube door
 ```
 
 Do not infer platform roles from delegated accounts. The long-term authority is:
@@ -72,6 +80,9 @@ A user-scoped hub that:
 - renders exact named-service namespace operations for manual automation access,
   validates them against the descriptor, and persists the narrowed policy in
   the delegated grant record.
+- authenticates a registered external protected service and evaluates its
+  bearer/resource/operation request against the same current card and active
+  catalog used by KDCube-managed REST/MCP guards.
 
 ## Building blocks it wires
 
@@ -215,6 +226,10 @@ account at call time.
   broker helpers for delegated external accounts.
 - `delegated_to_kdcube_oauth_callback` (public) — the shared OAuth browser
   redirect for delegated to KDCube providers such as Gmail and Slack.
+- `delegated_admission` (public, disabled by default) — direct operation-level
+  admission for a registered external backend. It requires an opaque delegated
+  bearer plus a separate signed service proof and returns a service-scoped
+  principal without provider credentials.
 - `delegated_access_list`, `delegated_access_create`,
   `delegated_agent_grant_create`, `delegated_access_revoke` (operations) —
   list, issue, extend, and revoke delegated access. State-changing Connection

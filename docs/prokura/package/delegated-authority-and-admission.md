@@ -1,12 +1,13 @@
 ---
 id: prokura/package/delegated-authority-and-admission
 title: "Delegated Authority And Admission"
-summary: "End-to-end architecture for current delegated-card authority across managed REST/MCP surfaces, connected-account claims, native named-service tools, and direct or relayed provider invocation."
+summary: "Delegated-card decision architecture across managed REST/MCP surfaces, direct external protected-service admission, connected-account claims, native named-service tools, and direct or relayed provider invocation."
 status: current
 tags: ["arch", "security", "admission", "connection-hub", "delegated-access", "mcp", "rest", "named-services", "data-bus"]
 keywords: ["delegated authority", "managed surface guard", "delegated access card", "access_id", "active catalog", "resource grants", "MCP tool grants", "connected account claims", "NamedServiceAdmission", "Data Bus relay"]
-updated_at: 2026-08-27
+updated_at: 2026-08-30
 see_also:
+  - ../connection-hub-architecture.md
   - ./delegated-cards.md
   - ./oauth-delegated-credential-protocol.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -15,10 +16,13 @@ see_also:
 ---
 # Delegated Authority And Admission
 
-This page is the whole-system map for delegated authority on managed KDCube
-surfaces. It connects durable Connection Hub state, request and session
-identity, managed REST/MCP guards, plain tools with connected-account claims,
-and named-service calls that may execute directly or through the Data Bus.
+This page owns delegated-card decision mechanics. The
+[Connection Hub architecture](../connection-hub-architecture.md) owns the
+whole-system semantic model, surface inventory, and storage boundaries. This
+page connects durable Connection Hub state, request and session identity,
+managed REST/MCP guards, direct external protected-service admission, plain
+tools with connected-account claims, and named-service calls that may execute
+directly or through the Data Bus.
 
 The delegated card and catalog system is reusable beyond named services. A
 managed surface author registers protected resources, outer operations/tools,
@@ -53,6 +57,8 @@ The architecture keeps these facts separate:
 | Delegated card | What did this user grant this caller? | Connection Hub delegated-card store. |
 | Active catalog | What does this deployment currently expose? | Connection Hub delegated catalog published from effective descriptor connections. |
 | Managed surface decision | May this resource and outer REST/MCP operation run now? | Managed surface guard for this request/tool invocation. |
+| Protected-service identity | May this external backend ask about this catalog resource? | Descriptor-owned service registration plus signed workload proof. |
+| Direct admission decision | May this bearer perform this concrete operation at that registered external backend? | Connection Hub direct-admission surface using the same current card/catalog evaluator. |
 | Connected-account decision | Which account and provider claims may this tool use? | Account broker using declared tool requirements and the card's `account_scope`. |
 | Named-service admission | May this decoded namespace and inner operation run now? | Common named-service dispatcher, when that subsystem is used. |
 | Provider request context | What diagnostics and domain context accompany a named-service request? | `NamedServiceRequest.context`, visible to provider code. |
@@ -238,6 +244,34 @@ The architecture applies equally to app-owned REST resources. The resource URL,
 tool/operation names, grants, account requirements, and domain implementation
 belong to that app and its descriptors.
 
+An external backend that cannot sit behind a KDCube-managed door can instead
+use direct protected-service admission. It sends the opaque delegated bearer,
+the concrete resource/operation, and an independent replay-protected workload
+proof to Connection Hub. Connection Hub authenticates the service before it
+inspects the bearer, then invokes the same current card/catalog evaluator used
+by managed guards. The backend receives a service-scoped subject and bounded
+authority, not an internal user id or provider credential.
+
+```text
+external caller -> opaque bearer -> external protected backend
+                                      |
+                         same bearer + signed service proof
+                         concrete resource + operation
+                                      |
+                                      v
+                         Connection Hub delegated_admission
+                         service registration + replay check
+                         current card + active catalog check
+                                      |
+                                      v
+                         bounded allow or structured denial
+```
+
+The protected-service registry contains resource selectors only. Operations,
+grants, and connected-account requirements stay in the active catalog. See
+[Direct Protected-Service Admission](../connection-hub-architecture.md#direct-protected-service-admission)
+for the wire contract and trust boundary.
+
 The current and hypothetical surfaces compare as follows:
 
 | Surface | Outer managed guard | Connected-account enforcement | Named-service admission |
@@ -247,6 +281,7 @@ The current and hypothetical surfaces compare as follows:
 | Named-services MCP | Resource + generic named-service MCP tools + `named_services:use`. | Provider requirements resolved for the inner operation. | Required for decoded namespace/operation. |
 | Native hosted-agent named-service tool | Trusted agent selector and card. | Provider requirements resolved for the inner operation. | Required for each `_call`. |
 | Custom app REST/MCP surface | App-owned resource, operations/tools, and grants. | Optional declared provider claims and shared account broker. | None when the app invokes its domain logic directly. |
+| Registered external protected service | Signed service proof + opaque bearer evaluated by Connection Hub direct admission. | Optional card account-scope check; provider credential delivery remains a separate broker. | None unless the external service separately invokes named services. |
 | Custom named-service provider | Governed by whichever outer/native entrance calls it. | Optional provider requirements for its inner operations. | Required at the common dispatcher. |
 
 ## Exact Bearer Binding

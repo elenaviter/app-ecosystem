@@ -1,35 +1,53 @@
 ---
 id: prokura/frontend/application/storage
 title: "Connection Hub Storage Map"
-summary: "Canonical storage map for connection-hub@1-0: descriptors, bundle secrets, Postgres authenticator metadata, connection-edge state, delegated account state, and runtime caches."
+summary: "Physical storage map for connection-hub@1-0: descriptor and secret authority, shared app storage, user-scoped account state, Postgres metadata, and Redis durable-projection and live-protocol roles."
 status: active
 tags: ["connection-hub", "storage", "secrets", "postgres", "identity", "authenticators", "connections"]
+keywords: ["delegated card storage", "capability catalog storage", "connected account secrets", "OAuth grant store", "Redis authority"]
+see_also:
+  - ../../../connection-hub-architecture.md
+  - ../../../package/delegated-cards.md
+  - ../../../../../apps/connection-hub@1-0/interface/README.md
 ---
 
 # Connection Hub Storage Map
 
+This page owns the physical storage map. The semantic distinctions and surface
+architecture are canonical in
+[Connection Hub Architecture And Semantic Requirements](../../../connection-hub-architecture.md).
+
 Connection Hub uses several storage surfaces on purpose. Do not collapse them
-into one "connection store" concept:
+into one "connection store" or treat all Redis records as cache:
 
 ```text
 bundles.yaml / descriptor authority
   non-secret deployment config:
-    connections providers/apps, identity settings, descriptor-defined authenticators
+    providers/apps, identity settings, active catalog source,
+    descriptor authenticators, protected-service registrations
 
 bundles.secrets.yaml / bundle secrets provider
   deployment secrets:
-    OAuth client secrets, Telegram bot tokens, signing secrets
+    OAuth client secrets, Telegram bot tokens, signing secrets,
+    protected-service HMAC secrets, pairwise projection secret
 
 Postgres
   request-authenticator metadata managed by the widget/admin API
     provider, row id, selector/verifier hints, secret_ref
 
-bundle artifact/local state
-  current playground connection edges and link challenges
-  current delegated-account connection state and user tokens
+shared app storage
+  connection edges and link challenges in the current implementation
+  immutable delegated-card revisions + current pointers
+  immutable delegated-catalog versions + active pointer
 
-Redis/cache
-  platform runtime caches, props caches, named-service discovery, event delivery
+user properties + user secrets
+  connected-account metadata in properties
+  provider access/refresh tokens and app-passwords in server-side user secrets
+
+Redis
+  live OAuth codes, clients, refresh/access bindings, credential handles
+  replay/CSRF state, catalog/card projections, selector cache,
+  named-service discovery, event delivery, coordination
 ```
 
 The security rule is strict: **Connection Hub metadata may reference a secret,
@@ -44,9 +62,18 @@ bundle secret lifecycle with `get_secret("b:<path>")`.
 | OAuth connector app secret | operator/admin | `bundles.secrets.yaml` or configured bundle secrets provider | yes | `connections.delegated_to_kdcube.providers.<provider>.connector_apps.<connector_app_id>.client_secret`. |
 | Telegram bot token | operator/admin | `bundles.secrets.yaml` or configured bundle secrets provider | yes | Referenced from `identity.authenticators[].secret_ref`, e.g. `identity.authenticators.telegram_kdcube_ref.bot_token`. |
 | Request-authenticator row | Connection Hub | Postgres | no | `connection_hub_request_authenticators`; stores metadata and `secret_ref` only. |
-| Identity link | Connection Hub | current bundle state | no | Maps `provider + provider_subject -> platform_user_id`. |
-| Identity-link challenge | Connection Hub | current bundle state | no | Short-lived challenge/proof state for link flows. |
-| Delegated-to-KDCube credential | Connection Hub delegated-to-KDCube | user-scoped bundle state | yes, user credential | Used by automation to act on a connected external account. OAuth tokens and app-password credentials use the same broker surface. |
+| Identity link | Connection Hub | shared app storage | no | Current implementation uses `connections/connection-edges.json`; maps a verified authority subject to a platform user. |
+| Identity-link challenge | Connection Hub | shared app storage | no | Current implementation uses `connections/connection-edge-challenges.json` for short-lived proof flows. |
+| Delegated card revision and current pointer | Prokura delegated authority | shared app storage | no | Immutable revisions under `delegated-cards/v1`; current pointer is the durable live authority. |
+| Capability catalog version and active pointer | Prokura delegated authority | shared app storage | no | Immutable versions plus self-contained `active.json` under `delegated-catalog/v1`. |
+| Connected-account metadata | Connection Hub delegated-to-KDCube | user properties | no | Provider, connector app, external subject, claims, status, and credential handle. |
+| Connected-account credential | Connection Hub delegated-to-KDCube | server-side user secrets | yes | OAuth tokens and app-passwords use the same broker contract. They are never stored in descriptors or returned to browsers. |
+| OAuth authorization code, refresh record, and access-grant binding | Prokura delegated OAuth | Redis | yes, bounded protocol state | Codes are single use; refresh records rotate; opaque access tokens resolve through a hashed grant binding and current card pointer. |
+| Delegated-card credential handle | Prokura delegated authority | Redis | yes, bounded live handle | Kept separately from durable card authority and expires with the card/credential. |
+| Card/catalog serving projection | Prokura delegated authority | Redis | no | Rebuildable from committed shared app storage; read-through restores missing projections. |
+| Direct-admission nonce | Prokura direct admission | Redis | no | Single-use `(service_id, nonce)` replay record; admission fails closed when this store is unavailable. |
+| Protected-service registration | operator/admin | effective app props | no | Binds a service id and `secret_ref` to catalog resource selectors only. |
+| Protected-service signing and identity-projection secrets | operator/admin | app secret provider | yes | Per-service HMAC secret plus separate deployment projection secret, each at least 32 bytes. |
 
 ## Request-Authenticator Metadata
 
@@ -172,14 +199,14 @@ platform user id
   a1b2c3d4-...
 ```
 
-The current playground implementation keeps connection edges and one-time
-challenges in app-local state through `prokura.hub.edges`.
+The current implementation keeps connection edges and one-time challenges in
+shared app storage through `prokura.hub.edges`.
 Those records do not contain platform roles. Role/economics authority is
 resolved after the link points at a platform principal.
 
-If this app graduates from playground to core identity infrastructure, identity
-links and challenges should move to a platform-owned durable store with the same
-logical contract. Do not move secret values with them.
+The edge-store interface is replaceable. A host can move edges and challenges
+to another durable store without changing their semantic contract. Do not move
+secret values into the edge records.
 
 ## Delegated Accounts
 
@@ -193,15 +220,64 @@ platform user id
 These tokens let automation act on a user's connected account. They do not prove
 platform identity and must not grant platform roles.
 
-Delegated integrations store OAuth token material and non-OAuth credential
-material in user-scoped bundle state. Deployment OAuth connector app secrets
-stay in bundle secrets.
+The portable Prokura store splits these records deliberately:
 
-## Runtime Cache
+```text
+user properties
+  delegated_to_kdcube.account_index
+  delegated_to_kdcube.accounts.<account-id>
 
-Redis is used by the platform runtime for props cache, named-service discovery,
-events, and other ephemeral coordination. It is not the authority for
-authenticator secrets, connection edges, or delegated OAuth tokens.
+server-side user secrets
+  delegated_to_kdcube.credentials.<credential-id>
+```
+
+KDCube supplies the user-property and user-secret backend. Deployment OAuth
+connector app secrets stay in app secrets and are not copied into user records.
+
+## Delegated Cards And Catalog
+
+Cards and the catalog are durable, versioned authority under the app storage
+root:
+
+```text
+delegated-cards/v1/grantors/<subject-hash>/cards/<access-id>/
+  revisions/card_revision_<stamp>_<revision>_<hash>.json
+  current.json
+
+delegated-catalog/v1/
+  versions/<catalog-version>.json
+  active.json
+```
+
+Card and catalog Redis rows are serving projections. A reader restores a
+missing projection from the committed revision or version. Publishing and
+editing commit durable state before projecting it.
+
+Credential handles are intentionally separate from card authority. A durable
+card says what may be done; a bounded live handle is still required to prove a
+current caller.
+
+## Redis: Projection, Protocol State, And Coordination
+
+Redis has three roles:
+
+```text
+rebuildable projections
+  active card/catalog projections, authenticator selector cache
+
+TTL-bounded protocol authority
+  OAuth authorization codes, dynamic client registrations, refresh records,
+  access-token grant bindings, card credential handles, consent CSRF,
+  direct-admission replay nonces
+
+coordination and delivery
+  discovery, events, locks, pending demand/event state
+```
+
+The second group is not reconstructable cache. Losing it invalidates the
+affected OAuth credential or in-flight protocol. It must never produce an
+implicit allow. Durable card/catalog state can restore authority documents,
+but it cannot recreate a lost bearer binding or credential handle.
 
 Connection Hub also uses Redis as a short-lived selector cache for
 request-authenticator metadata:
@@ -212,8 +288,24 @@ identity.authenticator_selector_cache
   ttl_seconds: 30
 ```
 
-The cached payload is only the merged authenticator metadata rows used for
+The authenticator selector cached payload is only the merged metadata rows used for
 candidate selection. It does not cache Telegram proof validation, connection-edge
 resolution, platform roles, delegated-account tokens, or authorization results.
 `authenticators_upsert`, `authenticators_remove`, and descriptor bootstrap
 invalidate the cache.
+
+## Direct Admission State
+
+Direct protected-service admission adds no card or catalog store. It reads the
+same access binding, current card, and active catalog used by managed REST/MCP
+guards. Its additional state is:
+
+- descriptor-owned service id, resource selectors, and `secret_ref`;
+- per-service signing secret in app secrets;
+- deployment pairwise-subject projection secret in app secrets;
+- Redis replay nonce with bounded TTL;
+- ordinary runtime decision logs without the bearer or secret values.
+
+See the
+[direct protected-service admission contract](../../../connection-hub-architecture.md#direct-protected-service-admission)
+for the wire protocol and trust boundary.

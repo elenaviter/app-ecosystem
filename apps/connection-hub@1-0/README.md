@@ -1,7 +1,7 @@
 ---
 id: connection-hub@1-0
 title: "Connection Hub"
-summary: "User-scoped identity and connections hub: links external identities to platform users, serves the public `connections` named-service contract for delegated account tokens, owns the shared OAuth callback route, and governs delegated access to named services."
+summary: "Prokura-backed identity and delegated-access hub: links external identities, brokers connected accounts, issues and governs delegated cards, and evaluates live operation admission for KDCube-managed and registered external services."
 status: active
 tags: ["app", "connection-hub", "identity", "connections", "named-services", "oauth", "email", "gmail", "icloud", "slack", "google-sheets"]
 module: entrypoint
@@ -11,6 +11,8 @@ primary_surfaces:
   - "request_authenticate public operation — verify provider/request proofs and return linked authority"
   - "named_service API (operations route) — serves the whole `connections` contract"
   - "public OAuth callback route (delegated_to_kdcube_oauth_callback) — shared by delegated to KDCube OAuth providers"
+  - "delegated OAuth authorization server (public/oauth/*) — issues opaque delegated client credentials backed by live cards"
+  - "delegated_admission public operation — lets a registered external protected service evaluate one bearer/resource/operation against current authority"
   - "connections_settings widget (ui/widgets/connections)"
 links:
   config: config/bundles.template.yaml
@@ -18,6 +20,7 @@ links:
   interface: interface/README.md
   openapi: interface/connection-hub.openapi.yaml
   design: ../../docs/prokura/frontend/application/README.md
+  architecture: ../../docs/prokura/connection-hub-architecture.md
   journal: ../../journal/README.md
 ---
 
@@ -26,7 +29,7 @@ links:
 `connection-hub@1-0` is the user-scoped hub for connection edges and delegated
 account connections.
 
-It answers three related questions:
+It answers five related questions:
 
 ```text
 Who is this external identity in KDCube?
@@ -40,6 +43,12 @@ Which user ids belong to the same linked identity family?
 
 Can automation use this user's external account?
   -> connected account -> delegated token/claim
+
+What may this external app, agent, or automation do for the approving user?
+  -> delegated bearer -> current card -> active capability catalog
+
+May this registered external backend perform this concrete delegated operation?
+  -> service proof + delegated bearer -> live admission decision
 ```
 
 The app exposes request authenticators so ingress and app/channel handlers can
@@ -50,7 +59,7 @@ OAuth mechanics itself. It also exposes connection-edge operations so a verified
 external identity can resolve to a platform principal envelope, and a resolver
 operation so aggregation surfaces can get canonical linked user ids server-side.
 
-The app wires four building blocks:
+The app wires these building blocks:
 
 - connection-edge storage and a temporary principal-resolution fixture;
 - identity-family resolver for linked user-id expansion;
@@ -60,6 +69,10 @@ The app wires four building blocks:
 - the reusable `integrations/email` settings (**iCloud** app-password only —
   Gmail is a connections provider), exposed through its own `email_*` ops; and
 - a `connections_settings` browser widget served from `ui/widgets/connections`.
+
+The canonical distinction between edges, connected accounts, cards, catalogs,
+service registrations, and their stores is in the
+[Connection Hub architecture](../../docs/prokura/connection-hub-architecture.md).
 
 ## Identity model
 
@@ -200,6 +213,8 @@ connection-hub@1-0/
   interface/
     README.md
     connection-hub.openapi.yaml
+  surfaces/
+    delegated_admission.py # direct protected-service host adapter
   tests/
     test_delegated_access_create.py
     test_oauth_discovery.py
@@ -233,6 +248,10 @@ kdcube_ai_app.apps.chat.sdk.integrations.prokura
 - Identity links are also user-scoped state in app storage. They link a
   verified external identity to a platform user; they do not grant roles by
   themselves.
+- Direct protected-service admission is disabled by default. When enabled, a
+  registered service supplies an independent signed workload proof beside the
+  delegated bearer. The route returns a service-scoped subject and current
+  operation authority, never an internal user id or provider credential.
 - The static widget is built from `ui/widgets/connections`; the runtime must be
   refreshed so the new app loads and the widget is built.
 
@@ -242,5 +261,7 @@ See [AGENTS.md](AGENTS.md) for builder-agent onboarding,
 deploy props, [config/bundles.secrets.template.yaml](config/bundles.secrets.template.yaml)
 for deploy secret keys,
 [the frontend documentation](../../docs/prokura/frontend/application/README.md)
-for the design overview, and [the public journal index](../../journal/README.md)
+for the UI design, the
+[Connection Hub architecture](../../docs/prokura/connection-hub-architecture.md)
+for semantic and storage ownership, and [the public journal index](../../journal/README.md)
 for the centralized maintenance record.

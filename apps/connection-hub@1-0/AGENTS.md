@@ -6,6 +6,7 @@ status: "active"
 tags: ["agents", "builder", "onboarding", "connection-hub", "identity", "connections", "oauth", "mcp", "named-services", "delegated-credentials", "react", "redux"]
 see_also:
   - "./README.md"
+  - "../../docs/prokura/connection-hub-architecture.md"
   - "../../docs/prokura/frontend/application/README.md"
   - "../../docs/prokura/frontend/application/storage/README.md"
   - "./interface/README.md"
@@ -41,6 +42,12 @@ delegated client credential
   examples: manual automation bearer, OAuth-issued MCP connector credential
   used by: managed REST/MCP guards and the named-service bridge
 
+protected-service registration
+  purpose: authenticate an external policy-enforcement backend and bind it to
+           the catalog resources for which it may request live decisions
+  examples: crm-api may ask about https://api.example.test/customers*
+  used by: direct delegated_admission calls; never duplicates operations/grants
+
 request authenticator
   purpose: verify that an incoming request proves a channel identity, then
            project linked platform authority into a UserSession
@@ -66,6 +73,7 @@ demos, but that fixture is not the long-term security authority.
 Start with these app-local files:
 
 - [README.md](README.md)
+- [Connection Hub architecture](../../docs/prokura/connection-hub-architecture.md)
 - [frontend design](../../docs/prokura/frontend/application/README.md)
 - [storage map](../../docs/prokura/frontend/application/storage/README.md)
 - [public journal index](../../journal/README.md)
@@ -115,6 +123,11 @@ Connection Hub app
     resource_grants + selected top-level operations
     optional exact named_service_operations selection
     provider-account prerequisites stay in Delegated to KDCube
+
+  direct protected-service admission
+    delegated bearer + independent signed service proof
+    current card + active catalog + optional account-scope decision
+    bounded service-scoped principal; no provider credential
 ```
 
 ## Implementation Rules
@@ -138,6 +151,11 @@ Connection Hub app
 - Do not put request-authenticator secret values in Postgres or bundle-local
   state. Store only `secret_ref` metadata there; secret values stay in
   `bundles.secrets.yaml` or the configured bundle secrets provider.
+- Do not treat Redis as one undifferentiated cache. Card/catalog projections
+  are rebuildable; OAuth codes, refresh/access bindings, live credential
+  handles, and admission nonces are TTL-bounded protocol authority.
+- A direct-admission service registration binds a workload to resource
+  selectors only. Operations and grants stay in the active delegated catalog.
 - Keep the widget as a React/Redux app. Add slices/components instead of turning
   it into an ad hoc script.
 - Keep `entrypoint.py` as shallow orchestration. Authority domain logic belongs

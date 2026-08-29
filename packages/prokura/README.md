@@ -21,7 +21,7 @@ and an edit or revocation of the card applies on the very next call.
 authority implementation: authority and authenticator contracts, durable
 identity-card and capability-catalog histories, delegated OAuth and connected-
 account lifecycle, identity-edge resolution, per-call named-service and
-managed-surface admission, structured denial contracts, and explicit ports for
+managed-surface and direct protected-service admission, structured denial contracts, and explicit ports for
 host storage, dispatch, identity, and live-delivery capabilities. KDCube
 consumes these modules through thin host adapters, and the Connection Hub app
 in this repository is the first frontend over the package.
@@ -30,6 +30,7 @@ Home: https://github.com/elenaviter/app-ecosystem
 
 Architecture and contracts:
 
+- [Connection Hub architecture and semantic requirements](../../docs/prokura/connection-hub-architecture.md)
 - [Package boundary and extraction](../../docs/prokura/package/extraction-architecture.md)
 - [Delegated authority and admission](../../docs/prokura/package/delegated-authority-and-admission.md)
 - [Delegated access cards](../../docs/prokura/package/delegated-cards.md)

@@ -64,6 +64,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.oaut
 from prokura.delegated_credentials.access_map import (
     build_delegated_access_map,
 )
+from prokura.delegated_credentials.admission import AdmissionConfig
 from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.automation_access import (
     AutomationAccessService,
 )
@@ -119,6 +120,11 @@ from prokura.mcp_metadata import (
 )
 from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
+from .surfaces.delegated_admission import (
+    AdmissionHostContext,
+    handle_delegated_admission,
+)
+
 BUNDLE_ID = "connection-hub@1-0"
 ENTRYPOINT_NAME = "connection-hub"
 LOGGER = logging.getLogger("kdcube.playground.connection_hub")
@@ -168,6 +174,7 @@ CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
 # or are read-only resolvers. They never inherit browser-operation CSRF.
 CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     "authority_provider_entrypoint_resolve",
+    "delegated_admission",
     "federated_data_bus_claim",
     "oauth",
     "request_authenticate",
@@ -1533,6 +1540,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "email_disconnect_account": {"visibility": {"user_types": []}},
                             "connections_settings": {"visibility": {"user_types": []}},
                             "oauth": {"visibility": {"user_types": []}},
+                            "delegated_admission": {"visibility": {"user_types": []}},
                         },
                     },
                     "widget": {
@@ -1687,6 +1695,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 },
                             },
                         ],
+                    },
+                    "admission": {
+                        "enabled": False,
+                        "identity_projection_secret_ref": "",
+                        "max_clock_skew_seconds": 300,
+                        "nonce_ttl_seconds": 600,
+                        "services": {},
                     },
                 },
                 "delegated_to_kdcube": {
@@ -1886,6 +1901,14 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             if not resource:
                 resource = str(kwargs.get("resource") or "").strip()
             parsed_cfg = oauth_delegated_config(request)
+            admission_cfg = AdmissionConfig.from_connections(
+                _connections_config(self)
+            )
+            admission_endpoint = ""
+            if admission_cfg.enabled:
+                admission_endpoint = (
+                    f"{public_base.rsplit('/', 1)[0]}/delegated_admission"
+                )
             resource_cfg = parsed_cfg.resource_config(resource or None)
             icon = kdcube_icon_descriptor(request=request, public_base_url=issuer)
             return JSONResponse(
@@ -1909,6 +1932,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                         for tool in parsed_cfg.resource_tool_catalog(resource)
                     ],
                     named_services=resource_cfg.named_services if resource_cfg is not None else {},
+                    delegated_admission_endpoint=admission_endpoint or None,
                     logo_uri=kdcube_icon_url(request=request, public_base_url=issuer),
                     website_url=kdcube_website_url(request=request, public_base_url=issuer),
                     icons=[icon] if icon else None,
@@ -1958,6 +1982,45 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return await oauth_revoke(request)
 
         return JSONResponse(status_code=404, content={"error": "oauth_route_not_found", "path": path})
+
+    # ── direct protected-service admission ──────────────────────────────────
+
+    @api(method="POST", alias="delegated_admission", route="public")
+    async def delegated_admission(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> JSONResponse:
+        """Decide one external service operation against live delegated state."""
+
+        tenant, project = _runtime_tenant_project(self)
+        redis = getattr(self, "redis", None) or get_async_redis_client(
+            get_settings().REDIS_URL
+        )
+
+        async def _resolve_secret(secret_path: str, trace_scope: str) -> str:
+            return await _bundle_secret_value(
+                self,
+                secret_path=secret_path,
+                trace_scope=trace_scope,
+                warn_missing=True,
+            )
+
+        return await handle_delegated_admission(
+            context=AdmissionHostContext(
+                connections=_connections_config(self),
+                redis=redis,
+                tenant=tenant,
+                project=project,
+                resolve_secret=_resolve_secret,
+                bind_delegated_request=lambda req: (
+                    _bind_delegated_client_request_config(self, req)
+                ),
+            ),
+            payload=_payload(data, **kwargs),
+            request=request,
+        )
 
     # ── delegated access map (admin, read-only) ────────────────────────────
 
