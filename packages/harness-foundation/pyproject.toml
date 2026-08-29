@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness-foundation"
+version = "0.0.1"
+description = "The harness that lets a reactive agent work at scale: ordered per-conversation event delivery, mid-run steering and stop, durable records and workspaces, native agents and agents with their own loop under one contract."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Elena Viter" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://github.com/elenaviter/app-ecosystem"
+Repository = "https://github.com/elenaviter/app-ecosystem"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+harness_foundation = ["py.typed"]
