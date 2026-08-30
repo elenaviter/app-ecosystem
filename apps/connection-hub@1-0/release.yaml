@@ -14,7 +14,7 @@ bundle:
       The surface is disabled by default and is advertised through protected-
       resource metadata only when enabled.
     - Implements the public `connections` named-service contract
-      (prokura plus KDCube host adapters): exposes
+      (`connection_hub` package plus KDCube host adapters): exposes
       `connection.catalog`, `connection.status`, `connection.get_token`,
       `connection.disconnect`, and `oauth.start` over the local and API
       transports. Serves the whole contract over HTTP via the `named_service`
@@ -40,7 +40,7 @@ bundle:
 
     Validation
 
-    - Prokura package suite passes: 123 tests.
+    - Connection Hub package suite passes: 123 tests.
     - Connection Hub backend suite passes: 24 tests.
     - KDCube bundle contract suite passes: 272 tests, with 50 graph-only
       contracts skipped because this is a service and UI app rather than an

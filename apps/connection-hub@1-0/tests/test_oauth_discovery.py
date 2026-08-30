@@ -146,10 +146,10 @@ async def test_protected_resource_metadata_advertises_enabled_admission_endpoint
     )
     payload = json.loads(response.body)
 
-    assert payload["prokura_delegated_admission_endpoint"] == (
+    assert payload["connection_hub_delegated_admission_endpoint"] == (
         "https://runtime.example.test/api/integrations/bundles/tenant-a/project-a/"
         "connection-hub@1-0/public/delegated_admission"
     )
-    assert payload["prokura_delegated_admission_schema"] == (
-        "prokura.delegated_admission.v1"
+    assert payload["connection_hub_delegated_admission_schema"] == (
+        "connection_hub.delegated_admission.v1"
     )

@@ -13,28 +13,28 @@ def _load_entrypoint_module():
     return module
 
 
-def test_kdcube_runtime_ports_wrap_portable_prokura_policy():
+def test_kdcube_runtime_ports_wrap_portable_connection_hub_policy():
     module = _load_entrypoint_module()
 
     assert module.AutomationAccessService.__module__.startswith(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura."
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub."
     )
     assert module.DurableCardPersistence.__module__.startswith(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura."
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub."
     )
     assert module.ensure_delegated_catalog.__module__.startswith(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura."
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub."
     )
     assert module.DelegatedToKdcubeStore.__module__.startswith(
-        "kdcube_ai_app.apps.chat.sdk.integrations.prokura."
+        "kdcube_ai_app.apps.chat.sdk.integrations.connection_hub."
     )
 
 
-def test_portable_authority_types_are_imported_from_prokura():
+def test_portable_authority_types_are_imported_from_connection_hub():
     module = _load_entrypoint_module()
 
-    assert module.ConnectionEdgeStore.__module__ == "prokura.hub.edges"
-    assert module.AuthenticatorStore.__module__ == "prokura.hub.authenticator_store"
+    assert module.ConnectionEdgeStore.__module__ == "connection_hub.hub.edges"
+    assert module.AuthenticatorStore.__module__ == "connection_hub.hub.authenticator_store"
     assert module.DelegatedCatalogResolver.__module__.startswith(
-        "prokura.delegated_credentials.catalog."
+        "connection_hub.delegated_credentials.catalog."
     )

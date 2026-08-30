@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Elena Viter
+
+"""Email/app-password adapter registration for delegated to KDCube."""
+
+from __future__ import annotations
+
+from connection_hub.delegated_to_kdcube.adapters import (
+    DelegatedToKdcubeAdapter,
+    adapter,
+)
+
+
+@adapter("email.imap_smtp_app_password")
+class EmailAppPasswordAdapter(DelegatedToKdcubeAdapter):
+    label = "Email"
+    kind = "app_password"
+
+    async def normalize_profile(self, credential: dict) -> dict:
+        email = str(credential.get("email") or credential.get("username") or "").strip()
+        return {
+            "external_subject": email,
+            "email": email,
+            "display_name": email,
+        }
+
+
+__all__ = ["EmailAppPasswordAdapter"]

@@ -3,7 +3,7 @@
 Service composition and launcher contracts, browser-session (OIDC) and
 service-workload authentication surfaces, opaque-token issuance for the
 service's own sessions, configuration, health and readiness, and
-migration invocation. No authority models (those are `prokura`), no
+migration invocation. No authority models (those are `connection_hub`), no
 application behavior, no KDCube bundle concepts; it stands on
 `app-foundation`.
 

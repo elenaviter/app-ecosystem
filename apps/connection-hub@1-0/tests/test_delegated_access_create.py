@@ -16,7 +16,7 @@ import pytest
 from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import (
     load_dynamic_module_for_path,
 )
-from prokura.delegated_credentials.automation_access import (
+from connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
 )
 

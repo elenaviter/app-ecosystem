@@ -6,9 +6,9 @@ status: "active"
 tags: ["agents", "builder", "onboarding", "connection-hub", "identity", "connections", "oauth", "mcp", "named-services", "delegated-credentials", "react", "redux"]
 see_also:
   - "./README.md"
-  - "../../docs/prokura/connection-hub-architecture.md"
-  - "../../docs/prokura/frontend/application/README.md"
-  - "../../docs/prokura/frontend/application/storage/README.md"
+  - "../../docs/connection-hub/connection-hub-architecture.md"
+  - "../../docs/connection-hub/frontend/application/README.md"
+  - "../../docs/connection-hub/frontend/application/storage/README.md"
   - "./interface/README.md"
   - "./interface/connection-hub.openapi.yaml"
   - "./config/bundles.template.yaml"
@@ -73,18 +73,18 @@ demos, but that fixture is not the long-term security authority.
 Start with these app-local files:
 
 - [README.md](README.md)
-- [Connection Hub architecture](../../docs/prokura/connection-hub-architecture.md)
-- [frontend design](../../docs/prokura/frontend/application/README.md)
-- [storage map](../../docs/prokura/frontend/application/storage/README.md)
+- [Connection Hub architecture](../../docs/connection-hub/connection-hub-architecture.md)
+- [frontend design](../../docs/connection-hub/frontend/application/README.md)
+- [storage map](../../docs/connection-hub/frontend/application/storage/README.md)
 - [public journal index](../../journal/README.md)
 - [interface/README.md](interface/README.md)
 - [interface/connection-hub.openapi.yaml](interface/connection-hub.openapi.yaml)
 - [config/bundles.template.yaml](config/bundles.template.yaml)
 - [config/bundles.secrets.template.yaml](config/bundles.secrets.template.yaml)
 - [entrypoint.py](entrypoint.py)
-- Prokura authority core: [`prokura`](../../packages/prokura/src/prokura)
+- Connection Hub authority core: [`connection-hub`](../../packages/connection-hub/src/connection_hub)
 - KDCube host adapters:
-  [`kdcube_ai_app.apps.chat.sdk.integrations.prokura`](https://github.com/kdcube/kdcube/tree/main/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/prokura)
+  [`kdcube_ai_app.apps.chat.sdk.integrations.connection_hub`](https://github.com/kdcube/kdcube/tree/main/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/connection_hub)
 - [ui/widgets/connections/src/App.tsx](ui/widgets/connections/src/App.tsx)
 
 When changing auth/session behavior, also read the platform docs:
@@ -159,7 +159,7 @@ Connection Hub app
 - Keep the widget as a React/Redux app. Add slices/components instead of turning
   it into an ad hoc script.
 - Keep `entrypoint.py` as shallow orchestration. Authority domain logic belongs
-  in `prokura`; KDCube-specific request, storage, and transport bindings remain
+  in `connection-hub`; KDCube-specific request, storage, and transport bindings remain
   thin host adapters.
 - Keep `interface/README.md`, the frontend docs, config templates, and journal in
   sync when changing an API or behavior.

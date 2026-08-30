@@ -24,7 +24,7 @@ A standalone service needs a host layer around its application logic:
 
 `service-foundation` will own that layer and stand on
 [`app-foundation`](../app-foundation/README.md). It will not own application
-behavior, Prokura authority policy, or KDCube application concepts.
+behavior, Connection Hub authority policy, or KDCube application concepts.
 
 The Connection Hub currently runs as a KDCube application. A future standalone
 host can compose the same application over this service layer once the required

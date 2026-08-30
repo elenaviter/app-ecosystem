@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable, Dict, Mapping
 
 from fastapi.responses import JSONResponse
 
-from prokura.delegated_credentials.admission import (
+from connection_hub.delegated_credentials.admission import (
     MIN_SERVICE_SECRET_BYTES,
     AdmissionConfig,
     AdmissionRequest,
@@ -20,8 +20,8 @@ from prokura.delegated_credentials.admission import (
     pairwise_service_subject,
     verify_admission_request,
 )
-from prokura.delegated_credentials.credential_view import DelegatedCredentialView
-from kdcube_ai_app.apps.chat.sdk.integrations.prokura.delegated_credentials.oauth.surface_guard import (
+from connection_hub.delegated_credentials.credential_view import DelegatedCredentialView
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.surface_guard import (
     evaluate_delegated_rest_admission,
 )
 
@@ -60,7 +60,7 @@ async def _claim_nonce(
 ) -> bool:
     digest = hashlib.sha256(f"{service_id}\n{nonce}".encode("utf-8")).hexdigest()
     key = (
-        f"prokura:admission:{context.tenant}:{context.project}:nonce:{digest}"
+        f"connection-hub:admission:{context.tenant}:{context.project}:nonce:{digest}"
     )
     claimed = await context.redis.set(
         key,

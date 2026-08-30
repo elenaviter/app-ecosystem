@@ -3,7 +3,7 @@ id: connection-hub-interface
 title: Connection Hub Interface
 summary: Documents the authenticated operations, public proof/OAuth/admission routes, named-service provider, and browser widget exposed by the Connection Hub app.
 tags:
-  - prokura
+  - connection-hub
   - connection-hub
   - interface
 keywords:
@@ -12,8 +12,8 @@ keywords:
   - named-service provider
 see_also:
   - ./connection-hub.openapi.yaml
-  - ../../../docs/prokura/connection-hub-architecture.md
-  - ../../../docs/prokura/frontend/application/README.md
+  - ../../../docs/connection-hub/connection-hub-architecture.md
+  - ../../../docs/connection-hub/frontend/application/README.md
 ---
 
 # Connection Hub Interface
@@ -31,7 +31,7 @@ operation alias.
 
 The semantic distinctions, storage authorities, and trust boundaries are
 canonical in the
-[Connection Hub architecture](../../../docs/prokura/connection-hub-architecture.md).
+[Connection Hub architecture](../../../docs/connection-hub/connection-hub-architecture.md).
 
 ## Browser surfaces
 
@@ -136,10 +136,10 @@ It is disabled by default.
 ```http
 POST /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/delegated_admission
 Authorization: Bearer <opaque-kst1-token>
-X-Prokura-Service-Id: crm-api
-X-Prokura-Timestamp: 1788048000
-X-Prokura-Nonce: 4b38d173e0864ee891f23f17
-X-Prokura-Signature: <base64url-hmac-sha256>
+X-Connection-Hub-Service-Id: crm-api
+X-Connection-Hub-Timestamp: 1788048000
+X-Connection-Hub-Nonce: 4b38d173e0864ee891f23f17
+X-Connection-Hub-Signature: <base64url-hmac-sha256>
 Content-Type: application/json
 
 {
@@ -158,7 +158,7 @@ and SHA-256 of the canonical semantic request. Service secrets contain at
 least 32 bytes. The default timestamp window is 300 seconds and the default
 single-use nonce lifetime is 600 seconds.
 
-The response carries `prokura.delegated_admission.v1`, a correlation id, a
+The response carries `connection_hub.delegated_admission.v1`, a correlation id, a
 service-scoped subject, caller client id, effective resource/operation/grants,
 optional account scope, card/catalog provenance, and expiry. It never returns
 the internal platform user id, raw card access id, bearer, identity-family
@@ -166,7 +166,7 @@ scope, or provider credential.
 
 The complete signing input, response schema, registration shape, and trust
 boundary are in
-[Direct Protected-Service Admission](../../../docs/prokura/connection-hub-architecture.md#direct-protected-service-admission).
+[Direct Protected-Service Admission](../../../docs/connection-hub/connection-hub-architecture.md#direct-protected-service-admission).
 
 ### Public Telegram proof route
 
@@ -327,7 +327,7 @@ Server-side application code parses the local tool config and passes that policy
 to `DelegatedToKdcubeClient.ensure_tool_claims(...)`:
 
 ```python
-from prokura.delegated_to_kdcube import (
+from connection_hub.delegated_to_kdcube import (
     ToolClaimPolicy,
 )
 
@@ -681,7 +681,7 @@ user-scoped app state created through these flows.
 
 The hub requires external operator/user setup before a connection can work.
 **Full step-by-step setup (Google Cloud Console, Slack app, iCloud) is in
-[the integration guides](../../../docs/prokura/frontend/application/integrations/README.md)
+[the integration guides](../../../docs/connection-hub/frontend/application/integrations/README.md)
 (one article per provider).**
 A summary follows:
 
@@ -725,5 +725,5 @@ resolution for code acting on behalf of the current user.
   widget.
 
 > Full step-by-step provider setup is in
-> [the integration guides](../../../docs/prokura/frontend/application/integrations/README.md)
+> [the integration guides](../../../docs/connection-hub/frontend/application/integrations/README.md)
 > (one article per provider).

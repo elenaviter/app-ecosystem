@@ -5,7 +5,7 @@ from pathlib import Path
 
 import yaml
 
-from prokura.delegated_credentials.cache_settings import DelegatedCacheSettings
+from connection_hub.delegated_credentials.cache_settings import DelegatedCacheSettings
 
 
 def _descriptor_connections(path: Path) -> dict:
@@ -28,7 +28,7 @@ def _descriptor_connections(path: Path) -> dict:
     return found[0]
 
 
-def test_app_template_declares_prokura_cache_defaults():
+def test_app_template_declares_connection_hub_cache_defaults():
     template = Path(__file__).resolve().parents[1] / "config/bundles.template.yaml"
     settings = DelegatedCacheSettings.from_connections(
         _descriptor_connections(template)

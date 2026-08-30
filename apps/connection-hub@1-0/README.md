@@ -1,7 +1,7 @@
 ---
 id: connection-hub@1-0
 title: "Connection Hub"
-summary: "Prokura-backed identity and delegated-access hub: links external identities, brokers connected accounts, issues and governs delegated cards, and evaluates live operation admission for KDCube-managed and registered external services."
+summary: "Connection Hub application: links external identities, brokers connected accounts, governs delegated cards, and evaluates live operation admission for KDCube-managed and registered external services."
 status: active
 tags: ["app", "connection-hub", "identity", "connections", "named-services", "oauth", "email", "gmail", "icloud", "slack", "google-sheets"]
 module: entrypoint
@@ -19,15 +19,17 @@ links:
   secrets: config/bundles.secrets.template.yaml
   interface: interface/README.md
   openapi: interface/connection-hub.openapi.yaml
-  design: ../../docs/prokura/frontend/application/README.md
-  architecture: ../../docs/prokura/connection-hub-architecture.md
+  design: ../../docs/connection-hub/frontend/application/README.md
+  architecture: ../../docs/connection-hub/connection-hub-architecture.md
   journal: ../../journal/README.md
 ---
 
 # Connection Hub App
 
-`connection-hub@1-0` is the user-scoped hub for connection edges and delegated
-account connections.
+Connection Hub is the product; `connection-hub@1-0` is its current technical
+KDCube app id. Its portable contracts come from the `connection-hub` Python
+distribution. It is the user-scoped hub for connection edges, connected
+accounts, delegated cards, and current operation admission.
 
 It answers five related questions:
 
@@ -72,7 +74,7 @@ The app wires these building blocks:
 
 The canonical distinction between edges, connected accounts, cards, catalogs,
 service registrations, and their stores is in the
-[Connection Hub architecture](../../docs/prokura/connection-hub-architecture.md).
+[Connection Hub architecture](../../docs/connection-hub/connection-hub-architecture.md).
 
 ## Identity model
 
@@ -206,7 +208,7 @@ not connected the requested provider/account.
 ```text
 connection-hub@1-0/
   AGENTS.md
-  entrypoint.py             # thin KDCube host composition over Prokura
+  entrypoint.py             # thin KDCube host composition over Connection Hub
   config/
     bundles.template.yaml
     bundles.secrets.template.yaml
@@ -223,16 +225,16 @@ connection-hub@1-0/
       connections/          # connections_settings widget app
 ```
 
-Portable authority logic lives in the Prokura package. KDCube-specific
+Portable authority logic lives in the Connection Hub package. KDCube-specific
 transport, identity-provider, and named-service bindings remain host adapters:
 
 ```text
-prokura
+connection-hub
   hub/                       # edges, identity families, authenticator metadata
   delegated_credentials/    # cards, catalog, OAuth, admission policy
   delegated_to_kdcube/      # connected-account lifecycle and provider contracts
 
-kdcube_ai_app.apps.chat.sdk.integrations.prokura
+kdcube_ai_app.apps.chat.sdk.integrations.connection_hub
   hub/provider_impl.py       # KDCube named-service and account-store binding
   hub/authenticators.py      # KDCube provider-proof and session projection
   delegated_credentials/oauth/http/  # FastAPI transport adapter
@@ -253,7 +255,7 @@ kdcube_ai_app.apps.chat.sdk.integrations.prokura
   delegated bearer. The route returns a service-scoped subject and current
   operation authority, never an internal user id or provider credential.
 - [Protect an external backend with Connection
-  Hub](../../docs/prokura/recipes/direct-protected-service.md) provides the
+  Hub](../../docs/connection-hub/recipes/direct-protected-service.md) provides the
   deployment contract and links a runnable protected-service implementation.
 - The static widget is built from `ui/widgets/connections`; the runtime must be
   refreshed so the new app loads and the widget is built.
@@ -263,8 +265,8 @@ See [AGENTS.md](AGENTS.md) for builder-agent onboarding,
 [config/bundles.template.yaml](config/bundles.template.yaml) for non-secret
 deploy props, [config/bundles.secrets.template.yaml](config/bundles.secrets.template.yaml)
 for deploy secret keys,
-[the frontend documentation](../../docs/prokura/frontend/application/README.md)
+[the frontend documentation](../../docs/connection-hub/frontend/application/README.md)
 for the UI design, the
-[Connection Hub architecture](../../docs/prokura/connection-hub-architecture.md)
+[Connection Hub architecture](../../docs/connection-hub/connection-hub-architecture.md)
 for semantic and storage ownership, and [the public journal index](../../journal/README.md)
 for the centralized maintenance record.

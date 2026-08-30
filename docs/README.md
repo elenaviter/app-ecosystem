@@ -3,9 +3,9 @@
 Everything in this repository is documented here, one folder per
 component:
 
-- [`prokura/`](prokura/README.md) — the delegated-access authority: the
-  Python package, the frontend application built on it, and, when it
-  ships, the standalone runnable service.
+- [`connection-hub/`](connection-hub/README.md) — the Connection Hub Python
+  package, KDCube application, authority architecture, integration recipes,
+  and planned standalone host.
 - [Package releases](package-releases.md) — version, test, wheel, smoke, and
   trusted-publishing contract for every Python distribution in this repo.
 

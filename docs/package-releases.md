@@ -8,7 +8,7 @@ is not a release record.
 
 | Distribution | Import | Package directory |
 | --- | --- | --- |
-| `prokura` | `prokura` | `packages/prokura` |
+| `connection-hub` | `connection_hub` | `packages/connection-hub` |
 | `app-foundation` | `app_foundation` | `packages/app-foundation` |
 | `service-foundation` | `service_foundation` | `packages/service-foundation` |
 | `harness-foundation` | `harness_foundation` | `packages/harness-foundation` |
@@ -18,7 +18,7 @@ is not a release record.
 1. Update the selected package's version in `pyproject.toml` and its import
    package `__version__` in the same commit.
 2. Update its README so PyPI describes what that version actually ships.
-3. Run package tests. Prokura runs its complete test directory; planning-marker
+3. Run package tests. Connection Hub runs its complete test directory; planning-marker
    packages run install/import/version smoke checks.
 4. Build both wheel and source distribution with `python -m build`.
 5. Run `twine check` on every artifact.

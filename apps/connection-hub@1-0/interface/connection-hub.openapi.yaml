@@ -725,15 +725,15 @@ paths:
         duplicate operations or grants.
 
         The signature is base64url HMAC-SHA256 over the canonical
-        `prokura-admission-v1` message documented in the Connection Hub
+        `connection-hub-admission-v1` message documented in the Connection Hub
         architecture. The body itself is not wrapped in `data`.
       operationId: delegated_admission
       security:
         - DelegatedBearer: []
-          ProkuraServiceId: []
-          ProkuraTimestamp: []
-          ProkuraNonce: []
-          ProkuraSignature: []
+          ConnectionHubServiceId: []
+          ConnectionHubTimestamp: []
+          ConnectionHubNonce: []
+          ConnectionHubSignature: []
       parameters:
         - $ref: "#/components/parameters/Tenant"
         - $ref: "#/components/parameters/Project"
@@ -792,25 +792,25 @@ components:
       scheme: bearer
       bearerFormat: opaque-kst1
       description: Opaque delegated-client bearer issued through Connection Hub.
-    ProkuraServiceId:
+    ConnectionHubServiceId:
       type: apiKey
       in: header
-      name: X-Prokura-Service-Id
+      name: X-Connection-Hub-Service-Id
       description: Descriptor-registered protected-service id.
-    ProkuraTimestamp:
+    ConnectionHubTimestamp:
       type: apiKey
       in: header
-      name: X-Prokura-Timestamp
+      name: X-Connection-Hub-Timestamp
       description: Decimal Unix timestamp covered by the service signature.
-    ProkuraNonce:
+    ConnectionHubNonce:
       type: apiKey
       in: header
-      name: X-Prokura-Nonce
+      name: X-Connection-Hub-Nonce
       description: Single-use 16-256 character replay nonce covered by the service signature.
-    ProkuraSignature:
+    ConnectionHubSignature:
       type: apiKey
       in: header
-      name: X-Prokura-Signature
+      name: X-Connection-Hub-Signature
       description: Base64url-without-padding HMAC-SHA256 service request signature.
   parameters:
     Tenant:
@@ -886,7 +886,7 @@ components:
       properties:
         ok: { type: boolean, const: true }
         allowed: { type: boolean, const: true }
-        schema: { type: string, const: prokura.delegated_admission.v1 }
+        schema: { type: string, const: connection_hub.delegated_admission.v1 }
         decision_id: { type: string }
         service_id: { type: string }
         principal:
@@ -928,14 +928,14 @@ components:
       properties:
         ok: { type: boolean, const: false }
         allowed: { type: boolean, const: false }
-        schema: { type: string, const: prokura.delegated_admission.v1 }
+        schema: { type: string, const: connection_hub.delegated_admission.v1 }
         error:
           type: object
           required: [code, message, where, retryable]
           properties:
             code: { type: string }
             message: { type: string }
-            where: { type: string, const: prokura.delegated_admission }
+            where: { type: string, const: connection_hub.delegated_admission }
             retryable: { type: boolean }
         ret:
           type: object

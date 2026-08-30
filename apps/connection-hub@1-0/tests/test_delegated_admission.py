@@ -12,12 +12,12 @@ from starlette.requests import Request
 from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import (
     load_dynamic_module_for_path,
 )
-from prokura.authority_registry import CredentialEnvelope
-from prokura.delegated_credentials.admission import (
+from connection_hub.authority_registry import CredentialEnvelope
+from connection_hub.delegated_credentials.admission import (
     AdmissionRequest,
     sign_admission_request,
 )
-from prokura.delegated_credentials.oauth.surface_policy import SurfacePolicyDecision
+from connection_hub.delegated_credentials.oauth.surface_policy import SurfacePolicyDecision
 
 
 SERVICE_SECRET = "service-secret-with-at-least-thirty-two-bytes"
@@ -89,10 +89,10 @@ def _request(
     )
     headers = [
         (b"authorization", f"Bearer {delegated_token}".encode()),
-        (b"x-prokura-service-id", b"crm-api"),
-        (b"x-prokura-timestamp", timestamp.encode()),
-        (b"x-prokura-nonce", nonce.encode()),
-        (b"x-prokura-signature", signature.encode()),
+        (b"x-connection-hub-service-id", b"crm-api"),
+        (b"x-connection-hub-timestamp", timestamp.encode()),
+        (b"x-connection-hub-nonce", nonce.encode()),
+        (b"x-connection-hub-signature", signature.encode()),
     ]
     return Request(
         {

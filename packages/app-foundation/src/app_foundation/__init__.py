@@ -3,7 +3,7 @@
 Generic principal and service identity, secret-reference resolution,
 Postgres/Redis clients, cache and distributed locks, HTTP/CSRF/external-URL
 utilities, events and observability primitives. No authority models (those
-are `prokura`), no Connection Hub behavior, no KDCube bundle concepts, no
+are `connection_hub`), no Connection Hub behavior, no KDCube bundle concepts, no
 deployment orchestration.
 
 Version 0.0.1 claims the name; the modules are being extracted from the

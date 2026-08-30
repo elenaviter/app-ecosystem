@@ -6,9 +6,9 @@ Operating instructions for coding agents (and a fair summary for humans).
 
 Components an application ecosystem needs, as installable packages, plus
 public application bundles that are their live implementations. First
-resident: Prokura, the delegated-access authority (package in
-`packages/prokura`, its Connection Hub frontend application in `apps/`, the
-standalone service later).
+product: Connection Hub. Its current KDCube application lives in
+`apps/connection-hub@1-0`, its Python library and client SDK live in
+`packages/connection-hub`, and its standalone service host comes later.
 
 ## Layout contract
 
@@ -16,9 +16,12 @@ standalone service later).
   `pyproject.toml`, `README.md` (the PyPI page), `src/<import_name>/`.
 - `apps/<app-name>/` — public application bundles, registered in a KDCube
   deployment by git path.
+- `examples/<product-or-component>/` — runnable integrations grouped by the
+  product or component they demonstrate, with a group README that maps each
+  example to its applications, packages, services, and docs.
 - `docs/<component>/` — ALL documentation, one folder per component
-  (`docs/prokura/package/`, `docs/prokura/frontend/`,
-  `docs/prokura/service/`). Docs change in the same pull request as the
+  (`docs/connection-hub/package/`, `docs/connection-hub/frontend/`,
+  `docs/connection-hub/service/`). Docs change in the same pull request as the
   behavior they describe. Docs are public: no secrets, no private paths,
   no links that a reader here cannot open.
 - `journal/README.md` — the pointer index into the maintainers' journal
@@ -30,12 +33,12 @@ standalone service later).
 - Everything here is public from the first commit. No secrets, tokens, or
   credentials anywhere, including examples and tests. No private
   repository paths.
-- The Prokura implementation in this repository is authoritative for the
-  authority modules already extracted. Behavior changes land here with their
-  package evidence, and KDCube consumes them through its host adapter and
+- The `connection_hub` implementation in this repository is authoritative for
+  the authority modules already extracted. Behavior changes land here with
+  their package evidence, and KDCube consumes them through its host adapter and
   integration tests. During migration, KDCube compatibility modules re-export
-  Prokura; they never fork its implementation.
-- Say what things are, plainly. The README positioning (the register
-  parallel) is the voice of this repository.
+  the package; they never fork its implementation.
+- Say what things are, plainly. Connection Hub is one product across its
+  package, application, protocol, examples, and service hosting.
 - Commit messages are audited before push: plain, factual, no internal
   codenames.

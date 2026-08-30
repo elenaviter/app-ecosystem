@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "connection-hub"
+version = "0.0.3"
+description = "Connection Hub delegated-access authority and client SDK."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Elena Viter" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+dependencies = [
+    "aiohttp>=3.9,<4",
+    "httpx>=0.27,<1",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.23,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/elenaviter/app-ecosystem"
+Repository = "https://github.com/elenaviter/app-ecosystem"
+Documentation = "https://github.com/elenaviter/app-ecosystem/tree/main/docs/connection-hub"
+Issues = "https://github.com/elenaviter/app-ecosystem/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+connection_hub = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
