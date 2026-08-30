@@ -3,7 +3,7 @@
 Every caller has its own identity card, authority lives in one central record,
 and a guarded boundary resolves current authority on every call.
 
-Version 0.0.3 is a development release. It contains the host-neutral authority
+This is an alpha release. It contains the host-neutral authority
 core, delegated card/catalog contracts, OAuth and connected-account policy,
 named-service admission, and direct protected-service admission. Host storage,
 identity, and transport adapters remain explicit integration responsibilities.
@@ -13,7 +13,7 @@ See the repository for status: https://github.com/elenaviter/app-ecosystem
 from importlib import import_module
 from typing import Any
 
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 
 _EXPORTS: dict[str, str] = {}
 for name in (

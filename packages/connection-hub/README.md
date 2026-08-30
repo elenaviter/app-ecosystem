@@ -1,13 +1,50 @@
 # Connection Hub
 
-The Python library and client SDK for the Connection Hub product.
+One authority for delegated access in an ecosystem of services, agents, and
+automations.
 
-Connection Hub gives every agent, automation, and connected application its own
-delegated-access card. The card records whose authority the caller uses, which
-resources and operations it may reach, which connected accounts it may use,
-and when that authority expires. A service resolves the current card and
-current capability catalog at the operation boundary, so an edit or revocation
-applies to the next call.
+The identity provider exists because many applications need one authority on
+who the user is. Delegated access needs its own authority the same way: when
+agents, automations, and external tools act on a user's behalf against many
+services, someone has to hold the answer to "what may this caller do right
+now, for which user, on which accounts". Connection Hub is that component.
+
+Every caller gets its own **delegated-access card**: a live, versioned record
+of whose authority it uses, which resources and operations it may reach,
+which connected accounts it may touch, and until when. The deployment
+publishes an **active capability catalog**: the ceiling of what may be
+delegated at all. A guarded service resolves *the current card intersected
+with the active catalog* on **every call**. Authorization never travels
+inside tokens, so there is nothing to copy between executions, and an edit
+or revocation applies on the very next call.
+
+```text
+user (grantor) --edits/revokes--> +----------- Connection Hub -----------+
+                                  | delegated cards: one per caller,     |
+                                  | versioned, with a current pointer    |
+                                  | active capability catalog: the       |
+                                  | deployment ceiling, versioned        |
+                                  +------------------+-------------------+
+                                                     | resolved per call:
+caller --opaque bearer--> guarded operation boundary | bearer x current card
+                                                     | x active catalog
+                                  allow with bounded authority, or a
+                                  structured denial the caller can act on
+```
+
+This package is for both sides of that boundary:
+
+- **service owners** who want their operations admitted through the hub:
+  registration, per-call admission, workload proof, structured denials;
+- **client and agent authors** whose code calls guarded services: the client
+  SDK, grant checks, one-call tokens, denial-driven consent.
+
+The package is the portable core: contracts, state machines, admission
+evaluation, OAuth protocol builders, the client SDK. A host supplies HTTP
+routes, sessions, storage, and secret resolution. [KDCube](https://github.com/kdcube/kdcube)
+is the first host (the complete Connection Hub application ships in this
+repository as [`connection-hub@1-0`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub@1-0/README.md));
+a standalone service host is planned.
 
 ## Install
 
@@ -15,34 +52,26 @@ applies to the next call.
 python -m pip install connection-hub
 ```
 
-`0.0.4` is an alpha release. It contains the portable implementation used by
-the Connection Hub application in this repository:
+`0.0.5` is an alpha release.
 
-- versioned delegated cards and capability catalogs;
-- live card/catalog admission for managed REST, MCP, and named-service calls;
-- delegated OAuth client and connected-account policy contracts;
-- structured, actionable denial results;
-- direct protected-service admission with an opaque delegated bearer and an
-  independent replay-protected workload proof;
-- explicit host ports for storage, identity, dispatch, secrets, and live
-  delivery.
+## Flow 1: a guarded service registers itself and admits calls
 
-The same product is currently hosted in KDCube under the technical app id
-[`connection-hub@1-0`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub@1-0/README.md). The library
-owns portable authority semantics and client contracts; the application host
-supplies authenticated sessions, storage, secret resolution, Redis protocol
-state, HTTP surfaces, and the user interface.
+A backend that wants the hub to regulate its admissions does three things.
 
-## Direct Protected-Service Admission
+**Register once** (configuration on the hub, not code): declare the
+capability rows the service exposes (grants, resources, operations) in the
+hub's delegated catalog, and register the service as a workload: a service
+id, a secret reference, and selectors of the declared resources. The
+registration does not restate operations; the catalog stays the single
+vocabulary both sides speak.
 
-An external backend can accept a user's opaque delegated bearer and ask the
-Connection Hub for a live decision about one concrete operation. The backend
-also signs the request with its own registered workload secret; possession of
-the user bearer alone is not service identity.
+**Per request, ask for admission.** The caller arrives with an opaque
+delegated bearer. The service builds the semantic request, signs it with its
+own workload secret (possession of a user bearer is not service identity),
+and asks the hub:
 
 ```python
-import secrets
-import time
+import secrets, time
 
 from connection_hub.delegated_credentials.admission import (
     AdmissionRequest,
@@ -63,37 +92,115 @@ signature = sign_admission_request(
     delegated_token=user_delegated_bearer,
     request=request,
 )
+# POST request.signing_dict() to the hub's admission endpoint with
+# Authorization: Bearer <user_delegated_bearer> and the four
+# X-Connection-Hub-* proof headers (service id, timestamp, nonce, signature).
 ```
 
-The service sends the semantic request body and the four `X-Connection-Hub-*` proof
-headers to the configured Connection Hub admission endpoint, with the opaque
-delegated bearer in `Authorization: Bearer ...`. An allow response contains a
-service-scoped subject and only the bounded authority relevant to that
-operation. It never returns provider credentials or the platform's internal
-user id.
+**Enforce the decision.** An allow carries a pairwise service-scoped subject
+and only the bounded authority for that one operation, never provider
+credentials and never the platform's internal user id. A denial is
+structured and actionable:
 
-See the runnable
-[`direct-admission-service`](https://github.com/elenaviter/app-ecosystem/blob/main/examples/connection-hub/direct-admission-service/README.md)
-and the [deployment recipe](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md).
+```json
+{
+  "ok": false, "allowed": false,
+  "schema": "connection_hub.delegated_admission.v1",
+  "error": {"code": "delegated_capability_not_granted",
+             "message": "...", "retryable": false},
+  "ret": {"reason": "delegated_capability_not_granted",
+           "details": {"resource": "...", "claims": ["..."]}}
+}
+```
 
-## Integration Boundaries
+The service still applies its own domain rules after admission; the hub
+answers delegation, the service answers business.
 
-- The service registry authenticates workloads and binds each service to
-  resource selectors. It does not duplicate the operation/grant catalog.
-- Every decision intersects the delegated bearer with the current card and
-  active catalog. A cached allow is not an authority source.
-- Connected-account credential resolution is a separate trusted operation;
-  direct admission does not export provider secrets.
-- A protected backend still applies its own domain authorization after
-  Connection Hub admission.
+Runnable end to end: the
+[`direct-admission-service` example](https://github.com/elenaviter/app-ecosystem/blob/main/examples/connection-hub/direct-admission-service/README.md)
+and the
+[deployment recipe](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md).
+
+## Flow 2: an external client connects through OAuth
+
+When an external agent client (Claude Code through its connector, or any MCP
+client) reaches a guarded service, the hub runs the handshake:
+
+```text
+external client                       Connection Hub host
+  | 1. call the service URL without a credential
+  |    <- 401 + WWW-Authenticate, protected-resource metadata (RFC 9728)
+  | 2. fetch authorization-server metadata (RFC 8414; also served as
+  |    openid-configuration so strict clients proceed)
+  | 3. identify: pre-registered client, client-id URL (CIMD), or
+  |    dynamic registration (DCR)
+  | 4. authorize with PKCE (S256 required)
+  |    -> the USER logs in, consents per capability, and binds the
+  |       exact connected accounts the client may use
+  | 5. exchange the single-use code (60 s) for an opaque bearer (1 h,
+  |    rotating refresh); a delegated card is created for this client
+  | 6. every subsequent call resolves the current card and active
+  |    catalog; nothing is decided from the token alone
+  | 7. the user edits or revokes the card at any time; the very next
+  |    call obeys (RFC 7009 revocation retires the card too)
+```
+
+The consent screen is not a blanket yes: the user selects capabilities and
+binds specific provider accounts, and that selection becomes the card. Full
+protocol, descriptor contract, and failure modes:
+[OAuth delegated credential protocol](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/oauth-delegated-credential-protocol.md).
+
+## Flow 3: calling from code, the client SDK
+
+A hosted agent or application talks to the hub through `ConnectionsClient`
+over a one-method host transport:
+
+```python
+from connection_hub import ConnectionsClient
+
+client = ConnectionsClient(transport)  # transport: async call(operation, payload)
+
+# what is connected, and what may this caller do
+entries = await client.catalog()                       # list[CatalogEntry]
+check = await client.agent_grant_check(
+    client_id="kdcube-agent:myapp:myagent",
+    namespace="mem", operation="object.search",
+)                                                       # governed/granted + claims
+
+# one-call credentials, resolved by the hub, never stored by the caller
+token = await client.get_token("google", account_id="acc-1")
+bearer = await client.agent_grant_token(
+    client_id="kdcube-agent:myapp:myagent",
+    resource="https://host/api/public/mcp/named_services",
+)                                                       # None while consent is pending
+```
+
+When a call is denied because a consent is missing, the denial carries
+everything needed to recover: which permission, which provider, which
+account, and where the user grants it. The
+[`mcp_consent`](https://github.com/elenaviter/app-ecosystem/blob/main/packages/connection-hub/src/connection_hub/mcp_consent.py)
+module turns such denials into a structured ask the agent can surface and
+retry after the grant lands.
+
+## What the package owns, and what a host supplies
+
+The package owns portable authority semantics: versioned cards and catalogs,
+per-call admission for managed REST, MCP, and named-service calls, the OAuth
+protocol builders, connected-account policy, structured denials, the client
+SDK, and explicit ports for storage, identity, dispatch, secrets, and live
+delivery. The host supplies the HTTP surfaces, authenticated sessions,
+durable storage and its Redis projections, secret resolution, and the UI.
+The boundary is documented in
+[package extraction architecture](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/extraction-architecture.md).
 
 ## Documentation
 
+- [Configuration and capabilities overview](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/configuration-and-capabilities.md)
 - [Connection Hub architecture and semantic requirements](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/connection-hub-architecture.md)
 - [Delegated authority and admission](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-authority-and-admission.md)
 - [Delegated access cards](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-cards.md)
 - [OAuth delegated credential protocol](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/oauth-delegated-credential-protocol.md)
-- [Package extraction boundary](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/extraction-architecture.md)
+- [Direct protected-service recipe](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md)
 - [Package release procedure](https://github.com/elenaviter/app-ecosystem/blob/main/docs/package-releases.md)
 
 License: MIT. Source: https://github.com/elenaviter/app-ecosystem

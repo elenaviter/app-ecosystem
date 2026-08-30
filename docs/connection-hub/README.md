@@ -10,6 +10,7 @@ keywords:
   - Connection Hub
   - identity cards
 see_also:
+  - ./configuration-and-capabilities.md
   - ./connection-hub-architecture.md
   - ./package/extraction-architecture.md
   - ./frontend/README.md
@@ -49,6 +50,7 @@ standalone service remains planned.
 
 The package contracts are:
 
+- [Configuration and capabilities overview](configuration-and-capabilities.md)
 - [Connection Hub architecture and semantic requirements](connection-hub-architecture.md)
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
 - [Delegated access cards](package/delegated-cards.md)
