@@ -24,7 +24,7 @@ The package will own the machinery around an agent turn:
   own loop, such as LangGraph- or Claude Code-based agents.
 
 It will not own application behavior or delegated authority policy. Connection Hub
-owns authority; [`app-foundation`](../app-foundation/README.md) owns generic
+owns authority; [`app-foundation`](https://github.com/elenaviter/app-ecosystem/blob/main/packages/app-foundation/README.md) owns generic
 host capabilities.
 
 The running implementation remains in

@@ -15,7 +15,7 @@ applies to the next call.
 python -m pip install connection-hub
 ```
 
-`0.0.3` is an alpha release. It contains the portable implementation used by
+`0.0.4` is an alpha release. It contains the portable implementation used by
 the Connection Hub application in this repository:
 
 - versioned delegated cards and capability catalogs;
@@ -28,7 +28,7 @@ the Connection Hub application in this repository:
   delivery.
 
 The same product is currently hosted in KDCube under the technical app id
-[`connection-hub@1-0`](../../apps/connection-hub@1-0/README.md). The library
+[`connection-hub@1-0`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub@1-0/README.md). The library
 owns portable authority semantics and client contracts; the application host
 supplies authenticated sessions, storage, secret resolution, Redis protocol
 state, HTTP surfaces, and the user interface.
@@ -73,8 +73,8 @@ operation. It never returns provider credentials or the platform's internal
 user id.
 
 See the runnable
-[`direct-admission-service`](../../examples/connection-hub/direct-admission-service/README.md)
-and the [deployment recipe](../../docs/connection-hub/recipes/direct-protected-service.md).
+[`direct-admission-service`](https://github.com/elenaviter/app-ecosystem/blob/main/examples/connection-hub/direct-admission-service/README.md)
+and the [deployment recipe](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md).
 
 ## Integration Boundaries
 
@@ -89,11 +89,11 @@ and the [deployment recipe](../../docs/connection-hub/recipes/direct-protected-s
 
 ## Documentation
 
-- [Connection Hub architecture and semantic requirements](../../docs/connection-hub/connection-hub-architecture.md)
-- [Delegated authority and admission](../../docs/connection-hub/package/delegated-authority-and-admission.md)
-- [Delegated access cards](../../docs/connection-hub/package/delegated-cards.md)
-- [OAuth delegated credential protocol](../../docs/connection-hub/package/oauth-delegated-credential-protocol.md)
-- [Package extraction boundary](../../docs/connection-hub/package/extraction-architecture.md)
-- [Package release procedure](../../docs/package-releases.md)
+- [Connection Hub architecture and semantic requirements](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/connection-hub-architecture.md)
+- [Delegated authority and admission](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-authority-and-admission.md)
+- [Delegated access cards](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-cards.md)
+- [OAuth delegated credential protocol](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/oauth-delegated-credential-protocol.md)
+- [Package extraction boundary](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/extraction-architecture.md)
+- [Package release procedure](https://github.com/elenaviter/app-ecosystem/blob/main/docs/package-releases.md)
 
 License: MIT. Source: https://github.com/elenaviter/app-ecosystem

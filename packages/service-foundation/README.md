@@ -23,7 +23,7 @@ A standalone service needs a host layer around its application logic:
 - migration invocation, while the application owns its migrations.
 
 `service-foundation` will own that layer and stand on
-[`app-foundation`](../app-foundation/README.md). It will not own application
+[`app-foundation`](https://github.com/elenaviter/app-ecosystem/blob/main/packages/app-foundation/README.md). It will not own application
 behavior, Connection Hub authority policy, or KDCube application concepts.
 
 The Connection Hub currently runs as a KDCube application. A future standalone

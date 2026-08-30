@@ -25,7 +25,7 @@ Applications serving real users repeatedly need the same host capabilities:
 - events and observability primitives.
 
 `app-foundation` will own those generic capabilities. It will not own delegated
-authority models (those belong to [`connection-hub`](../connection-hub/README.md)), Connection
+authority models (those belong to [`connection-hub`](https://github.com/elenaviter/app-ecosystem/blob/main/packages/connection-hub/README.md)), Connection
 Hub behavior, KDCube application concepts, or deployment orchestration.
 
 The production implementations being separated live in
