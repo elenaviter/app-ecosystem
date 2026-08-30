@@ -1261,6 +1261,79 @@ async def _authenticate_request_context(
     return dict(result or {})
 
 
+def _authenticated_platform_request_context(entrypoint: Any) -> Dict[str, Any]:
+    """Authentication result for a direct, host-authenticated platform call.
+
+    Public bundle APIs still arrive with KDCube's trusted invocation context.
+    A direct platform user can therefore claim a live Data Bus session without
+    re-authenticating the browser cookie through Connection Hub's external
+    authenticator registry.  An externally issued authority remains on the
+    external-authenticator path even when it projects a linked platform user.
+    """
+    authority = _entrypoint_identity_authority(entrypoint)
+    authority_id = str(
+        authority.get("authority_id")
+        or authority.get("issuer_authority_id")
+        or authority.get("authority")
+        or ""
+    ).strip()
+    context_user = getattr(getattr(entrypoint, "comm_context", None), "user", None)
+    raw_user_type = getattr(context_user, "user_type", None)
+    user_type = str(getattr(raw_user_type, "value", raw_user_type) or "").strip().lower()
+    if user_type not in {"registered", "paid", "privileged"}:
+        return {}
+
+    platform_authority_ids = {"platform", "kdcube.platform"}
+    registry_authorities = _authority_registry_config(entrypoint).get("authorities")
+    if isinstance(registry_authorities, Mapping):
+        platform_authority_ids.update(
+            str(configured_id).strip()
+            for configured_id, configured in registry_authorities.items()
+            if isinstance(configured, Mapping) and _bool(configured.get("platform"), False)
+        )
+    comm = getattr(entrypoint, "comm", None)
+    platform_user_id = str(
+        authority.get("platform_user_id")
+        or getattr(context_user, "user_id", None)
+        or getattr(comm, "user_id", None)
+        or ""
+    ).strip()
+    if not platform_user_id or platform_user_id == "anonymous":
+        return {}
+    actor_user_id = str(authority.get("actor_user_id") or "").strip()
+    if authority_id and authority_id not in platform_authority_ids:
+        return {}
+    if actor_user_id and actor_user_id != platform_user_id:
+        return {}
+    roles, permissions = _entrypoint_user_roles_permissions(entrypoint)
+    resolved = resolve_principal_roles(
+        platform_user_id=platform_user_id,
+        identity_config=_identity_config(entrypoint),
+    )
+    roles = _dedupe(roles + _safe_list(resolved.get("roles")))
+    permissions = _dedupe(permissions + _safe_list(resolved.get("permissions")))
+    projected_authority = {
+        **authority,
+        "authority_id": "platform",
+        "actor_user_id": platform_user_id,
+        "platform_user_id": platform_user_id,
+        "platform_roles": roles,
+        "platform_permissions": permissions,
+    }
+    return {
+        "ok": True,
+        "authenticated": True,
+        "provider": "platform",
+        "provider_subject": platform_user_id,
+        "actor_user_id": platform_user_id,
+        "platform_user_id": platform_user_id,
+        "authority_id": "platform",
+        "selected_authenticator": "platform_session",
+        "linked": True,
+        "identity_authority": projected_authority,
+    }
+
+
 def _challenge_live_event(challenge: Mapping[str, Any] | None) -> Dict[str, Any]:
     metadata = challenge.get("metadata") if isinstance(challenge, Mapping) else {}
     if not isinstance(metadata, Mapping):
@@ -3075,12 +3148,14 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         **kwargs: Any,
     ) -> Dict[str, Any]:
         payload = _payload(data, **kwargs)
-        auth = await _authenticate_request_context(
-            self,
-            request=request,
-            payload=payload,
-            trace_scope="connection_hub_federated_data_bus_claim",
-        )
+        auth = _authenticated_platform_request_context(self)
+        if not auth:
+            auth = await _authenticate_request_context(
+                self,
+                request=request,
+                payload=payload,
+                trace_scope="connection_hub_federated_data_bus_claim",
+            )
         if not auth.get("ok") or not auth.get("authenticated"):
             LOGGER.warning(
                 "[connection-hub.data_bus] claim rejected provider=%s authority_id=%s authenticator=%s error=%s",

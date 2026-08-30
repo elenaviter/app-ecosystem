@@ -63,3 +63,11 @@ test('viewport-bound widget and access-map panel own their sizing', () => {
   assert.match(block, /min-height: 0/)
   assert.match(source('src/features/accessMap/AccessMapPanel.tsx'), /className="access-map-body"/)
 })
+
+test('agent consent distinguishes resource requests from existing account permissions', () => {
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.match(panel, /Resource permissions requested for this operation/)
+  assert.match(panel, /Connected-account permissions/)
+  assert.match(panel, /Already granted/)
+  assert.match(panel, /existingScope: pendingExistingAccountScope/)
+})

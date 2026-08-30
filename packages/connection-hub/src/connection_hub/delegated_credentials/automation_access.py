@@ -855,6 +855,61 @@ def _card_claims_for_resource(record: Any, configured_resource: str) -> set[str]
     return out
 
 
+def _account_scope_claims(
+    account_scope: Mapping[str, Any] | None,
+    *,
+    required: Iterable[str],
+) -> set[str]:
+    """Provider claims held through at least one bound connected account.
+
+    Named-service admission treats those claims as effective authority without
+    copying them into ``resource_grants``.  This mirrors the managed MCP bridge:
+    explicit claims are globally named and therefore carry as written, while a
+    legacy ``"*"`` expands only to currently required claims in that provider's
+    own claim namespace.  The connected-account broker still enforces the exact
+    account when the provider call executes.
+    """
+    required_claims = {_clean(item) for item in required if _clean(item)}
+    held: set[str] = set()
+    for provider, accounts in normalize_account_scope(account_scope).items():
+        provider_prefix = f"{provider}:"
+        for claims in accounts.values():
+            normalized = {_clean(item) for item in claims if _clean(item)}
+            if "*" in normalized:
+                held.update(
+                    claim
+                    for claim in required_claims
+                    if claim.startswith(provider_prefix)
+                )
+            held.update(claim for claim in normalized if claim != "*")
+    return held
+
+
+def _account_scope_claims_for_requirements(
+    record: Any,
+    *,
+    required: Iterable[str],
+) -> set[str]:
+    return _account_scope_claims(
+        getattr(record, "account_scope", None),
+        required=required,
+    )
+
+
+def _effective_named_service_grants(
+    grants: Iterable[str],
+    *,
+    account_scope: Mapping[str, Any] | None,
+    required: Iterable[str],
+) -> list[str]:
+    """Claims that may materialize a named-service operation boundary."""
+    effective = _as_list(list(grants))
+    for claim in sorted(_account_scope_claims(account_scope, required=required)):
+        if claim not in effective:
+            effective.append(claim)
+    return effective
+
+
 class AutomationAccessService:
     """Create/list/revoke user-created delegated automation credentials."""
 
@@ -1717,7 +1772,11 @@ class AutomationAccessService:
                         named_services=cfg.named_services,
                         resource=resource_value,
                         selection=_selection_policy_argument(selected_named_service_operations),
-                        grants=selected_resource_grants.get(resource_value, []),
+                        grants=_effective_named_service_grants(
+                            selected_resource_grants.get(resource_value, []),
+                            account_scope=selected_account_scope,
+                            required=catalog_config.supported_scopes(resource_value),
+                        ),
                     )
                 except ValueError as exc:
                     return {
@@ -2026,6 +2085,16 @@ class AutomationAccessService:
                     "endpoints that differ on separate cards."
                 ),
             })
+        if account_scope is None:
+            selected_account_scope = {
+                provider: {account_id: list(claims) for account_id, claims in accounts.items()}
+                for provider, accounts in existing.account_scope.items()
+            }
+        else:
+            selected_account_scope = {
+                provider: {account_id: list(claims) for account_id, claims in accounts.items()}
+                for provider, accounts in normalize_account_scope(account_scope).items()
+            }
         # Materialize the boundary tree from the same active catalog the rows
         # came from, so the stored tree and the version stamped on the card
         # describe one generation.
@@ -2040,7 +2109,11 @@ class AutomationAccessService:
                     # Same value the record stores, so the tree and the
                     # selection it was derived from cannot disagree.
                     selection=_selection_policy_argument(selected_named_service_operations),
-                    grants=selected_resource_grants.get(resource_value, []),
+                    grants=_effective_named_service_grants(
+                        selected_resource_grants.get(resource_value, []),
+                        account_scope=selected_account_scope,
+                        required=catalog_config.supported_scopes(resource_value),
+                    ),
                 )
             except ValueError as exc:
                 return ResolvedCardAuthority(error={
@@ -2049,16 +2122,6 @@ class AutomationAccessService:
                     "message": str(exc),
                 })
             named_services = self._merge_named_service_configs(named_services, selected_policy)
-        if account_scope is None:
-            selected_account_scope = {
-                provider: {account_id: list(claims) for account_id, claims in accounts.items()}
-                for provider, accounts in existing.account_scope.items()
-            }
-        else:
-            selected_account_scope = {
-                provider: {account_id: list(claims) for account_id, claims in accounts.items()}
-                for provider, accounts in normalize_account_scope(account_scope).items()
-            }
         return ResolvedCardAuthority(
             resource_grants=selected_resource_grants,
             operations=self._resolve_operations(
@@ -2424,6 +2487,12 @@ class AutomationAccessService:
             not_granted: dict[str, Any] | None = None
             if record is not None:
                 held = _card_claims_for_resource(record, cfg.resource)
+                held.update(
+                    _account_scope_claims_for_requirements(
+                        record,
+                        required=required,
+                    )
+                )
                 missing_claims = sorted(required - held)
                 granted = not missing_claims
                 if granted:
@@ -2584,6 +2653,7 @@ class AutomationAccessService:
         selection: NamedServiceSelection,
         resource: str,
         grants: Iterable[str],
+        account_scope: Mapping[str, Any] | None = None,
         config: Any = None,
     ) -> dict[str, Any]:
         """The boundary tree a selection expands to for one resource.
@@ -2603,7 +2673,11 @@ class AutomationAccessService:
                 named_services=cfg.named_services,
                 resource=resource,
                 selection=_selection_policy_argument(selection),
-                grants=list(grants),
+                grants=_effective_named_service_grants(
+                    grants,
+                    account_scope=account_scope,
+                    required=getattr(cfg, "grants", ()) or (),
+                ),
             )
         except ValueError:
             return {}
@@ -2696,19 +2770,15 @@ class AutomationAccessService:
             )
         except ValueError:
             submitted_selection = None
-        if submitted_selection is not None or is_initial_consent:
+        materialize_boundary = submitted_selection is not None or is_initial_consent
+        consent_config = None
+        if materialize_boundary:
             existing_selection = submitted_selection or NamedServiceSelection.none()
             existing_catalog_version = _clean(catalog_version)
             try:
                 consent_config = self._catalog_config(await self._active_catalog())
             except CatalogUnavailable:
                 consent_config = None
-            existing_named_services = self._materialized_boundary_for(
-                selection=existing_selection,
-                resource=resource_value,
-                grants=_as_list(list(scopes)),
-                config=consent_config,
-            )
         inherited_account_scope: dict[str, dict[str, list[str]]] = {}
         superseded: list[AutomationAccessRecord] = []
         if is_initial_consent:
@@ -2742,6 +2812,14 @@ class AutomationAccessService:
                     for claim in claims:
                         if claim not in held:
                             held.append(claim)
+        if materialize_boundary:
+            existing_named_services = self._materialized_boundary_for(
+                selection=existing_selection,
+                resource=resource_value,
+                grants=scope_list,
+                account_scope=merged_account_scope,
+                config=consent_config,
+            )
         record = AutomationAccessRecord(
             access_id=access_id,
             label=_clean(client_label) or client,

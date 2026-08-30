@@ -1050,6 +1050,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   }, [manualFocus, items, accounts, startEdit]);
   // Per-account claim binding chosen while granting a PENDING request (consent card).
   const [pendingAccountScope, setPendingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
+  const [pendingExistingAccountScope, setPendingExistingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   const togglePendingAccount = makeToggleAccountClaim(setPendingAccountScope);
   const toggleCreateAccount = makeToggleAccountClaim(setCreateAccountScope);
   // Seed the pending consent card's per-account picker ONCE (per client) from
@@ -1059,7 +1060,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // stored state but never clobbers the user's in-progress ticks.
   const seededPendingFor = useRef<string | null>(null);
   useEffect(() => {
-    if (!pendingGrant) { seededPendingFor.current = null; return; }
+    if (!pendingGrant) {
+      seededPendingFor.current = null;
+      setPendingExistingAccountScope({});
+      return;
+    }
     if (seededPendingFor.current === pendingGrant.clientId) return;
     if (!accounts.length) return; // wait for the account list
     const existing = items.find(
@@ -1080,7 +1085,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
     // Restore only what this agent was ALREADY granted before (re-consent) —
     // that is existing state, not a new pre-tick.
-    if (existing) setPendingAccountScope(seedAccountScopeFromRecord(existing));
+    const existingScope = existing ? seedAccountScopeFromRecord(existing) : {};
+    setPendingExistingAccountScope(existingScope);
+    setPendingAccountScope(existingScope);
   }, [pendingGrant, items, accounts, seedAccountScopeFromRecord]);
 
   // The per-account permission picker: a disclosure per provider showing
@@ -1093,11 +1100,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     scope: Record<string, Record<string, string[]>>,
     onToggle: (provider: string, accountId: string, claim: string, checked: boolean) => void,
     who: string,
+    options?: {
+      title?: string;
+      existingScope?: Record<string, Record<string, string[]>>;
+    },
   ) => {
     if (!providersWithAccounts.size) return null;
     return (
       <div style={{ marginTop: 8 }}>
-        <div className="account-title">Which accounts and permissions may {who} use?</div>
+        <div className="account-title">
+          {options?.title || `Which accounts and permissions may ${who} use?`}
+        </div>
         {Array.from(providersWithAccounts.entries()).map(([provider, providerAccounts]) => {
           const providerScope = scope[provider] || {};
           const boundCount = Object.keys(providerScope).filter((id) => id !== '*').length;
@@ -1120,6 +1133,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               <div style={{ marginTop: 6 }}>
                 {providerAccounts.map((account) => {
                   const held = new Set(providerScope[account.account_id] || []);
+                  const alreadyGranted = new Set(
+                    options?.existingScope?.[provider]?.[account.account_id] || [],
+                  );
                   const supported = account.claims || [];
                   return (
                     <div key={account.account_id} style={{ marginTop: 6 }}>
@@ -1136,6 +1152,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                 onChange={(event) => onToggle(provider, account.account_id, claim, event.target.checked)}
                               />
                               <span>{claim}</span>
+                              {alreadyGranted.has(claim) ? (
+                                <span className="account-sub">Already granted</span>
+                              ) : null}
                             </label>
                           ))}
                         </div>
@@ -1150,7 +1169,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           );
         })}
         <div className="account-sub" style={{ marginTop: 4 }}>
-          Tick the permissions {who} may use on each account. Nothing is granted until you tick it — a provider with no ticks gives {who} no account access there.
+          {options?.existingScope
+            ? 'Items marked Already granted are current card permissions. Other checked items are choices this grant will add.'
+            : `Tick the permissions ${who} may use on each account. Nothing is granted until you tick it — a provider with no ticks gives ${who} no account access there.`}
         </div>
       </div>
     );
@@ -1457,6 +1478,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           </ol>
         </div>
       ) : null}
+      {pendingGrant.claims.length ? (
+        <div className="account-title" style={{ marginBottom: 6 }}>
+          Resource permissions requested for this operation
+        </div>
+      ) : null}
       <ul className="accounts">
         {pendingGrant.claims.map((claim) => {
           const option = grantOptionByName.get(claim);
@@ -1478,7 +1504,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           );
         })}
       </ul>
-      {renderAccountScopePicker(pendingAccountScope, togglePendingAccount, 'this agent')}
+      {renderAccountScopePicker(
+        pendingAccountScope,
+        togglePendingAccount,
+        'this agent',
+        {
+          title: 'Connected-account permissions',
+          existingScope: pendingExistingAccountScope,
+        },
+      )}
       <p className="muted">
         Granting lets exactly this agent do exactly this for you — nothing else.
         The grant appears under Granted access below, where you can revoke it at
@@ -1512,7 +1546,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           className="btn"
           type="button"
           disabled={busy}
-          onClick={() => { setPendingGrant(null); setPendingAccountScope({}); }}
+          onClick={() => {
+            setPendingGrant(null);
+            setPendingAccountScope({});
+            setPendingExistingAccountScope({});
+          }}
         >
           Not now
         </button>
