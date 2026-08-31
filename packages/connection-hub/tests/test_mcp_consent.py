@@ -12,6 +12,7 @@ import pytest
 from connection_hub.mcp_consent import (
     CONSENT_NEEDED_CODE,
     MCPConsentRequired,
+    announce_agent_consent,
     is_kdcube_mcp_consent_denial,
     mcp_consent_from_denial,
     raise_for_mcp_consent,
@@ -118,3 +119,28 @@ def test_status_read_from_object_or_mapping():
         reason = "missing_permission"
     with pytest.raises(MCPConsentRequired):
         raise_for_mcp_consent(_Err(), resource=_RES, claims=["memories:read"])
+
+
+@pytest.mark.asyncio
+async def test_agent_consent_records_the_requested_named_service_operation():
+    consent = mcp_consent_from_denial(
+        {"status": 403, "reason": "authority_mismatch"},
+        resource=_RES,
+        claims=[],
+        tool_name="slack",
+        agent_client_id="kdcube-agent:workspace@1-0:main",
+        namespace="slack",
+        operation="object.action.upload_file",
+    )
+    demands: list[dict] = []
+
+    async def announce(**kwargs):
+        demands.append(kwargs)
+        return True
+
+    await announce_agent_consent(consent, demand_announcer=announce)
+
+    assert demands[0]["claims"] == []
+    assert demands[0]["resource"] == _RES
+    assert demands[0]["namespace"] == "slack"
+    assert demands[0]["operation"] == "object.action.upload_file"

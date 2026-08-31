@@ -12,6 +12,7 @@ keywords:
 see_also:
   - ./configuration-and-capabilities.md
   - ./connection-hub-architecture.md
+  - ./testing/end-to-end-acceptance.md
   - ./package/extraction-architecture.md
   - ./frontend/README.md
   - ./service/README.md
@@ -44,6 +45,9 @@ planned standalone host:
 - **[`recipes/`](recipes/direct-protected-service.md)** - runnable integration
   paths, beginning with an external backend that asks Connection Hub for a
   live delegated operation decision.
+- **[`testing/`](testing/end-to-end-acceptance.md)** - the complete human-runnable
+  acceptance procedure for cards, accounts, managed MCP, named services, live
+  consent, Claude Code, revocation, and durability.
 
 KDCube supplies the first runtime host for the package and application. The
 standalone service remains planned.
@@ -55,4 +59,5 @@ The package contracts are:
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
 - [Delegated access cards](package/delegated-cards.md)
 - [OAuth delegated credential protocol](package/oauth-delegated-credential-protocol.md)
+- [Connection Hub and governed MCP end-to-end acceptance](testing/end-to-end-acceptance.md)
 - [Protect an external backend with Connection Hub](recipes/direct-protected-service.md)

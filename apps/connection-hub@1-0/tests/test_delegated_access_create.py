@@ -126,6 +126,87 @@ async def test_named_service_operations_keep_their_absent_semantics(entrypoint):
     assert entrypoint.service.calls[-1]["named_service_operations"] is None
 
 
+@pytest.mark.asyncio
+async def test_operation_only_agent_grant_authors_exact_operation(
+    entrypoint, monkeypatch
+):
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
+        consent_demand,
+    )
+
+    calls: list[dict] = []
+
+    async def author(**kwargs):
+        calls.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(consent_demand, "author_consent_granted_events", author)
+    monkeypatch.setattr(
+        entrypoint.module,
+        "_platform_user_payload",
+        lambda *args, **kwargs: {"sub": "user-1", "user_id": "user-1"},
+    )
+    entrypoint.instance.redis = object()
+    resource = "*/kdcube-services@1-0/public/mcp/named_services*"
+
+    result = await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        entrypoint.instance,
+        data={
+            "client_id": "kdcube-agent:workspace@1-0:main",
+            "resource": resource,
+            "claims": [],
+            "named_service_operations": {
+                "slack": ["object.action.upload_file"]
+            },
+        },
+    )
+
+    assert result["ok"] is True
+    assert calls[0]["granted_claims"] == []
+    assert calls[0]["granted_named_service_operations"] == {
+        "slack": ["object.action.upload_file"]
+    }
+    assert calls[0]["granted_resource"] == resource
+
+
+@pytest.mark.asyncio
+async def test_agent_grant_without_any_authority_is_rejected(entrypoint):
+    result = await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        entrypoint.instance,
+        data={
+            "client_id": "kdcube-agent:workspace@1-0:main",
+            "resource": "*/kdcube-services@1-0/public/mcp/named_services*",
+            "claims": [],
+        },
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "delegated_agent_grant_requires_resource_and_claims",
+    }
+    assert entrypoint.service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_claim_only_agent_grant_remains_valid(entrypoint):
+    result = await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        entrypoint.instance,
+        data={
+            "client_id": "kdcube-agent:workspace@1-0:main",
+            "resource": "*/kdcube-services@1-0/public/mcp/named_services*",
+            "claims": ["named_services:use"],
+        },
+    )
+
+    assert result["ok"] is True
+    assert entrypoint.service.calls[-1]["resource_grants"] == {
+        "*/kdcube-services@1-0/public/mcp/named_services*": [
+            "named_services:use"
+        ]
+    }
+    assert entrypoint.service.calls[-1]["named_service_operations"] is None
+
+
 # -- save preconditions ---------------------------------------------------------
 
 

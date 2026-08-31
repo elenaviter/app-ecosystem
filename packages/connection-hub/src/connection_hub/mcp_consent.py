@@ -237,6 +237,9 @@ async def announce_agent_consent(
             connector_app_id=str(consent.consent.get("agent_client_id") or ""),
             claims=list(consent.claims or []),
             tool_name=str(consent.consent.get("tool_name") or ""),
+            resource=str(consent.resource or ""),
+            namespace=str(consent.consent.get("namespace") or ""),
+            operation=str(consent.consent.get("operation") or ""),
         )
         if announced:
             log.info(

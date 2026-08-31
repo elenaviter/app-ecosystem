@@ -254,6 +254,16 @@ def _named_service_operations_for(payload: Mapping[str, Any], resource: str) -> 
     return None
 
 
+def _named_service_operations_for_resource(value: Any, resource: str) -> Any:
+    """Return one resource's persisted namespace/operation coverage."""
+    if isinstance(value, str):
+        return "*" if value.strip() == "*" else {}
+    if not isinstance(value, Mapping):
+        return {}
+    per_resource = value.get(resource)
+    return dict(per_resource) if isinstance(per_resource, Mapping) else {}
+
+
 def _safe_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -2251,12 +2261,17 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         client_id = str(payload.get("client_id") or "").strip()
         resource = str(payload.get("resource") or "").strip()
         claims = _safe_list(payload.get("claims") or payload.get("scopes"))
+        named_service_operations = _named_service_operations_for(payload, resource)
         # Per-account claim binding: {provider_id: {account_id: [claims]}} (the
         # legacy list form {provider_id: [account_ids]} is also accepted and
         # migrated). create_access/extend_client_access normalize it.
         raw_scope = payload.get("account_scope")
         account_scope = dict(raw_scope) if isinstance(raw_scope, Mapping) else None
-        if not resource or (not claims and account_scope is None):
+        if not resource or (
+            not claims
+            and account_scope is None
+            and named_service_operations is None
+        ):
             return {"ok": False, "error": "delegated_agent_grant_requires_resource_and_claims"}
         if client_id and not client_id.startswith("kdcube-agent:"):
             # An EXTERNAL delegated client (an OAuth app — Claude Code): the
@@ -2273,7 +2288,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 resource=resource,
                 claims=claims,
                 account_scope=account_scope,
-                named_service_operations=_named_service_operations_for(payload, resource),
+                named_service_operations=named_service_operations,
                 replace=bool(payload.get("replace")),
                 # Optional rename: a DCR client registers one fixed name, so the
                 # user may label the card. Empty keeps the existing name.
@@ -2284,7 +2299,6 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         # Optional named-service narrowing for THIS resource (namespace -> exact
         # operations), same selector the manual create flow sends — so extending
         # an agent's access from the hub can include named-service resources.
-        named_service_operations = _named_service_operations_for(payload, resource)
         # Default = MERGE (a one-click grant accumulates). `replace: true` is
         # the EDIT semantics: the submitted claim set becomes the record exactly
         # (the user unchecked something). Removing everything is a revoke, not
@@ -2314,6 +2328,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 client_id=client_id,
                 resource=resource,
                 fallback_claims=claims,
+                fallback_named_service_operations=named_service_operations,
                 access=result.get("access"),
             )
         return result
@@ -2325,6 +2340,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         client_id: str,
         resource: str,
         fallback_claims: list,
+        fallback_named_service_operations: Any,
         access: Any,
     ) -> None:
         """Best-effort granted-event authoring for a per-agent grant."""
@@ -2343,12 +2359,19 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 if isinstance(resource_grants, Mapping)
                 else []
             ) or list(fallback_claims or [])
+            granted_named_service_operations = _named_service_operations_for_resource(
+                record.get("named_service_operations"), resource
+            ) or _named_service_operations_for_resource(
+                fallback_named_service_operations, resource
+            )
             await author_consent_granted_events(
                 redis=redis,
                 user_id=user_id,
                 provider_id="kdcube",
                 connector_app_id=client_id,
                 granted_claims=granted,
+                granted_named_service_operations=granted_named_service_operations,
+                granted_resource=resource,
                 account_id=str(record.get("access_id") or ""),
                 connection_hub_bundle_id=BUNDLE_ID,
             )

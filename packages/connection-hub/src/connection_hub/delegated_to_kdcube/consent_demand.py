@@ -19,6 +19,11 @@ import datetime as _dt
 import logging
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from connection_hub.delegated_credentials.credential_view import (
+    normalize_resource,
+    resource_matches,
+)
+
 LOGGER = logging.getLogger("kdcube.connections.delegated_to_kdcube")
 
 
@@ -34,15 +39,17 @@ EventSourceFactory = Callable[[Mapping[str, Any]], Any]
 StoreFactory = Callable[..., Any]
 
 # One record per user+bundle: {"conversation_id": …, "providers": [group…]}
-# where a group is {provider_id, provider_label?, connector_app_id?, claims,
-# tools} — the same shape the ANNOUNCE composer reads.
+# where a group is {provider_id, provider_label?, connector_app_id?, resource?,
+# claims, tools, named_service_operations?} — the same shape the ANNOUNCE
+# composer reads.
 PENDING_CONSENT_KEY = "delegated_to_kdcube.blocked_snapshot"
 
 # Hub-addressed registry (per user, under the Connection Hub bundle): every
 # open demand with its FULL conversation address, so consent completion in the
 # hub can author the granted event back into the right conversation lane.
 # Value: {"demands": [{conversation_id, tenant, project, bundle_id, agent_id,
-# provider_id, connector_app_id, claims, tools, recorded_at}]}.
+# provider_id, connector_app_id, resource, claims, tool_name, namespace, operation,
+# recorded_at}]}.
 PENDING_DEMANDS_REGISTRY_KEY = "delegated_to_kdcube.consent_demands"
 
 # Semantic event type. The TRANSPORT lane kind is uniformly "external_event"
@@ -51,6 +58,34 @@ PENDING_DEMANDS_REGISTRY_KEY = "delegated_to_kdcube.consent_demands"
 CONSENT_GRANTED_EVENT_KIND = "connections.consent.granted"
 CONSENT_GRANTED_EVENT_TRANSPORT_KIND = "external_event"
 CONSENT_GRANTED_EVENT_SOURCE_ID = "connection_hub.consent"
+
+
+def _namespace(value: Any) -> str:
+    return str(value or "").strip().lower().rstrip(":")
+
+
+def _operation(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _operation_map(value: Any) -> dict[str, set[str]]:
+    if not isinstance(value, Mapping):
+        return {}
+    normalized: dict[str, set[str]] = {}
+    for raw_namespace, raw_operations in value.items():
+        namespace = _namespace(raw_namespace)
+        if not namespace:
+            continue
+        if isinstance(raw_operations, str):
+            values = [raw_operations]
+        elif isinstance(raw_operations, Sequence):
+            values = list(raw_operations)
+        else:
+            values = []
+        operations = {_operation(item) for item in values if _operation(item)}
+        if operations:
+            normalized[namespace] = operations
+    return normalized
 
 
 async def read_pending_consent(
@@ -122,6 +157,9 @@ async def record_consent_demand(
     provider_label: str = "",
     claims: list | tuple = (),
     tool_name: str = "",
+    resource: str = "",
+    namespace: str = "",
+    operation: str = "",
     tenant: str = "",
     project: str = "",
     agent_id: str = "",
@@ -130,7 +168,7 @@ async def record_consent_demand(
 ) -> bool:
     """Record one attempted tool's consent demand.
 
-    Returns True when this (provider, claims, tool) is NEW for the
+    Returns True when this (provider, resource, claims, tool, operation) is NEW for the
     conversation — the caller emits the chat consent event exactly once per
     demand; retries of the same tool in the same conversation stay quiet
     server-side (the banner reducer's signature dedupe covers client replays).
@@ -144,6 +182,9 @@ async def record_consent_demand(
     provider_key = str(provider_id or "").strip()
     tool_key = str(tool_name or "").strip()
     claim_list = [str(c).strip() for c in (claims or []) if str(c or "").strip()]
+    resource_key = normalize_resource(resource)
+    namespace_key = _namespace(namespace)
+    operation_key = _operation(operation) if namespace_key else ""
     if not provider_key or not tool_key:
         return False
     if not str(user_id or "").strip() or not str(bundle_id or "").strip() or not str(conversation_id or "").strip():
@@ -157,12 +198,28 @@ async def record_consent_demand(
     for group in pending:
         if str(group.get("provider_id") or "") != provider_key:
             continue
+        if normalize_resource(group.get("resource")) != resource_key:
+            continue
         known_tools = {str(t) for t in (group.get("tools") or [])}
         known_claims = {str(c) for c in (group.get("claims") or [])}
-        if tool_key in known_tools and set(claim_list) <= known_claims:
+        known_operations = _operation_map(group.get("named_service_operations"))
+        operation_known = (
+            not operation_key
+            or operation_key in known_operations.get(namespace_key, set())
+        )
+        if (
+            tool_key in known_tools
+            and set(claim_list) <= known_claims
+            and operation_known
+        ):
             return False
         group["tools"] = sorted(known_tools | {tool_key})
         group["claims"] = sorted(known_claims | set(claim_list))
+        if operation_key:
+            known_operations.setdefault(namespace_key, set()).add(operation_key)
+            group["named_service_operations"] = {
+                key: sorted(values) for key, values in known_operations.items()
+            }
         if provider_label and not group.get("provider_label"):
             group["provider_label"] = provider_label
         await write_pending_consent(
@@ -180,6 +237,9 @@ async def record_consent_demand(
             connector_app_id=str(connector_app_id or "").strip(),
             claims=claim_list,
             tool_name=tool_key,
+            resource=resource_key,
+            namespace=namespace_key,
+            operation=operation_key,
             tenant=tenant,
             project=project,
             agent_id=agent_id,
@@ -187,13 +247,18 @@ async def record_consent_demand(
             property_store=property_store,
         )
         return True
-    pending.append({
+    group = {
         "provider_id": provider_key,
         "provider_label": str(provider_label or "").strip(),
         "connector_app_id": str(connector_app_id or "").strip(),
         "claims": sorted(set(claim_list)),
         "tools": [tool_key],
-    })
+    }
+    if resource_key:
+        group["resource"] = resource_key
+    if operation_key:
+        group["named_service_operations"] = {namespace_key: [operation_key]}
+    pending.append(group)
     await write_pending_consent(
         user_id=user_id,
         bundle_id=bundle_id,
@@ -209,6 +274,9 @@ async def record_consent_demand(
         connector_app_id=str(connector_app_id or "").strip(),
         claims=claim_list,
         tool_name=tool_key,
+        resource=resource_key,
+        namespace=namespace_key,
+        operation=operation_key,
         tenant=tenant,
         project=project,
         agent_id=agent_id,
@@ -237,6 +305,9 @@ async def _register_demand_address(
     connector_app_id: str,
     claims: list,
     tool_name: str,
+    resource: str,
+    namespace: str,
+    operation: str,
     tenant: str,
     project: str,
     agent_id: str,
@@ -246,8 +317,8 @@ async def _register_demand_address(
     """Append this demand (with its full conversation address) to the
     hub-addressed registry, so consent completion can author the granted
     event back into the conversation. One entry per (conversation, provider,
-    tool). Best-effort. Only a FULL address registers: without a conversation
-    there is no lane to author the granted event into."""
+    resource, tool, operation). Best-effort. Only a FULL address registers:
+    without a conversation there is no lane to author the granted event into."""
     if not str(user_id or "").strip() or not str(conversation_id or "").strip():
         return
     if property_store is None:
@@ -269,6 +340,9 @@ async def _register_demand_address(
                 and str(entry.get("conversation_id") or "") == conversation_id
                 and str(entry.get("provider_id") or "") == provider_id
                 and str(entry.get("tool_name") or "") == tool_name
+                and normalize_resource(entry.get("resource")) == resource
+                and _namespace(entry.get("namespace")) == namespace
+                and _operation(entry.get("operation")) == operation
             ):
                 entry["claims"] = sorted({*(entry.get("claims") or []), *claims})
                 break
@@ -283,6 +357,9 @@ async def _register_demand_address(
                 "connector_app_id": connector_app_id,
                 "claims": sorted(set(claims)),
                 "tool_name": tool_name,
+                "resource": resource,
+                "namespace": namespace,
+                "operation": operation,
                 "recorded_at": time.time(),
             })
         await property_store.set_user_prop(
@@ -295,12 +372,31 @@ async def _register_demand_address(
         LOGGER.debug("consent demand address registration unavailable", exc_info=True)
 
 
-def consent_granted_event_text(*, provider_label: str, claims: list, tools: list) -> str:
+def consent_granted_event_text(
+    *,
+    provider_label: str,
+    claims: list,
+    tools: list,
+    namespace: str = "",
+    operation: str = "",
+) -> str:
     """The timeline-facing sentence of the granted event."""
     claim_text = ", ".join(claims)
     tool_text = ", ".join(sorted({str(t).rsplit(".", 1)[-1] for t in tools if str(t or "").strip()}))
+    if namespace and operation and claim_text:
+        approval = (
+            f"The user approved {provider_label} access for operation "
+            f"{operation} in {namespace} and claims ({claim_text})."
+        )
+    elif namespace and operation:
+        approval = (
+            f"The user approved {provider_label} access for operation "
+            f"{operation} in {namespace}."
+        )
+    else:
+        approval = f"The user approved {provider_label} access ({claim_text})."
     return (
-        f"The user approved {provider_label} access ({claim_text}). "
+        f"{approval} "
         f"The tools that needed it ({tool_text}) are usable now. "
         "The call this approval unblocked has NOT run — approving never "
         "re-runs it. Run it again only if it is still in the user's focus, "
@@ -315,6 +411,8 @@ async def author_consent_granted_events(
     user_id: str,
     provider_id: str,
     granted_claims: list | tuple,
+    granted_named_service_operations: Mapping[str, Sequence[str]] | str | None = None,
+    granted_resource: str = "",
     connector_app_id: str = "",
     account_id: str = "",
     connection_hub_bundle_id: str = "",
@@ -346,8 +444,18 @@ async def author_consent_granted_events(
     the fallback. Returns the number of events authored."""
     provider_key = str(provider_id or "").strip()
     granted = {str(c).strip() for c in (granted_claims or []) if str(c or "").strip()}
+    all_operations_granted = (
+        isinstance(granted_named_service_operations, str)
+        and granted_named_service_operations.strip() == "*"
+    )
+    granted_operations = _operation_map(granted_named_service_operations)
+    granted_resource_key = normalize_resource(granted_resource)
     clean_user = str(user_id or "").strip()
-    if not provider_key or not granted or not clean_user:
+    if (
+        not provider_key
+        or not clean_user
+        or (not granted and not all_operations_granted and not granted_operations)
+    ):
         return 0
     if property_store is None or source_factory is None:
         LOGGER.warning(
@@ -366,11 +474,35 @@ async def author_consent_granted_events(
         if not demands:
             return 0
         remaining: list = []
+        published_entries: list[dict] = []
         authored = 0
         for entry in demands:
             if not isinstance(entry, dict):
                 continue
             entry_claims = {str(c) for c in (entry.get("claims") or [])}
+            entry_resource = normalize_resource(entry.get("resource"))
+            entry_namespace = _namespace(entry.get("namespace"))
+            entry_operation = _operation(entry.get("operation"))
+            has_requirement = bool(entry_claims or (entry_namespace and entry_operation))
+            claims_match = not entry_claims or entry_claims <= granted
+            operation_match = (
+                not entry_operation
+                or (
+                    bool(entry_namespace)
+                    and (
+                        all_operations_granted
+                        or entry_operation
+                        in granted_operations.get(entry_namespace, set())
+                    )
+                )
+            )
+            resource_match = (
+                not entry_resource
+                or (
+                    bool(granted_resource_key)
+                    and resource_matches(granted_resource_key, entry_resource)
+                )
+            )
             # Connector narrows the match when both sides name one. For a
             # per-agent grant the connector slot carries the agent's
             # `kdcube-agent:<app>:<agent>` client id, so granting one agent
@@ -379,8 +511,10 @@ async def author_consent_granted_events(
             caller_connector = str(connector_app_id or "").strip()
             matches = (
                 str(entry.get("provider_id") or "") == provider_key
-                and entry_claims
-                and entry_claims <= granted
+                and has_requirement
+                and resource_match
+                and claims_match
+                and operation_match
                 and (
                     not entry_connector
                     or not caller_connector
@@ -415,6 +549,8 @@ async def author_consent_granted_events(
                     provider_label=provider_label,
                     claims=claims_list,
                     tools=[tool_name],
+                    namespace=entry_namespace,
+                    operation=entry_operation,
                 )
                 grant_facts = {
                     "provider_id": provider_key,
@@ -423,6 +559,16 @@ async def author_consent_granted_events(
                     "account_id": str(account_id or ""),
                     "tools": [tool_name],
                 }
+                if entry_resource:
+                    grant_facts["resource"] = entry_resource
+                if entry_namespace and entry_operation:
+                    grant_facts.update({
+                        "namespace": entry_namespace,
+                        "operation": entry_operation,
+                        "named_service_operations": {
+                            entry_namespace: [entry_operation]
+                        },
+                    })
                 event_ts = (
                     _dt.datetime.now(_dt.timezone.utc)
                     .isoformat()
@@ -462,17 +608,10 @@ async def author_consent_granted_events(
                     task_payload=None,
                 )
                 authored += 1
+                published_entries.append(entry)
                 LOGGER.info(
                     "[delegated.consent] granted event authored: conversation=%s provider=%s claims=%s tool=%s user=%s",
                     conversation_id, provider_key, ",".join(claims_list), tool_name, clean_user,
-                )
-                await _drop_tools_from_snapshot(
-                    user_id=clean_user,
-                    bundle_id=str(entry.get("bundle_id") or ""),
-                    conversation_id=conversation_id,
-                    provider_id=provider_key,
-                    tools=[tool_name],
-                    property_store=property_store,
                 )
             except Exception:
                 LOGGER.warning(
@@ -480,6 +619,36 @@ async def author_consent_granted_events(
                     conversation_id, provider_key, exc_info=True,
                 )
                 remaining.append(entry)
+        dropped_snapshot_tools: set[tuple[str, str, str, str]] = set()
+        for entry in published_entries:
+            drop_key = (
+                str(entry.get("bundle_id") or ""),
+                str(entry.get("conversation_id") or ""),
+                str(entry.get("provider_id") or ""),
+                str(entry.get("tool_name") or ""),
+            )
+            if drop_key in dropped_snapshot_tools:
+                continue
+            if any(
+                isinstance(other, dict)
+                and (
+                    str(other.get("bundle_id") or ""),
+                    str(other.get("conversation_id") or ""),
+                    str(other.get("provider_id") or ""),
+                    str(other.get("tool_name") or ""),
+                ) == drop_key
+                for other in remaining
+            ):
+                continue
+            dropped_snapshot_tools.add(drop_key)
+            await _drop_tools_from_snapshot(
+                user_id=clean_user,
+                bundle_id=drop_key[0],
+                conversation_id=drop_key[1],
+                provider_id=drop_key[2],
+                tools=[drop_key[3]],
+                property_store=property_store,
+            )
         if remaining:
             await property_store.set_user_prop(
                 PENDING_DEMANDS_REGISTRY_KEY,
@@ -548,6 +717,9 @@ async def announce_consent_demand(
     connector_app_id: str = "",
     claims: list | tuple = (),
     tool_name: str = "",
+    resource: str = "",
+    namespace: str = "",
+    operation: str = "",
     identity: Any = None,
     connection_hub_bundle_id: str = "",
     identity_provider: Callable[[], Mapping[str, Any] | None] | None = None,
@@ -556,7 +728,8 @@ async def announce_consent_demand(
     property_store: UserPropertyStore | None = None,
 ) -> bool:
     """Record one attempted tool's consent demand and emit the scoped chat
-    consent event ONCE per (provider, claims, tool) demand per conversation.
+    consent event ONCE per (provider, resource, claims, tool, operation) demand
+    per conversation.
 
     ``tool_name`` is the entry as the user sees it in the composer menu
     (``alias.tool`` for python tools, the bare namespace for named-service
@@ -588,6 +761,9 @@ async def announce_consent_demand(
             provider_label=(provider_key[:1].upper() + provider_key[1:]) if provider_key else "",
             claims=list(claims or []),
             tool_name=str(tool_name or "").strip(),
+            resource=normalize_resource(resource),
+            namespace=_namespace(namespace),
+            operation=_operation(operation),
             tenant=str(identity.get("tenant_id") or "").strip(),
             project=str(identity.get("project_id") or "").strip(),
             agent_id=agent_id,
