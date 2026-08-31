@@ -15,7 +15,12 @@ import { DelegatedToKdcubePanel } from './features/delegatedToKdcube/DelegatedTo
 import { clearDelegatedToKdcubeError, loadDelegatedToKdcube } from './features/delegatedToKdcube/delegatedToKdcubeSlice';
 import { ProviderConnectionsPanel, type ProviderSummon } from './features/providerConnections/ProviderConnectionsPanel';
 import { clearProviderConnectionsError, loadProviderConnections } from './features/providerConnections/providerConnectionsSlice';
-import { ackConnectionsHubOpen, parseConnectionsHubOpen, splitListParam } from './api/surfaceCommand';
+import {
+  ackConnectionsHubOpen,
+  announceConnectionsHubReady,
+  parseConnectionsHubOpen,
+  splitListParam,
+} from './api/surfaceCommand';
 
 function claimChallengeFromLocation(): string {
   const params = new URLSearchParams(window.location.search);
@@ -269,6 +274,7 @@ export default function App() {
       ackConnectionsHubOpen(command, 'applied');
     };
     window.addEventListener('message', onSurfaceCommand);
+    announceConnectionsHubReady();
     return () => window.removeEventListener('message', onSurfaceCommand);
   }, [telegramMiniAppMode, claimChallengeId, changeTab]);
 

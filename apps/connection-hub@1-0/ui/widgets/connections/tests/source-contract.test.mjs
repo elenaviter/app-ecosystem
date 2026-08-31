@@ -66,8 +66,49 @@ test('viewport-bound widget and access-map panel own their sizing', () => {
 
 test('agent consent distinguishes resource requests from existing account permissions', () => {
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
-  assert.match(panel, /Resource permissions requested for this operation/)
+  assert.match(panel, /Service operation/)
+  assert.match(panel, /KDCube service permissions/)
+  assert.match(panel, /resolvePendingServiceCapability\(pendingGrant, resources, operationRows\)/)
+  assert.match(panel, /pendingServiceCapability\.requiredDoorGrants/)
+  assert.match(panel, /Connected-account requirements for this capability/)
+  assert.match(panel, /Requested changes/)
+  assert.match(panel, /focusNextPendingReviewTarget/)
+  assert.match(panel, /request-review-section-active/)
+  assert.match(panel, /request-review-progress/)
+  assert.match(panel, /pendingReviewIndex \+ 1.*pendingReviewTargets\.length/s)
+  assert.match(panel, /<PendingStatus status=/)
+  assert.match(panel, /checked=\{pendingOperationSelected\}/)
+  assert.match(panel, /pendingServiceApprovalReady\(/)
+  assert.match(panel, /proposeExactAccountClaim\(/)
+  assert.match(panel, /pendingOperationRequested\s*\? !pendingOperationReady/)
+  assert.match(panel, /The request is still pending/)
   assert.match(panel, /Connected-account permissions/)
-  assert.match(panel, /Already granted/)
+  assert.match(panel, /pendingSelectionStatus\(/)
   assert.match(panel, /existingScope: pendingExistingAccountScope/)
+  assert.match(panel, /doorGrantsForOperation\(resourceOption, namespaceOption, operation, grants\)/)
+
+  const projection = source('src/features/delegatedAccess/pendingGrantProjection.ts')
+  assert.match(projection, /Already granted/)
+  assert.match(projection, /Pending - not granted yet/)
+  assert.match(projection, /Required for this request/)
+
+  const catalog = source('src/features/delegatedAccess/DelegatedResourceCatalog.tsx')
+  assert.match(catalog, /doorGrantsForOperation\(/)
+
+  const css = source('src/styles.css')
+  assert.match(css, /\.request-review-nav \{[\s\S]*position: sticky/)
+  assert.match(css, /\.pending-selection-status\[data-state='pending'\][\s\S]*var\(--warn-text\)/)
+})
+
+test('connections widget announces readiness only after installing its command listener', () => {
+  const app = source('src/App.tsx')
+  const listener = app.indexOf("window.addEventListener('message', onSurfaceCommand)")
+  const ready = app.indexOf('announceConnectionsHubReady()', listener)
+
+  assert.ok(listener >= 0)
+  assert.ok(ready > listener)
+
+  const command = source('src/api/surfaceCommand.ts')
+  assert.match(command, /SURFACE_READY_MESSAGE_TYPE = 'kdcube\.surface\.ready'/)
+  assert.match(command, /target_surfaces: CONNECTIONS_TARGET_SURFACES/)
 })

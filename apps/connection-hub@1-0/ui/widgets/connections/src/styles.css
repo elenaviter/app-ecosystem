@@ -1779,6 +1779,90 @@ code {
   border-top: 1px solid var(--line-soft);
 }
 
+.request-review-nav {
+  position: sticky;
+  top: -12px;
+  z-index: 3;
+  margin: 0 -12px 14px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface);
+  box-shadow: 0 6px 10px -10px rgba(13, 30, 44, 0.45);
+}
+
+.request-review-nav-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.request-review-nav-head .btn {
+  margin-left: 0;
+}
+
+.request-review-progress {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.request-review-links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 6px;
+}
+
+.request-review-links [aria-current='step'] {
+  color: var(--kind);
+  font-weight: 700;
+}
+
+.request-review-section {
+  scroll-margin-block-start: 76px;
+  padding-left: 8px;
+  border-left: 2px solid transparent;
+}
+
+.request-review-section-active {
+  border-left-color: var(--kind);
+}
+
+.pending-selection-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 4px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.pending-selection-status[data-state='pending'] {
+  color: var(--warn-text);
+  background: rgba(var(--warn-rgb), 0.14);
+  border-color: rgba(var(--warn-rgb), 0.55);
+}
+
+.pending-selection-status[data-state='granted'] {
+  color: var(--ok-text);
+  background: rgba(var(--ok-rgb), 0.10);
+  border-color: rgba(var(--ok-rgb), 0.40);
+}
+
+.pending-selection-status[data-state='required'] {
+  color: var(--kind);
+  background: rgba(var(--kind-rgb), 0.08);
+  border-color: rgba(var(--kind-rgb), 0.30);
+}
+
 /* ── delegated access map (admin, read-only) ─────────────────────────────
    Flat rows inside the standard cards: entry (label + token) on the left,
    grant chips on the right; namespaces as quiet sub-blocks. */

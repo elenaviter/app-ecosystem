@@ -6,6 +6,7 @@ import type {
   DelegatedToKdcubeProvider,
 } from '../../api/types';
 import { consentPlanState, type ConsentPlanAction } from '../delegatedToKdcube/ConsentPlan';
+import { doorGrantsForOperation } from './pendingGrantProjection';
 
 interface NamedServiceOperationRow {
   operation: string;
@@ -262,7 +263,12 @@ export function DelegatedResourceCatalog({
             <div className="namespace-operation-list">
               {rows.map((row) => {
                 const included = includedRows.includes(row);
-                const grantsReady = row.grants.every((grant) => selectedGrants.includes(grant));
+                const grantsReady = doorGrantsForOperation(
+                  resource,
+                  namespace,
+                  row.operation,
+                  row.grants,
+                ).every((grant) => selectedGrants.includes(grant));
                 return (
                   <label
                     className={`namespace-operation${included ? ' namespace-operation-included' : ''}`}

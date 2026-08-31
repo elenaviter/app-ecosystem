@@ -13,9 +13,24 @@
 
 export const SURFACE_COMMAND_MESSAGE_TYPE = 'kdcube.surface.command';
 export const SURFACE_COMMAND_ACK_MESSAGE_TYPE = 'kdcube.surface.command.ack';
+export const SURFACE_READY_MESSAGE_TYPE = 'kdcube.surface.ready';
 
 // Surfaces this widget answers for; scene contracts route by target_surface.
 export const CONNECTIONS_TARGET_SURFACES = ['connection_hub.connections', 'connection_hub.settings'];
+
+/** Tell the scene host that this widget has installed its command listener.
+ *  Iframe contentWindow existence and load do not prove listener readiness. */
+export function announceConnectionsHubReady(): void {
+  try {
+    if (!window.parent || window.parent === window) return;
+    window.parent.postMessage({
+      type: SURFACE_READY_MESSAGE_TYPE,
+      target_surfaces: CONNECTIONS_TARGET_SURFACES,
+    }, '*');
+  } catch {
+    // A standalone widget has no scene command queue to release.
+  }
+}
 
 export interface ConnectionsHubOpenCommand {
   targetSurface: string;

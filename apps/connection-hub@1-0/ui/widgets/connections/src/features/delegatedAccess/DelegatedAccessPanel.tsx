@@ -4,6 +4,15 @@ import { PaneGroup } from '../../components/Pane';
 import { operationUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
+import {
+  commonOperationGrants,
+  doorGrantsForOperation,
+  pendingServiceApprovalReady,
+  pendingSelectionStatus,
+  proposeExactAccountClaim,
+  resolvePendingServiceCapability,
+} from './pendingGrantProjection';
+import type { PendingSelectionStatus } from './pendingGrantProjection';
 import type {
   DelegatedAccessNamedServiceOperations,
   DelegatedAccessRecord,
@@ -63,8 +72,8 @@ type PendingAgentGrant = {
   resource: string;
   claims: string[];
   // A per-account ask (the account can do it, this agent is not bound): the
-  // exact account + claim to tick, so the card names it and opens the provider.
-  // The user still ticks the checkbox explicitly; the picker is default-closed.
+  // exact account + claim proposed by the denial. It is selected only on that
+  // account and remains pending until the user submits the grant.
   accountId?: string;
   accountClaim?: string;
   // The inner capability the refused call wanted. Approval grants this one
@@ -72,6 +81,16 @@ type PendingAgentGrant = {
   namespace?: string;
   operation?: string;
 };
+
+function PendingStatus({ status }: { status: PendingSelectionStatus }) {
+  if (!status) return null;
+  const state = status === 'Already granted'
+    ? 'granted'
+    : status === 'Pending - not granted yet'
+      ? 'pending'
+      : 'required';
+  return <span className="pending-selection-status" data-state={state}>{status}</span>;
+}
 
 function pendingAgentGrantFromParams(get: (key: string) => string): PendingAgentGrant | null {
   if (get('pending_agent_grant') !== '1') return null;
@@ -161,13 +180,6 @@ function formatDate(seconds?: number): string {
   } catch {
     return '';
   }
-}
-
-function commonOperationGrants(resource: DelegatedAccessResourceOption): string[] {
-  const operations = resource.operations || [];
-  if (!operations.length) return [];
-  const [first, ...rest] = operations.map((operation) => new Set(operation.grants || []));
-  return Array.from(first).filter((grant) => rest.every((grants) => grants.has(grant)));
 }
 
 /** A DCR client registers one fixed name — every Claude Code connector arrives
@@ -663,8 +675,22 @@ function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
 
 export function DelegatedAccessPanel({ openParams }: { openParams?: Record<string, string> } = {}) {
   const dispatch = useAppDispatch();
-  const { platformUserId, items, grantOptions, resources, issuedToken, issuedHeader, issuedAccess, busy } = useAppSelector((s) => s.delegatedAccess);
-  const { providers, accounts } = useAppSelector((s) => s.delegatedToKdcube);
+  const {
+    platformUserId,
+    items,
+    grantOptions,
+    resources,
+    issuedToken,
+    issuedHeader,
+    issuedAccess,
+    loading: delegatedAccessLoading,
+    busy,
+  } = useAppSelector((s) => s.delegatedAccess);
+  const {
+    providers,
+    accounts,
+    loading: delegatedAccountsLoading,
+  } = useAppSelector((s) => s.delegatedToKdcube);
   const [label, setLabel] = useState('Automation access');
   const [resourceGrants, setResourceGrants] = useState<Record<string, string[]>>({});
   const [namedServiceOperations, setNamedServiceOperations] = useState<DelegatedAccessNamedServiceOperations>(
@@ -688,10 +714,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     // Mount-time diagnostic only — the open command remounts this panel by key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // Which of the ASKED claims the user keeps checked — the request is a
-  // proposal, not a bundle: granting a subset is always allowed.
+  // Which of the ASKED claims the user keeps checked. A plain resource request
+  // may be narrowed; a focused operation request remains actionable only while
+  // all of that operation's prerequisites are selected.
   const [pendingClaimPicks, setPendingClaimPicks] = useState<Record<string, boolean>>(
     () => Object.fromEntries((pendingAgentGrantRequest(openParams)?.claims || []).map((c) => [c, true])),
+  );
+  const pendingOperationReviewRef = useRef<HTMLDivElement>(null);
+  const pendingServiceGrantReviewRef = useRef<HTMLDivElement>(null);
+  const pendingAccountReviewRef = useRef<HTMLDivElement>(null);
+  const [pendingReviewTarget, setPendingReviewTarget] = useState<'operation' | 'service' | 'account'>(
+    pendingAgentGrantRequest(openParams)?.namespace ? 'operation' : 'service',
   );
   // Per-record EDIT state for granted agent rows: access_id being edited and
   // the checkbox set keyed `${resource}:${claim}`.
@@ -777,7 +810,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         (resourceOption.named_services || []).forEach((namespace) => {
           const disallowed = new Set(
             operationRows(namespace)
-              .filter((row) => removesSurfaceAccess || row.grants.includes(grant))
+              .filter((row) => removesSurfaceAccess || doorGrantsForOperation(
+                resourceOption,
+                namespace,
+                row.operation,
+                row.grants,
+              ).includes(grant))
               .map((row) => row.operation),
           );
           const remaining = (existingNamespaces[namespace.namespace] || [])
@@ -801,10 +839,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   ) => {
     if (checked) {
       const resourceOption = resources.find((item) => item.resource === resource);
-      const requiredGrants = [
-        ...grants,
-        ...(resourceOption ? commonOperationGrants(resourceOption) : []),
-      ];
+      const namespaceOption = resourceOption?.named_services?.find(
+        (item) => item.namespace === namespace,
+      );
+      const requiredGrants = resourceOption && namespaceOption
+        ? doorGrantsForOperation(resourceOption, namespaceOption, operation, grants)
+        : grants;
       setResourceGrants((current) => ({
         ...current,
         [resource]: Array.from(new Set([...(current[resource] || []), ...requiredGrants])),
@@ -888,9 +928,83 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
   };
 
-  const pendingCheckedClaims = pendingGrant
-    ? pendingGrant.claims.filter((claim) => pendingClaimPicks[claim] !== false)
+  const pendingServiceCapability = useMemo(
+    () => resolvePendingServiceCapability(pendingGrant, resources, operationRows),
+    [pendingGrant, resources],
+  );
+  const pendingExistingRecords = pendingGrant
+    ? items.filter((record) => (record.client_id || '') === pendingGrant.clientId)
     : [];
+  const pendingExistingDoorGrants = new Set(
+    pendingGrant
+      ? pendingExistingRecords.flatMap(
+        (record) => (record.resource_grants || {})[pendingGrant.resource] || [],
+      )
+      : [],
+  );
+  const pendingOperationAlreadyGranted = Boolean(
+    pendingGrant?.namespace
+      && pendingGrant.operation
+      && pendingExistingRecords.some((record) => (
+        cardNamedServiceOperations(record)[pendingGrant.resource]?.[pendingGrant.namespace as string]
+          || []
+      ).includes(pendingGrant.operation as string)),
+  );
+  const pendingRequestedAccountClaims = (
+    pendingServiceCapability?.accountRequirements || []
+  ).reduce<Record<string, string[]>>((result, requirement) => ({
+    ...result,
+    [requirement.providerId]: Array.from(new Set([
+      ...(result[requirement.providerId] || []),
+      ...requirement.claims,
+    ])),
+  }), {});
+  const pendingRequestedClaims = Array.from(new Set([
+    ...(pendingGrant?.claims || []).filter((claim) => !pendingServiceCapability?.accountRequirements
+      .some((requirement) => requirement.claims.includes(claim))),
+    ...(pendingServiceCapability?.requiredDoorGrants || []),
+  ]));
+  const pendingCheckedClaims = pendingRequestedClaims
+    .filter((claim) => pendingClaimPicks[claim] !== false);
+  const pendingOperationSelected = Boolean(
+    pendingGrant?.namespace
+      && pendingGrant.operation
+      && (namedServiceOperations[pendingGrant.resource]?.[pendingGrant.namespace] || [])
+        .includes(pendingGrant.operation),
+  );
+  const pendingOperationRequested = Boolean(pendingGrant?.namespace && pendingGrant.operation);
+
+  const setPendingOperationSelected = (checked: boolean) => {
+    if (!pendingGrant?.namespace || !pendingGrant.operation) return;
+    if (checked && pendingServiceCapability) {
+      setPendingClaimPicks((current) => ({
+        ...current,
+        ...Object.fromEntries(
+          pendingServiceCapability.requiredDoorGrants.map((claim) => [claim, true]),
+        ),
+      }));
+    }
+    setNamedServiceOperations((current) => {
+      const next = { ...current };
+      const namespaces = { ...(next[pendingGrant.resource] || {}) };
+      const existing = namespaces[pendingGrant.namespace as string] || [];
+      const updated = checked
+        ? Array.from(new Set([...existing, pendingGrant.operation as string]))
+        : existing.filter((item) => item !== pendingGrant.operation);
+      if (updated.length) namespaces[pendingGrant.namespace as string] = updated;
+      else delete namespaces[pendingGrant.namespace as string];
+      if (Object.keys(namespaces).length) next[pendingGrant.resource] = namespaces;
+      else delete next[pendingGrant.resource];
+      return next;
+    });
+  };
+
+  const setPendingServiceClaimSelected = (claim: string, checked: boolean) => {
+    setPendingClaimPicks((current) => ({ ...current, [claim]: checked }));
+    if (!checked && pendingServiceCapability?.requiredDoorGrants.includes(claim)) {
+      setPendingOperationSelected(false);
+    }
+  };
 
   const grantPending = async () => {
     if (!pendingGrant) return;
@@ -911,22 +1025,29 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     // every claim the operation declares and only its boundary excludes it —
     // has none either. Still emit the resource carrying its EXISTING claims so
     // the binding and the operation reach the record.
-    const operationOnlyAsk = Boolean(pendingGrant.namespace && pendingGrant.operation);
+    const operationOnlyAsk = pendingOperationSelected;
     if ((Object.keys(pendingAccountScope).length || operationOnlyAsk) && !merged[pendingGrant.resource]) {
       const existing = items.find((record) => (record.client_id || '') === pendingGrant.clientId);
       merged[pendingGrant.resource] = [...((existing?.resource_grants || {})[pendingGrant.resource] || [])];
     }
-    let first = true;
-    for (const [resource, claims] of Object.entries(merged)) {
-      await dispatch(grantAgentAccess({
-        clientId: pendingGrant.clientId,
-        resource,
-        claims,
-        namedServiceOperations: namedServiceOperations[resource],
-        // The account binding is per-client: send it once with the first grant.
-        ...(first && Object.keys(pendingAccountScope).length ? { accountScope: pendingAccountScope } : {}),
-      })).unwrap().catch(() => undefined);
-      first = false;
+    try {
+      let first = true;
+      for (const [resource, claims] of Object.entries(merged)) {
+        await dispatch(grantAgentAccess({
+          clientId: pendingGrant.clientId,
+          resource,
+          claims,
+          namedServiceOperations: namedServiceOperations[resource],
+          // The account binding is per-client: send it once with the first grant.
+          ...(first && Object.keys(pendingAccountScope).length ? { accountScope: pendingAccountScope } : {}),
+        })).unwrap();
+        first = false;
+      }
+    } catch {
+      // The request is still pending. Keep its focused projection visible so
+      // the user can act on the precise server error instead of losing it.
+      void dispatch(loadDelegatedAccess());
+      return;
     }
     setPendingGrant(null);
     setResourceGrants({});
@@ -1021,6 +1142,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   }, [accounts]);
   // Which provider account-lists are expanded (the "+ choose" disclosure).
   const [expandedAccountProviders, setExpandedAccountProviders] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    const providerIds = (pendingServiceCapability?.accountRequirements || [])
+      .map((requirement) => requirement.providerId);
+    if (!providerIds.length) return;
+    setExpandedAccountProviders((current) => {
+      if (providerIds.every((provider) => current[provider])) return current;
+      return {
+        ...current,
+        ...Object.fromEntries(providerIds.map((provider) => [provider, true])),
+      };
+    });
+  }, [pendingServiceCapability]);
   const focusedManualAccessId = useRef<string | null>(null);
   useEffect(() => {
     if (!manualFocus) {
@@ -1053,6 +1186,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [pendingExistingAccountScope, setPendingExistingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   const togglePendingAccount = makeToggleAccountClaim(setPendingAccountScope);
   const toggleCreateAccount = makeToggleAccountClaim(setCreateAccountScope);
+  const pendingOperationReady = pendingServiceApprovalReady(
+    pendingServiceCapability,
+    pendingOperationSelected,
+    pendingCheckedClaims,
+    pendingAccountScope,
+  );
   // Seed the pending consent card's per-account picker ONCE (per client) from
   // the agent's existing grant, after the account list + grant registry load.
   // Without this, re-consent for a newly-demanded door claim (e.g. mail:send)
@@ -1066,29 +1205,47 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       return;
     }
     if (seededPendingFor.current === pendingGrant.clientId) return;
-    if (!accounts.length) return; // wait for the account list
+    if (delegatedAccessLoading || delegatedAccountsLoading) return;
+    if (pendingOperationRequested && !pendingServiceCapability) return;
     const existing = items.find(
       (record) => (record.client_id || '') === pendingGrant.clientId
         && !!record.account_scope && Object.keys(record.account_scope).length > 0,
     );
     seededPendingFor.current = pendingGrant.clientId;
-    // Guided per-account ask: the denial named the exact account + claim. Open
-    // that provider's section so the user lands on the checkboxes — but tick
-    // NOTHING: granting is always the user's explicit decision. The guide
-    // block names the account and claim to tick.
+    // Guided per-account ask: the denial names one exact account + claim. Open
+    // that provider and select only that requested pair as the proposal. This
+    // is not authority until the user presses Grant access; other matching
+    // accounts remain visible and unselected.
+    const existingScope = existing ? seedAccountScopeFromRecord(existing) : {};
+    let proposedScope = existingScope;
     if (pendingGrant.accountId && pendingGrant.accountClaim) {
       const account = accounts.find((item) => (item.account_id || '') === pendingGrant.accountId);
       const provider = account?.provider_id || '';
       if (provider) {
         setExpandedAccountProviders((current) => ({ ...current, [provider]: true }));
       }
+      proposedScope = proposeExactAccountClaim(
+        existingScope,
+        pendingServiceCapability,
+        accounts,
+        pendingGrant.accountId,
+        pendingGrant.accountClaim,
+      );
     }
     // Restore only what this agent was ALREADY granted before (re-consent) —
     // that is existing state, not a new pre-tick.
-    const existingScope = existing ? seedAccountScopeFromRecord(existing) : {};
     setPendingExistingAccountScope(existingScope);
-    setPendingAccountScope(existingScope);
-  }, [pendingGrant, items, accounts, seedAccountScopeFromRecord]);
+    setPendingAccountScope(proposedScope);
+  }, [
+    pendingGrant,
+    items,
+    accounts,
+    delegatedAccessLoading,
+    delegatedAccountsLoading,
+    pendingOperationRequested,
+    pendingServiceCapability,
+    seedAccountScopeFromRecord,
+  ]);
 
   // The per-account permission picker: a disclosure per provider showing
   // "<n>/<m> accounts" (or "no accounts yet" when unbound) so a large account
@@ -1103,6 +1260,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     options?: {
       title?: string;
       existingScope?: Record<string, Record<string, string[]>>;
+      requestedClaims?: Record<string, string[]>;
     },
   ) => {
     if (!providersWithAccounts.size) return null;
@@ -1136,6 +1294,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   const alreadyGranted = new Set(
                     options?.existingScope?.[provider]?.[account.account_id] || [],
                   );
+                  const requestedClaims = new Set(options?.requestedClaims?.[provider] || []);
                   const supported = account.claims || [];
                   return (
                     <div key={account.account_id} style={{ marginTop: 6 }}>
@@ -1144,19 +1303,24 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       </div>
                       {supported.length ? (
                         <div className="resource-grants">
-                          {supported.map((claim) => (
-                            <label className="grant-chip" key={claim} title={grantOptionByName.get(claim)?.label || undefined}>
-                              <input
-                                type="checkbox"
-                                checked={held.has(claim)}
-                                onChange={(event) => onToggle(provider, account.account_id, claim, event.target.checked)}
-                              />
-                              <span>{claim}</span>
-                              {alreadyGranted.has(claim) ? (
-                                <span className="account-sub">Already granted</span>
-                              ) : null}
-                            </label>
-                          ))}
+                          {supported.map((claim) => {
+                            const status = pendingSelectionStatus(
+                              alreadyGranted.has(claim),
+                              held.has(claim),
+                              requestedClaims.has(claim),
+                            );
+                            return (
+                              <label className="grant-chip" key={claim} title={grantOptionByName.get(claim)?.label || undefined}>
+                                <input
+                                  type="checkbox"
+                                  checked={held.has(claim)}
+                                  onChange={(event) => onToggle(provider, account.account_id, claim, event.target.checked)}
+                                />
+                                <span>{claim}</span>
+                                <PendingStatus status={status} />
+                              </label>
+                            );
+                          })}
                         </div>
                       ) : (
                         <div className="account-sub">No approved permissions on this account yet.</div>
@@ -1192,7 +1356,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       (resourceOption.named_services || []).forEach((namespace) => {
         const disallowed = new Set(
           operationRows(namespace)
-            .filter((row) => removesSurfaceAccess || row.grants.includes(claim))
+            .filter((row) => removesSurfaceAccess || doorGrantsForOperation(
+              resourceOption,
+              namespace,
+              row.operation,
+              row.grants,
+            ).includes(claim))
             .map((row) => row.operation),
         );
         const remaining = (existingNamespaces[namespace.namespace] || [])
@@ -1212,10 +1381,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   ) => {
     if (checked) {
       const resourceOption = catalogRowFor(resources, resource, editRowFor);
-      const required = [
-        ...grants,
-        ...(resourceOption ? commonOperationGrants(resourceOption) : []),
-      ];
+      const namespaceOption = resourceOption?.named_services?.find(
+        (item) => item.namespace === namespace,
+      );
+      const required = resourceOption && namespaceOption
+        ? doorGrantsForOperation(resourceOption, namespaceOption, operation, grants)
+        : grants;
       setEditPicks((current) => ({
         ...current,
         ...Object.fromEntries(required.map((grant) => [`${resource}:${grant}`, true])),
@@ -1443,6 +1614,40 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const pendingAccountLabel = pendingGrant?.accountId
     ? (accountLabelById.get(pendingGrant.accountId) || pendingGrant.accountId)
     : '';
+  const pendingReviewTargets = [
+    ...(pendingOperationRequested ? [{
+      id: 'operation' as const,
+      label: 'Service operation',
+      ref: pendingOperationReviewRef,
+    }] : []),
+    ...(pendingRequestedClaims.length ? [{
+      id: 'service' as const,
+      label: 'KDCube permissions',
+      ref: pendingServiceGrantReviewRef,
+    }] : []),
+    ...(pendingServiceCapability?.accountRequirements.length ? [{
+      id: 'account' as const,
+      label: 'Connected account',
+      ref: pendingAccountReviewRef,
+    }] : []),
+  ];
+  const focusPendingReviewTarget = (target: 'operation' | 'service' | 'account') => {
+    setPendingReviewTarget(target);
+    pendingReviewTargets.find((item) => item.id === target)?.ref.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'nearest',
+    });
+  };
+  const focusNextPendingReviewTarget = () => {
+    if (!pendingReviewTargets.length) return;
+    const current = pendingReviewTargets.findIndex((item) => item.id === pendingReviewTarget);
+    const next = pendingReviewTargets[(current + 1 + pendingReviewTargets.length) % pendingReviewTargets.length];
+    focusPendingReviewTarget(next.id);
+  };
+  const pendingReviewIndex = Math.max(
+    0,
+    pendingReviewTargets.findIndex((item) => item.id === pendingReviewTarget),
+  );
   const pendingGrantPane = pendingGrant ? (
     <section className="card card-attention">
       <div className="card-head">
@@ -1457,6 +1662,77 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         )} wants to
         act on your behalf on <strong>{pendingResourceLabel || 'this resource'}</strong>.{pendingGrant.claims.length ? ' It is asking for:' : ''}
       </p>
+      {pendingReviewTargets.length ? (
+        <nav className="request-review-nav" aria-label="Requested access review">
+          <div className="request-review-nav-head">
+            <div className="account-title">Requested changes</div>
+            <span className="request-review-progress" aria-live="polite">
+              {pendingReviewIndex + 1} of {pendingReviewTargets.length}
+            </span>
+            {pendingReviewTargets.length > 1 ? (
+              <button type="button" className="btn btn-ghost" onClick={focusNextPendingReviewTarget}>
+                Next
+              </button>
+            ) : null}
+          </div>
+          <div className="request-review-links">
+            {pendingReviewTargets.map((target, index) => (
+              <button
+                type="button"
+                className="inline-more"
+                aria-current={pendingReviewTarget === target.id ? 'step' : undefined}
+                onClick={() => focusPendingReviewTarget(target.id)}
+                key={target.id}
+              >
+                {index + 1}. {target.label}
+              </button>
+            ))}
+          </div>
+        </nav>
+      ) : null}
+      {pendingGrant.namespace && pendingGrant.operation ? (
+        <div
+          className={`request-review-section${pendingReviewTarget === 'operation' ? ' request-review-section-active' : ''}`}
+          ref={pendingOperationReviewRef}
+          style={{ marginBottom: 12 }}
+        >
+          <div className="account-title" style={{ marginBottom: 6 }}>
+            Service operation
+          </div>
+          {pendingServiceCapability ? (
+            <label
+              className={`namespace-operation${pendingOperationSelected ? ' namespace-operation-included' : ''}`}
+            >
+              <input
+                type="checkbox"
+                checked={pendingOperationSelected}
+                onChange={(event) => setPendingOperationSelected(event.target.checked)}
+              />
+              <span>
+                <strong>{pendingServiceCapability.operation.label}</strong>
+                {pendingServiceCapability.operation.description ? (
+                  <small>{pendingServiceCapability.operation.description}</small>
+                ) : null}
+                <small>
+                  <code>{pendingGrant.namespace}</code>{' · '}<code>{pendingGrant.operation}</code>
+                </small>
+                <small>
+                  <PendingStatus status={pendingSelectionStatus(
+                    pendingOperationAlreadyGranted,
+                    pendingOperationSelected,
+                    true,
+                  )} />
+                </small>
+              </span>
+            </label>
+          ) : (
+            <div className="notice" style={{ marginTop: 0 }}>
+              Loading this capability from the active service catalog: {' '}
+              <code>{pendingGrant.namespace}</code>{' · '}<code>{pendingGrant.operation}</code>
+            </div>
+          )}
+        </div>
+      ) : null}
       {pendingGrant.accountClaim ? (
         <div className="notice" style={{ marginTop: 0, marginBottom: 12 }}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Why you are here</div>
@@ -1478,41 +1754,67 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           </ol>
         </div>
       ) : null}
-      {pendingGrant.claims.length ? (
-        <div className="account-title" style={{ marginBottom: 6 }}>
-          Resource permissions requested for this operation
+      {pendingRequestedClaims.length ? (
+        <div
+          className={`request-review-section${pendingReviewTarget === 'service' ? ' request-review-section-active' : ''}`}
+          ref={pendingServiceGrantReviewRef}
+        >
+          <div className="account-title" style={{ marginBottom: 6 }}>
+            KDCube service permissions
+          </div>
+          <ul className="accounts">
+            {pendingRequestedClaims.map((claim) => {
+              const option = grantOptionByName.get(claim);
+              const selected = pendingClaimPicks[claim] !== false;
+              const alreadyGranted = pendingExistingDoorGrants.has(claim);
+              return (
+                <li className="account" key={claim}>
+                  <label style={{ display: 'flex', gap: 10, alignItems: 'baseline', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={(event) => setPendingServiceClaimSelected(claim, event.target.checked)}
+                    />
+                    <div>
+                      <div className="account-title"><code>{claim}</code></div>
+                      {option?.label ? <div className="account-sub">{option.label}</div> : null}
+                      {option?.description ? <div className="account-sub">{option.description}</div> : null}
+                      <PendingStatus status={pendingSelectionStatus(alreadyGranted, selected, true)} />
+                    </div>
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
         </div>
       ) : null}
-      <ul className="accounts">
-        {pendingGrant.claims.map((claim) => {
-          const option = grantOptionByName.get(claim);
-          return (
-            <li className="account" key={claim}>
-              <label style={{ display: 'flex', gap: 10, alignItems: 'baseline', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={pendingClaimPicks[claim] !== false}
-                  onChange={(event) => setPendingClaimPicks((current) => ({ ...current, [claim]: event.target.checked }))}
-                />
-                <div>
-                  <div className="account-title"><code>{claim}</code></div>
-                  {option?.label ? <div className="account-sub">{option.label}</div> : null}
-                  {option?.description ? <div className="account-sub">{option.description}</div> : null}
-                </div>
-              </label>
-            </li>
-          );
-        })}
-      </ul>
-      {renderAccountScopePicker(
-        pendingAccountScope,
-        togglePendingAccount,
-        'this agent',
-        {
-          title: 'Connected-account permissions',
-          existingScope: pendingExistingAccountScope,
-        },
-      )}
+      {pendingServiceCapability?.accountRequirements.length ? (
+        <div
+          className={`request-review-section${pendingReviewTarget === 'account' ? ' request-review-section-active' : ''}`}
+          ref={pendingAccountReviewRef}
+        >
+          <div className="account-sub" style={{ marginBottom: 6 }}>
+            Connected-account requirements for this capability:{' '}
+            {pendingServiceCapability.accountRequirements.map((requirement, index) => (
+              <Fragment key={`${requirement.providerId}:${requirement.claims.join(':')}`}>
+                {index ? '; ' : ''}
+                <strong>{providers[requirement.providerId]?.label || requirement.providerId}</strong>{' '}
+                <ChipRow entries={requirement.claims} />
+              </Fragment>
+            ))}
+          </div>
+          {renderAccountScopePicker(
+            pendingAccountScope,
+            togglePendingAccount,
+            'this agent',
+            {
+              title: 'Connected-account permissions',
+              existingScope: pendingExistingAccountScope,
+              requestedClaims: pendingRequestedAccountClaims,
+            },
+          )}
+        </div>
+      ) : null}
       <p className="muted">
         Granting lets exactly this agent do exactly this for you — nothing else.
         The grant appears under Granted access below, where you can revoke it at
@@ -1535,12 +1837,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         <button
           className="btn"
           type="button"
-          disabled={busy || (!pendingCheckedClaims.length && !selectedResourceEntries.length && !Object.keys(pendingAccountScope).length)}
+          disabled={busy || (pendingOperationRequested
+            ? !pendingOperationReady
+            : (
+              !pendingCheckedClaims.length
+              && !selectedResourceEntries.length
+              && !Object.keys(pendingAccountScope).length
+            )
+          )}
           onClick={grantPending}
         >
-          {pendingCheckedClaims.length < (pendingGrant.claims.length || 0) || selectedResourceEntries.length || Object.keys(pendingAccountScope).length
-            ? 'Grant selected access'
-            : 'Grant access'}
+          Grant access
         </button>
         <button
           className="btn"
