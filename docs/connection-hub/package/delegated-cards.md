@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Delegated by KDCube cards: what 
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "named_service_operations", "account_scope", "registry_access_id", "card authority", "descriptor drift", "grant lifecycle"]
-updated_at: 2026-08-27
+updated_at: 2026-08-31
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -224,6 +224,16 @@ written explicitly, the parser derives it from the grants required by the
 resource's outer tools and nested named-service operations. Every grant token
 used there should have a matching `capabilities[]` definition so Connection
 Hub can decide whether the current user may delegate it and provide its label.
+
+For a provider-backed named-service operation, the operation row may name both
+the KDCube door grant and the provider claim it needs. Connection Hub presents
+those requirements in separate scopes. The door grant is stored in
+`resource_grants`; the provider claim is selected on a specific connected
+account in `account_scope`. Admission treats that exact account binding as
+effective satisfaction of the provider-claim prerequisite, without copying the
+provider claim into `resource_grants`. It does not add an operation to
+`named_service_operations`; the user selects that operation independently.
+
 `capabilities[].tools` remains a compatibility/fallback source of outer tool
 metadata when no resource-specific tool catalog matches; current Connection
 Hub descriptors define protected operations under `resources[].tools`.
@@ -336,7 +346,13 @@ selected door + claims
 
 selected namespace operations
   -> namespace and operation exist in that door's NamedServiceBoundaryCatalog
-  -> operation-required grants are present in the selected door claims
+  -> operation membership is selected explicitly; neither resource_grants nor
+     account_scope imply an operation
+  -> KDCube door grants are present in the selected resource claims
+  -> provider-backed grants may instead be present on an exact account_scope
+     binding identified by the namespace's connected-account requirements;
+     they are effective for this operation without being copied into
+     resource_grants
 
 selected accounts
   -> normalize explicit provider -> account -> provider-claim binding
@@ -441,6 +457,29 @@ agent attempts a governed operation
   -> explicit edit uses replace semantics
   -> reusable agent bearer and card are stored server-side
 ```
+
+The focused consent view projects that one denied invocation into an
+always-expanded review. It keeps three selections separate:
+
+1. the exact named-service operation;
+2. the KDCube door grants required by that operation;
+3. the required provider claim on a specific connected account.
+
+The full service catalog remains an optional editor beneath this focused
+review. The requested operation and its relevant KDCube grants are selected as
+a proposal. The relevant provider is expanded and every matching connected
+account is visible. When the denial identifies an exact account and claim, only
+that account/claim pair is proposed; a second account is never inferred or
+selected. When no account is identified, no new account binding is proposed and
+the user chooses the account.
+
+Every checked value names its authority state. `Already granted` means it is in
+the current card. `Pending - not granted yet` means the current form proposes
+adding it. Pressing Grant persists the selected operation, door grants, and
+account binding together. An operation demand cannot be submitted while its
+operation or a required door/account selection is absent. Provider claims
+remain prerequisites only: selecting or already holding one never selects a
+tool operation.
 
 ### OAuth/MCP client
 

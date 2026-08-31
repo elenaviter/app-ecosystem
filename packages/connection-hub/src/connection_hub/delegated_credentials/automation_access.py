@@ -1533,6 +1533,16 @@ class AutomationAccessService:
         catalog_config = self._catalog_config(active)
 
         selected_resource_grants = self._resource_grants(resource_grants)
+        if _clean(client_id) and merge_existing:
+            # An incremental agent demand may add only an exact operation or
+            # account binding because the card already holds its door claims.
+            # Keep the submitted door key long enough to derive that existing
+            # deterministic card id; the post-merge non-empty check below still
+            # prevents creation of a claim-less card.
+            for raw_resource in dict(resource_grants or {}):
+                resource_value = _clean(raw_resource)
+                if resource_value:
+                    selected_resource_grants.setdefault(resource_value, [])
         try:
             selected_named_service_operations = self._named_service_operation_selection(
                 named_service_operations
@@ -1552,8 +1562,6 @@ class AutomationAccessService:
             for grants_for_resource in selected_resource_grants.values()
             for grant in grants_for_resource
         ])
-        if not selected_grants:
-            return {"ok": False, "error": "delegated_access_requires_resource_grants"}
 
         # The resource FIRST: a claim for an endpoint this deployment never put
         # in the hub's catalog is not "a claim you may not delegate" — it is an
@@ -1739,6 +1747,14 @@ class AutomationAccessService:
         else:
             access_id = "aut_" + secrets.token_urlsafe(10)
             client_id = f"{AUTOMATION_CLIENT_PREFIX}:{access_id}"
+
+        # An exact operation-only demand is a valid incremental update for an
+        # existing deterministic agent card: the merge above restores that
+        # card's already-granted door claims before the new operation is
+        # materialized. It may never create a claim-less card, and replace
+        # semantics may never preserve claims the caller omitted.
+        if not selected_grants:
+            return {"ok": False, "error": "delegated_access_requires_resource_grants"}
 
         # A create call that names no selection selects nothing. `"*"` is stored
         # only when the user chose every operation the current catalog offers;
