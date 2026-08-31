@@ -8,7 +8,7 @@ keywords: ["delegated card storage", "capability catalog storage", "connected ac
 see_also:
   - ../../../connection-hub-architecture.md
   - ../../../package/delegated-cards.md
-  - ../../../../../apps/connection-hub@1-0/interface/README.md
+  - ../../../../../products/connection-hub/apps/connection-hub@1-0/interface/README.md
 ---
 
 # Connection Hub Storage Map

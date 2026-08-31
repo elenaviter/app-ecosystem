@@ -10,7 +10,7 @@ see_also:
   - ./package/delegated-cards.md
   - ./package/oauth-delegated-credential-protocol.md
   - ./frontend/application/storage/README.md
-  - ../../apps/connection-hub@1-0/interface/README.md
+  - ../../products/connection-hub/apps/connection-hub@1-0/interface/README.md
 ---
 
 # Connection Hub Architecture And Semantic Requirements
@@ -155,7 +155,7 @@ co-located.
 | OAuth/protected-resource metadata | Public discovery client | Descriptor-derived OAuth and resource metadata | OAuth endpoints, supported capabilities, and direct-admission endpoint when enabled. |
 
 The app's human interface contract is
-[`apps/connection-hub@1-0/interface/README.md`](../../apps/connection-hub@1-0/interface/README.md).
+[`products/connection-hub/apps/connection-hub@1-0/interface/README.md`](../../products/connection-hub/apps/connection-hub@1-0/interface/README.md).
 
 ## Direct Protected-Service Admission
 
@@ -409,10 +409,10 @@ replaced without changing callers.
 
 ```text
 repo:app-ecosystem
-  packages/connection-hub/
+  products/connection-hub/packages/connection-hub/
     portable identity, card, catalog, OAuth, admission, and denial contracts
 
-  apps/connection-hub@1-0/
+  products/connection-hub/apps/connection-hub@1-0/
     canonical Connection Hub app, routes, widget, descriptors, OpenAPI
 
 repo:kdcube

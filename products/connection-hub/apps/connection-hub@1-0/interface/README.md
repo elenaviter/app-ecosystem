@@ -12,8 +12,8 @@ keywords:
   - named-service provider
 see_also:
   - ./connection-hub.openapi.yaml
-  - ../../../docs/connection-hub/connection-hub-architecture.md
-  - ../../../docs/connection-hub/frontend/application/README.md
+  - ../../../../../docs/connection-hub/connection-hub-architecture.md
+  - ../../../../../docs/connection-hub/frontend/application/README.md
 ---
 
 # Connection Hub Interface
@@ -31,7 +31,7 @@ operation alias.
 
 The semantic distinctions, storage authorities, and trust boundaries are
 canonical in the
-[Connection Hub architecture](../../../docs/connection-hub/connection-hub-architecture.md).
+[Connection Hub architecture](../../../../../docs/connection-hub/connection-hub-architecture.md).
 
 ## Browser surfaces
 
@@ -166,7 +166,7 @@ scope, or provider credential.
 
 The complete signing input, response schema, registration shape, and trust
 boundary are in
-[Direct Protected-Service Admission](../../../docs/connection-hub/connection-hub-architecture.md#direct-protected-service-admission).
+[Direct Protected-Service Admission](../../../../../docs/connection-hub/connection-hub-architecture.md#direct-protected-service-admission).
 
 ### Public Telegram proof route
 
@@ -681,7 +681,7 @@ user-scoped app state created through these flows.
 
 The hub requires external operator/user setup before a connection can work.
 **Full step-by-step setup (Google Cloud Console, Slack app, iCloud) is in
-[the integration guides](../../../docs/connection-hub/frontend/application/integrations/README.md)
+[the integration guides](../../../../../docs/connection-hub/frontend/application/integrations/README.md)
 (one article per provider).**
 A summary follows:
 
@@ -725,5 +725,5 @@ resolution for code acting on behalf of the current user.
   widget.
 
 > Full step-by-step provider setup is in
-> [the integration guides](../../../docs/connection-hub/frontend/application/integrations/README.md)
+> [the integration guides](../../../../../docs/connection-hub/frontend/application/integrations/README.md)
 > (one article per provider).

@@ -538,7 +538,7 @@ Rules:
   dynamic local port for its callback — but scheme, host, and path must match
   an allowlisted entry exactly. All non-loopback redirects must match exactly,
   including the port. Implementation: `redirect_uri_allowed()` in
-  `packages/connection-hub/src/connection_hub/delegated_credentials/oauth/clients.py`.
+  `products/connection-hub/packages/connection-hub/src/connection_hub/delegated_credentials/oauth/clients.py`.
 - CIMD callback matching honours what the document states. A published entry
   that **names a port** must be matched exactly, including that port — the
   document asserted a concrete callback, so it is held to it. A **portless**

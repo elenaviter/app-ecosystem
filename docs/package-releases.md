@@ -1,14 +1,15 @@
 # Publishing Python packages
 
-Each distribution under `packages/` versions and publishes independently. A
-release is made from a committed source snapshot; a working-tree version bump
-is not a release record.
+Each distribution versions and publishes independently. Product-owned
+distributions live below their product root; cross-product foundations live
+under `packages/`. A release is made from a committed source snapshot; a
+working-tree version bump is not a release record.
 
 ## Packages
 
 | Distribution | Import | Package directory |
 | --- | --- | --- |
-| `connection-hub` | `connection_hub` | `packages/connection-hub` |
+| `connection-hub` | `connection_hub` | `products/connection-hub/packages/connection-hub` |
 | `app-foundation` | `app_foundation` | `packages/app-foundation` |
 | `service-foundation` | `service_foundation` | `packages/service-foundation` |
 | `harness-foundation` | `harness_foundation` | `packages/harness-foundation` |

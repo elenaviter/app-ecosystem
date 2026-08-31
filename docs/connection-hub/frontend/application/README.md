@@ -293,6 +293,6 @@ The standalone browser claim page performs its own KDCube platform sign-in using
 implementation history is cataloged in the
 [public journal pointer](../../../../journal/README.md).
 
-See [the app interface](../../../../apps/connection-hub@1-0/interface/README.md) for the full contract and
+See [the app interface](../../../../products/connection-hub/apps/connection-hub@1-0/interface/README.md) for the full contract and
 prerequisites, [storage/README.md](storage/README.md) for storage boundaries,
 and the [public journal pointer](../../../../journal/README.md) for build decisions.

@@ -50,7 +50,7 @@ jobs:
           from packaging.version import InvalidVersion, Version
 
           packages = {
-              "connection-hub": ("packages/connection-hub", "connection_hub"),
+              "connection-hub": ("products/connection-hub/packages/connection-hub", "connection_hub"),
               "app-foundation": ("packages/app-foundation", "app_foundation"),
               "service-foundation": ("packages/service-foundation", "service_foundation"),
               "harness-foundation": ("packages/harness-foundation", "harness_foundation"),

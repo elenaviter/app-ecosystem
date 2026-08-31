@@ -72,7 +72,8 @@ service.
 The Connection Hub application is intentionally a KDCube host adapter. Its
 entrypoint imports KDCube lifecycle, HTTP, configuration, Redis, and Data Bus
 facilities, while delegated-authority policy and state machines come from
-Connection Hub. Host neutrality is therefore an invariant of `packages/connection-hub`, not
+Connection Hub. Host neutrality is therefore an invariant of
+`products/connection-hub/packages/connection-hub`, not
 of every application that presents Connection Hub through a particular runtime.
 
 ## Migration invariants

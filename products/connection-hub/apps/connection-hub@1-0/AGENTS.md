@@ -6,9 +6,9 @@ status: "active"
 tags: ["agents", "builder", "onboarding", "connection-hub", "identity", "connections", "oauth", "mcp", "named-services", "delegated-credentials", "react", "redux"]
 see_also:
   - "./README.md"
-  - "../../docs/connection-hub/connection-hub-architecture.md"
-  - "../../docs/connection-hub/frontend/application/README.md"
-  - "../../docs/connection-hub/frontend/application/storage/README.md"
+  - "../../../../docs/connection-hub/connection-hub-architecture.md"
+  - "../../../../docs/connection-hub/frontend/application/README.md"
+  - "../../../../docs/connection-hub/frontend/application/storage/README.md"
   - "./interface/README.md"
   - "./interface/connection-hub.openapi.yaml"
   - "./config/bundles.template.yaml"
@@ -73,10 +73,10 @@ demos, but that fixture is not the long-term security authority.
 Start with these app-local files:
 
 - [README.md](README.md)
-- [Connection Hub architecture](../../docs/connection-hub/connection-hub-architecture.md)
-- [frontend design](../../docs/connection-hub/frontend/application/README.md)
-- [storage map](../../docs/connection-hub/frontend/application/storage/README.md)
-- [public journal index](../../journal/README.md)
+- [Connection Hub architecture](../../../../docs/connection-hub/connection-hub-architecture.md)
+- [frontend design](../../../../docs/connection-hub/frontend/application/README.md)
+- [storage map](../../../../docs/connection-hub/frontend/application/storage/README.md)
+- [public journal index](../../../../journal/README.md)
 - [interface/README.md](interface/README.md)
 - [interface/connection-hub.openapi.yaml](interface/connection-hub.openapi.yaml)
 - [config/bundles.template.yaml](config/bundles.template.yaml)

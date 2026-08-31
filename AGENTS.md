@@ -4,18 +4,22 @@ Operating instructions for coding agents (and a fair summary for humans).
 
 ## What this repository is
 
-Components an application ecosystem needs, as installable packages, plus
-public application bundles that are their live implementations. First
-product: Connection Hub. Its current KDCube application lives in
-`apps/connection-hub@1-0`, its Python library and client SDK live in
-`packages/connection-hub`, and its standalone service host comes later.
+Components an application ecosystem needs, organized by product, plus shared
+foundation packages. First product: Connection Hub. Its current KDCube
+application and Python library live together under
+`products/connection-hub`. Its standalone service host comes later.
 
 ## Layout contract
 
-- `packages/<dist-name>/` — one shipped package per folder: its own
-  `pyproject.toml`, `README.md` (the PyPI page), `src/<import_name>/`.
-- `apps/<app-name>/` — public application bundles, registered in a KDCube
-  deployment by git path.
+- `products/<product>/` — one product ownership boundary. Product-specific
+  applications, packages, release metadata, and operating instructions live
+  below this directory.
+- `products/<product>/packages/<dist-name>/` — a product-owned distribution:
+  its own `pyproject.toml`, README (the PyPI page), and
+  `src/<import_name>/`.
+- `products/<product>/apps/<app-name>/` — a product-owned public application
+  bundle, registered in a KDCube deployment by git path.
+- `packages/<dist-name>/` — shared cross-product foundations only.
 - `examples/<product-or-component>/` — runnable integrations grouped by the
   product or component they demonstrate, with a group README that maps each
   example to its applications, packages, services, and docs.
@@ -39,6 +43,9 @@ product: Connection Hub. Its current KDCube application lives in
   integration tests. During migration, KDCube compatibility modules re-export
   the package; they never fork its implementation.
 - Say what things are, plainly. Connection Hub is one product across its
-  package, application, protocol, examples, and service hosting.
+  package, application, protocol, examples, and service hosting. Its code is
+  scoped under `products/connection-hub`; its public documentation remains
+  under `docs/connection-hub`, and runnable examples remain under
+  `examples/connection-hub`.
 - Commit messages are audited before push: plain, factual, no internal
   codenames.

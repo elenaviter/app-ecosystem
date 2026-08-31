@@ -28,7 +28,7 @@ the semantic model, storage authorities, surface inventory, and direct
 protected-service admission boundary.
 
 The application source lives at
-[`apps/connection-hub@1-0`](../../../apps/connection-hub@1-0). A KDCube
+[`products/connection-hub/apps/connection-hub@1-0`](../../../products/connection-hub/apps/connection-hub@1-0). A KDCube
 deployment loads it by repository, ref, and subdirectory, while the app uses
 KDCube host adapters over the Connection Hub authority package.
 

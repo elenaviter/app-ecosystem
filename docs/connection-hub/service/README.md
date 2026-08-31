@@ -7,13 +7,13 @@ keywords: [KDCube host, standalone service, application, admission endpoint]
 see_also:
   - ../connection-hub-architecture.md
   - ../recipes/direct-protected-service.md
-  - ../../../apps/connection-hub@1-0/README.md
+  - ../../../products/connection-hub/apps/connection-hub@1-0/README.md
 ---
 
 # Connection Hub service hosting
 
 The current supported service is the
-[`connection-hub@1-0`](../../../apps/connection-hub@1-0/README.md) application
+[`connection-hub@1-0`](../../../products/connection-hub/apps/connection-hub@1-0/README.md) application
 running on KDCube. The app is canonical: KDCube supplies authenticated user
 sessions, descriptor properties and secret resolution, durable storage, Redis
 protocol state, locks, HTTP routes, lifecycle, and widget serving; Connection Hub

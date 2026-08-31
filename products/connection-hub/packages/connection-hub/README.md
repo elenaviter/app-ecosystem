@@ -43,7 +43,7 @@ The package is the portable core: contracts, state machines, admission
 evaluation, OAuth protocol builders, the client SDK. A host supplies HTTP
 routes, sessions, storage, and secret resolution. [KDCube](https://github.com/kdcube/kdcube)
 is the first host (the complete Connection Hub application ships in this
-repository as [`connection-hub@1-0`](https://github.com/elenaviter/app-ecosystem/blob/main/apps/connection-hub@1-0/README.md));
+repository as [`connection-hub@1-0`](https://github.com/elenaviter/app-ecosystem/blob/main/products/connection-hub/apps/connection-hub@1-0/README.md));
 a standalone service host is planned.
 
 ## Install
@@ -52,7 +52,9 @@ a standalone service host is planned.
 python -m pip install connection-hub
 ```
 
-`0.0.5` is an alpha release.
+`0.0.6` is an alpha release. It keeps the package's authority and client
+contracts unchanged while placing the package and hosted application under
+one Connection Hub product root and correcting their public source links.
 
 ## Flow 1: a guarded service registers itself and admits calls
 
@@ -178,7 +180,7 @@ bearer = await client.agent_grant_token(
 When a call is denied because a consent is missing, the denial carries
 everything needed to recover: which permission, which provider, which
 account, and where the user grants it. The
-[`mcp_consent`](https://github.com/elenaviter/app-ecosystem/blob/main/packages/connection-hub/src/connection_hub/mcp_consent.py)
+[`mcp_consent`](https://github.com/elenaviter/app-ecosystem/blob/main/products/connection-hub/packages/connection-hub/src/connection_hub/mcp_consent.py)
 module turns such denials into a structured ask the agent can surface and
 retry after the grant lands.
 

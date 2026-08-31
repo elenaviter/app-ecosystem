@@ -1,0 +1,15 @@
+product:
+  id: connection-hub
+  documentation: docs/connection-hub
+
+components:
+  kdcube_app:
+    id: connection-hub@1-0
+    path: products/connection-hub/apps/connection-hub@1-0
+    release_record: products/connection-hub/apps/connection-hub@1-0/release.yaml
+  python_package:
+    distribution: connection-hub
+    import_name: connection_hub
+    path: products/connection-hub/packages/connection-hub
+    version_source: products/connection-hub/packages/connection-hub/pyproject.toml
+    workflow: .github/workflows/publish-python-package.yml

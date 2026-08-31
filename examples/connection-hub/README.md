@@ -5,15 +5,15 @@ and govern what applications, agents, and automations may do on their behalf.
 Its current runnable form is the KDCube application with the technical app id
 `connection-hub@1-0`.
 
-The [`connection-hub`](../../packages/connection-hub/README.md) Python package
+The [`connection-hub`](../../products/connection-hub/packages/connection-hub/README.md) Python package
 defines the product's card, catalog, admission, signing, and structured-denial
 contracts. The KDCube application supplies the user interface and hosted
 authority operations.
 
 ```text
 Connection Hub
-├── KDCube application: apps/connection-hub@1-0
-├── Python library and client SDK: packages/connection-hub
+├── KDCube application: products/connection-hub/apps/connection-hub@1-0
+├── Python library and client SDK: products/connection-hub/packages/connection-hub
 └── standalone service host: planned as services/connection-hub
 ```
 

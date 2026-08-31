@@ -19,9 +19,9 @@ links:
   secrets: config/bundles.secrets.template.yaml
   interface: interface/README.md
   openapi: interface/connection-hub.openapi.yaml
-  design: ../../docs/connection-hub/frontend/application/README.md
-  architecture: ../../docs/connection-hub/connection-hub-architecture.md
-  journal: ../../journal/README.md
+  design: ../../../../docs/connection-hub/frontend/application/README.md
+  architecture: ../../../../docs/connection-hub/connection-hub-architecture.md
+  journal: ../../../../journal/README.md
 ---
 
 # Connection Hub App
@@ -74,7 +74,7 @@ The app wires these building blocks:
 
 The canonical distinction between edges, connected accounts, cards, catalogs,
 service registrations, and their stores is in the
-[Connection Hub architecture](../../docs/connection-hub/connection-hub-architecture.md).
+[Connection Hub architecture](../../../../docs/connection-hub/connection-hub-architecture.md).
 
 ## Identity model
 
@@ -255,7 +255,7 @@ kdcube_ai_app.apps.chat.sdk.integrations.connection_hub
   delegated bearer. The route returns a service-scoped subject and current
   operation authority, never an internal user id or provider credential.
 - [Protect an external backend with Connection
-  Hub](../../docs/connection-hub/recipes/direct-protected-service.md) provides the
+  Hub](../../../../docs/connection-hub/recipes/direct-protected-service.md) provides the
   deployment contract and links a runnable protected-service implementation.
 - The static widget is built from `ui/widgets/connections`; the runtime must be
   refreshed so the new app loads and the widget is built.
@@ -265,8 +265,8 @@ See [AGENTS.md](AGENTS.md) for builder-agent onboarding,
 [config/bundles.template.yaml](config/bundles.template.yaml) for non-secret
 deploy props, [config/bundles.secrets.template.yaml](config/bundles.secrets.template.yaml)
 for deploy secret keys,
-[the frontend documentation](../../docs/connection-hub/frontend/application/README.md)
+[the frontend documentation](../../../../docs/connection-hub/frontend/application/README.md)
 for the UI design, the
-[Connection Hub architecture](../../docs/connection-hub/connection-hub-architecture.md)
-for semantic and storage ownership, and [the public journal index](../../journal/README.md)
+[Connection Hub architecture](../../../../docs/connection-hub/connection-hub-architecture.md)
+for semantic and storage ownership, and [the public journal index](../../../../journal/README.md)
 for the centralized maintenance record.

@@ -11,9 +11,9 @@ see_also:
   - ./icloud.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
-  - ../../../../../apps/connection-hub@1-0/interface/README.md
-  - ../../../../../apps/connection-hub@1-0/config/bundles.template.yaml
-  - ../../../../../apps/connection-hub@1-0/config/bundles.secrets.template.yaml
+  - ../../../../../products/connection-hub/apps/connection-hub@1-0/interface/README.md
+  - ../../../../../products/connection-hub/apps/connection-hub@1-0/config/bundles.template.yaml
+  - ../../../../../products/connection-hub/apps/connection-hub@1-0/config/bundles.secrets.template.yaml
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/integrations/connections-README.md
 ---
 

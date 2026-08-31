@@ -1082,6 +1082,6 @@ grant operation, not a pointer move to a historical revision.
 | Generic named-service admission contract | `...solutions.named_services_providers.admission` |
 | Connection Hub admission resolvers and managed snapshot | `...solutions.connections.named_service_admission` |
 | Relayed selector validation and target resolution | `...solutions.named_services_providers.relay` |
-| Connection Hub operations and descriptor binding | [`apps/connection-hub@1-0/entrypoint.py`](../../../apps/connection-hub@1-0/entrypoint.py) |
+| Connection Hub operations and descriptor binding | [`products/connection-hub/apps/connection-hub@1-0/entrypoint.py`](../../../products/connection-hub/apps/connection-hub@1-0/entrypoint.py) |
 | List/create/edit UI and account-requirement fusion | `connection-hub@1-0/ui/widgets/connections/src/features/delegatedAccess` |
 | Connected-account credential resolution | delegated-to-KDCube broker and provider adapters |
