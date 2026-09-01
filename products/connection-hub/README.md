@@ -11,7 +11,8 @@ distribution.
 - [`packages/connection-hub`](packages/connection-hub/README.md) is the
   `connection-hub` distribution imported as `connection_hub`. It owns the
   portable authority, card, catalog, admission, and client contracts.
-- [`release.yaml`](release.yaml) maps the independently released components.
+- [`release.yaml`](release.yaml) records the current product release and maps
+  its independently published components.
 
 The product documentation remains in
 [`docs/connection-hub`](../../docs/connection-hub/README.md). Runnable

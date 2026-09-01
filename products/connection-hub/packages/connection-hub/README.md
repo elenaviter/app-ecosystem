@@ -52,9 +52,10 @@ a standalone service host is planned.
 python -m pip install connection-hub
 ```
 
-`0.0.6` is an alpha release. It keeps the package's authority and client
-contracts unchanged while placing the package and hosted application under
-one Connection Hub product root and correcting their public source links.
+`2026.09.01.1120` adopts the repository's calendar release version and records
+the released Connection Hub snapshot in the product `release.yaml`. It carries
+the authority and client contracts previously published as `0.0.6`, with the
+package and hosted application grouped under one Connection Hub product root.
 
 ## Flow 1: a guarded service registers itself and admits calls
 
@@ -203,6 +204,6 @@ The boundary is documented in
 - [Delegated access cards](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-cards.md)
 - [OAuth delegated credential protocol](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/oauth-delegated-credential-protocol.md)
 - [Direct protected-service recipe](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md)
-- [Package release procedure](https://github.com/elenaviter/app-ecosystem/blob/main/docs/package-releases.md)
+- [Release procedure](https://github.com/elenaviter/app-ecosystem/blob/main/docs/releases.md)
 
 License: MIT. Source: https://github.com/elenaviter/app-ecosystem

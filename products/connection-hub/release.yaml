@@ -1,5 +1,16 @@
 product:
   id: connection-hub
+  ref: "2026.09.01.1120"
+  description: |
+    Connection Hub adopts the shared calendar release version used across the
+    KDCube system. This release carries the portable authority and client
+    contracts previously published as 0.0.6 from their product-scoped source
+    location.
+
+    The Connection Hub package and KDCube application are grouped under one
+    product boundary. Public package links resolve to that layout, and the
+    product release record now binds the source snapshot, package version, and
+    repository tag used for publication.
   documentation: docs/connection-hub
 
 components:
@@ -11,5 +22,9 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
+    version: "2026.09.01.1120"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
+
+config:
+  version: "2026.09.01.1120"

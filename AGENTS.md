@@ -31,6 +31,8 @@ application and Python library live together under
 - `journal/README.md` — the pointer index into the maintainers' journal
   store. Add a row in the same change as any significant move; titles and
   dates only, the store is not public.
+- `docs/releases.md` - the release contract for every product and shared
+  foundation in this repository.
 
 ## Rules
 
@@ -49,3 +51,7 @@ application and Python library live together under
   `examples/connection-hub`.
 - Commit messages are audited before push: plain, factual, no internal
   codenames.
+- Releases use the authored `YYYY.MM.DD.HHMM` calendar version. A release is a
+  committed and pushed snapshot whose release record, package metadata, and
+  import version agree. Tag that snapshot with the exact version, push the
+  tag, then dispatch publication from the tag. Follow `docs/releases.md`.

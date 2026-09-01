@@ -40,13 +40,14 @@ jobs:
           PACKAGE_NAME: ${{ inputs.package }}
           EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: |
-          python -m pip install --upgrade pip packaging
+          python -m pip install --upgrade pip packaging pyyaml
           python - "$GITHUB_OUTPUT" <<'PY'
           import os
           import sys
           import tomllib
           from pathlib import Path
 
+          import yaml
           from packaging.version import InvalidVersion, Version
 
           packages = {
@@ -62,12 +63,46 @@ jobs:
           except InvalidVersion as exc:
               raise SystemExit(f"expected_version is not PEP 440 compatible: {expected}") from exc
           path, import_name = packages[name]
+          ref_type = os.environ.get("GITHUB_REF_TYPE", "")
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
+          if ref_type != "tag" or ref_name != expected:
+              raise SystemExit(
+                  "package publication must run from the exact release tag: "
+                  f"expected tag {expected}, got {ref_type or '<none>'} "
+                  f"{ref_name or '<none>'}"
+              )
           metadata = tomllib.loads((Path(path) / "pyproject.toml").read_text())
           actual = str(metadata["project"]["version"])
           if actual != expected:
               raise SystemExit(
                   f"committed {name} version is {actual}, not requested {expected}"
               )
+          if name == "connection-hub":
+              release = yaml.safe_load(
+                  Path("products/connection-hub/release.yaml").read_text()
+              )
+              release_values = {
+                  "product.ref": release["product"]["ref"],
+                  "components.python_package.version": release["components"][
+                      "python_package"
+                  ]["version"],
+                  "config.version": release["config"]["version"],
+              }
+              mismatches = {
+                  field: value
+                  for field, value in release_values.items()
+                  if str(value) != expected
+              }
+              if mismatches:
+                  raise SystemExit(
+                      "Connection Hub release record does not match "
+                      f"{expected}: {mismatches}"
+                  )
+              description = str(release["product"].get("description", "")).strip()
+              if not description:
+                  raise SystemExit(
+                      "Connection Hub release record has no product.description"
+                  )
           with open(sys.argv[1], "a", encoding="utf-8") as output:
               output.write(f"path={path}\n")
               output.write(f"import_name={import_name}\n")

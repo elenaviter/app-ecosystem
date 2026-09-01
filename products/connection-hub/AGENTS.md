@@ -29,6 +29,10 @@ the contract crosses those boundaries.
 
 ## Releases
 
-`release.yaml` maps product components. It is not a version source. The Python
-distribution version remains in its `pyproject.toml`; the KDCube app keeps its
-own bundle `release.yaml`.
+The product `release.yaml` records the current Connection Hub release, its
+changes, and its component map. Its `product.ref`, package component version,
+and `config.version` match the Python distribution version in
+`packages/connection-hub/pyproject.toml` and `connection_hub.__version__`.
+The KDCube app keeps its own bundle `release.yaml`. Follow
+`../../docs/releases.md` for the commit, tag, publication, and verification
+order.
