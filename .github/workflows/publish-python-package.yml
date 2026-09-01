@@ -12,6 +12,7 @@ on:
           - app-foundation
           - service-foundation
           - harness-foundation
+          - capabilities-foundation
       expected_version:
         description: Exact committed PEP 440 version
         required: true
@@ -55,6 +56,7 @@ jobs:
               "app-foundation": ("packages/app-foundation", "app_foundation"),
               "service-foundation": ("packages/service-foundation", "service_foundation"),
               "harness-foundation": ("packages/harness-foundation", "harness_foundation"),
+              "capabilities-foundation": ("packages/capabilities-foundation", "capabilities_foundation"),
           }
           name = os.environ["PACKAGE_NAME"]
           expected = os.environ["EXPECTED_VERSION"].strip()

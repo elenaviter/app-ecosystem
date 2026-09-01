@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "capabilities-foundation"
+version = "2026.09.01.1230"
+description = "The capabilities agents and apps use, as plain Python: web search, document rendering, isolated code execution, browser automation. Classical call surfaces; the harness turns them into agent tools."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Elena Viter" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://github.com/elenaviter/app-ecosystem"
+Repository = "https://github.com/elenaviter/app-ecosystem"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+capabilities_foundation = ["py.typed"]

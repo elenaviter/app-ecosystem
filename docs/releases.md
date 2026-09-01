@@ -15,6 +15,7 @@ release.
 | `app-foundation` | `packages/app-foundation` | `pyproject.toml` and `app_foundation.__version__` | `packages/app-foundation/release.yaml` when released | `publish-python-package.yml` |
 | `service-foundation` | `packages/service-foundation` | `pyproject.toml` and `service_foundation.__version__` | `packages/service-foundation/release.yaml` when released | `publish-python-package.yml` |
 | `harness-foundation` | `packages/harness-foundation` | `pyproject.toml` and `harness_foundation.__version__` | `packages/harness-foundation/release.yaml` when released | `publish-python-package.yml` |
+| `capabilities-foundation` | `packages/capabilities-foundation` | `pyproject.toml` and `capabilities_foundation.__version__` | `packages/capabilities-foundation/release.yaml` | `publish-python-package.yml` |
 
 ## Version and tag contract
 

@@ -1,0 +1,18 @@
+package:
+  id: capabilities-foundation
+  ref: "2026.09.01.1230"
+  description: |
+    First release: the installable planning marker that reserves the
+    distribution and import names and states the boundary. Capabilities
+    (web search, document rendering, isolated code execution, browser
+    automation) are plain-Python implementations standing on
+    app-foundation contracts; the harness turns them into agent tools;
+    connecting them to an application is the host's act one layer up.
+    The running implementations live in KDCube; extraction proceeds
+    capability by capability, document rendering first.
+
+components:
+  python_package:
+    id: capabilities-foundation
+    path: packages/capabilities-foundation
+    version: "2026.09.01.1230"

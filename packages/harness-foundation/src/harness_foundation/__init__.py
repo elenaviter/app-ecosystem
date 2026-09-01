@@ -4,8 +4,11 @@ Ordered per-conversation event delivery, mid-run steering and stop,
 durable records and workspaces, and one contract for native agents and
 agents that run their own loop (such as LangGraph or Claude Code): the
 existing agent comes in as is and the harness puts events, workspace and
-records around it. No authority models (those are `connection_hub`), no
-application behavior; it stands on `app-foundation`.
+records around it. The harness is also how a capability becomes an agent
+tool: binding, tool identity, routing, recorded results — the capability
+implementations themselves are `capabilities-foundation`. No authority
+models (those are `connection_hub`), no application behavior; it stands
+on `app-foundation`.
 
 Version 0.0.1 claims the name; the running implementation lives inside
 KDCube today. Status: https://github.com/elenaviter/app-ecosystem
