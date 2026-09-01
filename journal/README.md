@@ -26,6 +26,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-08-30 | Connection Hub single-name package migration and PyPI handoff | The current package, import, docs, examples, KDCube adapter, and release automation adopted the Connection Hub name. Historical Prokura releases and compatibility literals remain historical evidence; publishing `connection-hub 0.0.3` is the remaining release step. |
 | 2026-08-31 | Operation-only live consent and governed MCP acceptance | Exact named-service demands with no missing account claims now publish grant events; resource-scoped matching remains fail-closed, and one public acceptance procedure covers hosted agents, accounts, managed MCP, named services, Claude Code, revocation, and durability. |
 | 2026-08-31 | Connection Hub product root refactor | The application and Python distribution now share `products/connection-hub`; docs and examples retain their approved roots, release automation follows the package, and all KDCube source locators were coordinated. |
+| 2026-09-01 | Connection Hub calendar-version release | The corrected `2026.09.01.1120` release, product-record and exact-tag contract, PyPI evidence, canonical-version behavior, and KDCube compatibility-floor update. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
