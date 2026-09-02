@@ -200,8 +200,50 @@ async def test_oauth_start_is_owner_scoped_and_returns_only_authorization_coordi
             "return_hint": "https://hub.example.test/settings",
             "connector_id": "",
             "expected_revision": 0,
+            "oauth_client_mode": "",
+            "oauth_client": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_oauth_start_forwards_provisioned_client_without_returning_secret(
+    entrypoint,
+):
+    response = await entrypoint.module.ConnectionHubEntrypoint.remote_mcp_connector_start_oauth(
+        entrypoint.instance,
+        data={
+            "label": "Provider console records",
+            "endpoint": "https://mcp.example.test/mcp",
+            "oauth_client_mode": "provisioned",
+            "oauth_client": {
+                "client_id": "provider-client",
+                "client_secret": "provider-secret",
+                "token_endpoint_auth_method": "client_secret_basic",
+            },
+        },
+        request=SimpleNamespace(),
+    )
+
+    assert response["ok"] is True
+    assert "provider-secret" not in repr(response)
+    assert entrypoint.oauth_service.calls[-1] == {
+        "method": "start",
+        "owner_subject": "user-1",
+        "label": "Provider console records",
+        "endpoint": "https://mcp.example.test/mcp",
+        "callback_url": "https://hub.example.test/oauth/callback",
+        "client_metadata_url": "https://hub.example.test/oauth/client-metadata",
+        "return_hint": "",
+        "connector_id": "",
+        "expected_revision": 0,
+        "oauth_client_mode": "provisioned",
+        "oauth_client": {
+            "client_id": "provider-client",
+            "client_secret": "provider-secret",
+            "token_endpoint_auth_method": "client_secret_basic",
+        },
+    }
 
 
 @pytest.mark.asyncio

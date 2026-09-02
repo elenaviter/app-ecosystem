@@ -337,6 +337,7 @@ export interface RemoteMcpOAuthStartResult {
   expires_at?: number;
   endpoint?: string;
   authorization_server?: string;
+  oauth_client_source?: 'client_metadata_document' | 'dynamic_registration' | 'provisioned' | string;
   error?: string;
   message?: string;
 }

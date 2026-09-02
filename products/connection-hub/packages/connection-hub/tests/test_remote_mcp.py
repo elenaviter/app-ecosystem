@@ -17,12 +17,14 @@ from connection_hub.remote_mcp import (
     DESCRIPTOR_ACCEPTED,
     DESCRIPTOR_DRIFTED,
     EXTERNAL_MCP_GRANT,
+    OAUTH_CLIENT_SOURCE_PROVISIONED,
     BundleStorageRemoteMCPConnectorStore,
     BundleStorageRemoteMCPOAuthStateStore,
     RemoteMCPConnectorConflict,
     RemoteMCPConnectorService,
     RemoteMCPDiscovery,
     RemoteMCPOAuthCredential,
+    RemoteMCPProvisionedOAuthClient,
     RemoteMCPOAuthStateError,
     RemoteMCPEndpointDenied,
     RemoteMCPEndpointPolicy,
@@ -160,6 +162,7 @@ def _oauth_credential(*, expires_at: int = 0) -> RemoteMCPOAuthCredential:
         client_id="registered-client",
         client_secret="registered-secret",
         token_endpoint_auth_method="client_secret_post",
+        client_source=OAUTH_CLIENT_SOURCE_PROVISIONED,
         issued_at=1_788_200_000,
     )
 
@@ -172,6 +175,54 @@ def test_oauth_credential_rejects_malformed_times_with_stable_error():
         RemoteMCPOAuthCredential.from_mapping(payload)
 
     assert failure.value.reason == "oauth_credential_time_invalid"
+
+
+def test_provisioned_oauth_client_validates_secret_and_stays_out_of_repr():
+    client = RemoteMCPProvisionedOAuthClient.from_mapping(
+        {
+            "client_id": "provider-console-client",
+            "client_secret": "provider-console-secret",
+            "token_endpoint_auth_method": "client_secret_basic",
+        }
+    )
+
+    assert client.to_client_info() == {
+        "client_id": "provider-console-client",
+        "client_secret": "provider-console-secret",
+        "token_endpoint_auth_method": "client_secret_basic",
+    }
+    assert "provider-console-secret" not in repr(client)
+
+    with pytest.raises(RemoteMCPRecordError) as missing:
+        RemoteMCPProvisionedOAuthClient.from_mapping(
+            {
+                "client_id": "provider-console-client",
+                "token_endpoint_auth_method": "client_secret_post",
+            }
+        )
+    assert missing.value.reason == "oauth_client_secret_missing"
+
+    with pytest.raises(RemoteMCPRecordError) as unexpected:
+        RemoteMCPProvisionedOAuthClient.from_mapping(
+            {
+                "client_id": "public-client",
+                "client_secret": "must-not-be-sent",
+                "token_endpoint_auth_method": "none",
+            }
+        )
+    assert unexpected.value.reason == "oauth_client_secret_unexpected"
+
+
+def test_oauth_credential_preserves_client_source_and_reads_older_bundle():
+    credential = _oauth_credential()
+
+    assert RemoteMCPOAuthCredential.from_json(
+        credential.to_json()
+    ).client_source == OAUTH_CLIENT_SOURCE_PROVISIONED
+
+    older = credential.to_dict()
+    older.pop("client_source")
+    assert RemoteMCPOAuthCredential.from_mapping(older).client_source == ""
 
 
 def _view(
@@ -361,6 +412,14 @@ async def test_oauth_connector_keeps_token_bundle_only_in_secret_store(tmp_path)
     )
     assert "oauth-access-token" not in durable_text
     assert "registered-secret" not in durable_text
+
+    resolved = await service.resolve_credential(
+        owner_subject="user-1",
+        connector_id=connector.connector_id,
+    )
+    resolved_oauth = RemoteMCPOAuthCredential.from_json(resolved.value)
+    assert resolved_oauth.client_source == OAUTH_CLIENT_SOURCE_PROVISIONED
+    assert "registered-secret" not in repr(resolved)
 
 
 @pytest.mark.asyncio

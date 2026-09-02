@@ -1,7 +1,7 @@
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
-import { operationUrl } from '../../api/client';
+import { operationUrl, publicMcpUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
 import {
@@ -2848,6 +2848,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // The minted token is a one-time secret and must be visible REGARDLESS of the
   // create form's open/closed state — folding the form on submit must never hide
   // it. So it renders at the top level (below), not inside `createPane`.
+  const issuedResources = issuedAccess
+    ? new Set([
+        ...Object.keys(issuedAccess.resource_grants || {}),
+        ...Object.keys(issuedAccess.resource_operations || {}),
+      ])
+    : new Set<string>();
+  const issuedRemoteMcpEndpoint = Array.from(issuedResources).some(
+    (resource) => resource.startsWith('urn:connection-hub:remote-mcp:'),
+  )
+    ? publicMcpUrl('remote_mcp_proxy')
+    : '';
   const issuedTokenPanel = issuedToken ? (
     <section className="card">
       <div className="issued-token">
@@ -2863,6 +2874,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         {issuedAccess ? (
           <div className="account-sub">
             {issuedAccess.label || issuedAccess.access_id} · expires {formatDate(issuedAccess.expires_at)}
+          </div>
+        ) : null}
+        {issuedRemoteMcpEndpoint ? (
+          <div className="card-fields issued-connection-fields">
+            <Field label="Streamable HTTP endpoint">
+              <DoorRef value={issuedRemoteMcpEndpoint} />
+            </Field>
+            <Field label="Header"><code>Authorization</code></Field>
           </div>
         ) : null}
         <textarea className="token-output" readOnly value={issuedHeader || `Bearer ${issuedToken}`} />

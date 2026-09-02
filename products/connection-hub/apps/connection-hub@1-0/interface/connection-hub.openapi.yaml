@@ -1197,6 +1197,26 @@ components:
                   type: integer
                   minimum: 0
                   description: Required current revision when connector_id is present.
+                oauth_client_mode:
+                  type: string
+                  enum: [automatic, provisioned]
+                  description: Automatic client registration or a client created in the provider console.
+                oauth_client:
+                  type: object
+                  additionalProperties: false
+                  required: [client_id, token_endpoint_auth_method]
+                  description: Provider-console client used only when oauth_client_mode is provisioned.
+                  properties:
+                    client_id:
+                      type: string
+                      maxLength: 4096
+                    client_secret:
+                      type: string
+                      writeOnly: true
+                      maxLength: 65536
+                    token_endpoint_auth_method:
+                      type: string
+                      enum: [none, client_secret_basic, client_secret_post]
     RemoteMCPConnectorEnabledEnvelope:
       allOf:
         - $ref: "#/components/schemas/Envelope"

@@ -206,15 +206,20 @@ non-secret descriptor metadata. A delegated caller receives a Connection Hub
 bearer for its own card; it never receives the upstream credential.
 
 For OAuth connectors, Connection Hub follows the MCP protected-resource and
-authorization-server discovery chain. It uses its public Client ID Metadata
-Document when the server advertises URL-based client ids, otherwise it uses
-dynamic client registration. The browser authorization uses PKCE and a random
+authorization-server discovery chain. It can use its public Client ID Metadata
+Document, dynamically register a client, or use a client the owner created in
+the provider console. The provider-console path supplies the exact callback URI,
+client id, optional client secret, and token-endpoint authentication method; it
+is the path for providers that support neither Client ID Metadata Documents nor
+dynamic registration. The browser authorization uses PKCE and a random
 single-use state whose transaction body remains in the owner's secret store.
 The callback exchanges the code server-side, then connector discovery begins
 with the resulting access token. Access-token refresh is serialized by a
 connector-scoped cross-worker lock and refresh-token rotation is written back
-to the same user secret. Reauthorization keeps the connector resource stable
-and revokes the replaced upstream grant when the provider exposes revocation.
+to the same user secret. Ordinary reauthorization reuses an existing
+provider-console client without asking the owner for its secret again. Explicit
+client replacement keeps the connector resource stable and revokes the
+replaced upstream grant when the provider exposes revocation.
 Connector deletion revokes the current access and refresh tokens before the
 local secret is removed. Provider revocation failure never preserves local
 connector authority.

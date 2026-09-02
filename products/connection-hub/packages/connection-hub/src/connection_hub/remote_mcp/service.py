@@ -223,6 +223,17 @@ class RemoteMCPConnectorService:
         records.sort(key=lambda item: (item.label.lower(), item.connector_id))
         return records
 
+    async def resolve_credential(
+        self, *, owner_subject: str, connector_id: str
+    ) -> RemoteMCPCredential:
+        """Resolve one owner connector's secret for a trusted host adapter."""
+
+        connector = await self._current(
+            owner_subject=owner_subject,
+            connector_id=connector_id,
+        )
+        return await self._credential(connector)
+
     async def create(
         self,
         *,

@@ -60,25 +60,50 @@ export interface StartRemoteMcpOAuthArgs {
   returnHint?: string;
   connectorId?: string;
   expectedRevision?: number;
+  oauthClientMode?: 'automatic' | 'provisioned';
+  oauthClient?: {
+    clientId: string;
+    clientSecret?: string;
+    tokenEndpointAuthMethod: 'none' | 'client_secret_basic' | 'client_secret_post';
+  };
+}
+
+/** Start upstream OAuth without retaining provider client credentials in Redux. */
+export async function requestRemoteMcpOAuth(
+  args: StartRemoteMcpOAuthArgs,
+): Promise<RemoteMcpOAuthStartResult> {
+  const payload: Record<string, unknown> = {
+    label: args.label,
+    endpoint: args.endpoint,
+    return_hint: args.returnHint || '',
+    connector_id: args.connectorId || '',
+    expected_revision: args.expectedRevision || 0,
+  };
+  if (args.oauthClientMode) payload.oauth_client_mode = args.oauthClientMode;
+  if (args.oauthClient) {
+    payload.oauth_client = {
+      client_id: args.oauthClient.clientId,
+      client_secret: args.oauthClient.clientSecret || '',
+      token_endpoint_auth_method: args.oauthClient.tokenEndpointAuthMethod,
+    };
+  }
+  const result = await postOp<RemoteMcpOAuthStartResult>(
+    'remote_mcp_connector_start_oauth',
+    payload,
+  );
+  if (result?.ok === false || !result?.authorize_url) {
+    throw new Error(resultError(result, 'Failed to start MCP authorization'));
+  }
+  return result;
 }
 
 export const startRemoteMcpOAuth = createAsyncThunk<
   RemoteMcpOAuthStartResult,
-  StartRemoteMcpOAuthArgs,
+  Omit<StartRemoteMcpOAuthArgs, 'oauthClient'>,
   { rejectValue: string }
 >('remoteMcp/startOAuth', async (args, { rejectWithValue }) => {
   try {
-    const result = await postOp<RemoteMcpOAuthStartResult>('remote_mcp_connector_start_oauth', {
-      label: args.label,
-      endpoint: args.endpoint,
-      return_hint: args.returnHint || '',
-      connector_id: args.connectorId || '',
-      expected_revision: args.expectedRevision || 0,
-    });
-    if (result?.ok === false || !result?.authorize_url) {
-      return rejectWithValue(resultError(result, 'Failed to start MCP authorization'));
-    }
-    return result;
+    return await requestRemoteMcpOAuth(args);
   } catch (error) {
     return rejectWithValue(message(error));
   }

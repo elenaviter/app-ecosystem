@@ -361,7 +361,12 @@ credential:
    uses the public `remote_mcp_oauth_client_metadata` URL as its client id and
    no registration request occurs. For another fixture, advertise dynamic
    registration; confirm one client is registered with only the Connection Hub
-   callback URI.
+   callback URI. For a third fixture, advertise neither mechanism. Register the
+   exact callback URI in that provider's console, then enter its client id,
+   client secret, and configured token-endpoint authentication method in
+   Connection Hub. Confirm no registration request occurs and the start
+   response exposes only `oauth_client_source: provisioned`, not the supplied
+   client material.
 3. Confirm the callback consumes the state once. Replaying it must fail, and
    the durable state pointer must contain only its digest, owner, user-secret
    reference, and expiry.
@@ -376,7 +381,9 @@ credential:
 6. Use **Reconnect** on the same connector. Confirm its resource stays stable,
    its connector revision advances, the existing delegated card still applies,
    and the provider receives revocation for the replaced refresh and access
-   tokens.
+   tokens. The provider-console fixture must reconnect without asking for its
+   client secret again. Then use **OAuth client** to replace it explicitly and
+   confirm the replacement still keeps the connector resource stable.
 7. Delete the connector. Confirm Connection Hub revokes the current refresh and
    access tokens, removes the local user secret, and keeps the connector absent
    even when the provider's optional revocation endpoint is unavailable.

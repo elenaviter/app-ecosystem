@@ -2513,6 +2513,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 return_hint=str(payload.get("return_hint") or ""),
                 connector_id=str(payload.get("connector_id") or ""),
                 expected_revision=_optional_remote_mcp_revision(payload),
+                oauth_client_mode=str(payload.get("oauth_client_mode") or ""),
+                oauth_client=payload.get("oauth_client"),
             )
             return {"ok": True, **started}
         except Exception as exc:

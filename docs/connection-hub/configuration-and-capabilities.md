@@ -103,7 +103,10 @@ public client metadata/callback base, state lifetime, and refresh leeway.
 `connections.remote_mcp.outbound` controls the endpoint network policy. These
 settings govern Connection Hub as an OAuth client of an owner-selected remote
 MCP and are independent from the delegated OAuth server configured under
-`connections.delegated_credentials.oauth`.
+`connections.delegated_credentials.oauth`. The owner can use automatic client
+registration through a Client ID Metadata Document or DCR, or enter a client
+created in the provider console. A provider-console client is owner connection
+state, so its id and secret never belong in the deployment descriptor.
 
 Full walkthroughs: [direct protected-service recipe](recipes/direct-protected-service.md)
 for the service lane, the OAuth protocol document for the client lane, and

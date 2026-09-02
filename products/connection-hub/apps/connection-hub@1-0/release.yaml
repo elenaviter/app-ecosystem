@@ -1,31 +1,34 @@
 bundle:
   repo: "https://github.com/elenaviter/app-ecosystem.git"
-  ref: "2026.09.02.0515"
+  ref: "2026.09.02.1410"
   description: |
-    Release 2026.09.02.0515 for connection-hub@1-0.
+    Release 2026.09.02.1410 for connection-hub@1-0.
 
     Highlights
 
-    - Adds browser authorization for owner-configured OAuth-protected external
-      MCP servers, including PKCE, Client ID Metadata Documents, dynamic client
-      registration, single-use state, refresh rotation, and revocation.
-    - Keeps upstream OAuth credentials in the owner's secret store. Connector,
-      card, browser, and proxy responses contain only non-secret metadata.
-    - Reconnects OAuth in place, preserving the connector resource while
-      revoking the replaced provider grant. Deletion revokes the current grant.
-    - Adds OAuth and Reconnect controls to the External MCP panel, with a
-      popup-safe authorization launch and visible fallback link.
-    - Preserves exact delegated tool filtering, Once and Always invocation
-      policy, descriptor drift review, and the connector-wide kill switch.
+    - Adds provider-console OAuth clients for MCP providers that support neither
+      Client ID Metadata Documents nor dynamic client registration.
+    - Shows the exact callback URI and accepts the provider client id, optional
+      secret, and configured token-endpoint authentication method.
+    - Keeps provider client secrets and OAuth tokens in owner-scoped server-side
+      secret storage and out of Redux, descriptors, cards, responses, and tool
+      results.
+    - Reuses a provisioned client on Reconnect and provides an explicit client
+      replacement path without changing the connector resource.
+    - Shows the exact governed Streamable HTTP endpoint with a newly issued
+      caller bearer and documents the complete KDCube-backed localhost path.
 
     Validation
 
-    - Connection Hub package suite: 178 passed.
-    - Connection Hub app suite: 52 passed.
-    - KDCube remote-MCP suite: 13 passed.
-    - KDCube bundle contract suite: 300 passed and 50 graph-only contracts
+    - Connection Hub package suite: 180 passed.
+    - Connection Hub app suite: 53 passed.
+    - KDCube remote-MCP suite: 17 passed.
+    - KDCube CLI descriptor suite: 139 passed.
+    - KDCube bundle contract suite: 301 passed and 50 graph-only contracts
       skipped.
-    - Connections widget: 19 tests passed and the production build completed.
-    - Live direct-credential proxy, direct service admission, dynamic client
-      registration OAuth, and Client ID Metadata OAuth acceptance all passed
-      against a refreshed local KDCube runtime.
+    - Connections widget: 20 tests passed and the production build completed.
+    - Six maintained descriptor forms passed structured semantic comparison.
+    - Provisioned-client, dynamic-registration, and Client ID Metadata OAuth
+      acceptance passed against a refreshed local KDCube runtime, including
+      refresh, governed invocation, reconnect, upstream revocation, deletion,
+      cleanup, and a tested-credential log scan.

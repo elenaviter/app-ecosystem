@@ -27,6 +27,16 @@ export function operationUrl(operation: string): string {
   return apiUrl('operations', operation);
 }
 
+/** Public app operation URL used as a provider callback or client endpoint. */
+export function publicOperationUrl(operation: string): string {
+  return apiUrl('public', operation);
+}
+
+/** Streamable HTTP endpoint for one MCP surface declared by this app. */
+export function publicMcpUrl(alias: string): string {
+  return apiUrl('public', `mcp/${encodeURIComponent(alias)}`);
+}
+
 function apiUrl(route: 'operations' | 'public', operation: string): string {
   const tenant = encodeURIComponent(settings.getTenant());
   const project = encodeURIComponent(settings.getProject());

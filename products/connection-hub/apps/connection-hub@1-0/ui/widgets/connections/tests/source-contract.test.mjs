@@ -118,6 +118,26 @@ test('an ungranted operation offers one atomic once-or-always grant', () => {
   assert.match(panel, />\s*Allow always\s*</)
 })
 
+test('provider-console OAuth stays transient and issued MCP access is client-ready', () => {
+  const remotePanel = source('src/features/remoteMcp/RemoteMcpPanel.tsx')
+  assert.match(remotePanel, /Client created in provider console/)
+  assert.match(remotePanel, /Redirect URI/)
+  assert.match(remotePanel, /requestRemoteMcpOAuth\(args\)/)
+  assert.match(remotePanel, /setOAuthClientSecret\(''\)/)
+  assert.match(remotePanel, /setReplacementOAuthSecret\(''\)/)
+
+  const remoteSlice = source('src/features/remoteMcp/remoteMcpSlice.ts')
+  assert.match(remoteSlice, /without retaining provider client credentials in Redux/)
+  assert.match(remoteSlice, /Omit<StartRemoteMcpOAuthArgs, 'oauthClient'>/)
+  assert.match(remoteSlice, /token_endpoint_auth_method/)
+
+  const delegatedPanel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.match(delegatedPanel, /publicMcpUrl\('remote_mcp_proxy'\)/)
+  assert.match(delegatedPanel, /Streamable HTTP endpoint/)
+  assert.match(delegatedPanel, /<Field label="Header"><code>Authorization<\/code><\/Field>/)
+  assert.match(delegatedPanel, /issuedHeader \|\| `Bearer \$\{issuedToken\}`/)
+})
+
 test('connections widget announces readiness only after installing its command listener', () => {
   const app = source('src/App.tsx')
   const listener = app.indexOf("window.addEventListener('message', onSurfaceCommand)")

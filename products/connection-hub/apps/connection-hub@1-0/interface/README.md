@@ -169,12 +169,15 @@ credential reference. Endpoint policy is descriptor-owned under
 private-network access for itself.
 
 OAuth mode follows MCP protected-resource and authorization-server discovery
-and PKCE. It uses the public Client ID Metadata Document when the authorization
-server advertises URL-based client ids, and otherwise uses dynamic client
-registration. Access, refresh, and registered-client credentials share the
-connector's server-side secret lifecycle. Expiring access tokens refresh under
-a connector-scoped cross-worker lock. Caller OAuth into `remote_mcp_proxy`
-remains an independent credential and card.
+and PKCE. It can use the public Client ID Metadata Document, dynamic client
+registration, or a client the owner registered in the provider console. The
+provider-console client id and optional secret enter only the authenticated
+start operation and are retained with the connector's server-side OAuth
+credential. Browser responses expose only the non-secret client-source marker.
+Expiring access tokens refresh under a connector-scoped cross-worker lock.
+Ordinary reconnect reuses a provider-console client; explicit replacement can
+select another provider-console client or automatic registration. Caller OAuth
+into `remote_mcp_proxy` remains an independent credential and card.
 
 A tools/call request may carry a stable id in MCP metadata at
 `connection_hub/invocation_id`. The proxy derives a digest from the upstream

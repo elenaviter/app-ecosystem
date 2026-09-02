@@ -1,20 +1,27 @@
 product:
   id: connection-hub
-  ref: "2026.09.02.0515"
+  ref: "2026.09.02.1410"
   description: |
-    Owners can connect an external OAuth-protected MCP without giving OAuth
-    tokens to a delegated caller. Connection Hub performs protected-resource
-    and authorization-server discovery, chooses a Client ID Metadata Document
-    or dynamic client registration, completes PKCE authorization, stores the
-    resulting credential in the owner's secret store, and refreshes it under a
-    connector-scoped lock.
+    External MCP OAuth now supports clients created in a provider console in
+    addition to Client ID Metadata Documents and dynamic client registration.
+    This covers providers that require a pre-registered client id and secret.
+    Connection Hub shows the exact callback URI, accepts the provider client
+    through the authenticated owner operation, and keeps it with the connector
+    credential in server-side user-secret storage.
 
-    Reauthorization preserves the connector resource and existing delegated
-    card authority while revoking the replaced upstream grant. Connector
-    deletion revokes current access and refresh tokens before removing the
-    local secret. The hosted app adds browser start, callback, public client
-    metadata, Reconnect, and exact-origin return handling. Direct bearer and
-    header connectors retain their established transport contract.
+    Reconnect reuses a provisioned client without asking for its secret again.
+    Explicit replacement can supply another provisioned client or return to
+    automatic registration while preserving the connector resource. Discovery,
+    PKCE, state, issuer checks, token refresh, upstream revocation, delegated
+    tool filtering, descriptor drift checks, and Once or Always invocation
+    policy retain their existing boundaries.
+
+    The hosted application displays the exact Streamable HTTP proxy endpoint
+    beside a newly issued caller bearer. The local quick start now carries a
+    user from an empty KDCube runtime through external MCP connection, bounded
+    caller creation, external client configuration, live narrowing, Once, and
+    revocation. Maintained descriptors expose the governed proxy with
+    deployment-specific callback and outbound-network policy.
   documentation: docs/connection-hub
 
 components:
@@ -26,9 +33,9 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.09.02.0515"
+    version: "2026.09.02.1410"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.09.02.0515"
+  version: "2026.09.02.1410"

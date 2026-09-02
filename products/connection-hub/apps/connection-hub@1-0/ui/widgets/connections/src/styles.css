@@ -780,6 +780,10 @@ h2 {
   font: 12px/1.45 var(--mono);
 }
 
+.issued-connection-fields {
+  margin-top: 10px;
+}
+
 /* Pill badges, architecture-inspector style: tinted bg + colored border. */
 .badge {
   font-size: 10px;
@@ -1071,6 +1075,11 @@ h2 {
 
 .remote-mcp-credential-form {
   max-width: 520px;
+}
+
+.remote-mcp-readonly {
+  font-family: var(--mono);
+  font-size: 12px;
 }
 
 @media (max-width: 680px) {

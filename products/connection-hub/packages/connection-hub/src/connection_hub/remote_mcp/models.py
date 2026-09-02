@@ -29,6 +29,21 @@ AUTH_OAUTH = "oauth"
 
 OAUTH_CREDENTIAL_SCHEMA = "connection_hub.remote_mcp_oauth_credential.v1"
 
+OAUTH_CLIENT_SOURCE_CIMD = "client_metadata_document"
+OAUTH_CLIENT_SOURCE_DCR = "dynamic_registration"
+OAUTH_CLIENT_SOURCE_PROVISIONED = "provisioned"
+
+_OAUTH_CLIENT_SOURCES = frozenset(
+    {
+        OAUTH_CLIENT_SOURCE_CIMD,
+        OAUTH_CLIENT_SOURCE_DCR,
+        OAUTH_CLIENT_SOURCE_PROVISIONED,
+    }
+)
+_OAUTH_TOKEN_AUTH_METHODS = frozenset(
+    {"none", "client_secret_post", "client_secret_basic"}
+)
+
 RESOURCE_PREFIX = "urn:connection-hub:remote-mcp:"
 
 _CONNECTOR_ID_PATTERN = re.compile(r"^mcp_[a-z0-9]{24}$")
@@ -152,6 +167,51 @@ class RemoteMCPCredential:
 
 
 @dataclass(frozen=True)
+class RemoteMCPProvisionedOAuthClient:
+    """Provider-console OAuth client supplied for one owner connection flow."""
+
+    client_id: str
+    client_secret: str = field(default="", repr=False)
+    token_endpoint_auth_method: str = "client_secret_basic"
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "RemoteMCPProvisionedOAuthClient":
+        if not isinstance(value, Mapping):
+            raise RemoteMCPRecordError("oauth_client_not_object")
+        client = cls(
+            client_id=_clean(value.get("client_id")),
+            client_secret=_clean(value.get("client_secret")),
+            token_endpoint_auth_method=(
+                _clean(value.get("token_endpoint_auth_method"))
+                or "client_secret_basic"
+            ),
+        )
+        client.verify()
+        return client
+
+    def verify(self) -> None:
+        if not self.client_id or len(self.client_id) > 4096:
+            raise RemoteMCPRecordError("oauth_client_id_invalid")
+        method = self.token_endpoint_auth_method
+        if method not in _OAUTH_TOKEN_AUTH_METHODS:
+            raise RemoteMCPRecordError("oauth_token_auth_method_unsupported")
+        if method == "none" and self.client_secret:
+            raise RemoteMCPRecordError("oauth_client_secret_unexpected")
+        if method != "none" and not self.client_secret:
+            raise RemoteMCPRecordError("oauth_client_secret_missing")
+        if len(self.client_secret) > 65536:
+            raise RemoteMCPRecordError("oauth_client_secret_too_large")
+
+    def to_client_info(self) -> dict[str, Any]:
+        self.verify()
+        return {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "token_endpoint_auth_method": self.token_endpoint_auth_method,
+        }
+
+
+@dataclass(frozen=True)
 class RemoteMCPOAuthCredential:
     """Server-side OAuth material for one upstream MCP connector."""
 
@@ -167,6 +227,7 @@ class RemoteMCPOAuthCredential:
     revocation_endpoint: str = ""
     client_secret: str = field(default="", repr=False)
     token_endpoint_auth_method: str = "none"
+    client_source: str = ""
     issued_at: int = 0
 
     @classmethod
@@ -195,6 +256,7 @@ class RemoteMCPOAuthCredential:
             token_endpoint_auth_method=(
                 _clean(value.get("token_endpoint_auth_method")) or "none"
             ),
+            client_source=_clean(value.get("client_source")),
             issued_at=issued_at,
         )
         credential.verify()
@@ -218,12 +280,14 @@ class RemoteMCPOAuthCredential:
         if not self.token_endpoint or len(self.token_endpoint) > 2048:
             raise RemoteMCPRecordError("oauth_token_endpoint_invalid")
         method = self.token_endpoint_auth_method
-        if method not in {"none", "client_secret_post", "client_secret_basic"}:
+        if method not in _OAUTH_TOKEN_AUTH_METHODS:
             raise RemoteMCPRecordError("oauth_token_auth_method_unsupported")
         if method != "none" and not self.client_secret:
             raise RemoteMCPRecordError("oauth_client_secret_missing")
         if len(self.refresh_token) > 65536 or len(self.client_secret) > 65536:
             raise RemoteMCPRecordError("oauth_credential_value_too_large")
+        if self.client_source and self.client_source not in _OAUTH_CLIENT_SOURCES:
+            raise RemoteMCPRecordError("oauth_client_source_invalid")
         if self.expires_at < 0 or self.issued_at < 0:
             raise RemoteMCPRecordError("oauth_credential_time_invalid")
 
@@ -252,6 +316,7 @@ class RemoteMCPOAuthCredential:
             "revocation_endpoint": self.revocation_endpoint,
             "client_secret": self.client_secret,
             "token_endpoint_auth_method": self.token_endpoint_auth_method,
+            "client_source": self.client_source,
             "issued_at": self.issued_at,
         }
 
