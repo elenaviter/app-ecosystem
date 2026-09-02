@@ -2490,7 +2490,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               ) : null}
                             </div>
                           )}
-                          {editing ? renderAccountScopePicker(editAccountScope, toggleEditAccount, 'this agent') : null}
+                          {editing ? renderAccountScopePicker(
+                            editAccountScope,
+                            toggleEditAccount,
+                            'this agent',
+                            { existingScope: seedAccountScopeFromRecord(item) },
+                          ) : null}
                           <div className="card-fields">
                             <Field label="Granted">
                               {formatDate(item.created_at) || 'unknown'}
@@ -2789,6 +2794,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         editAccountScope,
                         toggleEditAccount,
                         item.source === 'manual' ? 'this automation' : 'this app',
+                        { existingScope: seedAccountScopeFromRecord(item) },
                       )
                     : null}
                 </div>

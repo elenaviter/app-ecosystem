@@ -150,3 +150,31 @@ test('connections widget announces readiness only after installing its command l
   assert.match(command, /SURFACE_READY_MESSAGE_TYPE = 'kdcube\.surface\.ready'/)
   assert.match(command, /target_surfaces: CONNECTIONS_TARGET_SURFACES/)
 })
+
+test('the card editor shows a persisted account claim as granted, not pending', () => {
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+
+  // Every edit-mode picker must receive the card's persisted scope. Without it
+  // `alreadyGranted` is empty, and each ticked-and-saved claim renders as
+  // "Pending - not granted yet" beside a card that already grants it.
+  const editCalls = panel
+    .split('renderAccountScopePicker(')
+    .slice(1)
+    .filter((call) => call.slice(0, 200).includes('editAccountScope'))
+  assert.ok(editCalls.length >= 2)
+  for (const call of editCalls) {
+    assert.match(call.slice(0, 400), /existingScope: seedAccountScopeFromRecord\(item\)/)
+  }
+
+  // The create flow deliberately passes no persisted scope: a card being
+  // created grants nothing yet, so "pending" is the truthful label there.
+  const createCall = panel
+    .split('renderAccountScopePicker(')
+    .slice(1)
+    .find((call) => call.slice(0, 200).includes('createAccountScope'))
+  assert.ok(createCall)
+  assert.doesNotMatch(createCall.slice(0, 200), /existingScope/)
+
+  const projection = source('src/features/delegatedAccess/pendingGrantProjection.ts')
+  assert.match(projection, /if \(alreadyGranted\) return 'Already granted'/)
+})
