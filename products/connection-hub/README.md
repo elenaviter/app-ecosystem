@@ -6,11 +6,12 @@ distribution.
 ## Components
 
 - [`apps/connection-hub@1-0`](apps/connection-hub@1-0/README.md) is the KDCube
-  application, user interface, provider integration host, and protected
-  admission surface.
+  application, user interface, provider integration host, user-owned external
+  MCP proxy, and protected admission surface.
 - [`packages/connection-hub`](packages/connection-hub/README.md) is the
   `connection-hub` distribution imported as `connection_hub`. It owns the
-  portable authority, card, catalog, admission, and client contracts.
+  portable authority, card, catalog, invocation-policy, external-MCP,
+  admission, and client contracts.
 - [`release.yaml`](release.yaml) records the current product release and maps
   its independently published components.
 

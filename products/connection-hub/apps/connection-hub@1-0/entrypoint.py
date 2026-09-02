@@ -34,7 +34,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     NamedServiceRegistry,
     dispatch_named_service_api_request,
 )
-from kdcube_ai_app.infra.plugin.bundle_loader import api, bundle_entrypoint, bundle_id, ui_widget
+from kdcube_ai_app.infra.plugin.bundle_loader import api, bundle_entrypoint, bundle_id, mcp, ui_widget
 from kdcube_ai_app.infra.service_hub.inventory import Config
 
 from connection_hub.hub.authenticator_store import AuthenticatorStore
@@ -65,6 +65,10 @@ from connection_hub.delegated_credentials.access_map import (
     build_delegated_access_map,
 )
 from connection_hub.delegated_credentials.admission import AdmissionConfig
+from connection_hub.delegated_credentials.consent_denial import (
+    connection_hub_grant_url,
+    connection_hub_invocation_policy_url,
+)
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
 )
@@ -91,6 +95,29 @@ from connection_hub.delegated_credentials.catalog.source import (
 )
 from connection_hub.delegated_credentials.catalog.store import (
     BundleStorageDelegatedCatalogStore,
+)
+from connection_hub.remote_mcp import (
+    EXTERNAL_MCP_GRANT,
+    RemoteMCPConnectorConflict,
+    RemoteMCPConnectorNotFound,
+    RemoteMCPEndpointDenied,
+    RemoteMCPRecordError,
+    remote_mcp_resource_rows,
+)
+from connection_hub.invocation_policy import (
+    POLICY_ALWAYS,
+    POLICY_CHANGE_COMMITTED,
+    POLICY_ONCE,
+    SURFACE_OUTER,
+    InvocationAuthority,
+    InvocationPolicyConflict,
+    InvocationPolicyRecordError,
+)
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.remote_mcp import (
+    build_remote_mcp_connector_service,
+)
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.invocation_policy import (
+    build_invocation_policy_service,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
     RedisOAuthStateStore,
@@ -124,6 +151,7 @@ from .surfaces.delegated_admission import (
     AdmissionHostContext,
     handle_delegated_admission,
 )
+from .surfaces.remote_mcp import build_remote_mcp_proxy_app
 
 BUNDLE_ID = "connection-hub@1-0"
 ENTRYPOINT_NAME = "connection-hub"
@@ -147,6 +175,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "connections_start_oauth",
     "dcr_allowlist_set",
     "delegated_access_create",
+    "delegated_invocation_policy_set",
     "delegated_access_revoke",
     "delegated_access_update",
     "delegated_agent_grant_create",
@@ -156,6 +185,12 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "email_connect_app_password",
     "email_disconnect_account",
     "named_service",
+    "remote_mcp_connector_accept_descriptor",
+    "remote_mcp_connector_create",
+    "remote_mcp_connector_delete",
+    "remote_mcp_connector_refresh",
+    "remote_mcp_connector_set_enabled",
+    "remote_mcp_connector_update_credential",
 })
 CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
     "agent_capabilities",
@@ -262,6 +297,33 @@ def _named_service_operations_for_resource(value: Any, resource: str) -> Any:
         return {}
     per_resource = value.get(resource)
     return dict(per_resource) if isinstance(per_resource, Mapping) else {}
+
+
+def _resource_operations_for(payload: Mapping[str, Any], resource: str) -> Any:
+    """The exact outer operation selection carried by a focused grant.
+
+    The UI sends the card-shaped ``resource_operations`` map. A denial deep
+    link may instead carry one ``outer_operation``; both become the same map.
+    Absent stays absent so a claim-only extension preserves the card's current
+    operation boundary.
+    """
+    raw = payload.get("resource_operations")
+    if isinstance(raw, Mapping):
+        return {
+            str(key).strip(): _safe_list(value)
+            for key, value in raw.items()
+            if str(key or "").strip()
+        }
+    outer_operation = str(payload.get("outer_operation") or "").strip()
+    if outer_operation and resource:
+        return {resource: [outer_operation]}
+    return None
+
+
+def _resource_operations_for_resource(value: Any, resource: str) -> list[str]:
+    if not isinstance(value, Mapping):
+        return []
+    return _safe_list(value.get(resource))
 
 
 def _safe_list(value: Any) -> list[str]:
@@ -688,6 +750,91 @@ def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
     )
 
 
+def _remote_mcp_service(entrypoint: Any) -> Any:
+    return build_remote_mcp_connector_service(
+        storage_root=_storage_root_or_error(entrypoint),
+        bundle_id=BUNDLE_ID,
+        connections=_connections_config(entrypoint),
+    )
+
+
+def _invocation_policy_service(entrypoint: Any) -> Any:
+    return build_invocation_policy_service(
+        storage_root=_storage_root_or_error(entrypoint)
+    )
+
+
+def _invocation_policy_failure(exc: Exception) -> Dict[str, Any]:
+    if isinstance(exc, InvocationPolicyConflict):
+        return {
+            "ok": False,
+            "error": exc.reason,
+            "status": 409,
+            "current_revision": exc.current_revision,
+        }
+    if isinstance(exc, InvocationPolicyRecordError):
+        return {"ok": False, "error": exc.reason, "status": 400}
+    LOGGER.exception("[connection-hub.invocation_policy] operation failed")
+    return {
+        "ok": False,
+        "error": "delegated_invocation_policy_unavailable",
+        "status": 503,
+        "retryable": True,
+    }
+
+
+def _expected_invocation_policy_revision(payload: Mapping[str, Any]) -> int | None:
+    if "expected_revision" not in payload:
+        return None
+    try:
+        revision = int(payload.get("expected_revision"))
+    except (TypeError, ValueError) as exc:
+        raise InvocationPolicyRecordError("expected_revision_invalid") from exc
+    if revision < 0:
+        raise InvocationPolicyRecordError("expected_revision_invalid")
+    return revision
+
+
+async def _remote_mcp_resource_overlay(
+    entrypoint: Any, owner_subject: str
+) -> tuple[Any, ...]:
+    connectors = await _remote_mcp_service(entrypoint).list(
+        owner_subject=owner_subject
+    )
+    return remote_mcp_resource_rows(connectors)
+
+
+def _remote_mcp_failure(exc: Exception) -> Dict[str, Any]:
+    if isinstance(exc, RemoteMCPConnectorConflict):
+        return {
+            "ok": False,
+            "error": exc.reason,
+            "status": 409,
+            "current_revision": exc.current_revision,
+        }
+    if isinstance(exc, RemoteMCPConnectorNotFound):
+        return {"ok": False, "error": exc.reason, "status": 404}
+    if isinstance(exc, (RemoteMCPEndpointDenied, RemoteMCPRecordError)):
+        return {"ok": False, "error": exc.reason, "status": 400}
+    LOGGER.exception("[connection-hub.remote_mcp] operation failed")
+    return {
+        "ok": False,
+        "error": "remote_mcp_connector_unavailable",
+        "status": 503,
+        "retryable": True,
+    }
+
+
+def _expected_remote_mcp_revision(payload: Mapping[str, Any]) -> int:
+    try:
+        revision = int(payload.get("expected_revision") or 0)
+    except (TypeError, ValueError) as exc:
+        raise RemoteMCPRecordError("expected_revision_invalid") from exc
+    if revision < 1:
+        raise RemoteMCPRecordError("expected_revision_invalid")
+    return revision
+
+
 def _automation_access_service_for(entrypoint: Any, config: Any) -> AutomationAccessService:
     """Build the service against an already-resolved delegated-client config.
 
@@ -705,6 +852,9 @@ def _automation_access_service_for(entrypoint: Any, config: Any) -> AutomationAc
         config=config,
         catalog_resolver=_delegated_catalog_resolver(entrypoint, redis),
         card_persistence=_delegated_card_persistence(entrypoint, redis),
+        resource_overlay_provider=lambda owner_subject: _remote_mcp_resource_overlay(
+            entrypoint, owner_subject
+        ),
     )
 
 
@@ -1605,6 +1755,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "delegated_identity_scope_resolve": {"visibility": {"user_types": []}},
                             "delegated_access_list": {"visibility": {"user_types": []}},
                             "delegated_access_create": {"visibility": {"user_types": []}},
+                            "delegated_invocation_policy_set": {"visibility": {"user_types": []}},
                             "delegated_access_revoke": {"visibility": {"user_types": []}},
                             "delegated_to_kdcube_catalog": {"visibility": {"user_types": []}},
                             "delegated_to_kdcube_start_oauth": {"visibility": {"user_types": []}},
@@ -1624,6 +1775,21 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "connections_settings": {"visibility": {"user_types": []}},
                             "oauth": {"visibility": {"user_types": []}},
                             "delegated_admission": {"visibility": {"user_types": []}},
+                            "remote_mcp_connectors_list": {"visibility": {"user_types": []}},
+                            "remote_mcp_connector_create": {"visibility": {"user_types": []}},
+                            "remote_mcp_connector_refresh": {"visibility": {"user_types": []}},
+                            "remote_mcp_connector_accept_descriptor": {"visibility": {"user_types": []}},
+                            "remote_mcp_connector_set_enabled": {"visibility": {"user_types": []}},
+                            "remote_mcp_connector_update_credential": {"visibility": {"user_types": []}},
+                            "remote_mcp_connector_delete": {"visibility": {"user_types": []}},
+                        },
+                    },
+                    "mcp": {
+                        "remote_mcp_proxy": {
+                            "auth": {
+                                "mode": "delegated_proxy",
+                                "authority_id": "delegated_client",
+                            },
                         },
                     },
                     "widget": {
@@ -1727,6 +1893,17 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 ],
                                 "delegable_permissions": ["knowledge:read"],
                             },
+                            {
+                                "grant": "external_mcp:use",
+                                "label": "Use connected external MCP tools",
+                                "description": "Call only the external MCP tools selected on this delegated access card.",
+                                "delegable_roles": [
+                                    "kdcube:role:registered",
+                                    "kdcube:role:paid",
+                                    "kdcube:role:privileged",
+                                    "kdcube:role:super-admin",
+                                ],
+                            },
                         ],
                         "resources": [
                             {
@@ -1777,6 +1954,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                     },
                                 },
                             },
+                            {
+                                "resource": "*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/remote_mcp_proxy*",
+                                "label": "Connected external MCP tools",
+                                "identity_scope": "grantor",
+                                "grants": ["external_mcp:use"],
+                                "resource_selection": True,
+                            },
                         ],
                     },
                     "admission": {
@@ -1812,6 +1996,15 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                         #       client_secret_ref: connections.delegated_to_kdcube.providers.google.connector_apps.gmail.client_secret
                         #       allowed_claims:
                         #         - gmail:read
+                    },
+                },
+                "remote_mcp": {
+                    "read_timeout_seconds": 60.0,
+                    "max_result_bytes": 2 * 1024 * 1024,
+                    "outbound": {
+                        "allow_http": False,
+                        "allow_private_networks": False,
+                        "allowed_hosts": [],
                     },
                 },
                 # Legacy deploy config for older integrations/connections
@@ -2100,9 +2293,262 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 bind_delegated_request=lambda req: (
                     _bind_delegated_client_request_config(self, req)
                 ),
+                invocation_policies=_invocation_policy_service(self),
+                invocation_recovery_url_builder=lambda view, admission: (
+                    connection_hub_invocation_policy_url(
+                        tenant=tenant,
+                        project=project,
+                        access_id=view.registry_access_id,
+                        resource=admission.resource,
+                        operation=admission.operation,
+                    )
+                ),
+                operation_grant_url_builder=lambda view, admission, change_id: (
+                    connection_hub_grant_url(
+                        tenant=tenant,
+                        project=project,
+                        client_id=view.client_id,
+                        access_id=view.registry_access_id,
+                        resource=admission.resource,
+                        claims=[],
+                        outer_operation=admission.operation,
+                        invocation_policy="choose",
+                        invocation_change_id=change_id,
+                    )
+                ),
             ),
             payload=_payload(data, **kwargs),
             request=request,
+        )
+
+    # ── user-owned remote MCP connectors and delegated proxy ──────────────
+
+    @api(
+        method="GET",
+        alias="remote_mcp_connectors_list",
+        route="operations",
+        **_api_visibility("remote_mcp_connectors_list"),
+    )
+    async def remote_mcp_connectors_list(
+        self, user_id: Optional[str] = None, **kwargs: Any
+    ) -> Dict[str, Any]:
+        del kwargs
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
+        try:
+            connectors = await _remote_mcp_service(self).list(owner_subject=owner)
+            return {
+                "ok": True,
+                "items": [connector.to_public_dict() for connector in connectors],
+            }
+        except Exception as exc:
+            return _remote_mcp_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_mcp_connector_create",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_mcp_connector_create"),
+    )
+    async def remote_mcp_connector_create(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_mcp_service(self).create(
+                owner_subject=owner,
+                label=str(payload.get("label") or ""),
+                endpoint=str(payload.get("endpoint") or ""),
+                credential_mode=str(payload.get("credential_mode") or "none"),
+                credential_header=str(payload.get("credential_header") or ""),
+                credential_value=str(payload.get("credential_value") or ""),
+            )
+            return {"ok": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_mcp_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_mcp_connector_refresh",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_mcp_connector_refresh"),
+    )
+    async def remote_mcp_connector_refresh(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_mcp_service(self).refresh(
+                owner_subject=owner,
+                connector_id=str(payload.get("connector_id") or ""),
+                expected_revision=_expected_remote_mcp_revision(payload),
+            )
+            return {"ok": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_mcp_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_mcp_connector_accept_descriptor",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_mcp_connector_accept_descriptor"),
+    )
+    async def remote_mcp_connector_accept_descriptor(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_mcp_service(self).accept_descriptor(
+                owner_subject=owner,
+                connector_id=str(payload.get("connector_id") or ""),
+                expected_revision=_expected_remote_mcp_revision(payload),
+            )
+            return {"ok": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_mcp_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_mcp_connector_set_enabled",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_mcp_connector_set_enabled"),
+    )
+    async def remote_mcp_connector_set_enabled(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_mcp_service(self).set_enabled(
+                owner_subject=owner,
+                connector_id=str(payload.get("connector_id") or ""),
+                enabled=_bool(payload.get("enabled"), True),
+                expected_revision=_expected_remote_mcp_revision(payload),
+            )
+            return {"ok": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_mcp_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_mcp_connector_update_credential",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_mcp_connector_update_credential"),
+    )
+    async def remote_mcp_connector_update_credential(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_mcp_service(self).replace_credential(
+                owner_subject=owner,
+                connector_id=str(payload.get("connector_id") or ""),
+                expected_revision=_expected_remote_mcp_revision(payload),
+                credential_mode=str(payload.get("credential_mode") or "none"),
+                credential_header=str(payload.get("credential_header") or ""),
+                credential_value=str(payload.get("credential_value") or ""),
+            )
+            return {"ok": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_mcp_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_mcp_connector_delete",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_mcp_connector_delete"),
+    )
+    async def remote_mcp_connector_delete(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            connector = await _remote_mcp_service(self).delete(
+                owner_subject=owner,
+                connector_id=str(payload.get("connector_id") or ""),
+                expected_revision=_expected_remote_mcp_revision(payload),
+            )
+            return {"ok": True, "removed": True, "connector": connector.to_public_dict()}
+        except Exception as exc:
+            return _remote_mcp_failure(exc)
+
+    @mcp(
+        alias="remote_mcp_proxy",
+        route="public",
+        transport="streamable-http",
+        auth_config="surfaces.as_provider.mcp.remote_mcp_proxy.auth",
+    )
+    async def remote_mcp_proxy(self, request: Any = None, **kwargs: Any) -> Any:
+        del kwargs
+        tenant, project = _runtime_tenant_project(self)
+        return await build_remote_mcp_proxy_app(
+            request=request,
+            service=_remote_mcp_service(self),
+            invocation_policies=_invocation_policy_service(self),
+            recovery_url_builder=lambda view, decision: (
+                connection_hub_invocation_policy_url(
+                    tenant=tenant,
+                    project=project,
+                    access_id=view.registry_access_id,
+                    resource=decision.resource,
+                    operation=decision.tool.name,
+                )
+            ),
+            grant_url_builder=lambda view, decision, invocation_id: (
+                connection_hub_grant_url(
+                    tenant=tenant,
+                    project=project,
+                    client_id=view.client_id,
+                    access_id=view.registry_access_id,
+                    resource=decision.resource,
+                    claims=[EXTERNAL_MCP_GRANT],
+                    outer_operation=decision.tool.name,
+                    invocation_policy="choose",
+                    invocation_change_id=invocation_id,
+                )
+            ),
         )
 
     # ── delegated access map (admin, read-only) ────────────────────────────
@@ -2139,7 +2585,108 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).list_access(user)
+        response = await _automation_access_service(self, request).list_access(user)
+        if response.get("ok") is not True:
+            return response
+        owner = str(response.get("platform_user_id") or "").strip()
+        try:
+            policy_service = _invocation_policy_service(self)
+            for item in response.get("items") or []:
+                item["invocation_policies"] = [
+                    policy.to_public_dict()
+                    for policy in await policy_service.list_for_card(
+                        owner_subject=owner,
+                        access_id=str(item.get("access_id") or ""),
+                    )
+                ]
+        except Exception as exc:
+            return _invocation_policy_failure(exc)
+        return response
+
+    @api(
+        method="POST",
+        alias="delegated_invocation_policy_set",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_invocation_policy_set"),
+    )
+    async def delegated_invocation_policy_set(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Set repeated or next-invocation use for one granted operation."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        access_id = str(payload.get("access_id") or "").strip()
+        resource = str(payload.get("resource") or "").strip()
+        operation = str(payload.get("operation") or "").strip()
+        mode = str(payload.get("mode") or "").strip().lower()
+        listing = await _automation_access_service(self, request).list_access(user)
+        if listing.get("ok") is not True:
+            return listing
+        card = next(
+            (
+                item
+                for item in listing.get("items") or []
+                if str(item.get("access_id") or "") == access_id
+            ),
+            None,
+        )
+        if card is None:
+            return {"ok": False, "error": "delegated_card_not_found", "status": 404}
+        selected = {
+            str(value or "").strip()
+            for value in dict(card.get("resource_operations") or {}).get(resource, [])
+            if str(value or "").strip()
+        }
+        if operation not in selected:
+            return {
+                "ok": False,
+                "error": "invocation_policy_operation_not_granted",
+                "status": 409,
+            }
+        account = payload.get("account")
+        account = account if isinstance(account, Mapping) else {}
+        provider_id = str(account.get("provider_id") or "").strip()
+        account_id = str(account.get("account_id") or "").strip()
+        if provider_id or account_id:
+            bound = dict(card.get("account_scope") or {}).get(provider_id, {})
+            if account_id not in dict(bound or {}):
+                return {
+                    "ok": False,
+                    "error": "invocation_policy_account_not_granted",
+                    "status": 409,
+                }
+        if mode not in {POLICY_ALWAYS, POLICY_ONCE}:
+            return {"ok": False, "error": "policy_mode_invalid", "status": 400}
+        try:
+            policy = await _invocation_policy_service(self).set_policy(
+                owner_subject=str(listing.get("platform_user_id") or ""),
+                authority=InvocationAuthority(
+                    access_id=access_id,
+                    resource=resource,
+                    surface=SURFACE_OUTER,
+                    operation=operation,
+                    provider_id=provider_id,
+                    account_id=account_id,
+                ),
+                mode=mode,
+                expected_revision=_expected_invocation_policy_revision(payload),
+            )
+            return {"ok": True, "policy": policy.to_public_dict()}
+        except Exception as exc:
+            return _invocation_policy_failure(exc)
 
     @api(
         method="POST",
@@ -2167,6 +2714,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 label=str(payload.get("label") or "").strip(),
                 resource_grants=dict(payload.get("resource_grants") or {}),
                 operations=_safe_list(payload.get("operations")),
+                resource_operations=(
+                    dict(payload.get("resource_operations") or {})
+                    if "resource_operations" in payload
+                    else None
+                ),
                 # Both preserve absent vs empty. An omitted selection keeps the
                 # record's own state; "*" is the full policy of the saved
                 # catalog, and {} allows no named-service operation.
@@ -2213,6 +2765,16 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 user,
                 access_id=str(payload.get("access_id") or "").strip(),
                 resource_grants=dict(payload.get("resource_grants") or {}),
+                resource_operations=(
+                    dict(payload.get("resource_operations") or {})
+                    if "resource_operations" in payload
+                    else None
+                ),
+                operations=(
+                    _safe_list(payload.get("operations"))
+                    if "operations" in payload
+                    else ()
+                ),
                 named_service_operations=(
                     payload.get("named_service_operations")
                     if "named_service_operations" in payload
@@ -2261,7 +2823,20 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         client_id = str(payload.get("client_id") or "").strip()
         resource = str(payload.get("resource") or "").strip()
         claims = _safe_list(payload.get("claims") or payload.get("scopes"))
+        resource_operations = _resource_operations_for(payload, resource)
         named_service_operations = _named_service_operations_for(payload, resource)
+        access_service = _automation_access_service(self, request)
+        invocation_mode = str(payload.get("invocation_mode") or "").strip().lower()
+        invocation_access_id = str(payload.get("access_id") or "").strip()
+        invocation_change_id = str(
+            payload.get("invocation_change_id")
+            or payload.get("demand_id")
+            or ""
+        ).strip()
+        invocation_policy_service = None
+        invocation_authority = None
+        invocation_change = None
+        invocation_owner = ""
         # Per-account claim binding: {provider_id: {account_id: [claims]}} (the
         # legacy list form {provider_id: [account_ids]} is also accepted and
         # migrated). create_access/extend_client_access normalize it.
@@ -2269,10 +2844,150 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         account_scope = dict(raw_scope) if isinstance(raw_scope, Mapping) else None
         if not resource or (
             not claims
+            and resource_operations is None
             and account_scope is None
             and named_service_operations is None
         ):
             return {"ok": False, "error": "delegated_agent_grant_requires_resource_and_claims"}
+        if invocation_mode:
+            if invocation_mode not in {POLICY_ALWAYS, POLICY_ONCE}:
+                return {"ok": False, "error": "policy_mode_invalid", "status": 400}
+            selected_outer_operations = _resource_operations_for_resource(
+                resource_operations,
+                resource,
+            )
+            if len(selected_outer_operations) != 1:
+                return {
+                    "ok": False,
+                    "error": "invocation_policy_requires_one_outer_operation",
+                    "status": 400,
+                }
+            if not invocation_access_id or not invocation_change_id:
+                return {
+                    "ok": False,
+                    "error": "invocation_policy_change_identity_required",
+                    "status": 400,
+                }
+            listing = await access_service.list_access(user)
+            if listing.get("ok") is not True:
+                return listing
+            card = next(
+                (
+                    item
+                    for item in listing.get("items") or []
+                    if str(item.get("access_id") or "") == invocation_access_id
+                ),
+                None,
+            )
+            if card is None:
+                return {
+                    "ok": False,
+                    "error": "delegated_card_not_found",
+                    "status": 404,
+                }
+            if str(card.get("client_id") or "") != client_id:
+                return {
+                    "ok": False,
+                    "error": "invocation_policy_client_mismatch",
+                    "status": 409,
+                }
+            if resource not in dict(card.get("resource_grants") or {}):
+                return {
+                    "ok": False,
+                    "error": "invocation_policy_resource_not_granted",
+                    "status": 409,
+                }
+            requested_operation = selected_outer_operations[0]
+            catalog_resource = str(
+                dict(card.get("catalog_row_by_resource") or {}).get(resource)
+                or resource
+            ).strip()
+            resource_option = next(
+                (
+                    item
+                    for item in listing.get("resources") or []
+                    if str(item.get("resource") or "") == catalog_resource
+                ),
+                None,
+            )
+            offered_operations = {
+                str(item.get("name") or "").strip()
+                for item in (resource_option or {}).get("operations") or []
+                if isinstance(item, Mapping)
+            }
+            if requested_operation not in offered_operations:
+                return {
+                    "ok": False,
+                    "error": "invocation_policy_operation_not_available",
+                    "status": 409,
+                }
+            invocation_owner = str(
+                listing.get("platform_user_id")
+                or user.get("user_id")
+                or user.get("sub")
+                or ""
+            ).strip()
+            invocation_authority = InvocationAuthority(
+                access_id=invocation_access_id,
+                resource=resource,
+                surface=SURFACE_OUTER,
+                operation=requested_operation,
+            )
+            invocation_policy_service = _invocation_policy_service(self)
+            try:
+                invocation_change = (
+                    await invocation_policy_service.prepare_policy_change(
+                        owner_subject=invocation_owner,
+                        authority=invocation_authority,
+                        mode=invocation_mode,
+                        change_id=invocation_change_id,
+                        expected_revision=(
+                            _expected_invocation_policy_revision(
+                                {
+                                    "expected_revision": payload.get(
+                                        "expected_invocation_policy_revision"
+                                    )
+                                }
+                            )
+                            if "expected_invocation_policy_revision" in payload
+                            else None
+                        ),
+                    )
+                )
+                if invocation_change.state == POLICY_CHANGE_COMMITTED:
+                    policy = await invocation_policy_service.get(
+                        owner_subject=invocation_owner,
+                        authority=invocation_authority,
+                    )
+                    if policy is None:
+                        raise InvocationPolicyConflict(
+                            "invocation_policy_change_commit_moved"
+                        )
+                    replay_result = {
+                        "ok": True,
+                        "access_id": invocation_access_id,
+                        "access": card,
+                        "invocation_policy": policy.to_public_dict(),
+                        "replay": True,
+                    }
+                    # A retry can arrive after the durable card+policy commit
+                    # but before the passive conversation event was authored.
+                    # Re-run the idempotent completion step; already-satisfied
+                    # demand records have been removed and emit nothing.
+                    await self._author_agent_grant_events(
+                        user_id=str(user.get("sub") or ""),
+                        client_id=client_id,
+                        resource=resource,
+                        fallback_claims=claims,
+                        fallback_resource_operations=resource_operations,
+                        fallback_named_service_operations=named_service_operations,
+                        access=card,
+                        invocation_policy=replay_result["invocation_policy"],
+                        invocation_change_id=invocation_change_id,
+                    )
+                    return replay_result
+            except Exception as exc:
+                return _invocation_policy_failure(exc)
         if client_id and not client_id.startswith("kdcube-agent:"):
             # An EXTERNAL delegated client (an OAuth app — Claude Code): the
             # user EDITS its existing card here (born at its own OAuth consent;
@@ -2282,11 +2997,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             # connected account(s) the client may use per provider. The guard
             # resolves the card live, so the change carries on the bearer the
             # client already holds.
-            return await _automation_access_service(self, request).extend_client_access(
+            result = await access_service.extend_client_access(
                 user,
                 client_id=client_id,
+                access_id=(invocation_access_id or None),
                 resource=resource,
                 claims=claims,
+                resource_operations=resource_operations,
                 account_scope=account_scope,
                 named_service_operations=named_service_operations,
                 replace=bool(payload.get("replace")),
@@ -2294,29 +3011,59 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 # user may label the card. Empty keeps the existing name.
                 label=str(payload.get("label") or "").strip() or None,
             )
-        if not client_id.startswith("kdcube-agent:"):
+        elif not client_id.startswith("kdcube-agent:"):
             return {"ok": False, "error": "delegated_agent_grant_invalid_client"}
-        # Optional named-service narrowing for THIS resource (namespace -> exact
-        # operations), same selector the manual create flow sends — so extending
-        # an agent's access from the hub can include named-service resources.
-        # Default = MERGE (a one-click grant accumulates). `replace: true` is
-        # the EDIT semantics: the submitted claim set becomes the record exactly
-        # (the user unchecked something). Removing everything is a revoke, not
-        # an edit — the UI calls delegated_access_revoke for that.
-        replace = bool(payload.get("replace"))
-        try:
-            result = await _automation_access_service(self, request).create_access(
-                user,
-                label=str(payload.get("label") or "").strip() or client_id,
-                resource_grants={resource: claims},
-                named_service_operations=named_service_operations,
-                account_scope=account_scope,
-                ttl_seconds=payload.get("ttl_seconds") or AGENT_GRANT_DEFAULT_TTL_SECONDS,
-                client_id=client_id,
-                merge_existing=not replace,
-            )
-        except ValueError as exc:
-            return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+        else:
+            # Optional named-service narrowing for THIS resource (namespace -> exact
+            # operations), same selector the manual create flow sends — so extending
+            # an agent's access from the hub can include named-service resources.
+            # Default = MERGE (a one-click grant accumulates). `replace: true` is
+            # (the user unchecked something). Removing everything is a revoke, not
+            # an edit — the UI calls delegated_access_revoke for that.
+            replace = bool(payload.get("replace"))
+            try:
+                result = await access_service.create_access(
+                    user,
+                    label=str(payload.get("label") or "").strip() or client_id,
+                    resource_grants={resource: claims},
+                    resource_operations=resource_operations,
+                    named_service_operations=named_service_operations,
+                    account_scope=account_scope,
+                    ttl_seconds=payload.get("ttl_seconds") or AGENT_GRANT_DEFAULT_TTL_SECONDS,
+                    client_id=client_id,
+                    merge_existing=not replace,
+                )
+            except ValueError as exc:
+                return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+        if result.get("ok") and invocation_change is not None:
+            access = result.get("access")
+            actual_access_id = str(
+                (access or {}).get("access_id")
+                if isinstance(access, Mapping)
+                else result.get("access_id")
+            ).strip()
+            if actual_access_id != invocation_access_id:
+                return {
+                    "ok": False,
+                    "error": "invocation_policy_card_identity_moved",
+                    "status": 409,
+                    "retryable": True,
+                }
+            try:
+                policy = await invocation_policy_service.commit_policy_change(
+                    owner_subject=invocation_owner,
+                    authority=invocation_authority,
+                    change_id=invocation_change_id,
+                )
+                result = {
+                    **result,
+                    "invocation_policy": policy.to_public_dict(),
+                }
+            except Exception as exc:
+                # The prepared marker remains. If the card write committed,
+                # invocation enforcement stays closed until this exact change
+                # is retried and the policy commit completes.
+                return _invocation_policy_failure(exc)
         if result.get("ok"):
             # Close the consent loop the same way connected-account consent
             # does: author `connections.consent.granted` events into every
@@ -2328,8 +3075,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 client_id=client_id,
                 resource=resource,
                 fallback_claims=claims,
+                fallback_resource_operations=resource_operations,
                 fallback_named_service_operations=named_service_operations,
                 access=result.get("access"),
+                invocation_policy=result.get("invocation_policy"),
+                invocation_change_id=invocation_change_id,
             )
         return result
 
@@ -2340,8 +3090,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         client_id: str,
         resource: str,
         fallback_claims: list,
+        fallback_resource_operations: Any,
         fallback_named_service_operations: Any,
         access: Any,
+        invocation_policy: Any = None,
+        invocation_change_id: str = "",
     ) -> None:
         """Best-effort granted-event authoring for a per-agent grant."""
         try:
@@ -2364,6 +3117,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             ) or _named_service_operations_for_resource(
                 fallback_named_service_operations, resource
             )
+            granted_resource_operations = _resource_operations_for_resource(
+                record.get("resource_operations"), resource
+            ) or _resource_operations_for_resource(
+                fallback_resource_operations, resource
+            )
             await author_consent_granted_events(
                 redis=redis,
                 user_id=user_id,
@@ -2371,8 +3129,22 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 connector_app_id=client_id,
                 granted_claims=granted,
                 granted_named_service_operations=granted_named_service_operations,
+                granted_resource_operations={
+                    resource: granted_resource_operations
+                } if granted_resource_operations else {},
                 granted_resource=resource,
                 account_id=str(record.get("access_id") or ""),
+                invocation_policy_mode=str(
+                    (invocation_policy or {}).get("mode")
+                    if isinstance(invocation_policy, Mapping)
+                    else ""
+                ),
+                invocation_policy_revision=int(
+                    (invocation_policy or {}).get("revision") or 0
+                    if isinstance(invocation_policy, Mapping)
+                    else 0
+                ),
+                invocation_change_id=invocation_change_id,
                 connection_hub_bundle_id=BUNDLE_ID,
             )
         except Exception:

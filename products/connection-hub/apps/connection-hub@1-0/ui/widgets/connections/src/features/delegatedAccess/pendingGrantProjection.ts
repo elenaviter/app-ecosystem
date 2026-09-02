@@ -1,5 +1,6 @@
 import type {
   DelegatedAccessNamedServiceNamespaceOption,
+  DelegatedAccessOperationOption,
   DelegatedAccessResourceOption,
 } from '../../api/types';
 
@@ -7,6 +8,7 @@ export interface PendingServiceRequest {
   resource: string;
   namespace?: string;
   operation?: string;
+  outerOperation?: string;
 }
 
 export interface NamedServiceOperationProjection {
@@ -22,6 +24,11 @@ export interface PendingServiceCapability {
   operation: NamedServiceOperationProjection;
   requiredDoorGrants: string[];
   accountRequirements: Array<{ providerId: string; claims: string[] }>;
+}
+
+export interface PendingOuterCapability {
+  resource: DelegatedAccessResourceOption;
+  operation: DelegatedAccessOperationOption;
 }
 
 export type PendingAccountScope = Record<string, Record<string, string[]>>;
@@ -127,6 +134,30 @@ export function resolvePendingServiceCapability(
     ),
     accountRequirements,
   };
+}
+
+/** Resolve one requested MCP/REST operation on the protected resource. */
+export function resolvePendingOuterCapability(
+  request: PendingServiceRequest | null,
+  resources: DelegatedAccessResourceOption[],
+): PendingOuterCapability | null {
+  if (!request?.outerOperation) return null;
+  const resource = resources.find((item) => item.resource === request.resource);
+  if (!resource) return null;
+  const operation = (resource.operations || [])
+    .find((item) => item.name === request.outerOperation);
+  return operation ? { resource, operation } : null;
+}
+
+
+export function pendingOuterApprovalReady(
+  capability: PendingOuterCapability | null,
+  operationSelected: boolean,
+  selectedGrants: string[],
+): boolean {
+  if (!capability || !operationSelected) return false;
+  const selected = new Set(selectedGrants);
+  return (capability.operation.grants || []).every((grant) => selected.has(grant));
 }
 
 /** One demanded service operation is actionable only when all three explicit

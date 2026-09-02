@@ -6,6 +6,7 @@ import delegatedAccessReducer from '../features/delegatedAccess/delegatedAccessS
 import identityReducer from '../features/identity/identitySlice';
 import delegatedToKdcubeReducer from '../features/delegatedToKdcube/delegatedToKdcubeSlice';
 import providerConnectionsReducer from '../features/providerConnections/providerConnectionsSlice';
+import remoteMcpReducer from '../features/remoteMcp/remoteMcpSlice';
 
 export const store = configureStore({
   reducer: {
@@ -16,6 +17,7 @@ export const store = configureStore({
     identity: identityReducer,
     delegatedToKdcube: delegatedToKdcubeReducer,
     providerConnections: providerConnectionsReducer,
+    remoteMcp: remoteMcpReducer,
   },
 });
 

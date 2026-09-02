@@ -53,3 +53,26 @@ def test_catalog_config_parser_never_needs_host_settings():
 
     assert config.enabled is True
     assert config.supported_scopes() == ("messages:read",)
+
+
+def test_resource_can_enable_owner_resource_selection_for_oauth_consent():
+    config = oauth_delegated_config_from_connections(
+        {
+            "delegated_credentials": {
+                "oauth": {
+                    "enabled": True,
+                    "resources": [
+                        {
+                            "resource": "https://hub.example.test/mcp/proxy",
+                            "grants": ["external_mcp:use"],
+                            "resource_selection": True,
+                        }
+                    ],
+                }
+            }
+        }
+    )
+
+    resource = config.resource_config("https://hub.example.test/mcp/proxy")
+    assert resource is not None
+    assert resource.resource_selection is True

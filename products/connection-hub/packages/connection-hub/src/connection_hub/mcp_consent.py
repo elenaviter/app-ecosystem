@@ -86,8 +86,18 @@ class MCPConsentRequired(Exception):
             consent_block["namespace"] = c["namespace"]
         if c.get("operation"):
             consent_block["operation"] = c["operation"]
+        if c.get("outer_operation"):
+            consent_block["outer_operation"] = c["outer_operation"]
         if c.get("grant"):
             consent_block["grant"] = c["grant"]
+        if c.get("access_id"):
+            consent_block["access_id"] = c["access_id"]
+        if c.get("available_choices"):
+            consent_block["available_choices"] = list(c["available_choices"])
+        if c.get("invocation_policy"):
+            consent_block["invocation_policy"] = c["invocation_policy"]
+        if c.get("invocation_change_id"):
+            consent_block["invocation_change_id"] = c["invocation_change_id"]
         return {
             "ok": False,
             "error": {"code": CONSENT_NEEDED_CODE, "message": self.agent_message},
@@ -148,6 +158,7 @@ def mcp_consent_from_denial(
     agent_client_id: str = "",
     namespace: str = "",
     operation: str = "",
+    outer_operation: str = "",
 ) -> MCPConsentRequired:
     """Build the `MCPConsentRequired` from a KDCube-MCP denial + the connection's
     declared claims. The claims come from the caller (the `kind: mcp` connection's
@@ -159,11 +170,14 @@ def mcp_consent_from_denial(
     agent the claims, distinct from a connect-an-account flow.
 
     ``namespace`` / ``operation`` name the inner capability the call wanted.
-    Approval grants that operation, not every operation its claims allow."""
+    ``outer_operation`` names the MCP or REST operation on the protected
+    resource. Approval grants that operation, not every operation its claims
+    allow."""
     claim_list = [str(c).strip() for c in (claims or []) if str(c).strip()]
     label = tool_name or resource.rsplit("/", 1)[-1] or "this tool"
     claims_str = ", ".join(claim_list) or "the required access"
-    asked = f"the operation {operation}" if operation else ""
+    asked_operation = outer_operation or operation
+    asked = f"the operation {asked_operation}" if asked_operation else ""
     if asked and claim_list:
         asked = f"{asked} and {claims_str}"
     asked = asked or claims_str
@@ -186,6 +200,8 @@ def mcp_consent_from_denial(
         consent["namespace"] = namespace
     if operation:
         consent["operation"] = operation
+    if outer_operation:
+        consent["outer_operation"] = outer_operation
     if agent_client_id:
         # The one-click grant action for this demand (user grants THIS agent).
         consent["kind"] = CONSENT_KIND_AGENT_GRANT
@@ -197,6 +213,10 @@ def mcp_consent_from_denial(
         }
         if namespace and operation:
             grant_payload["named_service_operations"] = {namespace: [operation]}
+        if outer_operation:
+            grant_payload["resource_operations"] = {
+                resource: [outer_operation]
+            }
         consent["grant"] = {
             "operation": AGENT_GRANT_CREATE_OPERATION,
             "payload": grant_payload,
@@ -240,6 +260,7 @@ async def announce_agent_consent(
             resource=str(consent.resource or ""),
             namespace=str(consent.consent.get("namespace") or ""),
             operation=str(consent.consent.get("operation") or ""),
+            outer_operation=str(consent.consent.get("outer_operation") or ""),
         )
         if announced:
             log.info(

@@ -144,3 +144,29 @@ async def test_agent_consent_records_the_requested_named_service_operation():
     assert demands[0]["resource"] == _RES
     assert demands[0]["namespace"] == "slack"
     assert demands[0]["operation"] == "object.action.upload_file"
+
+
+@pytest.mark.asyncio
+async def test_agent_consent_records_an_outer_operation_without_claims():
+    consent = mcp_consent_from_denial(
+        {"status": 403, "reason": "authority_mismatch"},
+        resource=_RES,
+        claims=[],
+        tool_name="memory_delete",
+        agent_client_id="kdcube-agent:workspace@1-0:main",
+        outer_operation="memory_delete",
+    )
+    demands: list[dict] = []
+
+    async def announce(**kwargs):
+        demands.append(kwargs)
+        return True
+
+    await announce_agent_consent(consent, demand_announcer=announce)
+
+    assert consent.consent["grant"]["payload"]["resource_operations"] == {
+        _RES: ["memory_delete"]
+    }
+    assert consent.chat_event_payload()["consent"]["outer_operation"] == "memory_delete"
+    assert demands[0]["claims"] == []
+    assert demands[0]["outer_operation"] == "memory_delete"

@@ -33,6 +33,8 @@ async def test_client_sends_independent_valid_workload_proof() -> None:
         )
         assert verified.allowed
         assert admission_request.operation == "customers.search"
+        assert admission_request.invocation_id == "customer-search-1"
+        assert admission_request.request_digest == "a" * 64
         seen_nonces.append(proof.nonce)
         return httpx.Response(
             200,
@@ -57,10 +59,14 @@ async def test_client_sends_independent_valid_workload_proof() -> None:
         first = await client.evaluate(
             delegated_bearer="kst1.example",
             operation="customers.search",
+            invocation_id="customer-search-1",
+            request_digest="a" * 64,
         )
         second = await client.evaluate(
             delegated_bearer="kst1.example",
             operation="customers.search",
+            invocation_id="customer-search-1",
+            request_digest="a" * 64,
         )
 
     assert first.allowed and second.allowed
@@ -92,6 +98,8 @@ async def test_client_preserves_structured_denial() -> None:
         decision = await client.evaluate(
             delegated_bearer="kst1.example",
             operation="customers.search",
+            invocation_id="customer-search-2",
+            request_digest="b" * 64,
         )
 
     assert decision.status_code == 403

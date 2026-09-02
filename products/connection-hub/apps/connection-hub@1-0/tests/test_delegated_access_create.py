@@ -1,13 +1,9 @@
-"""delegated_access_create must forward every field the service accepts.
-
-A manual token's record is keyed by a random access_id, so the
-deterministic-key extend path (delegated_agent_grant_create) cannot reach it
-later: whatever the caller sends at creation is its only chance.
-"""
+"""Delegated access create and recovery preserve the complete card contract."""
 
 from __future__ import annotations
 
 import inspect
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +14,14 @@ from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import (
 )
 from connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
+)
+from connection_hub.invocation_policy import (
+    POLICY_ONCE,
+    SURFACE_OUTER,
+    BundleStorageInvocationPolicyStore,
+    InvocationAuthority,
+    InvocationPolicyService,
+    canonical_request_digest,
 )
 
 ACCOUNT_SCOPE = {"linkedin": {"linkedin_acc_1": ["linkedin:post"]}}
@@ -62,6 +66,18 @@ def test_service_still_accepts_account_scope():
     # Guards the other side of the contract: a renamed/removed service
     # parameter must fail here, not silently drop bindings at runtime.
     assert "account_scope" in inspect.signature(AutomationAccessService.create_access).parameters
+
+
+def test_service_accepts_resource_qualified_operations_on_every_grant_path():
+    assert "resource_operations" in inspect.signature(
+        AutomationAccessService.create_access
+    ).parameters
+    assert "resource_operations" in inspect.signature(
+        AutomationAccessService.extend_client_access
+    ).parameters
+    assert "access_id" in inspect.signature(
+        AutomationAccessService.extend_client_access
+    ).parameters
 
 
 @pytest.mark.asyncio
@@ -118,6 +134,45 @@ async def test_external_client_grant_forwards_explicit_empty_account_scope(entry
 
 
 @pytest.mark.asyncio
+async def test_external_client_grant_forwards_exact_outer_operation(entrypoint):
+    result = await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        entrypoint.instance,
+        data={
+            "client_id": "external-client",
+            "resource": "https://service.example/mcp",
+            "claims": [],
+            "outer_operation": "records_export",
+        },
+    )
+
+    assert result["ok"] is True
+    call = entrypoint.service.calls[-1]
+    assert call["method"] == "extend"
+    assert call["resource_operations"] == {
+        "https://service.example/mcp": ["records_export"]
+    }
+
+
+@pytest.mark.asyncio
+async def test_external_client_recovery_forwards_exact_card_identity(entrypoint):
+    result = await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        entrypoint.instance,
+        data={
+            "client_id": "automation:manual-caller",
+            "access_id": "aut_exact_card",
+            "resource": "https://service.example/mcp",
+            "claims": [],
+            "outer_operation": "records_export",
+        },
+    )
+
+    assert result["ok"] is True
+    call = entrypoint.service.calls[-1]
+    assert call["method"] == "extend"
+    assert call["access_id"] == "aut_exact_card"
+
+
+@pytest.mark.asyncio
 async def test_named_service_operations_keep_their_absent_semantics(entrypoint):
     await entrypoint.module.ConnectionHubEntrypoint.delegated_access_create(
         entrypoint.instance,
@@ -170,6 +225,48 @@ async def test_operation_only_agent_grant_authors_exact_operation(
 
 
 @pytest.mark.asyncio
+async def test_outer_operation_only_agent_grant_authors_exact_operation(
+    entrypoint, monkeypatch
+):
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
+        consent_demand,
+    )
+
+    calls: list[dict] = []
+
+    async def author(**kwargs):
+        calls.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(consent_demand, "author_consent_granted_events", author)
+    monkeypatch.setattr(
+        entrypoint.module,
+        "_platform_user_payload",
+        lambda *args, **kwargs: {"sub": "user-1", "user_id": "user-1"},
+    )
+    entrypoint.instance.redis = object()
+    resource = "https://service.example/mcp"
+
+    result = await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        entrypoint.instance,
+        data={
+            "client_id": "kdcube-agent:workspace@1-0:main",
+            "resource": resource,
+            "claims": [],
+            "outer_operation": "records_export",
+        },
+    )
+
+    assert result["ok"] is True
+    call = entrypoint.service.calls[-1]
+    assert call["resource_operations"] == {resource: ["records_export"]}
+    assert calls[0]["granted_resource_operations"] == {
+        resource: ["records_export"]
+    }
+    assert calls[0]["granted_resource"] == resource
+
+
+@pytest.mark.asyncio
 async def test_agent_grant_without_any_authority_is_rejected(entrypoint):
     result = await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
         entrypoint.instance,
@@ -205,6 +302,163 @@ async def test_claim_only_agent_grant_remains_valid(entrypoint):
         ]
     }
     assert entrypoint.service.calls[-1]["named_service_operations"] is None
+
+
+@pytest.mark.asyncio
+async def test_operation_grant_and_once_policy_stay_fail_closed_until_both_commit(
+    monkeypatch,
+    tmp_path,
+):
+    module = _entrypoint_module()
+    resource = "https://reference.example.test/customers"
+    catalog_resource = f"{resource}*"
+    access_id = "access_demo"
+    client_id = "claude-code"
+
+    class ExistingClientService:
+        def __init__(self):
+            self.extend_calls = 0
+            self.card = {
+                "access_id": access_id,
+                "client_id": client_id,
+                "resource_grants": {resource: ["external_mcp:use"]},
+                "resource_operations": {resource: ["status"]},
+                "catalog_row_by_resource": {resource: catalog_resource},
+                "card_revision": 3,
+            }
+
+        async def list_access(self, user):
+            assert user["sub"] == "user-1"
+            return {
+                "ok": True,
+                "platform_user_id": "user-1",
+                "items": [dict(self.card)],
+                "resources": [
+                    {
+                        "resource": catalog_resource,
+                        "operations": [
+                            {"name": "status"},
+                            {"name": "restart"},
+                        ],
+                    }
+                ],
+            }
+
+        async def extend_client_access(self, user, **kwargs):
+            assert user["sub"] == "user-1"
+            assert kwargs["access_id"] == access_id
+            self.extend_calls += 1
+            selected = list(
+                kwargs["resource_operations"].get(resource, [])
+            )
+            self.card["resource_operations"] = {
+                resource: sorted(
+                    set(self.card["resource_operations"][resource])
+                    | set(selected)
+                )
+            }
+            self.card["card_revision"] += 1
+            return {
+                "ok": True,
+                "access_id": access_id,
+                "access": dict(self.card),
+            }
+
+    class Locks:
+        @staticmethod
+        @asynccontextmanager
+        async def lock(**_kwargs):
+            yield {}
+
+    policies = InvocationPolicyService(
+        store=BundleStorageInvocationPolicyStore(tmp_path),
+        mutation_lock=Locks.lock,
+    )
+
+    class FailFirstCommit:
+        def __init__(self):
+            self.failed = False
+
+        async def prepare_policy_change(self, **kwargs):
+            return await policies.prepare_policy_change(**kwargs)
+
+        async def commit_policy_change(self, **kwargs):
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("simulated interruption after card commit")
+            return await policies.commit_policy_change(**kwargs)
+
+        async def get(self, **kwargs):
+            return await policies.get(**kwargs)
+
+    access = ExistingClientService()
+    policy_port = FailFirstCommit()
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube import (
+        consent_demand,
+    )
+
+    authored: list[dict] = []
+
+    async def author(**kwargs):
+        authored.append(kwargs)
+        return 1
+
+    monkeypatch.setattr(consent_demand, "author_consent_granted_events", author)
+    monkeypatch.setattr(module, "_automation_access_service", lambda *a, **kw: access)
+    monkeypatch.setattr(module, "_invocation_policy_service", lambda *a, **kw: policy_port)
+    monkeypatch.setattr(
+        module,
+        "_platform_user_payload",
+        lambda *a, **kw: {"sub": "user-1", "user_id": "user-1"},
+    )
+    instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    instance.redis = object()
+    payload = {
+        "client_id": client_id,
+        "access_id": access_id,
+        "resource": resource,
+        "claims": [],
+        "resource_operations": {resource: ["restart"]},
+        "invocation_mode": POLICY_ONCE,
+        "invocation_change_id": "grant-restart-1",
+    }
+
+    interrupted = await module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        instance,
+        data=payload,
+    )
+    assert authored == []
+    authority = InvocationAuthority(
+        access_id=access_id,
+        resource=resource,
+        surface=SURFACE_OUTER,
+        operation="restart",
+    )
+    blocked = await policies.begin(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="invoke-restart-1",
+        request_digest=canonical_request_digest({"service": "api"}),
+    )
+    completed = await module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        instance,
+        data=payload,
+    )
+    replay = await module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        instance,
+        data=payload,
+    )
+
+    assert interrupted["error"] == "delegated_invocation_policy_unavailable"
+    assert "restart" in access.card["resource_operations"][resource]
+    assert blocked.reason == "delegated_invocation_policy_changing"
+    assert completed["invocation_policy"]["mode"] == POLICY_ONCE
+    assert completed["invocation_policy"]["remaining"] == 1
+    assert replay["replay"] is True
+    assert access.extend_calls == 2
+    assert len(authored) == 2
+    assert all(call["invocation_policy_mode"] == POLICY_ONCE for call in authored)
+    assert all(call["invocation_change_id"] == "grant-restart-1" for call in authored)
 
 
 # -- save preconditions ---------------------------------------------------------

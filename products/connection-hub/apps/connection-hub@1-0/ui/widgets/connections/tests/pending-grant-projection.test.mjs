@@ -4,9 +4,11 @@ import test from 'node:test'
 import {
   commonOperationGrants,
   doorGrantsForOperation,
+  pendingOuterApprovalReady,
   pendingServiceApprovalReady,
   pendingSelectionStatus,
   proposeExactAccountClaim,
+  resolvePendingOuterCapability,
   resolvePendingServiceCapability,
 } from '../src/features/delegatedAccess/pendingGrantProjection.ts'
 
@@ -52,6 +54,36 @@ test('pending service capability derives its door grants from the active catalog
 
 test('common grants require membership on every outer operation', () => {
   assert.deepEqual(commonOperationGrants(resource), ['named_services:use'])
+})
+
+test('outer operation request resolves and requires its own grants', () => {
+  const capability = resolvePendingOuterCapability(
+    { resource: resource.resource, outerOperation: 'call' },
+    [resource],
+  )
+
+  assert.equal(capability?.operation.name, 'call')
+  assert.equal(pendingOuterApprovalReady(
+    capability,
+    true,
+    ['named_services:use', 'named_services:invoke'],
+  ), true)
+  assert.equal(pendingOuterApprovalReady(
+    capability,
+    true,
+    ['named_services:use'],
+  ), false)
+  assert.equal(pendingOuterApprovalReady(capability, false, [
+    'named_services:use',
+    'named_services:invoke',
+  ]), false)
+})
+
+test('unknown outer operation is never grantable from the pending pane', () => {
+  assert.equal(resolvePendingOuterCapability(
+    { resource: resource.resource, outerOperation: 'missing' },
+    [resource],
+  ), null)
 })
 
 test('provider-backed operation claims are not copied into door grants', () => {

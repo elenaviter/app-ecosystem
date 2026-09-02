@@ -33,6 +33,7 @@ from connection_hub.delegated_credentials.credential_view import (
 )
 
 MANAGED_AUTH_MODE = "managed"
+DELEGATED_PROXY_AUTH_MODE = "delegated_proxy"
 
 
 def as_list(value: Any) -> tuple[str, ...]:
@@ -69,6 +70,19 @@ class ManagedMcpAuthPolicy:
     permissions: tuple[str, ...] = ()
     tool_policies: Mapping[str, ManagedMcpToolPolicy] | None = None
     selected_tool_grants: bool = True
+
+
+@dataclass(frozen=True)
+class DelegatedProxyAuthPolicy:
+    """Authenticate a live delegated card for a proxy-owned inner resource.
+
+    The hosted proxy URL is a transport entrance. The proxy resolves the
+    concrete connector resource and operation from the live card itself.
+    """
+
+    authority_id: str = ""
+    roles: tuple[str, ...] = ()
+    permissions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -144,6 +158,21 @@ def managed_mcp_auth_policy(
             data.get("tools") or data.get("tool_policies")
         ),
         selected_tool_grants=bool(data.get("selected_tool_grants", True)),
+    )
+
+
+def delegated_proxy_auth_policy(
+    auth: Mapping[str, Any] | None,
+) -> DelegatedProxyAuthPolicy | None:
+    if auth_mode(auth) != DELEGATED_PROXY_AUTH_MODE:
+        return None
+    data = dict(auth or {})
+    return DelegatedProxyAuthPolicy(
+        authority_id=str(
+            data.get("authority_id") or data.get("authority") or ""
+        ).strip(),
+        roles=as_list(data.get("roles")),
+        permissions=as_list(data.get("permissions")),
     )
 
 
@@ -318,10 +347,8 @@ def authorize_credential_boundary(
             )
         )
 
-    operations = (
-        as_list(grant_record.get("operations"))
-        if isinstance(grant_record, Mapping)
-        else ()
+    operations = view.operations_for_resource(
+        request_resource, matched_resource=matched_resource
     )
     stored_grants = view.grants_for_resource(request_resource)
     return SurfacePolicyDecision.allow(
@@ -329,6 +356,49 @@ def authorize_credential_boundary(
         stored_grants=stored_grants,
         granted_operations=operations,
     )
+
+
+def authorize_credential_identity_boundary(
+    *,
+    authority_id: str,
+    required_roles: Iterable[str],
+    required_permissions: Iterable[str],
+    user_roles: Iterable[str],
+    user_permissions: Iterable[str],
+    envelope: CredentialEnvelope,
+    grant_record: Mapping[str, Any] | None,
+) -> SurfacePolicyDecision:
+    """Authenticate a delegated caller and require a resource-bearing card.
+
+    Used only by governed proxies whose own URL is not the protected resource.
+    The inner proxy must subsequently select one of these exact card resources
+    and enforce its grants and operations before dispatch.
+    """
+
+    principal = authorize_principal_boundary(
+        required_roles=required_roles,
+        required_permissions=required_permissions,
+        user_roles=user_roles,
+        user_permissions=user_permissions,
+    )
+    if not principal.allowed:
+        return principal
+    if authority_id and envelope.issuer_authority_id != authority_id:
+        return SurfacePolicyDecision.deny(
+            SurfacePolicyDenial(
+                reason="authority_mismatch",
+                description="delegated credential authority mismatch",
+            )
+        )
+    view = DelegatedCredentialView.from_envelope(envelope, grant_record)
+    if not view.resources:
+        return SurfacePolicyDecision.deny(
+            SurfacePolicyDenial(
+                reason="credential_resource_missing",
+                description="delegated credential resource is missing",
+            )
+        )
+    return SurfacePolicyDecision.allow(matched_resource="")
 
 
 def authorize_principal_boundary(
@@ -813,7 +883,9 @@ def authorize_rest_capabilities(
 
 
 __all__ = [
+    "DELEGATED_PROXY_AUTH_MODE",
     "MANAGED_AUTH_MODE",
+    "DelegatedProxyAuthPolicy",
     "ManagedMcpAuthPolicy",
     "ManagedMcpToolPolicy",
     "ManagedRestAuthPolicy",
@@ -823,10 +895,12 @@ __all__ = [
     "as_list",
     "auth_mode",
     "authorize_credential_boundary",
+    "authorize_credential_identity_boundary",
     "authorize_mcp_capabilities",
     "authorize_principal_boundary",
     "authorize_rest_capabilities",
     "decode_json_body",
+    "delegated_proxy_auth_policy",
     "extract_mcp_tool_calls",
     "managed_mcp_auth_policy",
     "managed_rest_auth_policy",

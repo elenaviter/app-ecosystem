@@ -101,6 +101,7 @@ class OAuthDelegatedResourceConfig:
     identity_scope: str = DEFAULT_DELEGATED_IDENTITY_SCOPE
     named_services: Mapping[str, Any] = field(default_factory=dict)
     admin_only: bool = False
+    resource_selection: bool = False
 
 
 @dataclass(frozen=True)
@@ -489,6 +490,10 @@ def _parse_resources(raw: Any) -> tuple[OAuthDelegatedResourceConfig, ...]:
                 identity_scope=normalize_delegated_identity_scope(item.get("identity_scope")),
                 named_services=named_services,
                 admin_only=_coerce_bool(item.get("admin_only") or item.get("adminOnly"), default=False),
+                resource_selection=_coerce_bool(
+                    item.get("resource_selection") or item.get("resourceSelection"),
+                    default=False,
+                ),
             )
         )
     return tuple(out)

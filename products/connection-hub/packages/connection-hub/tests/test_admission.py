@@ -8,6 +8,7 @@ from connection_hub.delegated_credentials.admission import (
     ServiceProof,
     admission_allow,
     authorize_account_scope,
+    pairwise_service_client_id,
     pairwise_service_subject,
     sign_admission_request,
     verify_admission_request,
@@ -207,10 +208,17 @@ def test_allow_projection_is_pairwise_and_contains_no_internal_user_id() -> None
         service_id="crm-api",
         grantor_user_id="user-1",
     )
+    client_id = pairwise_service_client_id(
+        secret=SUBJECT_SECRET,
+        service_id="crm-api",
+        grantor_user_id="user-1",
+        client_id=view.client_id,
+    )
     response = admission_allow(
         decision_id="decision-1",
         service_id="crm-api",
         subject=subject,
+        client_id=client_id,
         view=view,
         request=_request(claims=("contacts:read",)),
         available_grants=("crm:read",),
@@ -221,5 +229,7 @@ def test_allow_projection_is_pairwise_and_contains_no_internal_user_id() -> None
 
     assert response["allowed"] is True
     assert response["principal"]["sub"].startswith("prk_sub_")
+    assert response["principal"]["client_id"].startswith("prk_client_")
+    assert "external-client" not in str(response)
     assert "user-1" not in str(response)
     assert response["provenance"]["card_revision"] == 7

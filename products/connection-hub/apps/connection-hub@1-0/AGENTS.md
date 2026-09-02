@@ -1,9 +1,10 @@
 ---
 id: connection-hub@1-0/agents
 title: "Connection Hub Builder-Agent Onboarding"
-summary: "Builder-agent onboarding guide for the platform Connection Hub example app: connection edges, connected provider accounts, delegated client credentials, OAuth callbacks, named-service boundaries, and the Connections widget."
+summary: "Builder-agent onboarding guide for the Connection Hub app: connection edges, connected accounts, delegated cards, invocation policy, external MCP proxying, direct admission, and the Connections widget."
 status: "active"
 tags: ["agents", "builder", "onboarding", "connection-hub", "identity", "connections", "oauth", "mcp", "named-services", "delegated-credentials", "react", "redux"]
+updated_at: 2026-09-02
 see_also:
   - "./README.md"
   - "../../../../docs/connection-hub/connection-hub-architecture.md"
@@ -47,6 +48,17 @@ protected-service registration
            the catalog resources for which it may request live decisions
   examples: crm-api may ask about https://api.example.test/customers*
   used by: direct delegated_admission calls; never duplicates operations/grants
+
+user-owned external MCP connector
+  purpose: let a user add a remote MCP service that has no Connection Hub
+           integration, keep its upstream credential server-side, and expose
+           only selected tools through the delegated proxy
+  used by: remote_mcp_proxy after exact card, descriptor, and policy checks
+
+invocation policy
+  purpose: make one already-granted operation reusable or one-use
+  storage: separate from the card, keyed by access id + resource + operation
+  used by: proxy dispatch and direct protected-service admission
 
 request authenticator
   purpose: verify that an incoming request proves a channel identity, then
@@ -127,7 +139,12 @@ Connection Hub app
   direct protected-service admission
     delegated bearer + independent signed service proof
     current card + active catalog + optional account-scope decision
-    bounded service-scoped principal; no provider credential
+    bounded pairwise user and caller-profile ids; no provider credential
+
+  user-owned external MCP proxy
+    owner-scoped connector + accepted tool descriptor
+    current card + once-or-always invocation policy
+    upstream credential injected server-side
 ```
 
 ## Implementation Rules
@@ -156,6 +173,11 @@ Connection Hub app
   handles, and admission nonces are TTL-bounded protocol authority.
 - A direct-admission service registration binds a workload to resource
   selectors only. Operations and grants stay in the active delegated catalog.
+- Keep invocation policy out of card authority. Card revisions say what is
+  granted; policy and invocation records say whether and how often it may run.
+- An external MCP connector is owner-scoped. Its durable revision and public
+  response contain no upstream secret value; the proxy resolves the secret
+  only after current card, connector, tool descriptor, and policy checks.
 - Keep the widget as a React/Redux app. Add slices/components instead of turning
   it into an ad hoc script.
 - Keep `entrypoint.py` as shallow orchestration. Authority domain logic belongs

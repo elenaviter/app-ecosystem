@@ -59,6 +59,7 @@
 
 .page[data-tab='identity']          { --kind: var(--blue);      --kind-rgb: 67, 114, 195; }
 .page[data-tab='delegatedToKdcube'] { --kind: var(--teal);      --kind-rgb: 1, 190, 178; }
+.page[data-tab='remoteMcp']         { --kind: var(--sky);       --kind-rgb: 56, 184, 200; }
 .page[data-tab='delegatedAccess']   { --kind: var(--purple);    --kind-rgb: 107, 99, 254; }
 .page[data-tab='authenticators']    { --kind: var(--gold-gate); --kind-rgb: 184, 134, 11; }
 
@@ -1032,6 +1033,59 @@ h2 {
 
 .input-inline { width: auto; }
 
+.remote-mcp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.remote-mcp-row {
+  align-items: flex-start;
+  margin: 0;
+}
+
+.remote-mcp-endpoint {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.remote-mcp-actions {
+  display: flex;
+  flex: 0 0 176px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.remote-mcp-actions > .btn {
+  width: 100%;
+  text-align: left;
+}
+
+.remote-mcp-drift {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.remote-mcp-credential-form {
+  max-width: 520px;
+}
+
+@media (max-width: 680px) {
+  .remote-mcp-actions {
+    flex: 1 1 100%;
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .remote-mcp-actions > .btn {
+    width: auto;
+  }
+}
+
 .inline-fields {
   display: grid;
   grid-template-columns: minmax(110px, 150px) minmax(0, 1fr);
@@ -1312,6 +1366,65 @@ code {
   overflow-wrap: anywhere;
 }
 
+.outer-operation-editor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.outer-operation-editor > .grant-chip {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.invocation-policy-control {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(52px, auto));
+  position: relative;
+  flex: 0 0 auto;
+  overflow: visible;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.invocation-policy-control button {
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.invocation-policy-control button:last-of-type {
+  border-right: 0;
+}
+
+.invocation-policy-control button.active {
+  background: rgba(var(--kind-rgb), 0.1);
+  color: var(--kind);
+  font-weight: 700;
+}
+
+.invocation-policy-control button:disabled {
+  cursor: default;
+}
+
+.invocation-policy-control > small {
+  position: absolute;
+  top: 100%;
+  right: 2px;
+  color: var(--danger, #b33a3a);
+  font-size: 9px;
+  line-height: 1.2;
+}
+
 .resource-boundaries {
   margin-top: 4px;
   border-top: 1px solid var(--line-soft);
@@ -1470,6 +1583,17 @@ code {
 .provider-requirement {
   padding: 8px 2px;
   border-bottom: 1px solid var(--line-soft);
+}
+
+@media (max-width: 620px) {
+  .outer-operation-editor {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .invocation-policy-control {
+    align-self: flex-start;
+  }
 }
 
 .provider-requirement-action {

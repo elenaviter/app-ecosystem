@@ -23,8 +23,16 @@ correct behavior for free.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from fnmatch import fnmatch
 from typing import Any, Mapping
+
+from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource,
+    normalize_resource_operations,
+    operation_union,
+    operations_for_resource as selected_operations_for_resource,
+    project_legacy_operations,
+    resource_matches,
+)
 
 AGENT_CLIENT_PREFIX = "kdcube-agent:"
 
@@ -59,21 +67,6 @@ def _normalize_account_scope(value: Any) -> dict[str, dict[str, tuple[str, ...]]
     return normalize_account_scope(value)
 
 
-def normalize_resource(value: Any) -> str:
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    return raw.split("?", 1)[0].rstrip("/")
-
-
-def resource_matches(credential_resource: str, request_resource: str) -> bool:
-    credential_resource = normalize_resource(credential_resource)
-    request_resource = normalize_resource(request_resource)
-    if not credential_resource or not request_resource:
-        return False
-    return credential_resource == request_resource or fnmatch(request_resource, credential_resource)
-
-
 def _attrs_of(value: Any) -> Mapping[str, Any]:
     """The ``attrs`` of a credential mapping, coerced from either a raw envelope
     dict (``{attrs: {...}}``) or a nested ``{credential: {...}}`` wrapper."""
@@ -103,6 +96,7 @@ class DelegatedCredentialView:
     resource_grants: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     grants: frozenset[str] = field(default_factory=frozenset)
     operations: tuple[str, ...] = ()
+    resource_operations: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     tools: tuple[str, ...] = ()
     grantor_roles: tuple[str, ...] = ()
     named_services: Mapping[str, Any] = field(default_factory=dict)
@@ -178,6 +172,18 @@ class DelegatedCredentialView:
                 out.update(grants)
         return out
 
+    def operations_for_resource(
+        self, request_resource: str, *, matched_resource: str = ""
+    ) -> set[str]:
+        """The outer operations selected on the matched card resource."""
+        return set(
+            selected_operations_for_resource(
+                self.resource_operations,
+                request_resource,
+                matched_resource=matched_resource,
+            )
+        )
+
     # ── constructors ───────────────────────────────────────────────────────
 
     @classmethod
@@ -219,6 +225,27 @@ class DelegatedCredentialView:
             if single:
                 resource_grants[single] = tuple(sorted(grants))
 
+        resource_operations: dict[str, tuple[str, ...]] = {}
+        resource_operations_present = False
+        for src in (grant_record, cred_attrs, record_cred_attrs):
+            if "resource_operations" not in src:
+                continue
+            resource_operations_present = True
+            try:
+                resource_operations = normalize_resource_operations(
+                    src.get("resource_operations")
+                )
+            except ValueError:
+                resource_operations = {}
+            break
+        flat_operations = _as_list(
+            grant_record.get("operations") or cred_attrs.get("operations")
+        )
+        if not resource_operations_present:
+            resource_operations = project_legacy_operations(
+                resource_grants, flat_operations
+            )
+
         # Identity: client id (explicit, then subject-derived for an agent).
         client_id = str(
             grant_record.get("client_id")
@@ -259,7 +286,8 @@ class DelegatedCredentialView:
             catalog_version=str(grant_record.get("catalog_version") or "").strip(),
             resource_grants=resource_grants,
             grants=frozenset(g for g in grants if g),
-            operations=_as_list(grant_record.get("operations") or cred_attrs.get("operations")),
+            operations=operation_union(resource_operations),
+            resource_operations=resource_operations,
             tools=_as_list(grant_record.get("tools")),
             grantor_roles=_as_list(grantor_authority.get("grantor_roles")),
             named_services=(

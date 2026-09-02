@@ -4,8 +4,8 @@ title: "Delegated Access Cards: Storage, Rendering, And Enforcement"
 summary: "Canonical lifecycle of Connection Hub Delegated by KDCube cards: what each card stores, which live catalogs render its editor, how changes reach runtime enforcement, and how descriptor drift must be reconciled."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
-keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "named_service_operations", "account_scope", "registry_access_id", "card authority", "descriptor drift", "grant lifecycle"]
-updated_at: 2026-08-31
+keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "named_service_operations", "account_scope", "registry_access_id", "card authority", "descriptor drift", "grant lifecycle"]
+updated_at: 2026-09-02
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -48,6 +48,7 @@ own stores; they are not delegated-access records.
 stored card selection                 current deployment catalogs
   what this user granted                what can be granted now
   resource_grants                       resources and grants
+  resource_operations                   outer MCP/REST operations
   named_service_operations              namespaces and operations
   account_scope                         connected accounts and claims
              \                           /
@@ -170,11 +171,12 @@ durable read.
 
 | Field | Meaning | Public list response |
 | --- | --- | --- |
-| `access_id` | Stable id of this card. | yes |
-| `label`, `client_id` | Human name and delegated caller identity. | yes |
+| `access_id` | Stable id of this card. It selects authority; it is not the caller's identity. | yes |
+| `label`, `client_id` | Human name and delegated caller-profile identity. | yes |
 | `grantor_subject`, `delegate_subject` | User who granted and integration principal that acts. | yes; list is also owner-scoped to the authenticated grantor. |
-| `operations` | Allowed outer API/MCP operation names derived at issuance or save. | yes |
 | `resource_grants` | Exact selected KDCube claims per resource. | yes |
+| `resource_operations` | Exact selected outer API/MCP operation names per resource. This is the operation authority. | yes |
+| `operations` | Compatibility union derived from `resource_operations`. It is not an independent authority source. | yes |
 | `named_service_operations` | The card's selection: `"*"`, `{}`, or an exact resource -> namespace -> operation map. | yes, verbatim, including `{}` and `"*"` |
 | `named_services` | Materialized boundary tree derived from the descriptor and `named_service_operations`. The proc-side bridge consumes it. | no; its expansion surfaces as `effective_named_service_operations` |
 | `effective_named_service_operations` | The selection expanded under the catalog version the card was saved against. Derived, never authority. | yes when the card covers any operation |
@@ -204,8 +206,26 @@ between the four states:
 | exact map | That resource -> namespace -> operation selection. |
 | field absent | A record written before this encoding. Its prior set is derived from the materialized boundary. |
 
+Card authority schema `connection_hub.delegated_card_authority.v2` stores
+outer operations as `resource_operations`. This qualification matters when two
+protected resources expose the same operation name: selecting the operation on
+one resource grants nothing on the other. A v1 card with only the flat
+`operations` field is read with its prior semantics by projecting that set onto
+each resource already selected by the card. The next successful card write
+persists v2. A pre-resource OAuth record is projected to the wildcard resource
+`"*"`, preserving its former all-matching-resource interpretation without
+making the flat union authoritative for new cards.
+
 Connected provider credentials are stored by the delegated-to-KDCube account
 system, not in these cards. `account_scope` contains ids and claims only.
+
+Invocation policy is also not a card field. The policy registry is keyed to
+the card's `access_id`, exact resource and operation, and optional connected
+account. `delegated_access_list` joins current policies into each public item
+as `invocation_policies` so the editor can render `Always` or `Once`, but card
+revision history remains a record of delegated capability rather than a usage
+counter. A manual card mints `access_id` and `client_id` independently; neither
+identifier is derived from the other.
 
 ## What List And Rendering Read
 
@@ -242,7 +262,7 @@ There are also two different operation layers:
 
 | Layer | Canonical descriptor shape | Example | List/card representation |
 | --- | --- | --- | --- |
-| Outer surface operation | `resources[].tools.<name>` | `named_services_schema` | The list response calls these `resources[].operations`; the card stores allowed names in `operations`. They are API/MCP entry operations at the protected resource. The parser also accepts `operations`, `allowed_tools`, and `actions` as input aliases, but `tools` is the canonical descriptor spelling. |
+| Outer surface operation | `resources[].tools.<name>` | `named_services_schema` | The list response calls these `resources[].operations`; the card stores the exact resource -> operation selection in `resource_operations` and returns its flat `operations` union for compatibility. They are API/MCP entry operations at the protected resource. The parser also accepts `operations`, `allowed_tools`, and `actions` as input aliases, but `tools` is the canonical descriptor spelling. |
 | Inner named-service operation | `resources[].named_services.namespaces.<namespace>.tools.<tool>.operation`, or the nested `<tool>.operations.<operation>` map | namespace `linkedin`, operation `object.schema` or `object.action.publish_post` | The exact user selection is stored in `named_service_operations`; the derived bridge policy is stored internally in `named_services`. These are the ontologic operations inside the named-services door. |
 
 The word `capabilities` can also occur as a named-service tool key, for
@@ -276,7 +296,10 @@ connections.delegated_credentials.oauth
       grants[] -------------------------------------------> claim rows
       tools{} --------------------------------------------> outer operation rows
         named_services_schema                                 |
-          grants: [named_services:use]                        +--> card.operations
+          grants: [named_services:use]                        +--> card.resource_operations
+                                                                 [resource] -> operation[]
+                                                                 + flat card.operations union
+                                                                   for compatibility
       named_services
         namespaces
           linkedin
@@ -459,11 +482,13 @@ agent attempts a governed operation
 ```
 
 The focused consent view projects that one denied invocation into an
-always-expanded review. It keeps three selections separate:
+always-expanded review. It keeps four selections separate:
 
-1. the exact named-service operation;
-2. the KDCube door grants required by that operation;
-3. the required provider claim on a specific connected account.
+1. the exact outer operation, plus the named-service namespace and operation
+   when the request enters that inner subsystem;
+2. whether the exact outer operation is allowed once or always;
+3. the KDCube door grants required by that operation;
+4. the required provider claim on a specific connected account.
 
 The full service catalog remains an optional editor beneath this focused
 review. The requested operation and its relevant KDCube grants are selected as
@@ -475,11 +500,12 @@ the user chooses the account.
 
 Every checked value names its authority state. `Already granted` means it is in
 the current card. `Pending - not granted yet` means the current form proposes
-adding it. Pressing Grant persists the selected operation, door grants, and
-account binding together. An operation demand cannot be submitted while its
-operation or a required door/account selection is absent. Provider claims
-remain prerequisites only: selecting or already holding one never selects a
-tool operation.
+adding it. Pressing `Allow once` or `Allow always` persists the selected
+operation, initial invocation policy, door grants, and account binding as one
+fail-closed change. An operation demand cannot be submitted while its operation
+or a required door/account selection is absent. Provider claims remain
+prerequisites only: selecting or already holding one never selects a tool
+operation.
 
 ### OAuth/MCP client
 
@@ -630,6 +656,13 @@ one-click approval never re-pins a `"*"` to a newer catalog.
 accumulate. With `replace: true` the submitted resource claims replace that
 resource's selection; omitted `account_scope` and `named_service_operations`
 preserve their stored values, and explicit empty maps clear those dimensions.
+
+When the same request also chooses `once` or `always`, the operation merge and
+policy write form one cross-registry transaction. A prepared policy marker
+closes invocation first, the card merge runs second, and the policy commits
+last. If the final commit is interrupted, calls remain denied until the same
+change id is retried. This avoids a visible card grant with an absent or older
+usage policy.
 
 ### OAuth card
 
@@ -1078,6 +1111,8 @@ grant operation, not a pointer move to a historical revision.
 | Descriptor namespace/operation projection | `...solutions.named_services_providers.boundary_policy.NamedServiceBoundaryCatalog` |
 | Live provider requirement enrichment | `automation_access.AutomationAccessService._named_service_options` plus provider discovery `spec.metadata.connected_accounts` |
 | Pointer-backed live card resolution | `...delegated_credentials.live_grant` |
+| Once-or-always policy and invocation idempotency | `connection_hub.invocation_policy` |
+| Owner-scoped external MCP resource overlay | `connection_hub.remote_mcp.catalog` |
 | Managed request projection | `...delegated_credentials.oauth.surface_guard._live_grant_record` |
 | Generic named-service admission contract | `...solutions.named_services_providers.admission` |
 | Connection Hub admission resolvers and managed snapshot | `...solutions.connections.named_service_admission` |

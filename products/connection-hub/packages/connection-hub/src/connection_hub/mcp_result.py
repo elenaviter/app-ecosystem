@@ -41,8 +41,31 @@ from connection_hub.mcp_consent import (
 logger = logging.getLogger(__name__)
 
 DELEGATED_CONSENT_REQUIRED = "delegated_consent_required"
+DELEGATED_CAPABILITY_NOT_GRANTED = "delegated_capability_not_granted"
 NEEDS_CONNECTED_ACCOUNT_CONSENT = "needs_connected_account_consent"
-_MARKERS = ('"download"', f'"{DELEGATED_CONSENT_REQUIRED}"', f'"{NEEDS_CONNECTED_ACCOUNT_CONSENT}"', '"consent"')
+DELEGATED_INVOCATION_ID_REQUIRED = "delegated_invocation_id_required"
+DELEGATED_INVOCATION_LIMIT_EXHAUSTED = "delegated_invocation_limit_exhausted"
+REMOTE_MCP_CONNECTOR_NOT_CONSENTED = "connector_grant_not_consented"
+REMOTE_MCP_OPERATION_NOT_CONSENTED = "operation_not_consented"
+_INVOCATION_POLICY_CODES = (
+    DELEGATED_INVOCATION_ID_REQUIRED,
+    DELEGATED_INVOCATION_LIMIT_EXHAUSTED,
+)
+_REMOTE_MCP_GRANT_CODES = (
+    REMOTE_MCP_CONNECTOR_NOT_CONSENTED,
+    REMOTE_MCP_OPERATION_NOT_CONSENTED,
+)
+_MARKERS = (
+    '"download"',
+    f'"{DELEGATED_CONSENT_REQUIRED}"',
+    f'"{DELEGATED_CAPABILITY_NOT_GRANTED}"',
+    f'"{NEEDS_CONNECTED_ACCOUNT_CONSENT}"',
+    f'"{DELEGATED_INVOCATION_ID_REQUIRED}"',
+    f'"{DELEGATED_INVOCATION_LIMIT_EXHAUSTED}"',
+    f'"{REMOTE_MCP_CONNECTOR_NOT_CONSENTED}"',
+    f'"{REMOTE_MCP_OPERATION_NOT_CONSENTED}"',
+    '"consent"',
+)
 
 ConnectedConsentAnnouncer = Callable[..., Awaitable[Any]]
 AgentConsentAnnouncer = Callable[[MCPConsentRequired], Awaitable[None]]
@@ -53,7 +76,7 @@ def _error_code(parsed: Mapping[str, Any]) -> str:
     err = parsed.get("error")
     if isinstance(err, Mapping):
         return str(err.get("code") or "").strip()
-    return str(err or "").strip()
+    return str(parsed.get("code") or err or "").strip()
 
 
 def _consent_block(parsed: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -82,11 +105,92 @@ async def announce_result_consent(
     or None when there is no consent to raise. Never raises."""
     try:
         code = _error_code(parsed)
-        if code not in (DELEGATED_CONSENT_REQUIRED, NEEDS_CONNECTED_ACCOUNT_CONSENT):
+        if code not in (
+            DELEGATED_CONSENT_REQUIRED,
+            DELEGATED_CAPABILITY_NOT_GRANTED,
+            NEEDS_CONNECTED_ACCOUNT_CONSENT,
+            *_INVOCATION_POLICY_CODES,
+            *_REMOTE_MCP_GRANT_CODES,
+        ):
             return None
         block = _consent_block(parsed)
         namespace = str(block.get("namespace") or parsed.get("namespace") or "").strip()
         operation = str(block.get("operation") or parsed.get("operation") or "").strip()
+        outer_operation = str(block.get("outer_operation") or "").strip()
+
+        if code in _REMOTE_MCP_GRANT_CODES:
+            client_id = str(block.get("agent_client_id") or "").strip()
+            resource = str(
+                block.get("resource") or parsed.get("resource") or ""
+            ).strip()
+            if not client_id or not resource or not outer_operation:
+                logger.warning(
+                    "[mcp-result] remote-MCP grant demand is not announceable: "
+                    "client=%r resource=%r operation=%r",
+                    client_id,
+                    resource,
+                    outer_operation,
+                )
+                return None
+            label = str(block.get("tool_name") or outer_operation)
+            agent_message = (
+                f"{label} is outside this caller profile's current delegated "
+                "access. The user can allow this operation once or always in "
+                "Connection Hub."
+            )
+            consent = MCPConsentRequired(
+                resource=resource,
+                claims=[
+                    str(item)
+                    for item in block.get("claims") or []
+                    if str(item or "").strip()
+                ],
+                consent=dict(block),
+                agent_message=agent_message,
+            )
+            if agent_consent_announcer is not None:
+                await agent_consent_announcer(consent)
+            else:
+                logger.warning(
+                    "[mcp-result] remote-MCP consent announcer is not configured"
+                )
+            handled = consent.to_tool_result()
+            handled["error"]["code"] = code
+            return handled
+
+        if code in _INVOCATION_POLICY_CODES:
+            client_id = str(block.get("agent_client_id") or "").strip()
+            resource = str(block.get("resource") or parsed.get("resource") or "").strip()
+            if not client_id or not resource or not outer_operation:
+                logger.warning(
+                    "[mcp-result] invocation-policy demand is not announceable: "
+                    "client=%r resource=%r operation=%r",
+                    client_id,
+                    resource,
+                    outer_operation,
+                )
+                return None
+            label = str(block.get("tool_name") or outer_operation)
+            agent_message = (
+                f"{label} needs a new invocation allowance on its delegated "
+                "access card. It is blocked until the user chooses Once or "
+                "Always in Connection Hub."
+            )
+            consent = MCPConsentRequired(
+                resource=resource,
+                claims=[],
+                consent=dict(block),
+                agent_message=agent_message,
+            )
+            if agent_consent_announcer is not None:
+                await agent_consent_announcer(consent)
+            else:
+                logger.warning(
+                    "[mcp-result] invocation-policy consent announcer is not configured"
+                )
+            handled = consent.to_tool_result()
+            handled["error"]["code"] = code
+            return handled
 
         if code == NEEDS_CONNECTED_ACCOUNT_CONSENT:
             if not namespace:
@@ -116,7 +220,7 @@ async def announce_result_consent(
         claims = [str(c) for c in (block.get("claims") or parsed.get("missing_grants") or []) if str(c or "").strip()]
         client_id = str(block.get("agent_client_id") or "").strip()
         resource = str(block.get("resource") or "").strip()
-        if not claims or not client_id or not resource:
+        if not (claims or outer_operation) or not client_id or not resource:
             logger.warning(
                 "[mcp-result] agent-grant consent not announceable from block: "
                 "client=%r resource=%r claims=%s namespace=%s — the surface must self-describe it",
@@ -125,9 +229,29 @@ async def announce_result_consent(
             return None
         logger.info(
             "[mcp-result] agent-grant consent -> banner: client=%s resource=%s "
-            "claims=%s namespace=%s operation=%s",
-            client_id, resource, claims, namespace, operation,
+            "claims=%s namespace=%s operation=%s outer_operation=%s",
+            client_id, resource, claims, namespace, operation, outer_operation,
         )
+        if block.get("invocation_policy") or block.get("invocation_change_id"):
+            label = str(block.get("tool_name") or outer_operation or namespace)
+            asked = outer_operation or operation or "this operation"
+            consent = MCPConsentRequired(
+                resource=resource,
+                claims=claims,
+                consent=dict(block),
+                agent_message=(
+                    f"{label} needs the user's delegated access for {asked}. "
+                    "It is blocked until the user chooses Once or Always in "
+                    "Connection Hub."
+                ),
+            )
+            if agent_consent_announcer is not None:
+                await agent_consent_announcer(consent)
+            else:
+                logger.warning("[mcp-result] agent consent announcer is not configured")
+            handled = consent.to_tool_result()
+            handled["error"]["code"] = code
+            return handled
         consent = mcp_consent_from_denial(
             {"status": 403, "reason": "authority_mismatch"},
             resource=resource,
@@ -136,6 +260,7 @@ async def announce_result_consent(
             agent_client_id=client_id,
             namespace=namespace,
             operation=operation,
+            outer_operation=outer_operation,
         )
         if agent_consent_announcer is not None:
             await agent_consent_announcer(consent)

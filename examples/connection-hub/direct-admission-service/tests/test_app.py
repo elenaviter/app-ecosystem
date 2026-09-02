@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from reference_service.admission_client import AdmissionResult
 from reference_service.app import create_app
 from reference_service.settings import Settings
+from connection_hub.invocation_policy import canonical_request_digest
 
 
 SETTINGS = Settings(
@@ -18,15 +19,24 @@ SETTINGS = Settings(
 class StubAdmission:
     def __init__(self, result: AdmissionResult) -> None:
         self.result = result
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[dict[str, str]] = []
 
     async def evaluate(
         self,
         *,
         delegated_bearer: str,
         operation: str,
+        invocation_id: str,
+        request_digest: str,
     ) -> AdmissionResult:
-        self.calls.append((delegated_bearer, operation))
+        self.calls.append(
+            {
+                "delegated_bearer": delegated_bearer,
+                "operation": operation,
+                "invocation_id": invocation_id,
+                "request_digest": request_digest,
+            }
+        )
         return self.result
 
 
@@ -55,7 +65,10 @@ def test_endpoint_releases_domain_data_only_after_allow() -> None:
 
     response = client.post(
         "/customers/search",
-        headers={"Authorization": "Bearer kst1.example"},
+        headers={
+            "Authorization": "Bearer kst1.example",
+            "Idempotency-Key": "customer-search-1",
+        },
         json={"query": "north"},
     )
 
@@ -63,7 +76,15 @@ def test_endpoint_releases_domain_data_only_after_allow() -> None:
     assert response.json()["customers"] == [
         {"id": "customer-101", "name": "Northwind Labs", "status": "active"}
     ]
-    assert admission.calls == [("kst1.example", "customers.search")]
+    assert response.json()["invocation_id"] == "customer-search-1"
+    assert admission.calls == [
+        {
+            "delegated_bearer": "kst1.example",
+            "operation": "customers.search",
+            "invocation_id": "customer-search-1",
+            "request_digest": canonical_request_digest({"query": "north"}),
+        }
+    ]
 
 
 def test_endpoint_passes_current_authority_denial_through() -> None:
@@ -81,7 +102,10 @@ def test_endpoint_passes_current_authority_denial_through() -> None:
 
     response = client.post(
         "/customers/search",
-        headers={"Authorization": "Bearer kst1.example"},
+        headers={
+            "Authorization": "Bearer kst1.example",
+            "Idempotency-Key": "customer-search-denied",
+        },
         json={"query": "north"},
     )
 

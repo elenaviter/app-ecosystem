@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { TabGuide } from './TabGuide';
 
-export type ConnectionsTab = 'identity' | 'delegatedToKdcube' | 'providerConnections' | 'delegatedAccess' | 'accessMap' | 'authenticators';
+export type ConnectionsTab = 'identity' | 'delegatedToKdcube' | 'providerConnections' | 'remoteMcp' | 'delegatedAccess' | 'accessMap' | 'authenticators';
 
 export interface AppShellProps {
   errors: string[];
@@ -81,6 +81,13 @@ export function AppShell({
         data-fade-right={fade.right || undefined}
       >
       <nav className="tabs" aria-label="Connection Hub sections" ref={(el) => { tabsRef.current = el; }}>
+        <button
+          type="button"
+          className={`tab ${activeTab === 'remoteMcp' ? 'active' : ''}`}
+          onClick={() => onTabChange('remoteMcp')}
+        >
+          External MCP
+        </button>
         <button
           type="button"
           className={`tab ${activeTab === 'identity' ? 'active' : ''}`}

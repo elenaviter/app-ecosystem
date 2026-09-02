@@ -43,10 +43,14 @@ class AdmissionClient:
         *,
         delegated_bearer: str,
         operation: str,
+        invocation_id: str,
+        request_digest: str,
     ) -> AdmissionResult:
         request = AdmissionRequest(
             resource=self._settings.resource,
             operation=operation,
+            invocation_id=invocation_id,
+            request_digest=request_digest,
         )
         timestamp = str(int(time.time()))
         nonce = secrets.token_urlsafe(24)

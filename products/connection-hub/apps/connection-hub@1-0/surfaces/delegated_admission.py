@@ -17,10 +17,16 @@ from connection_hub.delegated_credentials.admission import (
     admission_allow,
     admission_denial,
     authorize_account_scope,
+    pairwise_service_client_id,
     pairwise_service_subject,
     verify_admission_request,
 )
 from connection_hub.delegated_credentials.credential_view import DelegatedCredentialView
+from connection_hub.invocation_policy import (
+    SURFACE_OUTER,
+    InvocationAuthority,
+    InvocationPolicyService,
+)
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.surface_guard import (
     evaluate_delegated_rest_admission,
 )
@@ -29,6 +35,12 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentia
 LOGGER = logging.getLogger("kdcube.connection_hub.admission")
 SecretResolver = Callable[[str, str], Awaitable[str]]
 RequestConfigBinder = Callable[[Any], Any]
+InvocationRecoveryURLBuilder = Callable[
+    [DelegatedCredentialView, AdmissionRequest], str
+]
+OperationGrantURLBuilder = Callable[
+    [DelegatedCredentialView, AdmissionRequest, str], str
+]
 
 
 @dataclass(frozen=True)
@@ -41,6 +53,9 @@ class AdmissionHostContext:
     project: str
     resolve_secret: SecretResolver
     bind_delegated_request: RequestConfigBinder
+    invocation_policies: InvocationPolicyService | None = None
+    invocation_recovery_url_builder: InvocationRecoveryURLBuilder | None = None
+    operation_grant_url_builder: OperationGrantURLBuilder | None = None
 
 
 def _request_bearer(request: Any) -> str:
@@ -71,7 +86,7 @@ async def _claim_nonce(
     return bool(claimed)
 
 
-def _guard_denial_facts(response: Any) -> tuple[str, str]:
+def _guard_denial_facts(response: Any) -> tuple[str, str, dict[str, Any]]:
     payload: Dict[str, Any] = {}
     try:
         raw = getattr(response, "body", b"")
@@ -96,7 +111,7 @@ def _guard_denial_facts(response: Any) -> tuple[str, str]:
         or payload.get("message")
         or "The delegated operation was denied."
     ).strip()
-    return code, message
+    return code, message, payload
 
 
 def _denial_response(
@@ -107,17 +122,32 @@ def _denial_response(
     decision_id: str,
     retryable: bool = False,
     details: Mapping[str, Any] | None = None,
+    consent: Mapping[str, Any] | None = None,
 ) -> JSONResponse:
+    content = admission_denial(
+        code=code,
+        message=message,
+        retryable=retryable,
+        decision_id=decision_id,
+        details=details,
+    )
+    if isinstance(consent, Mapping) and consent:
+        content["consent"] = dict(consent)
     return JSONResponse(
         status_code=status_code,
-        content=admission_denial(
-            code=code,
-            message=message,
-            retryable=retryable,
-            decision_id=decision_id,
-            details=details,
-        ),
+        content=content,
     )
+
+
+def _provider_invocation_policy(policy: Any) -> dict[str, Any]:
+    """Project invocation state without the owner's card coordinates."""
+
+    public = policy.to_public_dict()
+    return {
+        key: public[key]
+        for key in ("mode", "revision", "state", "remaining", "updated_at")
+        if key in public
+    }
 
 
 async def handle_delegated_admission(
@@ -313,7 +343,22 @@ async def handle_delegated_admission(
             retryable=True,
         )
     if result.denial is not None:
-        code, message = _guard_denial_facts(result.denial)
+        code, message, guard_payload = _guard_denial_facts(result.denial)
+        policy_denial = getattr(
+            getattr(result, "decision", None),
+            "denial",
+            None,
+        )
+        policy_reason = str(
+            getattr(policy_denial, "reason", "") or ""
+        ).strip()
+        policy_description = str(
+            getattr(policy_denial, "description", "") or ""
+        ).strip()
+        if policy_reason:
+            code = policy_reason
+        if policy_description:
+            message = policy_description
         status_code = int(getattr(result.denial, "status_code", 403) or 403)
         LOGGER.info(
             "denied decision_id=%s reason=%s service_id=%s resource=%s operation=%s",
@@ -323,16 +368,85 @@ async def handle_delegated_admission(
             admission_request.resource,
             admission_request.operation,
         )
+        details: dict[str, Any] = {
+            "resource": admission_request.resource,
+            "operation": admission_request.operation,
+        }
+        consent: dict[str, Any] = {}
+        requested = (
+            guard_payload.get("ret", {}).get("requested_capability", {})
+            if isinstance(guard_payload.get("ret"), Mapping)
+            else {}
+        )
+        recoverable_outer_operation = code == "operation_not_consented" or (
+            code == "delegated_capability_not_granted"
+            and isinstance(requested, Mapping)
+            and str(requested.get("kind") or "") == "outer_operation"
+        )
+        if recoverable_outer_operation:
+            view = DelegatedCredentialView.from_envelope(
+                result.envelope,
+                result.grant_record,
+            )
+            change_id = (
+                admission_request.invocation_id
+                or f"admission-{decision_id}"
+            )
+            recovery_url = (
+                context.operation_grant_url_builder(
+                    view,
+                    admission_request,
+                    change_id,
+                )
+                if context.operation_grant_url_builder is not None
+                else ""
+            )
+            if view.client_id and view.registry_access_id:
+                grant_payload = {
+                    "client_id": view.client_id,
+                    "access_id": view.registry_access_id,
+                    "resource": admission_request.resource,
+                    "claims": [],
+                    "resource_operations": {
+                        admission_request.resource: [admission_request.operation]
+                    },
+                    "invocation_change_id": change_id,
+                }
+                consent = {
+                    "kind": "delegated_agent_grant",
+                    "reason": code,
+                    "agent_client_id": view.client_id,
+                    "access_id": view.registry_access_id,
+                    "resource": admission_request.resource,
+                    "claims": [],
+                    "tool_name": admission_request.operation,
+                    "outer_operation": admission_request.operation,
+                    "connection_hub_url": recovery_url,
+                    "invocation_policy": "choose",
+                    "invocation_change_id": change_id,
+                    "available_choices": ["allow_once", "allow_always"],
+                    "grant": {
+                        "operation": "delegated_agent_grant_create",
+                        "payload": grant_payload,
+                    },
+                }
+                details.update(
+                    {
+                        "access_id": view.registry_access_id,
+                        "card_revision": view.card_revision,
+                        "client_id": view.client_id,
+                        "available_choices": ["allow_once", "allow_always"],
+                        "recovery": consent,
+                    }
+                )
         return _denial_response(
             status_code=status_code,
             code=code,
             message=message,
             decision_id=decision_id,
             retryable=status_code >= 500,
-            details={
-                "resource": admission_request.resource,
-                "operation": admission_request.operation,
-            },
+            details=details,
+            consent=consent,
         )
 
     view = DelegatedCredentialView.from_envelope(
@@ -398,6 +512,12 @@ async def handle_delegated_admission(
         service_id=service.service_id,
         grantor_user_id=grantor_user_id,
     )
+    client_id = pairwise_service_client_id(
+        secret=projection_secret,
+        service_id=service.service_id,
+        grantor_user_id=grantor_user_id,
+        client_id=view.client_id,
+    )
     grant_record = result.grant_record or {}
     try:
         expires_at = int(grant_record.get("expires_at") or 0)
@@ -407,6 +527,7 @@ async def handle_delegated_admission(
         decision_id=decision_id,
         service_id=service.service_id,
         subject=subject,
+        client_id=client_id,
         view=view,
         request=admission_request,
         available_grants=result.decision.available_grants,
@@ -414,6 +535,132 @@ async def handle_delegated_admission(
         expires_at=expires_at,
         active_catalog_version=result.catalog.version,
     )
+    if context.invocation_policies is not None:
+        authority = InvocationAuthority(
+            access_id=view.registry_access_id,
+            resource=admission_request.resource,
+            surface=SURFACE_OUTER,
+            operation=admission_request.operation,
+            provider_id=admission_request.account.provider_id,
+            account_id=admission_request.account.account_id,
+        )
+        try:
+            invocation_decision = await context.invocation_policies.begin(
+                owner_subject=grantor_user_id,
+                authority=authority,
+                invocation_id=admission_request.invocation_id,
+                request_digest=admission_request.request_digest,
+                card_revision=view.card_revision,
+                authority_revision=result.catalog.version,
+            )
+        except Exception:
+            LOGGER.exception(
+                "unavailable decision_id=%s reason=invocation_policy_unavailable "
+                "service_id=%s resource=%s operation=%s",
+                decision_id,
+                service.service_id,
+                admission_request.resource,
+                admission_request.operation,
+            )
+            return _denial_response(
+                status_code=503,
+                code="delegated_invocation_policy_unavailable",
+                message="The invocation policy could not be resolved.",
+                decision_id=decision_id,
+                retryable=True,
+                details={
+                    "access_id": view.registry_access_id,
+                    "resource": admission_request.resource,
+                    "surface": SURFACE_OUTER,
+                    "operation": admission_request.operation,
+                },
+            )
+        if not invocation_decision.dispatch:
+            if (
+                invocation_decision.replay
+                and invocation_decision.invocation is not None
+                and invocation_decision.invocation.state == "completed"
+                and isinstance(invocation_decision.result, Mapping)
+                and not invocation_decision.result_is_error
+            ):
+                replayed = dict(invocation_decision.result)
+                replayed["replay"] = True
+                replayed["invocation_id"] = admission_request.invocation_id
+                return JSONResponse(replayed)
+            details = {
+                "access_id": view.registry_access_id,
+                "card_revision": view.card_revision,
+                "resource": admission_request.resource,
+                "surface": SURFACE_OUTER,
+                "operation": admission_request.operation,
+                "invocation_id": admission_request.invocation_id,
+                "available_choices": ["allow_once", "allow_always"],
+                **invocation_decision.to_dict(),
+            }
+            if context.invocation_recovery_url_builder is not None:
+                recovery_url = context.invocation_recovery_url_builder(
+                    view,
+                    admission_request,
+                )
+                if recovery_url:
+                    details["recovery"] = {
+                        "kind": "delegated_invocation_policy",
+                        "connection_hub_url": recovery_url,
+                        "access_id": view.registry_access_id,
+                        "resource": admission_request.resource,
+                        "outer_operation": admission_request.operation,
+                        "available_choices": ["allow_once", "allow_always"],
+                    }
+            return _denial_response(
+                status_code=(409 if invocation_decision.replay else 403),
+                code=invocation_decision.reason,
+                message="The delegated invocation policy denied this operation.",
+                decision_id=decision_id,
+                retryable=invocation_decision.retryable,
+                details=details,
+            )
+        if invocation_decision.policy is not None:
+            response["invocation_policy"] = _provider_invocation_policy(
+                invocation_decision.policy
+            )
+            response["provenance"]["invocation_policy_revision"] = (
+                invocation_decision.policy.revision
+            )
+        if admission_request.invocation_id:
+            response["invocation_id"] = admission_request.invocation_id
+            response["replay"] = False
+        if invocation_decision.invocation is not None:
+            try:
+                await context.invocation_policies.complete(
+                    owner_subject=grantor_user_id,
+                    authority=authority,
+                    invocation_id=admission_request.invocation_id,
+                    request_digest=admission_request.request_digest,
+                    result=response,
+                )
+            except Exception:
+                LOGGER.exception(
+                    "unavailable decision_id=%s reason=invocation_record_unavailable "
+                    "service_id=%s resource=%s operation=%s",
+                    decision_id,
+                    service.service_id,
+                    admission_request.resource,
+                    admission_request.operation,
+                )
+                return _denial_response(
+                    status_code=503,
+                    code="delegated_invocation_record_unavailable",
+                    message="The invocation decision could not be recorded.",
+                    decision_id=decision_id,
+                    retryable=True,
+                    details={
+                        "access_id": view.registry_access_id,
+                        "resource": admission_request.resource,
+                        "surface": SURFACE_OUTER,
+                        "operation": admission_request.operation,
+                        "invocation_id": admission_request.invocation_id,
+                    },
+                )
     LOGGER.info(
         "allowed decision_id=%s service_id=%s client_id=%s resource=%s operation=%s card_revision=%s catalog_version=%s",
         decision_id,
@@ -427,4 +674,9 @@ async def handle_delegated_admission(
     return JSONResponse(response)
 
 
-__all__ = ["AdmissionHostContext", "handle_delegated_admission"]
+__all__ = [
+    "AdmissionHostContext",
+    "InvocationRecoveryURLBuilder",
+    "OperationGrantURLBuilder",
+    "handle_delegated_admission",
+]

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import uuid
 from typing import Annotated, Any, Protocol
 
 from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
+from connection_hub.invocation_policy import canonical_request_digest
 
 from reference_service.admission_client import AdmissionClient, AdmissionResult
 from reference_service.settings import Settings
@@ -16,6 +18,8 @@ class AdmissionEvaluator(Protocol):
         *,
         delegated_bearer: str,
         operation: str,
+        invocation_id: str,
+        request_digest: str,
     ) -> AdmissionResult: ...
 
 
@@ -53,6 +57,7 @@ def create_app(
     async def search_customers(
         payload: CustomerSearch,
         authorization: Annotated[str, Header()] = "",
+        idempotency_key: Annotated[str, Header(alias="Idempotency-Key")] = "",
     ) -> Any:
         delegated_bearer = _bearer(authorization)
         if not delegated_bearer:
@@ -67,9 +72,13 @@ def create_app(
                 },
             )
 
+        invocation_id = idempotency_key.strip() or f"reference-{uuid.uuid4().hex}"
+        request_digest = canonical_request_digest({"query": payload.query})
         decision = await evaluator.evaluate(
             delegated_bearer=delegated_bearer,
             operation="customers.search",
+            invocation_id=invocation_id,
+            request_digest=request_digest,
         )
         if not decision.allowed:
             return JSONResponse(
@@ -89,6 +98,9 @@ def create_app(
         principal = decision.payload.get("principal")
         return {
             "ok": True,
+            "invocation_id": invocation_id,
+            "admission_replay": bool(decision.payload.get("replay")),
+            "invocation_policy": dict(decision.payload.get("invocation_policy") or {}),
             "principal": principal if isinstance(principal, dict) else {},
             "customers": matches,
         }

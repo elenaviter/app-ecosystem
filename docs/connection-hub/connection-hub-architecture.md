@@ -1,10 +1,11 @@
 ---
 id: connection-hub/connection-hub-architecture
 title: "Connection Hub Architecture And Semantic Requirements"
-summary: "Canonical architecture for the Connection Hub-backed Connection Hub app: identity and delegation semantics, public and managed surfaces, storage authorities, host boundaries, and direct protected-service admission."
+summary: "Canonical architecture for Connection Hub: identity and delegation semantics, public and managed surfaces, user-owned external MCP proxying, storage authorities, host boundaries, and direct protected-service admission."
 status: active
-tags: ["connection-hub", "connection-hub", "architecture", "identity", "delegated-access", "storage", "admission"]
-keywords: ["connection edge", "connected account", "delegated card", "active capability catalog", "protected service", "direct admission", "storage authority"]
+tags: ["connection-hub", "architecture", "identity", "delegated-access", "storage", "admission", "mcp", "proxy"]
+keywords: ["connection edge", "connected account", "delegated card", "active capability catalog", "external MCP connector", "invocation policy", "protected service", "direct admission", "storage authority"]
+updated_at: 2026-09-02
 see_also:
   - ./package/delegated-authority-and-admission.md
   - ./package/delegated-cards.md
@@ -37,6 +38,8 @@ Connection Hub maintains several related contracts. They are not one generic
 | Connected account, delegated TO KDCube | May trusted server-side code use this user's external provider account, and with which provider claims? | User-scoped account metadata plus a server-side credential. |
 | Delegated card, delegated BY a user | Which caller may use which resource, operation, grants, and optional connected-account scope? | The card's current immutable revision. |
 | Active capability catalog | What may this deployment delegate now? | The current operator-published catalog version. It is the ceiling over every card. |
+| User-owned external MCP connector | Which remote MCP endpoint and accepted tools may Connection Hub present as a guarded resource for this user? | The connector's current immutable revision plus a separately stored upstream credential. |
+| Invocation policy | May this already-granted operation be invoked repeatedly or one time? | A live policy record keyed to the exact card, resource, operation, and optional connected account. |
 | Protected-service registration | Which authenticated backend may ask about which catalog resources? | Descriptor-owned workload registration with resource selectors only. |
 
 The effective delegated authority for one operation is the intersection of
@@ -50,6 +53,9 @@ authenticated delegated bearer
   AND operation still present in the active catalog
   AND grants allowed by both card and catalog
   AND requested connected account allowed by the card, when present
+  AND current connector state and accepted tool descriptor, when the
+      user-owned external MCP proxy is used
+  AND the operation's current once-or-always invocation policy
   AND authenticated protected service registered for that resource,
       when the direct admission surface is used
 ```
@@ -75,13 +81,21 @@ does not authorize every operation.
    operation, and account. It may not supply a trusted user id, card revision,
    grants, roles, or catalog version.
 6. **Bounded identity projection.** A directly integrated backend receives a
-   stable service-scoped subject, not the internal platform user id.
+   stable service-scoped user subject and caller-profile id. It receives
+   neither the internal platform user id nor the raw delegated-card id.
 7. **One policy path.** KDCube-managed REST/MCP guards and direct external
    admission use the same live delegated-card and catalog evaluator. The
    public route does not maintain a second capability model.
 8. **Domain authorization remains local.** An allow authorizes the named
    operation at the registered resource. The protected backend still checks
    domain objects and must perform the operation it asked about.
+9. **Accepted external MCP descriptors.** Connection Hub compares the live
+   descriptor of the exact tool with the user's accepted descriptor before a
+   proxied call. A changed or removed tool fails closed; a newly advertised
+   tool remains ungranted until the user accepts the descriptor and grants it.
+10. **One-use authority is separate from card authority.** A card answers
+    which operation may be called. Its invocation policy answers whether that
+    operation may be called repeatedly or has one remaining use.
 
 ## Runtime Architecture
 
@@ -97,7 +111,8 @@ does not authorize every operation.
 |                                                                           |
 | Connections widget       request_authenticate       delegated OAuth       |
 | authenticated ops        public proof callbacks     direct admission      |
-| connections named service                            discovery metadata    |
+| connections named svc    external MCP connectors   remote MCP proxy      |
+|                                                     discovery metadata    |
 +-------------------------------+-------------------------------------------+
                                 |
                                 | KDCube host adapters
@@ -107,7 +122,8 @@ does not authorize every operation.
 |                                                                           |
 | connection edges     connected-account contracts     request authenticators|
 | delegated cards      active capability catalog       admission decisions  |
-| OAuth contracts      structured denials              bounded projections  |
+| invocation policy    external MCP contracts          bounded projections  |
+| OAuth contracts      structured denials              descriptor drift     |
 +-------------------------------+-------------------------------------------+
                                 |
                                 | host storage and runtime ports
@@ -133,6 +149,17 @@ does not authorize every operation.
                        allow with bounded principal
                                   v
                      backend enforces domain operation
+
+ USER-OWNED EXTERNAL MCP SERVICE
+
+ delegated caller -- bearer --> Connection Hub remote MCP proxy
+                                  |
+                     current card + invocation policy
+                     accepted descriptor + connector state
+                                  |
+                     upstream credential injected here
+                                  v
+                            remote MCP server
 ```
 
 The direct backend is a policy-enforcement point. If that backend cannot be
@@ -151,11 +178,63 @@ co-located.
 | Delegated OAuth authorization server at `public/oauth/*` | OAuth client plus browser consent | Client registration, codes, refresh/access bindings, cards, catalog | Opaque delegated bearer and refresh lifecycle. |
 | `connections` named-service provider | Trusted KDCube app/tool acting for current user | User account metadata and server-side credential broker | Provider operation result or actionable consent requirement. |
 | Managed REST/MCP guard | Request carrying delegated bearer to a KDCube surface | Access binding, current card, active catalog, surface operation | Continue dispatch or structured denial. |
+| External MCP connector operations | Browser with platform session | Owner-scoped connector revisions, accepted descriptors, secret references | Create, inspect, refresh, accept drift, disable, rotate credentials, or delete. |
+| `remote_mcp_proxy` | MCP client carrying delegated bearer | Exact card, connector, accepted and live tool descriptors, invocation policy, upstream secret | List only granted tools and invoke the selected upstream tool. |
 | `delegated_admission` | Registered external backend carrying delegated bearer and signed service proof | Same live guard state plus service registration and replay store | Bounded allow/deny decision; no provider credential. |
 | OAuth/protected-resource metadata | Public discovery client | Descriptor-derived OAuth and resource metadata | OAuth endpoints, supported capabilities, and direct-admission endpoint when enabled. |
 
 The app's human interface contract is
 [`products/connection-hub/apps/connection-hub@1-0/interface/README.md`](../../products/connection-hub/apps/connection-hub@1-0/interface/README.md).
+
+## User-Owned External MCP Proxy
+
+This mode covers a remote MCP service that has no Connection Hub admission
+integration. The user registers its streamable-HTTP endpoint and, when needed,
+an upstream bearer or header credential. Connection Hub discovers the tools,
+stores an accepted descriptor snapshot, and adds one owner-scoped resource to
+the user's card editor:
+
+```text
+urn:connection-hub:remote-mcp:<connector-id>
+  grant: external_mcp:use
+  operations: exact accepted upstream tool names
+```
+
+The upstream credential is stored in the user's server-side secret store. The
+durable connector revision contains only an opaque credential reference and
+non-secret descriptor metadata. A delegated caller receives a Connection Hub
+bearer for its own card; it never receives the upstream credential.
+
+For every list or call, the proxy resolves the exact current card and connector
+for their common owner. A tool is visible and callable only when all of these
+facts hold:
+
+1. the connector is active;
+2. the card contains its exact connector resource and `external_mcp:use`;
+3. the card selects the exact upstream tool under that resource;
+4. the tool is still advertised with the accepted descriptor digest;
+5. the current invocation policy allows this invocation.
+
+Refresh stores added, changed, and removed tools as pending descriptor drift.
+An unchanged selected tool remains usable when another tool drifted. A changed
+or removed selected tool is denied. Accepting the pending descriptor advances
+the connector descriptor revision; newly accepted tools then appear in the
+card editor unchecked. Descriptor comparison detects changes in advertised
+name, description, and schemas. It cannot detect an implementation change that
+keeps the same advertised descriptor.
+
+The proxy validates the endpoint against deployment-owned outbound policy at
+creation, refresh, observation, and invocation. Public HTTPS is the default.
+HTTP, private networks, and explicit host exceptions are deployment choices,
+not user-provided overrides. The host resolves and validates every DNS answer
+again when opening the TCP socket, then connects to that approved address while
+retaining the original hostname for TLS verification. Redirects and
+environment-provided HTTP proxies remain disabled for this transport.
+
+Because Connection Hub performs the upstream call in this mode, it can store a
+terminal result under the invocation id. A retry with the same id and request
+digest returns that result without calling the remote MCP tool again. Reusing
+the id with different arguments is denied.
 
 ## Direct Protected-Service Admission
 
@@ -174,6 +253,8 @@ Content-Type: application/json
 {
   "resource": "https://api.example.test/customers",
   "operation": "customers.search",
+  "invocation_id": "customer-search-0185",
+  "request_digest": "<sha256-of-the-provider-domain-request>",
   "account": {
     "provider_id": "salesforce",
     "account_id": "account-17",
@@ -184,6 +265,9 @@ Content-Type: application/json
 
 `account` is optional. When supplied, `provider_id` and `account_id` are both
 required. Requested claims must be a subset of the live card's account scope.
+`invocation_id` and `request_digest` are also optional as a pair. They are
+required when the operation is governed by a one-use policy and recommended
+for retryable writes.
 
 ### Service request signature
 
@@ -192,7 +276,8 @@ service. The secret contains at least 32 bytes and is resolved server-side from
 `secret_ref`.
 
 ```text
-body = canonical JSON of resource, operation, and optional account
+body = canonical JSON of resource, operation, optional account,
+       and optional invocation id + request digest
 
 message =
   "connection-hub-admission-v1\n" +
@@ -225,7 +310,7 @@ using the endpoint as a bearer-probing oracle.
   "service_id": "crm-api",
   "principal": {
     "sub": "prk_sub_service_scoped_value",
-    "client_id": "external-agent"
+    "client_id": "prk_client_service_scoped_value"
   },
   "authority": {
     "resource": "https://api.example.test/customers",
@@ -246,10 +331,14 @@ using the endpoint as a bearer-probing oracle.
 }
 ```
 
-The response does not expose the platform user id, raw card access id,
-identity-family scope, bearer, or provider credential. `principal.sub` is
-derived with a separate deployment projection secret and is pairwise for the
-registered service.
+The response does not expose the platform user id, raw card access id, raw
+caller client id, identity-family scope, bearer, or provider credential.
+`principal.sub` is a stable pairwise id for this service and user.
+`principal.client_id` is a separate stable pairwise id for this service, user,
+and delegated caller profile. The same user can therefore authorize several
+caller profiles that the service can distinguish without learning their
+Connection Hub ids. Neither pairwise id correlates the user or profile across
+registered services.
 
 Denials use `connection_hub.delegated_admission.v1`, a stable error code, a
 `decision_id`, and a retryability flag. They do not disclose another card's
@@ -291,7 +380,8 @@ connections:
 ```
 
 The projection secret is separate from service signing secrets so rotating
-one workload credential does not change that service's pairwise user subjects.
+one workload credential does not change that service's pairwise user or
+caller-profile identifiers.
 
 ### Protected-service integration
 
@@ -308,10 +398,17 @@ A backend integrating this surface performs these steps:
 4. The backend signs a fresh admission request over that bearer and the exact
    semantic operation, using a new nonce for every attempt.
 5. On allow, the backend executes only the requested operation for the returned
-   service-scoped subject. It does not treat the decision as a general session
-   or cache it for a later operation.
+   pairwise user and caller-profile ids. It does not treat the decision as a
+   general session or cache it for a later operation.
 6. On denial, the backend performs no protected effect. It may retry only a
    response explicitly marked `retryable`, with a fresh nonce.
+
+Connection Hub can reserve a one-use decision and replay the same allow
+decision for the same invocation id and digest. It does not execute the
+backend's domain effect. A backend that changes state must use that invocation
+id in its own idempotency ledger before applying the effect. This is what
+prevents an uncertain client retry from applying the same provider-side change
+twice.
 
 The `connection-hub` package supplies the canonical request and signing functions:
 
@@ -327,6 +424,7 @@ from connection_hub.delegated_credentials.admission import (
     SERVICE_TIMESTAMP_HEADER,
     sign_admission_request,
 )
+from connection_hub.invocation_policy import canonical_request_digest
 
 service_id = "crm-api"
 timestamp = str(int(time.time()))
@@ -335,6 +433,8 @@ decision = AdmissionRequest.from_mapping(
     {
         "resource": "https://api.example.test/customers",
         "operation": "customers.search",
+        "invocation_id": "customer-search-0185",
+        "request_digest": canonical_request_digest({"query": "north"}),
     }
 )
 signature = sign_admission_request(

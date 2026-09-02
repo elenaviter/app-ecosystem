@@ -16,14 +16,16 @@ reference service
 Connection Hub delegated_admission
   |  current card x current catalog x service/resource registration
   v
-allow: pairwise subject + bounded authority
+allow: pairwise user + caller-profile ids + bounded authority
 deny: structured current-state reason
 ```
 
 The service never validates the opaque bearer locally and never receives a
 provider credential. It proves its own workload identity independently with an
-HMAC over its id, timestamp, nonce, bearer hash, and semantic request hash. On
-an allow, it still applies its own domain rule before returning data.
+HMAC over its id, timestamp, nonce, bearer hash, and semantic request. An allow
+returns pairwise user and caller-profile ids, bounded authority, and current
+invocation policy. The service still applies its own domain rule before
+returning data.
 
 ## Run
 
@@ -51,6 +53,7 @@ An authorized client can then call:
 ```bash
 curl -sS http://localhost:8090/customers/search \
   -H "Authorization: Bearer $DELEGATED_BEARER" \
+  -H 'Idempotency-Key: customer-search-0185' \
   -H 'Content-Type: application/json' \
   --data '{"query":"north"}'
 ```
@@ -58,6 +61,12 @@ curl -sS http://localhost:8090/customers/search \
 The delegated bearer is obtained through the Connection Hub's user-consent
 flow. It is not the protected service's secret and must not be substituted for
 workload authentication.
+
+The example operation is read-only. It passes the `Idempotency-Key` and a
+digest of the search request into direct admission to demonstrate one-use and
+replay semantics. A state-changing service must also keep its own effect
+idempotency ledger under that key because Connection Hub records the admission
+decision, not the external service's domain write.
 
 See the complete [deployment and integration
 recipe](../../../docs/connection-hub/recipes/direct-protected-service.md).

@@ -17,7 +17,13 @@ import hashlib
 import json
 import secrets
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
+
+from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource_grants,
+    normalize_resource_operations,
+    project_legacy_operations,
+)
 
 # Authorization codes are exchanged immediately by the client.
 AUTH_CODE_TTL_SECONDS = 60
@@ -134,6 +140,8 @@ class GrantStore:
         sub: str,
         scopes: List[str],
         operations: Optional[List[str]] = None,
+        resource_grants: Optional[Mapping[str, Any]] = None,
+        resource_operations: Optional[Mapping[str, Any]] = None,
         resource: Optional[str] = None,
         identity_scope: str = "",
         credential: Optional[Dict[str, Any]] = None,
@@ -146,6 +154,16 @@ class GrantStore:
         client_metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         code = secrets.token_urlsafe(32)
+        operation_map = (
+            normalize_resource_operations(resource_operations)
+            if resource_operations is not None
+            else project_legacy_operations(
+                {resource or "": scopes} if resource else {}, operations or []
+            )
+        )
+        grant_map = normalize_resource_grants(resource_grants)
+        if not grant_map and resource:
+            grant_map = normalize_resource_grants({resource: scopes})
         payload = {
             "client_id": client_id,
             "redirect_uri": redirect_uri,
@@ -153,6 +171,12 @@ class GrantStore:
             "sub": sub,
             "scopes": scopes,
             "operations": list(operations or []),
+            "resource_grants": {
+                key: list(value) for key, value in grant_map.items()
+            },
+            "resource_operations": {
+                key: list(value) for key, value in operation_map.items()
+            },
             "resource": resource or "",
             "identity_scope": identity_scope or "",
             "credential": credential or {},
@@ -203,6 +227,8 @@ class GrantStore:
         sub: str,
         scopes: List[str],
         operations: Optional[List[str]] = None,
+        resource_grants: Optional[Mapping[str, Any]] = None,
+        resource_operations: Optional[Mapping[str, Any]] = None,
         resource: Optional[str] = None,
         identity_scope: str = "",
         credential: Optional[Dict[str, Any]] = None,
@@ -213,12 +239,28 @@ class GrantStore:
         client_metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         rt = secrets.token_urlsafe(40)
+        operation_map = (
+            normalize_resource_operations(resource_operations)
+            if resource_operations is not None
+            else project_legacy_operations(
+                {resource or "": scopes} if resource else {}, operations or []
+            )
+        )
+        grant_map = normalize_resource_grants(resource_grants)
+        if not grant_map and resource:
+            grant_map = normalize_resource_grants({resource: scopes})
         payload = {
             "registry_access_id": str(registry_access_id or "").strip(),
             "client_id": client_id,
             "sub": sub,
             "scopes": scopes,
             "operations": list(operations or []),
+            "resource_grants": {
+                key: list(value) for key, value in grant_map.items()
+            },
+            "resource_operations": {
+                key: list(value) for key, value in operation_map.items()
+            },
             "resource": resource or "",
             "identity_scope": identity_scope or "",
             "credential": credential or {},
@@ -434,6 +476,8 @@ class GrantStore:
         *,
         scopes: Optional[List[str]] = None,
         operations: Optional[List[str]] = None,
+        resource_grants: Optional[Mapping[str, Any]] = None,
+        resource_operations: Optional[Mapping[str, Any]] = None,
         state: Optional[RefreshTokenState] = None,
     ) -> Optional[str]:
         """Rotate a refresh token and persist any freshly resolved authority.
@@ -459,6 +503,26 @@ class GrantStore:
                 list(rec.get("operations") or [])
                 if operations is None
                 else list(operations)
+            ),
+            "resource_grants": (
+                dict(rec.get("resource_grants") or {})
+                if resource_grants is None
+                else {
+                    key: list(value)
+                    for key, value in normalize_resource_grants(
+                        resource_grants
+                    ).items()
+                }
+            ),
+            "resource_operations": (
+                dict(rec.get("resource_operations") or {})
+                if resource_operations is None
+                else {
+                    key: list(value)
+                    for key, value in normalize_resource_operations(
+                        resource_operations
+                    ).items()
+                }
             ),
             "resource": rec.get("resource") or "",
             "identity_scope": rec.get("identity_scope") or "",
@@ -512,6 +576,8 @@ class GrantStore:
         grantor_authority: Optional[Dict[str, Any]] = None,
         delegation_edges: Optional[List[Dict[str, Any]]] = None,
         named_services: Optional[Dict[str, Any]] = None,
+        resource_grants: Optional[Mapping[str, Any]] = None,
+        resource_operations: Optional[Mapping[str, Any]] = None,
         registry_access_id: str = "",
     ) -> None:
         """Record the consented operation allowlist and credential envelope for a token.
@@ -521,6 +587,30 @@ class GrantStore:
         this bearer immediately. A binding without it stays a legacy snapshot."""
         payload: Dict[str, Any] = {
             "operations": list(operations or []),
+            "resource_grants": {
+                key: list(value)
+                for key, value in (
+                    normalize_resource_grants(resource_grants)
+                    if resource_grants is not None
+                    else normalize_resource_grants(
+                        (credential or {}).get("attrs", {}).get("resource_grants", {})
+                        if isinstance((credential or {}).get("attrs"), Mapping)
+                        else {}
+                    )
+                ).items()
+            },
+            "resource_operations": {
+                key: list(value)
+                for key, value in (
+                    normalize_resource_operations(resource_operations)
+                    if resource_operations is not None
+                    else normalize_resource_operations(
+                        (credential or {}).get("attrs", {}).get("resource_operations", {})
+                        if isinstance((credential or {}).get("attrs"), Mapping)
+                        else {}
+                    )
+                ).items()
+            },
             "credential": credential or {},
             "grantor_authority": grantor_authority or {},
             "delegation_edges": list(delegation_edges or []),

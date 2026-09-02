@@ -5,9 +5,11 @@ import type {
   DelegatedAccessGrantOption,
   DelegatedAccessListResult,
   DelegatedAccessRecord,
+  DelegatedAccessResourceOperations,
   DelegatedAccessResourceOption,
   DelegatedAccessRevokeResult,
   DelegatedAccessStoredNamedServices,
+  DelegatedInvocationPolicyResult,
 } from '../../api/types';
 
 export interface DelegatedAccessState {
@@ -59,6 +61,7 @@ export const loadDelegatedAccess = createAsyncThunk<DelegatedAccessListResult, v
 export interface CreateDelegatedAccessArgs {
   label: string;
   resourceGrants: Record<string, string[]>;
+  resourceOperations: DelegatedAccessResourceOperations;
   operations?: string[];
   /** `"*"` when every operation the current catalog offers for the selected
    *  resources is ticked, an exact map otherwise, {} for nothing. */
@@ -75,12 +78,13 @@ export const createDelegatedAccess = createAsyncThunk<
   { rejectValue: string }
 >(
   'delegatedAccess/create',
-  async ({ label, resourceGrants, operations, namedServiceOperations, accountScope, ttlSeconds }, { rejectWithValue }) => {
+  async ({ label, resourceGrants, resourceOperations, operations, namedServiceOperations, accountScope, ttlSeconds }, { rejectWithValue }) => {
     try {
       const res = await postOp<DelegatedAccessCreateResult>('delegated_access_create', {
         label,
         resource_grants: resourceGrants || {},
-        operations: operations || [],
+        resource_operations: resourceOperations || {},
+        ...(operations !== undefined ? { operations } : {}),
         named_service_operations: namedServiceOperations || {},
         ...(accountScope !== undefined
           ? { account_scope: accountScope }
@@ -99,7 +103,14 @@ export interface GrantAgentAccessArgs {
   clientId: string;
   resource: string;
   claims: string[];
+  /** Existing card and one fail-closed transaction when a denied call asks
+   *  the user to add this operation and choose its invocation policy. */
+  accessId?: string;
+  invocationMode?: 'always' | 'once';
+  invocationChangeId?: string;
   label?: string;
+  /** Exact outer MCP/REST operations selected for this protected resource. */
+  resourceOperations?: string[];
   /** Named-service narrowing for THIS resource (namespace -> exact operations),
    *  when the user extends the grant with a named-services resource. */
   namedServiceOperations?: Record<string, string[]>;
@@ -123,14 +134,20 @@ export const grantAgentAccess = createAsyncThunk<
   { rejectValue: string }
 >(
   'delegatedAccess/grantAgent',
-  async ({ clientId, resource, claims, label, namedServiceOperations, replace, accountScope }, { rejectWithValue }) => {
+  async ({ clientId, resource, claims, accessId, invocationMode, invocationChangeId, label, resourceOperations, namedServiceOperations, replace, accountScope }, { rejectWithValue }) => {
     try {
       const res = await postOp<DelegatedAccessCreateResult>('delegated_agent_grant_create', {
         client_id: clientId,
         resource,
         claims: claims || [],
         label: label || '',
+        ...(accessId ? { access_id: accessId } : {}),
+        ...(invocationMode ? { invocation_mode: invocationMode } : {}),
+        ...(invocationChangeId ? { invocation_change_id: invocationChangeId } : {}),
         ...(replace ? { replace: true } : {}),
+        ...(resourceOperations !== undefined
+          ? { resource_operations: { [resource]: resourceOperations } }
+          : {}),
         ...(namedServiceOperations && Object.keys(namedServiceOperations).length
           ? { named_service_operations: namedServiceOperations }
           : {}),
@@ -150,6 +167,7 @@ export interface UpdateDelegatedAccessArgs {
   accessId: string;
   label: string;
   resourceGrants: Record<string, string[]>;
+  resourceOperations: DelegatedAccessResourceOperations;
   operations?: string[];
   /** Namespace narrowing {resource:{namespace:[operation]}}, or `"*"` when the
    *  operator ticked every operation the current catalog offers. Undefined
@@ -180,6 +198,7 @@ export const updateDelegatedAccess = createAsyncThunk<
       accessId,
       label,
       resourceGrants,
+      resourceOperations,
       operations,
       namedServiceOperations,
       accountScope,
@@ -193,7 +212,8 @@ export const updateDelegatedAccess = createAsyncThunk<
         access_id: accessId,
         label,
         resource_grants: resourceGrants || {},
-        operations: operations || [],
+        resource_operations: resourceOperations || {},
+        ...(operations !== undefined ? { operations } : {}),
         ...(namedServiceOperations !== undefined
           ? { named_service_operations: namedServiceOperations }
           : {}),
@@ -228,6 +248,45 @@ export const revokeDelegatedAccess = createAsyncThunk<
     try {
       const res = await postOp<DelegatedAccessRevokeResult>('delegated_access_revoke', { access_id: accessId });
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to revoke delegated access'));
+      return res || {};
+    } catch (e) {
+      return rejectWithValue(message(e));
+    }
+  },
+);
+
+export interface SetDelegatedInvocationPolicyArgs {
+  accessId: string;
+  resource: string;
+  operation: string;
+  mode: 'always' | 'once';
+  expectedRevision: number;
+}
+
+export const setDelegatedInvocationPolicy = createAsyncThunk<
+  DelegatedInvocationPolicyResult,
+  SetDelegatedInvocationPolicyArgs,
+  { rejectValue: string }
+>(
+  'delegatedAccess/setInvocationPolicy',
+  async (
+    { accessId, resource, operation, mode, expectedRevision },
+    { rejectWithValue },
+  ) => {
+    try {
+      const res = await postOp<DelegatedInvocationPolicyResult>(
+        'delegated_invocation_policy_set',
+        {
+          access_id: accessId,
+          resource,
+          operation,
+          mode,
+          expected_revision: expectedRevision,
+        },
+      );
+      if (res?.ok === false) {
+        return rejectWithValue(resultError(res, 'Failed to update invocation policy'));
+      }
       return res || {};
     } catch (e) {
       return rejectWithValue(message(e));
@@ -351,6 +410,26 @@ const delegatedAccessSlice = createSlice({
       .addCase(revokeDelegatedAccess.rejected, (state, action) => {
         state.busy = false;
         state.error = action.payload ?? 'Failed to revoke delegated access';
+      })
+      .addCase(setDelegatedInvocationPolicy.pending, (state) => {
+        state.busy = true;
+        state.error = '';
+      })
+      .addCase(setDelegatedInvocationPolicy.fulfilled, (state, action) => {
+        state.busy = false;
+        const policy = action.payload.policy;
+        if (!policy) return;
+        state.items = state.items.map((item) => {
+          if (item.access_id !== policy.authority.access_id) return item;
+          const policies = (item.invocation_policies || []).filter(
+            (existing) => existing.policy_id !== policy.policy_id,
+          );
+          return { ...item, invocation_policies: [...policies, policy] };
+        });
+      })
+      .addCase(setDelegatedInvocationPolicy.rejected, (state, action) => {
+        state.busy = false;
+        state.error = action.payload ?? 'Failed to update invocation policy';
       });
   },
 });

@@ -1,7 +1,7 @@
 ---
 id: connection-hub@1-0
 title: "Connection Hub"
-summary: "Connection Hub application: links external identities, brokers connected accounts, governs delegated cards, and evaluates live operation admission for KDCube-managed and registered external services."
+summary: "Connection Hub application: links external identities, brokers connected accounts, governs delegated cards and invocation policy, proxies user-owned external MCP tools, and evaluates live operation admission."
 status: active
 tags: ["app", "connection-hub", "identity", "connections", "named-services", "oauth", "email", "gmail", "icloud", "slack", "google-sheets"]
 module: entrypoint
@@ -12,6 +12,7 @@ primary_surfaces:
   - "named_service API (operations route) — serves the whole `connections` contract"
   - "public OAuth callback route (delegated_to_kdcube_oauth_callback) — shared by delegated to KDCube OAuth providers"
   - "delegated OAuth authorization server (public/oauth/*) — issues opaque delegated client credentials backed by live cards"
+  - "remote_mcp_proxy public MCP surface — calls exact user-owned external tools selected on the caller card without disclosing the upstream credential"
   - "delegated_admission public operation — lets a registered external protected service evaluate one bearer/resource/operation against current authority"
   - "connections_settings widget (ui/widgets/connections)"
 links:
@@ -22,6 +23,7 @@ links:
   design: ../../../../docs/connection-hub/frontend/application/README.md
   architecture: ../../../../docs/connection-hub/connection-hub-architecture.md
   journal: ../../../../journal/README.md
+updated_at: 2026-09-02
 ---
 
 # Connection Hub App
@@ -31,7 +33,7 @@ KDCube app id. Its portable contracts come from the `connection-hub` Python
 distribution. It is the user-scoped hub for connection edges, connected
 accounts, delegated cards, and current operation admission.
 
-It answers five related questions:
+It answers eight related questions:
 
 ```text
 Who is this external identity in KDCube?
@@ -48,6 +50,12 @@ Can automation use this user's external account?
 
 What may this external app, agent, or automation do for the approving user?
   -> delegated bearer -> current card -> active capability catalog
+
+May this granted operation run repeatedly or one time?
+  -> exact card/resource/operation -> current invocation policy
+
+Can this caller use a remote MCP service whose owner did not integrate it with Connection Hub?
+  -> user-owned connector -> exact selected tool -> Connection Hub proxy
 
 May this registered external backend perform this concrete delegated operation?
   -> service proof + delegated bearer -> live admission decision
@@ -70,6 +78,8 @@ The app wires these building blocks:
   `ConnectionsProviderBase`, the connection registry of `ConnectionProvider`s);
 - the reusable `integrations/email` settings (**iCloud** app-password only —
   Gmail is a connections provider), exposed through its own `email_*` ops; and
+- owner-scoped external MCP connectors, descriptor-drift review, delegated
+  proxy dispatch, and separate once-or-always invocation policy; and
 - a `connections_settings` browser widget served from `ui/widgets/connections`.
 
 The canonical distinction between edges, connected accounts, cards, catalogs,
@@ -217,6 +227,7 @@ connection-hub@1-0/
     connection-hub.openapi.yaml
   surfaces/
     delegated_admission.py # direct protected-service host adapter
+    remote_mcp.py           # request-scoped delegated MCP proxy
   tests/
     test_delegated_access_create.py
     test_oauth_discovery.py
@@ -232,6 +243,8 @@ transport, identity-provider, and named-service bindings remain host adapters:
 connection-hub
   hub/                       # edges, identity families, authenticator metadata
   delegated_credentials/    # cards, catalog, OAuth, admission policy
+  invocation_policy/        # once/always and invocation idempotency
+  remote_mcp/               # user-owned connectors, drift, proxy contracts
   delegated_to_kdcube/      # connected-account lifecycle and provider contracts
 
 kdcube_ai_app.apps.chat.sdk.integrations.connection_hub
@@ -252,8 +265,15 @@ kdcube_ai_app.apps.chat.sdk.integrations.connection_hub
   themselves.
 - Direct protected-service admission is disabled by default. When enabled, a
   registered service supplies an independent signed workload proof beside the
-  delegated bearer. The route returns a service-scoped subject and current
-  operation authority, never an internal user id or provider credential.
+  delegated bearer. The route returns pairwise user and caller-profile ids and
+  current operation authority, never raw Connection Hub ids or a provider
+  credential.
+- External MCP connectors store upstream credentials in the owner's server-side
+  secret store. Durable connector revisions and browser responses contain only
+  a credential-presence signal and non-secret descriptor metadata.
+- The external MCP proxy resolves card, connector, exact tool descriptor, and
+  invocation policy on every call. A changed or removed selected tool is denied
+  before dispatch.
 - [Protect an external backend with Connection
   Hub](../../../../docs/connection-hub/recipes/direct-protected-service.md) provides the
   deployment contract and links a runnable protected-service implementation.

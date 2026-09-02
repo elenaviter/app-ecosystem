@@ -356,6 +356,7 @@ def replace_state(authority: CardAuthority, state: str) -> CardAuthority:
         state=state,
         operations=authority.operations,
         resource_grants=authority.resource_grants,
+        resource_operations=authority.resource_operations,
         named_service_operations=authority.named_service_operations,
         named_services=authority.named_services,
         account_scope=authority.account_scope,

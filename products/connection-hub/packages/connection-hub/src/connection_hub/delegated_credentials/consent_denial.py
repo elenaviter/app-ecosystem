@@ -67,6 +67,10 @@ def connection_hub_grant_url(
     account_claim: str = "",
     namespace: str = "",
     operation: str = "",
+    outer_operation: str = "",
+    access_id: str = "",
+    invocation_policy: str = "",
+    invocation_change_id: str = "",
 ) -> str:
     """An absolute Connection Hub deep link that lands on the Delegated by
     KDCube tab with THIS client's access request focused (the pending pane:
@@ -79,7 +83,8 @@ def connection_hub_grant_url(
     pre-checked.
 
     ``namespace`` / ``operation`` name the inner capability the pane
-    pre-selects.
+    pre-selects. ``outer_operation`` names the MCP or REST operation on the
+    protected resource itself.
 
     Openable outside the app origin — an external agent (Claude Code) relays
     it verbatim; the user signs in with their platform credentials and sees the
@@ -110,6 +115,12 @@ def connection_hub_grant_url(
             query["account_id"] = str(account_id).strip()
         if str(account_claim or "").strip():
             query["account_claim"] = str(account_claim).strip()
+        if str(outer_operation or "").strip():
+            query["outer_operation"] = str(outer_operation).strip()
+        if str(invocation_policy or "").strip():
+            query["invocation_policy"] = str(invocation_policy).strip()
+        if str(invocation_change_id or "").strip():
+            query["invocation_change_id"] = str(invocation_change_id).strip()
         return (
             f"{base}/api/integrations/bundles/"
             f"{quote(str(tenant), safe='')}/{quote(str(project), safe='')}/"
@@ -127,6 +138,14 @@ def connection_hub_grant_url(
         query["namespace"] = str(namespace).strip()
     if str(operation or "").strip():
         query["operation"] = str(operation).strip()
+    if str(outer_operation or "").strip():
+        query["outer_operation"] = str(outer_operation).strip()
+    if str(access_id or "").strip():
+        query["access_id"] = str(access_id).strip()
+    if str(invocation_policy or "").strip():
+        query["invocation_policy"] = str(invocation_policy).strip()
+    if str(invocation_change_id or "").strip():
+        query["invocation_change_id"] = str(invocation_change_id).strip()
     if str(account_id or "").strip():
         query["account_id"] = str(account_id).strip()
     if str(account_claim or "").strip():
@@ -136,6 +155,44 @@ def connection_hub_grant_url(
         f"{base}/api/integrations/bundles/"
         f"{quote(str(tenant), safe='')}/{quote(str(project), safe='')}/"
         f"{quote(hub_bundle_id, safe='')}/widgets/connections_settings?{params}"
+    )
+
+
+def connection_hub_invocation_policy_url(
+    *,
+    tenant: str,
+    project: str,
+    access_id: str,
+    resource: str,
+    operation: str,
+    hub_bundle_id: str = "connection-hub@1-0",
+) -> str:
+    """Open one existing card at the operation whose invocation limit blocked."""
+    from urllib.parse import quote, urlencode
+
+    from connection_hub.delegated_to_kdcube.public_base import (
+        connection_hub_public_base_url,
+    )
+
+    base = connection_hub_public_base_url()
+    if not all(
+        str(value or "").strip()
+        for value in (base, tenant, project, access_id, resource, operation)
+    ):
+        return ""
+    query = urlencode(
+        {
+            "tab": "delegated_by_kdcube",
+            "manual_access_id": str(access_id).strip(),
+            "resource": str(resource).strip(),
+            "outer_operation": str(operation).strip(),
+            "invocation_policy": "1",
+        }
+    )
+    return (
+        f"{base}/api/integrations/bundles/"
+        f"{quote(str(tenant), safe='')}/{quote(str(project), safe='')}/"
+        f"{quote(hub_bundle_id, safe='')}/widgets/connections_settings?{query}"
     )
 
 
@@ -526,6 +583,7 @@ async def connect_first_denial_for_identity(
 __all__ = [
     "agent_client_id_from_request",
     "agent_grant_consent_denial",
+    "connection_hub_invocation_policy_url",
     "connect_first_denial",
     "granted_resource_from_request",
     "CONSENT_NEEDED_CODE",

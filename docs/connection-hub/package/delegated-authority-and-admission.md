@@ -1,11 +1,11 @@
 ---
 id: connection-hub/package/delegated-authority-and-admission
 title: "Delegated Authority And Admission"
-summary: "Delegated-card decision architecture across managed REST/MCP surfaces, direct external protected-service admission, connected-account claims, native named-service tools, and direct or relayed provider invocation."
+summary: "Delegated-card and invocation-policy decisions across managed REST/MCP surfaces, proxied external MCP services, direct protected-service admission, connected-account claims, native named-service tools, and relayed provider invocation."
 status: current
 tags: ["arch", "security", "admission", "connection-hub", "delegated-access", "mcp", "rest", "named-services", "data-bus"]
-keywords: ["delegated authority", "managed surface guard", "delegated access card", "access_id", "active catalog", "resource grants", "MCP tool grants", "connected account claims", "NamedServiceAdmission", "Data Bus relay"]
-updated_at: 2026-08-30
+keywords: ["delegated authority", "managed surface guard", "delegated access card", "access_id", "active catalog", "resource grants", "resource operations", "MCP tool grants", "connected account claims", "NamedServiceAdmission", "Data Bus relay"]
+updated_at: 2026-09-02
 see_also:
   - ../connection-hub-architecture.md
   - ./delegated-cards.md
@@ -56,7 +56,9 @@ The architecture keeps these facts separate:
 | Authority selector | Which delegated record applies? | Exact bearer card binding or trusted hosted-agent identity. |
 | Delegated card | What did this user grant this caller? | Connection Hub delegated-card store. |
 | Active catalog | What does this deployment currently expose? | Connection Hub delegated catalog published from effective descriptor connections. |
+| External MCP connector | Which user-owned endpoint and accepted tool descriptors may be projected into this user's card catalog? | Owner-scoped connector revisions and server-side credential reference. |
 | Managed surface decision | May this resource and outer REST/MCP operation run now? | Managed surface guard for this request/tool invocation. |
+| Invocation policy | Is this granted operation reusable or limited to one invocation? | Separate live policy and idempotency registry keyed to exact card authority. |
 | Protected-service identity | May this external backend ask about this catalog resource? | Descriptor-owned service registration plus signed workload proof. |
 | Direct admission decision | May this bearer perform this concrete operation at that registered external backend? | Connection Hub direct-admission surface using the same current card/catalog evaluator. |
 | Connected-account decision | Which account and provider claims may this tool use? | Account broker using declared tool requirements and the card's `account_scope`. |
@@ -97,7 +99,7 @@ The same card/catalog state feeds three enforcement dimensions:
 
 ```text
 managed resource/tool authority
-    = current card resource grants + selected outer operations
+    = current card resource grants + resource-qualified outer operations
       INTERSECT complete current active catalog
 
 connected-account authority
@@ -113,6 +115,12 @@ The card records the user's explicit selection. The active catalog is the
 deployment ceiling. A plain account-backed tool declares its current provider
 requirements and resolves an account whose approved claims satisfy them. A
 named-service call adds its inner namespace/operation boundary.
+
+Outer operation names are qualified by protected resource in card authority.
+An operation called `search` on resource A does not authorize an operation
+with the same name on resource B. The flat `operations` list present in public
+and token compatibility shapes is derived from that resource map and is not
+used as an independent grant.
 
 ## Complete Managed-Surface Flow
 
@@ -166,6 +174,16 @@ conversations:read tool claim policy named_services:use app-owned grants
                            v
                     surface response
 ```
+
+When the active catalog still offers an outer operation but the caller's live
+card does not select it, the guard returns the existing structured
+`delegated_capability_not_granted` evidence and an actionable consent block.
+The block names the caller, protected resource, and exact outer operation. A
+hosted agent's chat can open the focused card and submit only that operation;
+an external OAuth/MCP client receives the same focused Connection Hub route.
+Grant completion emits a passive `connections.consent.granted` event only for
+the matching caller, resource, and operation. Approval does not replay the
+refused call.
 
 Conversation MCP demonstrates a plain managed operation with no connected
 provider account. Its `conversations_export` tool requires
@@ -249,8 +267,31 @@ use direct protected-service admission. It sends the opaque delegated bearer,
 the concrete resource/operation, and an independent replay-protected workload
 proof to Connection Hub. Connection Hub authenticates the service before it
 inspects the bearer, then invokes the same current card/catalog evaluator used
-by managed guards. The backend receives a service-scoped subject and bounded
-authority, not an internal user id or provider credential.
+by managed guards. The backend receives pairwise service-scoped user and
+caller-profile ids plus bounded authority, not internal Connection Hub ids or
+a provider credential.
+
+A remote MCP service that has no Connection Hub admission integration uses
+the proxy path. Its owner registers the endpoint and upstream credential in
+Connection Hub. The connector projects accepted tools into that owner's
+delegated catalog, and `remote_mcp_proxy` performs both admission and the
+upstream tool call. The delegated caller sees only exact tools selected on its
+card; the upstream credential stays in Connection Hub.
+
+An OAuth-capable MCP client can obtain that caller card without a manually
+issued bearer. Anonymous MCP and OAuth discovery advertise the protected proxy
+resource and reveal no owner inventory. After platform login identifies the
+grantor, the consent offer combines the active deployment catalog with that
+grantor's active connector overlay. The grantor selects exact tools under exact
+connector resources. Authorization-code exchange creates or updates one OAuth
+card containing the proxy resource plus those selected connector resources and
+their resource-qualified operations. Access-token use and refresh resolve that
+same live card, so edits and revocation apply without distributing the remote
+service credential or manually copying a Connection Hub bearer.
+
+This is OAuth between the external caller and Connection Hub. Authentication
+from Connection Hub to the external MCP server is the connector's upstream
+credential path and is a separate capability.
 
 ```text
 external caller -> opaque bearer -> external protected backend
@@ -282,6 +323,7 @@ The current and hypothetical surfaces compare as follows:
 | Native hosted-agent named-service tool | Trusted agent selector and card. | Provider requirements resolved for the inner operation. | Required for each `_call`. |
 | Custom app REST/MCP surface | App-owned resource, operations/tools, and grants. | Optional declared provider claims and shared account broker. | None when the app invokes its domain logic directly. |
 | Registered external protected service | Signed service proof + opaque bearer evaluated by Connection Hub direct admission. | Optional card account-scope check; provider credential delivery remains a separate broker. | None unless the external service separately invokes named services. |
+| User-owned external MCP service | Connection Hub proxy resolves exact card, connector, accepted tool descriptor, and invocation policy, then injects the upstream credential. | Expressed by the selected connector resource; the credential belongs to the connector owner. | None. |
 | Custom named-service provider | Governed by whichever outer/native entrance calls it. | Optional provider requirements for its inner operations. | Required at the common dispatcher. |
 
 ## Exact Bearer Binding
@@ -365,6 +407,50 @@ One invocation is the unit of authority:
 The current relay transports ordinary request/reply results. Direct bridges own
 provider byte-stream delivery.
 
+## Once-Or-Always Invocation Policy
+
+Card authority and invocation policy answer different questions:
+
+```text
+delegated card     may this caller use this operation?
+invocation policy  may the already-granted operation be used once or repeatedly?
+```
+
+Invocation policy is stored separately from the card and is keyed by exact
+`access_id + resource + surface + operation`, with an optional provider and
+account selector. An account-specific policy overrides the operation's general
+policy. No stored policy means `always`, preserving existing granted cards.
+
+`once` starts with one available invocation. The caller supplies a stable
+invocation id and a digest of the exact request. Connection Hub reserves that
+id under the policy lock and consumes the one-use permit before dispatch. One
+of concurrent new invocation ids wins. A later new id is denied. Reusing the
+winning id with a different digest is also denied.
+
+The same-id replay boundary depends on who executes the operation:
+
+| Provider mode | Connection Hub owns | Same id and digest |
+| --- | --- | --- |
+| User-owned external MCP proxy | Admission, upstream dispatch, and terminal tool result. | Returns the recorded result or terminal error without redispatching the upstream tool. |
+| Direct protected-service admission | The bounded allow/deny decision only. | Returns the recorded admission decision. A state-changing provider must use the invocation id in its own effect-idempotency ledger. |
+
+`always` permits new invocation ids repeatedly. It still records each supplied
+id, so an uncertain retry with the same id and digest can receive the same
+terminal result at a proxy-owned surface.
+
+An exact operation grant and its initial `once` or `always` choice are committed
+as one fail-closed cross-registry change. Connection Hub first writes a prepared
+policy marker, then mutates the card, then commits the policy. Calls are denied
+with a retryable policy-changing reason while the marker is prepared. Retrying
+the same change id completes or replays the transaction; a second writer cannot
+silently widen authority around it.
+
+When an operation is absent from a current card, the structured denial names
+the exact card, resource, and operation and offers `allow_once` and
+`allow_always`. Approval adds only that operation and commits the selected
+policy. An exhausted one-use policy returns the same choices without removing
+the operation from the card.
+
 ## Changes And Revocation
 
 Current state takes effect at the invocation boundary:
@@ -401,6 +487,9 @@ stored card preserves the old selection as drift evidence.
 | Current active catalog or required card serving state cannot be obtained or validated. | `503 temporarily_unavailable`; a valid shared-state decision is required. |
 | Card selected the capability but the active catalog removed it. | `403 delegated_capability_no_longer_available`. |
 | Active catalog exposes the capability but the card did not select it. | Existing missing-grant or consent denial. |
+| A one-use operation has no invocation id, is already consumed, or reuses an id with another request digest. | Structured invocation-policy denial with the exact recovery choices where applicable. |
+| A card/policy transaction is still prepared. | Retryable fail-closed denial until that exact change is completed. |
+| An external MCP tool disappeared or its advertised descriptor changed. | Structured proxy denial before one-use authority is consumed. |
 | Account binding or provider claims are incomplete. | Existing connection, account-selection, or claim-consent response. |
 
 These outcomes preserve the distinction between identity failure, unavailable
@@ -409,6 +498,12 @@ connected-account consent.
 
 ## Source Map
 
+- Once-or-always policy, reservation, and idempotency records:
+  [`connection_hub.invocation_policy`](../../../products/connection-hub/packages/connection-hub/src/connection_hub/invocation_policy)
+- User-owned connector, descriptor drift, endpoint policy, and proxy contracts:
+  [`connection_hub.remote_mcp`](../../../products/connection-hub/packages/connection-hub/src/connection_hub/remote_mcp)
+- KDCube-hosted direct-admission and remote-MCP surfaces:
+  [`connection-hub@1-0/surfaces`](../../../products/connection-hub/apps/connection-hub@1-0/surfaces)
 - Card/catalog durability and editor drift:
   [Delegated Access Cards](./delegated-cards.md)
 - Reusable managed MCP doors and caller families:

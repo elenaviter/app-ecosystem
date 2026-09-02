@@ -12,6 +12,7 @@ carried into the authorization code and ultimately the issued grant.
 from __future__ import annotations
 
 import html as _html
+import json
 from typing import Any, Iterable, List, Mapping, Tuple
 from urllib.parse import urlsplit
 
@@ -36,7 +37,7 @@ from connection_hub.named_service_boundary import (
 
 # Version of the consent view model. A renderer states the version it
 # implements; an absent or mismatched version is refused, not rendered.
-CONSENT_CONTRACT_VERSION = "2026-08-25.1"
+CONSENT_CONTRACT_VERSION = "2026-09-02.1"
 
 CONSENT_AUTHORIZE_FIELD_NAMES: tuple[str, ...] = (
     "client_id",
@@ -148,6 +149,79 @@ def platform_edge_grants_for_scopes(
             cap.description if cap is not None else "",
         ))
     return out
+
+
+def resource_selection_rows(
+    scopes: Iterable[str],
+    *,
+    config: OAuthDelegatedClientConfig | None = None,
+    resource: str | None = None,
+    seeded_operations: Mapping[str, Iterable[str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Owner-visible child resources selectable by this OAuth request.
+
+    A resource opts into this projection with ``resource_selection``. The
+    request resource remains the OAuth protected resource; selected rows add
+    exact child-resource authority to the resulting delegated card.
+    """
+
+    cfg = config or oauth_delegated_config()
+    request_cfg = cfg.resource_config(resource)
+    if request_cfg is None or not request_cfg.resource_selection:
+        return []
+
+    allowed = {
+        str(scope or "").strip()
+        for scope in (scopes or ())
+        if str(scope or "").strip()
+    }
+    held = {
+        str(selector or "").strip(): {
+            str(operation or "").strip()
+            for operation in (operations or ())
+            if str(operation or "").strip()
+        }
+        for selector, operations in dict(seeded_operations or {}).items()
+        if str(selector or "").strip()
+    }
+    rows: list[dict[str, Any]] = []
+    for candidate in cfg.resources:
+        if candidate is request_cfg or candidate.resource == "*":
+            continue
+        operations: list[dict[str, Any]] = []
+        for tool in candidate.tools:
+            grants = tuple(tool.grants or candidate.grants)
+            if grants and not set(grants).issubset(allowed):
+                continue
+            operations.append(
+                {
+                    "name": tool.name,
+                    "label": tool.label or tool.name,
+                    "description": tool.description,
+                    "grants": list(grants),
+                    "held": tool.name in held.get(candidate.resource, set()),
+                }
+            )
+        if not operations:
+            continue
+        resource_grants = tuple(candidate.grants) or tuple(
+            dict.fromkeys(
+                grant
+                for operation in operations
+                for grant in operation["grants"]
+            )
+        )
+        if resource_grants and not set(resource_grants).issubset(allowed):
+            continue
+        rows.append(
+            {
+                "resource": candidate.resource,
+                "label": candidate.label or candidate.resource,
+                "grants": list(resource_grants),
+                "operations": operations,
+            }
+        )
+    return rows
 
 
 def named_service_rows_for_scopes(
@@ -422,6 +496,7 @@ def render_consent_html(
     connected_accounts: list | None = None,
     seeded_account_scope: Mapping[str, Any] | None = None,
     seeded_named_service_operations: Mapping[str, Any] | None = None,
+    seeded_resource_operations: Mapping[str, Iterable[str]] | None = None,
     connection_hub_url: str = "",
     accounts_needed: AccountRequirements | None = None,
     catalog_version: str = "",
@@ -436,6 +511,42 @@ def render_consent_html(
     tools = tools_for_scopes(req.scopes, config=config, resource=req.resource)
     platform_edge_grants = platform_edge_grants_for_scopes(req.scopes, config=config)
     monogram = _brand_monogram(brand)
+
+    selectable_resources = resource_selection_rows(
+        req.scopes,
+        config=config,
+        resource=req.resource,
+        seeded_operations=seeded_resource_operations,
+    )
+    resource_blocks: list[str] = []
+    for selectable in selectable_resources:
+        selector = str(selectable["resource"])
+        operation_rows = "".join(
+            f'    <label class="tool"><input type="checkbox" '
+            f'name="resource_operations" '
+            f'value="{esc(json.dumps({"resource": selector, "operation": operation["name"]}, separators=(",", ":")))}"'
+            f'{" checked" if operation["held"] else ""}> '
+            f'<span class="row-text"><b>{esc(operation["label"])}</b>'
+            f'<span class="desc">{esc(operation["description"])}</span>'
+            f'<span class="grants">Requires: {esc(", ".join(operation["grants"]) or "none")}</span>'
+            f'</span></label>'
+            for operation in selectable["operations"]
+        )
+        resource_blocks.append(
+            f'    <section class="tool-group"><div class="group-head">'
+            f'<b>{esc(selectable["label"])}</b><span>{len(selectable["operations"])}</span></div>'
+            f'<div class="resource-ref">{esc(selector)}</div>{operation_rows}</section>'
+        )
+    resource_selection_section = ""
+    if resource_blocks:
+        resource_selection_section = f"""
+    <details class="fold" open>
+      <summary>Services and operations for this connection</summary>
+      <p class="desc">Select the exact operations this client may use. An
+      unchecked operation stays outside its delegated card.</p>
+{"".join(resource_blocks)}
+    </details>
+"""
 
     tool_rows = _render_grouped((
         (
@@ -765,6 +876,7 @@ def render_consent_html(
       display: inline-grid; place-items: center; background: rgba(1,190,178,.10); color: var(--accent-ink); font-size: .72rem;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     }}
+    .resource-ref {{ padding: .35rem .7rem; color: var(--muted); font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }}
     .tool {{ display: flex; gap: .6rem; align-items: flex-start; padding: .55rem .7rem; margin: .4rem 0;
       border: 1px solid var(--line); border-radius: 8px; cursor: pointer; transition: border-color .15s, background .15s; }}
     .tool-group .tool, .edge-group .edge, .namespace-group .namespace-row {{
@@ -838,6 +950,7 @@ def render_consent_html(
 {accounts_needed_html}
     <form method="post" action="{esc(form_action)}">
 {hidden}
+{resource_selection_section}
     <details class="fold">
       <summary>Platform account delegation edge — informational, review if needed</summary>
       <p class="desc">These grants let the external client represent your KDCube account only when this resource later needs platform authority.</p>

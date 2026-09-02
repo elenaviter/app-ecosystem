@@ -1,7 +1,7 @@
 ---
 id: connection-hub-interface
 title: Connection Hub Interface
-summary: Documents the authenticated operations, public proof/OAuth/admission routes, named-service provider, and browser widget exposed by the Connection Hub app.
+summary: Documents the authenticated operations, public proof/OAuth/admission routes, user-owned external MCP proxy, named-service provider, and browser widget exposed by the Connection Hub app.
 tags:
   - connection-hub
   - connection-hub
@@ -10,6 +10,9 @@ keywords:
   - Connection Hub operations
   - OAuth routes
   - named-service provider
+  - external MCP proxy
+  - invocation policy
+updated_at: 2026-09-02
 see_also:
   - ./connection-hub.openapi.yaml
   - ../../../../../docs/connection-hub/connection-hub-architecture.md
@@ -20,7 +23,7 @@ see_also:
 
 `connection-hub@1-0` exposes authenticated `operations` aliases, public
 proof/auth/OAuth/admission routes, one `connections` named-service provider,
-and one widget.
+one delegated external-MCP proxy, and one widget.
 The OpenAPI file
 [connection-hub.openapi.yaml](connection-hub.openapi.yaml) documents the
 operations and callback routes in detail; this README is the human contract.
@@ -42,10 +45,11 @@ The Connections settings widget is a separate React/Redux browser app served fro
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/widgets/connections_settings
 ```
 
-The widget reads/writes through the operations below. It shows connection edges
-and connected accounts in one place, while keeping their semantics separate. It
-never holds provider credentials; it only kicks off the hub-owned OAuth /
-app-password flows.
+The widget reads/writes through the operations below. It shows connection
+edges, connected accounts, delegated caller cards, invocation policy, and
+user-owned external MCP connectors while keeping their semantics separate. It
+never returns provider or connector credentials; it only submits them into
+Hub-owned server-side stores.
 
 ## Connection-edge vs delegated account contract
 
@@ -96,8 +100,18 @@ All are authenticated (`PlatformAuth`) and visibility-gated by
 | `delegated_to_kdcube_disconnect` | POST | operations | Disconnect a user account (`provider`, `account_id`). |
 | `delegated_to_kdcube_resolve` | POST | operations | Resolve a delegated-to-KDCube credential for code acting on behalf of the current authenticated user. Secret values are returned only to server-side callers. |
 | `delegated_access_list` | GET | operations | List automation credentials and the configured resource/grant catalog. Named-service resources include their descriptor-backed namespace operation tree and provider-declared connected-account requirements. |
-| `delegated_access_create` | POST | operations | Mint a short-lived KDCube automation bearer bounded by `resource_grants` and an optional exact `named_service_operations` resource/namespace/operation selection; compatible top-level MCP operations are derived server-side. |
+| `delegated_access_create` | POST | operations | Mint a short-lived KDCube automation bearer bounded by exact `resource_grants`, `resource_operations`, and optional `named_service_operations` selections. The flat top-level `operations` list is derived for compatibility. |
+| `delegated_access_update` | POST | operations | Replace or preserve the selected dimensions of an existing owner-scoped card in place. The credential remains bound to the same `access_id`. |
+| `delegated_agent_grant_create` | POST | operations | Merge or replace exact authority on a hosted-agent or existing external-client card. An operation-recovery submission may atomically add one operation and set it to `once` or `always`. |
+| `delegated_invocation_policy_set` | POST | operations | Set `once` or `always` for one already-granted resource operation, optionally scoped to a selected provider account. |
 | `delegated_access_revoke` | POST | operations | Revoke one automation or OAuth delegated-client grant owned by the current user. |
+| `remote_mcp_connectors_list` | GET | operations | List the current user's external MCP connectors and accepted/pending descriptor metadata without secret values. |
+| `remote_mcp_connector_create` | POST | operations | Validate an endpoint, store an optional bearer/header credential server-side, discover tools, and create the first accepted connector revision. |
+| `remote_mcp_connector_refresh` | POST | operations | Rediscover tools under an optimistic connector revision and record descriptor drift without accepting it. |
+| `remote_mcp_connector_accept_descriptor` | POST | operations | Promote the pending discovered descriptor to the accepted revision. Newly accepted tools remain ungranted on caller cards. |
+| `remote_mcp_connector_set_enabled` | POST | operations | Enable or disable the connector under an optimistic revision precondition. |
+| `remote_mcp_connector_update_credential` | POST | operations | Replace the server-side upstream credential, rediscover, and record any resulting descriptor drift. |
+| `remote_mcp_connector_delete` | POST | operations | Commit a deleted connector revision and remove its upstream credential. |
 | `email_accounts_status` | GET | operations | Older iCloud account status route retained only for the older email integration surface. |
 | `email_connect_app_password` | POST | operations | Older iCloud app-password route retained only for the older email integration surface. |
 | `email_disconnect_account` | POST | operations | Older iCloud disconnect route retained only for the older email integration surface. |
@@ -123,6 +137,35 @@ It accepts `code`, `state`, `error` and completes the hub-owned flow, validating
 `state` with `connections.delegated_to_kdcube.oauth_state_secret`. The
 provider + connector app are read from the signed `state`.
 
+### User-owned external MCP proxy
+
+The connector operations above manage remote streamable-HTTP MCP services for
+the signed-in owner. The public MCP surface is:
+
+```text
+/api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/mcp/remote_mcp_proxy
+```
+
+It uses managed delegated-client authentication. `tools/list` returns only
+tools selected on the caller's exact live card. `tools/call` resolves the card,
+current connector state, accepted and observed descriptor of the exact tool,
+and current invocation policy before Connection Hub injects the owner-held
+upstream credential and dispatches the call.
+
+Connector records expose `credential_mode`, optional non-secret header name,
+and `credential_present`. They never expose `credential_value` or the internal
+credential reference. Endpoint policy is descriptor-owned under
+`connections.remote_mcp.outbound`; a user-supplied URL cannot enable HTTP or
+private-network access for itself.
+
+A tools/call request may carry a stable id in MCP metadata at
+`connection_hub/invocation_id`. The proxy derives a digest from the upstream
+tool name and arguments. Standard clients that omit the metadata receive a new
+generated id for that call. A `once` policy consumes one new id. Repeating an
+explicit id with the same arguments replays the stored terminal result without
+calling the upstream server again; changing the arguments under that id is
+denied.
+
 ### Direct protected-service admission
 
 `delegated_admission` lets a registered backend that is not behind a KDCube
@@ -145,6 +188,8 @@ Content-Type: application/json
 {
   "resource": "https://api.example.test/customers",
   "operation": "customers.search",
+  "invocation_id": "customer-search-0185",
+  "request_digest": "<64-lowercase-hex-sha256>",
   "account": {
     "provider_id": "salesforce",
     "account_id": "account-17",
@@ -158,11 +203,17 @@ and SHA-256 of the canonical semantic request. Service secrets contain at
 least 32 bytes. The default timestamp window is 300 seconds and the default
 single-use nonce lifetime is 600 seconds.
 
-The response carries `connection_hub.delegated_admission.v1`, a correlation id, a
-service-scoped subject, caller client id, effective resource/operation/grants,
-optional account scope, card/catalog provenance, and expiry. It never returns
-the internal platform user id, raw card access id, bearer, identity-family
-scope, or provider credential.
+The response carries `connection_hub.delegated_admission.v1`, a correlation
+id, a service-scoped pairwise user id, a separate service-scoped pairwise
+caller-profile id, effective resource/operation/grants, optional account scope,
+card/catalog provenance, expiry, and invocation-policy state when one exists.
+It never returns the internal platform user id, raw caller client id, raw card
+access id, bearer, identity-family scope, or provider credential.
+
+`invocation_id` and `request_digest` are optional together and required for a
+`once` policy. Connection Hub records and may replay the admission decision. A
+state-changing protected service remains responsible for applying its own
+domain effect once under that invocation id.
 
 The complete signing input, response schema, registration shape, and trust
 boundary are in
@@ -659,6 +710,10 @@ Non-secret deploy props (see [../config/bundles.template.yaml](../config/bundles
   It does not redeclare operations or grants.
 - `connections.delegated_credentials.admission.{max_clock_skew_seconds,nonce_ttl_seconds}`
   — signed-request freshness and replay retention.
+- `connections.remote_mcp.{read_timeout_seconds,max_result_bytes}` — upstream
+  MCP response bounds.
+- `connections.remote_mcp.outbound.{allow_http,allow_private_networks,allowed_hosts}`
+  — deployment-owned endpoint policy. Public HTTPS is the default.
 
 Deploy secret KEYS (see [../config/bundles.secrets.template.yaml](../config/bundles.secrets.template.yaml)):
 
@@ -670,12 +725,13 @@ Deploy secret KEYS (see [../config/bundles.secrets.template.yaml](../config/bund
   `connections.delegated_to_kdcube.providers.slack.connector_apps.demo.client_secret`).
 - iCloud needs no deploy secret (the user's app-password is user-scoped state).
 - `connections.delegated_credentials.admission.identity_projection_secret` —
-  derives stable pairwise subjects for registered services.
+  derives stable pairwise user and caller-profile ids for registered services.
 - `connections.delegated_credentials.admission.services.<service_id>.signing_secret`
   — authenticates signed requests from one protected service.
 
-No user credentials live in any descriptor: user OAuth tokens / app-passwords are
-user-scoped app state created through these flows.
+No user credentials live in any descriptor. User OAuth tokens, app-passwords,
+and external MCP upstream credentials are user-scoped secret state created
+through these flows.
 
 ## Prerequisites
 

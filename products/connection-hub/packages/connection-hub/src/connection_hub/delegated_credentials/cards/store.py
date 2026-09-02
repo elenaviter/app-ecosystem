@@ -26,6 +26,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     CardCurrentPointer,
     CardRecordError,
+    card_authority_payload_hash,
     card_revision_name,
 )
 from connection_hub.delegated_credentials.durable_io import (
@@ -141,14 +142,23 @@ class BundleStorageDelegatedCardStore:
     async def read_revision(
         self, *, subject_hash: str, access_id: str, revision_name: str
     ) -> CardAuthority | None:
-        payload = await read_json_or_none(
-            self.revision_path(
-                subject_hash=subject_hash, access_id=access_id, revision_name=revision_name
-            )
+        payload = await self._read_revision_payload(
+            subject_hash=subject_hash,
+            access_id=access_id,
+            revision_name=revision_name,
         )
         if payload is None:
             return None
         return CardAuthority.from_mapping(payload)
+
+    async def _read_revision_payload(
+        self, *, subject_hash: str, access_id: str, revision_name: str
+    ) -> dict | None:
+        return await read_json_or_none(
+            self.revision_path(
+                subject_hash=subject_hash, access_id=access_id, revision_name=revision_name
+            )
+        )
 
     async def read_current_authority(
         self, *, subject_hash: str, access_id: str
@@ -161,15 +171,19 @@ class BundleStorageDelegatedCardStore:
         pointer = await self.read_current(subject_hash=subject_hash, access_id=access_id)
         if pointer is None:
             return None
-        authority = await self.read_revision(
+        payload = await self._read_revision_payload(
             subject_hash=subject_hash,
             access_id=access_id,
             revision_name=pointer.revision_name,
         )
-        if authority is None:
+        if payload is None:
             raise CardStorageError("current_revision_missing")
-        if authority.content_hash() != pointer.content_hash:
+        # Verify the immutable object exactly as it was written. A v1 reader
+        # projects flat operations into the v2 in-memory map, which must not
+        # change the hash used by its already-committed current pointer.
+        if card_authority_payload_hash(payload) != pointer.content_hash:
             raise CardRecordError("revision_content_hash_mismatch")
+        authority = CardAuthority.from_mapping(payload)
         if authority.card_revision != pointer.card_revision:
             raise CardRecordError("revision_number_mismatch")
         return pointer, authority

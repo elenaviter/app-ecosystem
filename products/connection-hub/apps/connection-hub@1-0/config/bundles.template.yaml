@@ -49,6 +49,8 @@ bundles:
                 visibility: *default_visibility
               delegated_access_update:
                 visibility: *default_visibility
+              delegated_invocation_policy_set:
+                visibility: *default_visibility
               delegated_access_revoke:
                 visibility: *default_visibility
               delegated_to_kdcube_catalog:
@@ -71,6 +73,25 @@ bundles:
                 visibility: *default_visibility
               delegated_admission:
                 visibility: *default_visibility
+              remote_mcp_connectors_list:
+                visibility: *default_visibility
+              remote_mcp_connector_create:
+                visibility: *default_visibility
+              remote_mcp_connector_refresh:
+                visibility: *default_visibility
+              remote_mcp_connector_accept_descriptor:
+                visibility: *default_visibility
+              remote_mcp_connector_set_enabled:
+                visibility: *default_visibility
+              remote_mcp_connector_update_credential:
+                visibility: *default_visibility
+              remote_mcp_connector_delete:
+                visibility: *default_visibility
+          mcp:
+            remote_mcp_proxy:
+              auth:
+                mode: delegated_proxy
+                authority_id: delegated_client
           widget:
             connections_settings:
               visibility: *default_visibility
@@ -171,6 +192,14 @@ bundles:
               - "kdcube:role:super-admin"
               delegable_permissions:
               - "knowledge:read"
+            - grant: "external_mcp:use"
+              label: "Use connected external MCP tools"
+              description: "Call only the external MCP tools selected on this delegated access card."
+              delegable_roles:
+              - "kdcube:role:registered"
+              - "kdcube:role:paid"
+              - "kdcube:role:privileged"
+              - "kdcube:role:super-admin"
             - grant: "named_services:use"
               label: "Use KDCube named services"
               description: "Discover and call configured KDCube named-service namespaces through delegated MCP tools."
@@ -1412,6 +1441,12 @@ bundles:
                             grants:
                             - "named_services:use"
                             - "linkedin:org:read"
+            - resource: "*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/remote_mcp_proxy*"
+              label: "Connected external MCP tools"
+              identity_scope: "grantor"
+              grants:
+              - "external_mcp:use"
+              resource_selection: true
           # Direct external protected-service admission. A service row binds
           # workload authentication to resource selectors already published by
           # the active delegated catalog above; it never declares operations or
@@ -1701,6 +1736,17 @@ bundles:
                 email:send:
                   label: "Send mail"
                   description: "Send mail through SMTP for the connected mailbox."
+        remote_mcp:
+          # Connector credentials live in the user's secret store. Durable
+          # connector records retain only an opaque credential reference.
+          read_timeout_seconds: 60
+          max_result_bytes: 2097152
+          outbound:
+            # Public HTTPS endpoints are accepted by default. Development
+            # deployments can explicitly allow a local fixture host.
+            allow_http: false
+            allow_private_networks: false
+            allowed_hosts: []
       identity:
         enabled: true
         authenticator_selector_cache:

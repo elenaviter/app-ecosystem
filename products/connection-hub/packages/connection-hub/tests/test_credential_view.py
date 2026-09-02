@@ -99,3 +99,36 @@ def test_from_envelope_matches_from_request():
     assert view.resource == DOOR
     assert view.grants == frozenset({"slack:read"})
     assert view.grants_for_resource("https://h/kdcube-services@1-0/public/mcp/named_services") == {"slack:read"}
+
+
+def test_resource_operation_map_overrides_the_flat_compatibility_union():
+    first = "https://one.example/mcp"
+    second = "https://two.example/mcp"
+    view = DelegatedCredentialView.from_parts(
+        {
+            "attrs": {
+                "resource_grants": {
+                    first: ["records:read"],
+                    second: ["records:read"],
+                }
+            }
+        },
+        {
+            "operations": ["search"],
+            "resource_operations": {first: ["search"], second: []},
+        },
+    )
+
+    assert view.operations == ("search",)
+    assert view.operations_for_resource(first) == {"search"}
+    assert view.operations_for_resource(second) == set()
+
+
+def test_flat_pre_resource_operation_remains_available_as_wildcard_authority():
+    view = DelegatedCredentialView.from_parts(
+        {"attrs": {}},
+        {"operations": ["search"]},
+    )
+
+    assert view.resource_operations == {"*": ("search",)}
+    assert view.operations_for_resource("https://example.test/mcp") == {"search"}

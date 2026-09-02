@@ -178,6 +178,103 @@ async def test_operation_only_grant_authors_the_exact_pending_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_once_grant_event_names_the_committed_invocation_policy() -> None:
+    store = MemoryPropertyStore()
+    resource = "urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567"
+    await record_consent_demand(
+        **demand(
+            provider_id="kdcube",
+            connector_app_id="claude-code",
+            claims=["external_mcp:use"],
+            tool_name="external_ops_delete",
+            resource=resource,
+            outer_operation="delete",
+        ),
+        property_store=store,
+    )
+    source = LaneSource()
+
+    authored = await author_consent_granted_events(
+        redis=None,
+        user_id="user-1",
+        provider_id="kdcube",
+        granted_claims=["external_mcp:use"],
+        granted_resource_operations={resource: ["delete"]},
+        granted_resource=resource,
+        connector_app_id="claude-code",
+        account_id="access-1",
+        invocation_policy_mode="once",
+        invocation_policy_revision=2,
+        invocation_change_id="invoke-delete-1",
+        connection_hub_bundle_id="connection-hub@1-0",
+        source_factory=lambda _entry: source,
+        property_store=store,
+    )
+
+    assert authored == 1
+    payload = source.published[0]["payload"]
+    assert "operation delete for one invocation" in payload["text"]
+    assert payload["invocation_policy"] == {
+        "mode": "once",
+        "revision": 2,
+        "change_id": "invoke-delete-1",
+    }
+    nested = payload["event"]["payload"]["event"]
+    assert nested["invocation_policy"] == payload["invocation_policy"]
+
+
+@pytest.mark.asyncio
+async def test_outer_operation_grant_authors_only_the_matching_demand() -> None:
+    store = MemoryPropertyStore()
+    resource = "https://service.example/mcp"
+    client_id = "kdcube-agent:workspace@1-0:main"
+    await record_consent_demand(
+        **demand(
+            provider_id="kdcube",
+            connector_app_id=client_id,
+            claims=[],
+            tool_name="records_export",
+            resource=resource,
+            outer_operation="records_export",
+        ),
+        property_store=store,
+    )
+    source = LaneSource()
+
+    wrong = await author_consent_granted_events(
+        redis=None,
+        user_id="user-1",
+        provider_id="kdcube",
+        granted_claims=[],
+        granted_resource_operations={resource: ["records_delete"]},
+        granted_resource=resource,
+        connector_app_id=client_id,
+        connection_hub_bundle_id="connection-hub@1-0",
+        source_factory=lambda _entry: source,
+        property_store=store,
+    )
+    authored = await author_consent_granted_events(
+        redis=None,
+        user_id="user-1",
+        provider_id="kdcube",
+        granted_claims=[],
+        granted_resource_operations={resource: ["records_export"]},
+        granted_resource=resource,
+        connector_app_id=client_id,
+        connection_hub_bundle_id="connection-hub@1-0",
+        source_factory=lambda _entry: source,
+        property_store=store,
+    )
+
+    assert wrong == 0
+    assert authored == 1
+    payload = source.published[0]["payload"]
+    assert payload["outer_operation"] == "records_export"
+    assert payload["resource_operations"] == {resource: ["records_export"]}
+    assert "operation records_export" in payload["text"]
+
+
+@pytest.mark.asyncio
 async def test_operation_only_grant_does_not_close_a_different_operation() -> None:
     store = MemoryPropertyStore()
     await record_consent_demand(

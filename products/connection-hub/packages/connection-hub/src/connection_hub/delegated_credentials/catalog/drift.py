@@ -24,6 +24,9 @@ from connection_hub.delegated_credentials.named_service_policy import (
 from connection_hub.delegated_credentials.oauth.config import (
     oauth_delegated_config_from_connections,
 )
+from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource_operations,
+)
 
 DRIFT_CURRENT = "current"
 DRIFT_CHANGED = "changed"
@@ -45,9 +48,11 @@ def _namespace(value: Any) -> str:
 class _CatalogView:
     """What one catalog generation offers, per card resource."""
 
-    def __init__(self, document: CatalogDocument) -> None:
+    def __init__(self, document: CatalogDocument, *, config: Any = None) -> None:
         self.version = document.version
-        self._config = oauth_delegated_config_from_connections(document.connections)
+        self._config = config or oauth_delegated_config_from_connections(
+            document.connections
+        )
 
     def resource(self, resource: str) -> Any:
         # A card selector, so the all-resource row answers only a card that
@@ -137,7 +142,9 @@ def _removed(
     named_service_operations: list[dict[str, Any]] = []
 
     selected_inner = selected_named_service_operations(card)
-    selected_outer = {_clean(name) for name in (card.operations or ()) if _clean(name)}
+    selected_outer = normalize_resource_operations(
+        getattr(card, "resource_operations", {})
+    )
 
     for raw_resource, grants in card.resource_grants.items():
         resource = _clean(raw_resource)
@@ -161,7 +168,9 @@ def _removed(
 
         offered_outer = active.outer_operations(resource)
         if offered_outer is not None:
-            for operation in sorted(selected_outer - offered_outer):
+            for operation in sorted(
+                set(selected_outer.get(resource, ())) - offered_outer
+            ):
                 outer_operations.append(
                     {
                         "resource": resource,
@@ -247,6 +256,7 @@ def card_drift(
     active: CatalogDocument,
     baseline: CatalogDocument | None,
     baseline_confirmed_absent: bool = False,
+    active_config: Any = None,
 ) -> dict[str, Any]:
     """The drift block for one card.
 
@@ -254,15 +264,27 @@ def card_drift(
     ``baseline_confirmed_absent`` when durable absence was confirmed.
     """
     saved_version = _clean(getattr(card, "catalog_version", ""))
-    if saved_version and saved_version == active.version:
+    active_view = _CatalogView(active, config=active_config)
+    removed = _removed(card=card, active=active_view)
+    if saved_version and saved_version == active.version and not _any(removed):
         return {
             "status": DRIFT_CURRENT,
             "saved_version": saved_version,
             "current_version": active.version,
         }
 
-    active_view = _CatalogView(active)
-    removed = _removed(card=card, active=active_view)
+    if saved_version and saved_version == active.version:
+        return {
+            "status": DRIFT_CHANGED,
+            "saved_version": saved_version,
+            "current_version": active.version,
+            "removed": removed,
+            "added": {
+                "claims": [],
+                "outer_operations": [],
+                "named_service_operations": [],
+            },
+        }
 
     if baseline is None:
         # Removals still hold against the verified current catalog; additions

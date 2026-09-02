@@ -25,8 +25,14 @@ from connection_hub.delegated_credentials.named_service_policy import (
     as_string_list,
     clean_text,
 )
+from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource_operations,
+    operation_union,
+    project_legacy_operations,
+)
 
-CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v1"
+CARD_AUTHORITY_SCHEMA_V1 = "connection_hub.delegated_card_authority.v1"
+CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v2"
 CARD_POINTER_SCHEMA = "connection_hub.delegated_card_current.v1"
 
 CARD_STATE_ACTIVE = "active"
@@ -48,6 +54,20 @@ class CardRecordError(ValueError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def card_authority_payload_hash(value: Mapping[str, Any]) -> str:
+    """Hash the exact durable payload before any in-memory migration."""
+    if not isinstance(value, Mapping):
+        raise CardRecordError("record_not_object")
+    canonical = json.dumps(
+        dict(value),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _normalized_namespace(value: Any) -> str:
@@ -189,6 +209,7 @@ class CardAuthority:
     state: str = CARD_STATE_ACTIVE
     operations: tuple[str, ...] = ()
     resource_grants: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    resource_operations: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     named_service_operations: NamedServiceSelection = field(
         default_factory=NamedServiceSelection.unknown
     )
@@ -204,7 +225,8 @@ class CardAuthority:
     def from_mapping(cls, value: Any) -> "CardAuthority":
         if not isinstance(value, Mapping):
             raise CardRecordError("record_not_object")
-        if str(value.get("schema") or "").strip() != CARD_AUTHORITY_SCHEMA:
+        schema = str(value.get("schema") or "").strip()
+        if schema not in {CARD_AUTHORITY_SCHEMA_V1, CARD_AUTHORITY_SCHEMA}:
             raise CardRecordError("schema_mismatch")
         resource_grants = value.get("resource_grants")
         if not isinstance(resource_grants, Mapping):
@@ -212,6 +234,18 @@ class CardAuthority:
         operations = value.get("operations")
         if not isinstance(operations, list):
             raise CardRecordError("operations_invalid")
+        try:
+            resource_operations = (
+                project_legacy_operations(resource_grants, operations)
+                if schema == CARD_AUTHORITY_SCHEMA_V1
+                else normalize_resource_operations(value.get("resource_operations"))
+            )
+        except ValueError as exc:
+            raise CardRecordError("resource_operations_invalid") from exc
+        if schema == CARD_AUTHORITY_SCHEMA and not isinstance(
+            value.get("resource_operations"), Mapping
+        ):
+            raise CardRecordError("resource_operations_invalid")
         for name in ("named_services", "account_scope"):
             if not isinstance(value.get(name, {}), Mapping):
                 raise CardRecordError(f"{name}_invalid")
@@ -228,12 +262,17 @@ class CardAuthority:
             card_revision=int(value.get("card_revision") or 0),
             catalog_version=clean_text(value.get("catalog_version")),
             state=state,
-            operations=tuple(as_string_list(operations)),
+            operations=(
+                tuple(as_string_list(operations))
+                if schema == CARD_AUTHORITY_SCHEMA_V1
+                else operation_union(resource_operations)
+            ),
             resource_grants={
                 clean_text(resource): tuple(as_string_list(grants))
                 for resource, grants in resource_grants.items()
                 if clean_text(resource)
             },
+            resource_operations=resource_operations,
             named_service_operations=NamedServiceSelection.from_stored(
                 value.get("named_service_operations"),
                 present="named_service_operations" in value,
@@ -271,6 +310,10 @@ class CardAuthority:
             "resource_grants": {
                 resource: list(grants) for resource, grants in self.resource_grants.items()
             },
+            "resource_operations": {
+                resource: list(operations)
+                for resource, operations in self.resource_operations.items()
+            },
             "named_services": copy.deepcopy(dict(self.named_services or {})),
             "account_scope": {
                 provider: {account_id: list(claims) for account_id, claims in accounts.items()}
@@ -287,15 +330,20 @@ class CardAuthority:
             payload["named_service_operations"] = stored_selection
         return payload
 
+    def __post_init__(self) -> None:
+        try:
+            normalized = normalize_resource_operations(self.resource_operations)
+        except ValueError as exc:
+            raise CardRecordError("resource_operations_invalid") from exc
+        if not normalized and self.operations:
+            normalized = project_legacy_operations(
+                self.resource_grants, self.operations
+            )
+        object.__setattr__(self, "resource_operations", normalized)
+        object.__setattr__(self, "operations", operation_union(normalized))
+
     def content_hash(self) -> str:
-        canonical = json.dumps(
-            self.to_dict(),
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-        return hashlib.sha256(canonical).hexdigest()
+        return card_authority_payload_hash(self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -410,6 +458,7 @@ class CardCurrentPointer:
 
 __all__ = [
     "CARD_AUTHORITY_SCHEMA",
+    "CARD_AUTHORITY_SCHEMA_V1",
     "CARD_POINTER_SCHEMA",
     "CARD_STATE_ACTIVE",
     "CARD_STATE_REVOKED",
@@ -424,5 +473,6 @@ __all__ = [
     "CardRecordError",
     "NamedServiceSelection",
     "authority_is_usable",
+    "card_authority_payload_hash",
     "card_revision_name",
 ]

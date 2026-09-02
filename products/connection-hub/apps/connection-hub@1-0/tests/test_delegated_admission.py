@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import sys
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import (
@@ -17,7 +19,18 @@ from connection_hub.delegated_credentials.admission import (
     AdmissionRequest,
     sign_admission_request,
 )
-from connection_hub.delegated_credentials.oauth.surface_policy import SurfacePolicyDecision
+from connection_hub.delegated_credentials.oauth.surface_policy import (
+    SurfacePolicyDecision,
+    SurfacePolicyDenial,
+)
+from connection_hub.invocation_policy import (
+    POLICY_ONCE,
+    SURFACE_OUTER,
+    BundleStorageInvocationPolicyStore,
+    InvocationAuthority,
+    InvocationPolicyService,
+    canonical_request_digest,
+)
 
 
 SERVICE_SECRET = "service-secret-with-at-least-thirty-two-bytes"
@@ -42,6 +55,11 @@ class _Redis:
             return None
         self.keys.add(key)
         return True
+
+
+@asynccontextmanager
+async def _lock(**_kwargs):
+    yield {}
 
 
 def _connections() -> dict:
@@ -172,7 +190,8 @@ async def test_direct_admission_returns_bounded_pairwise_projection(monkeypatch)
     assert response.status_code == 200
     assert body["allowed"] is True
     assert body["principal"]["sub"].startswith("prk_sub_")
-    assert body["principal"]["client_id"] == "external-client"
+    assert body["principal"]["client_id"].startswith("prk_client_")
+    assert "external-client" not in str(body)
     assert "user-1" not in str(body)
     assert "access-1" not in str(body)
     assert body["authority"]["operation"] == "customers.search"
@@ -182,8 +201,115 @@ async def test_direct_admission_returns_bounded_pairwise_projection(monkeypatch)
         "active_catalog_version": "catalog-active",
     }
     assert calls[0]["request_resource"] == RESOURCE
-    assert calls[0]["operation"] == "customers.search"
-    assert calls[0]["log_identity_details"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("denial_code", "include_requested_capability"),
+    [
+        ("delegated_capability_not_granted", True),
+        ("operation_not_consented", False),
+    ],
+)
+async def test_direct_ungranted_operation_returns_exact_once_or_always_recovery(
+    monkeypatch,
+    denial_code,
+    include_requested_capability,
+):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+    base = _allowed_result()
+    denial_ret = {"reason": denial_code}
+    if include_requested_capability:
+        denial_ret["requested_capability"] = {
+            "kind": "outer_operation",
+            "request_resource": RESOURCE,
+            "outer_operation": "customers.delete",
+        }
+    base.denial = JSONResponse(
+        status_code=403,
+        content={
+            "ok": False,
+            "error": {
+                "code": (
+                    denial_code
+                    if include_requested_capability
+                    else "forbidden"
+                ),
+                "message": "This delegated card does not grant that operation.",
+            },
+            "ret": denial_ret,
+        },
+    )
+    base.runtime = None
+    if denial_code == "operation_not_consented":
+        base.decision = SurfacePolicyDecision.deny(
+            SurfacePolicyDenial(
+                reason="operation_not_consented",
+                description=(
+                    "operation not consented for this connection: "
+                    "customers.delete"
+                ),
+            ),
+            matched_resource=RESOURCE,
+        )
+
+    async def _evaluate(**_kwargs):
+        return base
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    recovery_calls = []
+
+    def recovery(view, admission, change_id):
+        recovery_calls.append(
+            (view.registry_access_id, admission.operation, change_id)
+        )
+        return "https://hub.example/grant?invocation_policy=choose"
+
+    payload = {
+        "resource": RESOURCE,
+        "operation": "customers.delete",
+        "invocation_id": "invoke-delete-1",
+        "request_digest": canonical_request_digest(
+            {"customer_id": "customer-17"}
+        ),
+    }
+    response = await module.handle_delegated_admission(
+        context=module.AdmissionHostContext(
+            connections=_connections(),
+            redis=_Redis(),
+            tenant="tenant-a",
+            project="project-a",
+            resolve_secret=_secret,
+            bind_delegated_request=lambda request: None,
+            operation_grant_url_builder=recovery,
+        ),
+        payload=payload,
+        request=_request(payload),
+    )
+    body = json.loads(response.body)
+
+    assert response.status_code == 403
+    assert body["error"]["code"] == denial_code
+    consent = body["consent"]
+    assert consent["agent_client_id"] == "external-client"
+    assert consent["access_id"] == "access-1"
+    assert consent["resource"] == RESOURCE
+    assert consent["outer_operation"] == "customers.delete"
+    assert consent["available_choices"] == ["allow_once", "allow_always"]
+    assert consent["invocation_change_id"] == "invoke-delete-1"
+    assert consent["grant"]["payload"] == {
+        "client_id": "external-client",
+        "access_id": "access-1",
+        "resource": RESOURCE,
+        "claims": [],
+        "resource_operations": {RESOURCE: ["customers.delete"]},
+        "invocation_change_id": "invoke-delete-1",
+    }
+    assert body["ret"]["details"]["recovery"] == consent
+    assert recovery_calls == [
+        ("access-1", "customers.delete", "invoke-delete-1")
+    ]
 
 
 @pytest.mark.asyncio
@@ -368,3 +494,111 @@ async def test_direct_admission_narrows_a_requested_connected_account(monkeypatc
         "account_id": "account-17",
         "claims": ["contacts:read"],
     }
+
+
+@pytest.mark.asyncio
+async def test_direct_admission_once_replays_the_recorded_allow(monkeypatch, tmp_path):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+    evaluations = 0
+
+    async def _evaluate(**kwargs):
+        nonlocal evaluations
+        del kwargs
+        evaluations += 1
+        return _allowed_result()
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    policies = InvocationPolicyService(
+        store=BundleStorageInvocationPolicyStore(tmp_path),
+        mutation_lock=_lock,
+    )
+    authority = InvocationAuthority(
+        access_id="access-1",
+        resource=RESOURCE,
+        surface=SURFACE_OUTER,
+        operation="customers.search",
+    )
+    await policies.set_policy(
+        owner_subject="user-1",
+        authority=authority,
+        mode=POLICY_ONCE,
+        now=100,
+    )
+    context = module.AdmissionHostContext(
+        connections=_connections(),
+        redis=_Redis(),
+        tenant="tenant-a",
+        project="project-a",
+        resolve_secret=_secret,
+        bind_delegated_request=lambda request: None,
+        invocation_policies=policies,
+        invocation_recovery_url_builder=lambda view, request: (
+            f"https://hub.example/cards/{view.registry_access_id}"
+            f"?resource={request.resource}&operation={request.operation}"
+        ),
+    )
+    digest = canonical_request_digest({"customer_id": "customer-7"})
+    payload = {
+        "resource": RESOURCE,
+        "operation": "customers.search",
+        "invocation_id": "invoke-1",
+        "request_digest": digest,
+    }
+
+    first = await module.handle_delegated_admission(
+        context=context,
+        payload=payload,
+        request=_request(payload, nonce="nonce-1234567890abc1"),
+    )
+    replay = await module.handle_delegated_admission(
+        context=context,
+        payload=payload,
+        request=_request(payload, nonce="nonce-1234567890abc2"),
+    )
+    next_payload = {
+        **payload,
+        "invocation_id": "invoke-2",
+        "request_digest": canonical_request_digest({"customer_id": "customer-8"}),
+    }
+    exhausted = await module.handle_delegated_admission(
+        context=context,
+        payload=next_payload,
+        request=_request(next_payload, nonce="nonce-1234567890abc3"),
+    )
+
+    first_body = json.loads(first.body)
+    replay_body = json.loads(replay.body)
+    exhausted_body = json.loads(exhausted.body)
+    assert first.status_code == 200
+    assert first_body["invocation_id"] == "invoke-1"
+    assert first_body["replay"] is False
+    assert first_body["invocation_policy"]["remaining"] == 0
+    assert set(first_body["invocation_policy"]) == {
+        "mode",
+        "revision",
+        "state",
+        "remaining",
+        "updated_at",
+    }
+    assert "access-1" not in str(first_body)
+    assert replay.status_code == 200
+    assert replay_body["decision_id"] == first_body["decision_id"]
+    assert replay_body["replay"] is True
+    assert exhausted.status_code == 403
+    assert exhausted_body["error"]["code"] == (
+        "delegated_invocation_limit_exhausted"
+    )
+    assert exhausted_body["ret"]["details"]["recovery"] == {
+        "kind": "delegated_invocation_policy",
+        "connection_hub_url": (
+            "https://hub.example/cards/access-1"
+            f"?resource={RESOURCE}&operation=customers.search"
+        ),
+        "access_id": "access-1",
+        "resource": RESOURCE,
+        "outer_operation": "customers.search",
+        "available_choices": ["allow_once", "allow_always"],
+    }
+    # Live authority is intentionally re-evaluated before replay is served.
+    assert evaluations == 3

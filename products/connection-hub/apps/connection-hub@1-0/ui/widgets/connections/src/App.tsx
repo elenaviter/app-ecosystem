@@ -15,6 +15,8 @@ import { DelegatedToKdcubePanel } from './features/delegatedToKdcube/DelegatedTo
 import { clearDelegatedToKdcubeError, loadDelegatedToKdcube } from './features/delegatedToKdcube/delegatedToKdcubeSlice';
 import { ProviderConnectionsPanel, type ProviderSummon } from './features/providerConnections/ProviderConnectionsPanel';
 import { clearProviderConnectionsError, loadProviderConnections } from './features/providerConnections/providerConnectionsSlice';
+import { RemoteMcpPanel } from './features/remoteMcp/RemoteMcpPanel';
+import { clearRemoteMcpError, loadRemoteMcpConnectors } from './features/remoteMcp/remoteMcpSlice';
 import {
   ackConnectionsHubOpen,
   announceConnectionsHubReady,
@@ -55,6 +57,7 @@ function tabFromValue(raw: string): ConnectionsTab | null {
     || value === 'provider_connections'
     || value === 'providers'
   ) return 'providerConnections';
+  if (value === 'remotemcp' || value === 'remote-mcp' || value === 'remote_mcp' || value === 'externalmcp' || value === 'external-mcp') return 'remoteMcp';
   if (value === 'delegatedaccess' || value === 'delegated-access' || value === 'delegated_access') return 'delegatedAccess';
   if (value === 'delegatedbykdcube' || value === 'delegated-by-kdcube' || value === 'delegated_by_kdcube') return 'delegatedAccess';
   return null;
@@ -96,11 +99,13 @@ export default function App() {
   const identityLoading = useAppSelector((s) => s.identity.loading);
   const delegatedToKdcubeLoading = useAppSelector((s) => s.delegatedToKdcube.loading);
   const providerConnectionsLoading = useAppSelector((s) => s.providerConnections.loading);
+  const remoteMcpLoading = useAppSelector((s) => s.remoteMcp.loading);
   const authenticatorsError = useAppSelector((s) => s.authenticators.error);
   const delegatedAccessError = useAppSelector((s) => s.delegatedAccess.error);
   const identityError = useAppSelector((s) => s.identity.error);
   const delegatedToKdcubeError = useAppSelector((s) => s.delegatedToKdcube.error);
   const providerConnectionsError = useAppSelector((s) => s.providerConnections.error);
+  const remoteMcpError = useAppSelector((s) => s.remoteMcp.error);
 
   useEffect(() => {
     void settings.setupParentListener().then(async () => {
@@ -111,12 +116,13 @@ export default function App() {
       void dispatch(loadDelegatedAccess());
       void dispatch(loadDelegatedToKdcube());
       void dispatch(loadProviderConnections());
+      void dispatch(loadRemoteMcpConnectors());
     });
   }, [claimChallengeId, dispatch, telegramMiniAppMode]);
 
   const [refreshing, setRefreshing] = useState(false);
-  const loading = identityLoading || authenticatorsLoading || delegatedAccessLoading || delegatedToKdcubeLoading || providerConnectionsLoading;
-  const errors = [identityError, authenticatorsError, delegatedAccessError, delegatedToKdcubeError, providerConnectionsError].filter(Boolean) as string[];
+  const loading = identityLoading || authenticatorsLoading || delegatedAccessLoading || delegatedToKdcubeLoading || providerConnectionsLoading || remoteMcpLoading;
+  const errors = [identityError, authenticatorsError, delegatedAccessError, delegatedToKdcubeError, providerConnectionsError, remoteMcpError].filter(Boolean) as string[];
 
   const dismissErrors = () => {
     dispatch(clearIdentityError());
@@ -124,6 +130,7 @@ export default function App() {
     dispatch(clearDelegatedAccessError());
     dispatch(clearDelegatedToKdcubeError());
     dispatch(clearProviderConnectionsError());
+    dispatch(clearRemoteMcpError());
   };
 
   // Re-fetch after finishing OAuth in another tab. Doesn't blank the page.
@@ -139,6 +146,7 @@ export default function App() {
         dispatch(loadDelegatedAccess()).unwrap().catch(() => undefined),
         dispatch(loadDelegatedToKdcube()).unwrap().catch(() => undefined),
         dispatch(loadProviderConnections()).unwrap().catch(() => undefined),
+        dispatch(loadRemoteMcpConnectors()).unwrap().catch(() => undefined),
       ]);
     } finally {
       refreshInFlight.current = false;
@@ -233,7 +241,7 @@ export default function App() {
         // offer its one-click grant pane; the nonce remounts it to re-read.
         try {
           const url = new URL(window.location.href);
-          (['pending_agent_grant', 'agent_client_id', 'manual_access_id', 'resource', 'claims', 'namespace', 'operation', 'account_id', 'account_claim'] as const).forEach((key) => {
+          (['pending_agent_grant', 'agent_client_id', 'manual_access_id', 'access_id', 'resource', 'claims', 'namespace', 'operation', 'outer_operation', 'invocation_policy', 'invocation_change_id', 'account_id', 'account_claim'] as const).forEach((key) => {
             const value = (params[key] || '').trim();
             if (value) url.searchParams.set(key, value);
             else url.searchParams.delete(key);
@@ -331,6 +339,7 @@ export default function App() {
       ) : null}
       {activeTab === 'delegatedToKdcube' ? <DelegatedToKdcubePanel key={delegatedSummonNonce} openParams={delegatedToKdcubeOpenParams ?? undefined} /> : null}
       {activeTab === 'providerConnections' ? <ProviderConnectionsPanel summon={hubSummon ?? undefined} /> : null}
+      {activeTab === 'remoteMcp' ? <RemoteMcpPanel /> : null}
     </AppShell>
   );
 }

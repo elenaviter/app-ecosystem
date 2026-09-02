@@ -26,7 +26,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from dataclasses import replace as replace_fields
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Awaitable, Callable, Iterable, Mapping
 from urllib.parse import urlsplit
 
 from connection_hub.authority_inventory import (
@@ -62,6 +62,11 @@ from connection_hub.delegated_credentials.named_service_policy import (
     named_service_policy_for_resource,
     narrow_named_service_config,
     operation_grants as _named_service_operation_grants,
+)
+from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource_operations,
+    operation_union,
+    project_legacy_operations,
 )
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
@@ -122,6 +127,7 @@ DELEGATED_SESSION_MAX_TTL_SECONDS = 7 * 24 * 3600
 AuthorityFactory = Callable[..., Any]
 NamedServiceDiscoveryFactory = Callable[..., Any]
 RelayFactory = Callable[[], Any]
+ResourceOverlayProvider = Callable[[str], Awaitable[Iterable[Any]]]
 
 # Live delivery: registry mutations (an OAuth consent lands a grant, a manual
 # token is created, anything is revoked) are pushed to the user's OPEN
@@ -516,6 +522,7 @@ class ResolvedCardAuthority:
     """
 
     resource_grants: dict[str, list[str]] = field(default_factory=dict)
+    resource_operations: dict[str, list[str]] = field(default_factory=dict)
     operations: list[str] = field(default_factory=list)
     named_service_operations: NamedServiceSelection = field(
         default_factory=NamedServiceSelection.none
@@ -605,6 +612,7 @@ class AutomationAccessRecord:
     delegate_subject: str
     operations: tuple[str, ...]
     resource_grants: Mapping[str, tuple[str, ...]]
+    resource_operations: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     # Exact user-visible selection in one of four states. A newly written card
     # always carries "*", {}, or an exact map; `unknown` is a legacy-record
     # condition only.
@@ -643,6 +651,15 @@ class AutomationAccessRecord:
     # client disconnected without revoking).
     last_issued_at: int = 0
 
+    def __post_init__(self) -> None:
+        normalized = normalize_resource_operations(self.resource_operations)
+        if not normalized and self.operations:
+            normalized = project_legacy_operations(
+                self.resource_grants, self.operations
+            )
+        object.__setattr__(self, "resource_operations", normalized)
+        object.__setattr__(self, "operations", operation_union(normalized))
+
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "AutomationAccessRecord":
         return cls(
@@ -657,6 +674,14 @@ class AutomationAccessRecord:
                 for key, grants in dict(value.get("resource_grants") or {}).items()
                 if _clean(key)
             },
+            resource_operations=(
+                normalize_resource_operations(value.get("resource_operations"))
+                if "resource_operations" in value
+                else project_legacy_operations(
+                    dict(value.get("resource_grants") or {}),
+                    _as_list(value.get("operations")),
+                )
+            ),
             named_service_operations=_parse_named_service_selection(value),
             named_services=(
                 dict(value.get("named_services"))
@@ -687,6 +712,9 @@ class AutomationAccessRecord:
             "delegate_subject": self.delegate_subject,
             "operations": list(self.operations),
             "resource_grants": {key: list(value) for key, value in self.resource_grants.items()},
+            "resource_operations": {
+                key: list(value) for key, value in self.resource_operations.items()
+            },
             "named_services": dict(self.named_services or {}),
             "account_scope": {
                 provider: {account_id: list(claims) for account_id, claims in accounts.items()}
@@ -755,6 +783,9 @@ def card_authority_from_record(record: AutomationAccessRecord) -> CardAuthority:
         state=CARD_STATE_ACTIVE,
         operations=tuple(record.operations),
         resource_grants={key: tuple(value) for key, value in record.resource_grants.items()},
+        resource_operations={
+            key: tuple(value) for key, value in record.resource_operations.items()
+        },
         named_service_operations=record.named_service_operations,
         named_services=copy.deepcopy(dict(record.named_services or {})),
         account_scope={
@@ -793,6 +824,9 @@ def record_from_card(
         delegate_subject=authority.delegate_subject,
         operations=tuple(authority.operations),
         resource_grants={key: tuple(value) for key, value in authority.resource_grants.items()},
+        resource_operations={
+            key: tuple(value) for key, value in authority.resource_operations.items()
+        },
         named_service_operations=authority.named_service_operations,
         named_services=copy.deepcopy(dict(authority.named_services or {})),
         account_scope={
@@ -929,6 +963,7 @@ class AutomationAccessService:
         authority_factory: AuthorityFactory | None = None,
         named_service_discovery_factory: NamedServiceDiscoveryFactory | None = None,
         relay_factory: RelayFactory | None = None,
+        resource_overlay_provider: ResourceOverlayProvider | None = None,
     ) -> None:
         self._redis = redis
         self._tenant = _clean(tenant)
@@ -941,6 +976,7 @@ class AutomationAccessService:
         self._named_service_discovery = named_service_discovery
         self._named_service_discovery_factory = named_service_discovery_factory
         self._relay_factory = relay_factory
+        self._resource_overlay_provider = resource_overlay_provider
         # Required by the operations that stamp a card. Read-only and
         # credential-lifecycle operations do not need it.
         self._catalog_resolver = catalog_resolver
@@ -1036,6 +1072,9 @@ class AutomationAccessService:
         refreshed = existing.to_public_dict()
         try:
             baseline, reason = await self._baseline_document(_clean(existing.catalog_version))
+            active_config = await self._catalog_config(
+                active, owner_subject=existing.grantor_subject
+            )
             refreshed["catalog_drift"] = (
                 drift_unavailable(reason)
                 if reason
@@ -1044,6 +1083,7 @@ class AutomationAccessService:
                     active=active,
                     baseline=baseline,
                     baseline_confirmed_absent=baseline is None,
+                    active_config=active_config,
                 )
             )
         except Exception:
@@ -1062,7 +1102,10 @@ class AutomationAccessService:
         }
 
     async def _catalog_drift(
-        self, records: Iterable[AutomationAccessRecord]
+        self,
+        records: Iterable[AutomationAccessRecord],
+        *,
+        owner_subject: str = "",
     ) -> dict[str, dict[str, Any]]:
         """Drift per card: one active read, and one read per distinct baseline.
 
@@ -1080,13 +1123,19 @@ class AutomationAccessService:
                 record.access_id: drift_unavailable("catalog_unavailable") for record in rows
             }
 
+        active_config = await self._catalog_config(
+            active, owner_subject=owner_subject
+        )
         baselines: dict[str, tuple[Any, str]] = {}
         out: dict[str, dict[str, Any]] = {}
         for record in rows:
             version = _clean(record.catalog_version)
             if version and version == active.version:
                 out[record.access_id] = card_drift(
-                    card=record, active=active, baseline=active
+                    card=record,
+                    active=active,
+                    baseline=active,
+                    active_config=active_config,
                 )
                 continue
             if version not in baselines:
@@ -1100,6 +1149,7 @@ class AutomationAccessService:
                 active=active,
                 baseline=document,
                 baseline_confirmed_absent=document is None,
+                active_config=active_config,
             )
         return out
 
@@ -1123,14 +1173,30 @@ class AutomationAccessService:
             raise CatalogUnavailable("catalog_resolver_not_configured")
         return await self._catalog_resolver.resolve_active()
 
-    @staticmethod
-    def _catalog_config(active: Any) -> Any:
+    async def _catalog_config(
+        self, active: Any, *, owner_subject: str = ""
+    ) -> Any:
         """The delegable config a save decides against: the registered catalog,
-        read with the same parser request paths use. Effective props are an
-        input to publication, not to a card write."""
-        return oauth_delegated_config_from_connections(
+        read with the same parser request paths use, plus resources owned by
+        this grantor in host registries such as remote MCP connectors."""
+        config = oauth_delegated_config_from_connections(
             getattr(active, "connections", None) or {}
         )
+        provider = self._resource_overlay_provider
+        owner = _clean(owner_subject)
+        if provider is None or not owner:
+            return config
+        rows = tuple(await provider(owner) or ())
+        if not rows:
+            return config
+        existing = {_clean(getattr(item, "resource", "")) for item in config.resources}
+        additions = tuple(
+            item
+            for item in rows
+            if _clean(getattr(item, "resource", ""))
+            and _clean(getattr(item, "resource", "")) not in existing
+        )
+        return replace_fields(config, resources=tuple(config.resources) + additions)
 
     @staticmethod
     def _version_of(active: Any) -> str:
@@ -1167,17 +1233,29 @@ class AutomationAccessService:
             requested_grants=requested_grants,
         )
 
-    async def _offer_config(self) -> Any | None:
+    async def _offer_config(self, *, owner_subject: str = "") -> Any | None:
         """The catalog a form may offer from, or ``None`` when it cannot be
         established. Offering from effective props would promise what a save,
         which reads the catalog, then refuses."""
         try:
-            return self._catalog_config(await self._active_catalog())
+            return await self._catalog_config(
+                await self._active_catalog(), owner_subject=owner_subject
+            )
         except CatalogUnavailable:
             return None
 
+    async def oauth_consent_config(self, *, grantor_subject: str) -> Any | None:
+        """The registered catalog plus resources owned by this grantor.
+
+        OAuth discovery remains anonymous and descriptor-only. The browser
+        consent step calls this after platform login, when owner-scoped
+        resources such as external MCP connectors may be shown safely.
+        """
+
+        return await self._offer_config(owner_subject=grantor_subject)
+
     async def grant_options(self, user: Mapping[str, Any]) -> list[dict[str, Any]]:
-        offer = await self._offer_config()
+        offer = await self._offer_config(owner_subject=_subject_from_user(user))
         if offer is None:
             return []
         inventory = await self._available_inventory(user, config=offer)
@@ -1266,7 +1344,7 @@ class AutomationAccessService:
         registered catalog, which is what a save decides against; an
         unestablished catalog offers nothing rather than offering props.
         """
-        offer = await self._offer_config()
+        offer = await self._offer_config(owner_subject=_subject_from_user(user))
         if offer is None:
             return []
         platform_admin = _is_platform_admin(user)
@@ -1410,13 +1488,19 @@ class AutomationAccessService:
                 "retryable": True,
                 "status": 503,
             }
-        drift_by_card = await self._catalog_drift(records_found)
+        drift_by_card = await self._catalog_drift(
+            records_found, owner_subject=grantor_subject
+        )
         try:
             active = await self._active_catalog()
         except CatalogUnavailable:
             active = None
         # Without a catalog a card cannot be explained, only listed and revoked.
-        listing_config = self._catalog_config(active) if active is not None else None
+        listing_config = (
+            await self._catalog_config(active, owner_subject=grantor_subject)
+            if active is not None
+            else None
+        )
         records = []
         for record in records_found:
             item = record.to_public_dict()
@@ -1464,26 +1548,66 @@ class AutomationAccessService:
             "items": records,
         }
 
-    def _resolve_operations(
+    def _resolve_resource_operations(
         self,
         *,
-        grants: list[str],
-        operations: list[str],
-        resources: list[str],
+        resource_grants: Mapping[str, Iterable[str]],
+        resource_operations: Mapping[str, Any] | None,
+        legacy_operations: Iterable[str] = (),
+        default_all: bool = False,
+        prune_unknown: bool = False,
         config: Any = None,
-    ) -> list[str]:
+    ) -> dict[str, list[str]]:
         source = config or self._config
-        available_by_name: dict[str, Any] = {}
-        for resource in resources:
-            for operation in source.tools_for_scopes(grants, resource=resource or None):
-                available_by_name.setdefault(operation.name, operation)
-        available_names = set(available_by_name)
-        if operations:
-            unknown = sorted(set(operations) - available_names)
+        available: dict[str, set[str]] = {}
+        for resource, grants in resource_grants.items():
+            available[resource] = {
+                _clean(getattr(operation, "name", ""))
+                for operation in source.tools_for_scopes(
+                    list(grants or ()), resource=resource or None
+                )
+                if _clean(getattr(operation, "name", ""))
+            }
+
+        if resource_operations is not None:
+            selected = normalize_resource_operations(resource_operations)
+            unknown_resources = sorted(set(selected) - set(resource_grants))
+            if unknown_resources:
+                raise ValueError(
+                    "operation selection names unknown resource(s): "
+                    + ", ".join(unknown_resources)
+                )
+            resolved: dict[str, list[str]] = {}
+            for resource in resource_grants:
+                requested = set(selected.get(resource, ()))
+                unknown = sorted(requested - available.get(resource, set()))
+                if unknown and not prune_unknown:
+                    raise ValueError(
+                        f"unknown or unauthorized operation(s) for {resource}: "
+                        + ", ".join(unknown)
+                    )
+                resolved[resource] = sorted(
+                    requested & available.get(resource, set())
+                )
+            return resolved
+
+        legacy = {_clean(operation) for operation in legacy_operations if _clean(operation)}
+        if legacy:
+            offered_any = set().union(*available.values()) if available else set()
+            unknown = sorted(legacy - offered_any)
             if unknown:
-                raise ValueError(f"unknown or unauthorized operation(s): {', '.join(unknown)}")
-            return sorted(operations)
-        return sorted(available_names)
+                raise ValueError(
+                    "unknown or unauthorized operation(s): " + ", ".join(unknown)
+                )
+            return {
+                resource: sorted(legacy & offered)
+                for resource, offered in available.items()
+            }
+        if default_all:
+            return {
+                resource: sorted(offered) for resource, offered in available.items()
+            }
+        return {resource: [] for resource in resource_grants}
 
     async def create_access(
         self,
@@ -1492,6 +1616,7 @@ class AutomationAccessService:
         label: str,
         resource_grants: Mapping[str, Any],
         operations: Iterable[str] = (),
+        resource_operations: Mapping[str, Any] | None = None,
         named_service_operations: Mapping[str, Any] | str | None = None,
         account_scope: Mapping[str, Any] | None = None,
         ttl_seconds: Any = None,
@@ -1530,7 +1655,9 @@ class AutomationAccessService:
                 "retryable": True,
                 "status": 503,
             }
-        catalog_config = self._catalog_config(active)
+        catalog_config = await self._catalog_config(
+            active, owner_subject=grantor_subject
+        )
 
         selected_resource_grants = self._resource_grants(resource_grants)
         if _clean(client_id) and merge_existing:
@@ -1746,7 +1873,10 @@ class AutomationAccessService:
                         target_accounts[account_id] = merged_claims
         else:
             access_id = "aut_" + secrets.token_urlsafe(10)
-            client_id = f"{AUTOMATION_CLIENT_PREFIX}:{access_id}"
+            client_id = (
+                f"{AUTOMATION_CLIENT_PREFIX}:"
+                f"{secrets.token_urlsafe(10)}"
+            )
 
         # An exact operation-only demand is a valid incremental update for an
         # existing deterministic agent card: the merge above restores that
@@ -1804,12 +1934,79 @@ class AutomationAccessService:
                     named_services,
                     selected_policy,
                 )
-        selected_operations = self._resolve_operations(
-            grants=selected_grants,
-            operations=_as_list(list(operations)),
-            resources=selected_resources,
+        legacy_operations = _as_list(list(operations))
+        operation_selection = (
+            normalize_resource_operations(resource_operations)
+            if resource_operations is not None
+            else None
+        )
+        default_all = existing is None and operation_selection is None and not legacy_operations
+        if existing is not None:
+            existing_operations = self._resolve_resource_operations(
+                resource_grants=selected_resource_grants,
+                resource_operations={
+                    resource: tuple(selected)
+                    for resource, selected in existing.resource_operations.items()
+                    if resource in selected_resource_grants
+                },
+                prune_unknown=True,
+                config=catalog_config,
+            )
+            if operation_selection is None and not legacy_operations:
+                operation_selection = existing_operations
+                # A merge may add a new resource. Preserve reviewed authority on
+                # retained resources and initialize only the new resource from
+                # its own catalog.
+                missing = {
+                    resource: selected_resource_grants[resource]
+                    for resource in selected_resource_grants
+                    if resource not in operation_selection
+                }
+                if merge_existing and missing:
+                    defaults = self._resolve_resource_operations(
+                        resource_grants=missing,
+                        resource_operations=None,
+                        default_all=True,
+                        config=catalog_config,
+                    )
+                    operation_selection = {**operation_selection, **defaults}
+            elif merge_existing and operation_selection is not None:
+                merged_operations = {
+                    resource: list(values)
+                    for resource, values in existing_operations.items()
+                }
+                for resource, values in operation_selection.items():
+                    held = merged_operations.setdefault(resource, [])
+                    for operation in values:
+                        if operation not in held:
+                            held.append(operation)
+                operation_selection = merged_operations
+            elif merge_existing and legacy_operations:
+                legacy_selection = self._resolve_resource_operations(
+                    resource_grants=selected_resource_grants,
+                    resource_operations=None,
+                    legacy_operations=legacy_operations,
+                    config=catalog_config,
+                )
+                merged_operations = {
+                    resource: list(values)
+                    for resource, values in existing_operations.items()
+                }
+                for resource, values in legacy_selection.items():
+                    held = merged_operations.setdefault(resource, [])
+                    for operation in values:
+                        if operation not in held:
+                            held.append(operation)
+                operation_selection = merged_operations
+                legacy_operations = ()
+        selected_resource_operations = self._resolve_resource_operations(
+            resource_grants=selected_resource_grants,
+            resource_operations=operation_selection,
+            legacy_operations=legacy_operations,
+            default_all=default_all,
             config=catalog_config,
         )
+        selected_operations = list(operation_union(selected_resource_operations))
 
         ttl = _bounded_ttl(ttl_seconds)
         now = int(time.time())
@@ -1819,6 +2016,7 @@ class AutomationAccessService:
             client_id=client_id,
             scopes=selected_grants,
             operations=selected_operations,
+            resource_operations=selected_resource_operations,
             tenant=self._tenant,
             project=self._project,
             resource_grants=selected_resource_grants,
@@ -1857,6 +2055,7 @@ class AutomationAccessService:
             selected_operations,
             expires_in,
             credential=credential.to_dict(),
+            resource_operations=selected_resource_operations,
             grantor_authority=grantor_authority,
             delegation_edges=delegation_edges,
             named_services=named_services,
@@ -1876,6 +2075,10 @@ class AutomationAccessService:
             delegate_subject=integration_subject(grantor_subject, client_id=client_id),
             operations=tuple(selected_operations),
             resource_grants={key: tuple(value) for key, value in selected_resource_grants.items()},
+            resource_operations={
+                key: tuple(value)
+                for key, value in selected_resource_operations.items()
+            },
             named_service_operations=selected_named_service_operations,
             named_services=copy.deepcopy(named_services),
             account_scope={
@@ -1923,6 +2126,8 @@ class AutomationAccessService:
         existing: "AutomationAccessRecord",
         active: Any,
         resource_grants: Mapping[str, Any],
+        resource_operations: Mapping[str, Any] | None,
+        operations: Iterable[str],
         named_service_operations: Mapping[str, Any] | str | None,
         account_scope: Mapping[str, Any] | None,
     ) -> "ResolvedCardAuthority":
@@ -1936,7 +2141,9 @@ class AutomationAccessService:
         selected_resource_grants = self._resource_grants(resource_grants)
         # Every decision below reads the registered catalog. Effective props are
         # an input to publication, not to a card write.
-        catalog_config = self._catalog_config(active)
+        catalog_config = await self._catalog_config(
+            active, owner_subject=_subject_from_user(user)
+        )
         try:
             selected_named_service_operations = self._named_service_operation_selection(
                 named_service_operations
@@ -1992,15 +2199,53 @@ class AutomationAccessService:
                 "ok": False, "error": "delegated_access_requires_resource_grants",
             })
 
+        legacy_operations = _as_list(list(operations))
+        if resource_operations is not None:
+            try:
+                selected_resource_operations = normalize_resource_operations(
+                    resource_operations
+                )
+            except ValueError as exc:
+                return ResolvedCardAuthority(error={
+                    "ok": False,
+                    "error": "invalid_resource_operation_selection",
+                    "message": str(exc),
+                })
+        elif legacy_operations:
+            try:
+                selected_resource_operations = self._resolve_resource_operations(
+                    resource_grants=selected_resource_grants,
+                    resource_operations=None,
+                    legacy_operations=legacy_operations,
+                    config=catalog_config,
+                )
+            except ValueError as exc:
+                return ResolvedCardAuthority(error={
+                    "ok": False,
+                    "error": "invalid_resource_operation_selection",
+                    "message": str(exc),
+                })
+        else:
+            # An edit that omits this dimension preserves it. In particular, a
+            # label or account edit must not select new operations from a newer
+            # catalog generation.
+            selected_resource_operations = {
+                resource: list(existing.resource_operations.get(resource, ()))
+                for resource in selected_resource_grants
+            }
+
         # Values absent from the active catalog are pruned, not rejected.
         reconciled = reconcile_selection(
             resource_grants=selected_resource_grants,
+            resource_operations=selected_resource_operations,
             named_service_operations=selected_named_service_operations,
             active=active,
+            config=catalog_config,
         )
         if reconciled.empty:
             return ResolvedCardAuthority(reconciled=reconciled, revoke=True)
         selected_resource_grants = reconciled.resource_grants
+        selected_resource_operations = reconciled.resource_operations
         selected_named_service_operations = reconciled.named_service_operations
         selected_resources = list(selected_resource_grants)
         if catalog_config.resources and not selected_resources:
@@ -2140,10 +2385,8 @@ class AutomationAccessService:
             named_services = self._merge_named_service_configs(named_services, selected_policy)
         return ResolvedCardAuthority(
             resource_grants=selected_resource_grants,
-            operations=self._resolve_operations(
-                grants=selected_grants, operations=(), resources=selected_resources,
-                config=catalog_config,
-            ),
+            resource_operations=selected_resource_operations,
+            operations=list(operation_union(selected_resource_operations)),
             named_service_operations=selected_named_service_operations,
             named_services=named_services,
             account_scope=selected_account_scope,
@@ -2157,6 +2400,8 @@ class AutomationAccessService:
         *,
         access_id: str,
         resource_grants: Mapping[str, Any],
+        resource_operations: Mapping[str, Any] | None = None,
+        operations: Iterable[str] = (),
         named_service_operations: Mapping[str, Any] | str | None = None,
         account_scope: Mapping[str, Any] | None = None,
         label: str | None = None,
@@ -2229,6 +2474,8 @@ class AutomationAccessService:
             existing=existing,
             active=active,
             resource_grants=resource_grants,
+            resource_operations=resource_operations,
+            operations=operations,
             named_service_operations=named_service_operations,
             account_scope=account_scope,
         )
@@ -2251,6 +2498,7 @@ class AutomationAccessService:
                 ),
             }
         selected_resource_grants = resolved.resource_grants
+        selected_resource_operations = resolved.resource_operations
         selected_named_service_operations = resolved.named_service_operations
         named_services = resolved.named_services
         selected_operations = resolved.operations
@@ -2269,6 +2517,10 @@ class AutomationAccessService:
             delegate_subject=existing.delegate_subject,
             operations=tuple(selected_operations),
             resource_grants={key: tuple(value) for key, value in selected_resource_grants.items()},
+            resource_operations={
+                key: tuple(value)
+                for key, value in selected_resource_operations.items()
+            },
             named_service_operations=selected_named_service_operations,
             named_services=copy.deepcopy(named_services),
             account_scope={
@@ -2334,6 +2586,11 @@ class AutomationAccessService:
             "authorization_header": f"Bearer {record.access_token}",
             "expires_at": record.expires_at,
             "resource_grants": {key: list(value) for key, value in record.resource_grants.items()},
+            "resource_operations": {
+                key: list(value)
+                for key, value in record.resource_operations.items()
+            },
+            "operations": list(record.operations),
             "client_id": record.client_id,
         }
 
@@ -2705,7 +2962,9 @@ class AutomationAccessService:
         client_id: str,
         client_label: str = "",
         scopes: Iterable[str] = (),
-        operations: Iterable[str] = (),
+        operations: Iterable[str] | None = None,
+        resource_grants: Mapping[str, Any] | None = None,
+        resource_operations: Mapping[str, Any] | None = None,
         resource: str = "",
         identity_scope: str = "",
         access_token: str = "",
@@ -2741,12 +3000,13 @@ class AutomationAccessService:
         access_id = oauth_access_id(grantor, client, resource_value)
         now = int(time.time())
         created_at = now
-        existing_grants: list[str] = []
+        existing_resource_grants: dict[str, tuple[str, ...]] = {}
         existing_account_scope: dict[str, dict[str, list[str]]] = {}
         # A refresh rotation must not widen the card: the named-service
         # selection and its materialized boundary carry forward untouched.
         existing_selection = NamedServiceSelection.unknown()
         existing_named_services: dict[str, Any] = {}
+        existing_resource_operations: dict[str, tuple[str, ...]] = {}
         # Token rotation is not an authority change: the card keeps the catalog
         # generation it was last saved against and only advances its revision.
         existing_catalog_version = ""
@@ -2762,9 +3022,7 @@ class AutomationAccessService:
             existing_card = None
         if existing_card is not None:
             created_at = existing_card.created_at or now
-            existing_grants = list(
-                existing_card.resource_grants.get(resource_value or "*", ())
-            )
+            existing_resource_grants = dict(existing_card.resource_grants)
             existing_account_scope = {
                 provider: {account_id: list(claims) for account_id, claims in accounts.items()}
                 for provider, accounts in existing_card.account_scope.items()
@@ -2772,6 +3030,7 @@ class AutomationAccessService:
             existing_selection = existing_card.named_service_operations
             existing_catalog_version = existing_card.catalog_version
             existing_named_services = copy.deepcopy(dict(existing_card.named_services or {}))
+            existing_resource_operations = dict(existing_card.resource_operations)
         # Initial consent (not a refresh rotation): absorb superseded sibling
         # cards BEFORE composing this card, so their binding carries over.
         is_initial_consent = existing_card is None
@@ -2792,7 +3051,9 @@ class AutomationAccessService:
             existing_selection = submitted_selection or NamedServiceSelection.none()
             existing_catalog_version = _clean(catalog_version)
             try:
-                consent_config = self._catalog_config(await self._active_catalog())
+                consent_config = await self._catalog_config(
+                    await self._active_catalog(), owner_subject=grantor
+                )
             except CatalogUnavailable:
                 consent_config = None
         inherited_account_scope: dict[str, dict[str, list[str]]] = {}
@@ -2807,13 +3068,23 @@ class AutomationAccessService:
                     "[automation-access] sibling scan failed grantor=%s client=%s", grantor, client
                 )
         ttl = max(60, int(getattr(self._store, "refresh_ttl", None) or 86400))
-        # MERGE with the card's current grants: the card is the authority the
-        # guard resolves live, and a hub-side extension must survive token
-        # refresh rotations (which re-register on every issuance).
-        scope_list = _as_list(list(scopes))
-        for grant in existing_grants:
-            if grant not in scope_list:
-                scope_list.append(grant)
+        if resource_grants is not None:
+            selected_resource_grants = self._resource_grants(resource_grants)
+        elif existing_card is not None and operations is None and resource_operations is None:
+            selected_resource_grants = {
+                selector: list(grants)
+                for selector, grants in existing_resource_grants.items()
+            }
+        else:
+            selected_resource_grants = {
+                resource_value or "*": _as_list(list(scopes))
+            }
+        scope_list = list(dict.fromkeys(
+            grant
+            for grants in selected_resource_grants.values()
+            for grant in grants
+            if _clean(grant)
+        ))
         # Account binding: consent picks ∪ this card's existing binding ∪ what a
         # superseded sibling donated. Union per account claim list.
         merged_account_scope: dict[str, dict[str, list[str]]] = {
@@ -2836,14 +3107,28 @@ class AutomationAccessService:
                 account_scope=merged_account_scope,
                 config=consent_config,
             )
+        if resource_operations is not None:
+            selected_resource_operations = normalize_resource_operations(
+                resource_operations
+            )
+        elif operations is None and existing_card is not None:
+            selected_resource_operations = existing_resource_operations
+        else:
+            selected_resource_operations = project_legacy_operations(
+                selected_resource_grants, operations or ()
+            )
         record = AutomationAccessRecord(
             access_id=access_id,
             label=_clean(client_label) or client,
             client_id=client,
             grantor_subject=grantor,
             delegate_subject=integration_subject(grantor, client_id=client),
-            operations=tuple(_as_list(list(operations))),
-            resource_grants={resource_value or "*": tuple(scope_list)},
+            operations=operation_union(selected_resource_operations),
+            resource_grants={
+                selector: tuple(grants)
+                for selector, grants in selected_resource_grants.items()
+            },
+            resource_operations=selected_resource_operations,
             named_service_operations=existing_selection,
             named_services=existing_named_services,
             catalog_version=existing_catalog_version,
@@ -2960,6 +3245,34 @@ class AutomationAccessService:
         return {
             namespace: sorted(operations)
             for namespace, operations in offered.items()
+            if operations
+        }
+
+    async def oauth_seed_resource_operations(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+        resource: str,
+    ) -> dict[str, list[str]]:
+        """Exact child-resource operations held by this OAuth client's card."""
+
+        grantor = _clean(grantor_subject)
+        client = _clean(client_id)
+        if not grantor or not client:
+            return {}
+        try:
+            record = await self._load_record(
+                oauth_access_id(grantor, client, _clean(resource)),
+                grantor_subject=grantor,
+            )
+        except CardUnavailable:
+            return {}
+        if record is None:
+            return {}
+        return {
+            selector: list(operations)
+            for selector, operations in record.resource_operations.items()
             if operations
         }
 
@@ -3103,18 +3416,24 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         client_id: str,
+        access_id: str | None = None,
         resource: str,
         claims: Iterable[str],
+        resource_operations: Mapping[str, Any] | None = None,
         account_scope: Mapping[str, Any] | None = None,
         named_service_operations: Mapping[str, Any] | str | None = None,
         replace: bool = False,
         label: str | None = None,
     ) -> dict[str, Any]:
-        """Edit an EXISTING external client's card (an unknown client is never
-        created here; its card is born at OAuth consent). ``replace=False``
+        """Edit an EXISTING delegated client's card (an unknown client is never
+        created here). ``access_id`` selects an exact existing card when a
+        denial is recovered in place; without it, the OAuth card identity is
+        derived from the client and resource. ``replace=False``
         MERGES the claims in (a one-click extension); ``replace=True`` makes the
         submitted claim set the resource's grants EXACTLY (the edit-in-place
-        path — allowing narrowing, e.g. read+write -> read). ``account_scope``
+        path — allowing narrowing, e.g. read+write -> read).
+        ``resource_operations`` applies the same merge/replace rule to the
+        outer MCP/REST operations selected for this resource. ``account_scope``
         ({provider_id: [account_ids or "*"]}) edits the client's per-provider
         account binding the same way (merge or replace). The card is the
         authority the guard resolves live, so either takes effect on the
@@ -3130,6 +3449,25 @@ class AutomationAccessService:
         client = _clean(client_id)
         resource_value = _clean(resource)
         claim_list = _as_list(list(claims))
+        operation_scope_provided = resource_operations is not None
+        try:
+            operation_update = normalize_resource_operations(resource_operations)
+        except ValueError as exc:
+            return {
+                "ok": False,
+                "error": "invalid_resource_operation_selection",
+                "message": str(exc),
+            }
+        operation_key = resource_value or "*"
+        unknown_operation_resources = sorted(
+            set(operation_update) - {operation_key}
+        )
+        if unknown_operation_resources:
+            return {
+                "ok": False,
+                "error": "invalid_resource_operation_selection",
+                "resources": unknown_operation_resources,
+            }
         account_scope_provided = account_scope is not None
         scope_update: dict[str, dict[str, list[str]]] = {
             provider: {account_id: list(cl) for account_id, cl in accounts.items()}
@@ -3137,13 +3475,21 @@ class AutomationAccessService:
         }
         if not client or (
             not claim_list
+            and not operation_scope_provided
             and not scope_update
             and not (account_scope_provided and replace)
         ):
-            return {"ok": False, "error": "delegated_access_requires_client_and_claims"}
-        access_id = oauth_access_id(grantor_subject, client, resource_value)
+            return {"ok": False, "error": "delegated_access_requires_client_and_authority"}
+        selected_access_id = _clean(access_id) or oauth_access_id(
+            grantor_subject,
+            client,
+            resource_value,
+        )
         try:
-            record = await self._load_record(access_id, grantor_subject=grantor_subject)
+            record = await self._load_record(
+                selected_access_id,
+                grantor_subject=grantor_subject,
+            )
         except CardUnavailable as exc:
             return {
                 "ok": False,
@@ -3155,10 +3501,18 @@ class AutomationAccessService:
         if record is None:
             return {"ok": False, "error": "delegated_access_unknown_client",
                     "message": "This client has no existing grant to extend; it connects via its own consent flow first."}
+        if record.client_id != client:
+            return {
+                "ok": False,
+                "error": "delegated_access_client_mismatch",
+                "status": 409,
+            }
         # Claims must stay inside the deployment's delegable ceiling for the
         # resource when the catalog knows it.
         try:
-            extend_config = self._catalog_config(await self._active_catalog())
+            extend_config = await self._catalog_config(
+                await self._active_catalog(), owner_subject=grantor_subject
+            )
         except CatalogUnavailable as exc:
             return {
                 "ok": False,
@@ -3173,7 +3527,7 @@ class AutomationAccessService:
             outside = sorted(set(claim_list) - ceiling)
             if outside:
                 return {"ok": False, "error": "delegated_access_grants_not_delegable", "grants": outside}
-        key = resource_value or "*"
+        key = operation_key
         resource_grants = {res: tuple(vals) for res, vals in record.resource_grants.items()}
         if claim_list:
             if replace:
@@ -3185,6 +3539,19 @@ class AutomationAccessService:
                     if claim not in merged:
                         merged.append(claim)
             resource_grants[key] = tuple(merged)
+        resource_operations_out: dict[str, tuple[str, ...]] = {
+            res: tuple(vals) for res, vals in record.resource_operations.items()
+        }
+        if operation_scope_provided:
+            requested_operations = list(operation_update.get(key, ()))
+            if replace:
+                selected_operations = requested_operations
+            else:
+                selected_operations = list(resource_operations_out.get(key, ()))
+                for operation in requested_operations:
+                    if operation not in selected_operations:
+                        selected_operations.append(operation)
+            resource_operations_out[key] = tuple(selected_operations)
         # Account binding edit, same merge/replace semantics per provider AND
         # per account.
         account_scope_out: dict[str, dict[str, tuple[str, ...]]] = {
@@ -3226,6 +3593,10 @@ class AutomationAccessService:
             existing=record,
             active=active,
             resource_grants={res: list(vals) for res, vals in resource_grants.items()},
+            resource_operations={
+                res: list(vals) for res, vals in resource_operations_out.items()
+            },
+            operations=(),
             named_service_operations=named_service_operations,
             account_scope={
                 provider: {account_id: list(cl) for account_id, cl in accounts.items()}
@@ -3235,13 +3606,16 @@ class AutomationAccessService:
         if resolved.error is not None:
             return resolved.error
         if resolved.revoke:
-            revoked = await self.revoke_access(user, access_id=access_id)
+            revoked = await self.revoke_access(
+                user,
+                access_id=selected_access_id,
+            )
             if not revoked.get("ok"):
                 return revoked
             return {
                 "ok": True,
                 "revoked": True,
-                "access_id": access_id,
+                "access_id": selected_access_id,
                 "pruned": resolved.reconciled.to_public_dict(),
             }
         resource_grants = {
@@ -3255,6 +3629,10 @@ class AutomationAccessService:
         updated = replace_fields(
             record,
             resource_grants=resource_grants,
+            resource_operations={
+                res: tuple(vals)
+                for res, vals in resolved.resource_operations.items()
+            },
             account_scope=account_scope_out,
             named_service_operations=resolved.named_service_operations,
             named_services=copy.deepcopy(resolved.named_services),
@@ -3282,7 +3660,8 @@ class AutomationAccessService:
         )
         return {
             "ok": True,
-            "access_id": access_id,
+            "access_id": selected_access_id,
+            "access": updated.to_public_dict(),
             "resource_grants": {res: list(vals) for res, vals in resource_grants.items()},
             "account_scope": {
                 p: {a: list(cl) for a, cl in accounts.items()} for p, accounts in account_scope_out.items()
@@ -3407,6 +3786,7 @@ __all__ = [
     "DELEGATED_SESSION_MAX_TTL_SECONDS",
     "NamedServiceDiscoveryFactory",
     "RelayFactory",
+    "ResourceOverlayProvider",
     "notify_delegated_access_changed",
     "register_delegated_access_live_session",
 ]

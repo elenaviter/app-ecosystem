@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Connection Hub App Interface
-  version: 0.2.0
+  version: 0.3.0
   description: |
     Interface contract for connection-hub@1-0.
 
@@ -18,6 +18,9 @@ info:
     - one public browser OAuth callback route shared across connection providers/apps;
     - one optional direct protected-service admission route that combines an
       opaque delegated bearer with an independently signed service request;
+    - owner-scoped external MCP connector operations and one delegated MCP
+      proxy that injects the owner-held upstream credential server-side;
+    - once-or-always invocation policy for exact delegated operations;
     - one `connections_settings` widget built from `ui/widgets/connections`.
 
     Every POST operation body is wrapped as `{ "data": { ... } }` by frontend
@@ -41,6 +44,8 @@ tags:
   - name: Email
   - name: OAuth Callbacks
   - name: Delegated Admission
+  - name: Delegated Access
+  - name: External MCP
 security:
   - PlatformAuth: []
 paths:
@@ -281,7 +286,7 @@ paths:
 
   /bundles/{tenant}/{project}/{bundle_id}/operations/delegated_access_map:
     get:
-      tags: [Delegated access]
+      tags: [Delegated Access]
       summary: Read-only map of delegated resources, namespaces, and grants.
       description: >
         Admin route. Resolves the live connections configuration into the
@@ -300,6 +305,160 @@ paths:
       responses:
         "200":
           description: Resolved grants, resources, namespaces, and providers.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/delegated_invocation_policy_set:
+    post:
+      tags: [Delegated Access]
+      summary: Set once-or-always policy for one granted card operation.
+      operationId: delegated_invocation_policy_set
+      x-kdcube-result-alias: delegated_invocation_policy_set
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DelegatedInvocationPolicyEnvelope"
+      responses:
+        "200":
+          description: Current invocation policy, or a structured owner/card/operation conflict.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/remote_mcp_connectors_list:
+    get:
+      tags: [External MCP]
+      summary: List the signed-in user's external MCP connectors without secret values.
+      operationId: remote_mcp_connectors_list
+      x-kdcube-result-alias: remote_mcp_connectors_list
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      responses:
+        "200":
+          description: Owner-scoped connector revisions and accepted or pending descriptor metadata.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/remote_mcp_connector_create:
+    post:
+      tags: [External MCP]
+      summary: Validate, discover, and create one owner-scoped external MCP connector.
+      operationId: remote_mcp_connector_create
+      x-kdcube-result-alias: remote_mcp_connector_create
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteMCPConnectorCreateEnvelope"
+      responses:
+        "200":
+          description: Created connector. The submitted credential value is never returned.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/remote_mcp_connector_refresh:
+    post:
+      tags: [External MCP]
+      summary: Rediscover an external MCP connector and record descriptor drift.
+      operationId: remote_mcp_connector_refresh
+      x-kdcube-result-alias: remote_mcp_connector_refresh
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteMCPConnectorRevisionEnvelope"
+      responses:
+        "200":
+          description: New connector revision with accepted or pending descriptor state.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/remote_mcp_connector_accept_descriptor:
+    post:
+      tags: [External MCP]
+      summary: Accept the pending discovered descriptor under an optimistic revision.
+      operationId: remote_mcp_connector_accept_descriptor
+      x-kdcube-result-alias: remote_mcp_connector_accept_descriptor
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteMCPConnectorRevisionEnvelope"
+      responses:
+        "200":
+          description: Connector with the accepted descriptor revision.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/remote_mcp_connector_set_enabled:
+    post:
+      tags: [External MCP]
+      summary: Enable or disable one owner-scoped external MCP connector.
+      operationId: remote_mcp_connector_set_enabled
+      x-kdcube-result-alias: remote_mcp_connector_set_enabled
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteMCPConnectorEnabledEnvelope"
+      responses:
+        "200":
+          description: Updated connector state and revision.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/remote_mcp_connector_update_credential:
+    post:
+      tags: [External MCP]
+      summary: Replace the server-side upstream credential and rediscover tools.
+      operationId: remote_mcp_connector_update_credential
+      x-kdcube-result-alias: remote_mcp_connector_update_credential
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteMCPCredentialEnvelope"
+      responses:
+        "200":
+          description: Updated connector. The submitted credential value is never returned.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/remote_mcp_connector_delete:
+    post:
+      tags: [External MCP]
+      summary: Delete one owner-scoped connector and its upstream credential.
+      operationId: remote_mcp_connector_delete
+      x-kdcube-result-alias: remote_mcp_connector_delete
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteMCPConnectorRevisionEnvelope"
+      responses:
+        "200":
+          description: Deleted connector revision; the secret is removed.
 
   /bundles/{tenant}/{project}/{bundle_id}/operations/authenticators_list:
     get:
@@ -713,6 +872,40 @@ paths:
         "200":
           description: Authenticated actor plus linked platform authority, or a declined result.
 
+  /bundles/{tenant}/{project}/{bundle_id}/public/mcp/remote_mcp_proxy:
+    post:
+      tags: [External MCP]
+      summary: List or call exact external MCP tools selected on the caller's live card.
+      description: |
+        Streamable-HTTP MCP JSON-RPC endpoint. Connection Hub resolves the
+        delegated bearer to its exact current card, intersects the owner-scoped
+        connector and accepted live tool descriptor, applies invocation policy,
+        injects the upstream credential server-side, and dispatches the remote
+        tool. A caller can provide `connection_hub/invocation_id` in MCP call
+        metadata for stable retry and result replay.
+      operationId: remote_mcp_proxy
+      security:
+        - DelegatedBearer: []
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        "200":
+          description: MCP JSON-RPC result, including structured delegated denial when the tool cannot run.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
   /bundles/{tenant}/{project}/{bundle_id}/public/delegated_admission:
     post:
       tags: [Delegated Admission]
@@ -847,6 +1040,91 @@ components:
       required: false
       schema: { type: string }
   schemas:
+    DelegatedInvocationPolicyEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [access_id, resource, operation, mode, expected_revision]
+              properties:
+                access_id: { type: string }
+                resource: { type: string }
+                operation: { type: string }
+                mode: { type: string, enum: [once, always] }
+                expected_revision: { type: integer, minimum: 0 }
+                account:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    provider_id: { type: string }
+                    account_id: { type: string }
+    RemoteMCPConnectorCreateEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [label, endpoint, credential_mode]
+              properties:
+                label: { type: string, maxLength: 160 }
+                endpoint: { type: string, format: uri, maxLength: 2048 }
+                credential_mode: { type: string, enum: [none, bearer, header] }
+                credential_header:
+                  type: string
+                  description: Required only for header mode; forbidden transport headers are rejected.
+                credential_value:
+                  type: string
+                  writeOnly: true
+                  maxLength: 16384
+                  description: Required for bearer or header mode and stored only in the owner secret store.
+    RemoteMCPConnectorRevisionEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [connector_id, expected_revision]
+              properties:
+                connector_id: { type: string, pattern: '^mcp_[a-z0-9]{24}$' }
+                expected_revision: { type: integer, minimum: 1 }
+    RemoteMCPConnectorEnabledEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [connector_id, expected_revision, enabled]
+              properties:
+                connector_id: { type: string, pattern: '^mcp_[a-z0-9]{24}$' }
+                expected_revision: { type: integer, minimum: 1 }
+                enabled: { type: boolean }
+    RemoteMCPCredentialEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [connector_id, expected_revision, credential_mode]
+              properties:
+                connector_id: { type: string, pattern: '^mcp_[a-z0-9]{24}$' }
+                expected_revision: { type: integer, minimum: 1 }
+                credential_mode: { type: string, enum: [none, bearer, header] }
+                credential_header: { type: string }
+                credential_value:
+                  type: string
+                  writeOnly: true
+                  maxLength: 16384
     DelegatedAdmissionRequest:
       type: object
       additionalProperties: false
@@ -861,6 +1139,14 @@ components:
           type: string
           description: Concrete operation published for the resource in the active catalog.
           example: customers.search
+        invocation_id:
+          type: string
+          maxLength: 256
+          description: Stable provider-domain invocation id; supplied together with request_digest.
+        request_digest:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Canonical SHA-256 digest of the provider-domain request; supplied together with invocation_id.
         account:
           $ref: "#/components/schemas/DelegatedAdmissionAccount"
     DelegatedAdmissionAccount:
@@ -897,7 +1183,9 @@ components:
             sub:
               type: string
               description: Pairwise subject scoped to this registered service; not the internal platform user id.
-            client_id: { type: string }
+            client_id:
+              type: string
+              description: Pairwise caller-profile id scoped to this service and user; not the raw Connection Hub client or card id.
         authority:
           type: object
           additionalProperties: false
@@ -918,10 +1206,26 @@ components:
             card_revision: { type: integer, minimum: 0 }
             card_catalog_version: { type: string }
             active_catalog_version: { type: string }
+            invocation_policy_revision: { type: integer, minimum: 1 }
         expires_at:
           type: integer
           minimum: 0
           description: Delegated bearer/card expiry as a Unix timestamp.
+        invocation_id: { type: string }
+        replay: { type: boolean }
+        invocation_policy:
+          type: object
+          additionalProperties: false
+          properties:
+            mode: { type: string, enum: [once, always] }
+            revision: { type: integer, minimum: 1 }
+            state: { type: string, enum: [available, consumed] }
+            remaining:
+              oneOf:
+                - type: integer
+                  minimum: 0
+                - type: 'null'
+            updated_at: { type: integer, minimum: 0 }
     DelegatedAdmissionDenial:
       type: object
       required: [ok, allowed, schema, error, ret]

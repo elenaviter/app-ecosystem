@@ -83,6 +83,16 @@ const GUIDES: Record<ConnectionsTab, Guide> = {
       },
     ],
   },
+  remoteMcp: {
+    summary:
+      'Connect a user-owned MCP server, inspect its live tool descriptor, and make selected tools available on delegated access cards.',
+    links: [
+      {
+        label: 'Connection Hub solution map',
+        href: `${DOCS}/sdk/solutions/connections/connection-hub-solution-README.md`,
+      },
+    ],
+  },
   delegatedAccess: {
     summary:
       'Access you granted to automations and external clients. Create bounded tokens for your own '

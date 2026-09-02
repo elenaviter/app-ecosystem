@@ -27,6 +27,9 @@ from connection_hub.delegated_credentials.cards.model import (
 from connection_hub.delegated_credentials.named_service_policy import (
     configured_named_service_operations,
 )
+from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource_operations,
+)
 from connection_hub.delegated_credentials.oauth.config import (
     oauth_delegated_config_from_connections,
 )
@@ -45,9 +48,11 @@ class Reconciled:
     """What survives the active catalog, and what did not."""
 
     resource_grants: dict[str, list[str]]
+    resource_operations: dict[str, list[str]]
     named_service_operations: NamedServiceSelection
     pruned_resources: list[str] = field(default_factory=list)
     pruned_claims: list[dict[str, str]] = field(default_factory=list)
+    pruned_outer_operations: list[dict[str, str]] = field(default_factory=list)
     pruned_named_service_operations: list[dict[str, str]] = field(default_factory=list)
 
     @property
@@ -55,6 +60,7 @@ class Reconciled:
         return bool(
             self.pruned_resources
             or self.pruned_claims
+            or self.pruned_outer_operations
             or self.pruned_named_service_operations
         )
 
@@ -64,18 +70,23 @@ class Reconciled:
         return not any(self.resource_grants.values())
 
     def to_public_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "resources": list(self.pruned_resources),
             "claims": list(self.pruned_claims),
             "named_service_operations": list(self.pruned_named_service_operations),
         }
+        if self.pruned_outer_operations:
+            payload["outer_operations"] = list(self.pruned_outer_operations)
+        return payload
 
 
 def reconcile_selection(
     *,
     resource_grants: Mapping[str, Iterable[str]],
+    resource_operations: Mapping[str, Iterable[str]] | None = None,
     named_service_operations: NamedServiceSelection,
     active: CatalogDocument,
+    config: Any = None,
 ) -> Reconciled:
     """Drop everything the active catalog no longer offers.
 
@@ -83,7 +94,7 @@ def reconcile_selection(
     the catalog this save acknowledges", so it re-expands rather than being
     pruned.
     """
-    config = oauth_delegated_config_from_connections(active.connections)
+    config = config or oauth_delegated_config_from_connections(active.connections)
 
     kept_grants: dict[str, list[str]] = {}
     pruned_resources: list[str] = []
@@ -108,6 +119,43 @@ def reconcile_selection(
             if claim not in kept:
                 kept.append(claim)
         kept_grants[resource] = kept
+
+    kept_outer: dict[str, list[str]] = {}
+    pruned_outer: list[dict[str, str]] = []
+    for raw_resource, operations in normalize_resource_operations(
+        resource_operations or {}
+    ).items():
+        resource = _clean(raw_resource)
+        if resource not in kept_grants:
+            for operation in operations:
+                pruned_outer.append(
+                    {"resource": resource, "operation": _clean(operation)}
+                )
+            continue
+        cfg = config.card_selector_config(resource)
+        wildcard = _clean(getattr(cfg, "resource", "")).rstrip("/") == "*"
+        offered = {
+            _clean(getattr(tool, "name", "")): {
+                _clean(grant)
+                for grant in (getattr(tool, "grants", ()) or ())
+                if _clean(grant)
+            }
+            for tool in (getattr(cfg, "tools", ()) or ())
+            if _clean(getattr(tool, "name", ""))
+        }
+        held_grants = set(kept_grants[resource])
+        kept: list[str] = []
+        for operation in operations:
+            name = _clean(operation)
+            required = offered.get(name)
+            if not wildcard and (
+                required is None or not required.issubset(held_grants)
+            ):
+                pruned_outer.append({"resource": resource, "operation": name})
+                continue
+            if name and name not in kept:
+                kept.append(name)
+        kept_outer[resource] = kept
 
     selection = named_service_operations
     pruned_operations: list[dict[str, str]] = []
@@ -158,9 +206,11 @@ def reconcile_selection(
 
     return Reconciled(
         resource_grants=kept_grants,
+        resource_operations=kept_outer,
         named_service_operations=selection,
         pruned_resources=pruned_resources,
         pruned_claims=pruned_claims,
+        pruned_outer_operations=pruned_outer,
         pruned_named_service_operations=pruned_operations,
     )
 

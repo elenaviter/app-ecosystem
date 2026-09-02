@@ -100,6 +100,24 @@ test('agent consent distinguishes resource requests from existing account permis
   assert.match(css, /\.pending-selection-status\[data-state='pending'\][\s\S]*var\(--warn-text\)/)
 })
 
+test('an ungranted operation offers one atomic once-or-always grant', () => {
+  const app = source('src/App.tsx')
+  assert.match(app, /'access_id'/)
+  assert.match(app, /'invocation_policy'/)
+  assert.match(app, /'invocation_change_id'/)
+
+  const slice = source('src/features/delegatedAccess/delegatedAccessSlice.ts')
+  assert.match(slice, /invocation_mode: invocationMode/)
+  assert.match(slice, /invocation_change_id: invocationChangeId/)
+
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.match(panel, /pendingGrant\?\.invocationPolicy === 'choose'/)
+  assert.match(panel, /grantPending\('once'\)/)
+  assert.match(panel, /grantPending\('always'\)/)
+  assert.match(panel, />\s*Allow once\s*</)
+  assert.match(panel, />\s*Allow always\s*</)
+})
+
 test('connections widget announces readiness only after installing its command listener', () => {
   const app = source('src/App.tsx')
   const listener = app.indexOf("window.addEventListener('message', onSurfaceCommand)")

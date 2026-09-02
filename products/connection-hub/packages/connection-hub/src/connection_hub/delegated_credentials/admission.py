@@ -200,6 +200,8 @@ class AdmissionRequest:
     resource: str
     operation: str
     account: AdmissionAccount = field(default_factory=AdmissionAccount)
+    invocation_id: str = ""
+    request_digest: str = ""
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> "AdmissionRequest":
@@ -217,6 +219,8 @@ class AdmissionRequest:
                 account_id=_text(account_node.get("account_id")),
                 claims=claims,
             ),
+            invocation_id=_text(node.get("invocation_id")),
+            request_digest=_text(node.get("request_digest")).lower(),
         )
 
     def validation_error(self) -> str:
@@ -228,6 +232,15 @@ class AdmissionRequest:
             self.account.provider_id and self.account.account_id
         ):
             return "account_incomplete"
+        if bool(self.invocation_id) != bool(self.request_digest):
+            return "invocation_context_incomplete"
+        if self.invocation_id:
+            if len(self.invocation_id) > 256 or any(
+                ord(char) < 33 or ord(char) > 126 for char in self.invocation_id
+            ):
+                return "invocation_id_invalid"
+            if not re.fullmatch(r"[0-9a-f]{64}", self.request_digest):
+                return "request_digest_invalid"
         return ""
 
     def signing_dict(self) -> dict[str, Any]:
@@ -237,6 +250,9 @@ class AdmissionRequest:
         }
         if self.account.present:
             out["account"] = self.account.to_dict()
+        if self.invocation_id:
+            out["invocation_id"] = self.invocation_id
+            out["request_digest"] = self.request_digest
         return out
 
 
@@ -409,6 +425,27 @@ def pairwise_service_subject(
     return f"prk_sub_{encoded}"
 
 
+def pairwise_service_client_id(
+    *,
+    secret: str | bytes,
+    service_id: str,
+    grantor_user_id: str,
+    client_id: str,
+) -> str:
+    """Return a stable service-scoped identifier for one caller profile."""
+
+    secret_bytes = secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)
+    if len(secret_bytes) < MIN_SERVICE_SECRET_BYTES:
+        raise ValueError("identity projection secret must contain at least 32 bytes")
+    message = (
+        "prokura-service-client-v1\n"
+        f"{service_id}\n{grantor_user_id}\n{client_id}"
+    ).encode("utf-8")
+    digest = hmac.new(secret_bytes, message, hashlib.sha256).digest()
+    encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return f"prk_client_{encoded}"
+
+
 def admission_denial(
     *,
     code: str,
@@ -441,6 +478,7 @@ def admission_allow(
     decision_id: str,
     service_id: str,
     subject: str,
+    client_id: str,
     view: DelegatedCredentialView,
     request: AdmissionRequest,
     available_grants: Iterable[str],
@@ -467,7 +505,7 @@ def admission_allow(
         "service_id": service_id,
         "principal": {
             "sub": subject,
-            "client_id": view.client_id,
+            "client_id": client_id,
         },
         "authority": authority,
         "provenance": {
@@ -500,6 +538,7 @@ __all__ = [
     "admission_denial",
     "authorize_account_scope",
     "canonical_admission_message",
+    "pairwise_service_client_id",
     "pairwise_service_subject",
     "sign_admission_request",
     "verify_admission_request",

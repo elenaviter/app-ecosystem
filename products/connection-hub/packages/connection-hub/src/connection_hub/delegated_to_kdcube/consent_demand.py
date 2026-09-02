@@ -48,7 +48,8 @@ PENDING_CONSENT_KEY = "delegated_to_kdcube.blocked_snapshot"
 # open demand with its FULL conversation address, so consent completion in the
 # hub can author the granted event back into the right conversation lane.
 # Value: {"demands": [{conversation_id, tenant, project, bundle_id, agent_id,
-# provider_id, connector_app_id, resource, claims, tool_name, namespace, operation,
+# provider_id, connector_app_id, resource, claims, tool_name, namespace,
+# operation, outer_operation,
 # recorded_at}]}.
 PENDING_DEMANDS_REGISTRY_KEY = "delegated_to_kdcube.consent_demands"
 
@@ -66,6 +67,16 @@ def _namespace(value: Any) -> str:
 
 def _operation(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _outer_operations(value: Any) -> set[str]:
+    if isinstance(value, str):
+        raw = [value]
+    elif isinstance(value, Sequence):
+        raw = list(value)
+    else:
+        raw = []
+    return {_operation(item) for item in raw if _operation(item)}
 
 
 def _operation_map(value: Any) -> dict[str, set[str]]:
@@ -160,6 +171,7 @@ async def record_consent_demand(
     resource: str = "",
     namespace: str = "",
     operation: str = "",
+    outer_operation: str = "",
     tenant: str = "",
     project: str = "",
     agent_id: str = "",
@@ -185,6 +197,7 @@ async def record_consent_demand(
     resource_key = normalize_resource(resource)
     namespace_key = _namespace(namespace)
     operation_key = _operation(operation) if namespace_key else ""
+    outer_operation_key = _operation(outer_operation)
     if not provider_key or not tool_key:
         return False
     if not str(user_id or "").strip() or not str(bundle_id or "").strip() or not str(conversation_id or "").strip():
@@ -203,14 +216,20 @@ async def record_consent_demand(
         known_tools = {str(t) for t in (group.get("tools") or [])}
         known_claims = {str(c) for c in (group.get("claims") or [])}
         known_operations = _operation_map(group.get("named_service_operations"))
+        known_outer_operations = _outer_operations(group.get("outer_operations"))
         operation_known = (
             not operation_key
             or operation_key in known_operations.get(namespace_key, set())
+        )
+        outer_operation_known = (
+            not outer_operation_key
+            or outer_operation_key in known_outer_operations
         )
         if (
             tool_key in known_tools
             and set(claim_list) <= known_claims
             and operation_known
+            and outer_operation_known
         ):
             return False
         group["tools"] = sorted(known_tools | {tool_key})
@@ -220,6 +239,9 @@ async def record_consent_demand(
             group["named_service_operations"] = {
                 key: sorted(values) for key, values in known_operations.items()
             }
+        if outer_operation_key:
+            known_outer_operations.add(outer_operation_key)
+            group["outer_operations"] = sorted(known_outer_operations)
         if provider_label and not group.get("provider_label"):
             group["provider_label"] = provider_label
         await write_pending_consent(
@@ -240,6 +262,7 @@ async def record_consent_demand(
             resource=resource_key,
             namespace=namespace_key,
             operation=operation_key,
+            outer_operation=outer_operation_key,
             tenant=tenant,
             project=project,
             agent_id=agent_id,
@@ -258,6 +281,8 @@ async def record_consent_demand(
         group["resource"] = resource_key
     if operation_key:
         group["named_service_operations"] = {namespace_key: [operation_key]}
+    if outer_operation_key:
+        group["outer_operations"] = [outer_operation_key]
     pending.append(group)
     await write_pending_consent(
         user_id=user_id,
@@ -277,6 +302,7 @@ async def record_consent_demand(
         resource=resource_key,
         namespace=namespace_key,
         operation=operation_key,
+        outer_operation=outer_operation_key,
         tenant=tenant,
         project=project,
         agent_id=agent_id,
@@ -308,6 +334,7 @@ async def _register_demand_address(
     resource: str,
     namespace: str,
     operation: str,
+    outer_operation: str,
     tenant: str,
     project: str,
     agent_id: str,
@@ -343,6 +370,7 @@ async def _register_demand_address(
                 and normalize_resource(entry.get("resource")) == resource
                 and _namespace(entry.get("namespace")) == namespace
                 and _operation(entry.get("operation")) == operation
+                and _operation(entry.get("outer_operation")) == outer_operation
             ):
                 entry["claims"] = sorted({*(entry.get("claims") or []), *claims})
                 break
@@ -360,6 +388,7 @@ async def _register_demand_address(
                 "resource": resource,
                 "namespace": namespace,
                 "operation": operation,
+                "outer_operation": outer_operation,
                 "recorded_at": time.time(),
             })
         await property_store.set_user_prop(
@@ -379,11 +408,34 @@ def consent_granted_event_text(
     tools: list,
     namespace: str = "",
     operation: str = "",
+    outer_operation: str = "",
+    invocation_policy_mode: str = "",
 ) -> str:
     """The timeline-facing sentence of the granted event."""
     claim_text = ", ".join(claims)
     tool_text = ", ".join(sorted({str(t).rsplit(".", 1)[-1] for t in tools if str(t or "").strip()}))
-    if namespace and operation and claim_text:
+    policy_mode = str(invocation_policy_mode or "").strip().lower()
+    if outer_operation and policy_mode in {"once", "always"}:
+        allowance = (
+            "for one invocation"
+            if policy_mode == "once"
+            else "for every invocation while this delegated access remains active"
+        )
+        approval = (
+            f"The user allowed {provider_label} operation {outer_operation} "
+            f"{allowance}"
+        )
+        if claim_text:
+            approval += f" with claims ({claim_text})"
+        approval += "."
+    elif outer_operation and claim_text:
+        approval = (
+            f"The user approved {provider_label} operation {outer_operation} "
+            f"and claims ({claim_text})."
+        )
+    elif outer_operation:
+        approval = f"The user approved {provider_label} operation {outer_operation}."
+    elif namespace and operation and claim_text:
         approval = (
             f"The user approved {provider_label} access for operation "
             f"{operation} in {namespace} and claims ({claim_text})."
@@ -412,9 +464,13 @@ async def author_consent_granted_events(
     provider_id: str,
     granted_claims: list | tuple,
     granted_named_service_operations: Mapping[str, Sequence[str]] | str | None = None,
+    granted_resource_operations: Mapping[str, Sequence[str]] | None = None,
     granted_resource: str = "",
     connector_app_id: str = "",
     account_id: str = "",
+    invocation_policy_mode: str = "",
+    invocation_policy_revision: int = 0,
+    invocation_change_id: str = "",
     connection_hub_bundle_id: str = "",
     source_factory: EventSourceFactory | None = None,
     property_store: UserPropertyStore | None = None,
@@ -449,12 +505,22 @@ async def author_consent_granted_events(
         and granted_named_service_operations.strip() == "*"
     )
     granted_operations = _operation_map(granted_named_service_operations)
+    granted_outer_operations = {
+        normalize_resource(resource): _outer_operations(operations)
+        for resource, operations in (granted_resource_operations or {}).items()
+        if normalize_resource(resource)
+    }
     granted_resource_key = normalize_resource(granted_resource)
     clean_user = str(user_id or "").strip()
     if (
         not provider_key
         or not clean_user
-        or (not granted and not all_operations_granted and not granted_operations)
+        or (
+            not granted
+            and not all_operations_granted
+            and not granted_operations
+            and not granted_outer_operations
+        )
     ):
         return 0
     if property_store is None or source_factory is None:
@@ -483,7 +549,12 @@ async def author_consent_granted_events(
             entry_resource = normalize_resource(entry.get("resource"))
             entry_namespace = _namespace(entry.get("namespace"))
             entry_operation = _operation(entry.get("operation"))
-            has_requirement = bool(entry_claims or (entry_namespace and entry_operation))
+            entry_outer_operation = _operation(entry.get("outer_operation"))
+            has_requirement = bool(
+                entry_claims
+                or (entry_namespace and entry_operation)
+                or entry_outer_operation
+            )
             claims_match = not entry_claims or entry_claims <= granted
             operation_match = (
                 not entry_operation
@@ -494,6 +565,17 @@ async def author_consent_granted_events(
                         or entry_operation
                         in granted_operations.get(entry_namespace, set())
                     )
+                )
+            )
+            outer_operation_match = (
+                not entry_outer_operation
+                or any(
+                    entry_outer_operation in operations
+                    and (
+                        not entry_resource
+                        or resource_matches(resource, entry_resource)
+                    )
+                    for resource, operations in granted_outer_operations.items()
                 )
             )
             resource_match = (
@@ -515,6 +597,7 @@ async def author_consent_granted_events(
                 and resource_match
                 and claims_match
                 and operation_match
+                and outer_operation_match
                 and (
                     not entry_connector
                     or not caller_connector
@@ -551,6 +634,8 @@ async def author_consent_granted_events(
                     tools=[tool_name],
                     namespace=entry_namespace,
                     operation=entry_operation,
+                    outer_operation=entry_outer_operation,
+                    invocation_policy_mode=invocation_policy_mode,
                 )
                 grant_facts = {
                     "provider_id": provider_key,
@@ -569,6 +654,19 @@ async def author_consent_granted_events(
                             entry_namespace: [entry_operation]
                         },
                     })
+                if entry_outer_operation:
+                    grant_facts["outer_operation"] = entry_outer_operation
+                    grant_facts["resource_operations"] = {
+                        entry_resource or granted_resource_key: [entry_outer_operation]
+                    }
+                clean_policy_mode = str(invocation_policy_mode or "").strip().lower()
+                if clean_policy_mode in {"once", "always"}:
+                    policy_facts: dict[str, Any] = {"mode": clean_policy_mode}
+                    if int(invocation_policy_revision or 0) > 0:
+                        policy_facts["revision"] = int(invocation_policy_revision)
+                    if str(invocation_change_id or "").strip():
+                        policy_facts["change_id"] = str(invocation_change_id).strip()
+                    grant_facts["invocation_policy"] = policy_facts
                 event_ts = (
                     _dt.datetime.now(_dt.timezone.utc)
                     .isoformat()
@@ -720,6 +818,7 @@ async def announce_consent_demand(
     resource: str = "",
     namespace: str = "",
     operation: str = "",
+    outer_operation: str = "",
     identity: Any = None,
     connection_hub_bundle_id: str = "",
     identity_provider: Callable[[], Mapping[str, Any] | None] | None = None,
@@ -764,6 +863,7 @@ async def announce_consent_demand(
             resource=normalize_resource(resource),
             namespace=_namespace(namespace),
             operation=_operation(operation),
+            outer_operation=_operation(outer_operation),
             tenant=str(identity.get("tenant_id") or "").strip(),
             project=str(identity.get("project_id") or "").strip(),
             agent_id=agent_id,

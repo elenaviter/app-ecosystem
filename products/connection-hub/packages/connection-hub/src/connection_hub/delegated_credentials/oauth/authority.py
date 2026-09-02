@@ -22,6 +22,11 @@ from connection_hub.authority_registry import (
     CredentialEnvelope,
     RedisAuthorityDiscovery,
 )
+from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource_operations,
+    operation_union,
+    project_legacy_operations,
+)
 
 
 DELEGATED_CLIENT_AUDIENCE = "kdcube:delegated_client"
@@ -53,6 +58,7 @@ def build_delegated_client_credential(
     project: str,
     expires_in: int,
     operations: list[str] | tuple[str, ...] | None = None,
+    resource_operations: Mapping[str, list[str] | tuple[str, ...]] | None = None,
     resource: str | None = None,
     resources: list[str] | tuple[str, ...] | None = None,
     resource_grants: Mapping[str, list[str] | tuple[str, ...]] | None = None,
@@ -79,11 +85,12 @@ def build_delegated_client_credential(
             item: [str(scope or "").strip() for scope in (scopes or ()) if str(scope or "").strip()]
             for item in resource_list
         }
-    operation_list = [
-        str(item or "").strip()
-        for item in (operations or ())
-        if str(item or "").strip()
-    ]
+    operation_map = (
+        normalize_resource_operations(resource_operations)
+        if resource_operations is not None
+        else project_legacy_operations(cleaned_resource_grants, operations or ())
+    )
+    operation_list = list(operation_union(operation_map))
     return CredentialEnvelope(
         credential_id="cred_" + secrets.token_urlsafe(18),
         credential_kind=DELEGATED_CLIENT_CREDENTIAL_KIND,
@@ -100,6 +107,10 @@ def build_delegated_client_credential(
             "client_id": str(client_id or "").strip(),
             "scopes": list(scopes or []),
             "operations": operation_list,
+            "resource_operations": {
+                resource: list(selected)
+                for resource, selected in operation_map.items()
+            },
             "resource_grants": cleaned_resource_grants,
             # Per-account claim binding {provider: {account_id: [claims]}}, baked
             # into the credential attrs so a refresh re-derives it with the card.
@@ -149,6 +160,11 @@ class OAuthDelegatedClientAuthorityProvider:
         ctx = dict(context or {})
         grant_record = ctx.get("grant_record") if isinstance(ctx.get("grant_record"), Mapping) else {}
         operations = list(grant_record.get("operations") or envelope.attrs.get("operations") or [])
+        resource_operations = dict(
+            grant_record.get("resource_operations")
+            or envelope.attrs.get("resource_operations")
+            or {}
+        )
         scopes = list(envelope.attrs.get("scopes") or [])
         identity_scope = envelope.attrs.get("identity_scope") or "grantor"
         resource_grants = dict(envelope.attrs.get("resource_grants") or {})
@@ -167,6 +183,7 @@ class OAuthDelegatedClientAuthorityProvider:
                 "grantor_subject": envelope.attrs.get("grantor_subject"),
                 "scopes": scopes,
                 "operations": operations,
+                "resource_operations": resource_operations,
                 "resource_grants": resource_grants,
                 "identity_scope": identity_scope,
                 "token_present": bool(token),

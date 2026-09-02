@@ -7,9 +7,11 @@ import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCata
 import {
   commonOperationGrants,
   doorGrantsForOperation,
+  pendingOuterApprovalReady,
   pendingServiceApprovalReady,
   pendingSelectionStatus,
   proposeExactAccountClaim,
+  resolvePendingOuterCapability,
   resolvePendingServiceCapability,
 } from './pendingGrantProjection';
 import type { PendingSelectionStatus } from './pendingGrantProjection';
@@ -17,8 +19,10 @@ import type {
   DelegatedAccessNamedServiceOperations,
   DelegatedAccessRecord,
   DelegatedAccessResourceOption,
+  DelegatedAccessResourceOperations,
   DelegatedAccessStoredNamedServices,
   DelegatedCatalogDrift,
+  DelegatedInvocationPolicy,
   DelegatedToKdcubeAccount,
 } from '../../api/types';
 import {
@@ -27,6 +31,7 @@ import {
   grantAgentAccess,
   loadDelegatedAccess,
   revokeDelegatedAccess,
+  setDelegatedInvocationPolicy,
   updateDelegatedAccess,
 } from './delegatedAccessSlice';
 
@@ -69,6 +74,7 @@ function parseAgentClientId(clientId: string): { agent: string; app: string } | 
 
 type PendingAgentGrant = {
   clientId: string;
+  accessId?: string;
   resource: string;
   claims: string[];
   // A per-account ask (the account can do it, this agent is not bound): the
@@ -80,6 +86,11 @@ type PendingAgentGrant = {
   // operation, not everything its claims allow.
   namespace?: string;
   operation?: string;
+  // The MCP/REST operation on the protected resource itself. This is
+  // intentionally separate from a named-service namespace operation.
+  outerOperation?: string;
+  invocationPolicy?: string;
+  invocationChangeId?: string;
 };
 
 function PendingStatus({ status }: { status: PendingSelectionStatus }) {
@@ -92,9 +103,70 @@ function PendingStatus({ status }: { status: PendingSelectionStatus }) {
   return <span className="pending-selection-status" data-state={state}>{status}</span>;
 }
 
+function invocationPolicyFor(
+  item: DelegatedAccessRecord,
+  resource: string,
+  operation: string,
+): DelegatedInvocationPolicy | undefined {
+  return (item.invocation_policies || []).find((policy) => (
+    policy.authority.resource === resource
+    && policy.authority.surface === 'outer'
+    && policy.authority.operation === operation
+    && !policy.authority.account
+  ));
+}
+
+function invocationPolicyRows(item: DelegatedAccessRecord): string[] {
+  return (item.invocation_policies || []).map((policy) => {
+    if (policy.mode === 'always') return `${policy.authority.operation}: always`;
+    return `${policy.authority.operation}: ${policy.remaining === 1 ? 'once' : 'once, used'}`;
+  });
+}
+
+function InvocationPolicyControl({
+  policy,
+  busy,
+  onSet,
+}: {
+  policy?: DelegatedInvocationPolicy;
+  busy: boolean;
+  onSet: (mode: 'always' | 'once', expectedRevision: number) => void;
+}) {
+  const mode = policy?.mode || 'always';
+  const onceAvailable = mode === 'once' && policy?.remaining === 1;
+  return (
+    <span className="invocation-policy-control" aria-label="Invocation policy">
+      <button
+        type="button"
+        className={mode === 'always' ? 'active' : ''}
+        aria-pressed={mode === 'always'}
+        title="Allow every invocation while the card remains active"
+        disabled={busy || mode === 'always'}
+        onClick={() => onSet('always', policy?.revision || 0)}
+      >
+        Always
+      </button>
+      <button
+        type="button"
+        className={mode === 'once' ? 'active' : ''}
+        aria-pressed={mode === 'once'}
+        title={onceAvailable ? 'One invocation remains' : 'Allow the next invocation once'}
+        disabled={busy || onceAvailable}
+        onClick={() => onSet('once', policy?.revision || 0)}
+      >
+        Once
+      </button>
+      {mode === 'once' && policy?.remaining === 0 ? (
+        <small>used</small>
+      ) : null}
+    </span>
+  );
+}
+
 function pendingAgentGrantFromParams(get: (key: string) => string): PendingAgentGrant | null {
   if (get('pending_agent_grant') !== '1') return null;
   const clientId = get('agent_client_id').trim();
+  const accessId = get('access_id').trim();
   const resource = get('resource').trim();
   if (!clientId || !resource) return null;
   const claims = get('claims').split(',').map((item) => item.trim()).filter(Boolean);
@@ -102,14 +174,21 @@ function pendingAgentGrantFromParams(get: (key: string) => string): PendingAgent
   const accountClaim = get('account_claim').trim();
   const namespace = get('namespace').trim();
   const operation = get('operation').trim();
+  const outerOperation = get('outer_operation').trim();
+  const invocationPolicy = get('invocation_policy').trim();
+  const invocationChangeId = get('invocation_change_id').trim();
   return {
     clientId,
+    accessId: accessId || undefined,
     resource,
     claims,
     accountId: accountId || undefined,
     accountClaim: accountClaim || undefined,
     namespace: namespace || undefined,
     operation: operation || undefined,
+    outerOperation: outerOperation || undefined,
+    invocationPolicy: invocationPolicy || undefined,
+    invocationChangeId: invocationChangeId || undefined,
   };
 }
 
@@ -134,6 +213,7 @@ type ManualAccessFocus = {
   accessId: string;
   resource?: string;
   claims: string[];
+  outerOperation?: string;
   accountId?: string;
   accountClaim?: string;
 };
@@ -145,10 +225,12 @@ function manualAccessFocusFromParams(get: (key: string) => string): ManualAccess
   const claims = get('claims').split(',').map((item) => item.trim()).filter(Boolean);
   const accountId = get('account_id').trim();
   const accountClaim = get('account_claim').trim();
+  const outerOperation = get('outer_operation').trim();
   return {
     accessId,
     resource: resource || undefined,
     claims,
+    outerOperation: outerOperation || undefined,
     accountId: accountId || undefined,
     accountClaim: accountClaim || undefined,
   };
@@ -510,6 +592,16 @@ function namedServiceRows(item: DelegatedAccessRecord): string[] {
     ));
 }
 
+function outerOperationRows(item: DelegatedAccessRecord): string[] {
+  const qualified = item.resource_operations;
+  if (!qualified) return item.operations || [];
+  return Object.entries(qualified).flatMap(([resource, operations]) => (
+    (operations || []).map((operation) => (
+      `${doorAlias(resource) || resource}: ${operation}`
+    ))
+  ));
+}
+
 /** Every named-service operation the ACTIVE catalog offers for these resources.
  *
  *  The same rows the picker draws, so "all of them are ticked" is a question
@@ -693,6 +785,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   } = useAppSelector((s) => s.delegatedToKdcube);
   const [label, setLabel] = useState('Automation access');
   const [resourceGrants, setResourceGrants] = useState<Record<string, string[]>>({});
+  const [resourceOperations, setResourceOperations] =
+    useState<DelegatedAccessResourceOperations>(() => {
+      const asked = pendingAgentGrantRequest(openParams);
+      if (!asked?.resource || !asked.outerOperation) return {};
+      return { [asked.resource]: [asked.outerOperation] };
+    });
   const [namedServiceOperations, setNamedServiceOperations] = useState<DelegatedAccessNamedServiceOperations>(
     // The demand names the operation it was refused; approval grants that one.
     () => {
@@ -724,7 +822,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const pendingServiceGrantReviewRef = useRef<HTMLDivElement>(null);
   const pendingAccountReviewRef = useRef<HTMLDivElement>(null);
   const [pendingReviewTarget, setPendingReviewTarget] = useState<'operation' | 'service' | 'account'>(
-    pendingAgentGrantRequest(openParams)?.namespace ? 'operation' : 'service',
+    pendingAgentGrantRequest(openParams)?.namespace
+      || pendingAgentGrantRequest(openParams)?.outerOperation
+      ? 'operation'
+      : 'service',
   );
   // Per-record EDIT state for granted agent rows: access_id being edited and
   // the checkbox set keyed `${resource}:${claim}`.
@@ -739,6 +840,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Claims kept on the edited card, keyed `${resource}:${claim}`. The form
   // offers the resource's whole catalog, so only `true` counts.
   const [editPicks, setEditPicks] = useState<Record<string, boolean>>({});
+  const [editResourceOperations, setEditResourceOperations] =
+    useState<DelegatedAccessResourceOperations>({});
   // Namespace narrowing being edited: {resource: {namespace: [operation]}}.
   const [editNamedServiceOperations, setEditNamedServiceOperations] =
     useState<DelegatedAccessNamedServiceOperations>({});
@@ -790,6 +893,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const toggleResourceGrant = (resource: string, grant: string, checked: boolean) => {
+    const resourceOption = resources.find((item) => item.resource === resource);
+    const currentGrants = resourceGrants[resource] || [];
+    const updatedGrants = checked
+      ? Array.from(new Set([...currentGrants, grant]))
+      : currentGrants.filter((item) => item !== grant);
     setResourceGrants((current) => {
       const next = { ...current };
       const existing = next[resource] || [];
@@ -800,8 +908,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       else delete next[resource];
       return next;
     });
+    if (resourceOption) {
+      setResourceOperations((current) => {
+        const next = { ...current };
+        const selected = new Set(current[resource] || []);
+        (resourceOption.operations || []).forEach((operation) => {
+          const required = operation.grants || [];
+          const enabled = required.length > 0
+            && required.every((item) => updatedGrants.includes(item));
+          if (!enabled) selected.delete(operation.name);
+        });
+        next[resource] = Array.from(selected);
+        return next;
+      });
+    }
     if (!checked) {
-      const resourceOption = resources.find((item) => item.resource === resource);
       setNamedServiceOperations((current) => {
         const existingNamespaces = current[resource];
         if (!existingNamespaces || !resourceOption) return current;
@@ -828,6 +949,31 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         return next;
       });
     }
+  };
+
+  const toggleResourceOperation = (
+    resource: DelegatedAccessResourceOption,
+    operation: string,
+    grants: string[],
+    checked: boolean,
+  ) => {
+    if (checked) {
+      setResourceGrants((current) => ({
+        ...current,
+        [resource.resource]: Array.from(new Set([
+          ...(current[resource.resource] || []),
+          ...grants,
+        ])),
+      }));
+    }
+    setResourceOperations((current) => {
+      const next = { ...current };
+      const selected = new Set(current[resource.resource] || []);
+      if (checked) selected.add(operation);
+      else selected.delete(operation);
+      next[resource.resource] = Array.from(selected);
+      return next;
+    });
   };
 
   const toggleNamedServiceOperation = (
@@ -877,6 +1023,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     await dispatch(createDelegatedAccess({
       label: label.trim() || 'Automation access',
       resourceGrants,
+      resourceOperations: Object.fromEntries(
+        selectedResourceEntries.map(([resource]) => [
+          resource,
+          resourceOperations[resource] || [],
+        ]),
+      ),
       namedServiceOperations: encodeNamedServiceSelection(
         selectedNamedServiceOperations,
         offeredNamedServiceOperations(
@@ -891,6 +1043,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     // above it, which is what the user needs to see next.
     setCreateOpen(false);
     setCreateAccountScope({});
+    setResourceOperations({});
     void dispatch(loadDelegatedAccess());
   };
 
@@ -932,6 +1085,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     () => resolvePendingServiceCapability(pendingGrant, resources, operationRows),
     [pendingGrant, resources],
   );
+  const pendingOuterCapability = useMemo(
+    () => resolvePendingOuterCapability(pendingGrant, resources),
+    [pendingGrant, resources],
+  );
   const pendingExistingRecords = pendingGrant
     ? items.filter((record) => (record.client_id || '') === pendingGrant.clientId)
     : [];
@@ -943,12 +1100,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       : [],
   );
   const pendingOperationAlreadyGranted = Boolean(
-    pendingGrant?.namespace
-      && pendingGrant.operation
-      && pendingExistingRecords.some((record) => (
-        cardNamedServiceOperations(record)[pendingGrant.resource]?.[pendingGrant.namespace as string]
+    pendingGrant?.outerOperation
+      ? pendingExistingRecords.some((record) => (
+        record.resource_operations?.[pendingGrant.resource]
+          || record.operations
           || []
-      ).includes(pendingGrant.operation as string)),
+      ).includes(pendingGrant.outerOperation as string))
+      : pendingGrant?.namespace
+        && pendingGrant.operation
+        && pendingExistingRecords.some((record) => (
+          cardNamedServiceOperations(record)[pendingGrant.resource]?.[pendingGrant.namespace as string]
+            || []
+        ).includes(pendingGrant.operation as string)),
   );
   const pendingRequestedAccountClaims = (
     pendingServiceCapability?.accountRequirements || []
@@ -963,19 +1126,48 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     ...(pendingGrant?.claims || []).filter((claim) => !pendingServiceCapability?.accountRequirements
       .some((requirement) => requirement.claims.includes(claim))),
     ...(pendingServiceCapability?.requiredDoorGrants || []),
+    ...(pendingOuterCapability?.operation.grants || []),
   ]));
   const pendingCheckedClaims = pendingRequestedClaims
     .filter((claim) => pendingClaimPicks[claim] !== false);
   const pendingOperationSelected = Boolean(
-    pendingGrant?.namespace
-      && pendingGrant.operation
-      && (namedServiceOperations[pendingGrant.resource]?.[pendingGrant.namespace] || [])
-        .includes(pendingGrant.operation),
+    pendingGrant?.outerOperation
+      ? (resourceOperations[pendingGrant.resource] || []).includes(
+        pendingGrant.outerOperation,
+      )
+      : pendingGrant?.namespace
+        && pendingGrant.operation
+        && (namedServiceOperations[pendingGrant.resource]?.[pendingGrant.namespace] || [])
+          .includes(pendingGrant.operation),
   );
-  const pendingOperationRequested = Boolean(pendingGrant?.namespace && pendingGrant.operation);
+  const pendingOperationRequested = Boolean(
+    pendingGrant?.outerOperation
+      || (pendingGrant?.namespace && pendingGrant.operation),
+  );
 
   const setPendingOperationSelected = (checked: boolean) => {
-    if (!pendingGrant?.namespace || !pendingGrant.operation) return;
+    if (!pendingGrant) return;
+    const outerOperation = pendingGrant.outerOperation;
+    if (outerOperation) {
+      if (checked && pendingOuterCapability?.operation.grants?.length) {
+        setPendingClaimPicks((current) => ({
+          ...current,
+          ...Object.fromEntries(
+            (pendingOuterCapability.operation.grants || []).map((claim) => [claim, true]),
+          ),
+        }));
+      }
+      setResourceOperations((current) => {
+        const next = { ...current };
+        const selected = new Set(next[pendingGrant.resource] || []);
+        if (checked) selected.add(outerOperation);
+        else selected.delete(outerOperation);
+        next[pendingGrant.resource] = Array.from(selected);
+        return next;
+      });
+      return;
+    }
+    if (!pendingGrant.namespace || !pendingGrant.operation) return;
     if (checked && pendingServiceCapability) {
       setPendingClaimPicks((current) => ({
         ...current,
@@ -1001,12 +1193,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
 
   const setPendingServiceClaimSelected = (claim: string, checked: boolean) => {
     setPendingClaimPicks((current) => ({ ...current, [claim]: checked }));
-    if (!checked && pendingServiceCapability?.requiredDoorGrants.includes(claim)) {
+    if (!checked && (
+      pendingServiceCapability?.requiredDoorGrants.includes(claim)
+      || pendingOuterCapability?.operation.grants?.includes(claim)
+    )) {
       setPendingOperationSelected(false);
     }
   };
 
-  const grantPending = async () => {
+  const grantPending = async (invocationMode?: 'always' | 'once') => {
     if (!pendingGrant) return;
     // What the user KEPT CHECKED of the ask, PLUS anything else they picked
     // from the catalog below — merged per resource (one grant record per
@@ -1033,10 +1228,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     try {
       let first = true;
       for (const [resource, claims] of Object.entries(merged)) {
+        const isRequestedResource = resource === pendingGrant.resource;
         await dispatch(grantAgentAccess({
           clientId: pendingGrant.clientId,
           resource,
           claims,
+          ...(isRequestedResource && invocationMode ? {
+            accessId: pendingGrant.accessId,
+            invocationMode,
+            invocationChangeId: pendingGrant.invocationChangeId,
+          } : {}),
+          resourceOperations: resourceOperations[resource],
           namedServiceOperations: namedServiceOperations[resource],
           // The account binding is per-client: send it once with the first grant.
           ...(first && Object.keys(pendingAccountScope).length ? { accountScope: pendingAccountScope } : {}),
@@ -1052,6 +1254,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setPendingGrant(null);
     setResourceGrants({});
     setPendingAccountScope({});
+    setResourceOperations({});
     setNamedServiceOperations({});
     void dispatch(loadDelegatedAccess());
   };
@@ -1114,6 +1317,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     setEditingAccessId(item.access_id);
     setEditPicks(picks);
+    setEditResourceOperations(
+      Object.fromEntries(
+        Object.keys(item.resource_grants || {}).map((resource) => [
+          resource,
+          item.resource_operations?.[resource] || item.operations || [],
+        ]),
+      ),
+    );
     setEditCatalogRows({ ...(item.catalog_row_by_resource || {}) });
     // Seeded from what the card COVERS, not from what it names: a wildcard
     // names nothing, and an empty picker is indistinguishable from an explicit
@@ -1168,6 +1379,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (focusedManualAccessId.current !== manualFocus.accessId) {
       focusedManualAccessId.current = manualFocus.accessId;
       startEdit(item);
+      if (manualFocus.resource && manualFocus.outerOperation) {
+        setEditResourceOperations((current) => ({
+          ...current,
+          [manualFocus.resource as string]: Array.from(new Set([
+            ...(current[manualFocus.resource as string] || []),
+            manualFocus.outerOperation as string,
+          ])),
+        }));
+      }
     }
     if (manualFocus.accountId) {
       const account = accounts.find(
@@ -1186,12 +1406,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [pendingExistingAccountScope, setPendingExistingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   const togglePendingAccount = makeToggleAccountClaim(setPendingAccountScope);
   const toggleCreateAccount = makeToggleAccountClaim(setCreateAccountScope);
-  const pendingOperationReady = pendingServiceApprovalReady(
-    pendingServiceCapability,
-    pendingOperationSelected,
-    pendingCheckedClaims,
-    pendingAccountScope,
-  );
+  const pendingOperationReady = pendingGrant?.outerOperation
+    ? pendingOuterApprovalReady(
+      pendingOuterCapability,
+      pendingOperationSelected,
+      pendingCheckedClaims,
+    )
+      : pendingServiceApprovalReady(
+      pendingServiceCapability,
+      pendingOperationSelected,
+      pendingCheckedClaims,
+      pendingAccountScope,
+    );
   // Seed the pending consent card's per-account picker ONCE (per client) from
   // the agent's existing grant, after the account list + grant registry load.
   // Without this, re-consent for a newly-demanded door claim (e.g. mail:send)
@@ -1246,6 +1472,20 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     pendingServiceCapability,
     seedAccountScopeFromRecord,
   ]);
+  const pendingInvocationChoiceRequested = pendingGrant?.invocationPolicy === 'choose';
+  const pendingInvocationChoiceReady = Boolean(
+    pendingInvocationChoiceRequested
+      && pendingGrant?.accessId
+      && pendingGrant.invocationChangeId
+      && pendingGrant.outerOperation,
+  );
+  const pendingGrantDisabled = busy || (pendingOperationRequested
+    ? !pendingOperationReady
+    : (
+      !pendingCheckedClaims.length
+      && !selectedResourceEntries.length
+      && !Object.keys(pendingAccountScope).length
+    )) || Boolean(pendingInvocationChoiceRequested && !pendingInvocationChoiceReady);
 
   // The per-account permission picker: a disclosure per provider showing
   // "<n>/<m> accounts" (or "no accounts yet" when unbound) so a large account
@@ -1345,9 +1585,27 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // declares, dropping a claim drops the operations that required it.
   const toggleEditClaim = (resource: string, claim: string, checked: boolean) => {
     setEditPicks((current) => ({ ...current, [`${resource}:${claim}`]: checked }));
-    if (checked) return;
     const resourceOption = catalogRowFor(resources, resource, editRowFor);
     if (!resourceOption) return;
+    const updatedGrants = editableClaimsFor(
+      items.find((item) => item.access_id === editingAccessId) || { access_id: '' },
+      resource,
+    ).filter((item) => (
+      item === claim ? checked : editPicks[`${resource}:${item}`] === true
+    ));
+    setEditResourceOperations((current) => {
+      const next = { ...current };
+      const selected = new Set(current[resource] || []);
+      (resourceOption.operations || []).forEach((operation) => {
+        const required = operation.grants || [];
+        const enabled = required.length > 0
+          && required.every((item) => updatedGrants.includes(item));
+        if (!enabled) selected.delete(operation.name);
+      });
+      next[resource] = Array.from(selected);
+      return next;
+    });
+    if (checked) return;
     setEditNamedServiceOperations((current) => {
       const existingNamespaces = current[resource];
       if (!existingNamespaces) return current;
@@ -1370,6 +1628,46 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       });
       return { ...current, [resource]: nextNamespaces };
     });
+  };
+
+  const toggleEditResourceOperation = (
+    resource: string,
+    operation: string,
+    grants: string[],
+    checked: boolean,
+  ) => {
+    if (checked) {
+      setEditPicks((current) => ({
+        ...current,
+        ...Object.fromEntries(
+          grants.map((grant) => [`${resource}:${grant}`, true]),
+        ),
+      }));
+    }
+    setEditResourceOperations((current) => {
+      const next = { ...current };
+      const selected = new Set(current[resource] || []);
+      if (checked) selected.add(operation);
+      else selected.delete(operation);
+      next[resource] = Array.from(selected);
+      return next;
+    });
+  };
+
+  const setOperationInvocationPolicy = async (
+    item: DelegatedAccessRecord,
+    resource: string,
+    operation: string,
+    mode: 'always' | 'once',
+    expectedRevision: number,
+  ) => {
+    await dispatch(setDelegatedInvocationPolicy({
+      accessId: item.access_id,
+      resource,
+      operation,
+      mode,
+      expectedRevision,
+    })).unwrap().catch(() => undefined);
   };
 
   const toggleEditNamedServiceOperation = (
@@ -1409,6 +1707,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const clearEditState = () => {
     setEditingAccessId(null);
     setEditPicks({});
+    setEditResourceOperations({});
     setEditNamedServiceOperations({});
     setEditAccountScope({});
     setEditLabel('');
@@ -1472,6 +1771,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       accessId: item.access_id,
       label: editLabel.trim() || item.label || 'Automation access',
       resourceGrants: prunedKept,
+      resourceOperations: Object.fromEntries(
+        Object.keys(prunedKept).map((resource) => [
+          resource,
+          editResourceOperations[resource] || [],
+        ]),
+      ),
       namedServiceOperations: Object.keys(offered).length
         ? encodeNamedServiceSelection(keptNamedServiceOperations, offered)
         : undefined,
@@ -1579,6 +1884,33 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     );
                   })}
                 </div>
+                {item.operations?.length ? (
+                  <>
+                    <div className="account-title">Operations</div>
+                    <div className="resource-grants">
+                      {item.operations.map((operation) => (
+                        <label
+                          className={`grant-chip${scopeBlocked ? ' grant-chip-blocked' : ''}`}
+                          key={`${item.resource}:operation:${operation.name}`}
+                          title={operation.description || operation.label || undefined}
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={scopeBlocked}
+                            checked={(resourceOperations[item.resource] || []).includes(operation.name)}
+                            onChange={(event) => toggleResourceOperation(
+                              item,
+                              operation.name,
+                              operation.grants || [],
+                              event.target.checked,
+                            )}
+                          />
+                          <span>{operation.label || operation.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
                 <DelegatedResourceCatalog
                   resource={item}
                   selectedGrants={resourceGrants[item.resource] || []}
@@ -1690,7 +2022,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           </div>
         </nav>
       ) : null}
-      {pendingGrant.namespace && pendingGrant.operation ? (
+      {pendingOperationRequested ? (
         <div
           className={`request-review-section${pendingReviewTarget === 'operation' ? ' request-review-section-active' : ''}`}
           ref={pendingOperationReviewRef}
@@ -1699,7 +2031,31 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <div className="account-title" style={{ marginBottom: 6 }}>
             Service operation
           </div>
-          {pendingServiceCapability ? (
+          {pendingGrant.outerOperation && pendingOuterCapability ? (
+            <label
+              className={`namespace-operation${pendingOperationSelected ? ' namespace-operation-included' : ''}`}
+            >
+              <input
+                type="checkbox"
+                checked={pendingOperationSelected}
+                onChange={(event) => setPendingOperationSelected(event.target.checked)}
+              />
+              <span>
+                <strong>{pendingOuterCapability.operation.label || pendingOuterCapability.operation.name}</strong>
+                {pendingOuterCapability.operation.description ? (
+                  <small>{pendingOuterCapability.operation.description}</small>
+                ) : null}
+                <small><code>{pendingOuterCapability.operation.name}</code></small>
+                <small>
+                  <PendingStatus status={pendingSelectionStatus(
+                    pendingOperationAlreadyGranted,
+                    pendingOperationSelected,
+                    true,
+                  )} />
+                </small>
+              </span>
+            </label>
+          ) : pendingGrant.namespace && pendingGrant.operation && pendingServiceCapability ? (
             <label
               className={`namespace-operation${pendingOperationSelected ? ' namespace-operation-included' : ''}`}
             >
@@ -1728,7 +2084,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           ) : (
             <div className="notice" style={{ marginTop: 0 }}>
               Loading this capability from the active service catalog: {' '}
-              <code>{pendingGrant.namespace}</code>{' · '}<code>{pendingGrant.operation}</code>
+              {pendingGrant.outerOperation ? (
+                <code>{pendingGrant.outerOperation}</code>
+              ) : (
+                <><code>{pendingGrant.namespace}</code>{' · '}<code>{pendingGrant.operation}</code></>
+              )}
             </div>
           )}
         </div>
@@ -1834,21 +2194,35 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         </details>
       ) : null}
       <div className="row pending-actions">
-        <button
-          className="btn"
-          type="button"
-          disabled={busy || (pendingOperationRequested
-            ? !pendingOperationReady
-            : (
-              !pendingCheckedClaims.length
-              && !selectedResourceEntries.length
-              && !Object.keys(pendingAccountScope).length
-            )
-          )}
-          onClick={grantPending}
-        >
-          Grant access
-        </button>
+        {pendingInvocationChoiceRequested ? (
+          <>
+            <button
+              className="btn"
+              type="button"
+              disabled={pendingGrantDisabled}
+              onClick={() => grantPending('once')}
+            >
+              Allow once
+            </button>
+            <button
+              className="btn"
+              type="button"
+              disabled={pendingGrantDisabled}
+              onClick={() => grantPending('always')}
+            >
+              Allow always
+            </button>
+          </>
+        ) : (
+          <button
+            className="btn"
+            type="button"
+            disabled={pendingGrantDisabled}
+            onClick={() => grantPending()}
+          >
+            Grant access
+          </button>
+        )}
         <button
           className="btn"
           type="button"
@@ -1977,14 +2351,54 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                     <input
                                       type="checkbox"
                                       checked={editPicks[`${resource}:${claim}`] !== false}
-                                      onChange={(event) => setEditPicks((current) => ({
-                                        ...current, [`${resource}:${claim}`]: event.target.checked,
-                                      }))}
+                                      onChange={(event) => toggleEditClaim(
+                                        resource, claim, event.target.checked,
+                                      )}
                                     />
                                     <span>{claim}</span>
                                   </label>
                                 ))}
                               </div>
+                              {resourceOption?.operations?.length ? (
+                                <>
+                                  <div className="account-title">Operations</div>
+                                  <div className="resource-grants">
+                                    {resourceOption.operations.map((operation) => {
+                                      const selected = (editResourceOperations[resource] || []).includes(operation.name);
+                                      const alreadyGranted = (item.resource_operations?.[resource] || []).includes(operation.name);
+                                      const policy = invocationPolicyFor(item, resource, operation.name);
+                                      return (
+                                        <div className="outer-operation-editor" key={`${resource}:operation:${operation.name}`}>
+                                          <label className="grant-chip">
+                                            <input
+                                              type="checkbox"
+                                              checked={selected}
+                                              onChange={(event) => toggleEditResourceOperation(
+                                                resource,
+                                                operation.name,
+                                                operation.grants || [],
+                                                event.target.checked,
+                                              )}
+                                            />
+                                            <span>{operation.label || operation.name}</span>
+                                          </label>
+                                          {selected && alreadyGranted ? (
+                                            <InvocationPolicyControl
+                                              policy={policy}
+                                              busy={busy}
+                                              onSet={(mode, expectedRevision) => {
+                                                void setOperationInvocationPolicy(
+                                                  item, resource, operation.name, mode, expectedRevision,
+                                                );
+                                              }}
+                                            />
+                                          ) : null}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </>
+                              ) : null}
                               {resourceOption ? (
                                 <DelegatedResourceCatalog
                                   resource={resourceOption}
@@ -2021,6 +2435,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                   </Field>
                                 </Fragment>
                               ))}
+                              <Field label="Operations">
+                                {outerOperationRows(item).length ? (
+                                  <CountFold entries={outerOperationRows(item)} noun="operation" />
+                                ) : (
+                                  <small>None selected on these doors.</small>
+                                )}
+                              </Field>
+                              {invocationPolicyRows(item).length ? (
+                                <Field label="Invocation">
+                                  <ChipRow entries={invocationPolicyRows(item)} />
+                                </Field>
+                              ) : null}
                               {namedServiceRows(item).length ? (
                                 <Field label="Services">
                                   <CountFold entries={namedServiceRows(item)} noun="service" />
@@ -2041,12 +2467,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                     operation on this door.
                                   </small>
                                 </Field>
-                              ) : (
-                                <Field label="Operations">
-                                  Every operation the permissions above allow - this grant was
-                                  not narrowed to a shorter list.
-                                </Field>
-                              )}
+                              ) : null}
                               {Object.keys(item.account_scope || {}).length ? (
                                 <Field label="Accounts">
                                   {Object.entries(item.account_scope || {}).map(([provider, accountsMap]) => (
@@ -2219,6 +2640,46 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                 );
                               })}
                             </div>
+                            {resourceOption?.operations?.length ? (
+                              <>
+                                <div className="account-title">Operations</div>
+                                <div className="resource-grants">
+                                  {resourceOption.operations.map((operation) => {
+                                    const selected = (editResourceOperations[resource] || []).includes(operation.name);
+                                    const alreadyGranted = (item.resource_operations?.[resource] || []).includes(operation.name);
+                                    const policy = invocationPolicyFor(item, resource, operation.name);
+                                    return (
+                                      <div className="outer-operation-editor" key={`${resource}:operation:${operation.name}`}>
+                                        <label className="grant-chip">
+                                          <input
+                                            type="checkbox"
+                                            checked={selected}
+                                            onChange={(event) => toggleEditResourceOperation(
+                                              resource,
+                                              operation.name,
+                                              operation.grants || [],
+                                              event.target.checked,
+                                            )}
+                                          />
+                                          <span>{operation.label || operation.name}</span>
+                                        </label>
+                                        {selected && alreadyGranted ? (
+                                          <InvocationPolicyControl
+                                            policy={policy}
+                                            busy={busy}
+                                            onSet={(mode, expectedRevision) => {
+                                              void setOperationInvocationPolicy(
+                                                item, resource, operation.name, mode, expectedRevision,
+                                              );
+                                            }}
+                                          />
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            ) : null}
                             {/* Every family: the card type decides how the
                                 credential is managed, not whether its grantor
                                 may change authority. */}
@@ -2264,8 +2725,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           </Field>
                         </>
                       ) : null}
-                      {item.operations?.length ? (
-                        <Field label="Operations"><CountFold entries={item.operations} noun="operation" /></Field>
+                      <Field label="Operations">
+                        {outerOperationRows(item).length ? (
+                          <CountFold entries={outerOperationRows(item)} noun="operation" />
+                        ) : (
+                          <small>None selected on these doors.</small>
+                        )}
+                      </Field>
+                      {invocationPolicyRows(item).length ? (
+                        <Field label="Invocation">
+                          <ChipRow entries={invocationPolicyRows(item)} />
+                        </Field>
                       ) : null}
                       {(() => {
                         const services = namedServiceRows(item);

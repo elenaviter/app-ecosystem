@@ -1,11 +1,11 @@
 ---
 id: connection-hub/testing/end-to-end-acceptance
 title: "Connection Hub And Governed MCP End-To-End Acceptance"
-summary: "Human-runnable acceptance procedure for delegated cards, connected accounts, managed MCP resources, exact named-service operations, live consent, revocation, durability, and external clients such as Claude Code."
+summary: "Human-runnable acceptance procedure for delegated cards, once-or-always invocation policy, user-owned external MCP proxying, direct protected-service admission, connected accounts, live consent, revocation, durability, and external clients such as Claude Code."
 status: current
-tags: ["testing", "connection-hub", "delegated-access", "mcp", "named-services", "consent", "claude-code"]
-keywords: ["Connection Hub acceptance", "delegated card test", "live consent", "operation-only consent", "named services MCP", "Claude Code OAuth", "revocation test"]
-updated_at: 2026-08-31
+tags: ["testing", "connection-hub", "delegated-access", "mcp", "proxy", "admission", "invocation-policy", "consent", "claude-code"]
+keywords: ["Connection Hub acceptance", "delegated card test", "allow once", "allow always", "external MCP proxy", "direct admission", "descriptor drift", "live consent", "operation-only consent", "resource_operations", "named services MCP", "Claude Code OAuth", "revocation test"]
+updated_at: 2026-09-02
 see_also:
   - ../connection-hub-architecture.md
   - ../package/delegated-authority-and-admission.md
@@ -31,7 +31,12 @@ The procedure covers:
 - live grant delivery, retry, revocation, card durability, and fail-closed
   behavior;
 - an external OAuth client, using Claude Code as the worked client;
-- a caller-defined managed REST or MCP surface registered by an application.
+- a caller-defined managed REST or MCP surface registered by an application;
+- a user-owned external MCP server with no Connection Hub integration, called
+  through the Connection Hub proxy;
+- a directly integrated external service that asks Connection Hub for a live
+  decision before executing its own operation;
+- one-use and reusable invocation policies, including idempotent retry.
 
 This is an acceptance test, not the authority specification. The decision
 model is owned by
@@ -43,7 +48,7 @@ The run passes only when the real operation succeeds or is denied at the
 expected boundary. A green UI alone is not sufficient. Capture the structured
 tool result and the provider-side effect where one exists.
 
-Every accepted invocation must satisfy four independent facts:
+Every accepted invocation must satisfy five independent facts:
 
 | Fact | Example evidence |
 | --- | --- |
@@ -51,6 +56,7 @@ Every accepted invocation must satisfy four independent facts:
 | Managed resource and outer permission | The card covers the MCP/REST resource and required outer tool or KDCube grant. |
 | Exact inner operation | A named-service request covers the decoded namespace and operation, such as `slack.object.action.post_message`. |
 | Connected account and provider claims | The selected account is the intended Slack workspace and holds the provider claims required by that operation. |
+| Invocation policy | The operation is reusable, or the one available invocation is reserved by this invocation id and request digest. |
 
 Granting one fact never grants another. In particular, a provider claim such
 as `slack:post` does not select a named-service operation, and selecting
@@ -92,6 +98,11 @@ pass.
    user.
 7. Install Claude Code for the external-client phase.
 8. Keep service logs and the KDCube ReAct timeline available.
+9. For the external-MCP phase, prepare a disposable streamable-HTTP MCP server
+   with one harmless tool, one sibling tool, and controls for changing the
+   advertised tool descriptor.
+10. For direct admission, prepare the reference protected service and its
+    descriptor-owned service registration and signing secret.
 
 For a local KDCube runtime, establish these shell variables with values for
 the deployment:
@@ -311,6 +322,115 @@ card. An app-defined capability must behave exactly like a platform-defined
 capability: complete active-catalog ceiling, exact current card, structured
 denial, and immediate next-invocation revocation.
 
+For one MCP surface, remove only the selected outer tool while retaining its
+resource and required claims. Invoke that tool from the hosted agent. The
+structured denial and focused Connection Hub card must name that exact outer
+operation. Grant it once, confirm the card revision increases, and retry the
+tool successfully. The grant must author `connections.consent.granted` for
+the matching conversation without replaying the call.
+
+Also register or use two protected resources that expose the same tool name.
+Select the tool on resource A only. A call to resource A must succeed and the
+same-named call to resource B must return
+`delegated_capability_not_granted`. This is the acceptance proof that
+`resource_operations` is authority and the flat `operations` union is only a
+compatibility projection.
+
+## Phase 6A: User-Owned External MCP Proxy
+
+This phase covers an MCP service that does not integrate with Connection Hub.
+Connection Hub owns discovery, card projection, admission, credential
+injection, and upstream dispatch.
+
+1. Open **External MCP** and create a connector to the disposable server. Use
+   its bearer or custom-header credential when the fixture requires one.
+2. Inspect the returned connector. Record its connector revision, descriptor
+   revision, resource, server metadata, and accepted tool names.
+3. Confirm the response and durable connector record contain only
+   `credential_present` and an opaque secret reference. The credential value
+   must not appear in the browser response, card, connector revision, or logs.
+
+Before granting the connector, run the network-negative fixture. Confirm HTTP,
+loopback, private, link-local, non-global, and mixed public/private DNS answers
+are denied. Use a rebinding fixture that returns a public address during URL
+validation and a private address when the socket opens; the connect-time guard
+must deny it without attempting that address. Confirm redirects and inherited
+HTTP proxy environment settings are not followed by the connector transport.
+
+4. Configure an OAuth-capable MCP client with
+   `connection-hub@1-0/public/mcp/remote_mcp_proxy` as its protected resource
+   and start login. Do not create or paste a delegated bearer for this path.
+5. Before login, confirm discovery reveals no owner connector inventory. After
+   platform login, confirm consent shows the authenticated owner's connector
+   and its exact accepted tools, while another owner's connector is absent.
+   Select only the harmless tool and approve.
+6. Inspect the resulting OAuth card. It must name the proxy resource and the
+   exact connector resource, grant only the selected tool under that connector,
+   and have a client-specific `access_id`. Confirm `tools/list` exposes the
+   selected tool and omits the sibling.
+7. Invoke the selected tool and verify the real upstream fixture records one
+   call. Invoke the sibling by name and verify an exact operation denial.
+8. Remove the selected operation from the card, invoke it with the same stored
+   OAuth session, and follow the
+   focused recovery link. Choose **Allow once**. Confirm one retry succeeds,
+   a new invocation id is denied, and the card still names the operation.
+9. Retry the successful call with the same invocation id and identical
+   arguments. Confirm the recorded result returns and the upstream call count
+   remains one. Reuse that id with changed arguments and confirm an invocation
+   id conflict.
+10. Choose **Allow always** and confirm two new invocation ids succeed.
+11. Change the fixture's advertised schema or description for the selected
+    tool. Refresh the connector. Confirm drift names that tool and the call is
+    denied before a one-use permit is consumed.
+12. Accept the pending descriptor. Confirm the descriptor revision advances.
+    A newly added tool appears in the card editor unchecked and remains denied
+    until explicitly granted.
+13. Disable the connector and verify the next call is denied. Re-enable it,
+    revoke the caller card, and verify there is no fallback to another card.
+14. Delete the disposable connector and confirm its upstream credential is
+    removed from the secret store.
+
+Repeat the initial `tools/list` and one harmless call with a separate manually
+issued card and bearer when the release also needs coverage of the manual
+credential path. The OAuth run is the primary external-client proof; the manual
+run is an independent issuance and custody test.
+
+## Phase 6B: Direct Protected-Service Admission
+
+This phase covers a backend that integrates with Connection Hub but executes
+its own domain operation.
+
+1. Register the reference service id, signing-secret reference, and exact
+   resource selector in the Connection Hub descriptor. Publish the resource,
+   operations, and grants in the active delegated catalog.
+2. Give a dedicated caller card the resource and one harmless operation.
+3. Send the bearer to the reference service. Have the service sign a fresh
+   admission request containing the semantic operation, a stable invocation
+   id, and a digest of its domain request.
+4. First send an invalid workload signature. Confirm denial happens before
+   bearer/card details are evaluated or disclosed.
+5. Send the valid request. Confirm the provider receives a `prk_sub_...` user
+   id and `prk_client_...` caller-profile id, plus bounded authority. It must
+   not receive the platform user id, raw caller client id, card `access_id`,
+   bearer, or provider credential.
+6. Repeat for the same user and caller profile at the same service. Confirm
+   both pairwise ids are stable. Use another caller profile and confirm only
+   the pairwise caller-profile id changes. Use another registered service and
+   confirm neither id correlates across services.
+7. Remove the operation and call it. Confirm the denial names the exact card,
+   resource, and operation and offers **Allow once** and **Allow always**.
+8. Choose **Allow once**, retry with one invocation id, and confirm admission
+   succeeds. A new invocation id must be denied. Repeating the successful id
+   and digest returns the same admission decision.
+9. For a state-changing fixture operation, prove the provider's own
+   idempotency ledger applies the domain effect once when that same invocation
+   id is retried. Connection Hub replays the decision; it cannot record the
+   external service's effect.
+10. Choose **Allow always** and confirm two new invocation ids are admitted.
+11. Revoke the exact card and confirm the next admission is denied. Remove or
+    disable the service registration and confirm workload authentication or
+    resource registration fails closed.
+
 ## Phase 7: Claude Code Consent To KDCube
 
 Yes, Claude Code should be tested. It proves external-client OAuth, exact
@@ -422,6 +542,12 @@ Run these cases with disposable test records:
 | Missing account binding | Actionable connected-account consent, not application authority. |
 | Missing provider claim | Actionable per-account claim demand. |
 | Operation-only gap | Actionable demand is published when `claims` is empty. |
+| External MCP connector disabled or deleted | Proxy call is denied before upstream dispatch. |
+| External MCP selected tool changed or removed | Proxy call is denied before invocation-policy consumption. |
+| One-use policy consumed | A new invocation id is denied; the successful id and digest replay according to the provider mode. |
+| Reused invocation id with changed request | Denied as an idempotency conflict. |
+| Prepared card/policy change | Retryable fail-closed denial until the same change id completes. |
+| Invalid direct-service proof | Denied before bearer/card information is evaluated or disclosed. |
 | Active catalog removed the capability | Denied and surfaced as catalog/card drift; a stale card cannot restore it. |
 | Durable authority unavailable | Service error; no implicit allow from stale process memory. |
 | Different signed-in user | That user cannot inspect, edit, or use another user's cards or connected accounts. |
@@ -439,6 +565,12 @@ Retain the following for the acceptance report:
   operation-only `claims: []` demand;
 - structured success result and provider-side effect for Slack;
 - Claude Code MCP connection name and success/denial results without tokens;
+- external MCP connector and descriptor revisions, accepted/pending drift,
+  upstream call counts, and secret-redaction evidence;
+- direct-service pairwise user/profile ids, signed-proof denial, and provider
+  idempotency evidence without raw identities or credentials;
+- once/always policy revision, invocation ids, request digests, and replay
+  outcome without request secrets;
 - restart timestamps and post-restart invocation result;
 - deployment and package revisions tested;
 - cleanup confirmation.
@@ -466,6 +598,10 @@ evidence; the real operation result remains the acceptance authority.
 - [ ] Revocation affects the next invocation without restarting the agent.
 - [ ] Conversation/Productivity or another plain managed MCP surface passes.
 - [ ] One application-defined managed capability passes the same allow/deny test.
+- [ ] External MCP proxy proves exact tool selection, credential containment,
+      descriptor drift, once/always, and no-redispatch replay.
+- [ ] Direct admission proves independent workload authentication, pairwise
+      user/profile identity, once/always, and provider-owned effect idempotency.
 - [ ] Claude Code uses its own card and observes grant and revocation live.
 - [ ] Automation credential is resource- and operation-bounded.
 - [ ] Cards and catalog survive browser and runtime restart.

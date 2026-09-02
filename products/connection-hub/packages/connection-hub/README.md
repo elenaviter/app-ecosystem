@@ -18,6 +18,10 @@ with the active catalog* on **every call**. Authorization never travels
 inside tokens, so there is nothing to copy between executions, and an edit
 or revocation applies on the very next call.
 
+Each granted operation can also be **always** available or limited to **one**
+invocation. That usage policy is a separate live record, so consuming one use
+does not rewrite the user's card.
+
 ```text
 user (grantor) --edits/revokes--> +----------- Connection Hub -----------+
                                   | delegated cards: one per caller,     |
@@ -100,10 +104,10 @@ signature = sign_admission_request(
 # X-Connection-Hub-* proof headers (service id, timestamp, nonce, signature).
 ```
 
-**Enforce the decision.** An allow carries a pairwise service-scoped subject
-and only the bounded authority for that one operation, never provider
-credentials and never the platform's internal user id. A denial is
-structured and actionable:
+**Enforce the decision.** An allow carries a pairwise service-scoped user id, a
+separate pairwise caller-profile id, and only the bounded authority for that
+one operation. It never carries provider credentials, raw card/client ids, or
+the platform's internal user id. A denial is structured and actionable:
 
 ```json
 {
@@ -118,6 +122,11 @@ structured and actionable:
 
 The service still applies its own domain rules after admission; the hub
 answers delegation, the service answers business.
+
+For a `once` operation, the service supplies a stable invocation id and request
+digest. Connection Hub can replay its admission decision. A service that
+changes domain state also records the effect under that invocation id because
+the effect happens outside Connection Hub.
 
 Runnable end to end: the
 [`direct-admission-service` example](https://github.com/elenaviter/app-ecosystem/blob/main/examples/connection-hub/direct-admission-service/README.md)
@@ -153,7 +162,22 @@ binds specific provider accounts, and that selection becomes the card. Full
 protocol, descriptor contract, and failure modes:
 [OAuth delegated credential protocol](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/oauth-delegated-credential-protocol.md).
 
-## Flow 3: calling from code, the client SDK
+## Flow 3: proxying a user-owned external MCP service
+
+A remote MCP server does not need a Connection Hub integration. Its owner adds
+the streamable-HTTP endpoint and optional upstream bearer/header credential to
+Connection Hub. The credential stays in the server-side owner secret store.
+Discovery creates an owner-scoped resource whose exact accepted tools can be
+selected on each caller card.
+
+The delegated caller connects to the Connection Hub `remote_mcp_proxy` with its
+own opaque bearer. The proxy lists only that card's selected tools, compares
+the live tool descriptor with the accepted descriptor, applies `once` or
+`always`, injects the upstream credential, and calls the remote server. Because
+the proxy performs the call, a retry with the same invocation id and arguments
+can return the stored terminal result without redispatch.
+
+## Flow 4: calling from code, the client SDK
 
 A hosted agent or application talks to the hub through `ConnectionsClient`
 over a one-method host transport:
@@ -188,11 +212,13 @@ retry after the grant lands.
 ## What the package owns, and what a host supplies
 
 The package owns portable authority semantics: versioned cards and catalogs,
-per-call admission for managed REST, MCP, and named-service calls, the OAuth
-protocol builders, connected-account policy, structured denials, the client
-SDK, and explicit ports for storage, identity, dispatch, secrets, and live
-delivery. The host supplies the HTTP surfaces, authenticated sessions,
-durable storage and its Redis projections, secret resolution, and the UI.
+once-or-always invocation policy and idempotency records, external MCP
+connector/proxy contracts, per-call admission for managed REST, MCP, and
+named-service calls, the OAuth protocol builders, connected-account policy,
+structured denials, the client SDK, and explicit ports for storage, identity,
+dispatch, secrets, and live delivery. The host supplies the HTTP surfaces,
+authenticated sessions, durable storage and its Redis projections, secret
+resolution, and the UI.
 The boundary is documented in
 [package extraction architecture](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/extraction-architecture.md).
 

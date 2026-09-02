@@ -17,6 +17,7 @@ from connection_hub.delegated_credentials.oauth.surface_policy import (
 )
 
 RESOURCE = "https://app.example/mcp"
+OTHER_RESOURCE = "https://other.example/mcp"
 
 
 def _catalog(*, tools: dict | None = None) -> ActiveCatalogCapabilities:
@@ -168,3 +169,49 @@ def test_rest_requires_the_operation_selected_on_the_card() -> None:
     assert not decision.allowed
     assert decision.denial is not None
     assert decision.denial.reason == "operation_not_consented"
+
+
+def test_equal_tool_names_are_authorized_only_on_the_selected_resource() -> None:
+    envelope = CredentialEnvelope(
+        credential_kind="delegated_client_access",
+        issuer_authority_id="delegated_client",
+        subject="integration:cli:user-1",
+        attrs={
+            "resource_grants": {
+                RESOURCE: ["records:read"],
+                OTHER_RESOURCE: ["records:read"],
+            },
+            "scopes": ["records:read"],
+        },
+    )
+    record = {
+        "operations": ["search"],
+        "resource_operations": {
+            RESOURCE: ["search"],
+            OTHER_RESOURCE: [],
+        },
+    }
+
+    first = authorize_credential_boundary(
+        authority_id="delegated_client",
+        required_roles=(),
+        required_permissions=(),
+        user_roles=("user",),
+        user_permissions=("records:read",),
+        envelope=envelope,
+        grant_record=record,
+        request_resource=RESOURCE,
+    )
+    second = authorize_credential_boundary(
+        authority_id="delegated_client",
+        required_roles=(),
+        required_permissions=(),
+        user_roles=("user",),
+        user_permissions=("records:read",),
+        envelope=envelope,
+        grant_record=record,
+        request_resource=OTHER_RESOURCE,
+    )
+
+    assert first.allowed and first.granted_operations == frozenset({"search"})
+    assert second.allowed and second.granted_operations == frozenset()

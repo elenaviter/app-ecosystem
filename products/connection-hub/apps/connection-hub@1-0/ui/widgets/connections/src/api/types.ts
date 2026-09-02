@@ -116,6 +116,30 @@ export interface DelegatedAccessResourceOption {
 }
 
 export type DelegatedAccessNamedServiceOperations = Record<string, Record<string, string[]>>;
+export type DelegatedAccessResourceOperations = Record<string, string[]>;
+
+export interface DelegatedInvocationAuthority {
+  access_id: string;
+  resource: string;
+  surface: string;
+  operation: string;
+  account?: {
+    provider_id: string;
+    account_id: string;
+  };
+}
+
+export interface DelegatedInvocationPolicy {
+  policy_id: string;
+  authority: DelegatedInvocationAuthority;
+  mode: 'always' | 'once';
+  revision: number;
+  state: 'available' | 'consumed';
+  remaining: number | null;
+  consumed_invocation_id?: string;
+  consumed_at?: number;
+  updated_at?: number;
+}
 
 /** The stored selection as the server returns it, verbatim. `"*"` means every
  *  operation the acknowledged catalog offers; a map is an exact choice; an
@@ -128,6 +152,8 @@ export interface DelegatedAccessRecord {
   client_id?: string;
   delegate_subject?: string;
   operations?: string[];
+  /** Exact outer MCP/REST operation selection per protected resource. */
+  resource_operations?: DelegatedAccessResourceOperations;
   resource_grants?: Record<string, string[]>;
   named_service_operations?: DelegatedAccessStoredNamedServices;
   /** Derived, never authority: the selection above expanded under the catalog
@@ -154,6 +180,9 @@ export interface DelegatedAccessRecord {
   catalog_version?: string;
   /** Backend-computed comparison with the active catalog. */
   catalog_drift?: DelegatedCatalogDrift;
+  /** Invocation limits live beside card authority and are enforced immediately
+   *  before the operation is admitted. An absent row means reusable. */
+  invocation_policies?: DelegatedInvocationPolicy[];
 }
 
 /** A capability the card selected that the active catalog no longer offers.
@@ -234,6 +263,69 @@ export interface DelegatedAccessRevokeResult {
   ok?: boolean;
   removed?: boolean;
   session_removed?: boolean;
+  error?: string;
+  message?: string;
+}
+
+export interface DelegatedInvocationPolicyResult {
+  ok?: boolean;
+  policy?: DelegatedInvocationPolicy;
+  error?: string;
+  message?: string;
+  status?: number;
+  current_revision?: number;
+}
+
+// User-owned remote MCP connectors. Credential values never appear in these
+// projections; the backend returns only whether a credential is present.
+export interface RemoteMcpTool {
+  name: string;
+  proxy_name: string;
+  description?: string;
+  input_schema?: Record<string, unknown>;
+  output_schema?: Record<string, unknown> | null;
+  descriptor_digest?: string;
+}
+
+export interface RemoteMcpConnector {
+  connector_id: string;
+  label: string;
+  endpoint: string;
+  transport: string;
+  resource: string;
+  revision: number;
+  state: 'active' | 'disabled' | string;
+  credential_mode: 'none' | 'bearer' | 'header' | string;
+  credential_header?: string;
+  credential_present?: boolean;
+  tools?: RemoteMcpTool[];
+  descriptor_digest?: string;
+  descriptor_revision?: number;
+  descriptor_state?: 'accepted' | 'drifted' | string;
+  pending_tools?: RemoteMcpTool[];
+  pending_descriptor_digest?: string;
+  drift?: Record<string, string[]>;
+  server_name?: string;
+  server_version?: string;
+  protocol_version?: string;
+  created_at?: number;
+  updated_at?: number;
+  last_checked_at?: number;
+  last_error?: string;
+}
+
+export interface RemoteMcpConnectorsResult {
+  ok?: boolean;
+  items?: RemoteMcpConnector[];
+  error?: string;
+  message?: string;
+}
+
+export interface RemoteMcpConnectorMutationResult {
+  ok?: boolean;
+  connector?: RemoteMcpConnector;
+  removed?: boolean;
+  current_revision?: number;
   error?: string;
   message?: string;
 }

@@ -4,6 +4,7 @@ title: Protect An External Backend With Connection Hub
 summary: Configures a non-KDCube backend to ask a KDCube-hosted Connection Hub for live delegated operation admission using independent bearer and workload proofs.
 tags: [connection-hub, connection-hub, delegated-access, protected-service, recipe]
 keywords: [direct admission, opaque bearer, workload proof, resource server, card, capability catalog]
+updated_at: 2026-09-02
 see_also:
   - ../connection-hub-architecture.md
   - ../../../examples/connection-hub/direct-admission-service/README.md
@@ -99,8 +100,9 @@ For every protected operation, the backend:
 
 1. keeps the incoming opaque delegated bearer unchanged;
 2. creates a fresh timestamp and nonce;
-3. signs the service id, timestamp, nonce, bearer hash, and canonical semantic
-   request hash with its workload secret;
+3. chooses a stable invocation id for the domain request, computes its
+   canonical request digest, and signs both with the service id, timestamp,
+   nonce, bearer hash, and semantic admission request;
 4. calls Connection Hub with the bearer and `X-Connection-Hub-*` proof headers;
 5. performs the domain operation only when the live response says
    `allowed: true`.
@@ -109,6 +111,12 @@ Connection Hub authenticates both proofs independently, consumes the nonce,
 resolves the current card and active catalog, checks optional connected-account
 scope, and returns a pairwise service subject plus bounded authority. Editing,
 narrowing, or revoking the card changes the next fresh decision.
+
+The allow contains two pairwise identities. `principal.sub` identifies the
+same user consistently to this service. `principal.client_id` identifies one
+delegated caller profile for that user and service. A second caller profile can
+therefore hold different authority without exposing either raw Connection Hub
+identifier. Both values differ at another registered service.
 
 ## 5. Keep the two authorization layers
 
@@ -121,12 +129,26 @@ Do not cache an allow as durable authority. A short transport cache may reduce
 duplicate evaluation only if its invalidation and maximum staleness are an
 explicit product decision; the live Connection Hub record remains canonical.
 
+When an operation is `once`, the invocation id and request digest let
+Connection Hub reserve its one use and replay the same admission decision.
+Connection Hub does not execute this backend's domain effect. A write endpoint
+must use the same invocation id in its own idempotency ledger and return the
+already-recorded domain outcome on retry. A read-only endpoint may use the same
+mechanism without an effect ledger.
+
 ## Verification cases
 
 - valid bearer + valid workload proof + current grant -> allow;
 - changed body, bearer, or service id under the same signature -> 401;
 - replayed nonce -> 409;
+- one-use operation without an invocation id -> structured denial;
+- one-use operation with one new invocation id -> allow, then consumed;
+- same invocation id and digest -> replayed admission decision;
+- same invocation id with another digest -> idempotency conflict;
 - unregistered resource selector -> 403;
 - missing, narrowed, or revoked card operation -> structured denial;
 - Redis replay guard or authority store unavailable -> retryable 503;
-- allow response contains no provider credential or internal platform user id.
+- allow response contains pairwise user and caller-profile ids but no raw
+  client id, card access id, provider credential, or internal platform user id;
+- a state-changing service records the domain effect once under the invocation
+  id even when the client retries.
