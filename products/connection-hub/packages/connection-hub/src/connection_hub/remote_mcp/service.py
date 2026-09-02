@@ -17,6 +17,7 @@ from connection_hub.remote_mcp.models import (
     AUTH_BEARER,
     AUTH_HEADER,
     AUTH_NONE,
+    AUTH_OAUTH,
     CONNECTOR_ACTIVE,
     CONNECTOR_DELETED,
     CONNECTOR_DISABLED,
@@ -25,6 +26,7 @@ from connection_hub.remote_mcp.models import (
     RemoteMCPConnector,
     RemoteMCPCredential,
     RemoteMCPDiscovery,
+    RemoteMCPOAuthCredential,
     RemoteMCPRecordError,
     connector_resource,
     descriptor_drift,
@@ -101,7 +103,7 @@ def _credential_config(
     *, mode: Any, header: Any, value: Any
 ) -> tuple[str, str, RemoteMCPCredential]:
     normalized_mode = str(mode or AUTH_NONE).strip().lower() or AUTH_NONE
-    if normalized_mode not in {AUTH_NONE, AUTH_BEARER, AUTH_HEADER}:
+    if normalized_mode not in {AUTH_NONE, AUTH_BEARER, AUTH_HEADER, AUTH_OAUTH}:
         raise RemoteMCPRecordError("credential_mode_invalid")
     normalized_header = ""
     secret = str(value or "")
@@ -111,7 +113,8 @@ def _credential_config(
     else:
         if not secret:
             raise RemoteMCPRecordError("credential_value_missing")
-        if len(secret) > 16384:
+        max_secret_size = 262144 if normalized_mode == AUTH_OAUTH else 16384
+        if len(secret) > max_secret_size:
             raise RemoteMCPRecordError("credential_value_too_large")
     if normalized_mode == AUTH_HEADER:
         normalized_header = validated_auth_header(header)
@@ -120,6 +123,8 @@ def _credential_config(
         header=normalized_header,
         value=secret,
     )
+    if normalized_mode == AUTH_OAUTH:
+        RemoteMCPOAuthCredential.from_json(secret)
     credential.request_headers()
     return normalized_mode, normalized_header, credential
 
@@ -152,6 +157,27 @@ class RemoteMCPConnectorService:
             operation="remote-mcp-connector-mutation",
             wait_seconds=CONNECTOR_LOCK_WAIT_SECONDS,
         )
+
+    async def _transport_headers(
+        self,
+        *,
+        connector_id: str,
+        credential: RemoteMCPCredential,
+        owner_subject: str,
+        credential_ref: str,
+    ) -> dict[str, str]:
+        prepare = getattr(self._transport, "prepare_headers", None)
+        if not callable(prepare):
+            return credential.request_headers()
+        headers = await prepare(
+            connector_id=connector_id,
+            credential=credential,
+            owner_subject=owner_subject,
+            credential_ref=credential_ref,
+        )
+        if not isinstance(headers, Mapping):
+            raise RemoteMCPRecordError("transport_headers_invalid")
+        return {str(key): str(value) for key, value in headers.items()}
 
     async def _current(
         self,
@@ -221,12 +247,6 @@ class RemoteMCPConnectorService:
             header=credential_header,
             value=credential_value,
         )
-        discovery = await self._transport.discover(
-            connector_id=connector_id,
-            endpoint=canonical_endpoint,
-            transport="streamable-http",
-            headers=credential.request_headers(),
-        )
         moment = int(now if now is not None else time.time())
         secret_ref = (
             f"remote_mcp.{connector_id}.credential.{uuid.uuid4().hex}"
@@ -245,18 +265,17 @@ class RemoteMCPConnectorService:
             credential_mode=mode,
             credential_header=header,
             credential_ref=secret_ref,
-            tools=discovery.tools,
-            descriptor_digest=discovery.descriptor_digest,
+            tools=(),
+            descriptor_digest="",
             descriptor_revision=1,
             descriptor_state=DESCRIPTOR_ACCEPTED,
-            server_name=discovery.server_name,
-            server_version=discovery.server_version,
-            protocol_version=discovery.protocol_version,
+            server_name="",
+            server_version="",
+            protocol_version="",
             created_at=moment,
             updated_at=moment,
             last_checked_at=moment,
         )
-        connector.verify()
         owner_hash = owner_hash_for(owner)
         if secret_ref:
             await self._secret_store.set(
@@ -265,6 +284,27 @@ class RemoteMCPConnectorService:
                 value=credential.value,
             )
         try:
+            headers = await self._transport_headers(
+                connector_id=connector_id,
+                credential=credential,
+                owner_subject=owner,
+                credential_ref=secret_ref,
+            )
+            discovery = await self._transport.discover(
+                connector_id=connector_id,
+                endpoint=canonical_endpoint,
+                transport="streamable-http",
+                headers=headers,
+            )
+            connector = replace(
+                connector,
+                tools=discovery.tools,
+                descriptor_digest=discovery.descriptor_digest,
+                server_name=discovery.server_name,
+                server_version=discovery.server_version,
+                protocol_version=discovery.protocol_version,
+            )
+            connector.verify()
             async with self._critical_section(
                 owner_hash=owner_hash, connector_id=connector_id
             ):
@@ -279,6 +319,14 @@ class RemoteMCPConnectorService:
                 await self._commit(owner_hash=owner_hash, connector=connector)
         except Exception:
             if secret_ref:
+                await self._best_effort_revoke(
+                    connector_id=connector.connector_id,
+                    endpoint=connector.endpoint,
+                    transport=connector.transport,
+                    owner_subject=connector.owner_subject,
+                    credential=credential,
+                    credential_ref=secret_ref,
+                )
                 await self._secret_store.delete(
                     owner_subject=owner, secret_ref=secret_ref
                 )
@@ -306,11 +354,17 @@ class RemoteMCPConnectorService:
             )
             credential = await self._credential(current)
             endpoint = await self._endpoint_policy.validate(current.endpoint)
+            headers = await self._transport_headers(
+                connector_id=current.connector_id,
+                credential=credential,
+                owner_subject=current.owner_subject,
+                credential_ref=current.credential_ref,
+            )
             discovery = await self._transport.discover(
                 connector_id=current.connector_id,
                 endpoint=endpoint,
                 transport=current.transport,
-                headers=credential.request_headers(),
+                headers=headers,
             )
             moment = int(now if now is not None else time.time())
             if discovery.descriptor_digest == current.descriptor_digest:
@@ -443,6 +497,8 @@ class RemoteMCPConnectorService:
             else ""
         )
         old_ref = ""
+        old_credential: RemoteMCPCredential | None = None
+        current: RemoteMCPConnector | None = None
         if new_ref:
             await self._secret_store.set(
                 owner_subject=owner, secret_ref=new_ref, value=credential.value
@@ -457,12 +513,19 @@ class RemoteMCPConnectorService:
                     expected_revision=expected_revision,
                 )
                 old_ref = current.credential_ref
+                old_credential = await self._credential(current)
                 endpoint = await self._endpoint_policy.validate(current.endpoint)
+                headers = await self._transport_headers(
+                    connector_id=current.connector_id,
+                    credential=credential,
+                    owner_subject=current.owner_subject,
+                    credential_ref=new_ref,
+                )
                 discovery = await self._transport.discover(
                     connector_id=current.connector_id,
                     endpoint=endpoint,
                     transport=current.transport,
-                    headers=credential.request_headers(),
+                    headers=headers,
                 )
                 moment = int(now if now is not None else time.time())
                 same_descriptor = discovery.descriptor_digest == current.descriptor_digest
@@ -500,11 +563,38 @@ class RemoteMCPConnectorService:
                 await self._commit(owner_hash=owner_hash, connector=updated)
         except Exception:
             if new_ref:
+                if current is not None:
+                    await self._best_effort_revoke(
+                        connector_id=connector_id,
+                        endpoint=current.endpoint,
+                        transport=current.transport,
+                        owner_subject=owner,
+                        credential=credential,
+                        credential_ref=new_ref,
+                    )
+                else:
+                    await self._best_effort_revoke(
+                        connector_id=connector_id,
+                        endpoint="",
+                        transport="streamable-http",
+                        owner_subject=owner,
+                        credential=credential,
+                        credential_ref=new_ref,
+                    )
                 await self._secret_store.delete(
                     owner_subject=owner, secret_ref=new_ref
                 )
             raise
         if old_ref and old_ref != new_ref:
+            if current is not None and old_credential is not None:
+                await self._best_effort_revoke(
+                    connector_id=current.connector_id,
+                    endpoint=current.endpoint,
+                    transport=current.transport,
+                    owner_subject=current.owner_subject,
+                    credential=old_credential,
+                    credential_ref=old_ref,
+                )
             await self._secret_store.delete(owner_subject=owner, secret_ref=old_ref)
         return updated
 
@@ -529,6 +619,15 @@ class RemoteMCPConnectorService:
                 expected_revision=expected_revision,
             )
             old_ref = current.credential_ref
+            credential = await self._credential(current)
+            await self._best_effort_revoke(
+                connector_id=current.connector_id,
+                endpoint=current.endpoint,
+                transport=current.transport,
+                owner_subject=current.owner_subject,
+                credential=credential,
+                credential_ref=current.credential_ref,
+            )
             deleted = replace(
                 current,
                 revision=current.revision + 1,
@@ -551,11 +650,17 @@ class RemoteMCPConnectorService:
             raise RemoteMCPConnectorConflict("connector_not_active")
         endpoint = await self._endpoint_policy.validate(connector.endpoint)
         credential = await self._credential(connector)
+        headers = await self._transport_headers(
+            connector_id=connector.connector_id,
+            credential=credential,
+            owner_subject=connector.owner_subject,
+            credential_ref=connector.credential_ref,
+        )
         return await self._transport.discover(
             connector_id=connector.connector_id,
             endpoint=endpoint,
             transport=connector.transport,
-            headers=credential.request_headers(),
+            headers=headers,
         )
 
     async def call_tool(
@@ -569,11 +674,17 @@ class RemoteMCPConnectorService:
             raise RemoteMCPConnectorConflict("connector_not_active")
         endpoint = await self._endpoint_policy.validate(connector.endpoint)
         credential = await self._credential(connector)
+        headers = await self._transport_headers(
+            connector_id=connector.connector_id,
+            credential=credential,
+            owner_subject=connector.owner_subject,
+            credential_ref=connector.credential_ref,
+        )
         return await self._transport.call_tool(
             connector_id=connector.connector_id,
             endpoint=endpoint,
             transport=connector.transport,
-            headers=credential.request_headers(),
+            headers=headers,
             tool_name=str(tool_name or "").strip(),
             arguments=dict(arguments or {}),
         )
@@ -594,6 +705,34 @@ class RemoteMCPConnectorService:
             header=connector.credential_header,
             value=value,
         )
+
+    async def _best_effort_revoke(
+        self,
+        *,
+        connector_id: str,
+        endpoint: str,
+        transport: str,
+        owner_subject: str,
+        credential: RemoteMCPCredential,
+        credential_ref: str,
+    ) -> None:
+        revoke = getattr(self._transport, "revoke_credential", None)
+        if not callable(revoke):
+            return
+        try:
+            await revoke(
+                connector_id=connector_id,
+                endpoint=endpoint,
+                transport=transport,
+                credential=credential,
+                owner_subject=owner_subject,
+                credential_ref=credential_ref,
+            )
+        except Exception:
+            # The local secret/card transition remains authoritative. Failure
+            # of an optional provider revocation endpoint cannot keep local
+            # authority alive or make a failed connector visible.
+            pass
 
     async def _expect_current(
         self,

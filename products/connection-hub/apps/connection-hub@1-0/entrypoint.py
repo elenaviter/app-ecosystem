@@ -101,6 +101,7 @@ from connection_hub.remote_mcp import (
     RemoteMCPConnectorConflict,
     RemoteMCPConnectorNotFound,
     RemoteMCPEndpointDenied,
+    RemoteMCPOAuthStateError,
     RemoteMCPRecordError,
     remote_mcp_resource_rows,
 )
@@ -114,7 +115,10 @@ from connection_hub.invocation_policy import (
     InvocationPolicyRecordError,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.remote_mcp import (
+    RemoteMCPOAuthFlowError,
     build_remote_mcp_connector_service,
+    build_remote_mcp_oauth_service,
+    remote_mcp_endpoint_policy,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.invocation_policy import (
     build_invocation_policy_service,
@@ -190,6 +194,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "remote_mcp_connector_delete",
     "remote_mcp_connector_refresh",
     "remote_mcp_connector_set_enabled",
+    "remote_mcp_connector_start_oauth",
     "remote_mcp_connector_update_credential",
 })
 CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
@@ -758,6 +763,52 @@ def _remote_mcp_service(entrypoint: Any) -> Any:
     )
 
 
+def _remote_mcp_oauth_service(entrypoint: Any) -> Any:
+    connections = _connections_config(entrypoint)
+    return build_remote_mcp_oauth_service(
+        storage_root=_storage_root_or_error(entrypoint),
+        bundle_id=BUNDLE_ID,
+        connections=connections,
+        connector_service=_remote_mcp_service(entrypoint),
+        endpoint_policy=remote_mcp_endpoint_policy(connections),
+    )
+
+
+def _remote_mcp_oauth_public_url(
+    entrypoint: Any, request: Any, *, operation: str
+) -> str:
+    connections = _connections_config(entrypoint)
+    remote = connections.get("remote_mcp") if isinstance(connections, Mapping) else {}
+    remote = remote if isinstance(remote, Mapping) else {}
+    oauth = remote.get("oauth") if isinstance(remote.get("oauth"), Mapping) else {}
+    base = str(oauth.get("public_base_url") or "").strip().rstrip("/")
+    if not base:
+        base = _request_origin(request).rstrip("/")
+    if not base:
+        raise RemoteMCPOAuthFlowError("oauth_public_base_url_unavailable")
+    tenant, project = _runtime_tenant_project(entrypoint)
+    return (
+        f"{base}/api/integrations/bundles/{tenant}/{project}/"
+        f"{BUNDLE_ID}/public/{operation}"
+    )
+
+
+def _remote_mcp_oauth_callback_url(entrypoint: Any, request: Any) -> str:
+    return _remote_mcp_oauth_public_url(
+        entrypoint,
+        request,
+        operation="remote_mcp_oauth_callback",
+    )
+
+
+def _remote_mcp_oauth_client_metadata_url(entrypoint: Any, request: Any) -> str:
+    return _remote_mcp_oauth_public_url(
+        entrypoint,
+        request,
+        operation="remote_mcp_oauth_client_metadata",
+    )
+
+
 def _invocation_policy_service(entrypoint: Any) -> Any:
     return build_invocation_policy_service(
         storage_root=_storage_root_or_error(entrypoint)
@@ -814,7 +865,15 @@ def _remote_mcp_failure(exc: Exception) -> Dict[str, Any]:
         }
     if isinstance(exc, RemoteMCPConnectorNotFound):
         return {"ok": False, "error": exc.reason, "status": 404}
-    if isinstance(exc, (RemoteMCPEndpointDenied, RemoteMCPRecordError)):
+    if isinstance(
+        exc,
+        (
+            RemoteMCPEndpointDenied,
+            RemoteMCPOAuthFlowError,
+            RemoteMCPOAuthStateError,
+            RemoteMCPRecordError,
+        ),
+    ):
         return {"ok": False, "error": exc.reason, "status": 400}
     LOGGER.exception("[connection-hub.remote_mcp] operation failed")
     return {
@@ -833,6 +892,13 @@ def _expected_remote_mcp_revision(payload: Mapping[str, Any]) -> int:
     if revision < 1:
         raise RemoteMCPRecordError("expected_revision_invalid")
     return revision
+
+
+def _optional_remote_mcp_revision(payload: Mapping[str, Any]) -> int:
+    raw = payload.get("expected_revision")
+    if raw in (None, ""):
+        return 0
+    return _expected_remote_mcp_revision(payload)
 
 
 def _automation_access_service_for(entrypoint: Any, config: Any) -> AutomationAccessService:
@@ -1162,6 +1228,33 @@ def _request_origin(request: Any) -> str:
         return f"{url.scheme}://{url.netloc}"
     except Exception:
         return ""
+
+
+def _same_origin_return_link(*, origin: str, candidate: str) -> str:
+    base = str(origin or "").strip()
+    value = str(candidate or "").strip()
+    if not value:
+        return ""
+    try:
+        base_parts = urlsplit(base)
+        value_parts = urlsplit(value)
+        base_origin = (
+            base_parts.scheme.lower(),
+            base_parts.hostname,
+            base_parts.port,
+        )
+        value_origin = (
+            value_parts.scheme.lower(),
+            value_parts.hostname,
+            value_parts.port,
+        )
+    except ValueError:
+        return base
+    if base_origin != value_origin:
+        return base
+    if value_parts.username is not None or value_parts.password is not None:
+        return base
+    return value
 
 
 def _append_query(url: str, params: Mapping[str, str]) -> str:
@@ -1780,6 +1873,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "remote_mcp_connector_refresh": {"visibility": {"user_types": []}},
                             "remote_mcp_connector_accept_descriptor": {"visibility": {"user_types": []}},
                             "remote_mcp_connector_set_enabled": {"visibility": {"user_types": []}},
+                            "remote_mcp_connector_start_oauth": {"visibility": {"user_types": []}},
                             "remote_mcp_connector_update_credential": {"visibility": {"user_types": []}},
                             "remote_mcp_connector_delete": {"visibility": {"user_types": []}},
                         },
@@ -2001,6 +2095,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 "remote_mcp": {
                     "read_timeout_seconds": 60.0,
                     "max_result_bytes": 2 * 1024 * 1024,
+                    "oauth": {
+                        "enabled": True,
+                        "client_name": "KDCube Connection Hub",
+                        "public_base_url": "",
+                        "state_ttl_seconds": 900,
+                        "expiry_leeway_seconds": 60,
+                    },
                     "outbound": {
                         "allow_http": False,
                         "allow_private_networks": False,
@@ -2363,17 +2464,125 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
         payload = _payload(data, **kwargs)
         try:
+            credential_mode = str(
+                payload.get("credential_mode") or "none"
+            ).strip().lower()
+            if credential_mode == "oauth":
+                raise RemoteMCPOAuthFlowError(
+                    "remote_mcp_oauth_requires_browser_flow"
+                )
             connector = await _remote_mcp_service(self).create(
                 owner_subject=owner,
                 label=str(payload.get("label") or ""),
                 endpoint=str(payload.get("endpoint") or ""),
-                credential_mode=str(payload.get("credential_mode") or "none"),
+                credential_mode=credential_mode,
                 credential_header=str(payload.get("credential_header") or ""),
                 credential_value=str(payload.get("credential_value") or ""),
             )
             return {"ok": True, "connector": connector.to_public_dict()}
         except Exception as exc:
             return _remote_mcp_failure(exc)
+
+    @api(
+        method="POST",
+        alias="remote_mcp_connector_start_oauth",
+        route="operations",
+        csrf=True,
+        **_api_visibility("remote_mcp_connector_start_oauth"),
+    )
+    async def remote_mcp_connector_start_oauth(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        owner = _platform_user_id(self, user_id=user_id)
+        if not owner:
+            return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
+        payload = _payload(data, **kwargs)
+        try:
+            started = await _remote_mcp_oauth_service(self).start(
+                owner_subject=owner,
+                label=str(payload.get("label") or ""),
+                endpoint=str(payload.get("endpoint") or ""),
+                callback_url=_remote_mcp_oauth_callback_url(self, request),
+                client_metadata_url=_remote_mcp_oauth_client_metadata_url(
+                    self, request
+                ),
+                return_hint=str(payload.get("return_hint") or ""),
+                connector_id=str(payload.get("connector_id") or ""),
+                expected_revision=_optional_remote_mcp_revision(payload),
+            )
+            return {"ok": True, **started}
+        except Exception as exc:
+            return _remote_mcp_failure(exc)
+
+    @api(
+        method="GET",
+        alias="remote_mcp_oauth_client_metadata",
+        route="public",
+    )
+    async def remote_mcp_oauth_client_metadata(
+        self,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        del kwargs
+        return _remote_mcp_oauth_service(self).client_metadata(
+            callback_url=_remote_mcp_oauth_callback_url(self, request)
+        )
+
+    @api(method="GET", alias="remote_mcp_oauth_callback", route="public")
+    async def remote_mcp_oauth_callback(
+        self,
+        request: Any = None,
+        code: str = "",
+        state: str = "",
+        error: str = "",
+        iss: str = "",
+        **kwargs: Any,
+    ) -> Any:
+        del kwargs
+        if not state:
+            return _delegated_to_kdcube_html_done(
+                title="Connection failed",
+                body="The OAuth callback is missing its state.",
+                link=_request_origin(request),
+            )
+        try:
+            completed = await _remote_mcp_oauth_service(self).complete(
+                state=state,
+                code=code,
+                callback_url=_remote_mcp_oauth_callback_url(self, request),
+                issuer=iss,
+                provider_error=error,
+            )
+            connector = completed["connector"]
+            origin = _request_origin(request)
+            return_link = _same_origin_return_link(
+                origin=origin,
+                candidate=str(completed.get("return_hint") or ""),
+            )
+            return _delegated_to_kdcube_html_done(
+                title="Connection complete",
+                body=(
+                    f"Connected {connector.label}. You can close this tab and "
+                    "return to Connection Hub."
+                ),
+                link=return_link or origin,
+                notify={
+                    "type": "remote_mcp.connector.connected",
+                    "connector_id": str(connector.connector_id),
+                },
+            )
+        except Exception as exc:
+            failure = _remote_mcp_failure(exc)
+            return _delegated_to_kdcube_html_done(
+                title="Connection failed",
+                body=str(failure.get("error") or "remote_mcp_oauth_failed"),
+                link=_request_origin(request),
+            )
 
     @api(
         method="POST",
@@ -2475,11 +2684,18 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
         payload = _payload(data, **kwargs)
         try:
+            credential_mode = str(
+                payload.get("credential_mode") or "none"
+            ).strip().lower()
+            if credential_mode == "oauth":
+                raise RemoteMCPOAuthFlowError(
+                    "remote_mcp_oauth_requires_browser_flow"
+                )
             connector = await _remote_mcp_service(self).replace_credential(
                 owner_subject=owner,
                 connector_id=str(payload.get("connector_id") or ""),
                 expected_revision=_expected_remote_mcp_revision(payload),
-                credential_mode=str(payload.get("credential_mode") or "none"),
+                credential_mode=credential_mode,
                 credential_header=str(payload.get("credential_header") or ""),
                 credential_value=str(payload.get("credential_value") or ""),
             )
@@ -3322,9 +3538,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             )
             label = account.get("display_name") or account.get("email") or account.get("workspace") or account.get("account_id") or "account"
             origin = _request_origin(request)
-            return_link = str(result.get("return_hint") or "").strip()
-            if origin and return_link and not return_link.startswith(origin):
-                return_link = origin
+            return_link = _same_origin_return_link(
+                origin=origin,
+                candidate=str(result.get("return_hint") or ""),
+            )
             return _delegated_to_kdcube_html_done(
                 title="Connection complete",
                 body=f"Connected {label}. You can close this tab and return to KDCube.",

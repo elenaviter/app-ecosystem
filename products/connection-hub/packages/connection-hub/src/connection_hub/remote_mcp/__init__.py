@@ -7,6 +7,7 @@ from connection_hub.remote_mcp.models import (
     AUTH_BEARER,
     AUTH_HEADER,
     AUTH_NONE,
+    AUTH_OAUTH,
     CONNECTOR_ACTIVE,
     CONNECTOR_DELETED,
     CONNECTOR_DISABLED,
@@ -15,10 +16,16 @@ from connection_hub.remote_mcp.models import (
     RemoteMCPConnector,
     RemoteMCPCredential,
     RemoteMCPDiscovery,
+    RemoteMCPOAuthCredential,
     RemoteMCPRecordError,
     RemoteMCPTool,
     connector_id_from_resource,
     connector_resource,
+)
+from connection_hub.remote_mcp.oauth_state import (
+    BundleStorageRemoteMCPOAuthStateStore,
+    RemoteMCPOAuthStateError,
+    RemoteMCPOAuthStateHandle,
 )
 from connection_hub.remote_mcp.catalog import remote_mcp_resource_rows
 from connection_hub.remote_mcp.proxy import (
@@ -49,6 +56,7 @@ __all__ = [
     "AUTH_BEARER",
     "AUTH_HEADER",
     "AUTH_NONE",
+    "AUTH_OAUTH",
     "CONNECTOR_ACTIVE",
     "CONNECTOR_DELETED",
     "CONNECTOR_DISABLED",
@@ -56,6 +64,7 @@ __all__ = [
     "DESCRIPTOR_DRIFTED",
     "EXTERNAL_MCP_GRANT",
     "BundleStorageRemoteMCPConnectorStore",
+    "BundleStorageRemoteMCPOAuthStateStore",
     "RemoteMCPConnector",
     "RemoteMCPConnectorConflict",
     "RemoteMCPConnectorNotFound",
@@ -63,6 +72,9 @@ __all__ = [
     "RemoteMCPConnectorStore",
     "RemoteMCPCredential",
     "RemoteMCPDiscovery",
+    "RemoteMCPOAuthCredential",
+    "RemoteMCPOAuthStateError",
+    "RemoteMCPOAuthStateHandle",
     "RemoteMCPEndpointDenied",
     "RemoteMCPEndpointPolicy",
     "RemoteMCPMutationLock",

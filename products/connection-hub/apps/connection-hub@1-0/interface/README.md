@@ -107,6 +107,7 @@ All are authenticated (`PlatformAuth`) and visibility-gated by
 | `delegated_access_revoke` | POST | operations | Revoke one automation or OAuth delegated-client grant owned by the current user. |
 | `remote_mcp_connectors_list` | GET | operations | List the current user's external MCP connectors and accepted/pending descriptor metadata without secret values. |
 | `remote_mcp_connector_create` | POST | operations | Validate an endpoint, store an optional bearer/header credential server-side, discover tools, and create the first accepted connector revision. |
+| `remote_mcp_connector_start_oauth` | POST | operations | Discover an upstream MCP authorization server, select its advertised client-registration method, create a single-use PKCE transaction, and return the browser authorization URL. |
 | `remote_mcp_connector_refresh` | POST | operations | Rediscover tools under an optimistic connector revision and record descriptor drift without accepting it. |
 | `remote_mcp_connector_accept_descriptor` | POST | operations | Promote the pending discovered descriptor to the accepted revision. Newly accepted tools remain ungranted on caller cards. |
 | `remote_mcp_connector_set_enabled` | POST | operations | Enable or disable the connector under an optimistic revision precondition. |
@@ -123,7 +124,7 @@ All are authenticated (`PlatformAuth`) and visibility-gated by
 > `delegated_to_kdcube_oauth_callback`; non-OAuth providers use
 > `delegated_to_kdcube_connect_credential`.
 
-### Public callback route
+### Public OAuth routes
 
 A browser redirect target, not a JSON op — reached by the external provider after
 the user authorizes. One delegated-to-KDCube callback is shared by OAuth
@@ -132,10 +133,19 @@ providers such as Gmail and Slack:
 | Alias | Method | Route | Redirect URI to register |
 | --- | --- | --- | --- |
 | `delegated_to_kdcube_oauth_callback` | GET | public | `…/connection-hub@1-0/public/delegated_to_kdcube_oauth_callback` |
+| `remote_mcp_oauth_callback` | GET | public | `…/connection-hub@1-0/public/remote_mcp_oauth_callback` |
+| `remote_mcp_oauth_client_metadata` | GET | public | Client metadata document used as the URL-based OAuth client id when the authorization server advertises that method. |
 
 It accepts `code`, `state`, `error` and completes the hub-owned flow, validating
 `state` with `connections.delegated_to_kdcube.oauth_state_secret`. The
 provider + connector app are read from the signed `state`.
+
+The remote-MCP callback consumes a random single-use state. Its durable
+pointer contains only a digest, owner, secret reference, and expiry. PKCE,
+dynamic-client credentials, and discovered token endpoints remain in the
+referenced user secret until the callback claims it. The callback exchanges
+the code and creates the owner connector without returning OAuth tokens to the
+browser.
 
 ### User-owned external MCP proxy
 
@@ -157,6 +167,14 @@ and `credential_present`. They never expose `credential_value` or the internal
 credential reference. Endpoint policy is descriptor-owned under
 `connections.remote_mcp.outbound`; a user-supplied URL cannot enable HTTP or
 private-network access for itself.
+
+OAuth mode follows MCP protected-resource and authorization-server discovery
+and PKCE. It uses the public Client ID Metadata Document when the authorization
+server advertises URL-based client ids, and otherwise uses dynamic client
+registration. Access, refresh, and registered-client credentials share the
+connector's server-side secret lifecycle. Expiring access tokens refresh under
+a connector-scoped cross-worker lock. Caller OAuth into `remote_mcp_proxy`
+remains an independent credential and card.
 
 A tools/call request may carry a stable id in MCP metadata at
 `connection_hub/invocation_id`. The proxy derives a digest from the upstream
@@ -712,6 +730,9 @@ Non-secret deploy props (see [../config/bundles.template.yaml](../config/bundles
   — signed-request freshness and replay retention.
 - `connections.remote_mcp.{read_timeout_seconds,max_result_bytes}` — upstream
   MCP response bounds.
+- `connections.remote_mcp.oauth.{enabled,client_name,public_base_url,state_ttl_seconds,expiry_leeway_seconds}`
+  — owner browser authorization, callback origin, transaction lifetime, and
+  proactive token refresh window for generic OAuth-protected MCP connectors.
 - `connections.remote_mcp.outbound.{allow_http,allow_private_networks,allowed_hosts}`
   — deployment-owned endpoint policy. Public HTTPS is the default.
 

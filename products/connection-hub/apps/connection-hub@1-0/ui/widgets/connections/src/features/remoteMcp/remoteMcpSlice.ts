@@ -4,6 +4,7 @@ import type {
   RemoteMcpConnector,
   RemoteMcpConnectorMutationResult,
   RemoteMcpConnectorsResult,
+  RemoteMcpOAuthStartResult,
 } from '../../api/types';
 
 export interface RemoteMcpState {
@@ -52,6 +53,36 @@ export interface CreateRemoteMcpArgs {
   credentialHeader?: string;
   credentialValue?: string;
 }
+
+export interface StartRemoteMcpOAuthArgs {
+  label: string;
+  endpoint: string;
+  returnHint?: string;
+  connectorId?: string;
+  expectedRevision?: number;
+}
+
+export const startRemoteMcpOAuth = createAsyncThunk<
+  RemoteMcpOAuthStartResult,
+  StartRemoteMcpOAuthArgs,
+  { rejectValue: string }
+>('remoteMcp/startOAuth', async (args, { rejectWithValue }) => {
+  try {
+    const result = await postOp<RemoteMcpOAuthStartResult>('remote_mcp_connector_start_oauth', {
+      label: args.label,
+      endpoint: args.endpoint,
+      return_hint: args.returnHint || '',
+      connector_id: args.connectorId || '',
+      expected_revision: args.expectedRevision || 0,
+    });
+    if (result?.ok === false || !result?.authorize_url) {
+      return rejectWithValue(resultError(result, 'Failed to start MCP authorization'));
+    }
+    return result;
+  } catch (error) {
+    return rejectWithValue(message(error));
+  }
+});
 
 export const createRemoteMcpConnector = createAsyncThunk<
   RemoteMcpConnector,
@@ -204,6 +235,17 @@ const remoteMcpSlice = createSlice({
       .addCase(deleteRemoteMcpConnector.rejected, (state, action) => {
         state.busy = false;
         state.error = action.payload ?? 'Failed to remove the MCP connector';
+      })
+      .addCase(startRemoteMcpOAuth.pending, (state) => {
+        state.busy = true;
+        state.error = '';
+      })
+      .addCase(startRemoteMcpOAuth.fulfilled, (state) => {
+        state.busy = false;
+      })
+      .addCase(startRemoteMcpOAuth.rejected, (state, action) => {
+        state.busy = false;
+        state.error = action.payload ?? 'Failed to start MCP authorization';
       });
   },
 });

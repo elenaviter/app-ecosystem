@@ -295,7 +295,7 @@ export interface RemoteMcpConnector {
   resource: string;
   revision: number;
   state: 'active' | 'disabled' | string;
-  credential_mode: 'none' | 'bearer' | 'header' | string;
+  credential_mode: 'none' | 'bearer' | 'header' | 'oauth' | string;
   credential_header?: string;
   credential_present?: boolean;
   tools?: RemoteMcpTool[];
@@ -326,6 +326,17 @@ export interface RemoteMcpConnectorMutationResult {
   connector?: RemoteMcpConnector;
   removed?: boolean;
   current_revision?: number;
+  error?: string;
+  message?: string;
+}
+
+export interface RemoteMcpOAuthStartResult {
+  ok?: boolean;
+  authorize_url?: string;
+  state_id?: string;
+  expires_at?: number;
+  endpoint?: string;
+  authorization_server?: string;
   error?: string;
   message?: string;
 }

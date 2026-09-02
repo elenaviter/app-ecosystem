@@ -177,7 +177,11 @@ export default function App() {
       channel = new BroadcastChannel('kdcube-connection-hub');
       channel.onmessage = (event) => {
         const type = String((event.data as { type?: string } | null)?.type || '');
-        if (type.startsWith('delegated_to_kdcube.') || type.startsWith('provider_connections.')) {
+        if (
+          type.startsWith('delegated_to_kdcube.')
+          || type.startsWith('provider_connections.')
+          || type.startsWith('remote_mcp.')
+        ) {
           sessionStorage.removeItem('kdc-oauth-pending');
           void refresh();
         }

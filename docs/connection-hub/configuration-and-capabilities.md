@@ -48,6 +48,7 @@ card, and services verify against the card, live.
 | Direct admission | an external backend asks for a live decision per operation, with replay-protected workload proof | `delegated_credentials/admission.py`, [recipe](recipes/direct-protected-service.md) |
 | Named-service admission | the same decision at in-host namespace/operation boundaries | `named_service_admission.py`, `named_service_boundary.py` |
 | OAuth adapter | RFC 8414/9728 discovery, three client-registration paths, PKCE, consent with account binding, opaque bearers, RFC 7009 revocation | [OAuth protocol](package/oauth-delegated-credential-protocol.md) |
+| External MCP proxy | owner-selected MCP connectors, upstream OAuth or direct credentials, accepted descriptor revisions, exact delegated tools, refresh, and revocation | [architecture](connection-hub-architecture.md#user-owned-external-mcp-proxy) |
 | Client SDK | `ConnectionsClient`: catalog, status, grant checks, one-call tokens, disconnect, OAuth start | `client.py`, `contract.py` |
 | Consent recovery | structured denials that carry the exact missing grant and where to give it | `mcp_consent.py`, `consent_state.py` |
 | Authority registry | pluggable identity realms verifying credentials | `authority_registry.py` |
@@ -96,6 +97,13 @@ and per-operation grant vocabularies.
 **OAuth clients**: pre-registered entries in the descriptor, client-id URLs
 (CIMD), or dynamic registration; consent contract and account-requirement
 panels per the [OAuth protocol](package/oauth-delegated-credential-protocol.md).
+
+**External MCP upstream OAuth**: `connections.remote_mcp.oauth` controls the
+public client metadata/callback base, state lifetime, and refresh leeway.
+`connections.remote_mcp.outbound` controls the endpoint network policy. These
+settings govern Connection Hub as an OAuth client of an owner-selected remote
+MCP and are independent from the delegated OAuth server configured under
+`connections.delegated_credentials.oauth`.
 
 Full walkthroughs: [direct protected-service recipe](recipes/direct-protected-service.md)
 for the service lane, the OAuth protocol document for the client lane, and

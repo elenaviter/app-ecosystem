@@ -83,6 +83,8 @@ bundles:
                 visibility: *default_visibility
               remote_mcp_connector_set_enabled:
                 visibility: *default_visibility
+              remote_mcp_connector_start_oauth:
+                visibility: *default_visibility
               remote_mcp_connector_update_credential:
                 visibility: *default_visibility
               remote_mcp_connector_delete:
@@ -1741,6 +1743,13 @@ bundles:
           # connector records retain only an opaque credential reference.
           read_timeout_seconds: 60
           max_result_bytes: 2097152
+          oauth:
+            enabled: true
+            client_name: "KDCube Connection Hub"
+            # Empty derives the public callback origin from the owner request.
+            public_base_url: ""
+            state_ttl_seconds: 900
+            expiry_leeway_seconds: 60
           outbound:
             # Public HTTPS endpoints are accepted by default. Development
             # deployments can explicitly allow a local fixture host.

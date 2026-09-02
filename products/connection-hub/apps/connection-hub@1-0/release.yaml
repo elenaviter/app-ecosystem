@@ -1,49 +1,31 @@
 bundle:
   repo: "https://github.com/elenaviter/app-ecosystem.git"
-  ref: "main"
+  ref: "2026.09.02.0515"
   description: |
-    Release for connection-hub@1-0.
+    Release 2026.09.02.0515 for connection-hub@1-0.
 
     Highlights
 
-    - Adds direct protected-service admission for a registered backend that is
-      not behind a KDCube-managed REST/MCP door. The backend presents the
-      opaque delegated bearer plus a replay-protected HMAC service proof; the
-      app evaluates the same current card and active catalog used by managed
-      guards and returns a service-scoped principal without provider secrets.
-      The surface is disabled by default and is advertised through protected-
-      resource metadata only when enabled.
-    - Implements the public `connections` named-service contract
-      (`connection_hub` package plus KDCube host adapters): exposes
-      `connection.catalog`, `connection.status`, `connection.get_token`,
-      `connection.disconnect`, and `oauth.start` over the local and API
-      transports. Serves the whole contract over HTTP via the `named_service`
-      API alias and registers the registry to Redis discovery on bundle load.
-    - Three-level connection model: provider (OAuth mechanics, no creds) ->
-      client app (admin credentials, many per provider, carries the scope
-      ceiling) -> user account (one user token, records its app_id). Tokens are
-      user-scoped via the reusable `integrations/connections` `ConnectionStore`.
-    - Owns the single public `connection_oauth_callback` browser-redirect route
-      shared by all providers (the provider + client app are read from the signed
-      `state`), plus thin `connections_catalog` / `connections_start_oauth` /
-      `connections_disconnect` widget helper ops.
-    - Providers: Slack (user-token OAuth via `user_scope`, for any workspace under
-      Public Distribution) and Gmail (Google OAuth with refresh-on-expiry in
-      `connection.get_token`). Per-connect scope override is clamped to the client
-      app's configured ceiling.
-    - Email integration is iCloud-only (app-password via `email_*` ops); Gmail was
-      migrated onto the connections framework, so a cross-bundle
-      `connection.get_token("google")` resolves the user's Gmail token.
-    - Real React + Redux Connections settings widget (kdcube design system): app
-      picker, per-connect scope checkboxes, connect/disconnect, iCloud app-password
-      form. Builds to a static widget under `ui/widgets/connections`.
+    - Adds browser authorization for owner-configured OAuth-protected external
+      MCP servers, including PKCE, Client ID Metadata Documents, dynamic client
+      registration, single-use state, refresh rotation, and revocation.
+    - Keeps upstream OAuth credentials in the owner's secret store. Connector,
+      card, browser, and proxy responses contain only non-secret metadata.
+    - Reconnects OAuth in place, preserving the connector resource while
+      revoking the replaced provider grant. Deletion revokes the current grant.
+    - Adds OAuth and Reconnect controls to the External MCP panel, with a
+      popup-safe authorization launch and visible fallback link.
+    - Preserves exact delegated tool filtering, Once and Always invocation
+      policy, descriptor drift review, and the connector-wide kill switch.
 
     Validation
 
-    - Connection Hub package suite passes: 123 tests.
-    - Connection Hub backend suite passes: 24 tests.
-    - KDCube bundle contract suite passes: 272 tests, with 50 graph-only
-      contracts skipped because this is a service and UI app rather than an
-      agent-graph app.
-    - Connections widget source contracts pass and the production widget build
-      emits index.html.
+    - Connection Hub package suite: 178 passed.
+    - Connection Hub app suite: 52 passed.
+    - KDCube remote-MCP suite: 13 passed.
+    - KDCube bundle contract suite: 300 passed and 50 graph-only contracts
+      skipped.
+    - Connections widget: 19 tests passed and the production build completed.
+    - Live direct-credential proxy, direct service admission, dynamic client
+      registration OAuth, and Client ID Metadata OAuth acceptance all passed
+      against a refreshed local KDCube runtime.

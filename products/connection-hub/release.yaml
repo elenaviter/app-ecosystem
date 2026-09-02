@@ -1,16 +1,20 @@
 product:
   id: connection-hub
-  ref: "2026.09.01.1120"
+  ref: "2026.09.02.0515"
   description: |
-    Connection Hub adopts the shared calendar release version used across the
-    KDCube system. This release carries the portable authority and client
-    contracts previously published as 0.0.6 from their product-scoped source
-    location.
+    Owners can connect an external OAuth-protected MCP without giving OAuth
+    tokens to a delegated caller. Connection Hub performs protected-resource
+    and authorization-server discovery, chooses a Client ID Metadata Document
+    or dynamic client registration, completes PKCE authorization, stores the
+    resulting credential in the owner's secret store, and refreshes it under a
+    connector-scoped lock.
 
-    The Connection Hub package and KDCube application are grouped under one
-    product boundary. Public package links resolve to that layout, and the
-    product release record now binds the source snapshot, package version, and
-    repository tag used for publication.
+    Reauthorization preserves the connector resource and existing delegated
+    card authority while revoking the replaced upstream grant. Connector
+    deletion revokes current access and refresh tokens before removing the
+    local secret. The hosted app adds browser start, callback, public client
+    metadata, Reconnect, and exact-origin return handling. Direct bearer and
+    header connectors retain their established transport contract.
   documentation: docs/connection-hub
 
 components:
@@ -22,9 +26,9 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.09.01.1120"
+    version: "2026.09.02.0515"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.09.01.1120"
+  version: "2026.09.02.0515"

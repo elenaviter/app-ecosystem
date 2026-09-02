@@ -350,6 +350,37 @@ injection, and upstream dispatch.
    `credential_present` and an opaque secret reference. The credential value
    must not appear in the browser response, card, connector revision, or logs.
 
+Repeat connector creation with **OAuth** selected instead of entering a
+credential:
+
+1. Confirm the start response contains an authorization URL, state digest,
+   expiry, endpoint, and authorization-server URL only. It must contain no
+   access token, refresh token, client secret, or PKCE verifier.
+2. Complete the browser authorization. For one fixture, advertise
+   `client_id_metadata_document_supported`; confirm the authorization request
+   uses the public `remote_mcp_oauth_client_metadata` URL as its client id and
+   no registration request occurs. For another fixture, advertise dynamic
+   registration; confirm one client is registered with only the Connection Hub
+   callback URI.
+3. Confirm the callback consumes the state once. Replaying it must fail, and
+   the durable state pointer must contain only its digest, owner, user-secret
+   reference, and expiry.
+4. Confirm authenticated MCP discovery succeeds after code exchange and that
+   the connector exposes `credential_mode: oauth` without any token material.
+   Sending an OAuth token bundle through the ordinary create/update operation
+   must be rejected; browser authorization is the only app API for this mode.
+5. Use a short-lived access token. Let it enter the refresh leeway, then list
+   or invoke a tool. Confirm exactly one worker refreshes under the connector
+   lock, the rotated access and refresh tokens replace the old user secret,
+   and the operation succeeds.
+6. Use **Reconnect** on the same connector. Confirm its resource stays stable,
+   its connector revision advances, the existing delegated card still applies,
+   and the provider receives revocation for the replaced refresh and access
+   tokens.
+7. Delete the connector. Confirm Connection Hub revokes the current refresh and
+   access tokens, removes the local user secret, and keeps the connector absent
+   even when the provider's optional revocation endpoint is unavailable.
+
 Before granting the connector, run the network-negative fixture. Confirm HTTP,
 loopback, private, link-local, non-global, and mixed public/private DNS answers
 are denied. Use a rebinding fixture that returns a public address during URL
@@ -388,7 +419,8 @@ HTTP proxy environment settings are not followed by the connector transport.
 13. Disable the connector and verify the next call is denied. Re-enable it,
     revoke the caller card, and verify there is no fallback to another card.
 14. Delete the disposable connector and confirm its upstream credential is
-    removed from the secret store.
+    removed from the secret store. For OAuth, also confirm the current upstream
+    access and refresh tokens were sent to the provider's revocation endpoint.
 
 Repeat the initial `tools/list` and one harmless call with a separate manually
 issued card and bearer when the release also needs coverage of the manual

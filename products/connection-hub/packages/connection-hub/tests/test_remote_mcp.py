@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from contextlib import asynccontextmanager
 
 import pytest
@@ -11,18 +12,23 @@ from connection_hub.delegated_credentials.credential_view import (
 from connection_hub.remote_mcp import (
     AUTH_BEARER,
     AUTH_HEADER,
+    AUTH_OAUTH,
     CONNECTOR_DISABLED,
     DESCRIPTOR_ACCEPTED,
     DESCRIPTOR_DRIFTED,
     EXTERNAL_MCP_GRANT,
     BundleStorageRemoteMCPConnectorStore,
+    BundleStorageRemoteMCPOAuthStateStore,
     RemoteMCPConnectorConflict,
     RemoteMCPConnectorService,
     RemoteMCPDiscovery,
+    RemoteMCPOAuthCredential,
+    RemoteMCPOAuthStateError,
     RemoteMCPEndpointDenied,
     RemoteMCPEndpointPolicy,
     RemoteMCPProxy,
     RemoteMCPProxyError,
+    RemoteMCPRecordError,
 )
 from connection_hub.invocation_policy import (
     POLICY_ONCE,
@@ -76,8 +82,17 @@ class _Transport:
         ]
         self.calls: list[dict] = []
         self.headers_seen: list[dict[str, str]] = []
+        self.revocations: list[dict] = []
 
-    async def discover(self, *, connector_id: str, headers, **_kwargs):
+    async def discover(
+        self,
+        *,
+        connector_id: str,
+        endpoint: str,
+        transport: str,
+        headers,
+    ):
+        del endpoint, transport
         self.headers_seen.append(dict(headers))
         return RemoteMCPDiscovery.build(
             connector_id=connector_id,
@@ -88,8 +103,16 @@ class _Transport:
         )
 
     async def call_tool(
-        self, *, connector_id: str, headers, tool_name: str, arguments, **_kwargs
+        self,
+        *,
+        connector_id: str,
+        endpoint: str,
+        transport: str,
+        headers,
+        tool_name: str,
+        arguments,
     ):
+        del endpoint, transport
         self.headers_seen.append(dict(headers))
         call = {
             "connector_id": connector_id,
@@ -98,6 +121,10 @@ class _Transport:
         }
         self.calls.append(call)
         return {"ok": True, **call}
+
+    async def revoke_credential(self, **kwargs):
+        self.revocations.append(dict(kwargs))
+        return True
 
 
 async def _public_resolver(_host: str, _port: int):
@@ -118,6 +145,33 @@ def _service(tmp_path, *, transport=None, secrets=None):
         transport,
         secrets,
     )
+
+
+def _oauth_credential(*, expires_at: int = 0) -> RemoteMCPOAuthCredential:
+    return RemoteMCPOAuthCredential(
+        access_token="oauth-access-token",
+        refresh_token="oauth-refresh-token",
+        expires_at=expires_at,
+        scope="mcp:tools",
+        resource="https://mcp.example.test/mcp",
+        authorization_server="https://auth.example.test",
+        token_endpoint="https://auth.example.test/token",
+        revocation_endpoint="https://auth.example.test/revoke",
+        client_id="registered-client",
+        client_secret="registered-secret",
+        token_endpoint_auth_method="client_secret_post",
+        issued_at=1_788_200_000,
+    )
+
+
+def test_oauth_credential_rejects_malformed_times_with_stable_error():
+    payload = _oauth_credential().to_dict()
+    payload["expires_at"] = "tomorrow"
+
+    with pytest.raises(RemoteMCPRecordError) as failure:
+        RemoteMCPOAuthCredential.from_mapping(payload)
+
+    assert failure.value.reason == "oauth_credential_time_invalid"
 
 
 def _view(
@@ -278,6 +332,192 @@ async def test_connector_secret_stays_out_of_durable_and_public_records(tmp_path
         for path in tmp_path.rglob("*.json")
     )
     assert "super-secret-upstream-token" not in durable_text
+
+
+@pytest.mark.asyncio
+async def test_oauth_connector_keeps_token_bundle_only_in_secret_store(tmp_path):
+    service, transport, secrets = _service(tmp_path)
+    oauth = _oauth_credential(expires_at=1_788_203_600)
+
+    connector = await service.create(
+        owner_subject="user-1",
+        label="OAuth records",
+        endpoint="https://mcp.example.test/mcp",
+        credential_mode=AUTH_OAUTH,
+        credential_value=oauth.to_json(),
+        now=1_788_200_000,
+    )
+
+    assert connector.credential_mode == AUTH_OAUTH
+    assert connector.credential_present is True
+    assert transport.headers_seen == [
+        {"Authorization": "Bearer oauth-access-token"}
+    ]
+    assert list(secrets.values.values()) == [oauth.to_json()]
+    assert "oauth-access-token" not in json.dumps(connector.to_dict())
+    assert "oauth-refresh-token" not in json.dumps(connector.to_public_dict())
+    durable_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in tmp_path.rglob("*.json")
+    )
+    assert "oauth-access-token" not in durable_text
+    assert "registered-secret" not in durable_text
+
+
+@pytest.mark.asyncio
+async def test_oauth_reauthorization_revokes_the_replaced_upstream_grant(tmp_path):
+    service, transport, secrets = _service(tmp_path)
+    first = _oauth_credential(expires_at=1_788_203_600)
+    connector = await service.create(
+        owner_subject="user-1",
+        label="OAuth records",
+        endpoint="https://mcp.example.test/mcp",
+        credential_mode=AUTH_OAUTH,
+        credential_value=first.to_json(),
+        now=1_788_200_000,
+    )
+    second = RemoteMCPOAuthCredential(
+        **{
+            **first.__dict__,
+            "access_token": "replacement-access-token",
+            "refresh_token": "replacement-refresh-token",
+        }
+    )
+
+    updated = await service.replace_credential(
+        owner_subject="user-1",
+        connector_id=connector.connector_id,
+        expected_revision=connector.revision,
+        credential_mode=AUTH_OAUTH,
+        credential_value=second.to_json(),
+        now=1_788_200_100,
+    )
+
+    assert updated.revision == connector.revision + 1
+    assert len(transport.revocations) == 1
+    revoked = transport.revocations[0]["credential"]
+    assert RemoteMCPOAuthCredential.from_json(revoked.value).access_token == (
+        "oauth-access-token"
+    )
+    assert list(secrets.values.values()) == [second.to_json()]
+
+
+@pytest.mark.asyncio
+async def test_failed_oauth_reauthorization_revokes_only_the_new_grant(tmp_path):
+    service, transport, secrets = _service(tmp_path)
+    first = _oauth_credential(expires_at=1_788_203_600)
+    connector = await service.create(
+        owner_subject="user-1",
+        label="OAuth records",
+        endpoint="https://mcp.example.test/mcp",
+        credential_mode=AUTH_OAUTH,
+        credential_value=first.to_json(),
+        now=1_788_200_000,
+    )
+    second = RemoteMCPOAuthCredential(
+        **{
+            **first.__dict__,
+            "access_token": "replacement-access-token",
+            "refresh_token": "replacement-refresh-token",
+        }
+    )
+
+    with pytest.raises(RemoteMCPConnectorConflict) as failure:
+        await service.replace_credential(
+            owner_subject="user-1",
+            connector_id=connector.connector_id,
+            expected_revision=connector.revision + 1,
+            credential_mode=AUTH_OAUTH,
+            credential_value=second.to_json(),
+            now=1_788_200_100,
+        )
+
+    assert failure.value.reason == "connector_revision_moved"
+    assert len(transport.revocations) == 1
+    revoked = transport.revocations[0]["credential"]
+    assert RemoteMCPOAuthCredential.from_json(revoked.value).access_token == (
+        "replacement-access-token"
+    )
+    assert list(secrets.values.values()) == [first.to_json()]
+
+
+@pytest.mark.asyncio
+async def test_failed_oauth_creation_revokes_the_new_upstream_grant(tmp_path):
+    class _FailingTransport(_Transport):
+        async def discover(self, **_kwargs):
+            raise RuntimeError("fixture discovery failed")
+
+    transport = _FailingTransport()
+    service, _transport, secrets = _service(tmp_path, transport=transport)
+    oauth = _oauth_credential(expires_at=1_788_203_600)
+
+    with pytest.raises(RuntimeError, match="fixture discovery failed"):
+        await service.create(
+            owner_subject="user-1",
+            label="OAuth records",
+            endpoint="https://mcp.example.test/mcp",
+            credential_mode=AUTH_OAUTH,
+            credential_value=oauth.to_json(),
+            now=1_788_200_000,
+        )
+
+    assert len(transport.revocations) == 1
+    assert secrets.values == {}
+
+
+@pytest.mark.asyncio
+async def test_oauth_state_is_single_use_and_keeps_transaction_in_user_secret(
+    tmp_path,
+):
+    secrets_store = _Secrets()
+    states = BundleStorageRemoteMCPOAuthStateStore(
+        tmp_path, secret_store=secrets_store
+    )
+    transaction = {
+        "owner_subject": "user-1",
+        "code_verifier": "verifier-that-must-remain-secret",
+        "client_secret": "dynamic-registration-secret",
+        "endpoint": "https://mcp.example.test/mcp",
+    }
+
+    handle = await states.create(
+        owner_subject="user-1",
+        transaction=transaction,
+        ttl_seconds=900,
+        now=1_788_200_000,
+    )
+
+    durable_text = "\n".join(
+        path.read_text(encoding="utf-8") for path in tmp_path.rglob("*.json")
+    )
+    assert handle.state not in durable_text
+    assert "verifier-that-must-remain-secret" not in durable_text
+    assert "dynamic-registration-secret" not in durable_text
+    assert len(secrets_store.values) == 1
+
+    consumed = await states.consume(state=handle.state, now=1_788_200_001)
+    assert consumed == transaction
+    assert secrets_store.values == {}
+    with pytest.raises(RemoteMCPOAuthStateError) as replay:
+        await states.consume(state=handle.state, now=1_788_200_002)
+    assert replay.value.reason == "oauth_state_missing_or_used"
+
+
+@pytest.mark.asyncio
+async def test_expired_oauth_state_is_purged_with_its_secret(tmp_path):
+    secrets_store = _Secrets()
+    states = BundleStorageRemoteMCPOAuthStateStore(
+        tmp_path, secret_store=secrets_store
+    )
+    await states.create(
+        owner_subject="user-1",
+        transaction={"code_verifier": "secret"},
+        ttl_seconds=60,
+        now=int(time.time()) - 120,
+    )
+
+    assert await states.purge_expired(now=int(time.time())) == 1
+    assert secrets_store.values == {}
+    assert list(states.root.glob("*.json")) == []
 
 
 @pytest.mark.asyncio

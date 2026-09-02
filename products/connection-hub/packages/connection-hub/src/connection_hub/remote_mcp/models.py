@@ -25,6 +25,9 @@ DESCRIPTOR_DRIFTED = "drifted"
 AUTH_NONE = "none"
 AUTH_BEARER = "bearer"
 AUTH_HEADER = "header"
+AUTH_OAUTH = "oauth"
+
+OAUTH_CREDENTIAL_SCHEMA = "connection_hub.remote_mcp_oauth_credential.v1"
 
 RESOURCE_PREFIX = "urn:connection-hub:remote-mcp:"
 
@@ -143,7 +146,122 @@ class RemoteMCPCredential:
             return {"Authorization": f"Bearer {self.value}"}
         if mode == AUTH_HEADER:
             return {validated_auth_header(self.header): self.value}
+        if mode == AUTH_OAUTH:
+            return RemoteMCPOAuthCredential.from_json(self.value).request_headers()
         raise RemoteMCPRecordError("credential_mode_invalid")
+
+
+@dataclass(frozen=True)
+class RemoteMCPOAuthCredential:
+    """Server-side OAuth material for one upstream MCP connector."""
+
+    access_token: str = field(repr=False)
+    client_id: str
+    token_endpoint: str
+    token_type: str = "Bearer"
+    refresh_token: str = field(default="", repr=False)
+    expires_at: int = 0
+    scope: str = ""
+    resource: str = ""
+    authorization_server: str = ""
+    revocation_endpoint: str = ""
+    client_secret: str = field(default="", repr=False)
+    token_endpoint_auth_method: str = "none"
+    issued_at: int = 0
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "RemoteMCPOAuthCredential":
+        if not isinstance(value, Mapping):
+            raise RemoteMCPRecordError("oauth_credential_not_object")
+        if _clean(value.get("schema")) != OAUTH_CREDENTIAL_SCHEMA:
+            raise RemoteMCPRecordError("oauth_credential_schema_mismatch")
+        try:
+            expires_at = int(value.get("expires_at") or 0)
+            issued_at = int(value.get("issued_at") or 0)
+        except (TypeError, ValueError) as exc:
+            raise RemoteMCPRecordError("oauth_credential_time_invalid") from exc
+        credential = cls(
+            access_token=_clean(value.get("access_token")),
+            client_id=_clean(value.get("client_id")),
+            token_endpoint=_clean(value.get("token_endpoint")),
+            token_type=_clean(value.get("token_type")) or "Bearer",
+            refresh_token=_clean(value.get("refresh_token")),
+            expires_at=expires_at,
+            scope=_clean(value.get("scope")),
+            resource=_clean(value.get("resource")),
+            authorization_server=_clean(value.get("authorization_server")),
+            revocation_endpoint=_clean(value.get("revocation_endpoint")),
+            client_secret=_clean(value.get("client_secret")),
+            token_endpoint_auth_method=(
+                _clean(value.get("token_endpoint_auth_method")) or "none"
+            ),
+            issued_at=issued_at,
+        )
+        credential.verify()
+        return credential
+
+    @classmethod
+    def from_json(cls, value: Any) -> "RemoteMCPOAuthCredential":
+        try:
+            payload = json.loads(str(value or ""))
+        except (TypeError, ValueError) as exc:
+            raise RemoteMCPRecordError("oauth_credential_not_json") from exc
+        return cls.from_mapping(payload)
+
+    def verify(self) -> None:
+        if not self.access_token or len(self.access_token) > 65536:
+            raise RemoteMCPRecordError("oauth_access_token_invalid")
+        if self.token_type.lower() != "bearer":
+            raise RemoteMCPRecordError("oauth_token_type_unsupported")
+        if not self.client_id or len(self.client_id) > 4096:
+            raise RemoteMCPRecordError("oauth_client_id_invalid")
+        if not self.token_endpoint or len(self.token_endpoint) > 2048:
+            raise RemoteMCPRecordError("oauth_token_endpoint_invalid")
+        method = self.token_endpoint_auth_method
+        if method not in {"none", "client_secret_post", "client_secret_basic"}:
+            raise RemoteMCPRecordError("oauth_token_auth_method_unsupported")
+        if method != "none" and not self.client_secret:
+            raise RemoteMCPRecordError("oauth_client_secret_missing")
+        if len(self.refresh_token) > 65536 or len(self.client_secret) > 65536:
+            raise RemoteMCPRecordError("oauth_credential_value_too_large")
+        if self.expires_at < 0 or self.issued_at < 0:
+            raise RemoteMCPRecordError("oauth_credential_time_invalid")
+
+    def request_headers(self) -> dict[str, str]:
+        self.verify()
+        return {"Authorization": f"Bearer {self.access_token}"}
+
+    def is_expiring(self, *, now: int, leeway_seconds: int = 60) -> bool:
+        if self.expires_at <= 0:
+            return False
+        return self.expires_at <= int(now) + max(0, int(leeway_seconds))
+
+    def to_dict(self) -> dict[str, Any]:
+        self.verify()
+        return {
+            "schema": OAUTH_CREDENTIAL_SCHEMA,
+            "access_token": self.access_token,
+            "client_id": self.client_id,
+            "token_endpoint": self.token_endpoint,
+            "token_type": "Bearer",
+            "refresh_token": self.refresh_token,
+            "expires_at": self.expires_at,
+            "scope": self.scope,
+            "resource": self.resource,
+            "authorization_server": self.authorization_server,
+            "revocation_endpoint": self.revocation_endpoint,
+            "client_secret": self.client_secret,
+            "token_endpoint_auth_method": self.token_endpoint_auth_method,
+            "issued_at": self.issued_at,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
 
 @dataclass(frozen=True)
@@ -343,7 +461,7 @@ class RemoteMCPConnector:
         if state not in {CONNECTOR_ACTIVE, CONNECTOR_DISABLED, CONNECTOR_DELETED}:
             raise RemoteMCPRecordError("connector_state_invalid")
         auth_mode = _clean(value.get("credential_mode")).lower() or AUTH_NONE
-        if auth_mode not in {AUTH_NONE, AUTH_BEARER, AUTH_HEADER}:
+        if auth_mode not in {AUTH_NONE, AUTH_BEARER, AUTH_HEADER, AUTH_OAUTH}:
             raise RemoteMCPRecordError("credential_mode_invalid")
         auth_header = _clean(value.get("credential_header"))
         if auth_mode == AUTH_HEADER:
@@ -539,6 +657,7 @@ __all__ = [
     "AUTH_BEARER",
     "AUTH_HEADER",
     "AUTH_NONE",
+    "AUTH_OAUTH",
     "CONNECTOR_ACTIVE",
     "CONNECTOR_DELETED",
     "CONNECTOR_DISABLED",
@@ -549,10 +668,12 @@ __all__ = [
     "RESOURCE_PREFIX",
     "RemoteMCPConnector",
     "RemoteMCPCredential",
+    "RemoteMCPOAuthCredential",
     "RemoteMCPCurrentPointer",
     "RemoteMCPDiscovery",
     "RemoteMCPRecordError",
     "RemoteMCPTool",
+    "OAUTH_CREDENTIAL_SCHEMA",
     "connector_id_from_resource",
     "connector_resource",
     "descriptor_drift",

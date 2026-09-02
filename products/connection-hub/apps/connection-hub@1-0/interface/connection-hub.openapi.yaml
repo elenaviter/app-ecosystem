@@ -380,6 +380,85 @@ paths:
         "200":
           description: New connector revision with accepted or pending descriptor state.
 
+  /bundles/{tenant}/{project}/{bundle_id}/operations/remote_mcp_connector_start_oauth:
+    post:
+      tags: [External MCP]
+      summary: Discover upstream OAuth and start owner authorization for an external MCP connector.
+      operationId: remote_mcp_connector_start_oauth
+      x-kdcube-result-alias: remote_mcp_connector_start_oauth
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemoteMCPOAuthStartEnvelope"
+      responses:
+        "200":
+          description: Browser authorization URL and an opaque state digest; no OAuth credential is returned.
+
+  /bundles/{tenant}/{project}/{bundle_id}/public/remote_mcp_oauth_callback:
+    get:
+      tags: [External MCP]
+      summary: Consume the upstream OAuth callback and create the owner connector.
+      operationId: remote_mcp_oauth_callback
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+        - name: code
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+        - name: error
+          in: query
+          schema: { type: string }
+        - name: iss
+          in: query
+          schema: { type: string, format: uri }
+      responses:
+        "200":
+          description: Human completion page; token and dynamic-client material remain server-side.
+
+  /bundles/{tenant}/{project}/{bundle_id}/public/remote_mcp_oauth_client_metadata:
+    get:
+      tags: [External MCP]
+      summary: Publish this Connection Hub deployment's OAuth client metadata document.
+      operationId: remote_mcp_oauth_client_metadata
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      responses:
+        "200":
+          description: OAuth client metadata for authorization servers that support URL-based client IDs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [redirect_uris, token_endpoint_auth_method]
+                properties:
+                  client_name: { type: string }
+                  redirect_uris:
+                    type: array
+                    items: { type: string, format: uri }
+                  response_types:
+                    type: array
+                    items: { type: string }
+                  grant_types:
+                    type: array
+                    items: { type: string }
+                  token_endpoint_auth_method: { type: string, const: none }
+                  application_type: { type: string, const: web }
+
   /bundles/{tenant}/{project}/{bundle_id}/operations/remote_mcp_connector_accept_descriptor:
     post:
       tags: [External MCP]
@@ -1094,6 +1173,30 @@ components:
               properties:
                 connector_id: { type: string, pattern: '^mcp_[a-z0-9]{24}$' }
                 expected_revision: { type: integer, minimum: 1 }
+    RemoteMCPOAuthStartEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [label, endpoint]
+              properties:
+                label: { type: string, maxLength: 160 }
+                endpoint: { type: string, format: uri, maxLength: 2048 }
+                return_hint:
+                  type: string
+                  format: uri
+                  description: Same-origin Connection Hub page to offer after authorization.
+                connector_id:
+                  type: string
+                  pattern: '^mcp_[a-z0-9]{24}$'
+                  description: Existing owner connector to reauthorize in place.
+                expected_revision:
+                  type: integer
+                  minimum: 0
+                  description: Required current revision when connector_id is present.
     RemoteMCPConnectorEnabledEnvelope:
       allOf:
         - $ref: "#/components/schemas/Envelope"

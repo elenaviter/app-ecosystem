@@ -9,10 +9,12 @@ import {
   deleteRemoteMcpConnector,
   refreshRemoteMcpConnector,
   setRemoteMcpConnectorEnabled,
+  startRemoteMcpOAuth,
   updateRemoteMcpCredential,
 } from './remoteMcpSlice';
 
-type CredentialMode = 'none' | 'bearer' | 'header';
+type CredentialMode = 'none' | 'bearer' | 'header' | 'oauth';
+type DirectCredentialMode = Exclude<CredentialMode, 'oauth'>;
 
 function formatTime(value?: number): string {
   if (!value) return 'never';
@@ -35,10 +37,11 @@ export function RemoteMcpPanel() {
   const [credentialValue, setCredentialValue] = useState('');
   const [localError, setLocalError] = useState('');
   const [credentialEditor, setCredentialEditor] = useState('');
-  const [replacementMode, setReplacementMode] = useState<CredentialMode>('none');
+  const [replacementMode, setReplacementMode] = useState<DirectCredentialMode>('none');
   const [replacementHeader, setReplacementHeader] = useState('X-API-Key');
   const [replacementValue, setReplacementValue] = useState('');
   const [deleteArmed, setDeleteArmed] = useState('');
+  const [pendingAuthorizeUrl, setPendingAuthorizeUrl] = useState('');
 
   const rows = useMemo(
     () => items.slice().sort((a, b) => a.label.localeCompare(b.label)),
@@ -49,10 +52,42 @@ export function RemoteMcpPanel() {
     await dispatch(loadDelegatedAccess()).unwrap().catch(() => undefined);
   };
 
+  const launchOAuth = async (connector?: RemoteMcpConnector) => {
+    const authorizationWindow = window.open('about:blank', '_blank');
+    if (authorizationWindow) authorizationWindow.opener = null;
+    try {
+      const started = await dispatch(startRemoteMcpOAuth({
+        label: connector?.label || label.trim(),
+        endpoint: connector?.endpoint || endpoint.trim(),
+        returnHint: window.location.href,
+        connectorId: connector?.connector_id,
+        expectedRevision: connector?.revision,
+      })).unwrap();
+      const authorizeUrl = String(started.authorize_url || '');
+      setPendingAuthorizeUrl(authorizeUrl);
+      try {
+        sessionStorage.setItem('kdc-oauth-pending', '1');
+      } catch {
+        // The completion BroadcastChannel remains available.
+      }
+      if (authorizationWindow && !authorizationWindow.closed) {
+        authorizationWindow.location.replace(authorizeUrl);
+      }
+    } catch (error) {
+      authorizationWindow?.close();
+      throw error;
+    }
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setLocalError('');
+    setPendingAuthorizeUrl('');
     try {
+      if (credentialMode === 'oauth') {
+        await launchOAuth();
+        return;
+      }
       await dispatch(createRemoteMcpConnector({
         label: label.trim(),
         endpoint: endpoint.trim(),
@@ -89,6 +124,12 @@ export function RemoteMcpPanel() {
   const connectorForm = (
     <form className="form form-flush" onSubmit={submit}>
       {localError ? <div className="error" role="alert">{localError}</div> : null}
+      {pendingAuthorizeUrl ? (
+        <div className="notice success">
+          Authorization opened in another tab.{' '}
+          <a href={pendingAuthorizeUrl} target="_blank" rel="noreferrer">Open it again</a>
+        </div>
+      ) : null}
       <label>
         <span className="form-title">Name</span>
         <input
@@ -121,6 +162,7 @@ export function RemoteMcpPanel() {
           <option value="none">No credential</option>
           <option value="bearer">Bearer token</option>
           <option value="header">Custom header</option>
+          <option value="oauth">OAuth browser login</option>
         </select>
       </label>
       {credentialMode === 'header' ? (
@@ -134,7 +176,7 @@ export function RemoteMcpPanel() {
           />
         </label>
       ) : null}
-      {credentialMode !== 'none' ? (
+      {credentialMode !== 'none' && credentialMode !== 'oauth' ? (
         <label>
           <span className="form-title">Credential</span>
           <input
@@ -148,7 +190,7 @@ export function RemoteMcpPanel() {
         </label>
       ) : null}
       <button className="btn" type="submit" disabled={busy || !label.trim() || !endpoint.trim()}>
-        + Connect MCP server
+        {credentialMode === 'oauth' ? 'Authorize MCP server' : '+ Connect MCP server'}
       </button>
     </form>
   );
@@ -207,7 +249,7 @@ export function RemoteMcpPanel() {
                     <select
                       className="input"
                       value={replacementMode}
-                      onChange={(event) => setReplacementMode(event.target.value as CredentialMode)}
+                      onChange={(event) => setReplacementMode(event.target.value as DirectCredentialMode)}
                     >
                       <option value="none">No credential</option>
                       <option value="bearer">Bearer token</option>
@@ -286,19 +328,32 @@ export function RemoteMcpPanel() {
               >
                 {connector.state === 'active' ? 'Disable' : 'Enable'}
               </button>
-              <button
-                className="btn btn-ghost"
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setCredentialEditor(connector.connector_id);
-                  setReplacementMode(connector.credential_mode as CredentialMode);
-                  setReplacementHeader(connector.credential_header || 'X-API-Key');
-                  setReplacementValue('');
-                }}
-              >
-                Credential
-              </button>
+              {connector.credential_mode !== 'oauth' ? (
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setCredentialEditor(connector.connector_id);
+                    setReplacementMode(connector.credential_mode as DirectCredentialMode);
+                    setReplacementHeader(connector.credential_header || 'X-API-Key');
+                    setReplacementValue('');
+                  }}
+                >
+                  Credential
+                </button>
+              ) : (
+                <button
+                  className="btn btn-ghost"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void launchOAuth(connector).catch((error) => {
+                    setLocalError(error instanceof Error ? error.message : String(error));
+                  })}
+                >
+                  Reconnect
+                </button>
+              )}
               {deleteArmed === connector.connector_id ? (
                 <div className="revoke-confirm">
                   <span className="revoke-confirm__q">Remove?</span>

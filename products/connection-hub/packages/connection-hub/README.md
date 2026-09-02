@@ -56,10 +56,11 @@ a standalone service host is planned.
 python -m pip install connection-hub
 ```
 
-`2026.09.01.1120` adopts the repository's calendar release version and records
-the released Connection Hub snapshot in the product `release.yaml`. It carries
-the authority and client contracts previously published as `0.0.6`, with the
-package and hosted application grouped under one Connection Hub product root.
+`2026.09.02.0515` adds owner-configured OAuth for external MCP connectors.
+The browser flow uses MCP protected-resource and authorization-server
+discovery, PKCE, Client ID Metadata Documents or dynamic registration,
+server-side token storage, serialized refresh, and upstream revocation. The
+existing transport protocol remains compatible for direct-credential hosts.
 
 ## Flow 1: a guarded service registers itself and admits calls
 

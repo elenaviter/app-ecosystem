@@ -13,6 +13,7 @@ primary_surfaces:
   - "public OAuth callback route (delegated_to_kdcube_oauth_callback) — shared by delegated to KDCube OAuth providers"
   - "delegated OAuth authorization server (public/oauth/*) — issues opaque delegated client credentials backed by live cards"
   - "remote_mcp_proxy public MCP surface — calls exact user-owned external tools selected on the caller card without disclosing the upstream credential"
+  - "remote MCP upstream OAuth — connects an owner-selected MCP through MCP discovery, PKCE, Client ID Metadata Documents or dynamic registration, refresh rotation, and revocation"
   - "delegated_admission public operation — lets a registered external protected service evaluate one bearer/resource/operation against current authority"
   - "connections_settings widget (ui/widgets/connections)"
 links:
@@ -78,8 +79,9 @@ The app wires these building blocks:
   `ConnectionsProviderBase`, the connection registry of `ConnectionProvider`s);
 - the reusable `integrations/email` settings (**iCloud** app-password only —
   Gmail is a connections provider), exposed through its own `email_*` ops; and
-- owner-scoped external MCP connectors, descriptor-drift review, delegated
-  proxy dispatch, and separate once-or-always invocation policy; and
+- owner-scoped external MCP connectors, browser OAuth or direct upstream
+  credentials, descriptor-drift review, delegated proxy dispatch, and separate
+  once-or-always invocation policy; and
 - a `connections_settings` browser widget served from `ui/widgets/connections`.
 
 The canonical distinction between edges, connected accounts, cards, catalogs,

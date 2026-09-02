@@ -272,11 +272,13 @@ caller-profile ids plus bounded authority, not internal Connection Hub ids or
 a provider credential.
 
 A remote MCP service that has no Connection Hub admission integration uses
-the proxy path. Its owner registers the endpoint and upstream credential in
-Connection Hub. The connector projects accepted tools into that owner's
-delegated catalog, and `remote_mcp_proxy` performs both admission and the
-upstream tool call. The delegated caller sees only exact tools selected on its
-card; the upstream credential stays in Connection Hub.
+the proxy path. Its owner registers the endpoint and connects with OAuth or an
+explicit upstream credential. The connector projects accepted tools into that
+owner's delegated catalog, and `remote_mcp_proxy` performs both admission and
+the upstream tool call. The delegated caller sees only exact tools selected on
+its card; the upstream credential stays in Connection Hub. The upstream OAuth
+lifecycle is specified in
+[User-Owned External MCP Proxy](../connection-hub-architecture.md#user-owned-external-mcp-proxy).
 
 An OAuth-capable MCP client can obtain that caller card without a manually
 issued bearer. Anonymous MCP and OAuth discovery advertise the protected proxy

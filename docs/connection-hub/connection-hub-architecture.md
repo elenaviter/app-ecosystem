@@ -190,9 +190,9 @@ The app's human interface contract is
 
 This mode covers a remote MCP service that has no Connection Hub admission
 integration. The user registers its streamable-HTTP endpoint and, when needed,
-an upstream bearer or header credential. Connection Hub discovers the tools,
-stores an accepted descriptor snapshot, and adds one owner-scoped resource to
-the user's card editor:
+an upstream bearer, header credential, or OAuth connection. Connection Hub
+discovers the tools, stores an accepted descriptor snapshot, and adds one
+owner-scoped resource to the user's card editor:
 
 ```text
 urn:connection-hub:remote-mcp:<connector-id>
@@ -204,6 +204,24 @@ The upstream credential is stored in the user's server-side secret store. The
 durable connector revision contains only an opaque credential reference and
 non-secret descriptor metadata. A delegated caller receives a Connection Hub
 bearer for its own card; it never receives the upstream credential.
+
+For OAuth connectors, Connection Hub follows the MCP protected-resource and
+authorization-server discovery chain. It uses its public Client ID Metadata
+Document when the server advertises URL-based client ids, otherwise it uses
+dynamic client registration. The browser authorization uses PKCE and a random
+single-use state whose transaction body remains in the owner's secret store.
+The callback exchanges the code server-side, then connector discovery begins
+with the resulting access token. Access-token refresh is serialized by a
+connector-scoped cross-worker lock and refresh-token rotation is written back
+to the same user secret. Reauthorization keeps the connector resource stable
+and revokes the replaced upstream grant when the provider exposes revocation.
+Connector deletion revokes the current access and refresh tokens before the
+local secret is removed. Provider revocation failure never preserves local
+connector authority.
+
+This upstream OAuth flow authenticates Connection Hub to the remote MCP
+server. The separate delegated OAuth server at `public/oauth/*` authenticates
+an external caller to Connection Hub and creates that caller's delegated card.
 
 For every list or call, the proxy resolves the exact current card and connector
 for their common owner. A tool is visible and callable only when all of these
