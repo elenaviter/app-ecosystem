@@ -17,6 +17,12 @@ imports or adapts that contract without maintaining a second implementation.
 Update the app, docs, examples, and release evidence in the same change when
 the contract crosses those boundaries.
 
+## Read First
+
+- [Connection Hub documentation](../../docs/connection-hub/README.md)
+- [Run Connection Hub locally with KDCube](../../docs/connection-hub/quick-start-local.md)
+- [Connection Hub architecture](../../docs/connection-hub/connection-hub-architecture.md)
+
 ## Verification
 
 - Run the complete package test directory from

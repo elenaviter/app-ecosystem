@@ -20,5 +20,8 @@ The product documentation remains in
 integrations remain in
 [`examples/connection-hub`](../../examples/connection-hub/README.md).
 
+To run the current product locally, follow
+[`Run Connection Hub locally with KDCube`](../../docs/connection-hub/quick-start-local.md).
+
 Future Connection Hub service hosts belong under `services/` in this product
 directory.

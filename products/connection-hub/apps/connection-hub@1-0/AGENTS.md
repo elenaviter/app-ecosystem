@@ -85,6 +85,7 @@ demos, but that fixture is not the long-term security authority.
 Start with these app-local files:
 
 - [README.md](README.md)
+- [Run Connection Hub locally with KDCube](../../../../docs/connection-hub/quick-start-local.md)
 - [Connection Hub architecture](../../../../docs/connection-hub/connection-hub-architecture.md)
 - [frontend design](../../../../docs/connection-hub/frontend/application/README.md)
 - [storage map](../../../../docs/connection-hub/frontend/application/storage/README.md)

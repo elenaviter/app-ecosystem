@@ -9,6 +9,9 @@ foundation packages. First product: Connection Hub. Its current KDCube
 application and Python library live together under
 `products/connection-hub`. Its standalone service host comes later.
 
+For the current runnable local product path, start with
+[`docs/connection-hub/quick-start-local.md`](docs/connection-hub/quick-start-local.md).
+
 ## Layout contract
 
 - `products/<product>/` — one product ownership boundary. Product-specific
