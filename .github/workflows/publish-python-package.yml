@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - connection-hub
+          - connection-hub-cli
           - app-foundation
           - service-foundation
           - harness-foundation
@@ -53,12 +54,21 @@ jobs:
           from packaging.version import InvalidVersion, Version
 
           packages = {
-              "connection-hub": ("products/connection-hub/packages/connection-hub", "connection_hub"),
-              "app-foundation": ("packages/app-foundation", "app_foundation"),
-              "service-foundation": ("packages/service-foundation", "service_foundation"),
-              "harness-foundation": ("packages/harness-foundation", "harness_foundation"),
-              "capabilities-foundation": ("packages/capabilities-foundation", "capabilities_foundation"),
-              "economics-foundation": ("packages/economics-foundation", "economics_foundation"),
+              "connection-hub": (
+                  "products/connection-hub/packages/connection-hub",
+                  "connection_hub",
+                  "python_package",
+              ),
+              "connection-hub-cli": (
+                  "products/connection-hub/packages/connection-hub-cli",
+                  "connection_hub_cli",
+                  "cli_package",
+              ),
+              "app-foundation": ("packages/app-foundation", "app_foundation", None),
+              "service-foundation": ("packages/service-foundation", "service_foundation", None),
+              "harness-foundation": ("packages/harness-foundation", "harness_foundation", None),
+              "capabilities-foundation": ("packages/capabilities-foundation", "capabilities_foundation", None),
+              "economics-foundation": ("packages/economics-foundation", "economics_foundation", None),
           }
           name = os.environ["PACKAGE_NAME"]
           expected = os.environ["EXPECTED_VERSION"].strip()
@@ -66,7 +76,7 @@ jobs:
               Version(expected)
           except InvalidVersion as exc:
               raise SystemExit(f"expected_version is not PEP 440 compatible: {expected}") from exc
-          path, import_name = packages[name]
+          path, import_name, release_component = packages[name]
           ref_type = os.environ.get("GITHUB_REF_TYPE", "")
           ref_name = os.environ.get("GITHUB_REF_NAME", "")
           if ref_type != "tag" or ref_name != expected:
@@ -81,14 +91,14 @@ jobs:
               raise SystemExit(
                   f"committed {name} version is {actual}, not requested {expected}"
               )
-          if name == "connection-hub":
+          if release_component is not None:
               release = yaml.safe_load(
                   Path("products/connection-hub/release.yaml").read_text()
               )
               release_values = {
                   "product.ref": release["product"]["ref"],
-                  "components.python_package.version": release["components"][
-                      "python_package"
+                  f"components.{release_component}.version": release["components"][
+                      release_component
                   ]["version"],
                   "config.version": release["config"]["version"],
               }
@@ -120,7 +130,7 @@ jobs:
           IMPORT_NAME: ${{ steps.package.outputs.import_name }}
           EXPECTED_VERSION: ${{ steps.package.outputs.version }}
         run: |
-          if [ "$PACKAGE_NAME" = "connection-hub" ]; then
+          if [ "$PACKAGE_NAME" = "connection-hub" ] || [ "$PACKAGE_NAME" = "connection-hub-cli" ]; then
             python -m pip install -e "${PACKAGE_PATH}[test]"
             python -m pytest "${PACKAGE_PATH}/tests"
           else

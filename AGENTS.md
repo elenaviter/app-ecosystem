@@ -6,7 +6,7 @@ Operating instructions for coding agents (and a fair summary for humans).
 
 Components an application ecosystem needs, organized by product, plus shared
 foundation packages. First product: Connection Hub. Its current KDCube
-application and Python library live together under
+application, Python library, and local client helper live together under
 `products/connection-hub`. Its standalone service host comes later.
 
 For the current runnable local product path, start with

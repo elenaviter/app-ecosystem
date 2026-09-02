@@ -11,6 +11,7 @@ keywords:
   - identity cards
 see_also:
   - ./quick-start-local.md
+  - ./local-client-helper.md
   - ./configuration-and-capabilities.md
   - ./connection-hub-architecture.md
   - ./testing/end-to-end-acceptance.md
@@ -49,6 +50,9 @@ planned standalone host:
 - **[`testing/`](testing/end-to-end-acceptance.md)** - the complete human-runnable
   acceptance procedure for cards, accounts, managed MCP, named services, live
   consent, Claude Code, revocation, and durability.
+- **[Local MCP client helper](local-client-helper.md)** - KDCube host selection,
+  macOS Keychain custody, one stdio bridge, and verified registration paths for
+  Claude Code, Claude Desktop, Hermes, OpenClaw, and other stdio clients.
 
 For the shortest working path from an empty machine to an external MCP client,
 use [Run Connection Hub Locally With KDCube](quick-start-local.md).
@@ -60,6 +64,7 @@ The package contracts are:
 
 - [Configuration and capabilities overview](configuration-and-capabilities.md)
 - [Run Connection Hub locally with KDCube](quick-start-local.md)
+- [Connect local MCP clients without bearer files](local-client-helper.md)
 - [Connection Hub architecture and semantic requirements](connection-hub-architecture.md)
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
 - [Delegated access cards](package/delegated-cards.md)

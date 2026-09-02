@@ -9,6 +9,9 @@ root `AGENTS.md` first.
   composition, public app interface, and app-level integration tests.
 - `packages/connection-hub` owns host-neutral Python contracts and their
   package tests.
+- `packages/connection-hub-cli` owns KDCube application-target composition,
+  local caller profiles, operating-system credential custody, the stdio MCP
+  bridge, and external-client adapters.
 - `../../docs/connection-hub` owns public product documentation.
 - `../../examples/connection-hub` owns runnable integrations.
 
@@ -27,6 +30,8 @@ the contract crosses those boundaries.
 
 - Run the complete package test directory from
   `packages/connection-hub/tests`.
+- Run the local client helper tests from
+  `packages/connection-hub-cli/tests` when that package changes.
 - Run the app backend tests from `apps/connection-hub@1-0/tests`.
 - Run the KDCube shared bundle suite with the app directory as its explicit
   bundle fixture when app behavior or bundle structure changes.
