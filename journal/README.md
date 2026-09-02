@@ -27,6 +27,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-08-31 | Operation-only live consent and governed MCP acceptance | Exact named-service demands with no missing account claims now publish grant events; resource-scoped matching remains fail-closed, and one public acceptance procedure covers hosted agents, accounts, managed MCP, named services, Claude Code, revocation, and durability. |
 | 2026-08-31 | Connection Hub product root refactor | The application and Python distribution now share `products/connection-hub`; docs and examples retain their approved roots, release automation follows the package, and all KDCube source locators were coordinated. |
 | 2026-09-01 | Connection Hub calendar-version release | The corrected `2026.09.01.1120` release, product-record and exact-tag contract, PyPI evidence, canonical-version behavior, and KDCube compatibility-floor update. |
+| 2026-09-02 | Post-release regression run — result and three findings | Independent outside confirmation that the save-time operation widening was real on `2026.09.01.1120` and is closed on `2026.09.02.1410`; the negative assertion for it now lives in the package tests. Also records that the card editor still badges a granted account claim as pending, and that the editor cannot express an operation whose claim has no resource-level source. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
