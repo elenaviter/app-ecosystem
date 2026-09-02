@@ -8,15 +8,16 @@ Each component has its own documentation, tests, and release version.
 
 ## Connection Hub
 
-Connection Hub manages delegated authority for agents, sub-agents,
-automations, and registered external clients.
+Connection Hub manages delegated authority for callers that act on behalf of
+a user.
 
-Every caller, an agent, a sub-agent, an automation, has its own identity
-card. The authority attached to it lives in one central record: acting for
-which user, on which connected accounts, which operations, which claims,
-which caps, until when. A guarded boundary resolves the current authority
-on every call. Calls carry only plain facts, the actor identity and the
-wanted grant. Authorization evidence does not travel with calls, and an
+Each delegated caller profile has its own live access card. The caller can be
+an agent, sub-agent, automation, MCP client, service process, or another
+authorized client. The authority attached to it lives in one central record:
+acting for which user, on which connected accounts, which operations, which
+claims, which caps, until when. A guarded boundary resolves the current
+authority on every call. Calls carry only plain facts, the actor identity and
+the wanted grant. Authorization evidence does not travel with calls, and an
 edit or revocation of the card applies on the very next call.
 
 Connection Hub can run as the
@@ -24,6 +25,12 @@ Connection Hub can run as the
 [KDCube](https://github.com/kdcube/kdcube), which provides the application
 server and runtime services. From there, Connection Hub serves KDCube
 applications and agents, MCP clients, and registered external services.
+
+Start the released product with
+[Run Connection Hub Locally With KDCube](docs/connection-hub/quick-start-local.md).
+The workflow connects a Streamable HTTP MCP, creates a separate caller profile
+with exact tool and `Once` or `Always` authority, and proves live narrowing or
+revocation from a running client.
 
 The reusable Python distribution is **`connection-hub`**, imported as
 `connection_hub`. It owns actor and grant references, cards and catalogs,
