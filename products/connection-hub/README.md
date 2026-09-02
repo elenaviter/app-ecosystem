@@ -12,6 +12,11 @@ distribution.
   `connection-hub` distribution imported as `connection_hub`. It owns the
   portable authority, card, catalog, invocation-policy, external-MCP,
   admission, and client contracts.
+- [`packages/connection-hub-cli`](packages/connection-hub-cli/README.md) is the
+  `connection-hub-cli` distribution. It publishes the `connection-hub`
+  command, composes KDCube application-host control, keeps manually issued
+  caller credentials in the operating-system credential store, and registers
+  one common stdio MCP helper with supported local clients.
 - [`release.yaml`](release.yaml) records the current product release and maps
   its independently published components.
 

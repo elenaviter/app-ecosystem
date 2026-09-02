@@ -11,6 +11,7 @@ release.
 | --- | --- | --- | --- | --- |
 | Connection Hub product | `products/connection-hub` | `products/connection-hub/release.yaml` | `products/connection-hub/release.yaml` | Product tag and component workflows |
 | `connection-hub` Python distribution | `products/connection-hub/packages/connection-hub` | `pyproject.toml` and `connection_hub.__version__` | Product `release.yaml` | `publish-python-package.yml` |
+| `connection-hub-cli` Python distribution | `products/connection-hub/packages/connection-hub-cli` | `pyproject.toml` and `connection_hub_cli.__version__` | Product `release.yaml` | `publish-python-package.yml` |
 | Connection Hub KDCube app | `products/connection-hub/apps/connection-hub@1-0` | Bundle release record | `products/connection-hub/apps/connection-hub@1-0/release.yaml` | KDCube bundle source ref |
 | `app-foundation` | `packages/app-foundation` | `pyproject.toml` and `app_foundation.__version__` | `packages/app-foundation/release.yaml` when released | `publish-python-package.yml` |
 | `service-foundation` | `packages/service-foundation` | `pyproject.toml` and `service_foundation.__version__` | `packages/service-foundation/release.yaml` when released | `publish-python-package.yml` |
@@ -43,9 +44,11 @@ For each piece selected for release:
 1. Update its release record with the exact version and changes.
 2. Update each published package's `pyproject.toml`, import `__version__`, and
    README to the same authored version.
-3. Run the piece's complete tests. Connection Hub runs
-   `products/connection-hub/packages/connection-hub/tests`; planning-marker
-   foundations run install, import, and version smoke checks.
+3. Run the piece's complete tests. `connection-hub` runs
+   `products/connection-hub/packages/connection-hub/tests`;
+   `connection-hub-cli` runs
+   `products/connection-hub/packages/connection-hub-cli/tests`;
+   planning-marker foundations run install, import, and version smoke checks.
 4. Build the wheel and source distribution with `python -m build`.
 5. Run `python -m twine check` on every artifact.
 6. Install the wheel in a fresh virtual environment and verify the imported

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "connection-hub-cli"
+version = "2026.09.02.1705"
+description = "KDCube host setup, credential custody, and MCP client integration for Connection Hub."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Elena Viter" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+]
+dependencies = [
+    "filelock>=3.16,<4",
+    "httpx2>=2.5,<3",
+    "json5>=0.12,<1",
+    "kdcube-cli>=2026.09.02.1733,<2027",
+    "keyring>=25,<26",
+    "mcp==2.0.0",
+    "platformdirs>=4,<5",
+    "PyYAML>=6,<7",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.23,<2",
+]
+
+[project.scripts]
+connection-hub = "connection_hub_cli.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/elenaviter/app-ecosystem"
+Repository = "https://github.com/elenaviter/app-ecosystem"
+Documentation = "https://github.com/elenaviter/app-ecosystem/tree/main/docs/connection-hub"
+Issues = "https://github.com/elenaviter/app-ecosystem/issues/3"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+connection_hub_cli = ["py.typed"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

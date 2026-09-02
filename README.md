@@ -36,11 +36,25 @@ The reusable Python distribution is **`connection-hub`**, imported as
 `connection_hub`. It owns actor and grant references, cards and catalogs,
 per-call admission, structured denials, and protected-service signing helpers.
 
+The **`connection-hub-cli`** distribution installs the `connection-hub`
+command for KDCube application-host selection, local caller profiles, macOS
+Keychain custody, a stdio MCP bridge, and client registration. Its default
+first run is:
+
+```bash
+uv tool install connection-hub-cli
+connection-hub setup
+```
+
+See
+[Connect Local MCP Clients Without Bearer Files](docs/connection-hub/local-client-helper.md).
+
 ```text
 Connection Hub
 ├── product root: products/connection-hub
 ├── KDCube application: products/connection-hub/apps/connection-hub@1-0
 ├── Python library and client SDK: products/connection-hub/packages/connection-hub
+├── local client helper: products/connection-hub/packages/connection-hub-cli
 └── standalone service host: planned under products/connection-hub/services
 ```
 
@@ -57,6 +71,7 @@ one contract. Its packaging starts after the Connection Hub package.
 | Distribution | Status | Contract |
 | --- | --- | --- |
 | [`connection-hub`](products/connection-hub/packages/connection-hub/README.md) | Alpha implementation | Delegated cards and catalogs, OAuth and connected-account policy, managed-boundary admission, and direct protected-service admission. |
+| [`connection-hub-cli`](products/connection-hub/packages/connection-hub-cli/README.md) | Alpha implementation | KDCube host selection, local caller profiles, macOS Keychain custody, one stdio MCP bridge, and registration adapters for external MCP clients. |
 | [`app-foundation`](packages/app-foundation/README.md) | `0.0.1` planning marker | Future host-neutral identity, secrets, storage, HTTP, event, and observability primitives. |
 | [`service-foundation`](packages/service-foundation/README.md) | `0.0.1` planning marker | Future standalone service composition, authentication, token, config, health, and migration contracts. |
 | [`harness-foundation`](packages/harness-foundation/README.md) | `0.0.1` planning marker | Future distributed agent-turn, event, record, and workspace harness. |
