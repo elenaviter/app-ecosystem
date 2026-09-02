@@ -60,6 +60,7 @@ one contract. Its packaging starts after the Connection Hub package.
 | [`app-foundation`](packages/app-foundation/README.md) | `0.0.1` planning marker | Future host-neutral identity, secrets, storage, HTTP, event, and observability primitives. |
 | [`service-foundation`](packages/service-foundation/README.md) | `0.0.1` planning marker | Future standalone service composition, authentication, token, config, health, and migration contracts. |
 | [`harness-foundation`](packages/harness-foundation/README.md) | `0.0.1` planning marker | Future distributed agent-turn, event, record, and workspace harness. |
+| [`economics-foundation`](packages/economics-foundation/README.md) | `2026.09.02.1559` planning marker | Future host-neutral service usage, attribution, pricing, budget admission, reservation, and settlement contracts. |
 
 The planning markers reserve names; they do not claim an implemented API.
 `connection-hub` is the first implemented distribution and is used by the

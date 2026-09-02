@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "economics-foundation"
+version = "2026.09.02.1559"
+description = "Host-neutral accounting and economics contracts for attributable service usage, pricing, budget admission, reservation, and settlement."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Elena Viter" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Programming Language :: Python :: 3",
+]
+
+[project.urls]
+Homepage = "https://github.com/elenaviter/app-ecosystem"
+Repository = "https://github.com/elenaviter/app-ecosystem"
+Issues = "https://github.com/elenaviter/app-ecosystem/issues/2"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+economics_foundation = ["py.typed"]

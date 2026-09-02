@@ -1,0 +1,17 @@
+package:
+  id: economics-foundation
+  ref: "2026.09.02.1559"
+  description: |
+    First release: an installable planning marker that reserves the
+    economics-foundation distribution and economics_foundation import names.
+    The package boundary covers host-neutral service usage, attribution,
+    pricing, budget admission, reservation, and settlement contracts. The
+    production implementation remains in KDCube until it is characterized and
+    extracted behind compatibility imports. Connection Hub governed-service
+    accounting is tracked in App Ecosystem issue #2.
+
+components:
+  python_package:
+    id: economics-foundation
+    path: packages/economics-foundation
+    version: "2026.09.02.1559"
