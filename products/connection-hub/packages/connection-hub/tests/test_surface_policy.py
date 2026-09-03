@@ -276,3 +276,67 @@ def test_equal_tool_names_are_authorized_only_on_the_selected_resource() -> None
 
     assert first.allowed and first.granted_operations == frozenset({"search"})
     assert second.allowed and second.granted_operations == frozenset()
+
+
+def test_wildcard_role_row_does_not_steal_the_resource_match() -> None:
+    """The steuer-automation live failure: a card carries the all-resource
+    row ``*`` (role grants only, no operations) beside a specific door row
+    holding every tool. First-match selection judged the request by ``*`` and
+    refused tools the specific row plainly granted; the boundary must judge
+    by the MOST SPECIFIC matching row."""
+    door = "https://host.example/api/integrations/bundles/t/p/kdcube-services@1-0/public/mcp/productivity"
+    pattern = "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/productivity*"
+    envelope = CredentialEnvelope(
+        credential_kind="delegated_client_access",
+        issuer_authority_id="delegated_client",
+        subject="integration:automation:card-1:user-1",
+        attrs={
+            # dict order puts the wildcard row FIRST, the shape that failed.
+            "resource_grants": {
+                "*": ["kdcube:role:super-admin"],
+                pattern: ["mail:read", "mail:draft"],
+            },
+            "resource_operations": {
+                "*": [],
+                pattern: ["productivity_mail_search", "productivity_mail_draft"],
+            },
+            "scopes": ["kdcube:role:super-admin", "mail:read", "mail:draft"],
+        },
+    )
+    decision = authorize_credential_boundary(
+        authority_id="delegated_client",
+        required_roles=(),
+        required_permissions=(),
+        user_roles=("user",),
+        user_permissions=("mail:read",),
+        envelope=envelope,
+        grant_record={"operations": []},
+        request_resource=door,
+    )
+    assert decision.allowed
+    assert decision.matched_resource == pattern
+    assert decision.granted_operations == frozenset(
+        {"productivity_mail_search", "productivity_mail_draft"}
+    )
+    # An exact row beats every pattern.
+    exact_envelope = CredentialEnvelope(
+        credential_kind="delegated_client_access",
+        issuer_authority_id="delegated_client",
+        subject="integration:automation:card-1:user-1",
+        attrs={
+            "resource_grants": {"*": [], pattern: [], door: ["mail:read"]},
+            "resource_operations": {door: ["productivity_mail_search"]},
+            "scopes": ["mail:read"],
+        },
+    )
+    exact = authorize_credential_boundary(
+        authority_id="delegated_client",
+        required_roles=(),
+        required_permissions=(),
+        user_roles=("user",),
+        user_permissions=("mail:read",),
+        envelope=exact_envelope,
+        grant_record={"operations": []},
+        request_resource=door,
+    )
+    assert exact.allowed and exact.matched_resource == door

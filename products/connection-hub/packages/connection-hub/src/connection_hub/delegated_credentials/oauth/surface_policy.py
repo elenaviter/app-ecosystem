@@ -295,11 +295,35 @@ class SurfacePolicyDecision:
         )
 
 
+def _resource_specificity(resource: str) -> tuple[int, int]:
+    """Order matching card keys by how much they actually say: literal
+    characters first, then overall length. The all-resource row ``*`` scores
+    lowest by construction."""
+    literal = len(resource.replace("*", "").replace("?", ""))
+    return (literal, len(resource))
+
+
 def _matched_resource(resources: Iterable[str], request_resource: str) -> str:
+    """The card key this request is judged by: the MOST SPECIFIC matching one.
+
+    A card routinely carries an all-resource row (``*``, holding only role
+    grants) beside per-door rows that hold the operations. First-match
+    selection let ``*`` steal the match, and every downstream check then read
+    an empty operation list off it, refusing tools the specific row plainly
+    granted. An exact key always wins; otherwise the most literal pattern
+    does."""
+    best = ""
+    best_rank: tuple[int, int] | None = None
     for resource in resources:
-        if resource_matches(str(resource or ""), request_resource):
-            return str(resource)
-    return ""
+        text = str(resource or "")
+        if not resource_matches(text, request_resource):
+            continue
+        if text == request_resource:
+            return text
+        rank = _resource_specificity(text)
+        if best_rank is None or rank > best_rank:
+            best, best_rank = text, rank
+    return best
 
 
 def authorize_credential_boundary(
