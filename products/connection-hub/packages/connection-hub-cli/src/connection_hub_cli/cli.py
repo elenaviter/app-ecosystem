@@ -4,19 +4,40 @@ import argparse
 import getpass
 import json
 import sys
+import time
+import webbrowser
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import anyio
 from kdcube_cli.control import DEFAULT_RUNTIME_ROOT, LocalPlatformSourceRequest
 
 from connection_hub_cli import __version__
+from connection_hub_cli.authorization import (
+    BrowserAuthorizationFlow,
+    HttpxOAuthTransport,
+    MacOSOAuthSessionCredentialStore,
+    OAuthClient,
+    OAuthDiscovery,
+    OAuthSessionRepository,
+    OAuthSessionStore,
+)
 from connection_hub_cli.clients import ClientService, build_client_adapters
 from connection_hub_cli.credentials import MacOSKeychainCredentialStore
 from connection_hub_cli.diagnostics import collect_diagnostics
 from connection_hub_cli.errors import ConnectionHubCliError
 from connection_hub_cli.host import HostService
+from connection_hub_cli.management import (
+    DEFAULT_MANAGEMENT_SCOPE,
+    AuthorizedManagementService,
+    HttpxManagementTransport,
+    ManagementClient,
+    ManagementDenial,
+    ManagementRequest,
+    ManagementResult,
+)
 from connection_hub_cli.mcp_relay import serve_profile
 from connection_hub_cli.models import SUPPORTED_CLIENTS
 from connection_hub_cli.paths import StatePaths, resolve_helper_launch
@@ -33,6 +54,10 @@ class Services:
     profile_service: ProfileService
     client_service: ClientService
     host_service: HostService
+    oauth_sessions: OAuthSessionStore
+    oauth_repository: OAuthSessionRepository
+    authorization_flow: BrowserAuthorizationFlow
+    management_service: AuthorizedManagementService
     adapters: dict[str, Any]
 
 
@@ -41,7 +66,9 @@ def build_services(*, paths: StatePaths | None = None) -> Services:
     profiles = ProfileStore(selected_paths.profiles)
     installations = InstallationStore(selected_paths.installations)
     hosts = HostStore(selected_paths.host)
+    oauth_sessions = OAuthSessionStore(selected_paths.oauth_sessions)
     credentials = MacOSKeychainCredentialStore()
+    oauth_credentials = MacOSOAuthSessionCredentialStore()
     adapters = build_client_adapters()
     profile_service = ProfileService(
         profiles=profiles,
@@ -57,6 +84,24 @@ def build_services(*, paths: StatePaths | None = None) -> Services:
         launch=resolve_helper_launch(),
     )
     host_service = HostService(store=hosts)
+    oauth_transport = HttpxOAuthTransport()
+    oauth_discovery = OAuthDiscovery(transport=oauth_transport)
+    oauth_client = OAuthClient(transport=oauth_transport)
+    oauth_repository = OAuthSessionRepository(
+        sessions=oauth_sessions,
+        credentials=oauth_credentials,
+    )
+    authorization_flow = BrowserAuthorizationFlow(
+        discovery=oauth_discovery,
+        client=oauth_client,
+        sessions=oauth_repository,
+    )
+    management_service = AuthorizedManagementService(
+        sessions=oauth_repository,
+        discovery=oauth_discovery,
+        oauth=oauth_client,
+        management=ManagementClient(transport=HttpxManagementTransport()),
+    )
     return Services(
         profiles=profiles,
         installations=installations,
@@ -64,6 +109,10 @@ def build_services(*, paths: StatePaths | None = None) -> Services:
         profile_service=profile_service,
         client_service=client_service,
         host_service=host_service,
+        oauth_sessions=oauth_sessions,
+        oauth_repository=oauth_repository,
+        authorization_flow=authorization_flow,
+        management_service=management_service,
         adapters=adapters,
     )
 
@@ -113,6 +162,13 @@ def _new_local_auth(args: argparse.Namespace) -> tuple[str, str | None, str | No
 
 def _print_json(value: Any) -> None:
     sys.stdout.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def _print_manual_authorization_url(url: str) -> bool:
+    sys.stderr.write("Open this authorization URL in a browser:\n")
+    sys.stderr.write(f"{url}\n")
+    sys.stderr.flush()
+    return True
 
 
 def _profile_view(services: Services, profile: Any) -> dict[str, Any]:
@@ -322,7 +378,75 @@ def _run_setup(args: argparse.Namespace, services: Services) -> int:
     return 0
 
 
-def _run_host(args: argparse.Namespace, services: Services) -> int:
+def _management_view(
+    request: ManagementRequest,
+    result: ManagementResult | ManagementDenial,
+) -> dict[str, Any]:
+    if isinstance(result, ManagementResult):
+        return {
+            "schema": "connection_hub_cli.management_result.v1",
+            "ok": True,
+            "operation": result.operation,
+            "resource": result.resource,
+            "invocation": {
+                "id": result.invocation_id,
+                "replay": result.replay,
+            },
+            "authority": dict(result.authority),
+            "result": dict(result.result),
+        }
+    value: dict[str, Any] = {
+        "schema": "connection_hub_cli.management_error.v1",
+        "ok": False,
+        "status": result.status,
+        "operation": request.operation,
+        "resource": request.target.resource,
+        "invocation_id": request.invocation_id,
+        "request_digest": request.request_digest,
+        "error": {"code": result.code, "retryable": result.retryable},
+    }
+    if result.recovery is not None:
+        recovery = result.recovery
+        value["recovery"] = {
+            "type": "consent_required",
+            "reason": "delegated_request_permit_required",
+            "authorization_url": recovery.authorization_url,
+            "access_id": recovery.access_id,
+            "resource": recovery.resource,
+            "operation": recovery.operation,
+            "application_id": recovery.application_id,
+            "invocation_id": recovery.invocation_id,
+            "request_digest": recovery.request_digest,
+            "card_revision": recovery.card_revision,
+            "catalog_version": recovery.catalog_version,
+            "expires_at": recovery.expires_at,
+            "choices": list(recovery.choices),
+        }
+    return value
+
+
+async def _execute_management(
+    args: argparse.Namespace,
+    services: Services,
+    request: ManagementRequest,
+) -> int:
+    result = await services.management_service.execute(request)
+    if isinstance(result, ManagementDenial) and result.recovery is not None:
+        recovery = result.recovery
+        opened = False
+        if recovery.expires_at > int(time.time()) and not args.no_open:
+            try:
+                opened = bool(webbrowser.open(recovery.authorization_url))
+            except Exception:  # noqa: BLE001
+                opened = False
+        if opened and sys.stdin.isatty() and not args.no_wait:
+            input("Approve the exact operation in the browser, then press Enter: ")
+            result = await services.management_service.execute(request)
+    _print_json(_management_view(request, result))
+    return 0 if isinstance(result, ManagementResult) else 3
+
+
+async def _run_host(args: argparse.Namespace, services: Services) -> int:
     if args.host_command == "status":
         _print_json(services.host_service.status(probe=args.probe))
         return 0
@@ -339,6 +463,84 @@ def _run_host(args: argparse.Namespace, services: Services) -> int:
     if args.host_command == "open":
         _print_json(services.host_service.open())
         return 0
+    if args.host_command == "authorize":
+        target = services.host_service.management_target()
+        authorization_options: dict[str, Any] = {}
+        if args.no_open:
+            authorization_options["browser_opener"] = _print_manual_authorization_url
+        result = await services.authorization_flow.authorize_and_store(
+            target_key=target.session_target_key,
+            protected_resource_metadata_url=(target.protected_resource_metadata_url),
+            resource=target.resource,
+            scope=args.scope,
+            provisioned_client_id=args.client_id,
+            timeout_seconds=args.wait_seconds,
+            **authorization_options,
+        )
+        output = {
+            "authorized": True,
+            "target": {
+                "tenant": target.tenant,
+                "project": target.project,
+                "resource": target.resource,
+            },
+            "credential": "stored",
+        }
+        if result.session.access_id:
+            output["access_id"] = result.session.access_id
+        _print_json(output)
+        return 0
+    if args.host_command == "disconnect":
+        target = services.host_service.management_target()
+        removed = await services.management_service.disconnect(
+            target.session_target_key
+        )
+        output = {
+            "disconnected": True,
+            "target": {
+                "tenant": target.tenant,
+                "project": target.project,
+                "resource": target.resource,
+            },
+            "server_card_revoked": True,
+            "local_credential_removed": True,
+        }
+        if removed.access_id:
+            output["access_id"] = removed.access_id
+        _print_json(output)
+        return 0
+    if args.host_command == "inspect":
+        target = services.host_service.management_target()
+        return await _execute_management(
+            args,
+            services,
+            ManagementRequest.inspect(
+                target,
+                invocation_id=args.invocation_id,
+            ),
+        )
+    if args.host_command == "surfaces":
+        target = services.host_service.management_target()
+        return await _execute_management(
+            args,
+            services,
+            ManagementRequest.surfaces(
+                target,
+                application_id=args.application_id,
+                invocation_id=args.invocation_id,
+            ),
+        )
+    if args.host_command == "reload":
+        target = services.host_service.management_target()
+        return await _execute_management(
+            args,
+            services,
+            ManagementRequest.reload(
+                target,
+                application_id=args.application_id,
+                invocation_id=args.invocation_id,
+            ),
+        )
     raise AssertionError("unhandled host command")
 
 
@@ -347,7 +549,7 @@ async def _run(args: argparse.Namespace) -> int:
     if args.command == "setup":
         return _run_setup(args, services)
     if args.command == "host":
-        return _run_host(args, services)
+        return await _run_host(args, services)
     if args.command == "open":
         _print_json(services.host_service.open())
         return 0
@@ -385,6 +587,23 @@ async def _run(args: argparse.Namespace) -> int:
                     item.to_dict() for item in services.installations.list()
                 ],
                 "host": services.host_service.status(probe=False),
+                "management_sessions": [
+                    {
+                        "target_key": item.target_key,
+                        "resource": item.resource,
+                        "access_id": item.access_id,
+                        "credential": (
+                            "present"
+                            if services.oauth_repository.credential_present(
+                                item.session_id
+                            )
+                            else "missing"
+                        ),
+                        "created_at": item.created_at,
+                        "updated_at": item.updated_at,
+                    }
+                    for item in services.oauth_sessions.list()
+                ],
             }
         )
         return 0
@@ -396,6 +615,8 @@ async def _run(args: argparse.Namespace) -> int:
             profile_service=services.profile_service,
             adapters=services.adapters,
             probe=args.probe,
+            oauth_sessions=services.oauth_sessions,
+            oauth_repository=services.oauth_repository,
         )
         payload = [item.to_dict() for item in diagnostics]
         payload.extend(services.host_service.diagnostics(probe=args.probe))
@@ -492,6 +713,66 @@ def build_parser() -> argparse.ArgumentParser:
     host_stop = host_commands.add_parser("stop", help="Stop the selected local host.")
     host_stop.add_argument("--remove-volumes", action="store_true")
     host_commands.add_parser("open", help="Open the selected application.")
+    host_authorize = host_commands.add_parser(
+        "authorize",
+        help="Authorize this CLI through the selected KDCube login.",
+    )
+    host_authorize.add_argument(
+        "--client-id",
+        help="Provisioned public OAuth client ID when registration is unavailable.",
+    )
+    host_authorize.add_argument(
+        "--scope",
+        default=DEFAULT_MANAGEMENT_SCOPE,
+        help=(
+            "OAuth scopes requested from the selected KDCube deployment "
+            "(default: inspect deployment and read application surfaces)."
+        ),
+    )
+    host_authorize.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the authorization URL and wait for a browser callback.",
+    )
+    host_authorize.add_argument("--wait-seconds", type=float, default=300.0)
+    host_commands.add_parser(
+        "disconnect",
+        help="Revoke this CLI's delegated card and remove its local OAuth session.",
+    )
+
+    def add_management_options(command: argparse.ArgumentParser) -> None:
+        command.add_argument(
+            "--invocation-id",
+            help="Reuse this exact idempotency key after approving a denied request.",
+        )
+        command.add_argument(
+            "--no-open",
+            action="store_true",
+            help="Return consent recovery without opening its browser page.",
+        )
+        command.add_argument(
+            "--no-wait",
+            action="store_true",
+            help="Open consent without waiting for an interactive retry.",
+        )
+
+    host_inspect = host_commands.add_parser(
+        "inspect",
+        help="Inspect the running deployment through delegated authority.",
+    )
+    add_management_options(host_inspect)
+    host_surfaces = host_commands.add_parser(
+        "surfaces",
+        help="Read one application's declared public surfaces.",
+    )
+    host_surfaces.add_argument("application_id")
+    add_management_options(host_surfaces)
+    host_reload = host_commands.add_parser(
+        "reload",
+        help="Reload one exact application through delegated authority.",
+    )
+    host_reload.add_argument("application_id")
+    add_management_options(host_reload)
 
     commands.add_parser(
         "status", help="Show non-secret local Connection Hub client state."
@@ -590,7 +871,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return exc.exit_code
     except KeyboardInterrupt:
         return 130
-    except Exception:
+    except Exception:  # noqa: BLE001
         sys.stderr.write(
             "error[internal_error]: Connection Hub could not complete the command.\n"
         )

@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from kdcube_cli.control import (
     ApplicationSurface,
     ControlEvent,
@@ -233,6 +232,10 @@ def test_endpoint_setup_probes_both_routes_and_records_nonsecret_target(
     )
     assert "constructed" in route_diagnostic["summary"]
     assert "browser and MCP URLs" in route_diagnostic["summary"]
+    management = service.management_target()
+    assert management.public_base_url == "https://hub.example"
+    assert management.resource == "urn:kdcube:management:deployment:acme:prod"
+    assert management.session_target_key == service.store.get().target_key
 
 
 def test_new_local_setup_uses_kdcube_source_initialize_and_lifecycle(

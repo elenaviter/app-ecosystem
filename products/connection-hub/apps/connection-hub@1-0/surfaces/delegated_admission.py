@@ -123,6 +123,24 @@ def _guard_denial_facts(response: Any) -> tuple[str, str, dict[str, Any]]:
     return code, message, payload
 
 
+def _policy_missing_grants(policy_denial: Any) -> list[str]:
+    direct = getattr(policy_denial, "missing_grants", None)
+    if isinstance(direct, (list, tuple, set, frozenset)):
+        values = {str(item).strip() for item in direct if str(item).strip()}
+        if values:
+            return sorted(values)
+    payload = getattr(policy_denial, "payload", None)
+    payload = payload if isinstance(payload, Mapping) else {}
+    ret = payload.get("ret")
+    ret = ret if isinstance(ret, Mapping) else {}
+    raw = ret.get("missing_grants")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set)):
+        return []
+    return sorted({str(item).strip() for item in raw if str(item).strip()})
+
+
 def _denial_response(
     *,
     status_code: int,
@@ -396,6 +414,7 @@ async def handle_delegated_admission(
             code = policy_reason
         if policy_description:
             message = policy_description
+        missing_grants = _policy_missing_grants(policy_denial)
         status_code = int(getattr(result.denial, "status_code", 403) or 403)
         LOGGER.info(
             "denied decision_id=%s reason=%s service_id=%s resource=%s operation=%s",
@@ -473,7 +492,7 @@ async def handle_delegated_admission(
                     "client_id": view.client_id,
                     "access_id": view.registry_access_id,
                     "resource": admission_request.resource,
-                    "claims": [],
+                    "claims": missing_grants,
                     "resource_operations": {
                         admission_request.resource: [admission_request.operation]
                     },
@@ -497,7 +516,7 @@ async def handle_delegated_admission(
                     "agent_client_id": view.client_id,
                     "access_id": view.registry_access_id,
                     "resource": admission_request.resource,
-                    "claims": [],
+                    "claims": missing_grants,
                     "tool_name": admission_request.operation,
                     "outer_operation": admission_request.operation,
                     "connection_hub_url": recovery_url,

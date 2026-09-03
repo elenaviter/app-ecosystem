@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from connection_hub_cli.authorization.session import (
+    OAuthSessionRepository,
+    OAuthSessionStore,
+)
 from connection_hub_cli.clients.adapters import ClientAdapter
 from connection_hub_cli.credentials import CredentialStore
 from connection_hub_cli.errors import ConnectionHubCliError
@@ -43,6 +47,8 @@ async def collect_diagnostics(
     profile_service: ProfileService,
     adapters: dict[str, ClientAdapter],
     probe: bool,
+    oauth_sessions: OAuthSessionStore | None = None,
+    oauth_repository: OAuthSessionRepository | None = None,
 ) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
     try:
@@ -105,7 +111,10 @@ async def collect_diagnostics(
             )
         )
 
-    for path in (profiles.path, installations.path):
+    state_paths = [profiles.path, installations.path]
+    if oauth_sessions is not None:
+        state_paths.append(oauth_sessions.path)
+    for path in state_paths:
         mode = _mode(path)
         if mode is not None and mode & 0o077:
             diagnostics.append(
@@ -114,6 +123,53 @@ async def collect_diagnostics(
                     severity="error",
                     summary=f"Local state file permissions are too broad: {path}.",
                     recovery=f"Run: chmod 600 {path}",
+                )
+            )
+
+    if oauth_sessions is not None and oauth_repository is not None:
+        for session in oauth_sessions.list():
+            try:
+                present = oauth_repository.credential_present(session.session_id)
+            except ConnectionHubCliError as exc:
+                diagnostics.append(
+                    Diagnostic(
+                        code=exc.code,
+                        severity="error",
+                        summary=(
+                            "The delegated management session for "
+                            f"'{session.resource}' could not read its credential."
+                        ),
+                        recovery=(
+                            "Revoke the matching caller card in Connection Hub, "
+                            "then repair the local credential store."
+                        ),
+                    )
+                )
+                continue
+            if not present:
+                diagnostics.append(
+                    Diagnostic(
+                        code="oauth_session_credential_missing",
+                        severity="error",
+                        summary=(
+                            "The delegated management session for "
+                            f"'{session.resource}' has no Keychain credential."
+                        ),
+                        recovery=(
+                            "Revoke the matching caller card in Connection Hub "
+                            "before authorizing this CLI again."
+                        ),
+                    )
+                )
+                continue
+            diagnostics.append(
+                Diagnostic(
+                    code="oauth_session_credential_ready",
+                    severity="ok",
+                    summary=(
+                        "The delegated management session for "
+                        f"'{session.resource}' has a Keychain credential."
+                    ),
                 )
             )
 

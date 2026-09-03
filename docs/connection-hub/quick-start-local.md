@@ -226,14 +226,17 @@ authority because every exposed operation resolves the current profile.
 connection-hub status
 connection-hub doctor --probe
 connection-hub host status --probe
+connection-hub host inspect
+connection-hub host surfaces connection-hub@1-0
+connection-hub host reload connection-hub@1-0
 connection-hub host stop
 connection-hub host start
 connection-hub host open
 ```
 
-Lifecycle commands apply only to the explicitly selected local workdir.
-Endpoint targets can be inspected, probed, and opened but are administered
-through their deployment's own operator channel.
+Local `start` and `stop` apply to the explicitly selected local workdir.
+Delegated `inspect`, `surfaces`, and `reload` apply to any selected running
+local or endpoint target after `host authorize`.
 
 Configuration belongs in the local workdir's staged descriptors under
 `config/`. Application and user state belongs under `data/`; diagnostics

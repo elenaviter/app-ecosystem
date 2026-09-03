@@ -1,0 +1,613 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+import secrets
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import quote, unquote, urlsplit
+
+from connection_hub_cli.authorization.models import validate_web_url
+from connection_hub_cli.errors import AuthorizationError
+
+DEPLOYMENT_INSPECT = "kdcube.management.deployment.inspect"
+APPLICATION_SURFACES_READ = "kdcube.management.application.surfaces.read"
+APPLICATION_RELOAD = "kdcube.management.application.reload"
+DEFAULT_MANAGEMENT_SCOPE = f"{DEPLOYMENT_INSPECT} {APPLICATION_SURFACES_READ}"
+
+MANAGEMENT_REQUEST_SCHEMA = "kdcube.management.request.v1"
+MANAGEMENT_RESULT_SCHEMA = "kdcube.management.result.v1"
+MANAGEMENT_ERROR_SCHEMA = "kdcube.management.error.v1"
+
+_ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
+_HEX_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_CHOICES = frozenset({"allow_once", "allow_always"})
+
+
+def _text(value: Any, *, maximum: int = 4096) -> str:
+    if not isinstance(value, str):
+        raise AuthorizationError(
+            "management_value_invalid",
+            "A KDCube management value is invalid.",
+        )
+    candidate = value.strip()
+    if (
+        not candidate
+        or len(candidate) > maximum
+        or any(ord(character) < 32 or ord(character) == 127 for character in candidate)
+    ):
+        raise AuthorizationError(
+            "management_value_invalid",
+            "A KDCube management value is invalid.",
+        )
+    return candidate
+
+
+def _optional_text(value: Any, *, maximum: int = 4096) -> str:
+    if value is None or value == "":
+        return ""
+    return _text(value, maximum=maximum)
+
+
+def _integer(value: Any, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise AuthorizationError(
+            "management_value_invalid",
+            "A KDCube management value is invalid.",
+        )
+    return value
+
+
+def _coordinate_segment(value: str) -> str:
+    return quote(_text(value, maximum=256), safe="-._~")
+
+
+def _application_id(value: str) -> str:
+    candidate = _text(value, maximum=256)
+    if (
+        candidate in {".", ".."}
+        or any(character in candidate for character in ("*", "/", "\\", "?", "#"))
+        or "://" in candidate
+        or any(ord(character) < 33 or ord(character) == 127 for character in candidate)
+    ):
+        raise AuthorizationError(
+            "management_application_id_invalid",
+            "The KDCube application identifier must name one exact application.",
+        )
+    return candidate
+
+
+def _invocation_id(value: str | None = None) -> str:
+    candidate = str(value or secrets.token_urlsafe(32)).strip()
+    if (
+        not candidate
+        or len(candidate) > 256
+        or any(ord(character) < 33 or ord(character) > 126 for character in candidate)
+    ):
+        raise AuthorizationError(
+            "management_invocation_id_invalid",
+            "The KDCube management invocation identifier is invalid.",
+        )
+    return candidate
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementTarget:
+    public_base_url: str
+    tenant: str
+    project: str
+    session_target_key: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        public_base_url: str,
+        tenant: str,
+        project: str,
+        session_target_key: str | None = None,
+    ) -> ManagementTarget:
+        base = validate_web_url(
+            public_base_url,
+            code="management_endpoint_invalid",
+            allow_query=False,
+        ).rstrip("/")
+        normalized_tenant = _text(tenant, maximum=256)
+        normalized_project = _text(project, maximum=256)
+        return cls(
+            public_base_url=base,
+            tenant=normalized_tenant,
+            project=normalized_project,
+            session_target_key=(
+                _text(session_target_key, maximum=8192)
+                if session_target_key
+                else f"endpoint:{base}:{normalized_tenant}:{normalized_project}"
+            ),
+        )
+
+    @property
+    def resource(self) -> str:
+        return (
+            "urn:kdcube:management:deployment:"
+            f"{_coordinate_segment(self.tenant)}:{_coordinate_segment(self.project)}"
+        )
+
+    @property
+    def protected_resource_metadata_url(self) -> str:
+        return (
+            f"{self.public_base_url}/api/integrations/management/v1/"
+            ".well-known/oauth-protected-resource"
+        )
+
+    def route(self, suffix: str) -> str:
+        return f"/api/integrations/management/v1/{suffix.lstrip('/')}"
+
+    def url(self, path: str) -> str:
+        return f"{self.public_base_url}{path}"
+
+    def is_consent_path(self, path: str) -> bool:
+        base_path = urlsplit(self.public_base_url).path.rstrip("/")
+        expected = (
+            f"{base_path}/api/integrations/bundles/"
+            f"{quote(self.tenant, safe='')}/{quote(self.project, safe='')}/"
+            "connection-hub%401-0/widgets/connections_settings"
+        )
+        return _decoded_path_segments(path) == _decoded_path_segments(expected)
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementRequest:
+    target: ManagementTarget
+    operation: str
+    method: str
+    path: str
+    application_id: str
+    invocation_id: str
+
+    @classmethod
+    def inspect(
+        cls,
+        target: ManagementTarget,
+        *,
+        invocation_id: str | None = None,
+    ) -> ManagementRequest:
+        return cls(
+            target=target,
+            operation=DEPLOYMENT_INSPECT,
+            method="GET",
+            path=target.route("deployment"),
+            application_id="",
+            invocation_id=_invocation_id(invocation_id),
+        )
+
+    @classmethod
+    def surfaces(
+        cls,
+        target: ManagementTarget,
+        *,
+        application_id: str,
+        invocation_id: str | None = None,
+    ) -> ManagementRequest:
+        exact = _application_id(application_id)
+        segment = quote(exact, safe="-._~")
+        return cls(
+            target=target,
+            operation=APPLICATION_SURFACES_READ,
+            method="GET",
+            path=target.route(f"applications/{segment}/surfaces"),
+            application_id=exact,
+            invocation_id=_invocation_id(invocation_id),
+        )
+
+    @classmethod
+    def reload(
+        cls,
+        target: ManagementTarget,
+        *,
+        application_id: str,
+        invocation_id: str | None = None,
+    ) -> ManagementRequest:
+        exact = _application_id(application_id)
+        segment = quote(exact, safe="-._~")
+        return cls(
+            target=target,
+            operation=APPLICATION_RELOAD,
+            method="POST",
+            path=target.route(f"applications/{segment}/reload"),
+            application_id=exact,
+            invocation_id=_invocation_id(invocation_id),
+        )
+
+    @property
+    def body(self) -> dict[str, Any]:
+        return {}
+
+    @property
+    def target_key(self) -> str:
+        return self.target.session_target_key
+
+    @property
+    def url(self) -> str:
+        return self.target.url(self.path)
+
+    @property
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "application_id": self.application_id,
+            "body": {},
+            "operation": self.operation,
+            "resource": self.target.resource,
+            "schema": MANAGEMENT_REQUEST_SCHEMA,
+        }
+
+    @property
+    def request_digest(self) -> str:
+        encoded = json.dumps(
+            self.canonical_payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class ConsentRecovery:
+    authorization_url: str
+    access_id: str
+    resource: str
+    operation: str
+    application_id: str
+    invocation_id: str
+    request_digest: str
+    card_revision: int
+    catalog_version: str
+    expires_at: int
+    choices: tuple[str, ...]
+
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Mapping[str, Any],
+        *,
+        request: ManagementRequest,
+    ) -> ConsentRecovery:
+        if value.get("type") != "consent_required" or value.get("reason") != (
+            "delegated_request_permit_required"
+        ):
+            raise AuthorizationError(
+                "management_recovery_invalid",
+                "The KDCube management recovery response is invalid.",
+            )
+        authorization_url = validate_web_url(
+            value.get("authorization_url"),
+            code="management_recovery_invalid",
+        )
+        expected_origin = urlsplit(request.target.public_base_url)
+        recovery_origin = urlsplit(authorization_url)
+        if (recovery_origin.scheme, recovery_origin.netloc) != (
+            expected_origin.scheme,
+            expected_origin.netloc,
+        ):
+            raise AuthorizationError(
+                "management_recovery_origin_mismatch",
+                "The consent page belongs to a different KDCube endpoint.",
+            )
+        if not request.target.is_consent_path(recovery_origin.path):
+            raise AuthorizationError(
+                "management_recovery_path_mismatch",
+                "The consent page is not the selected KDCube Connection Hub surface.",
+            )
+        choices_raw = value.get("choices")
+        if not isinstance(choices_raw, list):
+            raise AuthorizationError(
+                "management_recovery_invalid",
+                "The KDCube management recovery response is invalid.",
+            )
+        choices = tuple(str(item) for item in choices_raw)
+        card_revision = _integer(value.get("card_revision"), minimum=1)
+        expires_at = _integer(value.get("expires_at"), minimum=1)
+        recovery = cls(
+            authorization_url=authorization_url,
+            access_id=_text(value.get("access_id"), maximum=256),
+            resource=_text(value.get("resource"), maximum=8192),
+            operation=_text(value.get("operation"), maximum=256),
+            application_id=(
+                _application_id(value.get("application_id"))
+                if value.get("application_id")
+                else ""
+            ),
+            invocation_id=_text(value.get("invocation_id"), maximum=256),
+            request_digest=_text(value.get("request_digest"), maximum=64),
+            card_revision=card_revision,
+            catalog_version=_text(value.get("catalog_version"), maximum=256),
+            expires_at=expires_at,
+            choices=choices,
+        )
+        if (
+            recovery.resource != request.target.resource
+            or recovery.operation != request.operation
+            or recovery.application_id != request.application_id
+            or recovery.invocation_id != request.invocation_id
+            or recovery.request_digest != request.request_digest
+            or not _HEX_DIGEST_RE.fullmatch(recovery.request_digest)
+            or not recovery.choices
+            or any(choice not in _CHOICES for choice in recovery.choices)
+            or len(set(recovery.choices)) != len(recovery.choices)
+        ):
+            raise AuthorizationError(
+                "management_recovery_request_mismatch",
+                "The consent response does not match the original management request.",
+            )
+        return recovery
+
+
+def _decoded_path_segments(value: str) -> tuple[str, ...]:
+    return tuple(unquote(segment) for segment in value.split("/"))
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementResult:
+    operation: str
+    resource: str
+    invocation_id: str
+    replay: bool
+    authority: Mapping[str, Any]
+    result: Mapping[str, Any]
+
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Mapping[str, Any],
+        *,
+        request: ManagementRequest,
+    ) -> ManagementResult:
+        target = value.get("target")
+        invocation = value.get("invocation")
+        authority = value.get("authority")
+        result = value.get("result")
+        if (
+            value.get("schema") != MANAGEMENT_RESULT_SCHEMA
+            or value.get("ok") is not True
+            or value.get("operation") != request.operation
+            or value.get("resource") != request.target.resource
+            or not isinstance(target, Mapping)
+            or target.get("tenant") != request.target.tenant
+            or target.get("project") != request.target.project
+            or not isinstance(invocation, Mapping)
+            or invocation.get("id") != request.invocation_id
+            or not isinstance(invocation.get("replay"), bool)
+            or not isinstance(authority, Mapping)
+            or not isinstance(result, Mapping)
+        ):
+            raise AuthorizationError(
+                "management_result_invalid",
+                "KDCube returned an invalid management result.",
+            )
+        return cls(
+            operation=request.operation,
+            resource=request.target.resource,
+            invocation_id=request.invocation_id,
+            replay=bool(invocation["replay"]),
+            authority=_public_authority(authority),
+            result=_public_result(result, request=request),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementDenial:
+    status: int
+    code: str
+    retryable: bool
+    recovery: ConsentRecovery | None = None
+
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Mapping[str, Any],
+        *,
+        status: int,
+        request: ManagementRequest,
+    ) -> ManagementDenial:
+        target = value.get("target")
+        error = value.get("error")
+        if (
+            value.get("schema") != MANAGEMENT_ERROR_SCHEMA
+            or value.get("ok") is not False
+            or value.get("operation") != request.operation
+            or value.get("resource") != request.target.resource
+            or value.get("invocation_id") != request.invocation_id
+            or not isinstance(target, Mapping)
+            or target.get("tenant") != request.target.tenant
+            or target.get("project") != request.target.project
+            or not isinstance(error, Mapping)
+            or not isinstance(error.get("retryable"), bool)
+        ):
+            raise AuthorizationError(
+                "management_error_invalid",
+                "KDCube returned an invalid management error.",
+            )
+        code = str(error.get("code") or "")
+        if not _ERROR_CODE_RE.fullmatch(code):
+            raise AuthorizationError(
+                "management_error_invalid",
+                "KDCube returned an invalid management error.",
+            )
+        recovery_raw = value.get("recovery")
+        recovery = (
+            ConsentRecovery.from_mapping(recovery_raw, request=request)
+            if isinstance(recovery_raw, Mapping)
+            else None
+        )
+        return cls(
+            status=int(status),
+            code=code,
+            retryable=bool(error["retryable"]),
+            recovery=recovery,
+        )
+
+
+def _public_authority(value: Mapping[str, Any]) -> dict[str, Any]:
+    output: dict[str, Any] = {}
+    for key in (
+        "decision_id",
+        "caller_profile",
+        "access_id",
+        "card_catalog_version",
+        "active_catalog_version",
+    ):
+        if key in value:
+            output[key] = _text(value[key], maximum=512)
+    for key in (
+        "card_revision",
+        "invocation_policy_revision",
+        "request_permit_revision",
+    ):
+        if key in value:
+            output[key] = _integer(value[key], minimum=1)
+    return output
+
+
+def _public_result(
+    value: Mapping[str, Any],
+    *,
+    request: ManagementRequest,
+) -> dict[str, Any]:
+    if request.operation == DEPLOYMENT_INSPECT:
+        return _deployment_result(value)
+    if request.operation == APPLICATION_SURFACES_READ:
+        return _surfaces_result(value, application_id=request.application_id)
+    if request.operation == APPLICATION_RELOAD:
+        return _reload_result(value, application_id=request.application_id)
+    raise AuthorizationError(
+        "management_result_invalid",
+        "KDCube returned an invalid management result.",
+    )
+
+
+def _deployment_result(value: Mapping[str, Any]) -> dict[str, Any]:
+    readiness = value.get("readiness")
+    applications = value.get("applications")
+    if readiness not in {"ready", "not_ready"} or not isinstance(applications, list):
+        raise AuthorizationError(
+            "management_result_invalid",
+            "KDCube returned an invalid deployment result.",
+        )
+    if len(applications) > 4096:
+        raise AuthorizationError(
+            "management_result_invalid",
+            "KDCube returned an invalid deployment result.",
+        )
+    projected: list[dict[str, Any]] = []
+    for item in applications:
+        if not isinstance(item, Mapping):
+            raise AuthorizationError(
+                "management_result_invalid",
+                "KDCube returned an invalid deployment result.",
+            )
+        application_id = _application_id(item.get("application_id"))
+        state = item.get("preparation_state")
+        declared = item.get("declared")
+        readiness_required = item.get("readiness_required")
+        if (
+            state not in {"ready", "preparing", "failed", "unknown"}
+            or not isinstance(declared, bool)
+            or not isinstance(readiness_required, bool)
+        ):
+            raise AuthorizationError(
+                "management_result_invalid",
+                "KDCube returned an invalid deployment result.",
+            )
+        projected.append(
+            {
+                "application_id": application_id,
+                "declared": declared,
+                "preparation_state": state,
+                "generation": _optional_text(item.get("generation")),
+                "readiness_required": readiness_required,
+            }
+        )
+    if [item["application_id"] for item in projected] != sorted(
+        item["application_id"] for item in projected
+    ):
+        raise AuthorizationError(
+            "management_result_invalid",
+            "KDCube returned an unsorted deployment application list.",
+        )
+    return {
+        "platform_release": _optional_text(value.get("platform_release")),
+        "readiness": readiness,
+        "applications": projected,
+    }
+
+
+def _surfaces_result(
+    value: Mapping[str, Any],
+    *,
+    application_id: str,
+) -> dict[str, Any]:
+    if value.get("application_id") != application_id or not isinstance(
+        value.get("surfaces"), Mapping
+    ):
+        raise AuthorizationError(
+            "management_result_invalid",
+            "KDCube returned an invalid application-surface result.",
+        )
+    surfaces = value["surfaces"]
+    specifications = {
+        "api": ("alias", "method", "path"),
+        "mcp": ("alias", "transport", "path"),
+        "widgets": ("alias", "path"),
+        "jobs": ("alias",),
+        "messaging": ("kind",),
+    }
+    projected: dict[str, list[dict[str, str]]] = {}
+    for family, fields in specifications.items():
+        rows = surfaces.get(family, [])
+        if not isinstance(rows, list) or len(rows) > 4096:
+            raise AuthorizationError(
+                "management_result_invalid",
+                "KDCube returned an invalid application-surface result.",
+            )
+        projected[family] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise AuthorizationError(
+                    "management_result_invalid",
+                    "KDCube returned an invalid application-surface result.",
+                )
+            selected = {field: _text(row.get(field)) for field in fields}
+            if "path" in selected and not selected["path"].startswith("/"):
+                raise AuthorizationError(
+                    "management_result_invalid",
+                    "KDCube returned an invalid application-surface path.",
+                )
+            projected[family].append(selected)
+    return {"application_id": application_id, "surfaces": projected}
+
+
+def _reload_result(
+    value: Mapping[str, Any],
+    *,
+    application_id: str,
+) -> dict[str, Any]:
+    changed = value.get("changed_application_ids")
+    if (
+        value.get("application_id") != application_id
+        or value.get("state") != "completed"
+        or not isinstance(changed, list)
+        or len(changed) > 4096
+    ):
+        raise AuthorizationError(
+            "management_result_invalid",
+            "KDCube returned an invalid application-reload result.",
+        )
+    changed_ids = [_application_id(item) for item in changed]
+    return {
+        "application_id": application_id,
+        "state": "completed",
+        "changed_application_ids": changed_ids,
+        "generation": _optional_text(value.get("generation")),
+    }

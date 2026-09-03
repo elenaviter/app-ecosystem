@@ -24,6 +24,7 @@ from kdcube_cli.control import (
 )
 
 from connection_hub_cli.errors import HostControlError
+from connection_hub_cli.management.models import ManagementTarget
 from connection_hub_cli.models import HostSelection
 from connection_hub_cli.state import HostStore
 
@@ -172,6 +173,31 @@ class HostService:
         if selection is None:
             return {"selected": False}
         return self._inspect(selection, probe=probe)
+
+    def management_target(self) -> ManagementTarget:
+        selection = self._require_selection()
+        target = self.target_factory(selection)
+        try:
+            surface = target.resolve_surface(
+                ApplicationRef(selection.application_id),
+                SurfaceSelector(
+                    kind=SurfaceKind.WIDGET,
+                    alias=selection.widget_alias,
+                ),
+            )
+        except KDCubeControlError as exc:
+            raise _safe_target_error(exc) from exc
+        if not surface.route or not surface.url.endswith(surface.route):
+            raise HostControlError(
+                "host_public_base_unavailable",
+                "The selected KDCube host has no usable public base URL.",
+            )
+        return ManagementTarget.create(
+            public_base_url=surface.url[: -len(surface.route)],
+            tenant=selection.tenant,
+            project=selection.project,
+            session_target_key=selection.target_key,
+        )
 
     def _wait_until_ready(
         self,

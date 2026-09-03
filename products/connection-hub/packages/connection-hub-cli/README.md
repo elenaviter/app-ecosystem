@@ -1,17 +1,22 @@
 # Connection Hub CLI
 
-`connection-hub-cli` keeps one delegated caller credential in the operating
-system credential store, selects the KDCube application host, and connects
-local MCP clients to a Connection Hub Streamable HTTP endpoint without copying
-that credential into every client configuration.
+`connection-hub-cli` selects the KDCube application host, keeps delegated
+caller credentials in the operating-system credential store, connects local
+MCP clients to Connection Hub, and operates a running KDCube through exact
+delegated management permissions.
 
 The installed command is `connection-hub`. A local caller profile contains an
 endpoint, a profile name, a keyring reference, and an optional `access_id`.
 The delegated bearer is stored separately in macOS Keychain.
+Set `CONNECTION_HUB_STATE_DIR` when non-secret CLI metadata needs an isolated
+root; keep the logged-in user's real `HOME` so the operating-system credential
+store remains discoverable.
 
 ```bash
 uv tool install connection-hub-cli
 connection-hub setup
+connection-hub host authorize
+connection-hub host inspect
 connection-hub profile add coding-agent
 connection-hub client install claude-code --profile coding-agent
 ```
@@ -21,9 +26,38 @@ select an existing local workdir or an existing KDCube endpoint addressed by
 loopback, IP, or DNS. New local setup uses Google login by default, asks for
 the public Google OAuth Web client ID, and accepts `--auth simple` as an
 explicit development option. Endpoint mode currently resolves, probes, and
-opens the deployed Connection Hub application. A future remote management API
-can authorize this CLI through a normal delegated caller card containing exact
-KDCube management resources and operations.
+opens the deployed Connection Hub application.
+
+`connection-hub host authorize` uses the identity provider configured by the
+selected KDCube, Authorization Code with PKCE, and an ephemeral loopback
+callback. Before contacting KDCube, it verifies a disposable write/read/remove
+round trip through the local OAuth credential store. Use
+`connection-hub host authorize --no-open` when the CLI cannot launch a browser.
+It prints the short-lived authorization URL and waits for the same loopback
+callback. The callback page confirms only that the authorization response was
+received; the terminal confirms token exchange and Keychain storage.
+Its default request contains deployment inspection and application-surface
+discovery. The resulting access and refresh credentials remain together in
+macOS Keychain. Application reload is requested when it is needed:
+
+```bash
+connection-hub host surfaces connection-hub@1-0
+connection-hub host reload connection-hub@1-0
+```
+
+A reload without reusable authority returns an exact consent request containing
+the operation and its currently missing required claims. In an interactive
+terminal the CLI opens it, waits for the user, and retries the unchanged request
+with the same invocation ID and digest. KDCube resolves the live delegated card
+immediately before the operation. The management service controls a running
+deployment; local or infrastructure control starts a stopped deployment.
+
+Disconnecting revokes the OAuth grant and its delegated card before removing
+the local Keychain session:
+
+```bash
+connection-hub host disconnect
+```
 
 The client entry launches this common local MCP helper:
 

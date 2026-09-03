@@ -2,12 +2,23 @@ from __future__ import annotations
 
 import io
 import json
+import time
+from types import SimpleNamespace
 
 import anyio
 
 from connection_hub_cli import cli
+from connection_hub_cli.authorization.session import OAuthSessionStore
 from connection_hub_cli.clients.adapters import ClaudeDesktopAdapter
 from connection_hub_cli.clients.service import ClientService
+from connection_hub_cli.management import (
+    DEFAULT_MANAGEMENT_SCOPE,
+    ConsentRecovery,
+    ManagementDenial,
+    ManagementRequest,
+    ManagementResult,
+    ManagementTarget,
+)
 from connection_hub_cli.models import HelperLaunch, ProbeResult
 from connection_hub_cli.profiles import ProfileService
 from connection_hub_cli.state import InstallationStore, ProfileStore
@@ -76,6 +87,40 @@ class _Host:
         self.calls.append(("open", {}))
         return {"operation": "open", "url": "https://hub.example/widget"}
 
+    def management_target(self):
+        return ManagementTarget.create(
+            public_base_url="https://hub.example",
+            tenant="acme",
+            project="prod",
+        )
+
+
+class _AuthorizationFlow:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def authorize_and_store(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(session=SimpleNamespace(access_id="access-cli"))
+
+
+class _ManagementService:
+    def __init__(self) -> None:
+        self.calls: list[ManagementRequest] = []
+        self.results: list[ManagementResult | ManagementDenial] = []
+
+    async def execute(self, request: ManagementRequest):
+        self.calls.append(request)
+        return self.results.pop(0)
+
+    async def disconnect(self, target_key: str):
+        return SimpleNamespace(access_id="access-cli", target_key=target_key)
+
+
+class _OAuthRepository:
+    def credential_present(self, _session_id: str) -> bool:
+        return True
+
 
 def _services(tmp_path):
     profiles = ProfileStore(tmp_path / "profiles.json")
@@ -105,7 +150,55 @@ def _services(tmp_path):
         profile_service=profile_service,
         client_service=client_service,
         host_service=_Host(),
+        oauth_sessions=OAuthSessionStore(tmp_path / "oauth-sessions.json"),
+        oauth_repository=_OAuthRepository(),
+        authorization_flow=_AuthorizationFlow(),
+        management_service=_ManagementService(),
         adapters={},
+    )
+
+
+def _management_result(request: ManagementRequest) -> ManagementResult:
+    return ManagementResult(
+        operation=request.operation,
+        resource=request.target.resource,
+        invocation_id=request.invocation_id,
+        replay=False,
+        authority={"access_id": "access-cli"},
+        result={
+            "application_id": request.application_id,
+            "state": "completed",
+            "changed_application_ids": [request.application_id],
+            "generation": "generation-2",
+        },
+    )
+
+
+def _management_denial(
+    request: ManagementRequest,
+    *,
+    expires_at: int | None = None,
+) -> ManagementDenial:
+    return ManagementDenial(
+        status=403,
+        code="delegated_request_permit_required",
+        retryable=False,
+        recovery=ConsentRecovery(
+            authorization_url=(
+                "https://hub.example/api/integrations/bundles/acme/prod/"
+                "connection-hub%401-0/widgets/connections_settings?request=opaque"
+            ),
+            access_id="access-cli",
+            resource=request.target.resource,
+            operation=request.operation,
+            application_id=request.application_id,
+            invocation_id=request.invocation_id,
+            request_digest=request.request_digest,
+            card_revision=4,
+            catalog_version="catalog-7",
+            expires_at=(int(time.time()) + 600 if expires_at is None else expires_at),
+            choices=("allow_once", "allow_always"),
+        ),
     )
 
 
@@ -593,3 +686,203 @@ def test_client_commands_report_reload_and_running_process_boundary(
     removed = json.loads(capsys.readouterr().out)
     assert removed["running_helper_stopped"] is False
     assert removed["server_card_revoked"] is False
+
+
+def test_host_authorize_uses_selected_target_and_renders_no_credential(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "host",
+            "authorize",
+            "--client-id",
+            "provisioned-client",
+            "--wait-seconds",
+            "5",
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == {
+        "access_id": "access-cli",
+        "authorized": True,
+        "credential": "stored",
+        "target": {
+            "project": "prod",
+            "resource": "urn:kdcube:management:deployment:acme:prod",
+            "tenant": "acme",
+        },
+    }
+    call = services.authorization_flow.calls[0]
+    assert call["target_key"] == "endpoint:https://hub.example:acme:prod"
+    assert call["provisioned_client_id"] == "provisioned-client"
+    assert call["scope"] == DEFAULT_MANAGEMENT_SCOPE
+
+
+def test_host_authorize_can_print_manual_browser_url(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+
+    async def authorize_and_store(**kwargs):
+        opener = kwargs["browser_opener"]
+        assert opener("https://hub.example/oauth/authorize?state=public-state") is True
+        return SimpleNamespace(session=SimpleNamespace(access_id="access-cli"))
+
+    services.authorization_flow.authorize_and_store = authorize_and_store
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(["host", "authorize", "--no-open", "--wait-seconds", "5"])
+
+    assert result == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["authorized"] is True
+    assert "Open this authorization URL in a browser:" in captured.err
+    assert "state=public-state" in captured.err
+
+
+def test_host_disconnect_revokes_before_reporting_local_removal(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(["host", "disconnect"])
+
+    assert result == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "access_id": "access-cli",
+        "disconnected": True,
+        "local_credential_removed": True,
+        "server_card_revoked": True,
+        "target": {
+            "project": "prod",
+            "resource": "urn:kdcube:management:deployment:acme:prod",
+            "tenant": "acme",
+        },
+    }
+
+
+def test_noninteractive_reload_returns_request_bound_recovery(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    target = services.host_service.management_target()
+    request = ManagementRequest.reload(
+        target,
+        application_id="connection-hub@1-0",
+        invocation_id="reload-1",
+    )
+    services.management_service.results = [_management_denial(request)]
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "host",
+            "reload",
+            "connection-hub@1-0",
+            "--invocation-id",
+            "reload-1",
+            "--no-open",
+        ]
+    )
+
+    assert result == 3
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["recovery"]["invocation_id"] == "reload-1"
+    assert payload["recovery"]["request_digest"] == request.request_digest
+    assert payload["recovery"]["authorization_url"].startswith("https://hub.example/")
+
+
+def test_interactive_reload_retries_the_same_request_after_browser_approval(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    target = services.host_service.management_target()
+    request = ManagementRequest.reload(
+        target,
+        application_id="connection-hub@1-0",
+        invocation_id="reload-1",
+    )
+    services.management_service.results = [
+        _management_denial(request),
+        _management_result(request),
+    ]
+    opened: list[str] = []
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+    monkeypatch.setattr(cli.sys, "stdin", _InteractiveInput())
+    monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.append(url) is None)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+
+    result = cli.main(
+        [
+            "host",
+            "reload",
+            "connection-hub@1-0",
+            "--invocation-id",
+            "reload-1",
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is True
+    assert opened == [
+        (
+            "https://hub.example/api/integrations/bundles/acme/prod/"
+            "connection-hub%401-0/widgets/connections_settings?request=opaque"
+        )
+    ]
+    assert len(services.management_service.calls) == 2
+    assert services.management_service.calls[0] is services.management_service.calls[1]
+
+
+def test_expired_reload_recovery_never_opens_or_retries(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    target = services.host_service.management_target()
+    request = ManagementRequest.reload(
+        target,
+        application_id="connection-hub@1-0",
+        invocation_id="reload-expired",
+    )
+    services.management_service.results = [
+        _management_denial(request, expires_at=int(time.time()) - 1)
+    ]
+    opened: list[str] = []
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+    monkeypatch.setattr(cli.sys, "stdin", _InteractiveInput())
+    monkeypatch.setattr(cli.webbrowser, "open", lambda url: opened.append(url) is None)
+
+    result = cli.main(
+        [
+            "host",
+            "reload",
+            "connection-hub@1-0",
+            "--invocation-id",
+            "reload-expired",
+        ]
+    )
+
+    assert result == 3
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["recovery"]["expires_at"] < int(time.time())
+    assert opened == []
+    assert services.management_service.calls == [request]

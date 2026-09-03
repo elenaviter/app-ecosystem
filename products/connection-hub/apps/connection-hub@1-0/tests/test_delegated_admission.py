@@ -345,6 +345,7 @@ async def test_request_bound_ungranted_operation_returns_signed_exact_recovery(
         SurfacePolicyDenial(
             reason="operation_not_consented",
             description="operation not consented for this connection",
+            missing_grants=frozenset({"crm:write"}),
         ),
         matched_resource=RESOURCE,
     )
@@ -401,6 +402,8 @@ async def test_request_bound_ungranted_operation_returns_signed_exact_recovery(
     assert body["consent"]["invocation_id"] == "search-1"
     assert body["consent"]["request_digest"] == digest
     assert body["consent"]["expires_at"] == ticket.expires_at
+    assert body["consent"]["claims"] == ["crm:write"]
+    assert body["consent"]["grant"]["payload"]["claims"] == ["crm:write"]
     assert ticket.approval_context == {"application_id": "app-a@1-0"}
 
 

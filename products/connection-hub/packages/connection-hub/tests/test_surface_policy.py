@@ -171,6 +171,67 @@ def test_rest_requires_the_operation_selected_on_the_card() -> None:
     assert decision.denial.reason == "operation_not_consented"
 
 
+def test_rest_missing_operation_recovers_operation_and_its_claim_together() -> None:
+    boundary, record = _boundary(operations=[])
+    policy = managed_rest_auth_policy(
+        {
+            "mode": "managed",
+            "selected_operation_grants": True,
+            "operations": {"records.write": {"grants": ["records:write"]}},
+        }
+    )
+    assert policy is not None
+
+    decision = authorize_rest_capabilities(
+        boundary=boundary,
+        policy=policy,
+        catalog=_catalog(),
+        grant_record=record,
+        request_resource=RESOURCE,
+        operation="records.write",
+        user_roles=("user",),
+        user_permissions=("records:read",),
+    )
+
+    assert not decision.allowed
+    assert decision.denial is not None
+    assert decision.denial.reason == "operation_not_consented"
+    assert decision.denial.required_grants == frozenset({"records:write"})
+    assert decision.denial.missing_grants == frozenset({"records:write"})
+    assert decision.denial.available_grants == frozenset({"records:read"})
+
+
+def test_mcp_missing_operation_recovers_operation_and_its_claim_together() -> None:
+    boundary, record = _boundary(operations=[])
+    policy = managed_mcp_auth_policy(
+        {"mode": "managed", "selected_tool_grants": True}
+    )
+    assert policy is not None
+
+    decision = authorize_mcp_capabilities(
+        boundary=boundary,
+        policy=policy,
+        catalog=_catalog(),
+        grant_record=record,
+        request_resource=RESOURCE,
+        user_roles=("user",),
+        user_permissions=("records:read",),
+        tool_calls=[(7, "records.write")],
+    )
+
+    assert not decision.allowed
+    assert decision.denial is not None
+    assert decision.denial.reason == "operation_not_consented"
+    assert decision.denial.rpc_id == 7
+    assert decision.denial.payload is not None
+    assert decision.denial.payload["ret"]["required_grants"] == [
+        "records:write"
+    ]
+    assert decision.denial.payload["ret"]["missing_grants"] == [
+        "records:write"
+    ]
+
+
 def test_equal_tool_names_are_authorized_only_on_the_selected_resource() -> None:
     envelope = CredentialEnvelope(
         credential_kind="delegated_client_access",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,6 +54,28 @@ class _Adapter:
 
     def remove(self, _installation) -> bool:
         raise AssertionError("diagnostics must not modify client configuration")
+
+
+class _OAuthSessions:
+    def __init__(self, path) -> None:
+        self.path = path
+        self.records = [
+            SimpleNamespace(
+                session_id="a" * 64,
+                resource=("urn:kdcube:management:deployment:demo-tenant:demo-project"),
+            )
+        ]
+
+    def list(self):
+        return list(self.records)
+
+
+class _OAuthRepository:
+    def __init__(self, *, present: bool) -> None:
+        self.present = present
+
+    def credential_present(self, _session_id: str) -> bool:
+        return self.present
 
 
 def _services(tmp_path, probe):
@@ -204,3 +227,26 @@ async def test_diagnostics_reject_a_managed_entry_with_a_missing_helper(
     codes = {item.code for item in diagnostics}
     assert "helper_executable_missing" in codes
     assert "client_entry_ready" not in codes
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_verify_management_session_credential(tmp_path) -> None:
+    async def probe(**_kwargs) -> ProbeResult:
+        return ProbeResult(tool_count=1)
+
+    profiles, installations, credentials, service = _services(tmp_path, probe)
+    oauth_sessions = _OAuthSessions(tmp_path / "state" / "oauth-sessions.json")
+
+    diagnostics = await collect_diagnostics(
+        profiles=profiles,
+        installations=installations,
+        credentials=credentials,
+        profile_service=service,
+        adapters={},
+        probe=False,
+        oauth_sessions=oauth_sessions,
+        oauth_repository=_OAuthRepository(present=False),
+    )
+
+    by_code = {item.code: item for item in diagnostics}
+    assert by_code["oauth_session_credential_missing"].severity == "error"

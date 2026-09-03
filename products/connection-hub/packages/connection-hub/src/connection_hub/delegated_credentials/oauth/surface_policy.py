@@ -240,6 +240,9 @@ class SurfacePolicyDenial:
     payload: Mapping[str, Any] | None = None
     rpc_id: Any = None
     rpc_message: str = ""
+    required_grants: frozenset[str] = frozenset()
+    missing_grants: frozenset[str] = frozenset()
+    available_grants: frozenset[str] = frozenset()
 
     @property
     def is_rpc(self) -> bool:
@@ -529,6 +532,55 @@ def _decision_with_state(
     return factory(denial, **kwargs)
 
 
+def _operation_not_consented_denial(
+    *,
+    grant_record: Mapping[str, Any] | None,
+    resource: str,
+    request_resource: str,
+    surface: str,
+    operation: str,
+    required_grants: Iterable[str] = (),
+    available_grants: Iterable[str] = (),
+    rpc_id: Any = None,
+    structured_payload: bool = False,
+) -> SurfacePolicyDenial:
+    required = {str(item).strip() for item in required_grants if str(item).strip()}
+    available = {
+        str(item).strip() for item in available_grants if str(item).strip()
+    }
+    payload: Mapping[str, Any] | None = None
+    if structured_payload:
+        structured = card_boundary_denial(
+            provenance=_provenance(grant_record),
+            request=CapabilityRequest(
+                kind=CAPABILITY_OUTER_OPERATION,
+                resource=resource,
+                request_resource=request_resource,
+                surface=surface,
+                outer_operation=operation,
+            ),
+        )
+        ret = dict(structured.get("ret") or {})
+        ret.update(
+            {
+                "required_grants": sorted(required),
+                "missing_grants": sorted(required - available),
+                "available_grants": sorted(available),
+            }
+        )
+        structured["ret"] = ret
+        payload = structured
+    return SurfacePolicyDenial(
+        reason="operation_not_consented",
+        description=f"operation not consented for this connection: {operation}",
+        payload=payload,
+        rpc_id=rpc_id,
+        required_grants=frozenset(required),
+        missing_grants=frozenset(required - available),
+        available_grants=frozenset(available),
+    )
+
+
 def authorize_mcp_capabilities(
     *,
     boundary: SurfacePolicyDecision,
@@ -660,6 +712,27 @@ def authorize_mcp_capabilities(
                         rpc_id=rpc_id,
                     ),
                 )
+        if policy.selected_tool_grants and tool_name not in boundary.granted_operations:
+            return _decision_with_state(
+                boundary,
+                allowed=False,
+                available_grants=available_grants,
+                denial=_operation_not_consented_denial(
+                    grant_record=grant_record,
+                    resource=resource,
+                    request_resource=request_resource,
+                    surface="mcp",
+                    operation=tool_name,
+                    required_grants=(
+                        tool_policy.grants if tool_policy is not None else ()
+                    ),
+                    available_grants=available_grants,
+                    rpc_id=rpc_id,
+                    structured_payload=True,
+                ),
+            )
+
+        if tool_policy is not None:
             missing = sorted(set(tool_policy.grants) - available_grants)
             if missing:
                 payload = card_boundary_denial(
@@ -682,28 +755,6 @@ def authorize_mcp_capabilities(
                         rpc_id=rpc_id,
                     ),
                 )
-
-        if policy.selected_tool_grants and tool_name not in boundary.granted_operations:
-            payload = card_boundary_denial(
-                provenance=_provenance(grant_record),
-                request=CapabilityRequest(
-                    kind=CAPABILITY_OUTER_OPERATION,
-                    resource=resource,
-                    request_resource=request_resource,
-                    surface="mcp",
-                    outer_operation=tool_name,
-                ),
-            )
-            return _decision_with_state(
-                boundary,
-                allowed=False,
-                available_grants=available_grants,
-                denial=SurfacePolicyDenial(
-                    reason="operation_not_consented",
-                    payload=payload,
-                    rpc_id=rpc_id,
-                ),
-            )
 
     return _decision_with_state(
         boundary, allowed=True, available_grants=available_grants
@@ -782,17 +833,6 @@ def authorize_rest_capabilities(
                 reason="capability_removed", payload=removed
             ),
         )
-    if policy.grants and not available_grants.issuperset(policy.grants):
-        return _decision_with_state(
-            boundary,
-            allowed=False,
-            available_grants=available_grants,
-            denial=SurfacePolicyDenial(
-                reason="missing_grant",
-                description="required delegated grant is missing",
-            ),
-        )
-
     operations = dict(operation_policies or policy.operation_policies or {})
     selected = policy.selected_operation_grants or bool(operations)
     operation_policy = operations.get(operation_name)
@@ -848,31 +888,50 @@ def authorize_rest_capabilities(
                     reason="capability_removed", payload=removed
                 ),
             )
-        if operation_policy.grants and not available_grants.issuperset(
-            operation_policy.grants
-        ):
-            return _decision_with_state(
-                boundary,
-                allowed=False,
-                available_grants=available_grants,
-                denial=SurfacePolicyDenial(
-                    reason="missing_operation_grant",
-                    description=(
-                        "required delegated grant is missing for operation: "
-                        f"{operation_name}"
-                    ),
-                ),
-            )
-
     if selected and operation_name not in boundary.granted_operations:
+        required_grants = set(policy.grants)
+        if operation_policy is not None:
+            required_grants.update(operation_policy.grants)
+        return _decision_with_state(
+            boundary,
+            allowed=False,
+            available_grants=available_grants,
+            denial=_operation_not_consented_denial(
+                grant_record=grant_record,
+                resource=resource,
+                request_resource=request_resource,
+                surface="rest",
+                operation=operation_name,
+                required_grants=required_grants,
+                available_grants=available_grants,
+            ),
+        )
+
+    if policy.grants and not available_grants.issuperset(policy.grants):
         return _decision_with_state(
             boundary,
             allowed=False,
             available_grants=available_grants,
             denial=SurfacePolicyDenial(
-                reason="operation_not_consented",
+                reason="missing_grant",
+                description="required delegated grant is missing",
+            ),
+        )
+
+    if (
+        operation_policy is not None
+        and operation_policy.grants
+        and not available_grants.issuperset(operation_policy.grants)
+    ):
+        return _decision_with_state(
+            boundary,
+            allowed=False,
+            available_grants=available_grants,
+            denial=SurfacePolicyDenial(
+                reason="missing_operation_grant",
                 description=(
-                    f"operation not consented for this connection: {operation_name}"
+                    "required delegated grant is missing for operation: "
+                    f"{operation_name}"
                 ),
             ),
         )

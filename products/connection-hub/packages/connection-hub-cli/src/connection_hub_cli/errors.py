@@ -36,3 +36,7 @@ class ClientConfigurationError(ConnectionHubCliError):
 
 class HostControlError(ConnectionHubCliError):
     pass
+
+
+class AuthorizationError(ConnectionHubCliError):
+    pass

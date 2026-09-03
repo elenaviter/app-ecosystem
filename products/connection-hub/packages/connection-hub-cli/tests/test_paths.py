@@ -1,19 +1,29 @@
 from __future__ import annotations
 
-from connection_hub_cli import paths
+from pathlib import Path
+
+from connection_hub_cli.paths import STATE_DIRECTORY_ENV, StatePaths
 
 
-def test_module_mode_uses_its_current_interpreter_instead_of_a_path_command(
+def test_default_paths_use_explicit_state_directory(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
-    monkeypatch.setattr(paths.sys, "executable", "/current/environment/bin/python")
-    monkeypatch.setattr(
-        paths.shutil,
-        "which",
-        lambda _name: "/different/environment/bin/connection-hub",
-    )
+    state_root = tmp_path / "isolated-state"
+    monkeypatch.setenv(STATE_DIRECTORY_ENV, str(state_root))
 
-    launch = paths.resolve_helper_launch("/source/connection_hub_cli/__main__.py")
+    paths = StatePaths.default()
 
-    assert launch.command == "/current/environment/bin/python"
-    assert launch.prefix_args == ("-m", "connection_hub_cli")
+    assert paths.root == state_root
+    assert paths.host == state_root / "host.json"
+    assert paths.oauth_sessions == state_root / "oauth-sessions.json"
+
+
+def test_default_paths_expand_user_in_explicit_state_directory(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv(STATE_DIRECTORY_ENV, "~/connection-hub-state")
+
+    assert StatePaths.default().root == tmp_path / "connection-hub-state"

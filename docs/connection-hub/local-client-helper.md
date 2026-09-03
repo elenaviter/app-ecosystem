@@ -133,6 +133,19 @@ helper as a child process and communicates with it over stdio.
 
 ## Inspect And Repair Local State
 
+Connection Hub CLI stores non-secret metadata in the operating system's user
+configuration directory. Tests or parallel installations can select another
+root without changing the operating-system account environment:
+
+```bash
+export CONNECTION_HUB_STATE_DIR="$HOME/.connection-hub-test-state"
+```
+
+The directory contains profile, host, client-installation, and OAuth-session
+coordinates. Credentials remain in the operating-system credential store. Do
+not override `HOME` merely to move this metadata: on macOS, doing so can leave
+the process without the user's default Keychain.
+
 These commands never print the bearer:
 
 ```bash
@@ -172,6 +185,45 @@ the authenticated Connection Hub owner surface. Removing a client entry or
 local profile also does not terminate a helper process that is already
 running. Reload the client, and revoke the delegated card when access must end
 immediately.
+
+## Authorize This CLI To Manage A Running KDCube
+
+The client profiles above authorize MCP clients. A separate OAuth-managed
+caller profile authorizes this CLI to inspect and operate the selected KDCube:
+
+```bash
+connection-hub host authorize
+connection-hub host inspect
+connection-hub host surfaces connection-hub@1-0
+connection-hub host reload connection-hub@1-0
+```
+
+Use `connection-hub host authorize --no-open` when the CLI cannot launch a
+browser. The command prints the short-lived authorization URL and waits on its
+ephemeral loopback callback.
+
+Authorization first proves a disposable random write/read/remove round trip
+through the OAuth credential store. Failure stops before OAuth discovery, DCR,
+browser login, or card creation. The browser callback confirms receipt of the
+authorization response; the terminal confirms token exchange and Keychain
+storage.
+
+The selected KDCube owns the browser login and uses its configured identity
+provider. The default authorization asks for deployment inspection and public
+application-surface discovery. Reload remains demand-driven. Its first denied
+call can open a consent page containing the operation and its currently missing
+required claims, bound to the exact application, invocation ID, and request
+digest, then retry that same request after approval.
+
+The OAuth access and refresh credentials are stored as one macOS Keychain
+item. The non-secret `oauth-sessions.json` record contains the selected target,
+issuer, resource, public client ID, Keychain reference, and timestamps.
+`connection-hub status` and `connection-hub doctor` verify the corresponding
+Keychain item without printing either credential.
+
+Use `connection-hub host disconnect` to revoke the server-side OAuth grant and
+delegated card before removing the local session. The command retains local
+state when server revocation fails so the user can retry safely.
 
 ## Credential Boundary
 
@@ -224,7 +276,8 @@ its access and refresh credentials, and no manual Keychain profile is needed.
 The current helper verifies macOS Keychain. Windows Credential Manager and
 Linux Secret Service require separate platform verification. Connection Hub
 host setup composes KDCube's supported target-control library. Local targets
-support initialization and lifecycle. Endpoint targets currently support route
-resolution, reachability checks, and browser open. The planned management API
-will accept a caller credential whose live delegated card contains the exact
-KDCube management operations granted to that profile.
+support initialization and lifecycle. Local and endpoint targets support
+delegated inspection, surface discovery, and exact application reload while
+they are running. Each management request carries the OAuth credential for the
+CLI caller profile, and KDCube resolves that profile's live card before the
+operation.

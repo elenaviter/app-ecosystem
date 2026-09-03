@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from dataclasses import dataclass
@@ -10,12 +11,18 @@ from platformdirs import user_config_dir
 from connection_hub_cli.models import HelperLaunch
 
 
+STATE_DIRECTORY_ENV = "CONNECTION_HUB_STATE_DIR"
+
+
 @dataclass(frozen=True, slots=True)
 class StatePaths:
     root: Path
 
     @classmethod
     def default(cls) -> StatePaths:
+        configured = os.environ.get(STATE_DIRECTORY_ENV, "").strip()
+        if configured:
+            return cls(Path(configured).expanduser())
         return cls(Path(user_config_dir("connection-hub", appauthor=False)))
 
     @property
@@ -29,6 +36,10 @@ class StatePaths:
     @property
     def host(self) -> Path:
         return self.root / "host.json"
+
+    @property
+    def oauth_sessions(self) -> Path:
+        return self.root / "oauth-sessions.json"
 
 
 def resolve_helper_launch(argv0: str | None = None) -> HelperLaunch:
