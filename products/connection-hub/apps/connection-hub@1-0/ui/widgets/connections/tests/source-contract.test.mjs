@@ -178,3 +178,59 @@ test('the card editor shows a persisted account claim as granted, not pending', 
   const projection = source('src/features/delegatedAccess/pendingGrantProjection.ts')
   assert.match(projection, /if \(alreadyGranted\) return 'Already granted'/)
 })
+
+test('external MCP tab exposes the client endpoint, summons the connector form, and discloses tool schemas', () => {
+  const panel = source('src/features/remoteMcp/RemoteMcpPanel.tsx')
+
+  // Requirement 1: the client-facing proxy endpoint is derived from settings
+  // through the shared builder and labelled apart from the upstream endpoint.
+  assert.match(panel, /const clientEndpoint = publicMcpUrl\('remote_mcp_proxy'\)/)
+  assert.match(panel, /Client MCP endpoint/)
+  assert.match(panel, /<DoorRef value=\{clientEndpoint\}/)
+  assert.doesNotMatch(panel, /localhost|ngrok/)
+
+  // Requirement 2: the creation pane is summoned from the tab action row and
+  // leads the tab only while open; direct creation clears and closes it.
+  assert.match(panel, /const \[connectOpen, setConnectOpen\] = useState\(false\)/)
+  assert.match(panel, /className="tab-actions remote-mcp-head__actions"/)
+  assert.match(panel, /onClick=\{\(\) => setConnectOpen\(true\)\}/)
+  assert.match(panel, /connectOpen \? \[\{\s*id: 'remote-mcp-connect', title: 'Connect MCP server', content: connectorForm, lead: true,/)
+  assert.match(panel, /onClick=\{closeConnectForm\}/)
+  assert.match(panel, /resetConnectForm\(\);\s*setConnectOpen\(false\);\s*await refreshCardCatalog\(\)/)
+  // The pending upstream OAuth link survives outside the pane.
+  assert.match(panel, /remote-mcp-pending-oauth/)
+  assert.match(panel, /Open it again/)
+
+  // Requirement 3: accessible disclosures over structured schema data, keyed
+  // per connector and tool, with pending drift kept apart from accepted tools.
+  assert.match(panel, /aria-expanded=\{open\}/)
+  assert.match(panel, /aria-controls=\{bodyId\}/)
+  assert.match(panel, /summarizeSchema\(tool\.input_schema\)/)
+  assert.match(panel, /summarizeSchema\(tool\.output_schema\)/)
+  assert.match(panel, /\$\{pending \? 'pending:' : ''\}\$\{connector\.connector_id\}::\$\{tool\.name\}/)
+  assert.match(panel, /renderTools\(connector, connector\.pending_tools, true\)/)
+  assert.match(panel, /Proxy name/)
+  assert.match(panel, /Raw input schema/)
+  assert.doesNotMatch(panel, /input_schema[^\n]*\.split\(/)
+  assert.doesNotMatch(panel, /className="claim-chip" key=\{tool\.name\}/)
+
+  const schema = source('src/features/remoteMcp/toolSchema.ts')
+  assert.match(schema, /export function summarizeSchema/)
+  assert.match(schema, /isObject\(schema\.properties\)/)
+  assert.match(schema, /Array\.isArray\(schema\.required\)/)
+  assert.doesNotMatch(schema, /\.split\('\\n'\)|\.split\(','\)/)
+
+  // The copy control is shared, not duplicated.
+  const shared = source('src/components/CopyControls.tsx')
+  assert.match(shared, /export function CopyButton/)
+  assert.match(shared, /export function DoorRef/)
+  const delegated = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.match(delegated, /import \{ CopyButton, DoorRef \} from '\.\.\/\.\.\/components\/CopyControls'/)
+  assert.doesNotMatch(delegated, /^function CopyButton/m)
+  assert.doesNotMatch(delegated, /^function DoorRef/m)
+
+  const css = source('src/styles.css')
+  assert.match(css, /\.remote-mcp-client-endpoint \{/)
+  assert.match(css, /\.tool-disclosure__toggle \{/)
+  assert.match(css, /\.tool-raw__json \{[\s\S]*overflow: auto/)
+})

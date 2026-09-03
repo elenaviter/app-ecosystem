@@ -2168,3 +2168,164 @@ code {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── External MCP tab ─────────────────────────────────────────────────────── */
+
+/* Head row: the client-facing proxy endpoint every external MCP client
+   registers (always visible, even with no connector yet) beside the summoned
+   "Connect MCP server" trigger. The endpoint is labelled apart from each
+   connector's upstream Streamable HTTP endpoint on purpose: Claude receives
+   the first, Connection Hub alone calls the second. */
+.remote-mcp-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 10px;
+}
+.remote-mcp-client-endpoint {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface);
+}
+.remote-mcp-client-endpoint .door-ref { margin-top: 0; }
+.remote-mcp-client-endpoint__hint {
+  font-size: 11.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.remote-mcp-head__actions {
+  flex: 0 0 auto;
+  margin: 0;
+  padding-top: 8px;
+}
+.remote-mcp-pending-oauth {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.form-hint { display: block; margin-top: 4px; font-size: 11.5px; line-height: 1.45; }
+
+/* Discovered tools: compact disclosure rows instead of name-only chips, never a
+   card inside the connector card. The toggle is a real button (aria-expanded,
+   keyboard) and every long value wraps or scrolls inside its own area so the
+   connector never widens and nothing below it is clipped. */
+.tool-disclosures {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.tool-disclosure {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  min-width: 0;
+  overflow: hidden;
+}
+.tool-disclosure.open { border-color: var(--line-strong); background: var(--surface); }
+.tool-disclosure--pending { border-style: dashed; }
+.tool-disclosure__toggle {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.tool-disclosure__toggle:hover { color: var(--ink); }
+.tool-disclosure__toggle:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.tool-disclosure__chevron { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+.tool-disclosure__name {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.tool-disclosure__summary {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-disclosure.open .tool-disclosure__summary { display: none; }
+.tool-disclosure__count { flex: 0 0 auto; font-size: 11px; white-space: nowrap; }
+.tool-disclosure__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 10px 10px 24px;
+  border-top: 1px solid var(--line-soft);
+  min-width: 0;
+}
+.tool-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 88px) minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: baseline;
+  min-width: 0;
+}
+.tool-detail > .card-field-value { min-width: 0; }
+.tool-description { overflow-wrap: anywhere; white-space: pre-wrap; }
+.tool-params { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tool-param { min-width: 0; }
+.tool-param__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.tool-param__name { font-family: var(--mono); font-size: 11.5px; font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.tool-param__type { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.tool-param__flag { font-size: 9.5px; }
+.tool-param__desc { font-size: 12px; color: var(--text-2); line-height: 1.45; overflow-wrap: anywhere; }
+.tool-param__meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-top: 2px; min-width: 0; }
+.tool-param__meta-label { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.tool-enum { white-space: normal; overflow-wrap: anywhere; }
+.tool-note { font-size: 11.5px; margin-top: 4px; }
+.tool-code { font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; word-break: break-all; }
+.tool-technical { font-size: 12px; min-width: 0; }
+.tool-technical > summary,
+.tool-raw > summary { cursor: pointer; color: var(--muted); font-size: 11.5px; }
+.tool-technical > summary:hover,
+.tool-raw > summary:hover { color: var(--teal-dark); }
+.tool-technical__fields { margin-top: 6px; }
+.tool-raw { margin-top: 6px; min-width: 0; }
+.tool-raw__json {
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+@media (max-width: 680px) {
+  .remote-mcp-head { flex-direction: column; align-items: stretch; }
+  /* In a column the row basis would become a height; size to content. */
+  .remote-mcp-client-endpoint { flex: 0 0 auto; }
+  .remote-mcp-head__actions { padding-top: 0; justify-content: flex-end; }
+  .tool-disclosure__summary { flex-basis: 100%; }
+  .tool-disclosure__body { padding-left: 10px; }
+  .tool-detail { grid-template-columns: minmax(0, 1fr); }
+}

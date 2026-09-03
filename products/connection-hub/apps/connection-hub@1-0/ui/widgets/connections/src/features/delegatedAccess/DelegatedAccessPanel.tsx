@@ -1,6 +1,7 @@
 import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
+import { CopyButton, DoorRef } from '../../components/CopyControls';
 import { operationUrl, publicMcpUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
@@ -319,44 +320,6 @@ function ChipRow({ entries, title }: { entries: string[]; title?: (entry: string
   );
 }
 
-/** Copy-to-clipboard icon for any identifier the operator pastes elsewhere
- *  (a door address, a client id). Confirms with a check for a moment. */
-function CopyButton({ value, label }: { value: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      setCopied(false);
-    }
-  };
-  return (
-    <button
-      type="button"
-      className="icon-btn"
-      onClick={copy}
-      title={copied ? 'Copied' : label}
-      aria-label={copied ? 'Copied' : label}
-    >
-      {copied ? (
-        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-          <path d="M3.5 8.5l3 3 6-6" fill="none" stroke="currentColor" strokeWidth="1.6"
-                strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      ) : (
-        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-          <rect x="5.6" y="5.6" width="8" height="8" rx="1.8" fill="none"
-                stroke="currentColor" strokeWidth="1.4" />
-          <path d="M10.4 5.6V4.2A1.8 1.8 0 0 0 8.6 2.4H4.2A1.8 1.8 0 0 0 2.4 4.2v4.4a1.8 1.8 0 0 0 1.8 1.8h1.4"
-                fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-        </svg>
-      )}
-    </button>
-  );
-}
-
 /** One request block: a labelled, copyable command. */
 function ScriptBlock({ title, script, note }: { title: string; script: string; note?: string }) {
   return (
@@ -506,28 +469,6 @@ function ClientIdRef({ value, kind }: { value: string; kind: 'client' | 'access'
       <span className="id-kind">{label}</span>
       <code className="id-value">{value}</code>
       <CopyButton value={value} label={`Copy ${label}`} />
-    </span>
-  );
-}
-
-/** The door's resource: a long URL/pattern. Shown on one truncated line that
- *  expands to the full value on click (wrapped, selectable), with a copy
- *  button — the value operators paste into a client config. */
-function DoorRef({ value }: { value: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <span className="door-ref">
-      <code
-        className={open ? 'door-uri open' : 'door-uri'}
-        title={open ? undefined : value}
-        onClick={() => setOpen((v) => !v)}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setOpen((v) => !v); }}
-      >
-        {value}
-      </code>
-      <CopyButton value={value} label="Copy address" />
     </span>
   );
 }
