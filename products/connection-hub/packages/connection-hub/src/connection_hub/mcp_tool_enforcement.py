@@ -55,6 +55,7 @@ The worked reference is the ``productivity`` MCP surface of the
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 
@@ -106,6 +107,42 @@ def _operation_claims(requirement: Mapping[str, Any], operation: str) -> list[st
     return [_clean(c) for c in (requirement.get("claims") or []) if _clean(c)]
 
 
+@dataclass(frozen=True)
+class ResolvedToolAccount:
+    """One requirement satisfied: which provider account answered it."""
+
+    requirement_index: int
+    provider_id: str
+    connector_app_id: str
+    account_id: str
+    claims: tuple[str, ...]
+    any_of: bool = False
+
+
+@dataclass(frozen=True)
+class ToolRequirementResolution:
+    """What enforcement decided. ``denial`` is the envelope to return as the
+    tool result when the call may not proceed; otherwise ``accounts`` names
+    the account chosen for every requirement, which is how a tool declared
+    with an ``any_of`` group learns WHICH provider it is about."""
+
+    denial: dict[str, Any] | None = None
+    accounts: tuple[ResolvedToolAccount, ...] = ()
+
+    @property
+    def allowed(self) -> bool:
+        return self.denial is None
+
+    def account_for(self, index: int = 0) -> ResolvedToolAccount | None:
+        for item in self.accounts:
+            if item.requirement_index == index:
+                return item
+        return None
+
+
+AccountsLister = Callable[[str], Awaitable[Sequence[Any]]]
+
+
 async def enforce_tool_requirements(
     request: Any,
     *,
@@ -122,7 +159,48 @@ async def enforce_tool_requirements(
     credential_resolver: CredentialResolver | None = None,
     credential_view_resolver: CredentialViewResolver | None = None,
     connect_first_denial_builder: ConnectFirstDenialBuilder | None = None,
+    accounts_lister: AccountsLister | None = None,
 ) -> dict[str, Any] | None:
+    """The denial-or-None form of :func:`resolve_tool_requirements`, kept for
+    every tool that only needs to know whether it may proceed."""
+    resolution = await resolve_tool_requirements(
+        request,
+        tool_name=tool_name,
+        operation=operation,
+        requirements=requirements,
+        account_id=account_id,
+        tenant=tenant,
+        project=project,
+        hub_bundle_id=hub_bundle_id,
+        identity=identity,
+        resolution_source=resolution_source,
+        connector_app_resolver=connector_app_resolver,
+        credential_resolver=credential_resolver,
+        credential_view_resolver=credential_view_resolver,
+        connect_first_denial_builder=connect_first_denial_builder,
+        accounts_lister=accounts_lister,
+    )
+    return resolution.denial
+
+
+async def resolve_tool_requirements(
+    request: Any,
+    *,
+    tool_name: str,
+    operation: str,
+    requirements: Sequence[Mapping[str, Any]],
+    account_id: str = "",
+    tenant: str = "",
+    project: str = "",
+    hub_bundle_id: str = "connection-hub@1-0",
+    identity: Mapping[str, Any] | None = None,
+    resolution_source: Any = None,
+    connector_app_resolver: ConnectorAppResolver | None = None,
+    credential_resolver: CredentialResolver | None = None,
+    credential_view_resolver: CredentialViewResolver | None = None,
+    connect_first_denial_builder: ConnectFirstDenialBuilder | None = None,
+    accounts_lister: AccountsLister | None = None,
+) -> ToolRequirementResolution:
     """Enforce a plain MCP tool's declared connected-account requirements.
 
     ``requirements`` is the tool's ``connected_accounts`` declaration - each
@@ -167,51 +245,100 @@ async def enforce_tool_requirements(
     op = _clean(operation)
     name = _clean(tool_name)
 
-    for raw in requirements or ():
+    # Requirement loop. A flat entry must resolve (AND across entries). An
+    # ``any_of`` group resolves through its alternatives: the ones whose
+    # provider account resolves are the candidates; exactly one proceeds,
+    # several without an explicit account_id answer account_required across
+    # providers, none answers the connect-first "connect one of" denial.
+    resolved: list[ResolvedToolAccount] = []
+    for index, raw in enumerate(requirements or ()):
         if not isinstance(raw, Mapping):
             continue
         requirement = dict(raw)
-        provider_id = _clean(requirement.get("provider_id"))
-        if not provider_id:
-            continue
-        claims = _operation_claims(requirement, op)
-        if not claims:
-            continue
-        connector_app_id = (
-            _clean(requirement.get("connector_app_id"))
-            or (
-                _clean(connector_app_resolver(provider_id))
-                if connector_app_resolver is not None
-                else ""
-            )
+        group = requirement.get("any_of")
+        alternatives: list[dict[str, Any]] = (
+            [dict(item) for item in group if isinstance(item, Mapping)]
+            if isinstance(group, (list, tuple)) and group
+            else [requirement]
         )
-        failed: Any = None
-        for claim in claims:
-            credential = await credential_resolver(
-                source,
-                provider_id=provider_id,
-                connector_app_id=connector_app_id,
-                claim=claim,
-                tool_name=name,
-                account_id=_clean(account_id),
-                connection_hub_bundle_id=hub_bundle_id,
+        is_group = len(alternatives) > 1 or bool(group)
+        passed: list[tuple[dict[str, Any], list[str], Any]] = []
+        failed: list[tuple[dict[str, Any], list[str], Any]] = []
+        for alternative in alternatives:
+            provider_id = _clean(alternative.get("provider_id"))
+            if not provider_id:
+                continue
+            claims = _operation_claims(alternative, op)
+            if not claims:
+                continue
+            connector_app_id = (
+                _clean(alternative.get("connector_app_id"))
+                or (
+                    _clean(connector_app_resolver(provider_id))
+                    if connector_app_resolver is not None
+                    else ""
+                )
             )
-            if not credential.ok:
-                failed = credential
-                break
-        if failed is None:
+            failure: Any = None
+            credential: Any = None
+            for claim in claims:
+                credential = await credential_resolver(
+                    source,
+                    provider_id=provider_id,
+                    connector_app_id=connector_app_id,
+                    claim=claim,
+                    tool_name=name,
+                    account_id=_clean(account_id),
+                    connection_hub_bundle_id=hub_bundle_id,
+                )
+                if not credential.ok:
+                    failure = credential
+                    break
+            resolved_alternative = (
+                {**alternative, "connector_app_id": connector_app_id}
+                if connector_app_id and not _clean(alternative.get("connector_app_id"))
+                else alternative
+            )
+            if failure is None:
+                passed.append((resolved_alternative, claims, credential))
+            else:
+                failed.append((alternative, claims, failure))
+        if not passed and not failed:
             continue
-        # Demand ordering, identical to the named-services door: with ZERO
-        # usable accounts on the backing provider the CONNECT demand leads
-        # (the guided plan ends in the agent-grant hand-off). The requirement
-        # is passed explicitly - no named-service discovery behind a plain
-        # MCP tool.
+        if passed:
+            if is_group and len(passed) > 1 and not _clean(account_id):
+                denial = await _cross_provider_account_required(
+                    name=name,
+                    passed=passed,
+                    accounts_lister=accounts_lister,
+                )
+                if denial is not None:
+                    return ToolRequirementResolution(denial=denial)
+            alternative, claims, credential = passed[0]
+            resolved.append(
+                ResolvedToolAccount(
+                    requirement_index=index,
+                    provider_id=_clean(alternative.get("provider_id")),
+                    connector_app_id=_clean(alternative.get("connector_app_id")),
+                    account_id=_clean(getattr(credential, "account_id", "")),
+                    claims=tuple(claims),
+                    any_of=is_group,
+                )
+            )
+            continue
+        # Every alternative failed. Demand ordering, identical to the
+        # named-services door: with ZERO usable accounts on the backing
+        # provider(s) the CONNECT demand leads (the guided plan ends in the
+        # agent-grant hand-off), and for a group it names every alternative so
+        # the consent reads "connect one of". The requirements are passed
+        # explicitly - no named-service discovery behind a plain MCP tool.
         if credential_view_resolver is None:
             raise ValueError(
                 "credential_view_resolver is required for a denied requirement"
             )
         view = credential_view_resolver(request)
         grantor = _clean(view.grantor_user_id) or _clean(identity.get("user_id"))
+        all_claims = sorted({claim for _alt, claims, _cred in failed for claim in claims})
         try:
             denial = None
             if connect_first_denial_builder is not None:
@@ -222,34 +349,106 @@ async def enforce_tool_requirements(
                     namespace=name,
                     tool=name,
                     operation=op,
-                    required=claims,
-                    missing=claims,
+                    required=all_claims,
+                    missing=all_claims,
                     tenant=tenant,
                     project=project,
                     hub_bundle_id=hub_bundle_id,
-                    requirements=[requirement],
+                    requirements=[alt for alt, _claims, _cred in failed],
                 )
         except Exception:
             logger.warning(
-                "[mcp-tool-enforcement] connect-first shaping failed (tool=%s provider=%s)",
-                name, provider_id, exc_info=True,
+                "[mcp-tool-enforcement] connect-first shaping failed (tool=%s providers=%s)",
+                name, [alt.get("provider_id") for alt, _c, _f in failed], exc_info=True,
             )
             denial = None
         if denial is not None:
             logger.info(
-                "[mcp-tool-enforcement] connect leads (tool=%s operation=%s provider=%s)",
-                name, op, provider_id,
+                "[mcp-tool-enforcement] connect leads (tool=%s operation=%s providers=%s)",
+                name, op, [alt.get("provider_id") for alt, _c, _f in failed],
             )
-            return denial
+            return ToolRequirementResolution(denial=denial)
+        # Account-level consent: for a group, prefer the alternative whose
+        # failure is NOT "nothing connected" (an upgrade/grant/reconnect on a
+        # real account says more than a connect prompt for the other one).
+        _alt, _claims, chosen_failure = failed[0]
+        for alt, claims, failure in failed:
+            reason = _clean((getattr(failure, "error_payload", None) or {}).get("reason"))
+            if reason and reason != "connect_required":
+                chosen_failure = failure
+                break
         logger.info(
             "[mcp-tool-enforcement] account consent (tool=%s operation=%s provider=%s claim=%s)",
-            name, op, provider_id, failed.claim,
+            name, op, getattr(chosen_failure, "provider_id", ""), getattr(chosen_failure, "claim", ""),
         )
-        return failed.error_envelope(where=name)
-    return None
+        return ToolRequirementResolution(denial=chosen_failure.error_envelope(where=name))
+    return ToolRequirementResolution(accounts=tuple(resolved))
+
+
+async def _cross_provider_account_required(
+    *,
+    name: str,
+    passed: Sequence[tuple[dict[str, Any], list[str], Any]],
+    accounts_lister: AccountsLister | None,
+) -> dict[str, Any] | None:
+    """Several alternatives of an any_of group resolved and no account was
+    named: the same reason the broker mints for several accounts of ONE
+    provider, raised across providers, with labeled candidates so a client
+    renders the same choice UI and resends with account_id."""
+    candidates: list[dict[str, Any]] = []
+    for alternative, claims, credential in passed:
+        provider_id = _clean(alternative.get("provider_id"))
+        account_id = _clean(getattr(credential, "account_id", ""))
+        label = ""
+        email = ""
+        if accounts_lister is not None and account_id:
+            try:
+                for account in await accounts_lister(provider_id):
+                    if _clean(getattr(account, "account_id", "")) == account_id:
+                        email = _clean(getattr(account, "email", ""))
+                        label = _clean(getattr(account, "display_name", "")) or email or account_id
+                        break
+            except Exception:  # noqa: BLE001 - labels are a courtesy, never a gate
+                logger.debug("[mcp-tool-enforcement] account label lookup failed", exc_info=True)
+        candidates.append(
+            {
+                "account_id": account_id,
+                "provider_id": provider_id,
+                "connector_app_id": _clean(alternative.get("connector_app_id")),
+                "claims": list(claims),
+                "label": f"{label or account_id} ({provider_id})",
+                "email": email,
+            }
+        )
+    message = (
+        "Several connected accounts on different providers can answer this "
+        "call; choose one and resend with its account_id."
+    )
+    return {
+        "ok": False,
+        "error": {
+            "code": "account_required",
+            "message": message,
+            "where": name,
+            "retryable": True,
+        },
+        "ret": {
+            "reason": "account_required",
+            "candidates": candidates,
+            "retry_same_request": False,
+            "instructions": "Pick one account_id from candidates and call again with it set.",
+        },
+        "consent": {
+            "kind": "account_choice",
+            "reason": "account_required",
+            "tool_name": name,
+            "candidates": candidates,
+        },
+    }
 
 
 __all__ = [
+    "AccountsLister",
     "ConnectFirstDenialBuilder",
     "ConnectorAppResolver",
     "ConnectorAppsBinder",
@@ -257,4 +456,7 @@ __all__ = [
     "CredentialViewResolver",
     "bind_service_connector_apps_from_config",
     "enforce_tool_requirements",
+    "ResolvedToolAccount",
+    "ToolRequirementResolution",
+    "resolve_tool_requirements",
 ]

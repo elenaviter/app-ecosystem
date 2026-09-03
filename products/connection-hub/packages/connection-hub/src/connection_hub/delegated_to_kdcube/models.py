@@ -195,6 +195,14 @@ class ConnectorApp:
         )
 
 
+_SECRET_KEY_MARKERS = ("secret", "password", "token", "api_key", "apikey", "private_key")
+
+
+def _secret_shaped(key: str) -> bool:
+    lowered = key.strip().lower()
+    return any(marker in lowered for marker in _SECRET_KEY_MARKERS)
+
+
 @dataclass(frozen=True)
 class IntegrationProvider:
     """Connection Hub provider registry row."""
@@ -208,6 +216,17 @@ class IntegrationProvider:
     claims: dict[str, ProviderClaim] = field(default_factory=dict)
     connector_apps: dict[str, ConnectorApp] = field(default_factory=dict)
 
+    def public_adapter_config(self) -> dict[str, Any]:
+        """The instance settings a provider CONSUMER may read (IMAP/SMTP hosts,
+        API versions...). Anything secret-shaped stays out: settings are
+        per-instance operator configuration, credentials never belong here,
+        and a stray one must not travel into a catalog answer."""
+        return {
+            str(key): value
+            for key, value in dict(self.adapter_config or {}).items()
+            if not _secret_shaped(str(key))
+        }
+
     def to_dict(self, *, include_client_ids: bool = False, include_secret_refs: bool = False) -> dict[str, Any]:
         return {
             "provider_id": self.provider_id,
@@ -215,6 +234,7 @@ class IntegrationProvider:
             "adapter": self.adapter,
             "enabled": self.enabled,
             "oauth": dict(self.oauth or {}),
+            "adapter_config": self.public_adapter_config(),
             "claims": {
                 key: value.to_dict() for key, value in sorted(self.claims.items())
             },
@@ -251,14 +271,35 @@ class IntegrationProvider:
 
 @dataclass(frozen=True)
 class ToolClaimRequirement:
-    """Provider claims one KDCube tool needs from a connected account."""
+    """Provider claims one KDCube tool needs from a connected account.
+
+    Two shapes. The flat one names ONE provider: ``{provider_id, claims}``,
+    and a tool listing several flat requirements needs ALL of them (a tool
+    that reads Slack and writes Sheets needs both accounts). The ``any_of``
+    group names ALTERNATIVES: ``{"any_of": [{provider_id, claims}, ...]}``
+    means any one satisfies the tool, which is how a realm like mail is
+    declared truthfully: the provider is the user's choice of mailbox, and
+    no code can know it up front. A group carries no provider_id of its own.
+    """
 
     provider_id: str
     connector_app_id: str = ""
     claims: tuple[str, ...] = ()
     account_id: str = ""
+    any_of: tuple["ToolClaimRequirement", ...] = ()
+
+    @property
+    def is_group(self) -> bool:
+        return bool(self.any_of)
+
+    def alternatives(self) -> tuple["ToolClaimRequirement", ...]:
+        """The flat requirements this entry may be satisfied by: the group's
+        members, or the entry itself."""
+        return self.any_of if self.any_of else (self,)
 
     def to_dict(self) -> dict[str, Any]:
+        if self.any_of:
+            return {"any_of": [item.to_dict() for item in self.any_of]}
         data: dict[str, Any] = {
             "provider_id": self.provider_id,
             "claims": list(self.claims),
@@ -272,6 +313,14 @@ class ToolClaimRequirement:
     @classmethod
     def from_config(cls, value: Any) -> "ToolClaimRequirement":
         data = as_dict(value)
+        raw_group = data.get("any_of")
+        if isinstance(raw_group, (list, tuple)):
+            members = tuple(
+                item
+                for item in (cls.from_config(raw) for raw in raw_group)
+                if item.provider_id and item.claims and not item.any_of
+            )
+            return cls(provider_id="", any_of=members)
         return cls(
             provider_id=as_str(data.get("provider_id")),
             connector_app_id=as_str(data.get("connector_app_id")),
@@ -309,7 +358,7 @@ class ToolClaimPolicy:
                 ToolClaimRequirement.from_config(raw)
                 for raw in raw_requirements
             )
-            if item.provider_id and item.claims
+            if (item.provider_id and item.claims) or item.any_of
         )
         return cls(
             tool_name=as_str(tool_name),

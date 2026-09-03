@@ -460,27 +460,49 @@ class DelegatedToKdcubeBroker:
         resolved: list[dict[str, Any]] = []
         failures: list[dict[str, Any]] = []
         for index, requirement in enumerate(policy.connected_accounts):
-            selection_key = (
-                requirement.account_id
-                or selections.get(requirement.provider_id)
-                or selections.get(f"{requirement.provider_id}:{requirement.connector_app_id}")
-                or ""
-            )
-            for claim in requirement.claims:
-                result = await self.ensure_claim(
-                    provider_id=requirement.provider_id,
-                    connector_app_id=requirement.connector_app_id,
-                    claim=claim,
-                    account_id=selection_key,
+            # A flat requirement must resolve. An any_of group resolves when
+            # ANY alternative does: the first satisfied alternative counts,
+            # and only when every alternative fails do the group's failures
+            # count (all of them, so the consent can say "connect one of").
+            group_resolved: list[dict[str, Any]] = []
+            group_failures: list[dict[str, Any]] = []
+            satisfied = False
+            for alternative in requirement.alternatives():
+                selection_key = (
+                    alternative.account_id
+                    or selections.get(alternative.provider_id)
+                    or selections.get(f"{alternative.provider_id}:{alternative.connector_app_id}")
+                    or ""
                 )
-                item = {
-                    "requirement_index": index,
-                    **result.to_dict(include_credential=False),
-                }
-                if result.ok:
-                    resolved.append(item)
-                else:
-                    failures.append(item)
+                ok_items: list[dict[str, Any]] = []
+                bad_items: list[dict[str, Any]] = []
+                for claim in alternative.claims:
+                    result = await self.ensure_claim(
+                        provider_id=alternative.provider_id,
+                        connector_app_id=alternative.connector_app_id,
+                        claim=claim,
+                        account_id=selection_key,
+                    )
+                    item = {
+                        "requirement_index": index,
+                        **result.to_dict(include_credential=False),
+                    }
+                    if requirement.is_group:
+                        item["any_of"] = True
+                    (ok_items if result.ok else bad_items).append(item)
+                if not bad_items:
+                    group_resolved.extend(ok_items)
+                    satisfied = True
+                    if requirement.is_group:
+                        break
+                    continue
+                group_failures.extend(bad_items)
+                if not requirement.is_group:
+                    # Flat requirement: every claim reports on its own, as before.
+                    group_resolved.extend(ok_items)
+            resolved.extend(group_resolved)
+            if not satisfied:
+                failures.extend(group_failures)
         if failures:
             return {
                 "ok": False,
