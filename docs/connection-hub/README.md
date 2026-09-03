@@ -1,7 +1,7 @@
 ---
 id: connection-hub-documentation
 title: Connection Hub Documentation
-summary: Maps the Connection Hub Python package, KDCube application, authority architecture, integration recipes, and planned standalone host.
+summary: Maps the Connection Hub packages, KDCube application, local helpers, authority architecture, integration recipes, and planned standalone host.
 tags:
   - connection-hub
   - documentation
@@ -12,6 +12,7 @@ keywords:
 see_also:
   - ./quick-start-local.md
   - ./local-client-helper.md
+  - ./macos-user-presence-helper.md
   - ./configuration-and-capabilities.md
   - ./connection-hub-architecture.md
   - ./testing/end-to-end-acceptance.md
@@ -32,8 +33,8 @@ canonical
 [Connection Hub architecture](connection-hub-architecture.md) for the semantic
 model, storage authorities, surfaces, and host boundaries.
 
-This folder documents the product's current package and application plus its
-planned standalone host:
+This folder documents the product's current packages and application, its
+local helper boundaries, and its planned standalone host:
 
 - **[`package/`](package/extraction-architecture.md)** - the Python package
   (`connection-hub` on PyPI): the authority domain, boundary and client SDK, actor
@@ -54,6 +55,9 @@ planned standalone host:
 - **[Local MCP client helper](local-client-helper.md)** - KDCube host selection,
   macOS Keychain custody, one stdio bridge, and verified registration paths for
   Claude Code, Claude Desktop, Hermes, OpenClaw, and other stdio clients.
+- **[macOS user-presence helper](macos-user-presence-helper.md)** - the
+  pre-release, separately signed Rust boundary for protected KDCube management
+  OAuth sessions and exact request-bound operations.
 
 For the shortest working path from an empty machine to an external MCP client,
 use [Run Connection Hub Locally With KDCube](quick-start-local.md).
@@ -72,6 +76,7 @@ The package contracts are:
 - [Configuration and capabilities overview](configuration-and-capabilities.md)
 - [Run Connection Hub locally with KDCube](quick-start-local.md)
 - [Connect local MCP clients without bearer files](local-client-helper.md)
+- [Protect KDCube management on macOS with user presence](macos-user-presence-helper.md)
 - [Connection Hub architecture and semantic requirements](connection-hub-architecture.md)
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
 - [Delegated access cards](package/delegated-cards.md)

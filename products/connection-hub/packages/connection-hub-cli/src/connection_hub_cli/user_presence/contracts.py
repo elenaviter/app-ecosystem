@@ -5,22 +5,24 @@ import hmac
 import ipaddress
 import json
 import re
-from dataclasses import dataclass, field
+import unicodedata
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
 from connection_hub_cli.user_presence.errors import UserPresenceError
 
-_CONTRACT_DOMAIN = "connection-hub-user-presence-request-v1"
+_CONTRACT_DOMAIN = "connection-hub-bound-http-operation-v2"
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _HTTP_METHOD_RE = re.compile(r"^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]{0,31}$")
-_PROFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _ACCESS_ID_RE = re.compile(r"^[^\s\x00-\x1f\x7f]{1,256}$")
 _MAX_BODY_BYTES = 8 * 1024 * 1024
+_MAX_SYSTEM_PROMPT_CHARS = 240
 
 
 def _invalid(message: str) -> UserPresenceError:
-    return UserPresenceError("invalid_approval_request", message)
+    return UserPresenceError("invalid_bound_operation", message)
 
 
 def _bounded_text(value: str, *, field_name: str, maximum: int) -> str:
@@ -30,7 +32,7 @@ def _bounded_text(value: str, *, field_name: str, maximum: int) -> str:
     if (
         not candidate
         or len(candidate) > maximum
-        or any(ord(char) < 32 or ord(char) == 127 for char in candidate)
+        or any(unicodedata.category(char).startswith("C") for char in candidate)
     ):
         raise _invalid(
             f"{field_name} must contain between 1 and {maximum} visible characters."
@@ -42,11 +44,11 @@ def _bounded_text(value: str, *, field_name: str, maximum: int) -> str:
     return candidate
 
 
-def _normalize_profile(value: str) -> str:
-    candidate = _bounded_text(value, field_name="caller_profile", maximum=64)
-    if not _PROFILE_RE.fullmatch(candidate):
+def _normalize_identifier(value: str, *, field_name: str) -> str:
+    candidate = _bounded_text(value, field_name=field_name, maximum=64)
+    if not _IDENTIFIER_RE.fullmatch(candidate):
         raise _invalid(
-            "caller_profile must start with a letter or digit and use only letters, "
+            f"{field_name} must start with a letter or digit and use only letters, "
             "digits, '.', '_', or '-'."
         )
     return candidate
@@ -69,28 +71,43 @@ def _is_loopback(hostname: str) -> bool:
         return False
 
 
+def _normalize_hostname(hostname: str) -> str:
+    candidate = hostname.rstrip(".").lower()
+    if ":" in candidate:
+        try:
+            return f"[{ipaddress.IPv6Address(candidate).compressed}]"
+        except ValueError:
+            raise _invalid("target contains an invalid IPv6 address.") from None
+    try:
+        candidate = candidate.encode("idna").decode("ascii")
+    except UnicodeError:
+        raise _invalid("target contains an invalid hostname.") from None
+    if not candidate or len(candidate) > 253:
+        raise _invalid("target hostname must contain at most 253 characters.")
+    return candidate
+
+
 def _normalize_target(value: str) -> str:
     target = _bounded_text(value, field_name="target", maximum=2048)
     try:
         parsed = urlsplit(target)
+        hostname = parsed.hostname
         port = parsed.port
     except ValueError:
         raise _invalid("target must be a valid absolute HTTP endpoint.") from None
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not hostname:
         raise _invalid("target must be an absolute HTTP or HTTPS endpoint.")
     if parsed.username is not None or parsed.password is not None:
         raise _invalid("target must not contain user information or credentials.")
     if parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
         raise _invalid("target must contain only an origin; put the route in path.")
-    if parsed.scheme == "http" and not _is_loopback(parsed.hostname):
+    if scheme == "http" and not _is_loopback(hostname):
         raise _invalid("plain HTTP targets must resolve to the local loopback host.")
 
-    hostname = parsed.hostname.rstrip(".").lower()
-    if ":" in hostname:
-        hostname = f"[{hostname}]"
-    default_port = 443 if parsed.scheme == "https" else 80
-    authority = hostname if port in {None, default_port} else f"{hostname}:{port}"
-    return f"{parsed.scheme}://{authority}"
+    normalized_host = _normalize_hostname(hostname)
+    normalized_port = port or (443 if scheme == "https" else 80)
+    return f"{scheme}://{normalized_host}:{normalized_port}"
 
 
 def _normalize_path(value: str) -> str:
@@ -131,9 +148,48 @@ def request_body_bytes(body: bytes | bytearray | memoryview | str | None) -> byt
     return value
 
 
+def _normalize_operation_fields(
+    *,
+    target_key: str,
+    tenant: str,
+    project: str,
+    caller_profile: str,
+    access_id: str,
+    resource: str,
+    operation: str,
+    method: str,
+    target: str,
+    path: str,
+    display_summary: str,
+) -> dict[str, str]:
+    return {
+        "target_key": _bounded_text(
+            target_key, field_name="target_key", maximum=512
+        ),
+        "tenant": _normalize_identifier(tenant, field_name="tenant"),
+        "project": _normalize_identifier(project, field_name="project"),
+        "caller_profile": _normalize_identifier(
+            caller_profile, field_name="caller_profile"
+        ),
+        "access_id": _normalize_access_id(access_id),
+        "resource": _bounded_text(resource, field_name="resource", maximum=128),
+        "operation": _bounded_text(
+            operation, field_name="operation", maximum=64
+        ),
+        "method": _normalize_method(method),
+        "target": _normalize_target(target),
+        "path": _normalize_path(path),
+        "display_summary": _bounded_text(
+            display_summary, field_name="display_summary", maximum=120
+        ),
+    }
+
+
 def _canonical_payload(
     *,
     target_key: str,
+    tenant: str,
+    project: str,
     caller_profile: str,
     access_id: str,
     resource: str,
@@ -155,9 +211,11 @@ def _canonical_payload(
         "method": method,
         "operation": operation,
         "path": path,
+        "project": project,
         "resource": resource,
         "target": target,
         "target_key": target_key,
+        "tenant": tenant,
     }
     return json.dumps(
         value,
@@ -167,9 +225,23 @@ def _canonical_payload(
     ).encode("ascii")
 
 
-def canonical_request_digest(
+def _operation_digest(
+    normalized: dict[str, str], *, body_sha256: str, body_length: int
+) -> str:
+    return hashlib.sha256(
+        _canonical_payload(
+            **normalized,
+            body_sha256=body_sha256,
+            body_length=body_length,
+        )
+    ).hexdigest()
+
+
+def canonical_operation_digest(
     *,
     target_key: str,
+    tenant: str,
+    project: str,
     caller_profile: str,
     access_id: str,
     resource: str,
@@ -180,8 +252,10 @@ def canonical_request_digest(
     body: bytes | bytearray | memoryview | str | None = None,
     display_summary: str,
 ) -> str:
-    normalized = _normalize_request_fields(
+    normalized = _normalize_operation_fields(
         target_key=target_key,
+        tenant=tenant,
+        project=project,
         caller_profile=caller_profile,
         access_id=access_id,
         resource=resource,
@@ -192,49 +266,18 @@ def canonical_request_digest(
         display_summary=display_summary,
     )
     body_value = request_body_bytes(body)
-    return hashlib.sha256(
-        _canonical_payload(
-            **normalized,
-            body_sha256=hashlib.sha256(body_value).hexdigest(),
-            body_length=len(body_value),
-        )
-    ).hexdigest()
-
-
-def _normalize_request_fields(
-    *,
-    target_key: str,
-    caller_profile: str,
-    access_id: str,
-    resource: str,
-    operation: str,
-    method: str,
-    target: str,
-    path: str,
-    display_summary: str,
-) -> dict[str, Any]:
-    return {
-        "target_key": _bounded_text(
-            target_key, field_name="target_key", maximum=1024
-        ),
-        "caller_profile": _normalize_profile(caller_profile),
-        "access_id": _normalize_access_id(access_id),
-        "resource": _bounded_text(resource, field_name="resource", maximum=128),
-        "operation": _bounded_text(
-            operation, field_name="operation", maximum=64
-        ),
-        "method": _normalize_method(method),
-        "target": _normalize_target(target),
-        "path": _normalize_path(path),
-        "display_summary": _bounded_text(
-            display_summary, field_name="display_summary", maximum=180
-        ),
-    }
+    return _operation_digest(
+        normalized,
+        body_sha256=hashlib.sha256(body_value).hexdigest(),
+        body_length=len(body_value),
+    )
 
 
 @dataclass(frozen=True, slots=True)
-class ApprovalRequest:
+class BoundHttpOperation:
     target_key: str
+    tenant: str
+    project: str
     caller_profile: str
     access_id: str
     resource: str
@@ -244,12 +287,14 @@ class ApprovalRequest:
     path: str
     body_sha256: str
     body_length: int
-    request_digest: str
+    operation_digest: str
     display_summary: str
 
     def __post_init__(self) -> None:
-        normalized = _normalize_request_fields(
+        normalized = _normalize_operation_fields(
             target_key=self.target_key,
+            tenant=self.tenant,
+            project=self.project,
             caller_profile=self.caller_profile,
             access_id=self.access_id,
             resource=self.resource,
@@ -261,8 +306,11 @@ class ApprovalRequest:
         )
         for name, value in normalized.items():
             object.__setattr__(self, name, value)
+        self._validate_derived_fields(normalized)
+
+    def _validate_derived_fields(self, normalized: dict[str, str]) -> None:
         if (
-            not isinstance(self.body_length, int)
+            type(self.body_length) is not int
             or not 0 <= self.body_length <= _MAX_BODY_BYTES
         ):
             raise _invalid(f"body_length must be between 0 and {_MAX_BODY_BYTES}.")
@@ -270,25 +318,31 @@ class ApprovalRequest:
             self.body_sha256
         ):
             raise _invalid("body_sha256 must be a lowercase SHA-256 digest.")
-        if not isinstance(self.request_digest, str) or not _DIGEST_RE.fullmatch(
-            self.request_digest
+        if not isinstance(self.operation_digest, str) or not _DIGEST_RE.fullmatch(
+            self.operation_digest
         ):
-            raise _invalid("request_digest must be a lowercase SHA-256 digest.")
-        expected = hashlib.sha256(
-            _canonical_payload(
-                **normalized,
-                body_sha256=self.body_sha256,
-                body_length=self.body_length,
+            raise _invalid("operation_digest must be a lowercase SHA-256 digest.")
+        expected = _operation_digest(
+            normalized,
+            body_sha256=self.body_sha256,
+            body_length=self.body_length,
+        )
+        if not hmac.compare_digest(self.operation_digest, expected):
+            raise _invalid(
+                "operation_digest does not match the bound operation fields."
             )
-        ).hexdigest()
-        if not hmac.compare_digest(self.request_digest, expected):
-            raise _invalid("request_digest does not match the bound request fields.")
+        if len(self.system_prompt()) > _MAX_SYSTEM_PROMPT_CHARS:
+            raise _invalid(
+                "operation and deployment coordinates are too long for the system prompt."
+            )
 
     @classmethod
     def bind(
         cls,
         *,
         target_key: str,
+        tenant: str,
+        project: str,
         caller_profile: str,
         access_id: str,
         resource: str,
@@ -298,9 +352,11 @@ class ApprovalRequest:
         path: str,
         body: bytes | bytearray | memoryview | str | None = None,
         display_summary: str,
-    ) -> ApprovalRequest:
-        normalized = _normalize_request_fields(
+    ) -> BoundHttpOperation:
+        normalized = _normalize_operation_fields(
             target_key=target_key,
+            tenant=tenant,
+            project=project,
             caller_profile=caller_profile,
             access_id=access_id,
             resource=resource,
@@ -313,38 +369,51 @@ class ApprovalRequest:
         body_value = request_body_bytes(body)
         body_sha256 = hashlib.sha256(body_value).hexdigest()
         body_length = len(body_value)
-        request_digest = hashlib.sha256(
-            _canonical_payload(
-                **normalized,
-                body_sha256=body_sha256,
-                body_length=body_length,
-            )
-        ).hexdigest()
         return cls(
             **normalized,
             body_sha256=body_sha256,
             body_length=body_length,
-            request_digest=request_digest,
+            operation_digest=_operation_digest(
+                normalized,
+                body_sha256=body_sha256,
+                body_length=body_length,
+            ),
         )
 
-    def matches_body(
-        self, body: bytes | bytearray | memoryview | str | None
-    ) -> bool:
-        body_value = request_body_bytes(body)
-        return self.body_length == len(body_value) and hmac.compare_digest(
-            self.body_sha256, hashlib.sha256(body_value).hexdigest()
+    def validate_integrity(self) -> None:
+        normalized = _normalize_operation_fields(
+            target_key=self.target_key,
+            tenant=self.tenant,
+            project=self.project,
+            caller_profile=self.caller_profile,
+            access_id=self.access_id,
+            resource=self.resource,
+            operation=self.operation,
+            method=self.method,
+            target=self.target,
+            path=self.path,
+            display_summary=self.display_summary,
+        )
+        if any(getattr(self, name) != value for name, value in normalized.items()):
+            raise _invalid("bound operation fields are not normalized.")
+        self._validate_derived_fields(normalized)
+
+    def matches_body(self, body: bytes) -> bool:
+        return self.body_length == len(body) and hmac.compare_digest(
+            self.body_sha256, hashlib.sha256(body).hexdigest()
         )
 
     def system_prompt(self) -> str:
-        host = urlsplit(self.target).hostname or self.target
         return (
-            f"{self.display_summary}. Operation: {self.operation}; resource: "
-            f"{self.resource}; host: {host}; profile: {self.caller_profile}."
+            f"{self.operation} for {self.tenant}/{self.project} at {self.target}; "
+            f"{self.method} {self.resource}"
         )
 
     def to_safe_dict(self) -> dict[str, Any]:
         return {
             "target_key": self.target_key,
+            "tenant": self.tenant,
+            "project": self.project,
             "caller_profile": self.caller_profile,
             "access_id": self.access_id,
             "resource": self.resource,
@@ -354,64 +423,6 @@ class ApprovalRequest:
             "path": self.path,
             "body_sha256": self.body_sha256,
             "body_length": self.body_length,
-            "request_digest": self.request_digest,
+            "operation_digest": self.operation_digest,
             "display_summary": self.display_summary,
         }
-
-
-@dataclass(frozen=True, slots=True)
-class ApprovalResult:
-    approved: bool
-    mechanism: str
-    request_digest: str
-    signed_proof: bytes | None = field(default=None, repr=False)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.approved, bool):
-            raise UserPresenceError(
-                "invalid_approval_result", "approved must be a Boolean value."
-            )
-        mechanism = _bounded_text(
-            self.mechanism, field_name="mechanism", maximum=128
-        )
-        object.__setattr__(self, "mechanism", mechanism)
-        if not isinstance(self.request_digest, str) or not _DIGEST_RE.fullmatch(
-            self.request_digest
-        ):
-            raise UserPresenceError(
-                "invalid_approval_result",
-                "request_digest must be a lowercase SHA-256 digest.",
-            )
-        if self.signed_proof is not None and (
-            not isinstance(self.signed_proof, bytes)
-            or len(self.signed_proof) > 65536
-        ):
-            raise UserPresenceError(
-                "invalid_approval_result",
-                "signed_proof must be bytes no larger than 65536 bytes.",
-            )
-
-    def authorizes(self, request: ApprovalRequest) -> bool:
-        return self.approved and hmac.compare_digest(
-            self.request_digest, request.request_digest
-        )
-
-    def to_safe_dict(self) -> dict[str, Any]:
-        return {
-            "approved": self.approved,
-            "mechanism": self.mechanism,
-            "request_digest": self.request_digest,
-            "signed_proof_present": self.signed_proof is not None,
-        }
-
-
-def require_matching_approval(
-    request: ApprovalRequest, result: ApprovalResult
-) -> None:
-    if not result.approved:
-        raise UserPresenceError("approval_denied", "User presence was not approved.")
-    if not result.authorizes(request):
-        raise UserPresenceError(
-            "approval_digest_mismatch",
-            "The user-presence result does not match this request.",
-        )

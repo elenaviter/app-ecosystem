@@ -49,12 +49,20 @@ connection-hub setup
 See
 [Connect Local MCP Clients Without Bearer Files](docs/connection-hub/local-client-helper.md).
 
+The pre-release
+[macOS user-presence helper](docs/connection-hub/macos-user-presence-helper.md)
+is a separately signed Rust application for exact KDCube management operations.
+It keeps the complete management OAuth session inside its provisioned Keychain
+boundary and returns only secret-free evidence. It is not yet wired into the
+shared `connection-hub` command.
+
 ```text
 Connection Hub
 ├── product root: products/connection-hub
 ├── KDCube application: products/connection-hub/apps/connection-hub@1-0
 ├── Python library and client SDK: products/connection-hub/packages/connection-hub
 ├── local client helper: products/connection-hub/packages/connection-hub-cli
+├── macOS presence helper: products/connection-hub/packages/connection-hub-presence-helper-macos
 └── standalone service host: planned under products/connection-hub/services
 ```
 
@@ -66,12 +74,13 @@ the middle of its run, durable records and workspaces, native agents and
 agents that run their own loop (such as LangGraph or Claude Code) under
 one contract. Its packaging starts after the Connection Hub package.
 
-## Packages
+## Packages And Native Components
 
-| Distribution | Status | Contract |
+| Component | Status | Contract |
 | --- | --- | --- |
 | [`connection-hub`](products/connection-hub/packages/connection-hub/README.md) | Alpha implementation | Delegated cards and catalogs, OAuth and connected-account policy, managed-boundary admission, and direct protected-service admission. |
 | [`connection-hub-cli`](products/connection-hub/packages/connection-hub-cli/README.md) | Alpha implementation | KDCube host selection, local caller profiles, macOS Keychain custody, one stdio MCP bridge, and registration adapters for external MCP clients. |
+| [`ConnectionHubPresenceHelper`](products/connection-hub/packages/connection-hub-presence-helper-macos/README.md) | Pre-release | Signed Rust executor for protected KDCube management OAuth sessions and three fixed request-bound operations on macOS. |
 | [`app-foundation`](packages/app-foundation/README.md) | `0.0.1` planning marker | Future host-neutral identity, secrets, storage, HTTP, event, and observability primitives. |
 | [`service-foundation`](packages/service-foundation/README.md) | `0.0.1` planning marker | Future standalone service composition, authentication, token, config, health, and migration contracts. |
 | [`harness-foundation`](packages/harness-foundation/README.md) | `0.0.1` planning marker | Future distributed agent-turn, event, record, and workspace harness. |
@@ -79,7 +88,8 @@ one contract. Its packaging starts after the Connection Hub package.
 
 The planning markers reserve names; they do not claim an implemented API.
 `connection-hub` is the first implemented distribution and is used by the
-Connection Hub application now.
+Connection Hub application now. The native presence helper is source-complete
+but remains outside the supported CLI path until its release gates pass.
 
 ## Examples
 

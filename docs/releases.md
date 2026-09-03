@@ -12,6 +12,7 @@ release.
 | Connection Hub product | `products/connection-hub` | `products/connection-hub/release.yaml` | `products/connection-hub/release.yaml` | Product tag and component workflows |
 | `connection-hub` Python distribution | `products/connection-hub/packages/connection-hub` | `pyproject.toml` and `connection_hub.__version__` | Product `release.yaml` | `publish-python-package.yml` |
 | `connection-hub-cli` Python distribution | `products/connection-hub/packages/connection-hub-cli` | `pyproject.toml` and `connection_hub_cli.__version__` | Product `release.yaml` | `publish-python-package.yml` |
+| Connection Hub macOS presence helper | `products/connection-hub/packages/connection-hub-presence-helper-macos` | Product `release.yaml`; injected into the binary and app metadata by `build-app.sh --version` | Product `release.yaml` | Signed and notarized zip plus manifest on the matching GitHub release |
 | Connection Hub KDCube app | `products/connection-hub/apps/connection-hub@1-0` | Bundle release record | `products/connection-hub/apps/connection-hub@1-0/release.yaml` | KDCube bundle source ref |
 | `app-foundation` | `packages/app-foundation` | `pyproject.toml` and `app_foundation.__version__` | `packages/app-foundation/release.yaml` when released | `publish-python-package.yml` |
 | `service-foundation` | `packages/service-foundation` | `pyproject.toml` and `service_foundation.__version__` | `packages/service-foundation/release.yaml` when released | `publish-python-package.yml` |
@@ -63,6 +64,43 @@ For each piece selected for release:
 The workflow repeats tests, build, metadata checks, and clean-wheel smoke. For
 Connection Hub it also verifies that the product release record, distribution
 metadata, import version, workflow input, and source tag all agree.
+
+## Native macOS helper gate
+
+The Connection Hub macOS presence helper is released with the Connection Hub
+product version. Before tagging that product release:
+
+1. Add the helper path and exact version to the product `release.yaml` component
+   map.
+2. Run locked Rust tests, strict Clippy, formatting, release checking, the
+   dependency advisory scan, and the packaging lifecycle suite.
+3. Build with `scripts/build-app.sh` using the Developer ID Application
+   identity, exact 10-character Team ID, matching provisioning profile, and a
+   `notarytool` keychain profile.
+4. Complete the real provisioned interactive test while a tester is present.
+   Cancellation must dispatch no operation; approval must dispatch one exact
+   operation; changed input must require another prompt; cleanup must remove the
+   disposable protected item.
+5. Verify the candidate's signature, entitlement, embedded profile,
+   notarization ticket, Gatekeeper assessment, version, architecture, archive
+   checksum, and absence of the interactive-check binary and disposable test
+   values.
+6. Install, upgrade, and uninstall from clean macOS accounts. A failed candidate
+   must preserve the current version, and failed protected-session cleanup must
+   preserve the installed helper.
+7. Attach `ConnectionHubPresenceHelper-<version>.zip` and
+   `manifest-<version>.txt` to the GitHub release for the exact product tag.
+   Publish the expected Team ID and archive SHA-256 in the release notes.
+8. Verify the documented `connection-hub` integration against the released
+   artifact before announcing the user-presence path as supported.
+
+The canonical user and maintainer procedure is
+[Protect KDCube Management On macOS With User Presence](connection-hub/macos-user-presence-helper.md).
+
+The repository currently has no workflow that publishes this native artifact.
+`publish-python-package.yml` publishes Python distributions only. Add a
+reviewed native release workflow or execute and record an explicit supervised
+GitHub-release attachment procedure before the first helper release.
 
 PyPI versions are immutable. Correct a release with a new calendar version.
 After a package is visible on PyPI, consumers may raise their requirement floor

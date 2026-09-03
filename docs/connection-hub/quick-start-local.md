@@ -8,6 +8,7 @@ keywords: [Connection Hub local install, external MCP proxy, automation credenti
 see_also:
   - ./README.md
   - ./local-client-helper.md
+  - ./macos-user-presence-helper.md
   - ./connection-hub-architecture.md
   - ./testing/end-to-end-acceptance.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/quick-start-README.md
@@ -96,21 +97,85 @@ Endpoint setup resolves and probes the existing browser and MCP routes, records
 their non-secret coordinates, and opens the browser application. The user then
 signs in through that deployment's configured identity provider.
 
-In the current release, endpoint setup performs route construction,
-reachability probes, and browser open. It does not yet authorize the CLI as a
-remote management caller, so endpoint targets do not currently support start,
-stop, configuration, reload, or logs.
+Endpoint setup performs route construction, reachability probes, and browser
+open. Authorize the CLI separately through the selected deployment:
 
-The remote-management extension uses Connection Hub's existing delegated-card
-model. The user signs in to the target KDCube in the browser and approves a CLI
-caller profile containing selected KDCube management resources and operations.
-The CLI receives a credential bound to that card through Authorization Code
-with PKCE and keeps it in the operating-system credential store. A person,
-agent, or automation may then invoke the CLI; KDCube resolves the card on every
-management call. Missing operations can request user consent, and edits or
-revocation take effect on the next call. The endpoint must already be running
-for login and admission; recovery of a completely stopped deployment uses its
-local or infrastructure control plane.
+```bash
+connection-hub host authorize
+connection-hub host inspect
+connection-hub host surfaces connection-hub@1-0
+```
+
+The browser uses the identity provider already configured by that KDCube,
+including Google, Cognito, or another configured provider. The CLI creates a
+PKCE verifier and an ephemeral localhost callback, discovers KDCube's
+Connection Hub authorization server, and asks for a delegated caller profile
+scoped to this tenant and project. The default request contains only deployment
+inspection and application-surface discovery. The OAuth access and refresh
+credentials remain together in macOS Keychain.
+
+Before contacting KDCube, `host authorize` proves a disposable random
+write/read/remove round trip through that credential store. A failure stops
+before OAuth discovery, client registration, browser login, or card creation.
+Do not replace a failed Keychain check with a bearer file or environment
+variable.
+
+The current source CLI uses its ordinary Keychain session for these host
+commands. A separately signed Rust helper for keeping management credentials
+behind macOS user presence is in pre-release acceptance. Installing its source
+artifact alone does not change this command path. See
+[Protect KDCube Management On macOS With User Presence](macos-user-presence-helper.md)
+for the exact release gates, user installation contract, and security boundary.
+
+When the CLI cannot launch a browser, print the short-lived authorization URL
+and keep the callback waiting:
+
+```bash
+connection-hub host authorize --no-open
+```
+
+Open that URL in a browser on the same machine and complete the selected
+KDCube deployment's normal login and approval flow. The callback page confirms
+that the authorization response reached the CLI. Return to the terminal to
+confirm token exchange and Keychain storage.
+
+Application reload is demand-driven:
+
+```bash
+connection-hub host reload connection-hub@1-0
+```
+
+When this card has no reusable reload permission, KDCube returns a consent page
+bound to the exact application, invocation ID, and request digest. In an
+interactive terminal the CLI opens that page, waits for approval, and retries
+the unchanged request. **Allow once** admits that exact request. **Allow
+always** admits later distinct reload requests while the card retains the
+operation. Card changes and revocation apply to the next call.
+
+For automation, keep the recovery machine-readable and control browser
+handling explicitly:
+
+```bash
+connection-hub host reload connection-hub@1-0 \
+  --invocation-id release-2026-09-03-1 \
+  --no-open
+```
+
+The command exits with status `3` and returns the bounded recovery object when
+authority is missing. Re-run the same command and invocation ID after the user
+approves it. The selected endpoint must already be running for login,
+admission, and management. Local Docker or infrastructure control recovers a
+completely stopped deployment.
+
+Disconnect when this CLI should lose its delegated authority:
+
+```bash
+connection-hub host disconnect
+```
+
+The command revokes the OAuth grant and matching delegated card before it
+removes the local Keychain session. A second authorization creates a new
+caller profile.
 
 KDCube is the host in this workflow. It supplies login, durable app and user
 storage, server-side secrets, locking, routes, and lifecycle. This quick start

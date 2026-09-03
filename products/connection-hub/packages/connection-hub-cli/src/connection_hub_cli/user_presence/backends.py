@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from connection_hub_cli.user_presence.contracts import ApprovalRequest, ApprovalResult
+from connection_hub_cli.user_presence.contracts import BoundHttpOperation
 from connection_hub_cli.user_presence.errors import UserPresenceError
+from connection_hub_cli.user_presence.operations import HttpOperationResult
 
 
 def _safe_platform_name(value: str) -> str:
@@ -21,7 +22,13 @@ def _safe_platform_name(value: str) -> str:
 class UserPresenceBackend(Protocol):
     def available(self) -> bool: ...
 
-    def approve(self, request: ApprovalRequest) -> ApprovalResult: ...
+    def execute(
+        self,
+        operation: BoundHttpOperation,
+        *,
+        body: bytes | bytearray | memoryview | str | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> HttpOperationResult: ...
 
 
 class UnavailableUserPresenceBackend:
@@ -31,8 +38,14 @@ class UnavailableUserPresenceBackend:
     def available(self) -> bool:
         return False
 
-    def approve(self, request: ApprovalRequest) -> ApprovalResult:
-        del request
+    def execute(
+        self,
+        operation: BoundHttpOperation,
+        *,
+        body: bytes | bytearray | memoryview | str | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> HttpOperationResult:
+        del operation, body, timeout_seconds
         raise UserPresenceError(
             "user_presence_unsupported_platform",
             f"Native user presence is not implemented for {self.platform_name}.",

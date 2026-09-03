@@ -8,6 +8,7 @@ keywords: ["Connection Hub acceptance", "delegated card test", "allow once", "al
 updated_at: 2026-09-02
 see_also:
   - ../connection-hub-architecture.md
+  - ../macos-user-presence-helper.md
   - ../package/delegated-authority-and-admission.md
   - ../package/delegated-cards.md
   - ../package/oauth-delegated-credential-protocol.md
@@ -61,6 +62,13 @@ Every accepted invocation must satisfy five independent facts:
 Granting one fact never grants another. In particular, a provider claim such
 as `slack:post` does not select a named-service operation, and selecting
 `object.action.post_message` does not grant `slack:post` on an account.
+
+The signed macOS presence helper has a separate release acceptance because it
+adds native signing, entitlement, Keychain, prompt-cancellation, update, and
+uninstall evidence. Follow
+[Protect KDCube Management On macOS With User Presence](../macos-user-presence-helper.md).
+Passing this product suite does not establish that the pre-release native
+helper is signed, notarized, integrated, or accepted on a real Mac.
 
 ## Test Record
 

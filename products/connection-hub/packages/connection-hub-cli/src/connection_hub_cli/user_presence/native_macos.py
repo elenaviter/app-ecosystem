@@ -19,6 +19,7 @@ from typing import Protocol
 from connection_hub_cli.user_presence.errors import UserPresenceError
 
 KEYCHAIN_SERVICE = "tech.kdcube.connection-hub.human-presence"
+MAX_PROTECTED_CREDENTIAL_BYTES = 16 * 1024
 
 _SECURITY_PATH = "/System/Library/Frameworks/Security.framework/Security"
 _CORE_FOUNDATION_PATH = (
@@ -132,6 +133,22 @@ def _status_error(status: int, *, action: str) -> UserPresenceError:
         f"The macOS Security framework could not {action} the protected item.",
         native_status=status,
     )
+
+
+def _copy_protected_data(core_foundation: ctypes.CDLL, reference: int) -> bytearray:
+    length = int(core_foundation.CFDataGetLength(reference))
+    if not 0 < length <= MAX_PROTECTED_CREDENTIAL_BYTES:
+        raise UserPresenceError(
+            "protected_credential_invalid",
+            "The protected credential is invalid.",
+        )
+    pointer = core_foundation.CFDataGetBytePtr(reference)
+    if not pointer:
+        raise UserPresenceError(
+            "protected_credential_invalid",
+            "The protected credential is invalid.",
+        )
+    return bytearray(pointer[index] for index in range(length))
 
 
 class _CFDictionary:
@@ -389,14 +406,7 @@ class SecurityFrameworkKeychain:
                 "The macOS Security framework returned no protected credential data.",
             )
         try:
-            length = int(self._core_foundation.CFDataGetLength(result.value))
-            pointer = self._core_foundation.CFDataGetBytePtr(result.value)
-            if length <= 0 or not pointer:
-                raise UserPresenceError(
-                    "protected_credential_invalid",
-                    "The protected credential is invalid.",
-                )
-            value = bytearray(pointer[index] for index in range(length))
+            value = _copy_protected_data(self._core_foundation, result.value)
         finally:
             self._core_foundation.CFRelease(result.value)
         return SecretLease(value)

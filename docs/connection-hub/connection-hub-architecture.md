@@ -10,6 +10,7 @@ see_also:
   - ./package/delegated-authority-and-admission.md
   - ./package/delegated-cards.md
   - ./package/oauth-delegated-credential-protocol.md
+  - ./macos-user-presence-helper.md
   - ./frontend/application/storage/README.md
   - ../../products/connection-hub/apps/connection-hub@1-0/interface/README.md
 ---
@@ -171,6 +172,12 @@ The direct backend is a policy-enforcement point. If that backend cannot be
 trusted to perform the operation it asked about, route the operation through a
 KDCube-managed REST or MCP door instead, where authorization and dispatch are
 co-located.
+
+Local credential custody and local user presence are client-side adapters to
+this authority model; they do not replace live server admission. The
+[macOS user-presence helper](macos-user-presence-helper.md) owns the detailed
+pre-release contract for a signed local executor that keeps management OAuth
+credentials out of Python and executes only registered KDCube operations.
 
 ## Surface Inventory
 

@@ -7,6 +7,7 @@ tags: [connection-hub, mcp, keychain, claude-code, claude-desktop, hermes, openc
 keywords: [connection-hub-cli, delegated caller profile, local MCP helper, macOS Keychain, stdio relay]
 see_also:
   - ./quick-start-local.md
+  - ./macos-user-presence-helper.md
   - ./testing/end-to-end-acceptance.md
   - ./package/delegated-cards.md
 ---
@@ -17,6 +18,11 @@ see_also:
 macOS Keychain and installs one local stdio MCP helper into supported clients.
 The client configuration contains the helper command and caller-profile name;
 it does not contain the bearer.
+
+This page describes the Python MCP relay and its ordinary Keychain custody.
+The separately signed Rust helper for user-presence-protected KDCube management
+has a different operation boundary and release path. See
+[Protect KDCube Management On macOS With User Presence](macos-user-presence-helper.md).
 
 The helper opens Connection Hub's governed Streamable HTTP endpoint when the
 client starts it. It forwards current tools, calls, structured denials,
@@ -244,25 +250,20 @@ policy, and may also invoke the configured helper directly. Use this path for
 a caller that is intentionally trusted to exercise the card's bounded
 authority.
 
-A future human-only administration profile needs a stronger local interaction
-when same-user agents or applications are outside its trust boundary: explicit
-user presence for sensitive calls, an access-controlled helper, or a
-non-exportable device key bound to proof-of-possession credentials. Hiding the
-`credential_ref` does not create that boundary.
+The pre-release macOS presence helper supplies the stronger local interaction
+for delegated KDCube management. It is a separately signed Rust application
+with a provisioned Keychain access group. It owns the complete access/refresh
+OAuth session and executes one registered operation after macOS user presence;
+credential bytes do not cross into Python. It remains unavailable through the
+shared CLI until its signing, notarization, real-prompt acceptance, and command
+integration gates pass. Its complete contract and user procedure are in
+[Protect KDCube Management On macOS With User Presence](macos-user-presence-helper.md).
 
-That stronger helper can expose one common command across environments while
-using a native adapter underneath: Security framework user presence on macOS,
-Windows Hello on Windows, Secret Service plus polkit or PAM on Linux, and a
-browser approval or device flow where no local user session exists. A
-container can call a narrowly scoped helper on its host; it must not receive a
-mounted credential store.
-
-The helper must validate the selected KDCube target, caller profile, exact
-operation, and request before asking for approval. After approval it performs
-or signs that request itself and never returns the bearer. Connection Hub still
-resolves the live card and consumes any `Once` invocation authority. Native
-biometric or password prompts are platform adapters; browser-backed one-use
-approval is the portable path for desktops, containers, and headless workers.
+Other environments use their native interaction or a request-bound browser
+flow: Windows Hello on Windows, Secret Service plus polkit or PAM on Linux, and
+browser or device approval where no local user session exists. A container
+calls a narrowly scoped helper on its host; it does not receive a mounted
+credential store.
 
 The upstream service credential remains inside Connection Hub. The local
 helper receives only the delegated caller credential. It accepts HTTPS
