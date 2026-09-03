@@ -540,18 +540,6 @@ h2 {
 .count-fold .chip-row { margin-top: 5px; }
 
 /* Search + result count above the granted-access list. */
-.grant-search { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
-.grant-search input {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 10px;
-  font-size: 12.5px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--ink);
-}
-.grant-search input:focus { outline: none; border-color: var(--teal); }
 
 /* Inline "… N more / show less" toggle for collapsed operation lists. */
 .inline-more {
@@ -1377,9 +1365,20 @@ code {
 
 .outer-operation-editor {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   min-width: 0;
+}
+
+/* An operation with its policy is one unit. The bordered row keeps the two
+   together on every width: on a narrow pane the policy wraps under its own
+   chip, inside the same row, never under a neighbouring operation. */
+.outer-operation-editor--policy {
+  padding: 4px 6px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
 }
 
 .outer-operation-editor > .grant-chip {
@@ -2328,4 +2327,185 @@ code {
   .tool-disclosure__summary { flex-basis: 100%; }
   .tool-disclosure__body { padding-left: 10px; }
   .tool-detail { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ── Granted-access filter (Delegated by KDCube) ───────────────────────────
+   The controls live in the tab's action row beside "Create automation access",
+   the settings drop below that row across the tab, and the explainer is a
+   dialog. Filtering hides cards; it never ranks them (see grantFilter.ts). */
+.grant-filter-row { justify-content: space-between; flex-wrap: wrap; align-items: center; }
+.grant-filter-row > .btn { flex: 0 0 auto; }
+.grant-filter {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.grant-filter__input { flex: 1 1 auto; min-width: 0; padding: 6px 10px; font-size: 12.5px; }
+.grant-filter__toggle,
+.grant-filter__info { position: relative; width: 30px; height: 30px; border-radius: var(--r-md); }
+.grant-filter__toggle.open { color: var(--teal-dark); border-color: var(--teal); background: rgba(1, 190, 178, 0.08); }
+.grant-filter__count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--teal);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+.grant-filter__tally { flex: 0 0 auto; font-size: 12px; white-space: nowrap; }
+
+.grant-filter__settings {
+  margin: -4px 0 10px;
+  padding: 10px 12px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.grant-filter__settings-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.grant-filter__settings-title {
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--muted);
+}
+.grant-filter__row {
+  display: grid;
+  grid-template-columns: minmax(0, 64px) minmax(0, 1fr);
+  gap: 4px 10px;
+  align-items: center;
+}
+.grant-filter__label {
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--muted);
+}
+.grant-filter__controls { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.grant-filter__chip {
+  appearance: none;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-2);
+  padding: 3px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.grant-filter__chip:hover { border-color: var(--teal); color: var(--teal-dark); }
+.grant-filter__chip.on { border-color: var(--teal); background: var(--teal-pale); color: var(--teal-dark); font-weight: 600; }
+.grant-filter__chip:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.grant-filter__dates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.grant-filter__date { display: inline-flex; align-items: center; gap: 6px; }
+.grant-filter__date-label { font-size: 11px; color: var(--muted); }
+.grant-filter__date .input { padding: 4px 8px; font-size: 12px; }
+.grant-filter__controls select.input { padding: 4px 8px; font-size: 12px; }
+.grant-filter__hint { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+
+.grant-filter__dialog { width: min(640px, 100%); font-size: 12.5px; line-height: 1.5; color: var(--text-2); }
+.grant-filter__dialog p { margin: 4px 0 0; }
+.grant-filter__dialog code { font-family: var(--mono); font-size: 11.5px; color: var(--ink); }
+.grant-filter__step { margin-top: 12px; }
+.grant-filter__step-title {
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--muted);
+}
+.grant-filter__formula {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.grant-filter__terms {
+  display: grid;
+  grid-template-columns: minmax(0, 72px) minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 6px 0 0;
+}
+.grant-filter__terms dt { font-weight: 600; color: var(--ink); }
+.grant-filter__terms dd { margin: 0; }
+.grant-filter__why { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line-soft); color: var(--muted); }
+
+@media (max-width: 680px) {
+  .grant-filter { flex-basis: 100%; }
+  .grant-filter__row { grid-template-columns: minmax(0, 1fr); }
+  .grant-filter__terms { grid-template-columns: minmax(0, 1fr); }
+  .grant-filter__terms dd { margin-bottom: 4px; }
+}
+
+/* ── Invocation policy, named per operation ───────────────────────────────
+   Live control for a granted operation, and the choice for one being added.
+   Both spell out the operation so no control reads as its neighbour's. */
+.operation-policy {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+.operation-policy__label {
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.operation-policy__label code,
+.operation-policy__status code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  font-weight: 600;
+}
+.operation-policy__status {
+  flex: 1 1 100%;
+  font-size: 11px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.operation-policy--choice .invocation-policy-control button:not(.active) {
+  color: var(--ink);
+}
+/* In the pending review the choice sits right under the requested operation,
+   aligned with its text column, inside the same bordered section. */
+.pending-operation-policy {
+  margin: -2px 0 10px 28px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.pending-operation-policy .operation-policy__status { flex-basis: 100%; }
+.operation-policy__siblings {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+@media (max-width: 680px) {
+  .pending-operation-policy { margin-left: 0; }
+  .operation-policy__label { white-space: normal; }
 }

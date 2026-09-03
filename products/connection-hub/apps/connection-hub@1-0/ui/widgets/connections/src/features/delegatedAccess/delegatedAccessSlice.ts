@@ -1,5 +1,6 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
+import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
 import type {
   DelegatedAccessCreateResult,
   DelegatedAccessGrantOption,
@@ -99,36 +100,8 @@ export const createDelegatedAccess = createAsyncThunk<
   },
 );
 
-export interface GrantAgentAccessArgs {
-  clientId: string;
-  resource: string;
-  claims: string[];
-  /** Existing card and one fail-closed transaction when a denied call asks
-   *  the user to add this operation and choose its invocation policy. */
-  accessId?: string;
-  invocationMode?: 'always' | 'once';
-  invocationChangeId?: string;
-  requestBound?: boolean;
-  requestDigest?: string;
-  requestApprovalTicket?: string;
-  requestCardRevision?: number;
-  requestAuthorityRevision?: string;
-  approvalContext?: Record<string, string>;
-  label?: string;
-  /** Exact outer MCP/REST operations selected for this protected resource. */
-  resourceOperations?: string[];
-  /** Named-service narrowing for THIS resource (namespace -> exact operations),
-   *  when the user extends the grant with a named-services resource. */
-  namedServiceOperations?: Record<string, string[]>;
-  /** EDIT semantics: the submitted claim set REPLACES the record exactly
-   *  (the user unchecked something). Default merges — one-click grants
-   *  accumulate. */
-  replace?: boolean;
-  /** Per-account claim binding: {provider_id: {account_id: [claims]}}. Which
-   *  connected account(s) this agent may use for a provider AND, per account,
-   *  the claims it may use there. */
-  accountScope?: Record<string, Record<string, string[]>>;
-}
+/** The focused-grant arguments; the wire shape lives in agentGrantPayload.ts. */
+export type { GrantAgentAccessArgs };
 
 /** Grant a hosted agent (a "Delegated By KDCube" entity) access to a resource —
  *  the consent action behind a pending agent MCP demand. Keyed to the agent's
@@ -140,37 +113,9 @@ export const grantAgentAccess = createAsyncThunk<
   { rejectValue: string }
 >(
   'delegatedAccess/grantAgent',
-  async ({ clientId, resource, claims, accessId, invocationMode, invocationChangeId, requestBound, requestDigest, requestApprovalTicket, requestCardRevision, requestAuthorityRevision, approvalContext, label, resourceOperations, namedServiceOperations, replace, accountScope }, { rejectWithValue }) => {
+  async (args, { rejectWithValue }) => {
     try {
-      const res = await postOp<DelegatedAccessCreateResult>('delegated_agent_grant_create', {
-        client_id: clientId,
-        resource,
-        claims: claims || [],
-        label: label || '',
-        ...(accessId ? { access_id: accessId } : {}),
-        ...(invocationMode ? { invocation_mode: invocationMode } : {}),
-        ...(invocationChangeId ? { invocation_change_id: invocationChangeId } : {}),
-        ...(requestBound ? { request_bound: true } : {}),
-        ...(requestDigest ? { request_digest: requestDigest } : {}),
-        ...(requestApprovalTicket
-          ? { request_approval_ticket: requestApprovalTicket }
-          : {}),
-        ...(requestCardRevision ? { request_card_revision: requestCardRevision } : {}),
-        ...(requestAuthorityRevision ? { request_authority_revision: requestAuthorityRevision } : {}),
-        ...(approvalContext && Object.keys(approvalContext).length
-          ? { approval_context: approvalContext }
-          : {}),
-        ...(replace ? { replace: true } : {}),
-        ...(resourceOperations !== undefined
-          ? { resource_operations: { [resource]: resourceOperations } }
-          : {}),
-        ...(namedServiceOperations && Object.keys(namedServiceOperations).length
-          ? { named_service_operations: namedServiceOperations }
-          : {}),
-        ...(accountScope !== undefined
-          ? { account_scope: accountScope }
-          : {}),
-      });
+      const res = await postOp<DelegatedAccessCreateResult>('delegated_agent_grant_create', agentGrantWirePayload(args));
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to grant agent access'));
       return res || {};
     } catch (e) {

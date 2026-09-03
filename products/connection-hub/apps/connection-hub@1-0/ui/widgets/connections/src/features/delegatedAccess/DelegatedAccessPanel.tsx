@@ -5,6 +5,28 @@ import { CopyButton, DoorRef } from '../../components/CopyControls';
 import { operationUrl, publicMcpUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
+import { GrantFilterControls, GrantFilterInfo, GrantFilterSettings } from './GrantFilterBar';
+import { InvocationPolicyControl, OperationInvocationChoice } from './InvocationControls';
+import {
+  editChangeId,
+  focusedGrantArgs,
+  pendingChoiceRequested,
+  pendingFocusedIdentity,
+  pendingPresetMode,
+  randomNonce,
+  splitEditedOperations,
+  type InvocationMode,
+} from './invocationChoice';
+import {
+  agentGroupMatches,
+  compareAgentGroups,
+  compareRecords,
+  DEFAULT_GRANT_FILTER,
+  isUnfiltered,
+  recordMatches,
+  type GrantFilter,
+  type GrantFilterContext,
+} from './grantFilter';
 import {
   commonOperationGrants,
   doorGrantsForOperation,
@@ -130,45 +152,6 @@ function invocationPolicyRows(item: DelegatedAccessRecord): string[] {
   });
 }
 
-function InvocationPolicyControl({
-  policy,
-  busy,
-  onSet,
-}: {
-  policy?: DelegatedInvocationPolicy;
-  busy: boolean;
-  onSet: (mode: 'always' | 'once', expectedRevision: number) => void;
-}) {
-  const mode = policy?.mode || 'always';
-  const onceAvailable = mode === 'once' && policy?.remaining === 1;
-  return (
-    <span className="invocation-policy-control" aria-label="Invocation policy">
-      <button
-        type="button"
-        className={mode === 'always' ? 'active' : ''}
-        aria-pressed={mode === 'always'}
-        title="Allow every invocation while the card remains active"
-        disabled={busy || mode === 'always'}
-        onClick={() => onSet('always', policy?.revision || 0)}
-      >
-        Always
-      </button>
-      <button
-        type="button"
-        className={mode === 'once' ? 'active' : ''}
-        aria-pressed={mode === 'once'}
-        title={onceAvailable ? 'One invocation remains' : 'Allow the next invocation once'}
-        disabled={busy || onceAvailable}
-        onClick={() => onSet('once', policy?.revision || 0)}
-      >
-        Once
-      </button>
-      {mode === 'once' && policy?.remaining === 0 ? (
-        <small>used</small>
-      ) : null}
-    </span>
-  );
-}
 
 function pendingAgentGrantFromParams(get: (key: string) => string): PendingAgentGrant | null {
   if (get('pending_agent_grant') !== '1') return null;
@@ -762,6 +745,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   );
   const [ttlSeconds, setTtlSeconds] = useState(ttlOptions[0].value);
   const [pendingGrant, setPendingGrant] = useState(() => pendingAgentGrantRequest(openParams));
+  // The invocation policy for the ONE operation the request names: preset when
+  // the link fixed it, null while the user is asked to choose. It is chosen
+  // beside that operation and submitted with its grant, never beside a sibling.
+  const [pendingInvocationMode, setPendingInvocationMode] =
+    useState<InvocationMode | null>(() => pendingPresetMode(pendingAgentGrantRequest(openParams)));
   const manualFocus = useMemo(() => manualAccessFocusRequest(openParams), [openParams]);
   useEffect(() => {
     console.info(
@@ -791,9 +779,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Per-record EDIT state for granted agent rows: access_id being edited and
   // the checkbox set keyed `${resource}:${claim}`.
   const [editingAccessId, setEditingAccessId] = useState<string | null>(null);
-  // Search + "show more" over the granted-access list (see matchedOtherItems).
-  const [grantQuery, setGrantQuery] = useState('');
+  // Policy chosen for an operation the editor ADDS to a card, keyed
+  // `${resource}:${operation}`. It travels with that operation's grant in one
+  // focused transaction (see invocationChoice.ts): set afterwards, the
+  // operation would run as "always" until the policy call landed.
+  const [editInvocationModes, setEditInvocationModes] = useState<Record<string, InvocationMode>>({});
+  // Filter + "show more" over the granted-access list (see matchedOtherItems).
+  // The rules live in grantFilter.ts; the controls sit in the tab's action row.
+  const [grantFilter, setGrantFilter] = useState<GrantFilter>(DEFAULT_GRANT_FILTER);
+  const [grantSettingsOpen, setGrantSettingsOpen] = useState(false);
+  const [grantInfoOpen, setGrantInfoOpen] = useState(false);
   const [grantLimit, setGrantLimit] = useState(GRANT_PAGE_SIZE);
+  const updateGrantFilter = (patch: Partial<GrantFilter>) => {
+    setGrantFilter((current) => ({ ...current, ...patch }));
+    setGrantLimit(GRANT_PAGE_SIZE);
+  };
   // Rename of the card being edited (a DCR client always registers "Claude").
   const [editLabel, setEditLabel] = useState('');
   // The automation-creation form is folded behind its call to action.
@@ -1060,6 +1060,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       )
       : [],
   );
+  // Policies the card already holds for OTHER operations on the requested
+  // door. Shown beside the choice so it is plain that they stay as they are.
+  const pendingSiblingPolicyRows = pendingGrant?.outerOperation
+    ? pendingExistingRecords.flatMap((record) => (record.invocation_policies || [])
+      .filter((policy) => policy.authority.resource === pendingGrant.resource
+        && policy.authority.surface === 'outer'
+        && !policy.authority.account
+        && policy.authority.operation !== pendingGrant.outerOperation)
+      .map((policy) => `${policy.authority.operation}: ${policy.mode}`))
+    : [];
   const pendingOperationAlreadyGranted = Boolean(
     pendingGrant?.outerOperation
       ? pendingExistingRecords.some((record) => (
@@ -1190,26 +1200,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       let first = true;
       for (const [resource, claims] of Object.entries(merged)) {
         const isRequestedResource = resource === pendingGrant.resource;
-        await dispatch(grantAgentAccess({
-          clientId: pendingGrant.clientId,
-          resource,
-          claims,
-          ...(isRequestedResource && invocationMode ? {
-            accessId: pendingGrant.accessId,
-            invocationMode,
-            invocationChangeId: pendingGrant.invocationChangeId,
-            requestBound: pendingGrant.requestBound,
-            requestDigest: pendingGrant.requestDigest,
-            requestApprovalTicket: pendingGrant.requestApprovalTicket,
-            requestCardRevision: pendingGrant.requestCardRevision,
-            requestAuthorityRevision: pendingGrant.requestAuthorityRevision,
-            approvalContext: pendingGrant.approvalContext,
-          } : {}),
-          resourceOperations: resourceOperations[resource],
-          namedServiceOperations: namedServiceOperations[resource],
-          // The account binding is per-client: send it once with the first grant.
-          ...(first && Object.keys(pendingAccountScope).length ? { accountScope: pendingAccountScope } : {}),
-        })).unwrap();
+        // The account binding is per-client: send it once with the first grant.
+        const accountScopeForThis = first && Object.keys(pendingAccountScope).length
+          ? pendingAccountScope
+          : undefined;
+        const focusedIdentity = isRequestedResource && invocationMode
+          ? pendingFocusedIdentity(pendingGrant)
+          : null;
+        await dispatch(grantAgentAccess(focusedIdentity && invocationMode
+          // The policy path: exactly the requested operation with the chosen
+          // mode, on the exact card and change id. The server merges that one
+          // operation into the card and commits its policy in the same
+          // transaction; the card's other operations are not in the payload.
+          ? focusedGrantArgs(focusedIdentity, invocationMode, claims, {
+            namedServiceOperations: namedServiceOperations[resource],
+            accountScope: accountScopeForThis,
+          })
+          : {
+            clientId: pendingGrant.clientId,
+            resource,
+            claims,
+            resourceOperations: resourceOperations[resource],
+            namedServiceOperations: namedServiceOperations[resource],
+            ...(accountScopeForThis ? { accountScope: accountScopeForThis } : {}),
+          })).unwrap();
         first = false;
       }
     } catch {
@@ -1439,20 +1453,25 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     pendingServiceCapability,
     seedAccountScopeFromRecord,
   ]);
-  const pendingInvocationChoiceRequested = pendingGrant?.invocationPolicy === 'choose';
-  const pendingInvocationChoiceReady = Boolean(
-    pendingInvocationChoiceRequested
-      && pendingGrant?.accessId
-      && pendingGrant.invocationChangeId
-      && pendingGrant.outerOperation,
-  );
+  const pendingInvocationChoiceRequested = pendingChoiceRequested(pendingGrant);
+  // A policy is committed only through the focused transaction, which needs
+  // the card, the operation, and the change id from the denial. A request that
+  // asks for a choice but lacks one of them cannot be granted from here.
+  const pendingFocused = pendingFocusedIdentity(pendingGrant);
+  const pendingInvocationChoiceReady = Boolean(pendingInvocationChoiceRequested && pendingFocused);
+  // The mode the grant submits: the user's choice (or the link's preset) when
+  // the transaction can carry it; otherwise the grant carries no policy.
+  const pendingSubmitMode: InvocationMode | undefined =
+    pendingFocused && pendingInvocationMode ? pendingInvocationMode : undefined;
   const pendingGrantDisabled = busy || (pendingOperationRequested
     ? !pendingOperationReady
     : (
       !pendingCheckedClaims.length
       && !selectedResourceEntries.length
       && !Object.keys(pendingAccountScope).length
-    )) || Boolean(pendingInvocationChoiceRequested && !pendingInvocationChoiceReady);
+    ))
+    || Boolean(pendingInvocationChoiceRequested && !pendingInvocationChoiceReady)
+    || Boolean(pendingInvocationChoiceRequested && !pendingInvocationMode);
 
   // The per-account permission picker: a disclosure per provider showing
   // "<n>/<m> accounts" (or "no accounts yet" when unbound) so a large account
@@ -1611,6 +1630,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ),
       }));
     }
+    if (!checked) {
+      // An unticked operation takes its pending choice with it.
+      setEditInvocationModes((current) => {
+        const next = { ...current };
+        delete next[`${resource}:${operation}`];
+        return next;
+      });
+    }
     setEditResourceOperations((current) => {
       const next = { ...current };
       const selected = new Set(current[resource] || []);
@@ -1675,6 +1702,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditingAccessId(null);
     setEditPicks({});
     setEditResourceOperations({});
+    setEditInvocationModes({});
     setEditNamedServiceOperations({});
     setEditAccountScope({});
     setEditLabel('');
@@ -1700,6 +1728,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       rows.filter((row) => row.resource === resource && row.claim).map((row) => row.claim as string),
     );
   };
+
+  /** Operations the editor added that still have no invocation choice. The
+   *  save waits for them: granted through the card update they would run as
+   *  "always" until a later policy call, which is not what the user picked. */
+  const editMissingChoices = (item: DelegatedAccessRecord): string[] =>
+    Object.keys(item.resource_grants || {}).flatMap((resource) => splitEditedOperations(
+      item.resource_operations?.[resource] || item.operations || [],
+      editResourceOperations[resource] || [],
+      (operation) => editInvocationModes[`${resource}:${operation}`],
+    ).missingChoice);
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
     const kept: Record<string, string[]> = {};
@@ -1734,15 +1772,27 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const offered = offeredNamedServiceOperations(
       resources, Object.keys(prunedKept), editRowFor,
     );
-    await dispatch(updateDelegatedAccess({
+    // Operations the card already grants stay on the card update, their
+    // policies untouched. Each ADDED operation goes through the focused grant
+    // with the policy chosen beside it, so it is never authorized under a
+    // default the user did not pick (see invocationChoice.ts).
+    const splits = Object.fromEntries(
+      Object.keys(prunedKept).map((resource) => [
+        resource,
+        splitEditedOperations(
+          item.resource_operations?.[resource] || item.operations || [],
+          editResourceOperations[resource] || [],
+          (operation) => editInvocationModes[`${resource}:${operation}`],
+        ),
+      ]),
+    );
+    if (Object.values(splits).some((split) => split.missingChoice.length)) return;
+    const updated = await dispatch(updateDelegatedAccess({
       accessId: item.access_id,
       label: editLabel.trim() || item.label || 'Automation access',
       resourceGrants: prunedKept,
       resourceOperations: Object.fromEntries(
-        Object.keys(prunedKept).map((resource) => [
-          resource,
-          editResourceOperations[resource] || [],
-        ]),
+        Object.entries(splits).map(([resource, split]) => [resource, split.kept]),
       ),
       namedServiceOperations: Object.keys(offered).length
         ? encodeNamedServiceSelection(keptNamedServiceOperations, offered)
@@ -1753,6 +1803,28 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       expectedCardRevision: item.card_revision,
       expectedCatalogVersion: item.catalog_drift?.current_version || item.catalog_version,
     })).unwrap().catch(() => undefined);
+    const updateAccepted = Boolean(updated) && updated?.ok !== false;
+    if (updateAccepted) {
+      for (const [resource, split] of Object.entries(splits)) {
+        for (const { operation, mode } of split.focused) {
+          if (!item.client_id) {
+            console.warn('[delegated-access] card without client id cannot take a focused grant', item.access_id, operation);
+            continue;
+          }
+          await dispatch(grantAgentAccess(focusedGrantArgs(
+            {
+              clientId: item.client_id,
+              accessId: item.access_id,
+              resource,
+              operation,
+              changeId: editChangeId(item.access_id, operation, randomNonce()),
+            },
+            mode,
+            prunedKept[resource] || [],
+          ))).unwrap().catch(() => undefined);
+        }
+      }
+    }
     clearEditState();
     void dispatch(loadDelegatedAccess());
   };
@@ -2007,29 +2079,49 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             Service operation
           </div>
           {pendingGrant.outerOperation && pendingOuterCapability ? (
-            <label
-              className={`namespace-operation${pendingOperationSelected ? ' namespace-operation-included' : ''}`}
-            >
-              <input
-                type="checkbox"
-                checked={pendingOperationSelected}
-                onChange={(event) => setPendingOperationSelected(event.target.checked)}
-              />
-              <span>
-                <strong>{pendingOuterCapability.operation.label || pendingOuterCapability.operation.name}</strong>
-                {pendingOuterCapability.operation.description ? (
-                  <small>{pendingOuterCapability.operation.description}</small>
-                ) : null}
-                <small><code>{pendingOuterCapability.operation.name}</code></small>
-                <small>
-                  <PendingStatus status={pendingSelectionStatus(
-                    pendingOperationAlreadyGranted,
-                    pendingOperationSelected,
-                    true,
-                  )} />
-                </small>
-              </span>
-            </label>
+            <>
+              <label
+                className={`namespace-operation${pendingOperationSelected ? ' namespace-operation-included' : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={pendingOperationSelected}
+                  onChange={(event) => setPendingOperationSelected(event.target.checked)}
+                />
+                <span>
+                  <strong>{pendingOuterCapability.operation.label || pendingOuterCapability.operation.name}</strong>
+                  {pendingOuterCapability.operation.description ? (
+                    <small>{pendingOuterCapability.operation.description}</small>
+                  ) : null}
+                  <small><code>{pendingOuterCapability.operation.name}</code></small>
+                  <small>
+                    <PendingStatus status={pendingSelectionStatus(
+                      pendingOperationAlreadyGranted,
+                      pendingOperationSelected,
+                      true,
+                    )} />
+                  </small>
+                </span>
+              </label>
+              {pendingInvocationChoiceRequested || pendingInvocationMode ? (
+                // The policy is decided HERE, under the operation it governs,
+                // and submitted with its grant. It never renders beside another
+                // operation of the card, whose policies stay as they are.
+                <div className="pending-operation-policy">
+                  <OperationInvocationChoice
+                    operation={pendingOuterCapability.operation.name}
+                    mode={pendingInvocationMode}
+                    busy={busy || !pendingOperationSelected}
+                    onChoose={setPendingInvocationMode}
+                  />
+                  {pendingSiblingPolicyRows.length ? (
+                    <small className="operation-policy__siblings">
+                      Other operations on this card keep their own policy: {pendingSiblingPolicyRows.join(', ')}.
+                    </small>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
           ) : pendingGrant.namespace && pendingGrant.operation && pendingServiceCapability ? (
             <label
               className={`namespace-operation${pendingOperationSelected ? ' namespace-operation-included' : ''}`}
@@ -2169,31 +2261,29 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         </details>
       ) : null}
       <div className="row pending-actions">
-        {pendingInvocationChoiceRequested ? (
-          <>
-            <button
-              className="btn"
-              type="button"
-              disabled={pendingGrantDisabled}
-              onClick={() => grantPending('once')}
-            >
-              Allow once
-            </button>
-            <button
-              className="btn"
-              type="button"
-              disabled={pendingGrantDisabled}
-              onClick={() => grantPending('always')}
-            >
-              Allow always
-            </button>
-          </>
+        {pendingInvocationChoiceRequested && pendingGrant.outerOperation ? (
+          // One action, named after the operation and the mode chosen beside
+          // it above. Two anonymous "Allow once / Allow always" buttons down
+          // here read as detached from the operation they decide.
+          <button
+            className="btn"
+            type="button"
+            disabled={pendingGrantDisabled}
+            title={pendingInvocationMode
+              ? `Grant ${pendingGrant.outerOperation} and commit its ${pendingInvocationMode} policy`
+              : `Choose once or always for ${pendingGrant.outerOperation} above`}
+            onClick={() => grantPending(pendingSubmitMode)}
+          >
+            {pendingInvocationMode
+              ? `Allow ${pendingGrant.outerOperation} ${pendingInvocationMode}`
+              : `Choose once or always for ${pendingGrant.outerOperation}`}
+          </button>
         ) : (
           <button
             className="btn"
             type="button"
             disabled={pendingGrantDisabled}
-            onClick={() => grantPending()}
+            onClick={() => grantPending(pendingSubmitMode)}
           >
             Grant access
           </button>
@@ -2230,43 +2320,33 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
   });
   // A user accumulates grants (every reconnect mints a client), so the list is
-  // searchable by name/id/door and shows the most RECENT first, capped — older
-  // ones stay one click away instead of scrolling forever.
-  const grantQ = grantQuery.trim().toLowerCase();
-  const matchedOtherItems = (grantQ
-    ? allOtherItems.filter((item) => [
-        item.label || '', item.client_id || '', item.access_id,
-        ...Object.keys(item.resource_grants || {}),
-      ].join(' ').toLowerCase().includes(grantQ))
-    : allOtherItems
-  ).slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  // filterable by name/app/client id/door, kind, state, and two date windows,
+  // shows the most RECENT first by default, and is capped — older ones stay one
+  // click away instead of scrolling forever. The rules are in grantFilter.ts.
+  const resourceLabelFor = (resource: string): string =>
+    resources.find((r) => r.resource === resource)?.label || '';
+  const grantFilterContext: GrantFilterContext = {
+    now: Math.floor(Date.now() / 1000),
+    doorAlias,
+    doorLabel: resourceLabelFor,
+    parseAgent: parseAgentClientId,
+  };
+  const grantNarrowed = !isUnfiltered(grantFilter);
+  const matchedOtherItems = allOtherItems
+    .filter((item) => recordMatches(item, grantFilter, grantFilterContext))
+    .sort((a, b) => compareRecords(grantFilter.sort, a, b));
   const otherItems = matchedOtherItems.slice(0, grantLimit);
   const hiddenGrantCount = matchedOtherItems.length - otherItems.length;
-  // Agent cards obey the same search + page size, so one control governs the
+  // Agent cards obey the same filter + page size, so one control governs the
   // whole tab no matter which kind of caller accumulated.
   const allAgentEntries = Array.from(agentGroups.entries());
-  const matchedAgentEntries = (grantQ
-    ? allAgentEntries.filter(([clientId, records]) => {
-        const who = parseAgentClientId(clientId);
-        return [
-          clientId, who?.agent || '', who?.app || '',
-          ...records.flatMap((record) => [
-            record.label || '', ...Object.keys(record.resource_grants || {}),
-          ]),
-        ].join(' ').toLowerCase().includes(grantQ);
-      })
-    : allAgentEntries
-  ).slice().sort((a, b) => {
-    const newest = (records: DelegatedAccessRecord[]) =>
-      records.reduce((max, record) => Math.max(max, record.created_at || 0), 0);
-    return newest(b[1]) - newest(a[1]);
-  });
+  const matchedAgentEntries = allAgentEntries
+    .filter(([clientId, records]) => agentGroupMatches(clientId, records, grantFilter, grantFilterContext))
+    .sort((a, b) => compareAgentGroups(grantFilter.sort, a, b, grantFilterContext));
   const agentEntries = matchedAgentEntries.slice(0, grantLimit);
   const hiddenAgentCount = matchedAgentEntries.length - agentEntries.length;
   const totalGrantCount = allAgentEntries.length + allOtherItems.length;
   const matchedGrantCount = matchedAgentEntries.length + matchedOtherItems.length;
-  const resourceLabelFor = (resource: string): string =>
-    resources.find((r) => r.resource === resource)?.label || '';
   // The REAL consent is the claim token — that is what renders in the rows
   // (as chips; the vocabulary label rides along as the chip's tooltip).
 
@@ -2343,7 +2423,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                       const alreadyGranted = (item.resource_operations?.[resource] || []).includes(operation.name);
                                       const policy = invocationPolicyFor(item, resource, operation.name);
                                       return (
-                                        <div className="outer-operation-editor" key={`${resource}:operation:${operation.name}`}>
+                                        <div className={selected ? 'outer-operation-editor outer-operation-editor--policy' : 'outer-operation-editor'} key={`${resource}:operation:${operation.name}`}>
                                           <label className="grant-chip">
                                             <input
                                               type="checkbox"
@@ -2359,6 +2439,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                           </label>
                                           {selected && alreadyGranted ? (
                                             <InvocationPolicyControl
+                                              operation={operation.name}
                                               policy={policy}
                                               busy={busy}
                                               onSet={(mode, expectedRevision) => {
@@ -2366,6 +2447,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                                   item, resource, operation.name, mode, expectedRevision,
                                                 );
                                               }}
+                                            />
+                                          ) : selected ? (
+                                            // Not granted yet: the choice travels with the grant (saveEdit) so
+                                            // the operation is never authorized under a default the user did
+                                            // not pick.
+                                            <OperationInvocationChoice
+                                              operation={operation.name}
+                                              mode={editInvocationModes[`${resource}:${operation.name}`] || null}
+                                              busy={busy}
+                                              onChoose={(mode) => setEditInvocationModes((current) => ({
+                                                ...current, [`${resource}:${operation.name}`]: mode,
+                                              }))}
                                             />
                                           ) : null}
                                         </div>
@@ -2481,7 +2574,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         <div className="account-actions">
                           {editing ? (
                             <>
-                              <button className="btn" type="button" disabled={busy} onClick={() => saveEdit(item)}>
+                              <button
+  className="btn"
+  type="button"
+  disabled={busy || editMissingChoices(item).length > 0}
+  title={editMissingChoices(item).length
+    ? `Choose once or always for ${editMissingChoices(item).join(', ')} before saving`
+    : undefined}
+  onClick={() => saveEdit(item)}
+>
                                 Save
                               </button>
                               <button className="btn" type="button" disabled={busy} onClick={clearEditState}>
@@ -2507,20 +2608,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               </div>
             );
           })}
-        </div>
-      ) : null}
-
-      {totalGrantCount > GRANT_PAGE_SIZE || grantQ ? (
-        <div className="grant-search">
-          <input
-            type="search"
-            value={grantQuery}
-            placeholder="Search connections by name, client id, or door"
-            onChange={(event) => { setGrantQuery(event.target.value); setGrantLimit(GRANT_PAGE_SIZE); }}
-          />
-          <span className="account-sub">
-            {matchedGrantCount} of {totalGrantCount}
-          </span>
         </div>
       ) : null}
 
@@ -2629,7 +2716,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                     const alreadyGranted = (item.resource_operations?.[resource] || []).includes(operation.name);
                                     const policy = invocationPolicyFor(item, resource, operation.name);
                                     return (
-                                      <div className="outer-operation-editor" key={`${resource}:operation:${operation.name}`}>
+                                      <div className={selected ? 'outer-operation-editor outer-operation-editor--policy' : 'outer-operation-editor'} key={`${resource}:operation:${operation.name}`}>
                                         <label className="grant-chip">
                                           <input
                                             type="checkbox"
@@ -2645,6 +2732,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                         </label>
                                         {selected && alreadyGranted ? (
                                           <InvocationPolicyControl
+                                            operation={operation.name}
                                             policy={policy}
                                             busy={busy}
                                             onSet={(mode, expectedRevision) => {
@@ -2652,6 +2740,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                                 item, resource, operation.name, mode, expectedRevision,
                                               );
                                             }}
+                                          />
+                                        ) : selected ? (
+                                          // Not granted yet: the choice travels with the grant (saveEdit) so
+                                          // the operation is never authorized under a default the user did
+                                          // not pick.
+                                          <OperationInvocationChoice
+                                            operation={operation.name}
+                                            mode={editInvocationModes[`${resource}:${operation.name}`] || null}
+                                            busy={busy}
+                                            onChoose={(mode) => setEditInvocationModes((current) => ({
+                                              ...current, [`${resource}:${operation.name}`]: mode,
+                                            }))}
                                           />
                                         ) : null}
                                       </div>
@@ -2776,7 +2876,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 <div className="account-actions">
                   {editing ? (
                     <>
-                      <button className="btn" type="button" disabled={busy} onClick={() => saveEdit(item)}>
+                      <button
+  className="btn"
+  type="button"
+  disabled={busy || editMissingChoices(item).length > 0}
+  title={editMissingChoices(item).length
+    ? `Choose once or always for ${editMissingChoices(item).join(', ')} before saving`
+    : undefined}
+  onClick={() => saveEdit(item)}
+>
                         Save
                       </button>
                       <button className="btn" type="button" disabled={busy} onClick={clearEditState}>
@@ -2812,8 +2920,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           Show more ({hiddenGrantCount + hiddenAgentCount} older)
         </button>
       ) : null}
-      {grantQ && !matchedGrantCount ? (
-        <p className="muted">No connection matches “{grantQuery}”.</p>
+      {grantNarrowed && items.length > 0 && !matchedGrantCount ? (
+        <p className="muted">
+          No card matches the current filter.{' '}
+          <button
+            type="button"
+            className="inline-more"
+            onClick={() => updateGrantFilter({ ...DEFAULT_GRANT_FILTER })}
+          >
+            Clear filter
+          </button>
+        </p>
       ) : null}
 
       {!items.length ? (
@@ -2918,13 +3035,33 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   return (
     <>
       {issuedTokenPanel}
-      {!createOpen ? (
-        <div className="tab-actions">
-          <button className="btn" type="button" onClick={() => setCreateOpen(true)}>
-            Create automation access
-          </button>
+      {/* The action row carries the filter too: it is the one row every state
+          of the tab shares, so the search never sits between two groups of
+          cards. The settings drop below it across the full tab width. */}
+      {items.length > 0 || !createOpen ? (
+        <div className="tab-actions grant-filter-row">
+          {items.length > 0 ? (
+            <GrantFilterControls
+              filter={grantFilter}
+              onChange={updateGrantFilter}
+              matched={matchedGrantCount}
+              total={totalGrantCount}
+              settingsOpen={grantSettingsOpen}
+              onToggleSettings={() => setGrantSettingsOpen((v) => !v)}
+              onOpenInfo={() => setGrantInfoOpen(true)}
+            />
+          ) : null}
+          {!createOpen ? (
+            <button className="btn" type="button" onClick={() => setCreateOpen(true)}>
+              Create automation access
+            </button>
+          ) : null}
         </div>
       ) : null}
+      {items.length > 0 && grantSettingsOpen ? (
+        <GrantFilterSettings filter={grantFilter} onChange={updateGrantFilter} />
+      ) : null}
+      {grantInfoOpen ? <GrantFilterInfo onClose={() => setGrantInfoOpen(false)} /> : null}
       <PaneGroup
         panes={[
           ...(pendingGrantPane ? [{

@@ -100,22 +100,57 @@ test('agent consent distinguishes resource requests from existing account permis
   assert.match(css, /\.pending-selection-status\[data-state='pending'\][\s\S]*var\(--warn-text\)/)
 })
 
-test('an ungranted operation offers one atomic once-or-always grant', () => {
+test('an ungranted operation offers one atomic once-or-always grant, chosen beside that operation', () => {
   const app = source('src/App.tsx')
   assert.match(app, /'access_id'/)
   assert.match(app, /'invocation_policy'/)
   assert.match(app, /'invocation_change_id'/)
 
+  // The wire payload is built in one pure module the thunk sends verbatim, so
+  // tests/invocation-choice.test.mjs can pin what is submitted.
   const slice = source('src/features/delegatedAccess/delegatedAccessSlice.ts')
-  assert.match(slice, /invocation_mode: invocationMode/)
-  assert.match(slice, /invocation_change_id: invocationChangeId/)
+  assert.match(slice, /agentGrantWirePayload\(args\)/)
+  const payload = source('src/features/delegatedAccess/agentGrantPayload.ts')
+  assert.match(payload, /invocation_mode: invocationMode/)
+  assert.match(payload, /invocation_change_id: invocationChangeId/)
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
-  assert.match(panel, /pendingGrant\?\.invocationPolicy === 'choose'/)
-  assert.match(panel, /grantPending\('once'\)/)
-  assert.match(panel, /grantPending\('always'\)/)
-  assert.match(panel, />\s*Allow once\s*</)
-  assert.match(panel, />\s*Allow always\s*</)
+  // The pending choice renders under the requested operation and is submitted
+  // with its grant through the focused transaction; nothing sets a sibling's
+  // policy on the way.
+  assert.match(panel, /pendingChoiceRequested\(pendingGrant\)/)
+  assert.match(panel, /<OperationInvocationChoice\n\s*operation=\{pendingOuterCapability\.operation\.name\}/)
+  assert.match(panel, /grantPending\(pendingSubmitMode\)/)
+  assert.match(panel, /`Allow \$\{pendingGrant\.outerOperation\} \$\{pendingInvocationMode\}`/)
+  assert.match(panel, /focusedGrantArgs\(focusedIdentity, invocationMode, claims/)
+  assert.doesNotMatch(panel, />\s*Allow once\s*</)
+  assert.doesNotMatch(panel, />\s*Allow always\s*</)
+  const grantPendingBody = panel.slice(
+    panel.indexOf('const grantPending = async'),
+    panel.indexOf('// Toggle one claim on one account'),
+  )
+  assert.ok(grantPendingBody.length > 0)
+  assert.doesNotMatch(grantPendingBody, /setDelegatedInvocationPolicy|setOperationInvocationPolicy/)
+
+  // Ordinary editing: a granted operation keeps its labeled live control; an
+  // added one gets the choice, the save waits for it, and the card update
+  // carries only the operations already granted (each added one goes through
+  // the focused grant with its mode).
+  assert.match(panel, /<InvocationPolicyControl\n\s*operation=\{operation\.name\}/)
+  assert.match(panel, /\) : selected \? \(\n(?:.*\n){3}\s*<OperationInvocationChoice/)
+  assert.match(panel, /disabled=\{busy \|\| editMissingChoices\(item\)\.length > 0\}/)
+  assert.match(panel, /Object\.entries\(splits\)\.map\(\(\[resource, split\]\) => \[resource, split\.kept\]\)/)
+  assert.match(panel, /changeId: editChangeId\(item\.access_id, operation, randomNonce\(\)\)/)
+
+  const controls = source('src/features/delegatedAccess/InvocationControls.tsx')
+  assert.match(controls, /aria-label=\{`Invocation policy for \$\{operation\}`\}/)
+  assert.match(controls, /aria-label=\{`\$\{operation\}: once`\}/)
+  assert.match(controls, /aria-label=\{`\$\{operation\}: always`\}/)
+
+  const css = source('src/styles.css')
+  for (const cls of ['.outer-operation-editor--policy', '.operation-policy__label', '.pending-operation-policy']) {
+    assert.ok(css.includes(cls), `styles.css lacks ${cls}`)
+  }
 })
 
 test('provider-console OAuth stays transient and issued MCP access is client-ready', () => {
@@ -233,4 +268,48 @@ test('external MCP tab exposes the client endpoint, summons the connector form, 
   assert.match(css, /\.remote-mcp-client-endpoint \{/)
   assert.match(css, /\.tool-disclosure__toggle \{/)
   assert.match(css, /\.tool-raw__json \{[\s\S]*overflow: auto/)
+})
+
+test('granted-access cards filter from the action row, by exact rules the explainer describes', () => {
+  const rules = source('src/features/delegatedAccess/grantFilter.ts')
+  assert.match(rules, /export const EXPIRING_SOON_SECONDS = 7 \* 24 \* 3600/)
+  assert.match(rules, /export function recordMatches\(/)
+  assert.match(rules, /export function agentGroupMatches\(/)
+  // A missing timestamp matches only an empty window; it is never guessed.
+  assert.match(rules, /if \(from === null && to === null\) return true;\n  if \(!seconds\) return false;/)
+  // "Active" keeps a credential that is about to expire.
+  assert.match(rules, /filter\.state === 'active' \? state !== 'expired' : state === filter\.state/)
+  // Text is plain substring matching over the ticked fields; nothing scores.
+  assert.match(rules, /text\.toLowerCase\(\)\.includes\(needle\)/)
+  assert.doesNotMatch(rules, /score|rank\(|weight/)
+
+  const bar = source('src/features/delegatedAccess/GrantFilterBar.tsx')
+  assert.match(bar, /export function GrantFilterControls\(/)
+  assert.match(bar, /export function GrantFilterSettings\(/)
+  assert.match(bar, /export function GrantFilterInfo\(/)
+  assert.match(bar, /aria-pressed=\{settingsOpen\}/)
+  assert.match(bar, /aria-controls="grant-filter-settings"/)
+  assert.match(bar, /id="grant-filter-settings"/)
+  assert.match(bar, /aria-label="How card filtering works"/)
+  assert.match(bar, /role="dialog"/)
+  // The explainer quotes the implemented expiry window rather than a literal.
+  assert.match(bar, /ends within \{EXPIRING_DAYS\} days/)
+  // The last ticked field cannot be unticked.
+  assert.match(bar, /next\.length \? ALL_SEARCH_FIELDS\.filter/)
+
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.doesNotMatch(panel, /grantQuery|grant-search/)
+  assert.match(panel, /className="tab-actions grant-filter-row"/)
+  assert.match(panel, /<GrantFilterControls[\s\S]*?onOpenInfo=\{\(\) => setGrantInfoOpen\(true\)\}/)
+  assert.match(panel, /items\.length > 0 && grantSettingsOpen \? \(\n\s*<GrantFilterSettings/)
+  assert.match(panel, /recordMatches\(item, grantFilter, grantFilterContext\)/)
+  assert.match(panel, /agentGroupMatches\(clientId, records, grantFilter, grantFilterContext\)/)
+  // Any filter change returns to the first page.
+  assert.match(panel, /setGrantFilter\(\(current\) => \(\{ \.\.\.current, \.\.\.patch \}\)\);\n\s*setGrantLimit\(GRANT_PAGE_SIZE\);/)
+
+  const css = source('src/styles.css')
+  for (const cls of ['.grant-filter-row', '.grant-filter__count', '.grant-filter__settings', '.grant-filter__chip.on', '.grant-filter__formula']) {
+    assert.ok(css.includes(cls), `styles.css lacks ${cls}`)
+  }
+  assert.doesNotMatch(css, /\.grant-search/)
 })
