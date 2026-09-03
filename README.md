@@ -81,15 +81,17 @@ one contract. Its packaging starts after the Connection Hub package.
 | [`connection-hub`](products/connection-hub/packages/connection-hub/README.md) | Alpha implementation | Delegated cards and catalogs, OAuth and connected-account policy, managed-boundary admission, and direct protected-service admission. |
 | [`connection-hub-cli`](products/connection-hub/packages/connection-hub-cli/README.md) | Alpha implementation | KDCube host selection, local caller profiles, macOS Keychain custody, one stdio MCP bridge, and registration adapters for external MCP clients. |
 | [`ConnectionHubPresenceHelper`](products/connection-hub/packages/connection-hub-presence-helper-macos/README.md) | Pre-release | Signed Rust executor for protected KDCube management OAuth sessions and three fixed request-bound operations on macOS. |
-| [`app-foundation`](packages/app-foundation/README.md) | `0.0.1` planning marker | Future host-neutral identity, secrets, storage, HTTP, event, and observability primitives. |
-| [`service-foundation`](packages/service-foundation/README.md) | `0.0.1` planning marker | Future standalone service composition, authentication, token, config, health, and migration contracts. |
+| [`app-foundation`](packages/app-foundation/README.md) | `2026.09.03.1835` implementation candidate | Host-neutral MCP client construction and normalization; further identity, storage, HTTP, event, and observability extraction follows contract by contract. |
+| [`service-foundation`](packages/service-foundation/README.md) | `2026.09.03.1835` implementation candidate | Generic host-relay adapter, polling, retry, stop, health, and discovery contracts; broader standalone-service extraction remains planned. |
 | [`harness-foundation`](packages/harness-foundation/README.md) | `0.0.1` planning marker | Future distributed agent-turn, event, record, and workspace harness. |
 | [`economics-foundation`](packages/economics-foundation/README.md) | `2026.09.02.1559` planning marker | Future host-neutral service usage, attribution, pricing, budget admission, reservation, and settlement contracts. |
 
-The planning markers reserve names; they do not claim an implemented API.
-`connection-hub` is the first implemented distribution and is used by the
-Connection Hub application now. The native presence helper is source-complete
-but remains outside the supported CLI path until its release gates pass.
+Planning markers reserve names and do not claim an implemented API. The two
+foundation implementation candidates name their current source contracts but
+are not releases until their release records and tags pass the documented
+gate. `connection-hub` is used by the Connection Hub application now. The
+native presence helper is source-complete but remains outside the supported
+CLI path until its release gates pass.
 
 ## Examples
 

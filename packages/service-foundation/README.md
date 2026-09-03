@@ -1,33 +1,43 @@
 # service-foundation
 
-Foundations for standalone runnable services.
+Foundations for standalone runnable services and host-side companion
+processes.
 
 ## Current Status
 
-`0.0.1` is an installable planning marker that reserves the distribution and
-import names. It currently exposes only `service_foundation.__version__`; it is
-not yet a service launcher or authentication framework.
+`2026.09.03.1835` is the first implementation candidate. It includes a generic
+host-relay lifecycle under `service_foundation.host_relay`:
+
+- `HostRelayAdapter` defines one asynchronous `poll_once()` domain boundary;
+- `HostRelayRuntime` owns repeated execution, health, stop, and bounded retry;
+- `HostRelayPolicy` defines poll and retry timing;
+- entry-point discovery uses `service_foundation.host_relay.adapters` for
+  separately packaged adapters.
 
 ```bash
 python -m pip install service-foundation
 ```
 
-## Intended Boundary
+An adapter owns domain translation and returns bounded cycle metadata. The
+runtime emits lifecycle metadata and result-key names; it does not copy domain
+payloads into observer events.
+
+## Boundary
 
 A standalone service needs a host layer around its application logic:
 
 - composition and launcher contracts;
-- browser-session OIDC and service-workload authentication surfaces;
-- opaque-token issuance and verification for service-owned sessions;
+- browser-session and service-workload authentication surfaces;
+- service-owned session issuance and verification;
 - configuration, health, and readiness contracts;
-- migration invocation, while the application owns its migrations.
+- migration invocation, while the application owns its migrations;
+- lifecycle for a local or remote companion process.
 
-`service-foundation` will own that layer and stand on
-[`app-foundation`](https://github.com/elenaviter/app-ecosystem/blob/main/packages/app-foundation/README.md). It will not own application
-behavior, Connection Hub authority policy, or KDCube application concepts.
+The host-relay runtime does not know MCP, credentials, agents, mail, journals,
+or any product vocabulary. A product composition root supplies an adapter and
+opens whatever governed transport that adapter needs.
 
-The Connection Hub currently runs as a KDCube application. A future standalone
-host can compose the same application over this service layer once the required
-host contracts are extracted and verified.
+`service-foundation` does not import `app-foundation`, and `app-foundation`
+does not import `service-foundation`. Products may depend on either or both.
 
 License: MIT. Source: https://github.com/elenaviter/app-ecosystem

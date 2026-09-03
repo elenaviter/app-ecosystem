@@ -1,13 +1,9 @@
-"""app-foundation: host-neutral foundation for applications in an ecosystem.
+"""Host-neutral foundations shared by applications in an ecosystem.
 
-Generic principal and service identity, secret-reference resolution,
-Postgres/Redis clients, cache and distributed locks, HTTP/CSRF/external-URL
-utilities, events and observability primitives. No authority models (those
-are `connection_hub`), no Connection Hub behavior, no KDCube bundle concepts, no
-deployment orchestration.
-
-Version 0.0.1 claims the name; the modules are being extracted from the
-production implementation. Status: https://github.com/elenaviter/app-ecosystem
+The current package provides MCP client construction and result normalization.
+Product authority, application-domain behavior, service lifecycle, and
+deployment orchestration remain outside this package. Additional primitives
+move here only after their contracts are characterized.
 """
 
-__version__ = "0.0.1"
+__version__ = "2026.09.03.1835"

@@ -14,8 +14,9 @@ from mcp.server.subscriptions import (
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from connection_hub_cli import __version__
-from connection_hub_cli.errors import CredentialError, UpstreamError
-from connection_hub_cli.remote_mcp import RemoteTools, connect_remote_tools
+from connection_hub_cli.errors import UpstreamError
+from connection_hub_cli.profile_connection import connect_profile_tools
+from connection_hub_cli.remote_mcp import RemoteTools
 from connection_hub_cli.state import ProfileStore
 from connection_hub_cli.credentials import CredentialStore
 
@@ -132,19 +133,12 @@ async def serve_profile(
     profiles: ProfileStore,
     credentials: CredentialStore,
 ) -> None:
-    profile = profiles.require(profile_name)
-    bearer = credentials.get(profile.credential_ref)
-    if bearer is None:
-        raise CredentialError(
-            "credential_missing",
-            f"Caller profile '{profile_name}' has no credential in macOS Keychain.",
-        )
-
     downstream_changes = DownstreamToolChanges()
     try:
-        async with connect_remote_tools(
-            endpoint=profile.endpoint,
-            bearer=bearer,
+        async with connect_profile_tools(
+            profile_name=profile_name,
+            profiles=profiles,
+            credentials=credentials,
             message_handler=downstream_changes.handle_upstream_message,
         ) as (upstream, _client):
             await McpToolRelay(upstream, downstream_changes).run_stdio()

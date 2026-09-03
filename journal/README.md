@@ -36,6 +36,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-03 | Delegated KDCube management service implemented in source | The deployment-scoped inspect, surface-discovery, and exact-reload API; signed request-bound browser approval; durable effect replay boundary; cross-repository offline evidence; and remaining live acceptance gate. |
 | 2026-09-03 | macOS presence helper user and release documentation | The separate Python MCP-relay and Rust management-helper boundaries, released-user install/verify/update/remove contract, Apple maintainer signing procedure, native release gates, and precise packaging preflights. |
 | 2026-09-03 | Presence helper precommit audit and dependency hardening | The KDCube-hosted product boundary, stale-source and build-output cleanup, RustSec dependency corrections, final Python/Rust/package evidence, and the remaining Rust 1.83, Apple provisioning, native publication, and shared CLI integration gates. |
+| 2026-09-03 | MCP client and host relay foundations extracted | The first implemented App Foundation MCP and Service Foundation host-relay slices, independent dependency boundaries, Connection Hub profile composition, KDCube compatibility ownership, offline package evidence, and remaining release and live-acceptance gates. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

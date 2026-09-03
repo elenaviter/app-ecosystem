@@ -75,6 +75,26 @@ reduces accidental copying; the live delegated-access card remains the
 authority. Connection Hub resolves the current card, catalog, expiry,
 invocation policy, and revocation on each covered call.
 
+Python host processes can use the same profile boundary without launching the
+stdio bridge:
+
+```python
+from connection_hub_cli.profile_connection import connect_profile_tools
+
+async with connect_profile_tools(
+    profile_name="coding-agent",
+    profiles=profiles,
+    credentials=credentials,
+) as (remote_tools, _mcp_client):
+    tools = await remote_tools.list_tools()
+```
+
+`connection-hub-cli` owns profile lookup and operating-system credential
+custody. The host-neutral MCP session underneath is provided by
+[`app-foundation`](https://github.com/elenaviter/app-ecosystem/tree/main/packages/app-foundation).
+The application using `remote_tools` still owns its domain calls and result
+interpretation.
+
 The same helper can be registered for Claude Code, Claude Desktop local MCP,
 Hermes, or OpenClaw:
 

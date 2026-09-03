@@ -1,14 +1,8 @@
-"""service-foundation: foundation for standalone runnable services.
+"""Foundations for standalone runnable services and companion processes.
 
-Service composition and launcher contracts, browser-session (OIDC) and
-service-workload authentication surfaces, opaque-token issuance for the
-service's own sessions, configuration, health and readiness, and
-migration invocation. No authority models (those are `connection_hub`), no
-application behavior, no KDCube bundle concepts; it stands on
-`app-foundation`.
-
-Version 0.0.1 claims the name; the modules arrive with the standalone
-host work. Status: https://github.com/elenaviter/app-ecosystem
+The current package provides the generic host-relay lifecycle. Product
+authority, application-domain behavior, transport selection, and credential
+custody remain in adapters and their composition roots.
 """
 
-__version__ = "0.0.1"
+__version__ = "2026.09.03.1835"
