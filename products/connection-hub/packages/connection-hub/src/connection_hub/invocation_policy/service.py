@@ -21,12 +21,15 @@ from connection_hub.invocation_policy.models import (
     POLICY_CONSUMED,
     POLICY_MODES,
     POLICY_ONCE,
+    REQUEST_PERMIT_AVAILABLE,
+    REQUEST_PERMIT_CONSUMED,
     InvocationAuthority,
     InvocationDecision,
     InvocationPolicy,
     InvocationPolicyChange,
     InvocationPolicyRecordError,
     InvocationRecord,
+    RequestBoundPermit,
     validated_invocation_id,
     validated_request_digest,
 )
@@ -110,6 +113,18 @@ class InvocationPolicyService:
         if not owner:
             raise InvocationPolicyRecordError("owner_subject_missing")
         return await self._store.read_policy(
+            owner_hash=owner_hash_for(owner), authority=authority
+        )
+
+    async def get_policy_change(
+        self, *, owner_subject: str, authority: InvocationAuthority
+    ) -> InvocationPolicyChange | None:
+        """Return the durable idempotency marker for one policy authority."""
+
+        owner = str(owner_subject or "").strip()
+        if not owner:
+            raise InvocationPolicyRecordError("owner_subject_missing")
+        return await self._store.read_policy_change(
             owner_hash=owner_hash_for(owner), authority=authority
         )
 
@@ -285,6 +300,106 @@ class InvocationPolicyService:
             )
             return current
 
+    async def issue_request_permit(
+        self,
+        *,
+        owner_subject: str,
+        authority: InvocationAuthority,
+        invocation_id: str,
+        request_digest: str,
+        card_revision: int,
+        authority_revision: str,
+        ttl_seconds: int = 600,
+        now: int | None = None,
+    ) -> RequestBoundPermit:
+        """Issue one exact permit under the current available ``once`` policy."""
+
+        owner = str(owner_subject or "").strip()
+        if not owner:
+            raise InvocationPolicyRecordError("owner_subject_missing")
+        clean_invocation_id = validated_invocation_id(invocation_id)
+        clean_request_digest = validated_request_digest(request_digest)
+        clean_authority_revision = str(authority_revision or "").strip()
+        clean_card_revision = int(card_revision)
+        lifetime = int(ttl_seconds)
+        if clean_card_revision < 1:
+            raise InvocationPolicyRecordError("request_permit_card_revision_invalid")
+        if not clean_authority_revision:
+            raise InvocationPolicyRecordError(
+                "request_permit_authority_revision_missing"
+            )
+        if lifetime < 1:
+            raise InvocationPolicyRecordError("request_permit_ttl_invalid")
+
+        owner_hash = owner_hash_for(owner)
+        moment = int(now if now is not None else time.time())
+        policy_authorities = self._policy_authorities(authority)
+        async with AsyncExitStack() as stack:
+            for policy_authority in policy_authorities:
+                await stack.enter_async_context(
+                    self._critical_section(
+                        owner_hash=owner_hash,
+                        authority=policy_authority,
+                    )
+                )
+
+            policy = None
+            for policy_authority in policy_authorities:
+                change = await self._store.read_policy_change(
+                    owner_hash=owner_hash,
+                    authority=policy_authority,
+                )
+                if change is not None and change.state == POLICY_CHANGE_PREPARED:
+                    raise InvocationPolicyConflict(
+                        "invocation_policy_change_in_progress"
+                    )
+                candidate = await self._store.read_policy(
+                    owner_hash=owner_hash,
+                    authority=policy_authority,
+                )
+                if candidate is not None and (
+                    policy is None or candidate.authority == authority
+                ):
+                    policy = candidate
+            if policy is None or policy.mode != POLICY_ONCE:
+                raise InvocationPolicyConflict("request_permit_requires_once_policy")
+            if policy.state != POLICY_AVAILABLE:
+                raise InvocationPolicyConflict("delegated_invocation_limit_exhausted")
+
+            existing = await self._store.read_request_permit(
+                owner_hash=owner_hash,
+                authority=authority,
+                invocation_id=clean_invocation_id,
+            )
+            if existing is not None:
+                same_request = (
+                    existing.request_digest == clean_request_digest
+                    and existing.card_revision == clean_card_revision
+                    and existing.authority_revision == clean_authority_revision
+                    and existing.policy_revision == policy.revision
+                )
+                if not same_request:
+                    raise InvocationPolicyConflict("request_permit_identity_moved")
+                return existing
+
+            permit = RequestBoundPermit(
+                authority=authority,
+                invocation_id=clean_invocation_id,
+                request_digest=clean_request_digest,
+                card_revision=clean_card_revision,
+                authority_revision=clean_authority_revision,
+                policy_revision=policy.revision,
+                revision=1,
+                state=REQUEST_PERMIT_AVAILABLE,
+                issued_at=moment,
+                expires_at=moment + lifetime,
+            )
+            await self._store.write_request_permit(
+                owner_hash=owner_hash,
+                permit=permit,
+            )
+            return permit
+
     async def begin(
         self,
         *,
@@ -294,6 +409,7 @@ class InvocationPolicyService:
         request_digest: str = "",
         card_revision: int = 0,
         authority_revision: str = "",
+        require_request_permit: bool = False,
         now: int | None = None,
     ) -> InvocationDecision:
         owner = str(owner_subject or "").strip()
@@ -361,6 +477,7 @@ class InvocationPolicyService:
                 request_digest=request_digest,
                 card_revision=card_revision,
                 authority_revision=authority_revision,
+                require_request_permit=require_request_permit,
                 moment=moment,
             )
 
@@ -374,11 +491,18 @@ class InvocationPolicyService:
         request_digest: str,
         card_revision: int,
         authority_revision: str,
+        require_request_permit: bool,
         moment: int,
     ) -> InvocationDecision:
         mode = policy.mode if policy is not None else POLICY_ALWAYS
+        if require_request_permit and policy is None:
+            return InvocationDecision(
+                allowed=False,
+                reason="delegated_request_policy_required",
+                dispatch=False,
+            )
         if not str(invocation_id or "").strip():
-            if mode == POLICY_ONCE:
+            if mode == POLICY_ONCE or require_request_permit:
                 return InvocationDecision(
                     allowed=False,
                     reason="delegated_invocation_id_required",
@@ -404,6 +528,18 @@ class InvocationPolicyService:
                 return InvocationDecision(
                     allowed=False,
                     reason="delegated_invocation_id_conflict",
+                    dispatch=False,
+                    policy=policy,
+                    invocation=existing,
+                )
+            if require_request_permit and (
+                existing.card_revision != max(0, int(card_revision))
+                or existing.authority_revision
+                != str(authority_revision or "").strip()
+            ):
+                return InvocationDecision(
+                    allowed=False,
+                    reason="delegated_request_authority_moved",
                     dispatch=False,
                     policy=policy,
                     invocation=existing,
@@ -443,6 +579,58 @@ class InvocationPolicyService:
                 policy=policy,
             )
 
+        request_permit = None
+        if require_request_permit and policy is not None and policy.mode == POLICY_ONCE:
+            request_permit = await self._store.read_request_permit(
+                owner_hash=owner_hash,
+                authority=authority,
+                invocation_id=clean_invocation_id,
+            )
+            if request_permit is None:
+                return InvocationDecision(
+                    allowed=False,
+                    reason="delegated_request_permit_required",
+                    dispatch=False,
+                    policy=policy,
+                )
+            if request_permit.request_digest != clean_request_digest:
+                return InvocationDecision(
+                    allowed=False,
+                    reason="delegated_request_permit_mismatch",
+                    dispatch=False,
+                    policy=policy,
+                    request_permit=request_permit,
+                )
+            if request_permit.state != REQUEST_PERMIT_AVAILABLE:
+                return InvocationDecision(
+                    allowed=False,
+                    reason="delegated_request_permit_consumed",
+                    dispatch=False,
+                    policy=policy,
+                    request_permit=request_permit,
+                )
+            if request_permit.expires_at <= moment:
+                return InvocationDecision(
+                    allowed=False,
+                    reason="delegated_request_permit_expired",
+                    dispatch=False,
+                    policy=policy,
+                    request_permit=request_permit,
+                )
+            if (
+                request_permit.card_revision != max(0, int(card_revision))
+                or request_permit.authority_revision
+                != str(authority_revision or "").strip()
+                or request_permit.policy_revision != policy.revision
+            ):
+                return InvocationDecision(
+                    allowed=False,
+                    reason="delegated_request_permit_stale",
+                    dispatch=False,
+                    policy=policy,
+                    request_permit=request_permit,
+                )
+
         policy_id = (
             policy.policy_id
             if policy is not None
@@ -459,12 +647,25 @@ class InvocationPolicyService:
             state=INVOCATION_RESERVED,
             card_revision=card_revision,
             authority_revision=str(authority_revision or "").strip(),
+            request_permit_revision=(
+                request_permit.revision if request_permit is not None else 0
+            ),
             created_at=moment,
         )
         # The reservation is written first. A crash before one-use
         # consumption cannot dispatch this invocation and cannot make its
         # retry dispatch; another new invocation may still consume it.
         await self._store.write_invocation(owner_hash=owner_hash, record=record)
+        if request_permit is not None:
+            request_permit = replace(
+                request_permit,
+                state=REQUEST_PERMIT_CONSUMED,
+                consumed_at=moment,
+            )
+            await self._store.write_request_permit(
+                owner_hash=owner_hash,
+                permit=request_permit,
+            )
         if policy is not None and policy.mode == POLICY_ONCE:
             policy = replace(
                 policy,
@@ -481,6 +682,7 @@ class InvocationPolicyService:
             dispatch=True,
             policy=policy,
             invocation=record,
+            request_permit=request_permit,
         )
 
     async def complete(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Mapping
@@ -22,6 +23,10 @@ from connection_hub.delegated_credentials.admission import (
     verify_admission_request,
 )
 from connection_hub.delegated_credentials.credential_view import DelegatedCredentialView
+from connection_hub.delegated_credentials.request_approval import (
+    RequestApprovalTicket,
+    issue_request_approval_ticket,
+)
 from connection_hub.invocation_policy import (
     SURFACE_OUTER,
     InvocationAuthority,
@@ -37,6 +42,9 @@ SecretResolver = Callable[[str, str], Awaitable[str]]
 RequestConfigBinder = Callable[[Any], Any]
 InvocationRecoveryURLBuilder = Callable[
     [DelegatedCredentialView, AdmissionRequest], str
+]
+RequestPermitRecoveryURLBuilder = Callable[
+    [DelegatedCredentialView, AdmissionRequest, int, str, int, str], str
 ]
 OperationGrantURLBuilder = Callable[
     [DelegatedCredentialView, AdmissionRequest, str], str
@@ -55,6 +63,7 @@ class AdmissionHostContext:
     bind_delegated_request: RequestConfigBinder
     invocation_policies: InvocationPolicyService | None = None
     invocation_recovery_url_builder: InvocationRecoveryURLBuilder | None = None
+    request_permit_recovery_url_builder: RequestPermitRecoveryURLBuilder | None = None
     operation_grant_url_builder: OperationGrantURLBuilder | None = None
 
 
@@ -150,6 +159,33 @@ def _provider_invocation_policy(policy: Any) -> dict[str, Any]:
     }
 
 
+def _request_approval_ticket(
+    *,
+    service_id: str,
+    service_secret: str,
+    view: DelegatedCredentialView,
+    request: AdmissionRequest,
+    authority_revision: str,
+    ttl_seconds: int,
+) -> tuple[str, RequestApprovalTicket]:
+    moment = int(time.time())
+    ticket = RequestApprovalTicket(
+        service_id=service_id,
+        client_id=view.client_id,
+        access_id=view.registry_access_id,
+        resource=request.resource,
+        operation=request.operation,
+        invocation_id=request.invocation_id,
+        request_digest=request.request_digest,
+        card_revision=view.card_revision,
+        authority_revision=authority_revision,
+        issued_at=moment,
+        expires_at=moment + max(1, int(ttl_seconds)),
+        approval_context=request.approval_context,
+    )
+    return issue_request_approval_ticket(ticket, secret=service_secret), ticket
+
+
 async def handle_delegated_admission(
     *,
     context: AdmissionHostContext,
@@ -212,6 +248,7 @@ async def handle_delegated_admission(
             message="The protected service is not registered for this resource.",
             decision_id=decision_id,
         )
+    request_bound = service.requires_request_permit(admission_request.operation)
     if not service.secret_ref:
         LOGGER.error(
             "unavailable decision_id=%s reason=service_secret_ref_missing service_id=%s",
@@ -392,15 +429,45 @@ async def handle_delegated_admission(
                 admission_request.invocation_id
                 or f"admission-{decision_id}"
             )
-            recovery_url = (
-                context.operation_grant_url_builder(
+            catalog_version = str(
+                getattr(result.catalog, "version", "") or ""
+            ).strip()
+            if (
+                request_bound
+                and context.request_permit_recovery_url_builder is not None
+            ):
+                approval_ticket, approval = _request_approval_ticket(
+                    service_id=service.service_id,
+                    service_secret=service_secret,
+                    view=view,
+                    request=admission_request,
+                    authority_revision=catalog_version,
+                    ttl_seconds=service.request_permit_ttl_seconds,
+                )
+                recovery_url = context.request_permit_recovery_url_builder(
+                    view,
+                    admission_request,
+                    view.card_revision,
+                    catalog_version,
+                    service.request_permit_ttl_seconds,
+                    approval_ticket,
+                )
+            elif request_bound:
+                return _denial_response(
+                    status_code=503,
+                    code="delegated_request_approval_unavailable",
+                    message="Request-bound approval is unavailable.",
+                    decision_id=decision_id,
+                    retryable=True,
+                )
+            elif context.operation_grant_url_builder is not None:
+                recovery_url = context.operation_grant_url_builder(
                     view,
                     admission_request,
                     change_id,
                 )
-                if context.operation_grant_url_builder is not None
-                else ""
-            )
+            else:
+                recovery_url = ""
             if view.client_id and view.registry_access_id:
                 grant_payload = {
                     "client_id": view.client_id,
@@ -412,6 +479,18 @@ async def handle_delegated_admission(
                     },
                     "invocation_change_id": change_id,
                 }
+                if request_bound:
+                    grant_payload.update(
+                        {
+                            "request_bound": True,
+                            "request_digest": admission_request.request_digest,
+                            "request_card_revision": view.card_revision,
+                            "request_authority_revision": catalog_version,
+                            "approval_context": dict(
+                                admission_request.approval_context
+                            ),
+                        }
+                    )
                 consent = {
                     "kind": "delegated_agent_grant",
                     "reason": code,
@@ -430,6 +509,20 @@ async def handle_delegated_admission(
                         "payload": grant_payload,
                     },
                 }
+                if request_bound:
+                    consent.update(
+                        {
+                            "kind": "delegated_request_permit",
+                            "invocation_id": admission_request.invocation_id,
+                            "request_digest": admission_request.request_digest,
+                            "card_revision": view.card_revision,
+                            "catalog_version": catalog_version,
+                            "expires_at": approval.expires_at,
+                            "approval_context": dict(
+                                admission_request.approval_context
+                            ),
+                        }
+                    )
                 details.update(
                     {
                         "access_id": view.registry_access_id,
@@ -535,6 +628,14 @@ async def handle_delegated_admission(
         expires_at=expires_at,
         active_catalog_version=result.catalog.version,
     )
+    if request_bound and context.invocation_policies is None:
+        return _denial_response(
+            status_code=503,
+            code="delegated_invocation_policy_unavailable",
+            message="Request-bound invocation policy is unavailable.",
+            decision_id=decision_id,
+            retryable=True,
+        )
     if context.invocation_policies is not None:
         authority = InvocationAuthority(
             access_id=view.registry_access_id,
@@ -552,6 +653,7 @@ async def handle_delegated_admission(
                 request_digest=admission_request.request_digest,
                 card_revision=view.card_revision,
                 authority_revision=result.catalog.version,
+                require_request_permit=request_bound,
             )
         except Exception:
             LOGGER.exception(
@@ -597,13 +699,68 @@ async def handle_delegated_admission(
                 "available_choices": ["allow_once", "allow_always"],
                 **invocation_decision.to_dict(),
             }
-            if context.invocation_recovery_url_builder is not None:
+            if request_bound:
+                details["request_bound"] = True
+                if admission_request.approval_context:
+                    details["approval_context"] = dict(
+                        admission_request.approval_context
+                    )
+            recovery_url = ""
+            if (
+                request_bound
+                and context.request_permit_recovery_url_builder is not None
+            ):
+                approval_ticket, approval = _request_approval_ticket(
+                    service_id=service.service_id,
+                    service_secret=service_secret,
+                    view=view,
+                    request=admission_request,
+                    authority_revision=result.catalog.version,
+                    ttl_seconds=service.request_permit_ttl_seconds,
+                )
+                recovery_url = context.request_permit_recovery_url_builder(
+                    view,
+                    admission_request,
+                    view.card_revision,
+                    result.catalog.version,
+                    service.request_permit_ttl_seconds,
+                    approval_ticket,
+                )
+            elif request_bound:
+                return _denial_response(
+                    status_code=503,
+                    code="delegated_request_approval_unavailable",
+                    message="Request-bound approval is unavailable.",
+                    decision_id=decision_id,
+                    retryable=True,
+                )
+            elif context.invocation_recovery_url_builder is not None:
                 recovery_url = context.invocation_recovery_url_builder(
                     view,
                     admission_request,
                 )
-                if recovery_url:
-                    details["recovery"] = {
+            consent: dict[str, Any] = {}
+            if recovery_url:
+                if request_bound:
+                    consent = {
+                        "kind": "delegated_request_permit",
+                        "reason": invocation_decision.reason,
+                        "connection_hub_url": recovery_url,
+                        "access_id": view.registry_access_id,
+                        "resource": admission_request.resource,
+                        "outer_operation": admission_request.operation,
+                        "invocation_id": admission_request.invocation_id,
+                        "request_digest": admission_request.request_digest,
+                        "card_revision": view.card_revision,
+                        "catalog_version": result.catalog.version,
+                        "expires_at": approval.expires_at,
+                        "approval_context": dict(
+                            admission_request.approval_context
+                        ),
+                        "available_choices": ["allow_once", "allow_always"],
+                    }
+                else:
+                    consent = {
                         "kind": "delegated_invocation_policy",
                         "connection_hub_url": recovery_url,
                         "access_id": view.registry_access_id,
@@ -611,6 +768,7 @@ async def handle_delegated_admission(
                         "outer_operation": admission_request.operation,
                         "available_choices": ["allow_once", "allow_always"],
                     }
+                details["recovery"] = consent
             return _denial_response(
                 status_code=(409 if invocation_decision.replay else 403),
                 code=invocation_decision.reason,
@@ -618,6 +776,7 @@ async def handle_delegated_admission(
                 decision_id=decision_id,
                 retryable=invocation_decision.retryable,
                 details=details,
+                consent=consent,
             )
         if invocation_decision.policy is not None:
             response["invocation_policy"] = _provider_invocation_policy(
@@ -625,6 +784,22 @@ async def handle_delegated_admission(
             )
             response["provenance"]["invocation_policy_revision"] = (
                 invocation_decision.policy.revision
+            )
+        if invocation_decision.request_permit is not None:
+            response["request_permit"] = {
+                key: value
+                for key, value in invocation_decision.request_permit.to_public_dict().items()
+                if key
+                in {
+                    "revision",
+                    "state",
+                    "issued_at",
+                    "expires_at",
+                    "consumed_at",
+                }
+            }
+            response["provenance"]["request_permit_revision"] = (
+                invocation_decision.request_permit.revision
             )
         if admission_request.invocation_id:
             response["invocation_id"] = admission_request.invocation_id
@@ -677,6 +852,7 @@ async def handle_delegated_admission(
 __all__ = [
     "AdmissionHostContext",
     "InvocationRecoveryURLBuilder",
+    "RequestPermitRecoveryURLBuilder",
     "OperationGrantURLBuilder",
     "handle_delegated_admission",
 ]

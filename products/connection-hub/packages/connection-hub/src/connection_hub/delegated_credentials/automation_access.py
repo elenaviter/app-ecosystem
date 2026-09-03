@@ -1220,6 +1220,11 @@ class AutomationAccessService:
             raise CatalogUnavailable("active_catalog_version_missing")
         return version
 
+    async def active_catalog_version(self) -> str:
+        """Return the catalog revision against which a new card write resolves."""
+
+        return await self._active_catalog_version()
+
     async def _available_inventory(
         self,
         user: Mapping[str, Any],

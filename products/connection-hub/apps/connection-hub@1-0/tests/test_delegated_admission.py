@@ -23,6 +23,9 @@ from connection_hub.delegated_credentials.oauth.surface_policy import (
     SurfacePolicyDecision,
     SurfacePolicyDenial,
 )
+from connection_hub.delegated_credentials.request_approval import (
+    verify_request_approval_ticket,
+)
 from connection_hub.invocation_policy import (
     POLICY_ONCE,
     SURFACE_OUTER,
@@ -62,17 +65,25 @@ async def _lock(**_kwargs):
     yield {}
 
 
-def _connections() -> dict:
+def _connections(*, request_bound: bool = False) -> dict:
+    service = {
+        "secret_ref": "admission.crm-api.secret",
+        "resources": [RESOURCE],
+    }
+    if request_bound:
+        service.update(
+            {
+                "request_bound_operations": ["customers.search"],
+                "request_permit_ttl_seconds": 600,
+            }
+        )
     return {
         "delegated_credentials": {
             "admission": {
                 "enabled": True,
                 "identity_projection_secret_ref": "admission.subject_secret",
                 "services": {
-                    "crm-api": {
-                        "secret_ref": "admission.crm-api.secret",
-                        "resources": [RESOURCE],
-                    }
+                    "crm-api": service,
                 },
             }
         }
@@ -193,9 +204,9 @@ async def test_direct_admission_returns_bounded_pairwise_projection(monkeypatch)
     assert body["principal"]["client_id"].startswith("prk_client_")
     assert "external-client" not in str(body)
     assert "user-1" not in str(body)
-    assert "access-1" not in str(body)
     assert body["authority"]["operation"] == "customers.search"
     assert body["provenance"] == {
+        "access_id": "access-1",
         "card_revision": 4,
         "card_catalog_version": "catalog-card",
         "active_catalog_version": "catalog-active",
@@ -310,6 +321,87 @@ async def test_direct_ungranted_operation_returns_exact_once_or_always_recovery(
     assert recovery_calls == [
         ("access-1", "customers.delete", "invoke-delete-1")
     ]
+
+
+@pytest.mark.asyncio
+async def test_request_bound_ungranted_operation_returns_signed_exact_recovery(
+    monkeypatch,
+):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+    denied_result = _allowed_result()
+    denied_result.denial = JSONResponse(
+        status_code=403,
+        content={
+            "ok": False,
+            "error": {
+                "code": "forbidden",
+                "message": "This delegated card does not grant that operation.",
+            },
+            "ret": {"reason": "operation_not_consented"},
+        },
+    )
+    denied_result.decision = SurfacePolicyDecision.deny(
+        SurfacePolicyDenial(
+            reason="operation_not_consented",
+            description="operation not consented for this connection",
+        ),
+        matched_resource=RESOURCE,
+    )
+
+    async def _evaluate(**_kwargs):
+        return denied_result
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    approval_tokens: list[str] = []
+
+    def _recovery_url(
+        _view,
+        _request,
+        _card_revision,
+        _catalog_version,
+        _ttl,
+        approval_ticket,
+    ):
+        approval_tokens.append(approval_ticket)
+        return (
+            "https://hub.example/approve?request_approval_ticket="
+            f"{approval_ticket}"
+        )
+
+    digest = canonical_request_digest({"application_id": "app-a@1-0"})
+    payload = {
+        "resource": RESOURCE,
+        "operation": "customers.search",
+        "invocation_id": "search-1",
+        "request_digest": digest,
+        "approval_context": {"application_id": "app-a@1-0"},
+    }
+    response = await module.handle_delegated_admission(
+        context=module.AdmissionHostContext(
+            connections=_connections(request_bound=True),
+            redis=_Redis(),
+            tenant="tenant-a",
+            project="project-a",
+            resolve_secret=_secret,
+            bind_delegated_request=lambda request: None,
+            request_permit_recovery_url_builder=_recovery_url,
+        ),
+        payload=payload,
+        request=_request(payload, nonce="nonce-1234567890abc3"),
+    )
+
+    body = json.loads(response.body)
+    ticket = verify_request_approval_ticket(
+        approval_tokens[0],
+        secret=SERVICE_SECRET,
+    )
+    assert response.status_code == 403
+    assert body["consent"]["kind"] == "delegated_request_permit"
+    assert body["consent"]["invocation_id"] == "search-1"
+    assert body["consent"]["request_digest"] == digest
+    assert body["consent"]["expires_at"] == ticket.expires_at
+    assert ticket.approval_context == {"application_id": "app-a@1-0"}
 
 
 @pytest.mark.asyncio
@@ -581,7 +673,7 @@ async def test_direct_admission_once_replays_the_recorded_allow(monkeypatch, tmp
         "remaining",
         "updated_at",
     }
-    assert "access-1" not in str(first_body)
+    assert first_body["provenance"]["access_id"] == "access-1"
     assert replay.status_code == 200
     assert replay_body["decision_id"] == first_body["decision_id"]
     assert replay_body["replay"] is True
@@ -602,3 +694,122 @@ async def test_direct_admission_once_replays_the_recorded_allow(monkeypatch, tmp
     }
     # Live authority is intentionally re-evaluated before replay is served.
     assert evaluations == 3
+
+
+@pytest.mark.asyncio
+async def test_request_bound_direct_admission_accepts_only_exact_browser_permit(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+
+    async def _evaluate(**kwargs):
+        del kwargs
+        return _allowed_result()
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    policies = InvocationPolicyService(
+        store=BundleStorageInvocationPolicyStore(tmp_path),
+        mutation_lock=_lock,
+    )
+    authority = InvocationAuthority(
+        access_id="access-1",
+        resource=RESOURCE,
+        surface=SURFACE_OUTER,
+        operation="customers.search",
+    )
+    await policies.set_policy(
+        owner_subject="user-1",
+        authority=authority,
+        mode=POLICY_ONCE,
+    )
+    approval_tickets: list[str] = []
+
+    def _recovery_url(
+        _view,
+        _request,
+        _card_revision,
+        _catalog_version,
+        _ttl,
+        approval_ticket,
+    ):
+        approval_tickets.append(approval_ticket)
+        return "https://hub.example/approve-exact-request"
+
+    context = module.AdmissionHostContext(
+        connections=_connections(request_bound=True),
+        redis=_Redis(),
+        tenant="tenant-a",
+        project="project-a",
+        resolve_secret=_secret,
+        bind_delegated_request=lambda request: None,
+        invocation_policies=policies,
+        request_permit_recovery_url_builder=_recovery_url,
+    )
+    digest = canonical_request_digest({"application_id": "app-a@1-0"})
+    payload = {
+        "resource": RESOURCE,
+        "operation": "customers.search",
+        "invocation_id": "approved-request",
+        "request_digest": digest,
+        "approval_context": {"application_id": "app-a@1-0"},
+    }
+    denied = await module.handle_delegated_admission(
+        context=context,
+        payload=payload,
+        request=_request(payload, nonce="nonce-1234567890abc4"),
+    )
+    competing_payload = {
+        **payload,
+        "invocation_id": "competing-request",
+        "request_digest": canonical_request_digest(
+            {"application_id": "app-b@1-0"}
+        ),
+        "approval_context": {"application_id": "app-b@1-0"},
+    }
+    competing = await module.handle_delegated_admission(
+        context=context,
+        payload=competing_payload,
+        request=_request(competing_payload, nonce="nonce-1234567890abc5"),
+    )
+    await policies.issue_request_permit(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="approved-request",
+        request_digest=digest,
+        card_revision=4,
+        authority_revision="catalog-active",
+    )
+    approved = await module.handle_delegated_admission(
+        context=context,
+        payload=payload,
+        request=_request(payload, nonce="nonce-1234567890abc6"),
+    )
+
+    denied_body = json.loads(denied.body)
+    competing_body = json.loads(competing.body)
+    approved_body = json.loads(approved.body)
+    assert denied.status_code == 403
+    assert denied_body["error"]["code"] == "delegated_request_permit_required"
+    assert denied_body["consent"]["invocation_id"] == "approved-request"
+    assert denied_body["consent"]["request_digest"] == digest
+    assert denied_body["consent"]["approval_context"] == {
+        "application_id": "app-a@1-0"
+    }
+    ticket = verify_request_approval_ticket(
+        approval_tickets[0],
+        secret=SERVICE_SECRET,
+    )
+    assert ticket.invocation_id == "approved-request"
+    assert ticket.request_digest == digest
+    assert ticket.card_revision == 4
+    assert ticket.authority_revision == "catalog-active"
+    assert ticket.approval_context == {"application_id": "app-a@1-0"}
+    assert denied_body["consent"]["expires_at"] == ticket.expires_at
+    assert "permit_ttl_seconds" not in denied_body["consent"]
+    assert competing.status_code == 403
+    assert competing_body["error"]["code"] == "delegated_request_permit_required"
+    assert approved.status_code == 200
+    assert approved_body["request_permit"]["state"] == "consumed"
+    assert approved_body["provenance"]["request_permit_revision"] == 1

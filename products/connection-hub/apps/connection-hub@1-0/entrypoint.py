@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import html
 import json
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Dict, Mapping, Optional
@@ -68,6 +69,12 @@ from connection_hub.delegated_credentials.admission import AdmissionConfig
 from connection_hub.delegated_credentials.consent_denial import (
     connection_hub_grant_url,
     connection_hub_invocation_policy_url,
+)
+from connection_hub.delegated_credentials.request_approval import (
+    RequestApprovalTicket,
+    RequestApprovalTicketError,
+    peek_request_approval_ticket,
+    verify_request_approval_ticket,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
@@ -832,6 +839,112 @@ def _invocation_policy_failure(exc: Exception) -> Dict[str, Any]:
         "status": 503,
         "retryable": True,
     }
+
+
+async def _validated_request_approval(
+    entrypoint: Any,
+    *,
+    access_service: Any,
+    invocation_policy_service: Any,
+    owner_subject: str,
+    authority: InvocationAuthority,
+    approval_ticket: str,
+    client_id: str,
+    access_id: str,
+    resource: str,
+    operation: str,
+    invocation_id: str,
+    request_digest: str,
+    request_card_revision: int,
+    request_authority_revision: str,
+    approval_context: Mapping[str, str],
+    invocation_mode: str,
+    card: Mapping[str, Any],
+) -> RequestApprovalTicket:
+    """Verify the server-authored browser handoff before mutating authority."""
+
+    try:
+        unverified = peek_request_approval_ticket(approval_ticket)
+    except RequestApprovalTicketError as exc:
+        raise InvocationPolicyRecordError(exc.reason) from exc
+    config = AdmissionConfig.from_connections(_connections_config(entrypoint))
+    service = config.service(unverified.service_id)
+    if (
+        service is None
+        or not service.allows_resource(resource)
+        or not service.requires_request_permit(operation)
+    ):
+        raise InvocationPolicyRecordError("request_approval_service_invalid")
+    service_secret = await _bundle_secret_value(
+        entrypoint,
+        secret_path=service.secret_ref,
+        trace_scope=f"delegated_admission.service.{service.service_id}",
+        warn_missing=True,
+    )
+    if len(service_secret.encode("utf-8")) < 32:
+        raise RuntimeError("request_approval_secret_unavailable")
+    try:
+        ticket = verify_request_approval_ticket(
+            approval_ticket,
+            secret=service_secret,
+        )
+    except RequestApprovalTicketError as exc:
+        raise InvocationPolicyRecordError(exc.reason) from exc
+
+    expected = (
+        client_id,
+        access_id,
+        resource,
+        operation,
+        invocation_id,
+        request_digest,
+    )
+    actual = (
+        ticket.client_id,
+        ticket.access_id,
+        ticket.resource,
+        ticket.operation,
+        ticket.invocation_id,
+        ticket.request_digest,
+    )
+    if actual != expected:
+        raise InvocationPolicyConflict("request_approval_identity_moved")
+    if (
+        request_card_revision != ticket.card_revision
+        or request_authority_revision != ticket.authority_revision
+        or dict(sorted(approval_context.items()))
+        != dict(ticket.approval_context)
+    ):
+        raise InvocationPolicyConflict("request_approval_display_moved")
+    now = int(time.time())
+    if (
+        ticket.issued_at > now + config.max_clock_skew_seconds
+        or ticket.expires_at - ticket.issued_at
+        > service.request_permit_ttl_seconds
+    ):
+        raise InvocationPolicyRecordError("request_approval_lifetime_invalid")
+
+    existing_change = await invocation_policy_service.get_policy_change(
+        owner_subject=owner_subject,
+        authority=authority,
+    )
+    committed_replay = bool(
+        existing_change is not None
+        and existing_change.state == POLICY_CHANGE_COMMITTED
+        and existing_change.change_id == invocation_id
+        and existing_change.mode == invocation_mode
+    )
+    if committed_replay:
+        return ticket
+
+    current_card_revision = int(card.get("card_revision") or 0)
+    current_authority_revision = await access_service.active_catalog_version()
+    if (
+        current_card_revision != ticket.card_revision
+        or current_authority_revision != ticket.authority_revision
+    ):
+        raise InvocationPolicyConflict("request_approval_authority_moved")
+    return ticket
 
 
 def _expected_invocation_policy_revision(payload: Mapping[str, Any]) -> int | None:
@@ -1945,6 +2058,24 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 "delegable_roles": ["kdcube:role:super-admin"],
                             },
                             {
+                                "grant": "kdcube.management.deployment.inspect",
+                                "label": "Inspect KDCube deployment",
+                                "description": "Read bounded readiness and application status for one running KDCube deployment.",
+                                "delegable_roles": ["kdcube:role:super-admin"],
+                            },
+                            {
+                                "grant": "kdcube.management.application.surfaces.read",
+                                "label": "Discover KDCube application surfaces",
+                                "description": "Read the declared surfaces of one exact KDCube application.",
+                                "delegable_roles": ["kdcube:role:super-admin"],
+                            },
+                            {
+                                "grant": "kdcube.management.application.reload",
+                                "label": "Reload KDCube application",
+                                "description": "Re-read descriptor authority and reload one exact KDCube application.",
+                                "delegable_roles": ["kdcube:role:super-admin"],
+                            },
+                            {
                                 "grant": "conversations:read",
                                 "label": "Read your conversations",
                                 "description": "Read the approving user's own KDCube conversations through delegated named-service tools.",
@@ -2007,6 +2138,35 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 "grants": ["kdcube:role:super-admin"],
                             },
                             {
+                                "resource": "urn:kdcube:management:deployment:*:*",
+                                "label": "KDCube deployment management",
+                                "admin_only": True,
+                                "resource_selection": True,
+                                "operations": {
+                                    "kdcube.management.deployment.inspect": {
+                                        "label": "Inspect deployment",
+                                        "description": "Read bounded release, readiness, and application status.",
+                                        "grants": [
+                                            "kdcube.management.deployment.inspect"
+                                        ],
+                                    },
+                                    "kdcube.management.application.surfaces.read": {
+                                        "label": "Discover application surfaces",
+                                        "description": "Read declared surfaces for one exact application.",
+                                        "grants": [
+                                            "kdcube.management.application.surfaces.read"
+                                        ],
+                                    },
+                                    "kdcube.management.application.reload": {
+                                        "label": "Reload application",
+                                        "description": "Reload one exact application from descriptor authority.",
+                                        "grants": [
+                                            "kdcube.management.application.reload"
+                                        ],
+                                    },
+                                },
+                            },
+                            {
                                 "resource": "*/api/integrations/bundles/*/*/user-memories@2026-06-26/public/mcp/memories*",
                                 "label": "User memories MCP",
                                 "tools": {
@@ -2059,10 +2219,23 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     },
                     "admission": {
                         "enabled": False,
-                        "identity_projection_secret_ref": "",
+                        "identity_projection_secret_ref": "connections.delegated_credentials.admission.identity_projection_secret",
                         "max_clock_skew_seconds": 300,
                         "nonce_ttl_seconds": 600,
-                        "services": {},
+                        "services": {
+                            "kdcube-management": {
+                                "label": "KDCube management service",
+                                "enabled": True,
+                                "secret_ref": "connections.delegated_credentials.admission.services.kdcube-management.signing_secret",
+                                "resources": [
+                                    "urn:kdcube:management:deployment:*:*"
+                                ],
+                                "request_bound_operations": [
+                                    "kdcube.management.application.reload"
+                                ],
+                                "request_permit_ttl_seconds": 600,
+                            }
+                        },
                     },
                 },
                 "delegated_to_kdcube": {
@@ -2402,6 +2575,27 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                         access_id=view.registry_access_id,
                         resource=admission.resource,
                         operation=admission.operation,
+                    )
+                ),
+                request_permit_recovery_url_builder=(
+                    lambda view, admission, card_revision, authority_revision, _ttl, approval_ticket: (
+                        connection_hub_grant_url(
+                            tenant=tenant,
+                            project=project,
+                            client_id=view.client_id,
+                            access_id=view.registry_access_id,
+                            resource=admission.resource,
+                            claims=[],
+                            outer_operation=admission.operation,
+                            invocation_policy="choose",
+                            invocation_change_id=admission.invocation_id,
+                            request_bound=True,
+                            request_digest=admission.request_digest,
+                            request_card_revision=card_revision,
+                            request_authority_revision=authority_revision,
+                            request_approval_ticket=approval_ticket,
+                            approval_context=admission.approval_context,
+                        )
                     )
                 ),
                 operation_grant_url_builder=lambda view, admission, change_id: (
@@ -3051,6 +3245,36 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             or payload.get("demand_id")
             or ""
         ).strip()
+        request_bound = _bool(payload.get("request_bound"), default=False)
+        request_digest = str(payload.get("request_digest") or "").strip().lower()
+        request_approval_ticket = str(
+            payload.get("request_approval_ticket") or ""
+        ).strip()
+        try:
+            request_card_revision = int(payload.get("request_card_revision") or 0)
+        except (TypeError, ValueError):
+            return {
+                "ok": False,
+                "error": "request_approval_card_revision_invalid",
+                "status": 400,
+            }
+        request_authority_revision = str(
+            payload.get("request_authority_revision") or ""
+        ).strip()
+        raw_approval_context = payload.get("approval_context")
+        if raw_approval_context is not None and not isinstance(
+            raw_approval_context, Mapping
+        ):
+            return {
+                "ok": False,
+                "error": "request_approval_context_invalid",
+                "status": 400,
+            }
+        approval_context = {
+            str(key or "").strip(): str(value or "").strip()
+            for key, value in dict(raw_approval_context or {}).items()
+            if str(key or "").strip() and str(value or "").strip()
+        }
         invocation_policy_service = None
         invocation_authority = None
         invocation_change = None
@@ -3084,6 +3308,17 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 return {
                     "ok": False,
                     "error": "invocation_policy_change_identity_required",
+                    "status": 400,
+                }
+            if request_bound and (
+                not request_digest
+                or not request_approval_ticket
+                or request_card_revision < 1
+                or not request_authority_revision
+            ):
+                return {
+                    "ok": False,
+                    "error": "request_permit_identity_required",
                     "status": 400,
                 }
             listing = await access_service.list_access(user)
@@ -3153,6 +3388,26 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             )
             invocation_policy_service = _invocation_policy_service(self)
             try:
+                if request_bound:
+                    await _validated_request_approval(
+                        self,
+                        access_service=access_service,
+                        invocation_policy_service=invocation_policy_service,
+                        owner_subject=invocation_owner,
+                        authority=invocation_authority,
+                        approval_ticket=request_approval_ticket,
+                        client_id=client_id,
+                        access_id=invocation_access_id,
+                        resource=resource,
+                        operation=requested_operation,
+                        invocation_id=invocation_change_id,
+                        request_digest=request_digest,
+                        request_card_revision=request_card_revision,
+                        request_authority_revision=request_authority_revision,
+                        approval_context=approval_context,
+                        invocation_mode=invocation_mode,
+                        card=card,
+                    )
                 invocation_change = (
                     await invocation_policy_service.prepare_policy_change(
                         owner_subject=invocation_owner,
@@ -3188,6 +3443,23 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                         "invocation_policy": policy.to_public_dict(),
                         "replay": True,
                     }
+                    if request_bound and invocation_mode == POLICY_ONCE:
+                        try:
+                            permit = await invocation_policy_service.issue_request_permit(
+                                owner_subject=invocation_owner,
+                                authority=invocation_authority,
+                                invocation_id=invocation_change_id,
+                                request_digest=request_digest,
+                                card_revision=int(card.get("card_revision") or 0),
+                                authority_revision=str(
+                                    card.get("catalog_version") or ""
+                                ).strip(),
+                            )
+                            replay_result["request_permit"] = (
+                                permit.to_public_dict()
+                            )
+                        except Exception as exc:
+                            return _invocation_policy_failure(exc)
                     # A retry can arrive after the durable card+policy commit
                     # but before the passive conversation event was authored.
                     # Re-run the idempotent completion step; already-satisfied
@@ -3277,6 +3549,20 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     **result,
                     "invocation_policy": policy.to_public_dict(),
                 }
+                if request_bound and invocation_mode == POLICY_ONCE:
+                    access = result.get("access")
+                    access = access if isinstance(access, Mapping) else {}
+                    permit = await invocation_policy_service.issue_request_permit(
+                        owner_subject=invocation_owner,
+                        authority=invocation_authority,
+                        invocation_id=invocation_change_id,
+                        request_digest=request_digest,
+                        card_revision=int(access.get("card_revision") or 0),
+                        authority_revision=str(
+                            access.get("catalog_version") or ""
+                        ).strip(),
+                    )
+                    result["request_permit"] = permit.to_public_dict()
             except Exception as exc:
                 # The prepared marker remains. If the card write committed,
                 # invocation enforcement stays closed until this exact change

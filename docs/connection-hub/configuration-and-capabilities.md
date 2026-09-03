@@ -1,3 +1,16 @@
+---
+id: connection-hub-configuration-and-capabilities
+title: Connection Hub Configuration And Capabilities
+summary: Maps Connection Hub capabilities to their descriptor-owned configuration and canonical contract documents.
+status: current
+tags: [connection-hub, configuration, delegated-access, capabilities]
+keywords: [capability catalog, protected service, request-bound approval, OAuth, external MCP]
+updated_at: 2026-09-03
+see_also:
+  - ./connection-hub-architecture.md
+  - ./package/delegated-authority-and-admission.md
+  - ./recipes/direct-protected-service.md
+---
 # Configuration and capabilities overview
 
 What the Connection Hub does, seen as one picture, and where each part is
@@ -46,6 +59,7 @@ card, and services verify against the card, live.
 | Delegated cards | versioned per-caller authority records, current pointer, drift reconciliation | `connection_hub.delegated_credentials`, [delegated cards](package/delegated-cards.md) |
 | Capability catalog | the deployment's delegable ceiling as immutable versions | [architecture](connection-hub-architecture.md) |
 | Direct admission | an external backend asks for a live decision per operation, with replay-protected workload proof | `delegated_credentials/admission.py`, [recipe](recipes/direct-protected-service.md) |
+| Request-bound approval | a sensitive `Once` decision binds one signed browser approval to an exact invocation and digest | `delegated_credentials/request_approval.py`, `invocation_policy`, [authority contract](package/delegated-authority-and-admission.md#once-or-always-invocation-policy) |
 | Named-service admission | the same decision at in-host namespace/operation boundaries | `named_service_admission.py`, `named_service_boundary.py` |
 | OAuth adapter | RFC 8414/9728 discovery, three client-registration paths, PKCE, consent with account binding, opaque bearers, RFC 7009 revocation | [OAuth protocol](package/oauth-delegated-credential-protocol.md) |
 | External MCP proxy | owner-selected MCP connectors, upstream OAuth or direct credentials, accepted descriptor revisions, exact delegated tools, refresh, and revocation | [architecture](connection-hub-architecture.md#user-owned-external-mcp-proxy) |
@@ -88,7 +102,14 @@ connections:
           label: CRM API
           secret_ref: secrets.crm_api_signing
           resources: ["https://api.example.test/customers"]
+          request_bound_operations: [customers.update]
+          request_permit_ttl_seconds: 600
 ```
+
+`request_bound_operations` is optional. Each named operation must already be
+published by the active catalog. Its `allow_once` path uses a signed,
+short-lived browser handoff and creates a permit for one exact invocation and
+request digest.
 
 **A named-service boundary** (in-host namespaces declaring their guarded
 operations): parsed by `NamespaceBoundaryPolicy.from_config`, with per-tool

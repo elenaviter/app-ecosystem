@@ -71,6 +71,12 @@ def connection_hub_grant_url(
     access_id: str = "",
     invocation_policy: str = "",
     invocation_change_id: str = "",
+    request_bound: bool = False,
+    request_digest: str = "",
+    request_card_revision: int = 0,
+    request_authority_revision: str = "",
+    request_approval_ticket: str = "",
+    approval_context: Mapping[str, str] | None = None,
 ) -> str:
     """An absolute Connection Hub deep link that lands on the Delegated by
     KDCube tab with THIS client's access request focused (the pending pane:
@@ -121,6 +127,23 @@ def connection_hub_grant_url(
             query["invocation_policy"] = str(invocation_policy).strip()
         if str(invocation_change_id or "").strip():
             query["invocation_change_id"] = str(invocation_change_id).strip()
+        if request_bound:
+            query["request_bound"] = "1"
+        if str(request_digest or "").strip():
+            query["request_digest"] = str(request_digest).strip()
+        if int(request_card_revision or 0) > 0:
+            query["request_card_revision"] = str(int(request_card_revision))
+        if str(request_authority_revision or "").strip():
+            query["request_authority_revision"] = str(
+                request_authority_revision
+            ).strip()
+        if str(request_approval_ticket or "").strip():
+            query["request_approval_ticket"] = str(request_approval_ticket).strip()
+        for key, value in sorted(dict(approval_context or {}).items()):
+            clean_key = str(key or "").strip()
+            clean_value = str(value or "").strip()
+            if clean_key and clean_value:
+                query[f"approval_{clean_key}"] = clean_value
         return (
             f"{base}/api/integrations/bundles/"
             f"{quote(str(tenant), safe='')}/{quote(str(project), safe='')}/"
@@ -146,6 +169,23 @@ def connection_hub_grant_url(
         query["invocation_policy"] = str(invocation_policy).strip()
     if str(invocation_change_id or "").strip():
         query["invocation_change_id"] = str(invocation_change_id).strip()
+    if request_bound:
+        query["request_bound"] = "1"
+    if str(request_digest or "").strip():
+        query["request_digest"] = str(request_digest).strip()
+    if int(request_card_revision or 0) > 0:
+        query["request_card_revision"] = str(int(request_card_revision))
+    if str(request_authority_revision or "").strip():
+        query["request_authority_revision"] = str(
+            request_authority_revision
+        ).strip()
+    if str(request_approval_ticket or "").strip():
+        query["request_approval_ticket"] = str(request_approval_ticket).strip()
+    for key, value in sorted(dict(approval_context or {}).items()):
+        clean_key = str(key or "").strip()
+        clean_value = str(value or "").strip()
+        if clean_key and clean_value:
+            query[f"approval_{clean_key}"] = clean_value
     if str(account_id or "").strip():
         query["account_id"] = str(account_id).strip()
     if str(account_claim or "").strip():

@@ -179,6 +179,158 @@ async def test_concurrent_once_requests_have_one_winner(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_request_bound_once_only_dispatches_the_approved_request(tmp_path):
+    service = _service(tmp_path)
+    authority = _authority(operation="applications.reload")
+    approved_digest = canonical_request_digest({"application_id": "app-a"})
+    await service.set_policy(
+        owner_subject="user-1", authority=authority, mode=POLICY_ONCE, now=100
+    )
+    permit = await service.issue_request_permit(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="approved-invocation",
+        request_digest=approved_digest,
+        card_revision=7,
+        authority_revision="catalog-11",
+        ttl_seconds=60,
+        now=101,
+    )
+
+    competing = await service.begin(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="competing-invocation",
+        request_digest=canonical_request_digest({"application_id": "app-b"}),
+        card_revision=7,
+        authority_revision="catalog-11",
+        require_request_permit=True,
+        now=102,
+    )
+    approved = await service.begin(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="approved-invocation",
+        request_digest=approved_digest,
+        card_revision=7,
+        authority_revision="catalog-11",
+        require_request_permit=True,
+        now=103,
+    )
+
+    assert permit.state == "available"
+    assert competing.allowed is False
+    assert competing.reason == "delegated_request_permit_required"
+    assert approved.allowed is True and approved.dispatch is True
+    assert approved.request_permit is not None
+    assert approved.request_permit.state == "consumed"
+    assert approved.invocation is not None
+    assert approved.invocation.request_permit_revision == permit.revision
+
+
+@pytest.mark.asyncio
+async def test_request_bound_permit_fails_closed_on_digest_expiry_and_revision_drift(
+    tmp_path,
+):
+    service = _service(tmp_path)
+    authority = _authority(operation="applications.reload")
+    digest = canonical_request_digest({"application_id": "app-a"})
+    await service.set_policy(
+        owner_subject="user-1", authority=authority, mode=POLICY_ONCE, now=100
+    )
+    await service.issue_request_permit(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="approved-invocation",
+        request_digest=digest,
+        card_revision=7,
+        authority_revision="catalog-11",
+        ttl_seconds=10,
+        now=101,
+    )
+
+    moved_digest = await service.begin(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="approved-invocation",
+        request_digest=canonical_request_digest({"application_id": "app-b"}),
+        card_revision=7,
+        authority_revision="catalog-11",
+        require_request_permit=True,
+        now=102,
+    )
+    moved_revision = await service.begin(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="approved-invocation",
+        request_digest=digest,
+        card_revision=8,
+        authority_revision="catalog-11",
+        require_request_permit=True,
+        now=102,
+    )
+    expired = await service.begin(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="approved-invocation",
+        request_digest=digest,
+        card_revision=7,
+        authority_revision="catalog-11",
+        require_request_permit=True,
+        now=112,
+    )
+
+    assert moved_digest.reason == "delegated_request_permit_mismatch"
+    assert moved_revision.reason == "delegated_request_permit_stale"
+    assert expired.reason == "delegated_request_permit_expired"
+
+
+@pytest.mark.asyncio
+async def test_request_bound_operation_requires_policy_but_explicit_always_is_reusable(
+    tmp_path,
+):
+    service = _service(tmp_path)
+    authority = _authority(operation="applications.reload")
+    missing = await service.begin(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="invoke-1",
+        request_digest=canonical_request_digest({"application_id": "app-a"}),
+        card_revision=2,
+        authority_revision="catalog-3",
+        require_request_permit=True,
+        now=100,
+    )
+    await service.set_policy(
+        owner_subject="user-1", authority=authority, mode=POLICY_ALWAYS, now=101
+    )
+    first = await service.begin(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="invoke-1",
+        request_digest=canonical_request_digest({"application_id": "app-a"}),
+        card_revision=2,
+        authority_revision="catalog-3",
+        require_request_permit=True,
+        now=102,
+    )
+    second = await service.begin(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="invoke-2",
+        request_digest=canonical_request_digest({"application_id": "app-b"}),
+        card_revision=2,
+        authority_revision="catalog-3",
+        require_request_permit=True,
+        now=103,
+    )
+
+    assert missing.reason == "delegated_request_policy_required"
+    assert first.allowed is True and first.dispatch is True
+    assert second.allowed is True and second.dispatch is True
+
+
+@pytest.mark.asyncio
 async def test_resetting_once_creates_a_new_policy_revision_and_permit(tmp_path):
     service = _service(tmp_path)
     authority = _authority()

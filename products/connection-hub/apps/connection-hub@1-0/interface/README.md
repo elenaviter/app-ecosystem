@@ -4,7 +4,6 @@ title: Connection Hub Interface
 summary: Documents the authenticated operations, public proof/OAuth/admission routes, user-owned external MCP proxy, named-service provider, and browser widget exposed by the Connection Hub app.
 tags:
   - connection-hub
-  - connection-hub
   - interface
 keywords:
   - Connection Hub operations
@@ -12,7 +11,7 @@ keywords:
   - named-service provider
   - external MCP proxy
   - invocation policy
-updated_at: 2026-09-02
+updated_at: 2026-09-03
 see_also:
   - ./connection-hub.openapi.yaml
   - ../../../../../docs/connection-hub/connection-hub-architecture.md
@@ -102,7 +101,7 @@ All are authenticated (`PlatformAuth`) and visibility-gated by
 | `delegated_access_list` | GET | operations | List automation credentials and the configured resource/grant catalog. Named-service resources include their descriptor-backed namespace operation tree and provider-declared connected-account requirements. |
 | `delegated_access_create` | POST | operations | Mint a short-lived KDCube automation bearer bounded by exact `resource_grants`, `resource_operations`, and optional `named_service_operations` selections. The flat top-level `operations` list is derived for compatibility. |
 | `delegated_access_update` | POST | operations | Replace or preserve the selected dimensions of an existing owner-scoped card in place. The credential remains bound to the same `access_id`. |
-| `delegated_agent_grant_create` | POST | operations | Merge or replace exact authority on a hosted-agent or existing external-client card. An operation-recovery submission may atomically add one operation and set it to `once` or `always`. |
+| `delegated_agent_grant_create` | POST | operations | Merge or replace exact authority on a hosted-agent or existing external-client card. A request-bound recovery submission must return the opaque signed `request_approval_ticket`; the server verifies it before atomically adding the exact operation and selecting `once` or `always`. |
 | `delegated_invocation_policy_set` | POST | operations | Set `once` or `always` for one already-granted resource operation, optionally scoped to a selected provider account. |
 | `delegated_access_revoke` | POST | operations | Revoke one automation or OAuth delegated-client grant owned by the current user. |
 | `remote_mcp_connectors_list` | GET | operations | List the current user's external MCP connectors and accepted/pending descriptor metadata without secret values. |
@@ -211,6 +210,7 @@ Content-Type: application/json
   "operation": "customers.search",
   "invocation_id": "customer-search-0185",
   "request_digest": "<64-lowercase-hex-sha256>",
+  "approval_context": {"application_id": "crm-console@1-0"},
   "account": {
     "provider_id": "salesforce",
     "account_id": "account-17",
@@ -227,14 +227,18 @@ single-use nonce lifetime is 600 seconds.
 The response carries `connection_hub.delegated_admission.v1`, a correlation
 id, a service-scoped pairwise user id, a separate service-scoped pairwise
 caller-profile id, effective resource/operation/grants, optional account scope,
-card/catalog provenance, expiry, and invocation-policy state when one exists.
-It never returns the internal platform user id, raw caller client id, raw card
-access id, bearer, identity-family scope, or provider credential.
+card/catalog provenance including `access_id`, expiry, and invocation-policy
+state when one exists. It never returns the internal platform user id, raw
+OAuth client id, bearer, identity-family scope, or provider credential.
 
 `invocation_id` and `request_digest` are optional together and required for a
-`once` policy. Connection Hub records and may replay the admission decision. A
-state-changing protected service remains responsible for applying its own
-domain effect once under that invocation id.
+`once` policy. A registered request-bound operation also binds those values,
+the approval context, card revision, and catalog revision into a short-lived
+signed browser ticket. The widget carries the ticket opaquely, and the server
+verifies it before issuing the exact `Once` permit or committing `Always`.
+Connection Hub records and may replay the admission decision. A state-changing
+protected service remains responsible for applying its own domain effect once
+under that invocation id.
 
 The complete signing input, response schema, registration shape, and trust
 boundary are in

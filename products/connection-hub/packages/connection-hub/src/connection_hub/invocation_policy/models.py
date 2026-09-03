@@ -18,6 +18,7 @@ from typing import Any, Mapping
 INVOCATION_POLICY_SCHEMA = "connection_hub.invocation_policy.v1"
 INVOCATION_RECORD_SCHEMA = "connection_hub.invocation_record.v1"
 INVOCATION_POLICY_CHANGE_SCHEMA = "connection_hub.invocation_policy_change.v1"
+REQUEST_BOUND_PERMIT_SCHEMA = "connection_hub.request_bound_permit.v1"
 
 POLICY_ALWAYS = "always"
 POLICY_ONCE = "once"
@@ -30,6 +31,12 @@ POLICY_STATES = frozenset({POLICY_AVAILABLE, POLICY_CONSUMED})
 INVOCATION_RESERVED = "reserved"
 INVOCATION_COMPLETED = "completed"
 INVOCATION_STATES = frozenset({INVOCATION_RESERVED, INVOCATION_COMPLETED})
+
+REQUEST_PERMIT_AVAILABLE = "available"
+REQUEST_PERMIT_CONSUMED = "consumed"
+REQUEST_PERMIT_STATES = frozenset(
+    {REQUEST_PERMIT_AVAILABLE, REQUEST_PERMIT_CONSUMED}
+)
 
 POLICY_CHANGE_PREPARED = "prepared"
 POLICY_CHANGE_COMMITTED = "committed"
@@ -325,6 +332,101 @@ class InvocationPolicyChange:
 
 
 @dataclass(frozen=True)
+class RequestBoundPermit:
+    """One browser-approved invocation under an otherwise one-use policy."""
+
+    authority: InvocationAuthority
+    invocation_id: str
+    request_digest: str
+    card_revision: int
+    authority_revision: str
+    policy_revision: int
+    revision: int
+    state: str = REQUEST_PERMIT_AVAILABLE
+    issued_at: int = 0
+    expires_at: int = 0
+    consumed_at: int = 0
+
+    def __post_init__(self) -> None:
+        invocation_id = validated_invocation_id(self.invocation_id)
+        request_digest = validated_request_digest(self.request_digest)
+        authority_revision = _text(self.authority_revision)
+        state = _text(self.state).lower()
+        card_revision = int(self.card_revision)
+        policy_revision = int(self.policy_revision)
+        revision = int(self.revision)
+        issued_at = int(self.issued_at)
+        expires_at = int(self.expires_at)
+        consumed_at = int(self.consumed_at)
+        if state not in REQUEST_PERMIT_STATES:
+            raise InvocationPolicyRecordError("request_permit_state_invalid")
+        if card_revision < 1:
+            raise InvocationPolicyRecordError("request_permit_card_revision_invalid")
+        if not authority_revision:
+            raise InvocationPolicyRecordError("request_permit_authority_revision_missing")
+        if policy_revision < 1 or revision < 1:
+            raise InvocationPolicyRecordError("request_permit_revision_invalid")
+        if issued_at < 1 or expires_at <= issued_at:
+            raise InvocationPolicyRecordError("request_permit_expiry_invalid")
+        if state == REQUEST_PERMIT_AVAILABLE and consumed_at:
+            raise InvocationPolicyRecordError("request_permit_not_consumed")
+        if state == REQUEST_PERMIT_CONSUMED and consumed_at < issued_at:
+            raise InvocationPolicyRecordError("request_permit_consumption_invalid")
+        object.__setattr__(self, "invocation_id", invocation_id)
+        object.__setattr__(self, "request_digest", request_digest)
+        object.__setattr__(self, "authority_revision", authority_revision)
+        object.__setattr__(self, "state", state)
+        object.__setattr__(self, "card_revision", card_revision)
+        object.__setattr__(self, "policy_revision", policy_revision)
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "issued_at", issued_at)
+        object.__setattr__(self, "expires_at", expires_at)
+        object.__setattr__(self, "consumed_at", consumed_at)
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "RequestBoundPermit":
+        if _text(value.get("schema")) != REQUEST_BOUND_PERMIT_SCHEMA:
+            raise InvocationPolicyRecordError("request_permit_schema_mismatch")
+        authority = value.get("authority")
+        if not isinstance(authority, Mapping):
+            raise InvocationPolicyRecordError("request_permit_authority_invalid")
+        return cls(
+            authority=InvocationAuthority.from_mapping(authority),
+            invocation_id=value.get("invocation_id", ""),
+            request_digest=value.get("request_digest", ""),
+            card_revision=int(value.get("card_revision") or 0),
+            authority_revision=value.get("authority_revision", ""),
+            policy_revision=int(value.get("policy_revision") or 0),
+            revision=int(value.get("revision") or 0),
+            state=value.get("state", ""),
+            issued_at=int(value.get("issued_at") or 0),
+            expires_at=int(value.get("expires_at") or 0),
+            consumed_at=int(value.get("consumed_at") or 0),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": REQUEST_BOUND_PERMIT_SCHEMA,
+            "authority": self.authority.to_dict(),
+            "invocation_id": self.invocation_id,
+            "request_digest": self.request_digest,
+            "card_revision": self.card_revision,
+            "authority_revision": self.authority_revision,
+            "policy_revision": self.policy_revision,
+            "revision": self.revision,
+            "state": self.state,
+            "issued_at": self.issued_at,
+            "expires_at": self.expires_at,
+            "consumed_at": self.consumed_at,
+        }
+
+    def to_public_dict(self) -> dict[str, Any]:
+        out = self.to_dict()
+        out.pop("request_digest", None)
+        return out
+
+
+@dataclass(frozen=True)
 class InvocationRecord:
     authority: InvocationAuthority
     invocation_id: str
@@ -335,6 +437,7 @@ class InvocationRecord:
     state: str
     card_revision: int = 0
     authority_revision: str = ""
+    request_permit_revision: int = 0
     result: Any = None
     result_is_error: bool = False
     created_at: int = 0
@@ -358,6 +461,11 @@ class InvocationRecord:
         object.__setattr__(self, "policy_mode", mode)
         object.__setattr__(self, "policy_revision", int(self.policy_revision))
         object.__setattr__(self, "card_revision", max(0, int(self.card_revision)))
+        object.__setattr__(
+            self,
+            "request_permit_revision",
+            max(0, int(self.request_permit_revision)),
+        )
         object.__setattr__(self, "created_at", int(self.created_at))
         object.__setattr__(self, "completed_at", int(self.completed_at))
 
@@ -378,6 +486,7 @@ class InvocationRecord:
             state=value.get("state", ""),
             card_revision=int(value.get("card_revision") or 0),
             authority_revision=_text(value.get("authority_revision")),
+            request_permit_revision=int(value.get("request_permit_revision") or 0),
             result=value.get("result"),
             result_is_error=bool(value.get("result_is_error", False)),
             created_at=int(value.get("created_at") or 0),
@@ -396,6 +505,7 @@ class InvocationRecord:
             "state": self.state,
             "card_revision": self.card_revision,
             "authority_revision": self.authority_revision,
+            "request_permit_revision": self.request_permit_revision,
             "result": self.result,
             "result_is_error": self.result_is_error,
             "created_at": self.created_at,
@@ -412,6 +522,7 @@ class InvocationDecision:
     retryable: bool = False
     policy: InvocationPolicy | None = None
     invocation: InvocationRecord | None = None
+    request_permit: RequestBoundPermit | None = None
 
     @property
     def result(self) -> Any:
@@ -438,7 +549,10 @@ class InvocationDecision:
                 "policy_revision": self.invocation.policy_revision,
                 "card_revision": self.invocation.card_revision,
                 "authority_revision": self.invocation.authority_revision,
+                "request_permit_revision": self.invocation.request_permit_revision,
             }
+        if self.request_permit is not None:
+            out["request_permit"] = self.request_permit.to_public_dict()
         return out
 
 
@@ -454,6 +568,9 @@ __all__ = [
     "POLICY_CHANGE_COMMITTED",
     "POLICY_CHANGE_PREPARED",
     "POLICY_ONCE",
+    "REQUEST_BOUND_PERMIT_SCHEMA",
+    "REQUEST_PERMIT_AVAILABLE",
+    "REQUEST_PERMIT_CONSUMED",
     "SURFACE_OUTER",
     "InvocationAuthority",
     "InvocationDecision",
@@ -461,6 +578,7 @@ __all__ = [
     "InvocationPolicyChange",
     "InvocationPolicyRecordError",
     "InvocationRecord",
+    "RequestBoundPermit",
     "canonical_request_digest",
     "validated_invocation_id",
     "validated_request_digest",

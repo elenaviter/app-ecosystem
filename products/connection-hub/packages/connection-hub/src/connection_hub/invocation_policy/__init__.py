@@ -13,6 +13,9 @@ from connection_hub.invocation_policy.models import (
     POLICY_CHANGE_PREPARED,
     POLICY_CONSUMED,
     POLICY_ONCE,
+    REQUEST_BOUND_PERMIT_SCHEMA,
+    REQUEST_PERMIT_AVAILABLE,
+    REQUEST_PERMIT_CONSUMED,
     SURFACE_OUTER,
     InvocationAuthority,
     InvocationDecision,
@@ -20,6 +23,7 @@ from connection_hub.invocation_policy.models import (
     InvocationPolicyChange,
     InvocationPolicyRecordError,
     InvocationRecord,
+    RequestBoundPermit,
     canonical_request_digest,
 )
 from connection_hub.invocation_policy.service import (
@@ -43,6 +47,9 @@ __all__ = [
     "POLICY_CHANGE_PREPARED",
     "POLICY_CONSUMED",
     "POLICY_ONCE",
+    "REQUEST_BOUND_PERMIT_SCHEMA",
+    "REQUEST_PERMIT_AVAILABLE",
+    "REQUEST_PERMIT_CONSUMED",
     "SURFACE_OUTER",
     "BundleStorageInvocationPolicyStore",
     "InvocationAuthority",
@@ -56,5 +63,6 @@ __all__ = [
     "InvocationPolicyStorageError",
     "InvocationPolicyStore",
     "InvocationRecord",
+    "RequestBoundPermit",
     "canonical_request_digest",
 ]

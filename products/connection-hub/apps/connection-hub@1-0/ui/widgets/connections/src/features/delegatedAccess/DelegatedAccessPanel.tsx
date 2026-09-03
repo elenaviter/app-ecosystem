@@ -91,6 +91,12 @@ type PendingAgentGrant = {
   outerOperation?: string;
   invocationPolicy?: string;
   invocationChangeId?: string;
+  requestBound?: boolean;
+  requestDigest?: string;
+  requestApprovalTicket?: string;
+  requestCardRevision?: number;
+  requestAuthorityRevision?: string;
+  approvalContext?: Record<string, string>;
 };
 
 function PendingStatus({ status }: { status: PendingSelectionStatus }) {
@@ -177,6 +183,12 @@ function pendingAgentGrantFromParams(get: (key: string) => string): PendingAgent
   const outerOperation = get('outer_operation').trim();
   const invocationPolicy = get('invocation_policy').trim();
   const invocationChangeId = get('invocation_change_id').trim();
+  const requestBound = get('request_bound').trim() === '1';
+  const requestDigest = get('request_digest').trim();
+  const requestApprovalTicket = get('request_approval_ticket').trim();
+  const requestCardRevision = Number.parseInt(get('request_card_revision').trim(), 10);
+  const requestAuthorityRevision = get('request_authority_revision').trim();
+  const approvalApplicationId = get('approval_application_id').trim();
   return {
     clientId,
     accessId: accessId || undefined,
@@ -189,6 +201,14 @@ function pendingAgentGrantFromParams(get: (key: string) => string): PendingAgent
     outerOperation: outerOperation || undefined,
     invocationPolicy: invocationPolicy || undefined,
     invocationChangeId: invocationChangeId || undefined,
+    requestBound,
+    requestDigest: requestDigest || undefined,
+    requestApprovalTicket: requestApprovalTicket || undefined,
+    requestCardRevision: Number.isFinite(requestCardRevision) ? requestCardRevision : undefined,
+    requestAuthorityRevision: requestAuthorityRevision || undefined,
+    approvalContext: approvalApplicationId
+      ? { application_id: approvalApplicationId }
+      : undefined,
   };
 }
 
@@ -1237,6 +1257,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             accessId: pendingGrant.accessId,
             invocationMode,
             invocationChangeId: pendingGrant.invocationChangeId,
+            requestBound: pendingGrant.requestBound,
+            requestDigest: pendingGrant.requestDigest,
+            requestApprovalTicket: pendingGrant.requestApprovalTicket,
+            requestCardRevision: pendingGrant.requestCardRevision,
+            requestAuthorityRevision: pendingGrant.requestAuthorityRevision,
+            approvalContext: pendingGrant.approvalContext,
           } : {}),
           resourceOperations: resourceOperations[resource],
           namedServiceOperations: namedServiceOperations[resource],
@@ -1994,6 +2020,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         )} wants to
         act on your behalf on <strong>{pendingResourceLabel || 'this resource'}</strong>.{pendingGrant.claims.length ? ' It is asking for:' : ''}
       </p>
+      {pendingGrant.requestBound ? (
+        <div className="notice" style={{ marginTop: 0, marginBottom: 12 }}>
+          This approval applies to the exact request shown here
+          {pendingGrant.approvalContext?.application_id ? (
+            <> for application <code>{pendingGrant.approvalContext.application_id}</code></>
+          ) : null}. Changing the request requires another approval.
+        </div>
+      ) : null}
       {pendingReviewTargets.length ? (
         <nav className="request-review-nav" aria-label="Requested access review">
           <div className="request-review-nav-head">

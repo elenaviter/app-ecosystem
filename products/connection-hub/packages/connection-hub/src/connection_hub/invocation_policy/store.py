@@ -23,6 +23,7 @@ from connection_hub.invocation_policy.models import (
     InvocationPolicyChange,
     InvocationPolicyRecordError,
     InvocationRecord,
+    RequestBoundPermit,
     validated_invocation_id,
 )
 
@@ -32,6 +33,7 @@ GRANTORS_DIRNAME = "grantors"
 CARDS_DIRNAME = "cards"
 AUTHORITIES_DIRNAME = "authorities"
 INVOCATIONS_DIRNAME = "invocations"
+REQUEST_PERMITS_DIRNAME = "request-permits"
 POLICY_FILENAME = "policy.json"
 POLICY_CHANGE_FILENAME = "policy-change.json"
 MUTATION_LOCK_FILENAME = ".mutation.lock"
@@ -97,6 +99,18 @@ class InvocationPolicyStore(Protocol):
 
     async def write_invocation(
         self, *, owner_hash: str, record: InvocationRecord
+    ) -> None: ...
+
+    async def read_request_permit(
+        self,
+        *,
+        owner_hash: str,
+        authority: InvocationAuthority,
+        invocation_id: str,
+    ) -> RequestBoundPermit | None: ...
+
+    async def write_request_permit(
+        self, *, owner_hash: str, permit: RequestBoundPermit
     ) -> None: ...
 
     async def list_policies(
@@ -238,6 +252,54 @@ class BundleStorageInvocationPolicyStore:
             record.to_dict(),
         )
 
+    def request_permit_path(
+        self,
+        *,
+        owner_hash: str,
+        authority: InvocationAuthority,
+        invocation_id: str,
+    ) -> pathlib.Path:
+        return (
+            self.authority_path(owner_hash=owner_hash, authority=authority)
+            / REQUEST_PERMITS_DIRNAME
+            / f"{invocation_hash_for(invocation_id)}.json"
+        )
+
+    async def read_request_permit(
+        self,
+        *,
+        owner_hash: str,
+        authority: InvocationAuthority,
+        invocation_id: str,
+    ) -> RequestBoundPermit | None:
+        payload = await read_json_or_none(
+            self.request_permit_path(
+                owner_hash=owner_hash,
+                authority=authority,
+                invocation_id=invocation_id,
+            )
+        )
+        if payload is None:
+            return None
+        permit = RequestBoundPermit.from_mapping(payload)
+        if permit.authority != authority:
+            raise InvocationPolicyRecordError("request_permit_authority_mismatch")
+        if permit.invocation_id != validated_invocation_id(invocation_id):
+            raise InvocationPolicyRecordError("request_permit_invocation_id_mismatch")
+        return permit
+
+    async def write_request_permit(
+        self, *, owner_hash: str, permit: RequestBoundPermit
+    ) -> None:
+        await write_json_atomic(
+            self.request_permit_path(
+                owner_hash=owner_hash,
+                authority=permit.authority,
+                invocation_id=permit.invocation_id,
+            ),
+            permit.to_dict(),
+        )
+
     async def list_policies(
         self, *, owner_hash: str, access_id: str
     ) -> list[InvocationPolicy]:
@@ -270,6 +332,7 @@ class BundleStorageInvocationPolicyStore:
 __all__ = [
     "MUTATION_LOCK_FILENAME",
     "POLICY_CHANGE_FILENAME",
+    "REQUEST_PERMITS_DIRNAME",
     "BundleStorageInvocationPolicyStore",
     "InvocationPolicyStorageError",
     "InvocationPolicyStore",

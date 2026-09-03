@@ -2,9 +2,9 @@
 id: connection-hub-direct-protected-service-recipe
 title: Protect An External Backend With Connection Hub
 summary: Configures a non-KDCube backend to ask a KDCube-hosted Connection Hub for live delegated operation admission using independent bearer and workload proofs.
-tags: [connection-hub, connection-hub, delegated-access, protected-service, recipe]
+tags: [connection-hub, delegated-access, protected-service, recipe]
 keywords: [direct admission, opaque bearer, workload proof, resource server, card, capability catalog]
-updated_at: 2026-09-02
+updated_at: 2026-09-03
 see_also:
   - ../connection-hub-architecture.md
   - ../../../examples/connection-hub/direct-admission-service/README.md
@@ -72,6 +72,19 @@ Put the two referenced secret values in the deployment's app-secret provider.
 Each value contains at least 32 random bytes. The service receives only its own
 signing secret; it never receives the identity-projection secret.
 
+For a state-changing operation declared in the catalog, add its exact name to
+the service registration:
+
+```yaml
+request_bound_operations:
+  - customers.update
+request_permit_ttl_seconds: 600
+```
+
+This identifies sensitive effects whose `allow_once` choice must approve one
+exact invocation and request digest. A read-only operation can use ordinary
+operation-scoped `Once` and `Always` semantics.
+
 ## 3. Configure the backend
 
 Run the [reference service](../../../examples/connection-hub/direct-admission-service/README.md)
@@ -116,7 +129,10 @@ The allow contains two pairwise identities. `principal.sub` identifies the
 same user consistently to this service. `principal.client_id` identifies one
 delegated caller profile for that user and service. A second caller profile can
 therefore hold different authority without exposing either raw Connection Hub
-identifier. Both values differ at another registered service.
+identifier. Both values differ at another registered service. The
+`provenance.access_id` field deliberately carries the exact delegated-card
+coordinate for audit and idempotency correlation; it is not a bearer or
+provider credential.
 
 ## 5. Keep the two authorization layers
 
@@ -136,6 +152,21 @@ must use the same invocation id in its own idempotency ledger and return the
 already-recorded domain outcome on retry. A read-only endpoint may use the same
 mechanism without an effect ledger.
 
+For an operation listed in `request_bound_operations`, Connection Hub creates
+a short-lived signed approval ticket when admission needs browser approval.
+The ticket binds the service, caller card, resource, operation, invocation id,
+request digest, display context, and card/catalog revisions. The browser UI
+carries it opaquely. Connection Hub verifies it before changing card or policy
+state. `Allow once` then creates a permit for that exact request; a competing
+invocation or changed body cannot consume it. `Allow always` commits the
+reusable policy selected by the user.
+
+The protected service still owns execution idempotency. It reserves the
+invocation in a shared effect ledger after admission and before applying a
+state change, records the terminal outcome, and returns that outcome on an
+exact retry. An unresolved started record is reported as pending or unknown;
+the service does not repeat the effect automatically.
+
 ## Verification cases
 
 - valid bearer + valid workload proof + current grant -> allow;
@@ -147,8 +178,13 @@ mechanism without an effect ledger.
 - same invocation id with another digest -> idempotency conflict;
 - unregistered resource selector -> 403;
 - missing, narrowed, or revoked card operation -> structured denial;
+- request-bound approval exposes the signed ticket's absolute expiry and the
+  exact invocation, digest, display context, and authority revisions;
+- another invocation, changed digest, expired ticket, or moved card/catalog
+  revision cannot consume the request-bound permit;
 - Redis replay guard or authority store unavailable -> retryable 503;
-- allow response contains pairwise user and caller-profile ids but no raw
-  client id, card access id, provider credential, or internal platform user id;
+- allow response contains pairwise user and caller-profile ids plus the card
+  `access_id` as authority evidence, but no raw OAuth client id, provider
+  credential, internal platform user id, or bearer;
 - a state-changing service records the domain effect once under the invocation
   id even when the client retries.

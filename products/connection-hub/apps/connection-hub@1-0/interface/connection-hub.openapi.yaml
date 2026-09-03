@@ -997,8 +997,8 @@ paths:
         duplicate operations or grants.
 
         The signature is base64url HMAC-SHA256 over the canonical
-        `connection-hub-admission-v1` message documented in the Connection Hub
-        architecture. The body itself is not wrapped in `data`.
+        `prokura-admission-v1` compatibility message documented in the
+        Connection Hub architecture. The body itself is not wrapped in `data`.
       operationId: delegated_admission
       security:
         - DelegatedBearer: []
@@ -1270,6 +1270,15 @@ components:
           type: string
           pattern: '^[0-9a-f]{64}$'
           description: Canonical SHA-256 digest of the provider-domain request; supplied together with invocation_id.
+        approval_context:
+          type: object
+          maxProperties: 16
+          propertyNames:
+            pattern: '^[a-z][a-z0-9_]{0,63}$'
+          additionalProperties:
+            type: string
+            maxLength: 512
+          description: Bounded display context signed with the request; it does not add authority.
         account:
           $ref: "#/components/schemas/DelegatedAdmissionAccount"
     DelegatedAdmissionAccount:
@@ -1324,12 +1333,16 @@ components:
         provenance:
           type: object
           additionalProperties: false
-          required: [card_revision, card_catalog_version, active_catalog_version]
+          required: [access_id, card_revision, card_catalog_version, active_catalog_version]
           properties:
+            access_id:
+              type: string
+              description: Exact delegated-card coordinate used as admission evidence; not a credential.
             card_revision: { type: integer, minimum: 0 }
             card_catalog_version: { type: string }
             active_catalog_version: { type: string }
             invocation_policy_revision: { type: integer, minimum: 1 }
+            request_permit_revision: { type: integer, minimum: 1 }
         expires_at:
           type: integer
           minimum: 0
@@ -1349,6 +1362,15 @@ components:
                   minimum: 0
                 - type: 'null'
             updated_at: { type: integer, minimum: 0 }
+        request_permit:
+          type: object
+          additionalProperties: false
+          properties:
+            revision: { type: integer, minimum: 1 }
+            state: { type: string, enum: [available, consumed] }
+            issued_at: { type: integer, minimum: 1 }
+            expires_at: { type: integer, minimum: 1 }
+            consumed_at: { type: integer, minimum: 1 }
     DelegatedAdmissionDenial:
       type: object
       required: [ok, allowed, schema, error, ret]
@@ -1373,6 +1395,35 @@ components:
             details:
               type: object
               additionalProperties: true
+        consent:
+          $ref: "#/components/schemas/DelegatedAdmissionConsent"
+    DelegatedAdmissionConsent:
+      type: object
+      additionalProperties: true
+      properties:
+        kind:
+          type: string
+          enum: [delegated_agent_grant, delegated_invocation_policy, delegated_request_permit]
+        reason: { type: string }
+        connection_hub_url: { type: string, format: uri }
+        access_id: { type: string }
+        resource: { type: string, format: uri }
+        outer_operation: { type: string }
+        invocation_id: { type: string }
+        request_digest: { type: string, pattern: '^[0-9a-f]{64}$' }
+        card_revision: { type: integer, minimum: 1 }
+        catalog_version: { type: string }
+        expires_at:
+          type: integer
+          minimum: 1
+          description: Absolute expiry copied from the exact signed request-approval ticket.
+        approval_context:
+          type: object
+          additionalProperties: { type: string }
+        available_choices:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [allow_once, allow_always] }
     Envelope:
       type: object
       properties:

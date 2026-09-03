@@ -72,6 +72,8 @@ def test_admission_config_binds_services_to_catalog_resources_only() -> None:
                         "crm-api": {
                             "secret_ref": "admission.services.crm-api.secret",
                             "resources": ["https://service.example/*"],
+                            "request_bound_operations": ["customers.delete"],
+                            "request_permit_ttl_seconds": 90,
                         }
                     },
                 }
@@ -85,10 +87,20 @@ def test_admission_config_binds_services_to_catalog_resources_only() -> None:
     assert service is not None
     assert service.allows_resource(RESOURCE)
     assert not service.allows_resource("https://other.example/customers")
+    assert service.requires_request_permit("customers.delete")
+    assert not service.requires_request_permit("customers.search")
+    assert service.request_permit_ttl_seconds == 90
 
 
 def test_signed_admission_binds_service_token_and_semantic_request() -> None:
-    request = _request(claims=("contacts:read",))
+    request = AdmissionRequest(
+        resource=RESOURCE,
+        operation="customers.search",
+        account=_request(claims=("contacts:read",)).account,
+        invocation_id="invoke-1",
+        request_digest="a" * 64,
+        approval_context={"application_id": "crm@1-0"},
+    )
     signature = sign_admission_request(
         secret=SECRET,
         service_id="crm-api",
@@ -116,6 +128,20 @@ def test_signed_admission_binds_service_token_and_semantic_request() -> None:
         proof=proof,
         delegated_token="kst1.other",
         request=request,
+        now=1000,
+    ).reason == "signature_invalid"
+    assert verify_admission_request(
+        secret=SECRET,
+        proof=proof,
+        delegated_token="kst1.token",
+        request=AdmissionRequest(
+            resource=RESOURCE,
+            operation="customers.search",
+            account=request.account,
+            invocation_id="invoke-1",
+            request_digest="a" * 64,
+            approval_context={"application_id": "other@1-0"},
+        ),
         now=1000,
     ).reason == "signature_invalid"
     assert verify_admission_request(
@@ -232,4 +258,5 @@ def test_allow_projection_is_pairwise_and_contains_no_internal_user_id() -> None
     assert response["principal"]["client_id"].startswith("prk_client_")
     assert "external-client" not in str(response)
     assert "user-1" not in str(response)
+    assert response["provenance"]["access_id"] == "access-1"
     assert response["provenance"]["card_revision"] == 7

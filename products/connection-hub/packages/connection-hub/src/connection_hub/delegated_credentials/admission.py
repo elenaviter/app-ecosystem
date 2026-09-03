@@ -99,6 +99,8 @@ class ProtectedService:
     service_id: str
     secret_ref: str
     resources: tuple[str, ...]
+    request_bound_operations: tuple[str, ...] = ()
+    request_permit_ttl_seconds: int = 600
     label: str = ""
     enabled: bool = True
 
@@ -107,6 +109,9 @@ class ProtectedService:
         return bool(requested) and any(
             resource_matches(selector, requested) for selector in self.resources
         )
+
+    def requires_request_permit(self, operation: str) -> bool:
+        return _text(operation) in self.request_bound_operations
 
 
 @dataclass(frozen=True)
@@ -148,6 +153,12 @@ class AdmissionConfig:
                 service_id=service_id,
                 secret_ref=secret_ref,
                 resources=resources,
+                request_bound_operations=_strings(
+                    row.get("request_bound_operations")
+                ),
+                request_permit_ttl_seconds=_positive_int(
+                    row.get("request_permit_ttl_seconds"), 600
+                ),
                 label=_text(row.get("label")),
                 enabled=_bool(row.get("enabled"), True),
             )
@@ -202,6 +213,7 @@ class AdmissionRequest:
     account: AdmissionAccount = field(default_factory=AdmissionAccount)
     invocation_id: str = ""
     request_digest: str = ""
+    approval_context: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any] | None) -> "AdmissionRequest":
@@ -209,6 +221,13 @@ class AdmissionRequest:
         raw_account = node.get("account")
         account_node = raw_account if isinstance(raw_account, Mapping) else {}
         claims = tuple(sorted(_strings(account_node.get("claims"))))
+        raw_context = node.get("approval_context")
+        context_node = raw_context if isinstance(raw_context, Mapping) else {}
+        approval_context = {
+            _text(key): _text(item)
+            for key, item in context_node.items()
+            if _text(key) and _text(item)
+        }
         return cls(
             resource=normalize_resource(node.get("resource")),
             operation=_text(node.get("operation")),
@@ -221,6 +240,7 @@ class AdmissionRequest:
             ),
             invocation_id=_text(node.get("invocation_id")),
             request_digest=_text(node.get("request_digest")).lower(),
+            approval_context=approval_context,
         )
 
     def validation_error(self) -> str:
@@ -241,6 +261,13 @@ class AdmissionRequest:
                 return "invocation_id_invalid"
             if not re.fullmatch(r"[0-9a-f]{64}", self.request_digest):
                 return "request_digest_invalid"
+        if len(self.approval_context) > 16:
+            return "approval_context_invalid"
+        for key, value in self.approval_context.items():
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", _text(key)):
+                return "approval_context_invalid"
+            if not value or len(value) > 512 or any(ord(char) < 32 for char in value):
+                return "approval_context_invalid"
         return ""
 
     def signing_dict(self) -> dict[str, Any]:
@@ -253,6 +280,8 @@ class AdmissionRequest:
         if self.invocation_id:
             out["invocation_id"] = self.invocation_id
             out["request_digest"] = self.request_digest
+        if self.approval_context:
+            out["approval_context"] = dict(sorted(self.approval_context.items()))
         return out
 
 
@@ -509,6 +538,7 @@ def admission_allow(
         },
         "authority": authority,
         "provenance": {
+            "access_id": view.registry_access_id,
             "card_revision": view.card_revision,
             "card_catalog_version": view.catalog_version,
             "active_catalog_version": _text(active_catalog_version),

@@ -19,6 +19,7 @@ see_also:
   - ./frontend/README.md
   - ./service/README.md
   - ./recipes/direct-protected-service.md
+  - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/service/cicd/delegated-management-service-README.md
 ---
 
 # Connection Hub documentation
@@ -59,6 +60,12 @@ use [Run Connection Hub Locally With KDCube](quick-start-local.md).
 
 KDCube supplies the first runtime host for the package and application. The
 standalone service remains planned.
+
+KDCube's
+[delegated management service](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/service/cicd/delegated-management-service-README.md)
+is the reference state-changing integration. It uses live direct admission,
+signed request-bound browser approval, and a provider-side effect ledger to
+reload one exact application without repeating an accepted effect.
 
 The package contracts are:
 

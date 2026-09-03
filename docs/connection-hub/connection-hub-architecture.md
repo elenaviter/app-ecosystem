@@ -5,7 +5,7 @@ summary: "Canonical architecture for Connection Hub: identity and delegation sem
 status: active
 tags: ["connection-hub", "architecture", "identity", "delegated-access", "storage", "admission", "mcp", "proxy"]
 keywords: ["connection edge", "connected account", "delegated card", "active capability catalog", "external MCP connector", "invocation policy", "protected service", "direct admission", "storage authority"]
-updated_at: 2026-09-02
+updated_at: 2026-09-03
 see_also:
   - ./package/delegated-authority-and-admission.md
   - ./package/delegated-cards.md
@@ -58,6 +58,8 @@ authenticated delegated bearer
   AND the operation's current once-or-always invocation policy
   AND authenticated protected service registered for that resource,
       when the direct admission surface is used
+  AND an exact unexpired request permit when that service marks the
+      operation request-bound and the selected policy is Once
 ```
 
 Absence at any required leg is a denial. Authentication proves an actor; it
@@ -96,6 +98,9 @@ does not authorize every operation.
 10. **One-use authority is separate from card authority.** A card answers
     which operation may be called. Its invocation policy answers whether that
     operation may be called repeatedly or has one remaining use.
+11. **Sensitive Once approval is request-bound.** A registered service may
+    require browser approval to bind one invocation id, request digest,
+    display context, card revision, and catalog revision before dispatch.
 
 ## Runtime Architecture
 
@@ -278,6 +283,7 @@ Content-Type: application/json
   "operation": "customers.search",
   "invocation_id": "customer-search-0185",
   "request_digest": "<sha256-of-the-provider-domain-request>",
+  "approval_context": {"application_id": "crm-console@1-0"},
   "account": {
     "provider_id": "salesforce",
     "account_id": "account-17",
@@ -288,9 +294,11 @@ Content-Type: application/json
 
 `account` is optional. When supplied, `provider_id` and `account_id` are both
 required. Requested claims must be a subset of the live card's account scope.
-`invocation_id` and `request_digest` are also optional as a pair. They are
-required when the operation is governed by a one-use policy and recommended
-for retryable writes.
+`invocation_id` and `request_digest` are optional as a pair for ordinary
+operations. They are required by one-use and request-bound policies and are
+recommended for retryable writes. `approval_context` contains bounded text
+that the consent surface displays, such as one exact application id; it is
+included in the signed request and cannot add authority.
 
 ### Service request signature
 
@@ -303,7 +311,7 @@ body = canonical JSON of resource, operation, optional account,
        and optional invocation id + request digest
 
 message =
-  "connection-hub-admission-v1\n" +
+  "prokura-admission-v1\n" +
   service_id + "\n" +
   decimal_unix_timestamp + "\n" +
   nonce + "\n" +
@@ -312,6 +320,9 @@ message =
 
 signature = base64url_without_padding(HMAC-SHA256(service_secret, message))
 ```
+
+`prokura-admission-v1` is the retained compatibility literal for this wire
+signature. It does not name the current package or product.
 
 The default timestamp window is 300 seconds. A `(service_id, nonce)` may be
 used once and is retained for 600 seconds. Replay state is stored in Redis and
@@ -346,6 +357,7 @@ using the endpoint as a bearer-probing oracle.
     }
   },
   "provenance": {
+    "access_id": "card-access-coordinate",
     "card_revision": 7,
     "card_catalog_version": "delegated_catalog_...",
     "active_catalog_version": "delegated_catalog_..."
@@ -354,8 +366,9 @@ using the endpoint as a bearer-probing oracle.
 }
 ```
 
-The response does not expose the platform user id, raw card access id, raw
-caller client id, identity-family scope, bearer, or provider credential.
+The response exposes `provenance.access_id` as the exact card coordinate used
+for admission evidence. It does not expose the platform user id, raw OAuth
+client id, identity-family scope, bearer, or provider credential.
 `principal.sub` is a stable pairwise id for this service and user.
 `principal.client_id` is a separate stable pairwise id for this service, user,
 and delegated caller profile. The same user can therefore authorize several
@@ -384,6 +397,9 @@ connections:
           secret_ref: connections.delegated_credentials.admission.services.crm-api.signing_secret
           resources:
             - https://api.example.test/customers*
+          request_bound_operations:
+            - customers.update
+          request_permit_ttl_seconds: 600
 ```
 
 The service row binds a workload to resource selectors. It does not declare
@@ -405,6 +421,31 @@ connections:
 The projection secret is separate from service signing secrets so rotating
 one workload credential does not change that service's pairwise user or
 caller-profile identifiers.
+
+### Request-bound browser approval
+
+An operation named in `request_bound_operations` has stronger `Once`
+semantics. When its current card or invocation policy needs approval,
+Connection Hub signs a short-lived ticket containing the service id, caller
+profile and `access_id`, resource, operation, invocation id, request digest,
+approval context, card/catalog revisions, and absolute expiry. The recovery
+URL carries that ticket to the authenticated Connection Hub widget.
+
+The widget preserves the ticket as an opaque value. On submission, the server
+verifies its signature and expiry, compares every displayed and submitted
+field, checks current ownership and authority revisions, and performs these
+checks before mutating the card or invocation policy. `Allow once` issues a
+permit for the exact request. `Allow always` commits a reusable operation
+policy. A competing invocation, changed request body, moved caller/card,
+expired ticket, or stale authority revision fails before the protected effect.
+
+The ticket and permit solve different boundaries:
+
+```text
+signed approval ticket   authenticates the exact server-to-browser handoff
+request permit           authorizes one exact invocation at admission
+provider effect ledger   prevents an admitted retry from repeating the effect
+```
 
 ### Protected-service integration
 

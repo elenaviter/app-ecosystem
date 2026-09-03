@@ -108,6 +108,12 @@ export interface GrantAgentAccessArgs {
   accessId?: string;
   invocationMode?: 'always' | 'once';
   invocationChangeId?: string;
+  requestBound?: boolean;
+  requestDigest?: string;
+  requestApprovalTicket?: string;
+  requestCardRevision?: number;
+  requestAuthorityRevision?: string;
+  approvalContext?: Record<string, string>;
   label?: string;
   /** Exact outer MCP/REST operations selected for this protected resource. */
   resourceOperations?: string[];
@@ -134,7 +140,7 @@ export const grantAgentAccess = createAsyncThunk<
   { rejectValue: string }
 >(
   'delegatedAccess/grantAgent',
-  async ({ clientId, resource, claims, accessId, invocationMode, invocationChangeId, label, resourceOperations, namedServiceOperations, replace, accountScope }, { rejectWithValue }) => {
+  async ({ clientId, resource, claims, accessId, invocationMode, invocationChangeId, requestBound, requestDigest, requestApprovalTicket, requestCardRevision, requestAuthorityRevision, approvalContext, label, resourceOperations, namedServiceOperations, replace, accountScope }, { rejectWithValue }) => {
     try {
       const res = await postOp<DelegatedAccessCreateResult>('delegated_agent_grant_create', {
         client_id: clientId,
@@ -144,6 +150,16 @@ export const grantAgentAccess = createAsyncThunk<
         ...(accessId ? { access_id: accessId } : {}),
         ...(invocationMode ? { invocation_mode: invocationMode } : {}),
         ...(invocationChangeId ? { invocation_change_id: invocationChangeId } : {}),
+        ...(requestBound ? { request_bound: true } : {}),
+        ...(requestDigest ? { request_digest: requestDigest } : {}),
+        ...(requestApprovalTicket
+          ? { request_approval_ticket: requestApprovalTicket }
+          : {}),
+        ...(requestCardRevision ? { request_card_revision: requestCardRevision } : {}),
+        ...(requestAuthorityRevision ? { request_authority_revision: requestAuthorityRevision } : {}),
+        ...(approvalContext && Object.keys(approvalContext).length
+          ? { approval_context: approvalContext }
+          : {}),
         ...(replace ? { replace: true } : {}),
         ...(resourceOperations !== undefined
           ? { resource_operations: { [resource]: resourceOperations } }

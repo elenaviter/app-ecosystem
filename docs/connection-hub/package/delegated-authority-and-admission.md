@@ -5,7 +5,7 @@ summary: "Delegated-card and invocation-policy decisions across managed REST/MCP
 status: current
 tags: ["arch", "security", "admission", "connection-hub", "delegated-access", "mcp", "rest", "named-services", "data-bus"]
 keywords: ["delegated authority", "managed surface guard", "delegated access card", "access_id", "active catalog", "resource grants", "resource operations", "MCP tool grants", "connected account claims", "NamedServiceAdmission", "Data Bus relay"]
-updated_at: 2026-09-02
+updated_at: 2026-09-03
 see_also:
   - ../connection-hub-architecture.md
   - ./delegated-cards.md
@@ -421,13 +421,22 @@ invocation policy  may the already-granted operation be used once or repeatedly?
 Invocation policy is stored separately from the card and is keyed by exact
 `access_id + resource + surface + operation`, with an optional provider and
 account selector. An account-specific policy overrides the operation's general
-policy. No stored policy means `always`, preserving existing granted cards.
+policy. For ordinary operations, no stored policy means `always`, preserving
+existing granted cards. A protected-service operation configured as
+request-bound requires an explicit policy and never inherits that fallback.
 
 `once` starts with one available invocation. The caller supplies a stable
 invocation id and a digest of the exact request. Connection Hub reserves that
 id under the policy lock and consumes the one-use permit before dispatch. One
 of concurrent new invocation ids wins. A later new id is denied. Reusing the
 winning id with a different digest is also denied.
+
+Request-bound `once` adds a short-lived permit containing the exact owner,
+`access_id`, resource, operation, invocation id, request digest, card revision,
+catalog revision, and expiry. The permit is created only after the browser
+submits the signed approval ticket issued for that denied request. Reservation
+and consumption happen under the same invocation-policy lock. Another
+invocation under the same card and operation cannot take that permit.
 
 The same-id replay boundary depends on who executes the operation:
 
@@ -446,6 +455,13 @@ policy marker, then mutates the card, then commits the policy. Calls are denied
 with a retryable policy-changing reason while the marker is prepared. Retrying
 the same change id completes or replays the transaction; a second writer cannot
 silently widen authority around it.
+
+For request-bound operations, the denial URL carries a signed approval ticket
+that also binds the protected service, caller profile, bounded display context,
+and issue/expiry times. The browser treats it as opaque. The server verifies
+the signature and compares every request and displayed field before changing
+card or policy state. The ticket is the authenticated browser handoff; the
+durable request permit is the authority consumed by the retried operation.
 
 When an operation is absent from a current card, the structured denial names
 the exact card, resource, and operation and offers `allow_once` and
@@ -490,6 +506,7 @@ stored card preserves the old selection as drift evidence.
 | Card selected the capability but the active catalog removed it. | `403 delegated_capability_no_longer_available`. |
 | Active catalog exposes the capability but the card did not select it. | Existing missing-grant or consent denial. |
 | A one-use operation has no invocation id, is already consumed, or reuses an id with another request digest. | Structured invocation-policy denial with the exact recovery choices where applicable. |
+| A request-bound operation has no exact permit, or its ticket/request/card/catalog facts moved. | Structured request-permit denial before dispatch; an authenticated matching browser handoff may create the exact permit. |
 | A card/policy transaction is still prepared. | Retryable fail-closed denial until that exact change is completed. |
 | An external MCP tool disappeared or its advertised descriptor changed. | Structured proxy denial before one-use authority is consumed. |
 | Account binding or provider claims are incomplete. | Existing connection, account-selection, or claim-consent response. |
