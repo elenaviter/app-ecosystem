@@ -6,11 +6,12 @@ import time
 from types import SimpleNamespace
 
 import anyio
-
+import pytest
 from connection_hub_cli import cli
 from connection_hub_cli.authorization.session import OAuthSessionStore
 from connection_hub_cli.clients.adapters import ClaudeDesktopAdapter
 from connection_hub_cli.clients.service import ClientService
+from connection_hub_cli.errors import CredentialError
 from connection_hub_cli.management import (
     DEFAULT_MANAGEMENT_SCOPE,
     ConsentRecovery,
@@ -19,7 +20,13 @@ from connection_hub_cli.management import (
     ManagementResult,
     ManagementTarget,
 )
-from connection_hub_cli.models import HelperLaunch, ProbeResult
+from connection_hub_cli.models import (
+    CallerProfile,
+    HelperLaunch,
+    ProbeResult,
+    ProfileOAuthMetadata,
+)
+from connection_hub_cli.paths import StatePaths
 from connection_hub_cli.profiles import ProfileService
 from connection_hub_cli.state import InstallationStore, ProfileStore
 
@@ -122,6 +129,82 @@ class _OAuthRepository:
         return True
 
 
+class _OAuthProfileSessions:
+    def __init__(self, profiles: ProfileStore) -> None:
+        self.profiles = profiles
+        self.calls: list[dict] = []
+        self.access_canary = "oauth-access-never-render"
+        self.refresh_canary = "oauth-refresh-never-render"
+
+    async def authorize(self, **kwargs):
+        self.calls.append(kwargs)
+        profile = CallerProfile.create_oauth(
+            name=kwargs["name"],
+            endpoint=kwargs["endpoint"],
+            access_id="access-oauth-agent",
+            oauth=ProfileOAuthMetadata(
+                protected_resource_metadata_url=(
+                    "https://hub.example/.well-known/oauth-protected-resource"
+                ),
+                resource=kwargs["endpoint"],
+                issuer="https://hub.example/oauth",
+                token_endpoint="https://hub.example/oauth/token",
+                revocation_endpoint="https://hub.example/oauth/revoke",
+                client_id=(kwargs.get("client_metadata_url") or "registered-client"),
+                client_source=("cimd" if kwargs.get("client_metadata_url") else "dcr"),
+                client_metadata_url=kwargs.get("client_metadata_url"),
+                scope=kwargs.get("scope") or "mcp",
+            ),
+        )
+        self.profiles.add(profile)
+        return SimpleNamespace(
+            profile=profile,
+            probe=ProbeResult(tool_count=4, server_name="hub", server_version="1"),
+        )
+
+    def credential_present(self, _profile: CallerProfile) -> bool:
+        return True
+
+    def credential_status(self, _profile: CallerProfile) -> dict[str, object]:
+        return {
+            "credential": "present",
+            "expiry": "current",
+            "expires_at": 2_000_000_000,
+            "refresh_ready": True,
+        }
+
+
+class _OAuthClientAdapter:
+    client = "claude-code"
+
+    def __init__(self) -> None:
+        self.entry = None
+
+    def available(self) -> bool:
+        return True
+
+    def ensure_mode(self, mode: str) -> None:
+        assert mode == "oauth"
+
+    def inspect(self, _server_name: str):
+        return self.entry
+
+    def install(self, installation) -> bool:
+        self.ensure_mode(installation.mode)
+        self.entry = installation.to_entry()
+        return True
+
+    def rollback_install(self, _installation) -> None:
+        self.entry = None
+
+    def remove(self, _installation) -> bool:
+        self.entry = None
+        return True
+
+    def authorization_command(self, installation):
+        return ["claude", "mcp", "login", installation.server_name]
+
+
 def _services(tmp_path):
     profiles = ProfileStore(tmp_path / "profiles.json")
     installations = InstallationStore(tmp_path / "installations.json")
@@ -172,6 +255,68 @@ def _management_result(request: ManagementRequest) -> ManagementResult:
             "generation": "generation-2",
         },
     )
+
+
+def test_direct_oauth_install_does_not_require_a_local_native_store(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def unavailable_store():
+        raise CredentialError(
+            "unavailable_keyring_backend",
+            "Linux Secret Service is unavailable.",
+        )
+
+    monkeypatch.setattr(cli, "NativeCredentialStore", unavailable_store)
+    services = cli.build_services(paths=StatePaths(tmp_path))
+    adapter = _OAuthClientAdapter()
+    services.client_service.adapters["claude-code"] = adapter
+
+    result = services.client_service.install(
+        client="claude-code",
+        endpoint="https://hub.example/mcp",
+        mode="oauth",
+    )
+
+    assert result.installation.mode == "oauth"
+    assert result.authorization_command == (
+        "claude",
+        "mcp",
+        "login",
+        "connection-hub-claude-code",
+    )
+    with pytest.raises(CredentialError) as raised:
+        services.credentials.verify_ready()
+    assert raised.value.code == "unavailable_keyring_backend"
+
+
+def test_bridge_install_remains_closed_when_the_native_store_is_unavailable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def unavailable_store():
+        raise CredentialError(
+            "unavailable_keyring_backend",
+            "Linux Secret Service is unavailable.",
+        )
+
+    monkeypatch.setattr(cli, "NativeCredentialStore", unavailable_store)
+    services = cli.build_services(paths=StatePaths(tmp_path))
+    profile = CallerProfile.create(name="agent", endpoint="https://hub.example/mcp")
+    services.profiles.add(profile)
+    client_config = tmp_path / "claude-desktop.json"
+    adapter = ClaudeDesktopAdapter(config_path=client_config)
+    services.client_service.adapters["claude-desktop"] = adapter
+
+    with pytest.raises(CredentialError) as raised:
+        services.client_service.install(
+            client="claude-desktop",
+            profile_name="agent",
+            mode="bridge",
+        )
+
+    assert raised.value.code == "unavailable_keyring_backend"
+    assert not client_config.exists()
 
 
 def _management_denial(
@@ -686,6 +831,81 @@ def test_client_commands_report_reload_and_running_process_boundary(
     removed = json.loads(capsys.readouterr().out)
     assert removed["running_helper_stopped"] is False
     assert removed["server_card_revoked"] is False
+
+
+def test_profile_authorize_reports_oauth_state_without_tokens(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    oauth_profiles = _OAuthProfileSessions(services.profiles)
+    services.oauth_profile_sessions = oauth_profiles
+    services.profile_service.oauth_sessions = oauth_profiles
+    services.client_service.oauth_sessions = oauth_profiles
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "profile",
+            "authorize",
+            "agent",
+            "--endpoint",
+            "https://hub.example/mcp",
+            "--client-metadata-url",
+            "https://client.example/oauth/metadata.json",
+            "--callback-port",
+            "9124",
+            "--wait-seconds",
+            "5",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert oauth_profiles.access_canary not in captured.out
+    assert oauth_profiles.refresh_canary not in captured.out
+    payload = json.loads(captured.out)
+    assert payload["profile"]["auth_type"] == "oauth"
+    assert payload["profile"]["access_id"] == "access-oauth-agent"
+    assert payload["profile"]["refresh_ready"] is True
+    assert oauth_profiles.calls[0]["callback_port"] == 9124
+
+
+def test_client_oauth_install_reports_native_login_command_without_local_profile(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    adapter = _OAuthClientAdapter()
+    services.client_service.adapters["claude-code"] = adapter
+    services.adapters["claude-code"] = adapter
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "client",
+            "install",
+            "claude-code",
+            "--mode",
+            "oauth",
+            "--endpoint",
+            "https://hub.example/mcp",
+        ]
+    )
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["requested_mode"] == "oauth"
+    assert payload["selected_mode"] == "oauth"
+    assert payload["installation"]["profile"] is None
+    assert payload["authorization_command"] == [
+        "claude",
+        "mcp",
+        "login",
+        "connection-hub-claude-code",
+    ]
 
 
 def test_host_authorize_uses_selected_target_and_renders_no_credential(

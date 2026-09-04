@@ -16,6 +16,7 @@ from connection_hub_cli.errors import (
     ProfileError,
     StateError,
 )
+from connection_hub_cli.filesystem import apply_open_file_mode
 from connection_hub_cli.models import CallerProfile, HostSelection, ManagedInstallation
 
 _T = TypeVar("_T")
@@ -96,7 +97,7 @@ class AtomicJsonState:
         )
         temporary = Path(temporary_name)
         try:
-            os.fchmod(descriptor, 0o600)
+            apply_open_file_mode(descriptor, temporary, 0o600)
             stream = os.fdopen(descriptor, "wb", closefd=True)
             descriptor = -1
             with stream:

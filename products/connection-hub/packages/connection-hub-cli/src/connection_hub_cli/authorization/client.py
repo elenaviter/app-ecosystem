@@ -34,7 +34,7 @@ def _oauth_value(value: Any, *, maximum: int = 8192) -> str:
     if (
         not candidate
         or len(candidate) > maximum
-        or any(ord(character) < 32 or ord(character) == 127 for character in candidate)
+        or any(not 0x20 <= ord(character) <= 0x7E for character in candidate)
     ):
         raise AuthorizationError(
             "oauth_value_invalid",
@@ -78,6 +78,7 @@ class OAuthClient:
         redirect_uri: str,
         client_name: str = "Connection Hub CLI",
         provisioned_client_id: str | None = None,
+        client_metadata_url: str | None = None,
     ) -> OAuthClientRegistration:
         callback = validate_web_url(
             redirect_uri,
@@ -88,7 +89,27 @@ class OAuthClient:
             return OAuthClientRegistration(
                 client_id=_oauth_value(provisioned_client_id, maximum=4096),
                 redirect_uris=(callback,),
+                source="provisioned",
             )
+        if client_metadata_url:
+            from mcp.client.auth.oauth2 import is_valid_client_metadata_url
+
+            metadata_url = validate_web_url(
+                client_metadata_url,
+                code="oauth_client_metadata_url_invalid",
+            )
+            if not is_valid_client_metadata_url(metadata_url):
+                raise AuthorizationError(
+                    "oauth_client_metadata_url_invalid",
+                    "The OAuth client metadata document URL is invalid.",
+                )
+            if metadata.client_id_metadata_document_supported:
+                return OAuthClientRegistration(
+                    client_id=metadata_url,
+                    redirect_uris=(callback,),
+                    source="cimd",
+                    client_metadata_url=metadata_url,
+                )
         if not metadata.registration_endpoint:
             raise AuthorizationError(
                 "oauth_provisioned_client_required",

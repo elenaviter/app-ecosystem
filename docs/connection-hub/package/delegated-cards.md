@@ -4,8 +4,8 @@ title: "Delegated Access Cards: Storage, Rendering, And Enforcement"
 summary: "Canonical lifecycle of Connection Hub Delegated by KDCube cards: what each card stores, which live catalogs render its editor, how changes reach runtime enforcement, and how descriptor drift must be reconciled."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
-keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "named_service_operations", "account_scope", "registry_access_id", "card authority", "descriptor drift", "grant lifecycle"]
-updated_at: 2026-09-02
+keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "named_service_operations", "account_scope", "registry_access_id", "card authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
+updated_at: 2026-09-04
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -74,6 +74,44 @@ rules differ.
 An OAuth client and a hosted agent are both delegated callers. The source
 field records how their credential lifecycle is managed; it does not create a
 different authorization model.
+
+## Stable Resident Identity
+
+A hosted agent is a **resident caller profile**: one agent of one application
+acting for one grantor. Its card keeps one `access_id` while the resources on
+it change, because everything that binds to a card is keyed by that id: the
+reusable bearer, the invocation policies, the consent recovery links, and the
+audit trail. The earlier deterministic id folded the selected resource set into
+the hash, so adding a resource addressed a different record and one profile
+fragmented into one card per resource.
+
+The stable key, implemented once in
+`connection_hub.delegated_credentials.cards.identity`, is:
+
+```text
+grantor subject
+tenant/project scope                 implied by the store the card lives in
+resident application (app/bundle)    from the client id kdcube-agent:<app>:<agent>
+agent id
+```
+
+Selected resources and their acting scope are card contents and never part of
+the key. One resident profile has one card. The current credential contract
+accepts several resources that share one compatible `identity_scope` and
+refuses a conflicting scope before anything is written
+(`delegated_access_resources_have_conflicting_identity_scopes`); it does not
+create another card for the same resident agent.
+
+`ResidentCallerProfile.parse(grantor, client_id)` yields the profile and its
+`access_id`; Projection and Gateway read it instead of reproducing hashing. The
+other families keep their own identities: a manual automation mints a random
+id, and an OAuth connection is keyed by grantor, client id, and resource, so two
+dynamic clients registered by the same public app (both named "Claude") never
+collapse into one card.
+
+Records written under the earlier resource-dependent id are still read (the
+stable id is tried first, then the legacy id) and are folded into the stable
+card by the migration described below.
 
 ## Stored Record
 
@@ -185,6 +223,10 @@ durable read.
 | `identity_scope` | Which identity boundary the delegated resource uses. | yes |
 | `created_at`, `expires_at`, `last_issued_at` | Lifecycle timestamps. | yes when present |
 | `last_four`, `source` | Token fingerprint and card family. | yes |
+| `resource_acceptance` | Per resource: the descriptor authority (`kind` `catalog` or `remote_mcp`, `provider`), the `revision` and `digest` accepted at the last save, the claims seen, and one digest per offered operation. Drift is judged against it, resource by resource. | yes when present |
+| `provenance` | Non-secret lineage written by the resident-profile migration: the legacy records folded into this card, when, and any operation dropped because its one-use permit was spent. | yes when present |
+| `caller_profile`, `stable_identity` | List-only: the resident profile behind an agent card and whether the card already lives under the profile's stable id. | yes for agent cards |
+| `resource_offers` | List-only: owner-visible delegable resources that may join this card, each with `compatible` and a `reason` (`already_on_card`, `identity_scope_incompatible`, `admin_only`). | yes |
 | `session_id`, `access_token`, `refresh_token` | Internal credential/revocation handles, according to source. | no |
 
 Every authority and lifecycle field above is copied into the immutable durable
@@ -206,15 +248,18 @@ between the four states:
 | exact map | That resource -> namespace -> operation selection. |
 | field absent | A record written before this encoding. Its prior set is derived from the materialized boundary. |
 
-Card authority schema `connection_hub.delegated_card_authority.v2` stores
-outer operations as `resource_operations`. This qualification matters when two
-protected resources expose the same operation name: selecting the operation on
-one resource grants nothing on the other. A v1 card with only the flat
-`operations` field is read with its prior semantics by projecting that set onto
-each resource already selected by the card. The next successful card write
-persists v2. A pre-resource OAuth record is projected to the wildcard resource
-`"*"`, preserving its former all-matching-resource interpretation without
-making the flat union authoritative for new cards.
+Card authority schema `connection_hub.delegated_card_authority.v3` stores
+outer operations as `resource_operations` and adds `resource_acceptance` and
+`provenance`. The resource qualification matters when two protected resources
+expose the same operation name: selecting the operation on one resource grants
+nothing on the other, and an invocation policy is keyed to the resource as
+well. A v1 card with only the flat `operations` field is read with its prior
+semantics by projecting that set onto each resource already selected by the
+card; a v2 card reads without acceptance, and every resource of it reports
+`unknown` per-resource state until the next save stamps it. The next
+successful card write persists v3. A pre-resource OAuth record is projected to
+the wildcard resource `"*"`, preserving its former all-matching-resource
+interpretation without making the flat union authoritative for new cards.
 
 Connected provider credentials are stored by the delegated-to-KDCube account
 system, not in these cards. `account_scope` contains ids and claims only.
@@ -475,8 +520,10 @@ agent attempts a governed operation
   -> denial names the deterministic kdcube-agent:<app>:<agent> client, the
      namespace and the operation it was refused
   -> user approves the demand in Connection Hub, with that operation pre-selected
-  -> create_access deduplicates by grantor + client + resources
-  -> approval merges exactly the approved authority
+  -> create_access addresses the profile's ONE stable card (grantor + app + agent);
+     legacy resource-dependent records fold into it first
+  -> approval merges exactly the approved authority; a new resource joins the
+     same card
   -> explicit edit uses replace semantics
   -> reusable agent bearer and card are stored server-side
 ```
@@ -600,6 +647,7 @@ re-authorization.
 | `account_scope: {}` | Bind no provider account; provider-backed use is default-closed. |
 | `account_scope` with content | Replace with the exact provider -> account -> claim selection. |
 | `label` | Rename without changing omitted dimensions. |
+| `accepted_operations` | Per resource, the selected operations whose CHANGED descriptor the grantor reviewed and accepts with this save. Every other changed selected operation keeps the digest the card accepted before and stays suspended. Omitted accepts nothing. |
 
 The update recomputes outer operations and the materialized `named_services`
 tree from the active catalog available to Connection Hub. For a stored `"*"`,
@@ -676,6 +724,62 @@ live card and the existing pointer-backed bearer sees the new authority on its
 next call. A refresh rotation updates credential handles, expiry, and
 `last_issued_at` only — it neither restores an older operation selection nor
 widens one.
+
+## Multi-Resource Cards
+
+One card carries several resources under one identity. The mutation contract:
+
+| Mutation | Behavior |
+| --- | --- |
+| Create with several resources | One card; every resource carries its own claims, exact operations, and acceptance. |
+| Incremental consent (`delegated_agent_grant_create`, `create_access(client_id=...)`) | Merges exactly one resource/operation into the profile's stable card. A resource the card did not hold is added with its own operations; the other resources are untouched. |
+| Ordinary edit (`delegated_access_update`) | Replaces the complete submitted contents. A resource absent from the submission is removed. |
+| Removing one resource | The other resources, their invocation policies, the account binding, the credential binding, `access_id`, `created_at`, and provenance stay intact. Policies keyed to the removed resource are left in the policy registry; they grant nothing while the card does not hold the operation. |
+| Removing the final resource | Refused (`delegated_access_requires_resource_grants`). Ending a card is a revoke, decided explicitly. The editor offers Revoke instead of Save. |
+| Incompatible identity scope | Refused before any write, naming the scopes. No second resident card is created. |
+| Re-adding a removed resource or operation | Lands on the same card. A consumed one-use policy for that operation is still consumed: the policy registry is keyed by card, resource, and operation, so a spent permit never comes back to life through a card edit, and a revoked card is not reactivated. |
+
+Equal operation names on different resources remain independent throughout:
+`search` on memories and `search` on tasks are two operations, two acceptances,
+and two policies.
+
+## Migration Of Resource-Dependent Resident Records
+
+Records written under the earlier resource-dependent agent id are folded into
+the profile's stable card. The fold runs before a grant lands on the stable
+card (`create_access` with a client id) and can be run on its own through
+`AutomationAccessService.migrate_resident_profile`. Its rules are fail-closed:
+
+- candidates are the grantor's own active agent cards with this exact client
+  id, excluding the target; no other profile's record can be a candidate;
+- source cards must agree on acting identity scope, otherwise
+  `identity_scope_conflict` and nothing changes;
+- two records holding the same resource must agree on its claims and
+  operations, otherwise `resident_profile_migration_conflict`
+  (`resource_selection_conflict`) and nothing changes;
+- non-empty account bindings must be identical across every record folded,
+  including the target; a binding one card made for its resource is not
+  extended to another card's resource (`account_scope_conflict`);
+- the folded card expires when the earliest of its sources would;
+- invocation policies move with their operation: `always` and an unconsumed
+  `once` are re-declared on the stable card before the card is written, a
+  consumed `once` drops the operation from the folded card so a spent permit
+  cannot revive, and a target policy of a different mode is a conflict. Without
+  a configured policy service the fold refuses (`invocation_policies_unverifiable`);
+- the target card is persisted with a fresh reusable bearer bound to the stable
+  id, then the legacy cards are revoked, which invalidates their bearers. The
+  legacy resource-specific resolver remains compatible before the fold; the
+  unified Gateway runtime uses only the stable exact id and therefore waits for
+  migration;
+- replay is a no-op: a second pass finds no candidates, and a concurrent
+  worker loses the card's revision precondition and skips;
+- `provenance.migrated_from` on the stable card names the source records and
+  their revisions, `migrated_at` the moment, and `dropped_consumed_once` any
+  operation the fold left out. No credential value appears anywhere.
+
+A conflict is reported to the caller with the candidate records and a recovery
+action: review those cards in Connection Hub, revoke or edit the ones that
+should not carry over, then grant again.
 
 ## Runtime Enforcement Lifecycle
 
@@ -933,6 +1037,42 @@ the current catalog with selected operations can find removed selected values,
 but cannot distinguish a newly added operation from one that was already
 available and deliberately left unchecked.
 
+### Per-resource accepted state
+
+Every card resource has its own descriptor authority. A static catalog row
+follows the deployment catalog version; a user-owned connector follows its own
+descriptor revision and does not appear in catalog history at all. Comparing a
+card only against the catalog version therefore had two failures: an unrelated
+catalog change made an unchanged connector's grants read as newly available
+(the baseline document never contained the overlay row), and a changed
+connector tool under an unchanged catalog version read as current.
+
+The card now records `resource_acceptance` at every save:
+
+```text
+resource_acceptance[<resource>]
+  kind        catalog | remote_mcp        which authority describes it
+  provider    ""      | remote_mcp
+  revision    catalog version | connector descriptor revision
+  digest      row digest (grants, tools, named services, identity)
+              | connector descriptor digest
+  grants      the claim ceiling seen
+  operations  <operation> -> descriptor digest, for every offered operation
+```
+
+`catalog.descriptors` digests a static row from its published projection,
+deliberately excluding the catalog version, and reads a connector row's own
+evidence from the overlay (`remote_mcp.catalog.RemoteMCPResourceRow`). Drift
+(`catalog.drift.card_drift`) then judges each resource against its acceptance
+and returns a `resources` block with one entry per resource
+(`current`, `changed`, `removed`, or `unknown` for a card written before this
+evidence existed), and a `changed.outer_operations` block for selected
+operations whose descriptor changed. Such an operation carries the effect
+`suspended_until_accepted`: it stays granted on the card but is not to be run
+until the grantor accepts exactly that change, through `accepted_operations`
+on save. A newly advertised operation is reported under `added` and stays
+ungranted. An unrelated catalog change leaves an unchanged resource `current`.
+
 ### Drift projection and Save concurrency
 
 `delegated_access_list` computes drift on the server and returns one status per
@@ -941,7 +1081,7 @@ card:
 | Status | Meaning |
 | --- | --- |
 | `current` | The card references the active catalog version. |
-| `changed` | A relevant resource, claim, outer operation, or named operation changed. |
+| `changed` | A relevant resource, claim, outer operation, or named operation changed, including a selected operation whose descriptor changed on its own authority. |
 | `no_relevant_change` | The global catalog advanced without changing anything represented by this card. |
 | `baseline_missing` | The card predates `catalog_version`, or its referenced durable version document is confirmed absent, so exact additions since the previous Save cannot be identified. |
 | `unavailable` | Complete cached `active.json`, or a historical version required for drift, cannot be obtained from Redis or restored from committed durable state; or a catalog document fails content-hash validation. Editing authority is disabled; create/update and governed calls return `503 temporarily_unavailable` when the unavailable document is required for their decision. |
@@ -1076,6 +1216,40 @@ Immutable card revisions are required for durable authority and provenance.
 They do not expose rollback: restoring old authority would be a new explicit
 grant operation, not a pointer move to a historical revision.
 
+## Read Model For Gateway And Projection
+
+`connection_hub.delegated_credentials.cards.read_model` is the one portable
+view of a card that its consumers read. Gateway lists and routes tools from
+it; Projection intersects it with descriptor and conversation ceilings. Neither
+parses persistence records nor reproduces identity, acceptance, or migration
+rules.
+
+```text
+DelegatedCardView
+  caller_kind                   resident | oauth | manual
+  profile                       ResidentCallerProfile for a resident card
+  access_id, card_revision, catalog_version, state, source, label
+  created_at, expires_at, identity_scope
+  resources[]
+    resource, kind, provider, label, identity_scope, state
+    grants
+    operations[]                name, state (current|changed|removed|unknown),
+                                accepted_digest, current_digest, policy (public)
+    accepted_revision, current_revision, accepted_digest, current_digest
+    named_service_operations    namespace -> operations
+  account_scope
+  provenance
+```
+
+`AutomationAccessService.describe_card(user, access_id=...)` returns the view of
+a card its grantor owns; `resident_profile_card(grantor_subject, client_id)`
+returns the view of one resident profile's card (the stable card first, else a
+single not-yet-folded legacy record, else nothing).
+`compatible_resource_offers` is the owner-scoped seam that lists which
+delegable resources may join a card and why the others may not; a resident
+ceiling narrows it further in Projection, so no KDCube runtime rule lives in
+the portable package. Every field is non-secret.
+
 ## Revocation And Expiry
 
 - Expired cards disappear from the normal active list and cease to resolve.
@@ -1101,6 +1275,10 @@ grant operation, not a pointer move to a historical revision.
 | Durable revisions and current pointer | `...delegated_credentials.cards.store.DelegatedCardStore` over Connection Hub bundle storage |
 | Persistence port, TTL live projection and read-through | `...delegated_credentials.cards.persistence`, `.cache`, `.handles`, `.resolver` |
 | Stored selection states and card model | `...delegated_credentials.cards.model` |
+| Stable resident caller identity | `...delegated_credentials.cards.identity` |
+| Per-resource accepted descriptor state | `...delegated_credentials.catalog.descriptors` |
+| Portable card read model and compatible-resource offers | `...delegated_credentials.cards.read_model` |
+| Resident-profile fold of legacy records | `automation_access.AutomationAccessService.migrate_resident_profile` |
 | Pre-encoding record interpretation | `...delegated_credentials.cards.migration` |
 | Durable catalog history and publication | `...delegated_credentials.catalog.store` and `.publisher`, immutable version documents and complete `active.json` |
 | Current catalog resolution and read-through recovery | `...delegated_credentials.catalog.resolver` |

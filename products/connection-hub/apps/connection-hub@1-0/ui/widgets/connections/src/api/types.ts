@@ -183,6 +183,74 @@ export interface DelegatedAccessRecord {
   /** Invocation limits live beside card authority and are enforced immediately
    *  before the operation is admitted. An absent row means reusable. */
   invocation_policies?: DelegatedInvocationPolicy[];
+  /** Per resource: the descriptor authority (catalog row or connector), the
+   *  revision and digest the card accepted at its last save, and one digest
+   *  per offered operation. Absent on cards written before it existed. */
+  resource_acceptance?: Record<string, DelegatedResourceAcceptance>;
+  /** Non-secret lineage: legacy records folded into this card, and when. */
+  provenance?: Record<string, unknown>;
+  /** The resident profile behind an agent card (grantor, app, agent) and the
+   *  stable card id that profile owns. */
+  caller_profile?: DelegatedCallerProfile;
+  /** False on an agent card still living under the earlier resource-dependent
+   *  id; it folds into the profile's stable card on the next grant. */
+  stable_identity?: boolean;
+  /** Owner-visible delegable resources that may join this card, and why the
+   *  others may not. */
+  resource_offers?: DelegatedResourceOffer[];
+}
+
+export interface DelegatedResourceAcceptance {
+  kind: 'catalog' | 'remote_mcp' | string;
+  revision: string;
+  digest: string;
+  grants?: string[];
+  operations?: Record<string, string>;
+  provider?: string;
+}
+
+export interface DelegatedCallerProfile {
+  kind: 'resident';
+  grantor_subject: string;
+  application: string;
+  agent_id: string;
+  identity_scope: string;
+  client_id: string;
+  access_id: string;
+}
+
+export interface DelegatedResourceOffer {
+  resource: string;
+  label: string;
+  identity_scope: string;
+  compatible: boolean;
+  reason: 'compatible' | 'already_on_card' | 'identity_scope_incompatible' | 'admin_only' | string;
+  card_identity_scope?: string;
+}
+
+/** Per-resource descriptor state: what changed on this resource's own
+ *  authority since the card accepted it. */
+export interface DelegatedResourceDriftState {
+  status: 'current' | 'changed' | 'removed' | 'unknown' | string;
+  kind?: string;
+  accepted_revision?: string;
+  current_revision?: string;
+  accepted_digest?: string;
+  current_digest?: string;
+  changed_operations?: string[];
+  removed_operations?: string[];
+  added_operations?: string[];
+  removed_claims?: string[];
+  added_claims?: string[];
+}
+
+export interface DelegatedDriftChange {
+  resource: string;
+  operation: string;
+  was_selected?: boolean;
+  effect?: 'suspended_until_accepted' | string;
+  accepted_digest?: string;
+  current_digest?: string;
 }
 
 /** A capability the card selected that the active catalog no longer offers.
@@ -224,6 +292,12 @@ export interface DelegatedCatalogDrift {
     outer_operations?: DelegatedDriftAddition[];
     named_service_operations?: DelegatedDriftAddition[];
   };
+  /** Selected operations whose descriptor changed; suspended until accepted. */
+  changed?: {
+    outer_operations?: DelegatedDriftChange[];
+  };
+  /** Drift judged per resource against that resource's own accepted state. */
+  resources?: Record<string, DelegatedResourceDriftState>;
 }
 
 export interface DelegatedAccessListResult {

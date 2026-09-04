@@ -8,6 +8,18 @@ import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCata
 import { GrantFilterControls, GrantFilterInfo, GrantFilterSettings } from './GrantFilterBar';
 import { InvocationPolicyControl, OperationInvocationChoice } from './InvocationControls';
 import {
+  RemovedResourceStub,
+  ResourceDriftReview,
+  ResourceOfferPicker,
+  ResourceSectionHead,
+} from './ResourceEditorParts';
+import {
+  editedResourceKeys,
+  saveProblemText,
+  saveProblems,
+  toggleAccepted,
+} from './resourceEditing';
+import {
   editChangeId,
   focusedGrantArgs,
   pendingChoiceRequested,
@@ -784,6 +796,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // focused transaction (see invocationChoice.ts): set afterwards, the
   // operation would run as "always" until the policy call landed.
   const [editInvocationModes, setEditInvocationModes] = useState<Record<string, InvocationMode>>({});
+  // Resources this edit adds to or removes from the card, and the changed
+  // descriptors it accepts. All three are submitted with Save; nothing
+  // changes authority until then.
+  const [editAddedResources, setEditAddedResources] = useState<string[]>([]);
+  const [editRemovedResources, setEditRemovedResources] = useState<string[]>([]);
+  const [editAcceptedOperations, setEditAcceptedOperations] = useState<Record<string, string[]>>({});
   // Filter + "show more" over the granted-access list (see matchedOtherItems).
   // The rules live in grantFilter.ts; the controls sit in the tab's action row.
   const [grantFilter, setGrantFilter] = useState<GrantFilter>(DEFAULT_GRANT_FILTER);
@@ -1323,6 +1341,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
     setEditAccountScope(seedAccountScopeFromRecord(item));
     setEditLabel(item.label || '');
+    setEditAddedResources([]);
+    setEditRemovedResources([]);
+    setEditAcceptedOperations({});
   }, [resources, seedAccountScopeFromRecord]);
   // Human label for one connected account (falls back to the id).
   const accountLabelById = useMemo(() => {
@@ -1706,6 +1727,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditNamedServiceOperations({});
     setEditAccountScope({});
     setEditLabel('');
+    setEditAddedResources([]);
+    setEditRemovedResources([]);
+    setEditAcceptedOperations({});
   };
 
   // The catalog's claims (so one can be added) union the record's own (so a
@@ -1729,21 +1753,52 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
   };
 
+  /** The resources this edit submits: the card's own minus the ones marked
+   *  for removal, plus the ones being added. */
+  const editResourceKeys = (item: DelegatedAccessRecord): string[] =>
+    editedResourceKeys(Object.keys(item.resource_grants || {}), editAddedResources, editRemovedResources);
+
+  /** The operations the card already grants on a resource. An added resource
+   *  grants none yet, whatever equal names other resources carry. */
+  const editGrantedOperations = (item: DelegatedAccessRecord, resource: string): string[] =>
+    resource in (item.resource_grants || {}) ? (item.resource_operations?.[resource] || []) : [];
+
+  const editKeptClaims = (item: DelegatedAccessRecord, resource: string): string[] =>
+    editableClaimsFor(item, resource).filter((claim) => editPicks[`${resource}:${claim}`] === true);
+
   /** Operations the editor added that still have no invocation choice. The
    *  save waits for them: granted through the card update they would run as
    *  "always" until a later policy call, which is not what the user picked. */
-  const editMissingChoices = (item: DelegatedAccessRecord): string[] =>
-    Object.keys(item.resource_grants || {}).flatMap((resource) => splitEditedOperations(
-      item.resource_operations?.[resource] || item.operations || [],
+  const editMissingChoices = (item: DelegatedAccessRecord): Array<{ resource: string; operation: string }> =>
+    editResourceKeys(item).flatMap((resource) => splitEditedOperations(
+      editGrantedOperations(item, resource),
       editResourceOperations[resource] || [],
       (operation) => editInvocationModes[`${resource}:${operation}`],
-    ).missingChoice);
+    ).missingChoice.map((operation) => ({ resource, operation })));
+
+  /** Everything that blocks Save, with the reason for the button title. */
+  const editSaveProblems = (item: DelegatedAccessRecord) => saveProblems({
+    resourceKeys: editResourceKeys(item),
+    addedResources: editAddedResources,
+    claimsFor: (resource) => editKeptClaims(item, resource),
+    missingChoices: editMissingChoices(item),
+  });
+
+  /** Forget every editor choice made for one resource (an addition undone). */
+  const dropEditResourceState = (resource: string) => {
+    const prefix = `${resource}:`;
+    setEditPicks((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(prefix))));
+    setEditInvocationModes((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(prefix))));
+    setEditResourceOperations((current) => { const next = { ...current }; delete next[resource]; return next; });
+    setEditNamedServiceOperations((current) => { const next = { ...current }; delete next[resource]; return next; });
+    setEditAcceptedOperations((current) => { const next = { ...current }; delete next[resource]; return next; });
+  };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
+    if (editSaveProblems(item).length) return;
     const kept: Record<string, string[]> = {};
-    Object.keys(item.resource_grants || {}).forEach((resource) => {
-      kept[resource] = editableClaimsFor(item, resource)
-        .filter((claim) => editPicks[`${resource}:${claim}`] === true);
+    editResourceKeys(item).forEach((resource) => {
+      kept[resource] = editKeptClaims(item, resource);
     });
     const anyKept = Object.values(kept).some((claims) => claims.length > 0);
     if (!anyKept) {
@@ -1780,7 +1835,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       Object.keys(prunedKept).map((resource) => [
         resource,
         splitEditedOperations(
-          item.resource_operations?.[resource] || item.operations || [],
+          editGrantedOperations(item, resource),
           editResourceOperations[resource] || [],
           (operation) => editInvocationModes[`${resource}:${operation}`],
         ),
@@ -1802,6 +1857,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       // either moved.
       expectedCardRevision: item.card_revision,
       expectedCatalogVersion: item.catalog_drift?.current_version || item.catalog_version,
+      // Changed descriptors the grantor reviewed and accepts with this save;
+      // every other changed selected operation stays suspended.
+      acceptedOperations: editAcceptedOperations,
     })).unwrap().catch(() => undefined);
     const updateAccepted = Boolean(updated) && updated?.ok !== false;
     if (updateAccepted) {
@@ -1896,9 +1954,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               <>
                 {scopeBlocked ? (
                   <p className="resource-boundaries-empty">
-                    This endpoint runs under <code>{scope}</code>, and this card is
-                    already committed to <code>{committedIdentityScope}</code>. One
-                    card carries one identity - grant it on a separate card.
+                    This endpoint runs under <code>{scope}</code>, while the resources
+                    selected on this card run under <code>{committedIdentityScope}</code>.
+                    It cannot be added to this card.
                   </p>
                 ) : null}
                 <div className="resource-grants">
@@ -2350,6 +2408,187 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // The REAL consent is the claim token — that is what renders in the rows
   // (as chips; the vocabulary label rides along as the chip's tooltip).
 
+  const resourceOfferLabel = (item: DelegatedAccessRecord, resource: string): string =>
+    (item.resource_offers || []).find((offer) => offer.resource === resource)?.label || '';
+  const editResourceTitle = (item: DelegatedAccessRecord, resource: string): string => (
+    resource === '*'
+      ? 'all resources'
+      : (doorAlias(resource) || resourceLabelFor(resource) || resourceOfferLabel(item, resource) || resource)
+  );
+
+  /** One resource of the card in edit mode: its claims, outer operations with
+   *  their invocation control or choice, named services, and the review of
+   *  what changed on THIS resource's descriptor. A resource being added renders
+   *  the same section so the grantor grants it with the same care. */
+  const renderEditResourceSection = (item: DelegatedAccessRecord, resource: string, isNew: boolean) => {
+    const resourceOption = catalogRowFor(
+      resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
+    );
+    const editedGrants = editKeptClaims(item, resource);
+    return (
+      <div
+        key={resource}
+        className={isNew ? 'resource-edit-section resource-edit-section--new' : 'resource-edit-section'}
+        data-resource={resource}
+      >
+        <ResourceSectionHead
+          title={editResourceTitle(item, resource)}
+          isNew={isNew}
+          onRemove={() => {
+            if (isNew) {
+              setEditAddedResources((current) => current.filter((entry) => entry !== resource));
+              dropEditResourceState(resource);
+            } else {
+              setEditRemovedResources((current) => (current.includes(resource) ? current : [...current, resource]));
+            }
+          }}
+        />
+        {resource !== '*' ? <DoorRef value={resource} /> : null}
+        <div className="resource-grants">
+          {editableClaimsFor(item, resource).map((claim) => {
+            const stale = withdrawnClaims(item, resource).has(claim);
+            return (
+              <label
+                className={stale ? 'grant-chip grant-chip-stale' : 'grant-chip'}
+                key={`${resource}:${claim}`}
+                title={
+                  stale
+                    ? 'No longer offered by the service catalog — already ineffective, removed when you save'
+                    : grantOptionByName.get(claim)?.label || undefined
+                }
+              >
+                <input
+                  type="checkbox"
+                  checked={editPicks[`${resource}:${claim}`] === true}
+                  disabled={stale}
+                  onChange={(event) => toggleEditClaim(resource, claim, event.target.checked)}
+                />
+                <span>{claim}</span>
+                {stale ? <span className="badge badge-warn">withdrawn</span> : null}
+              </label>
+            );
+          })}
+        </div>
+        {resourceOption?.operations?.length ? (
+          <>
+            <div className="account-title">Operations</div>
+            <div className="resource-grants">
+              {resourceOption.operations.map((operation) => {
+                const selected = (editResourceOperations[resource] || []).includes(operation.name);
+                const alreadyGranted = editGrantedOperations(item, resource).includes(operation.name);
+                const policy = invocationPolicyFor(item, resource, operation.name);
+                return (
+                  <div className={selected ? 'outer-operation-editor outer-operation-editor--policy' : 'outer-operation-editor'} key={`${resource}:operation:${operation.name}`}>
+                    <label className="grant-chip">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={(event) => toggleEditResourceOperation(
+                          resource,
+                          operation.name,
+                          operation.grants || [],
+                          event.target.checked,
+                        )}
+                      />
+                      <span>{operation.label || operation.name}</span>
+                    </label>
+                    {selected && alreadyGranted ? (
+                      <InvocationPolicyControl
+                        operation={operation.name}
+                        policy={policy}
+                        busy={busy}
+                        onSet={(mode, expectedRevision) => {
+                          void setOperationInvocationPolicy(
+                            item, resource, operation.name, mode, expectedRevision,
+                          );
+                        }}
+                      />
+                    ) : selected ? (
+                      // Not granted yet: the choice travels with the grant (saveEdit) so
+                      // the operation is never authorized under a default the user did
+                      // not pick.
+                      <OperationInvocationChoice
+                        operation={operation.name}
+                        mode={editInvocationModes[`${resource}:${operation.name}`] || null}
+                        busy={busy}
+                        onChoose={(mode) => setEditInvocationModes((current) => ({
+                          ...current, [`${resource}:${operation.name}`]: mode,
+                        }))}
+                      />
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
+        {/* Every family: the card type decides how the credential is managed,
+            not whether its grantor may change authority. */}
+        {resourceOption ? (
+          <DelegatedResourceCatalog
+            resource={resourceOption}
+            selectedGrants={editedGrants}
+            selectedOperations={editNamedServiceOperations[resource] || {}}
+            onOperationChange={(namespace, operation, operationGrants, checked) => (
+              toggleEditNamedServiceOperation(
+                resource, namespace, operation, operationGrants, checked,
+              )
+            )}
+            providers={providers}
+            accounts={accounts}
+          />
+        ) : null}
+        {!isNew ? (
+          <ResourceDriftReview
+            resource={resource}
+            state={item.catalog_drift?.resources?.[resource]}
+            accepted={editAcceptedOperations[resource] || []}
+            onToggleAccept={(operation, on) => setEditAcceptedOperations(
+              (current) => toggleAccepted(current, resource, operation, on),
+            )}
+          />
+        ) : null}
+      </div>
+    );
+  };
+
+  /** Every resource section of a card in edit mode, the stubs of the ones
+   *  being removed, the sections of the ones being added, the picker of what
+   *  else may join, and the reasons Save is not yet possible. */
+  const renderEditResourceSections = (item: DelegatedAccessRecord) => {
+    const problems = editSaveProblems(item);
+    return (
+      <>
+        {Object.keys(item.resource_grants || {}).map((resource) => (
+          editRemovedResources.includes(resource) ? (
+            <RemovedResourceStub
+              key={resource}
+              title={editResourceTitle(item, resource)}
+              onUndo={() => setEditRemovedResources((current) => current.filter((entry) => entry !== resource))}
+            />
+          ) : renderEditResourceSection(item, resource, false)
+        ))}
+        {editAddedResources.map((resource) => renderEditResourceSection(item, resource, true))}
+        <ResourceOfferPicker
+          offers={item.resource_offers || []}
+          added={editAddedResources}
+          onAdd={(resource) => setEditAddedResources((current) => (
+            current.includes(resource) ? current : [...current, resource]
+          ))}
+        />
+        {problems.length ? (
+          <ul className="edit-save-problems">
+            {problems.map((problem) => (
+              <li key={`${problem.code}:${problem.resource || ''}`}>
+                {saveProblemText(problem, (resource) => editResourceTitle(item, resource))}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </>
+    );
+  };
+
   const grantedPane = (
     <section className="card">
       <div className="card-head">
@@ -2389,101 +2628,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           {/* Edit mode keeps the per-claim checkboxes; the
                               read-only view is the same labelled-row card the
                               connected-app grants use. */}
-                          {editing ? Object.entries(item.resource_grants || {}).map(([resource, grants]) => {
-                            const resourceOption = catalogRowFor(
-                              resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
-                            );
-                            const editedGrants = grants.filter(
-                              (claim) => editPicks[`${resource}:${claim}`] !== false,
-                            );
-                            return (
-                            <div key={resource}>
-                              <div className="account-title">{doorAlias(resource) || resourceLabelFor(resource) || resource}</div>
-                              {resource !== '*' ? <DoorRef value={resource} /> : null}
-                              <div className="resource-grants">
-                                {grants.map((claim) => (
-                                  <label className="grant-chip" key={`${resource}:${claim}`} title={grantOptionByName.get(claim)?.label || undefined}>
-                                    <input
-                                      type="checkbox"
-                                      checked={editPicks[`${resource}:${claim}`] !== false}
-                                      onChange={(event) => toggleEditClaim(
-                                        resource, claim, event.target.checked,
-                                      )}
-                                    />
-                                    <span>{claim}</span>
-                                  </label>
-                                ))}
-                              </div>
-                              {resourceOption?.operations?.length ? (
-                                <>
-                                  <div className="account-title">Operations</div>
-                                  <div className="resource-grants">
-                                    {resourceOption.operations.map((operation) => {
-                                      const selected = (editResourceOperations[resource] || []).includes(operation.name);
-                                      const alreadyGranted = (item.resource_operations?.[resource] || []).includes(operation.name);
-                                      const policy = invocationPolicyFor(item, resource, operation.name);
-                                      return (
-                                        <div className={selected ? 'outer-operation-editor outer-operation-editor--policy' : 'outer-operation-editor'} key={`${resource}:operation:${operation.name}`}>
-                                          <label className="grant-chip">
-                                            <input
-                                              type="checkbox"
-                                              checked={selected}
-                                              onChange={(event) => toggleEditResourceOperation(
-                                                resource,
-                                                operation.name,
-                                                operation.grants || [],
-                                                event.target.checked,
-                                              )}
-                                            />
-                                            <span>{operation.label || operation.name}</span>
-                                          </label>
-                                          {selected && alreadyGranted ? (
-                                            <InvocationPolicyControl
-                                              operation={operation.name}
-                                              policy={policy}
-                                              busy={busy}
-                                              onSet={(mode, expectedRevision) => {
-                                                void setOperationInvocationPolicy(
-                                                  item, resource, operation.name, mode, expectedRevision,
-                                                );
-                                              }}
-                                            />
-                                          ) : selected ? (
-                                            // Not granted yet: the choice travels with the grant (saveEdit) so
-                                            // the operation is never authorized under a default the user did
-                                            // not pick.
-                                            <OperationInvocationChoice
-                                              operation={operation.name}
-                                              mode={editInvocationModes[`${resource}:${operation.name}`] || null}
-                                              busy={busy}
-                                              onChoose={(mode) => setEditInvocationModes((current) => ({
-                                                ...current, [`${resource}:${operation.name}`]: mode,
-                                              }))}
-                                            />
-                                          ) : null}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </>
-                              ) : null}
-                              {resourceOption ? (
-                                <DelegatedResourceCatalog
-                                  resource={resourceOption}
-                                  selectedGrants={editedGrants}
-                                  selectedOperations={editNamedServiceOperations[resource] || {}}
-                                  onOperationChange={(namespace, operation, operationGrants, checked) => (
-                                    toggleEditNamedServiceOperation(
-                                      resource, namespace, operation, operationGrants, checked,
-                                    )
-                                  )}
-                                  providers={providers}
-                                  accounts={accounts}
-                                />
-                              ) : null}
-                            </div>
-                            );
-                          }) : (
+                          {editing ? renderEditResourceSections(item) : (
                             <div className="card-fields">
                               {/* Door and Access are paired per door, so which claims
                                   belong to which door survives on a multi-door grant.
@@ -2577,10 +2722,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               <button
   className="btn"
   type="button"
-  disabled={busy || editMissingChoices(item).length > 0}
-  title={editMissingChoices(item).length
-    ? `Choose once or always for ${editMissingChoices(item).join(', ')} before saving`
-    : undefined}
+  disabled={busy || editSaveProblems(item).length > 0}
+  title={editSaveProblems(item)
+    .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
+    .join(' ') || undefined}
   onClick={() => saveEdit(item)}
 >
                                 Save
@@ -2671,116 +2816,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     </label>
                   ) : null}
                   {item.resource_grants && Object.keys(item.resource_grants).length ? (
-                    editing ? (
-                      Object.keys(item.resource_grants).map((resource) => {
-                        const resourceOption = catalogRowFor(
-                          resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
-                        );
-                        const editedGrants = editableClaimsFor(item, resource)
-                          .filter((claim) => editPicks[`${resource}:${claim}`] === true);
-                        return (
-                          <div key={resource}>
-                            <div className="account-title">{resource === '*' ? 'all resources' : (doorAlias(resource) || resourceLabelFor(resource) || resource)}</div>
-                            {resource !== '*' ? <DoorRef value={resource} /> : null}
-                            <div className="resource-grants">
-                              {editableClaimsFor(item, resource).map((claim) => {
-                                const stale = withdrawnClaims(item, resource).has(claim);
-                                return (
-                                  <label
-                                    className={stale ? 'grant-chip grant-chip-stale' : 'grant-chip'}
-                                    key={`${resource}:${claim}`}
-                                    title={
-                                      stale
-                                        ? 'No longer offered by the service catalog — already ineffective, removed when you save'
-                                        : grantOptionByName.get(claim)?.label || undefined
-                                    }
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={editPicks[`${resource}:${claim}`] === true}
-                                      disabled={stale}
-                                      onChange={(event) => toggleEditClaim(resource, claim, event.target.checked)}
-                                    />
-                                    <span>{claim}</span>
-                                    {stale ? <span className="badge badge-warn">withdrawn</span> : null}
-                                  </label>
-                                );
-                              })}
-                            </div>
-                            {resourceOption?.operations?.length ? (
-                              <>
-                                <div className="account-title">Operations</div>
-                                <div className="resource-grants">
-                                  {resourceOption.operations.map((operation) => {
-                                    const selected = (editResourceOperations[resource] || []).includes(operation.name);
-                                    const alreadyGranted = (item.resource_operations?.[resource] || []).includes(operation.name);
-                                    const policy = invocationPolicyFor(item, resource, operation.name);
-                                    return (
-                                      <div className={selected ? 'outer-operation-editor outer-operation-editor--policy' : 'outer-operation-editor'} key={`${resource}:operation:${operation.name}`}>
-                                        <label className="grant-chip">
-                                          <input
-                                            type="checkbox"
-                                            checked={selected}
-                                            onChange={(event) => toggleEditResourceOperation(
-                                              resource,
-                                              operation.name,
-                                              operation.grants || [],
-                                              event.target.checked,
-                                            )}
-                                          />
-                                          <span>{operation.label || operation.name}</span>
-                                        </label>
-                                        {selected && alreadyGranted ? (
-                                          <InvocationPolicyControl
-                                            operation={operation.name}
-                                            policy={policy}
-                                            busy={busy}
-                                            onSet={(mode, expectedRevision) => {
-                                              void setOperationInvocationPolicy(
-                                                item, resource, operation.name, mode, expectedRevision,
-                                              );
-                                            }}
-                                          />
-                                        ) : selected ? (
-                                          // Not granted yet: the choice travels with the grant (saveEdit) so
-                                          // the operation is never authorized under a default the user did
-                                          // not pick.
-                                          <OperationInvocationChoice
-                                            operation={operation.name}
-                                            mode={editInvocationModes[`${resource}:${operation.name}`] || null}
-                                            busy={busy}
-                                            onChoose={(mode) => setEditInvocationModes((current) => ({
-                                              ...current, [`${resource}:${operation.name}`]: mode,
-                                            }))}
-                                          />
-                                        ) : null}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </>
-                            ) : null}
-                            {/* Every family: the card type decides how the
-                                credential is managed, not whether its grantor
-                                may change authority. */}
-                            {resourceOption ? (
-                              <DelegatedResourceCatalog
-                                resource={resourceOption}
-                                selectedGrants={editedGrants}
-                                selectedOperations={editNamedServiceOperations[resource] || {}}
-                                onOperationChange={(namespace, operation, operationGrants, checked) => (
-                                  toggleEditNamedServiceOperation(
-                                    resource, namespace, operation, operationGrants, checked,
-                                  )
-                                )}
-                                providers={providers}
-                                accounts={accounts}
-                              />
-                            ) : null}
-                          </div>
-                        );
-                      })
-                    ) : null
+                    editing ? renderEditResourceSections(item) : null
                   ) : null}
                   {/* Read-only view: labelled rows, values as chips. A grant can
                       carry a long resource URL and dozens of operations, so the
@@ -2879,10 +2915,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       <button
   className="btn"
   type="button"
-  disabled={busy || editMissingChoices(item).length > 0}
-  title={editMissingChoices(item).length
-    ? `Choose once or always for ${editMissingChoices(item).join(', ')} before saving`
-    : undefined}
+  disabled={busy || editSaveProblems(item).length > 0}
+  title={editSaveProblems(item)
+    .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
+    .join(' ') || undefined}
   onClick={() => saveEdit(item)}
 >
                         Save

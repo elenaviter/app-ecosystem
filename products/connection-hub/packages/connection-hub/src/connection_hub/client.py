@@ -76,6 +76,32 @@ class ConnectionsClient:
             return None
         return ConnectionToken.coerce(result)
 
+    async def resident_agent_grant_for_access_id(
+        self,
+        client_id: str,
+        *,
+        access_id: str,
+    ) -> dict[str, Any] | None:
+        """Resolve one exact resident-profile Card credential.
+
+        This method is for trusted runtime adapters. The token remains a
+        transport credential and the nested ``card`` is Connection Hub's
+        non-secret public read model.
+        """
+
+        response = await self._call(
+            AGENT_GRANT_GET_TOKEN,
+            client_id=client_id,
+            access_id=access_id,
+        )
+        attrs = dict(getattr(response, "attrs", None) or {})
+        if not attrs.get("has_token"):
+            return None
+        result = dict(getattr(response, "object", None) or {})
+        if not result.get("access_token") or not isinstance(result.get("card"), dict):
+            return None
+        return result
+
     async def agent_grant_check(
         self,
         client_id: str,

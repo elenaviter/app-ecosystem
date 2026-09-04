@@ -2509,3 +2509,73 @@ code {
   .pending-operation-policy { margin-left: 0; }
   .operation-policy__label { white-space: normal; }
 }
+
+/* ── Compatible-resource editor ─────────────────────────────────────────────
+   One card, several resources. Each resource is its own section with a
+   remove action; a removed one collapses to a stub until Save; a resource
+   being added is badged; the descriptor review sits inside the section it
+   concerns, so an accepted change is never read as another resource's. */
+.resource-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.resource-section-head .account-title { margin: 0; }
+.resource-section-head__remove { flex: 0 0 auto; padding: 3px 9px; font-size: 12px; }
+.resource-removed-stub {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.resource-removed-stub b { color: var(--ink); }
+.resource-drift-review {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(var(--warn-rgb), 0.5);
+  border-radius: var(--r-md);
+  background: rgba(var(--warn-rgb), 0.06);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.resource-drift-review__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.resource-drift-review__head strong { color: var(--ink); }
+.resource-drift-review__head code,
+.resource-drift-review__list code { font-family: var(--mono); font-size: 11.5px; }
+.resource-drift-review__group { margin-top: 6px; }
+.resource-drift-review__list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.resource-drift-review__list li { display: flex; flex-direction: column; gap: 2px; }
+.descriptor-accept { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.descriptor-accept input { accent-color: var(--teal); margin: 0; }
+.resource-offer-picker {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+.resource-offer-picker__row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.resource-offer { padding: 4px 10px; font-size: 12.5px; }
+.resource-offer-picker__empty { margin: 6px 0 0; font-size: 12px; }
+.resource-offer-picker__blocked {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+}
+.resource-offer--blocked b { color: var(--text-2); font-weight: 600; }
+.edit-save-problems { margin: 8px 0 0; font-size: 12px; color: var(--warn-text); line-height: 1.45; }
+.edit-save-problems li { margin-left: 16px; }

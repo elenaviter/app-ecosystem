@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import anyio
 import pytest
-from mcp import Client, types
-from mcp.shared.subscriptions import ToolsListChanged
-
 from connection_hub_cli.mcp_relay import DownstreamToolChanges, McpToolRelay
+from mcp import Client, MCPError, types
+from mcp.shared.subscriptions import ToolsListChanged
 
 
 class _Remote:
@@ -24,11 +24,14 @@ class _Remote:
         ]
         self.calls: list[dict[str, Any]] = []
         self.raise_on_call: Exception | None = None
+        self.raise_on_list: Exception | None = None
         self.started = anyio.Event()
         self.cancelled = anyio.Event()
         self.block = False
 
     async def list_tools(self, *, params=None) -> types.ListToolsResult:
+        if self.raise_on_list:
+            raise self.raise_on_list
         return types.ListToolsResult(
             tools=self.tools, nextCursor=params.cursor if params else None
         )
@@ -125,11 +128,13 @@ async def test_relay_publishes_tool_list_changes_to_modern_subscribers() -> None
     changes = DownstreamToolChanges()
     relay = McpToolRelay(remote, changes)
 
-    async with Client(relay.server, mode="2026-07-28", cache=None) as client:
-        async with client.listen(tools_list_changed=True) as subscription:
-            await changes.handle_upstream_message(types.ToolListChangedNotification())
-            with anyio.fail_after(1):
-                event = await subscription.__anext__()
+    async with (
+        Client(relay.server, mode="2026-07-28", cache=None) as client,
+        client.listen(tools_list_changed=True) as subscription,
+    ):
+        await changes.handle_upstream_message(types.ToolListChangedNotification())
+        with anyio.fail_after(1):
+            event = await subscription.__anext__()
 
     assert isinstance(event, ToolsListChanged)
 
@@ -162,3 +167,18 @@ async def test_relay_sanitizes_an_upstream_exception() -> None:
     assert result.is_error is True
     assert result.structured_content["error"]["code"] == "connection_hub_unavailable"
     assert secret not in rendered
+
+
+@pytest.mark.asyncio
+async def test_relay_removes_the_cause_from_tool_list_failures() -> None:
+    remote = _Remote()
+    secret = "delegated-secret-must-not-survive-as-cause"
+    remote.raise_on_list = RuntimeError(secret)
+    relay = McpToolRelay(remote, DownstreamToolChanges())
+    context = SimpleNamespace(session=SimpleNamespace(protocol_version="2026-07-28"))
+
+    with pytest.raises(MCPError) as raised:
+        await relay._list_tools(context, None)
+
+    assert raised.value.__cause__ is None
+    assert secret not in str(raised.value)

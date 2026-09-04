@@ -12,8 +12,11 @@ from urllib.parse import urlsplit
 from connection_hub_cli.errors import ClientConfigurationError, ProfileError
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-_CLIENTS = frozenset({"claude-code", "claude-desktop", "hermes", "openclaw"})
+_CLIENTS = frozenset({"claude-code", "claude-desktop", "codex", "hermes", "openclaw"})
 _HOST_KINDS = frozenset({"local", "endpoint"})
+_PROFILE_AUTH_TYPES = frozenset({"static_bearer", "oauth"})
+_OAUTH_CLIENT_SOURCES = frozenset({"cimd", "dcr", "provisioned"})
+_INSTALLATION_MODES = frozenset({"bridge", "oauth"})
 
 
 def utc_now() -> str:
@@ -100,12 +103,144 @@ def validate_access_id(value: str | None) -> str | None:
     return candidate
 
 
+def _profile_oauth_text(value: Any, *, field: str, maximum: int = 8192) -> str:
+    candidate = str(value or "").strip()
+    if (
+        not candidate
+        or len(candidate) > maximum
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in candidate)
+    ):
+        raise ProfileError(
+            "invalid_oauth_profile_record",
+            f"The OAuth profile {field} is invalid.",
+        )
+    return candidate
+
+
+def _profile_oauth_url(value: Any, *, field: str) -> str:
+    candidate = _profile_oauth_text(value, field=field)
+    try:
+        parsed = urlsplit(candidate)
+        _ = parsed.port
+    except ValueError:
+        raise ProfileError(
+            "invalid_oauth_profile_record",
+            f"The OAuth profile {field} is invalid.",
+        ) from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or (parsed.scheme == "http" and not _is_loopback_host(parsed.hostname))
+    ):
+        raise ProfileError(
+            "invalid_oauth_profile_record",
+            f"The OAuth profile {field} is invalid.",
+        )
+    return candidate
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileOAuthMetadata:
+    protected_resource_metadata_url: str
+    resource: str
+    issuer: str
+    token_endpoint: str
+    revocation_endpoint: str | None
+    client_id: str
+    client_source: str
+    client_metadata_url: str | None
+    scope: str
+
+    def verify(self) -> None:
+        _profile_oauth_url(
+            self.protected_resource_metadata_url,
+            field="protected-resource metadata URL",
+        )
+        _profile_oauth_text(self.resource, field="resource")
+        _profile_oauth_url(self.issuer, field="issuer")
+        _profile_oauth_url(self.token_endpoint, field="token endpoint")
+        if self.revocation_endpoint is not None:
+            _profile_oauth_url(
+                self.revocation_endpoint,
+                field="revocation endpoint",
+            )
+        _profile_oauth_text(self.client_id, field="client identifier", maximum=4096)
+        if self.client_source not in _OAUTH_CLIENT_SOURCES:
+            raise ProfileError(
+                "invalid_oauth_profile_record",
+                "The OAuth profile client registration source is invalid.",
+            )
+        if self.client_metadata_url is not None:
+            _profile_oauth_url(
+                self.client_metadata_url,
+                field="client metadata URL",
+            )
+        if len(self.scope) > 8192 or any(
+            not 0x20 <= ord(ch) <= 0x7E for ch in self.scope
+        ):
+            raise ProfileError(
+                "invalid_oauth_profile_record",
+                "The OAuth profile scope is invalid.",
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        self.verify()
+        return {
+            "protected_resource_metadata_url": self.protected_resource_metadata_url,
+            "resource": self.resource,
+            "issuer": self.issuer,
+            "token_endpoint": self.token_endpoint,
+            "revocation_endpoint": self.revocation_endpoint,
+            "client_id": self.client_id,
+            "client_source": self.client_source,
+            "client_metadata_url": self.client_metadata_url,
+            "scope": self.scope,
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> ProfileOAuthMetadata:
+        try:
+            record = cls(
+                protected_resource_metadata_url=str(
+                    value["protected_resource_metadata_url"]
+                ),
+                resource=str(value["resource"]),
+                issuer=str(value["issuer"]),
+                token_endpoint=str(value["token_endpoint"]),
+                revocation_endpoint=(
+                    str(value["revocation_endpoint"])
+                    if value.get("revocation_endpoint")
+                    else None
+                ),
+                client_id=str(value["client_id"]),
+                client_source=str(value["client_source"]),
+                client_metadata_url=(
+                    str(value["client_metadata_url"])
+                    if value.get("client_metadata_url")
+                    else None
+                ),
+                scope=str(value.get("scope") or ""),
+            )
+            record.verify()
+            return record
+        except (KeyError, TypeError, ValueError, ProfileError) as exc:
+            raise ProfileError(
+                "invalid_oauth_profile_record",
+                "The stored OAuth profile metadata is invalid.",
+            ) from exc
+
+
 @dataclass(frozen=True, slots=True)
 class CallerProfile:
     name: str
     endpoint: str
     credential_ref: str
     access_id: str | None
+    auth_type: str
+    oauth: ProfileOAuthMetadata | None
     created_at: str
     updated_at: str
 
@@ -125,6 +260,32 @@ class CallerProfile:
             endpoint=validate_endpoint(endpoint),
             credential_ref=credential_ref or uuid.uuid4().hex,
             access_id=validate_access_id(access_id),
+            auth_type="static_bearer",
+            oauth=None,
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+
+    @classmethod
+    def create_oauth(
+        cls,
+        *,
+        name: str,
+        endpoint: str,
+        access_id: str,
+        oauth: ProfileOAuthMetadata,
+        credential_ref: str | None = None,
+        now: str | None = None,
+    ) -> CallerProfile:
+        oauth.verify()
+        timestamp = now or utc_now()
+        return cls(
+            name=validate_name(name),
+            endpoint=validate_endpoint(endpoint),
+            credential_ref=credential_ref or uuid.uuid4().hex,
+            access_id=validate_access_id(access_id),
+            auth_type="oauth",
+            oauth=oauth,
             created_at=timestamp,
             updated_at=timestamp,
         )
@@ -135,6 +296,8 @@ class CallerProfile:
             endpoint=self.endpoint,
             credential_ref=self.credential_ref,
             access_id=self.access_id,
+            auth_type=self.auth_type,
+            oauth=self.oauth,
             created_at=self.created_at,
             updated_at=now or utc_now(),
         )
@@ -145,6 +308,9 @@ class CallerProfile:
             "endpoint": self.endpoint,
             "credential_ref": self.credential_ref,
             "access_id": self.access_id,
+            "auth_type": self.auth_type,
+            "oauth": self.oauth.to_dict() if self.oauth is not None else None,
+            "record_version": 2,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -157,6 +323,12 @@ class CallerProfile:
                 endpoint=validate_endpoint(str(value["endpoint"])),
                 credential_ref=str(value["credential_ref"]),
                 access_id=validate_access_id(value.get("access_id")),
+                auth_type=str(value.get("auth_type") or "static_bearer"),
+                oauth=(
+                    ProfileOAuthMetadata.from_dict(value["oauth"])
+                    if isinstance(value.get("oauth"), dict)
+                    else None
+                ),
                 created_at=str(value["created_at"]),
                 updated_at=str(value["updated_at"]),
             )
@@ -168,6 +340,18 @@ class CallerProfile:
             raise ProfileError(
                 "invalid_profile_record",
                 "A stored caller profile has an invalid credential reference.",
+            )
+        if (
+            profile.auth_type not in _PROFILE_AUTH_TYPES
+            or (
+                profile.auth_type == "oauth"
+                and (profile.oauth is None or profile.access_id is None)
+            )
+            or (profile.auth_type == "static_bearer" and profile.oauth is not None)
+        ):
+            raise ProfileError(
+                "invalid_profile_record",
+                "A stored caller profile has an invalid authorization type.",
             )
         return profile
 
@@ -348,14 +532,38 @@ class HelperLaunch:
 class ManagedInstallation:
     installation_id: str
     client: str
-    profile: str
+    mode: str
+    profile: str | None
     server_name: str
-    command: str
+    endpoint: str | None
+    command: str | None
     args: tuple[str, ...]
     created_at: str
 
     @classmethod
     def create(
+        cls,
+        *,
+        client: str,
+        profile: str,
+        server_name: str,
+        launch: HelperLaunch,
+        installation_id: str | None = None,
+        now: str | None = None,
+    ) -> ManagedInstallation:
+        """Create a bridge installation using the legacy public factory."""
+
+        return cls.create_bridge(
+            client=client,
+            profile=profile,
+            server_name=server_name,
+            launch=launch,
+            installation_id=installation_id,
+            now=now,
+        )
+
+    @classmethod
+    def create_bridge(
         cls,
         *,
         client: str,
@@ -388,10 +596,44 @@ class ManagedInstallation:
         return cls(
             installation_id=marker,
             client=client,
+            mode="bridge",
             profile=validated_profile,
             server_name=validated_server_name,
+            endpoint=None,
             command=launch.command,
             args=tuple(args),
+            created_at=now or utc_now(),
+        )
+
+    @classmethod
+    def create_oauth(
+        cls,
+        *,
+        client: str,
+        endpoint: str,
+        server_name: str,
+        installation_id: str | None = None,
+        now: str | None = None,
+    ) -> ManagedInstallation:
+        if client not in _CLIENTS:
+            raise ClientConfigurationError(
+                "unsupported_client", f"Unsupported MCP client: {client}."
+            )
+        validated_server_name = validate_name(server_name, field="MCP server name")
+        marker = installation_id or uuid.uuid4().hex
+        if not re.fullmatch(r"[0-9a-f]{32}", marker):
+            raise ClientConfigurationError(
+                "invalid_installation_id", "The client installation marker is invalid."
+            )
+        return cls(
+            installation_id=marker,
+            client=client,
+            mode="oauth",
+            profile=None,
+            server_name=validated_server_name,
+            endpoint=validate_endpoint(endpoint),
+            command=None,
+            args=(),
             created_at=now or utc_now(),
         )
 
@@ -400,26 +642,69 @@ class ManagedInstallation:
         return f"{self.client}:{self.server_name}"
 
     def to_entry(self, *, include_type: bool = False) -> dict[str, Any]:
+        if self.mode == "oauth":
+            if self.client == "openclaw":
+                return {
+                    "url": self.endpoint,
+                    "transport": "streamable-http",
+                    "auth": "oauth",
+                    "requestTimeoutMs": 60000,
+                    "connectionTimeoutMs": 20000,
+                }
+            if self.client == "hermes":
+                return {
+                    "url": self.endpoint,
+                    "auth": "oauth",
+                    "timeout": 60,
+                    "connect_timeout": 20,
+                }
+            return {"type": "http", "url": self.endpoint}
         entry: dict[str, Any] = {"command": self.command, "args": list(self.args)}
         if include_type:
             entry["type"] = "stdio"
         return entry
 
     def owns_entry(self, entry: Any) -> bool:
-        return (
-            isinstance(entry, dict)
-            and entry.get("command") == self.command
-            and entry.get("args") == list(self.args)
+        if not isinstance(entry, dict):
+            return False
+        if self.client == "codex":
+            transport = entry.get("transport")
+            if not isinstance(transport, dict):
+                return False
+            if self.mode == "bridge":
+                return (
+                    transport.get("type") == "stdio"
+                    and transport.get("command") == self.command
+                    and transport.get("args") == list(self.args)
+                )
+            return (
+                transport.get("type") == "streamable_http"
+                and transport.get("url") == self.endpoint
+                and transport.get("bearer_token_env_var") is None
+                and transport.get("http_headers") is None
+                and transport.get("env_http_headers") is None
+                and transport.get("http_headers_helper") is None
+            )
+        if self.mode == "oauth":
+            expected = self.to_entry()
+            if any(entry.get(key) != value for key, value in expected.items()):
+                return False
+            return entry.get("headers") in (None, {})
+        return entry.get("command") == self.command and entry.get("args") == list(
+            self.args
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "installation_id": self.installation_id,
             "client": self.client,
+            "mode": self.mode,
             "profile": self.profile,
             "server_name": self.server_name,
+            "endpoint": self.endpoint,
             "command": self.command,
             "args": list(self.args),
+            "record_version": 2,
             "created_at": self.created_at,
         }
 
@@ -429,21 +714,48 @@ class ManagedInstallation:
             installation = cls(
                 installation_id=str(value["installation_id"]),
                 client=str(value["client"]),
-                profile=validate_name(str(value["profile"])),
+                mode=str(value.get("mode") or "bridge"),
+                profile=(
+                    validate_name(str(value["profile"]))
+                    if value.get("profile") is not None
+                    else None
+                ),
                 server_name=validate_name(
                     str(value["server_name"]), field="MCP server name"
                 ),
-                command=str(value["command"]),
-                args=tuple(str(item) for item in value["args"]),
+                endpoint=(
+                    validate_endpoint(str(value["endpoint"]))
+                    if value.get("endpoint") is not None
+                    else None
+                ),
+                command=(
+                    str(value["command"]) if value.get("command") is not None else None
+                ),
+                args=tuple(str(item) for item in value.get("args", ())),
                 created_at=str(value["created_at"]),
             )
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError, ProfileError) as exc:
             raise ClientConfigurationError(
                 "invalid_installation_record",
                 "A stored client installation record is invalid.",
             ) from exc
-        if installation.client not in _CLIENTS or not re.fullmatch(
-            r"[0-9a-f]{32}", installation.installation_id
+        bridge_invalid = installation.mode == "bridge" and (
+            installation.profile is None
+            or not installation.command
+            or installation.endpoint is not None
+        )
+        oauth_invalid = installation.mode == "oauth" and (
+            installation.profile is not None
+            or installation.endpoint is None
+            or installation.command is not None
+            or bool(installation.args)
+        )
+        if (
+            installation.client not in _CLIENTS
+            or installation.mode not in _INSTALLATION_MODES
+            or not re.fullmatch(r"[0-9a-f]{32}", installation.installation_id)
+            or bridge_invalid
+            or oauth_invalid
         ):
             raise ClientConfigurationError(
                 "invalid_installation_record",

@@ -80,6 +80,158 @@ def test_service_accepts_resource_qualified_operations_on_every_grant_path():
     ).parameters
 
 
+def test_service_accepts_per_operation_descriptor_acceptance():
+    assert "accepted_operations" in inspect.signature(
+        AutomationAccessService.update_access
+    ).parameters
+
+
+def test_service_factory_injects_invocation_policy_service(monkeypatch):
+    module = _entrypoint_module()
+    captured: dict = {}
+    redis = object()
+    policies = object()
+
+    class RecordingFactory:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(module, "AutomationAccessService", RecordingFactory)
+    monkeypatch.setattr(module, "_runtime_tenant_project", lambda _entrypoint: ("t", "p"))
+    monkeypatch.setattr(module, "_delegated_catalog_resolver", lambda *_args: object())
+    monkeypatch.setattr(module, "_delegated_card_persistence", lambda *_args: object())
+    monkeypatch.setattr(module, "_invocation_policy_service", lambda _entrypoint: policies)
+
+    module._automation_access_service_for(SimpleNamespace(redis=redis), object())
+
+    assert captured["redis"] is redis
+    assert captured["invocation_policy_service"] is policies
+
+
+def test_entrypoint_registers_delegated_gateway_contract():
+    module = _entrypoint_module()
+    mcp_spec = getattr(
+        module.ConnectionHubEntrypoint.delegated_mcp_gateway,
+        "__bundle_mcp_endpoint__",
+    )
+    api_spec = getattr(
+        module.ConnectionHubEntrypoint.delegated_mcp_gateway_access,
+        "__bundle_api_method__",
+    )
+    instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    defaults = instance.configuration_defaults()
+
+    assert mcp_spec.alias == "delegated_mcp_gateway"
+    assert mcp_spec.route == "public"
+    assert mcp_spec.auth_config == (
+        "surfaces.as_provider.mcp.delegated_mcp_gateway.auth"
+    )
+    assert api_spec.alias == "delegated_mcp_gateway_access"
+    assert api_spec.route == "public"
+    assert defaults["surfaces"]["as_provider"]["mcp"][
+        "delegated_mcp_gateway"
+    ]["auth"] == {
+        "mode": "delegated_proxy",
+        "authority_id": "delegated_client",
+    }
+    assert defaults["connections"]["delegated_credentials"]["gateway"] == {
+        "requestable_discovery": {"caller_types": ["resident"]}
+    }
+    gateway_rows = [
+        row
+        for row in defaults["connections"]["delegated_credentials"]["oauth"][
+            "resources"
+        ]
+        if "delegated_mcp_gateway" in row["resource"]
+    ]
+    assert gateway_rows == [
+        {
+            "resource": "*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/delegated_mcp_gateway*",
+            "label": "Connection Hub delegated MCP gateway",
+            "identity_scope": "grantor",
+            "resource_selection": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_entrypoint_builds_request_scoped_delegated_gateway(monkeypatch):
+    module = _entrypoint_module()
+    instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    binding = SimpleNamespace(
+        gateway=object(),
+        resolve_caller=lambda request: request,
+    )
+    captured: dict = {}
+
+    async def _binding(**kwargs):
+        captured["binding"] = kwargs
+        return binding
+
+    async def _surface(**kwargs):
+        captured["surface"] = kwargs
+        return "gateway-app"
+
+    monkeypatch.setattr(module, "build_hosted_gateway_binding", _binding)
+    monkeypatch.setattr(module, "build_delegated_mcp_gateway_app", _surface)
+    monkeypatch.setattr(module, "_runtime_tenant_project", lambda _entrypoint: ("t", "p"))
+    monkeypatch.setattr(module, "_automation_access_service", lambda *_args: "cards")
+    monkeypatch.setattr(module, "_remote_mcp_service", lambda _entrypoint: "remote")
+    monkeypatch.setattr(module, "_invocation_policy_service", lambda _entrypoint: "policy")
+    monkeypatch.setattr(module, "_connections_config", lambda _entrypoint: {"gateway": True})
+    request = object()
+
+    result = await module.ConnectionHubEntrypoint.delegated_mcp_gateway(
+        instance,
+        request=request,
+    )
+
+    assert result == "gateway-app"
+    assert captured["binding"] == {
+        "request": request,
+        "access_service": "cards",
+        "remote_mcp_service": "remote",
+        "invocation_policy_service": "policy",
+        "tenant": "t",
+        "project": "p",
+        "connections": {"gateway": True},
+    }
+    assert captured["surface"] == {
+        "request": request,
+        "gateway": binding.gateway,
+        "caller_resolver": binding.resolve_caller,
+    }
+
+
+@pytest.mark.asyncio
+async def test_gateway_access_api_fails_before_composition_on_auth_denial(monkeypatch):
+    module = _entrypoint_module()
+    instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    denial = object()
+    monkeypatch.setattr(
+        module,
+        "_bind_delegated_client_request_config",
+        lambda *_args: {},
+    )
+
+    async def _deny(**kwargs):
+        assert kwargs["body"] == b"{}"
+        return denial
+
+    async def _unexpected(**kwargs):
+        raise AssertionError(f"gateway composed after denial: {kwargs}")
+
+    monkeypatch.setattr(module, "authorize_delegated_mcp_proxy_request", _deny)
+    monkeypatch.setattr(module, "build_hosted_gateway_binding", _unexpected)
+
+    result = await module.ConnectionHubEntrypoint.delegated_mcp_gateway_access(
+        instance,
+        request=SimpleNamespace(),
+    )
+
+    assert result is denial
+
+
 @pytest.mark.asyncio
 async def test_account_scope_is_forwarded_to_the_service(entrypoint):
     await entrypoint.module.ConnectionHubEntrypoint.delegated_access_create(
@@ -115,6 +267,32 @@ async def test_update_forwards_explicit_empty_account_scope(entrypoint):
     )
     assert entrypoint.service.calls[-1]["method"] == "update"
     assert entrypoint.service.calls[-1]["account_scope"] == {}
+
+
+@pytest.mark.asyncio
+async def test_update_forwards_per_operation_descriptor_acceptance(entrypoint):
+    accepted = {"urn:resource:one": ["search"]}
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance,
+        data={
+            "access_id": "aut_1",
+            "resource_grants": {"urn:resource:one": ["external_mcp:use"]},
+            "accepted_operations": accepted,
+        },
+    )
+    assert entrypoint.service.calls[-1]["accepted_operations"] == accepted
+
+
+@pytest.mark.asyncio
+async def test_absent_operation_acceptance_stays_none(entrypoint):
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance,
+        data={
+            "access_id": "aut_1",
+            "resource_grants": {"urn:resource:one": ["external_mcp:use"]},
+        },
+    )
+    assert entrypoint.service.calls[-1]["accepted_operations"] is None
 
 
 @pytest.mark.asyncio

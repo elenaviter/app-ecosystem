@@ -13,12 +13,14 @@ requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
+    "Operating System :: Microsoft :: Windows",
     "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Topic :: Security",
 ]
 dependencies = [
-    "app-foundation[mcp]>=2026.09.03.1835,<2027",
+    "app-foundation[mcp,native-secrets]>=2026.09.03.1835,<2027",
     "filelock>=3.16,<4",
     "httpx2>=2.5,<3",
     "json5>=0.12,<1",

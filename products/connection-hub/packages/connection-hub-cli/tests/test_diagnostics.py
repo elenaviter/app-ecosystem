@@ -4,7 +4,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from connection_hub_cli.diagnostics import collect_diagnostics
 from connection_hub_cli.errors import CredentialError, UpstreamError
 from connection_hub_cli.models import (
@@ -20,6 +19,8 @@ from connection_hub_cli.state import InstallationStore, ProfileStore
 class _Credentials:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.platform_name = "TestOS"
+        self.store_name = "Test Native Store"
 
     def put(self, credential_ref: str, bearer: str) -> None:
         self.values[credential_ref] = bearer
@@ -36,6 +37,9 @@ class _Credentials:
     def verify_ready(self) -> None:
         return None
 
+    def recovery_hint(self) -> str:
+        return "Unlock the test native store."
+
 
 class _Adapter:
     client = "claude-desktop"
@@ -45,6 +49,9 @@ class _Adapter:
 
     def available(self) -> bool:
         return True
+
+    def ensure_mode(self, _mode: str) -> None:
+        return None
 
     def inspect(self, _server_name: str):
         return self.entry
@@ -129,6 +136,35 @@ async def test_diagnostics_report_missing_credential_permissions_and_changed_cli
 
 
 @pytest.mark.asyncio
+async def test_windows_diagnostics_do_not_apply_posix_permission_bits(tmp_path) -> None:
+    async def probe(**_kwargs) -> ProbeResult:
+        return ProbeResult(tool_count=1)
+
+    profiles, installations, credentials, service = _services(tmp_path, probe)
+    credentials.platform_name = "Windows"
+    credentials.store_name = "Windows Credential Manager"
+    profile = CallerProfile.create(name="agent", endpoint="https://hub.example/mcp")
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, "synthetic-bearer")
+    profiles.path.parent.chmod(0o755)
+    profiles.path.chmod(0o644)
+
+    diagnostics = await collect_diagnostics(
+        profiles=profiles,
+        installations=installations,
+        credentials=credentials,
+        profile_service=service,
+        adapters={},
+        probe=False,
+    )
+
+    codes = {item.code for item in diagnostics}
+    assert "state_permissions_managed_by_windows" in codes
+    assert "state_directory_permissions" not in codes
+    assert "state_file_permissions" not in codes
+
+
+@pytest.mark.asyncio
 async def test_probe_diagnostics_do_not_render_a_bearer_or_upstream_exception(
     tmp_path,
 ) -> None:
@@ -187,9 +223,8 @@ async def test_diagnostics_fail_when_keyring_backend_exists_but_cannot_write(
 
     by_code = {item.code: item for item in diagnostics}
     assert by_code["credential_store_write_failed"].severity == "error"
-    assert (
-        "logged-in macOS user session"
-        in by_code["credential_store_write_failed"].recovery
+    assert by_code["credential_store_write_failed"].recovery == (
+        "Unlock the test native store."
     )
     assert "credential_store_ready" not in by_code
     assert "state_directory_not_created" in by_code

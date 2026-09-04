@@ -14,11 +14,13 @@ from mcp.server.subscriptions import (
 from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 
 from connection_hub_cli import __version__
-from connection_hub_cli.errors import UpstreamError
+from connection_hub_cli.authorization.profile_session import (
+    OAuthProfileSessionService,
+)
+from connection_hub_cli.credentials import CredentialStore
 from connection_hub_cli.profile_connection import connect_profile_tools
 from connection_hub_cli.remote_mcp import RemoteTools
 from connection_hub_cli.state import ProfileStore
-from connection_hub_cli.credentials import CredentialStore
 
 
 class DownstreamToolChanges:
@@ -39,7 +41,7 @@ class DownstreamToolChanges:
             return
         try:
             await session.send_tool_list_changed()
-        except Exception:
+        except Exception:  # noqa: BLE001 - a failed legacy notification detaches the session
             self._session = None
 
     def close(self) -> None:
@@ -71,11 +73,11 @@ class McpToolRelay:
             return await self.upstream.list_tools(params=params)
         except anyio.get_cancelled_exc_class():
             raise
-        except Exception as exc:
+        except Exception:  # noqa: BLE001 - MCP boundary drops untrusted upstream details
             raise MCPError(
                 types.INTERNAL_ERROR,
                 "Connection Hub could not provide the current tool list.",
-            ) from exc
+            ) from None
 
     async def _call_tool(
         self,
@@ -102,7 +104,7 @@ class McpToolRelay:
             )
         except anyio.get_cancelled_exc_class():
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001 - MCP boundary returns one stable safe result
             message = "Connection Hub could not complete this tool call."
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=message)],
@@ -132,15 +134,14 @@ async def serve_profile(
     profile_name: str,
     profiles: ProfileStore,
     credentials: CredentialStore,
+    oauth_sessions: OAuthProfileSessionService | None = None,
 ) -> None:
     downstream_changes = DownstreamToolChanges()
-    try:
-        async with connect_profile_tools(
-            profile_name=profile_name,
-            profiles=profiles,
-            credentials=credentials,
-            message_handler=downstream_changes.handle_upstream_message,
-        ) as (upstream, _client):
-            await McpToolRelay(upstream, downstream_changes).run_stdio()
-    except UpstreamError:
-        raise
+    async with connect_profile_tools(
+        profile_name=profile_name,
+        profiles=profiles,
+        credentials=credentials,
+        oauth_sessions=oauth_sessions,
+        message_handler=downstream_changes.handle_upstream_message,
+    ) as (upstream, _client):
+        await McpToolRelay(upstream, downstream_changes).run_stdio()

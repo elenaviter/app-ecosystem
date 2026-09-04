@@ -151,6 +151,9 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentia
     revoke as oauth_revoke,
     token as oauth_token,
 )
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.surface_guard import (
+    authorize_delegated_mcp_proxy_request,
+)
 from connection_hub.mcp_metadata import (
     kdcube_icon_descriptor,
     kdcube_icon_url,
@@ -163,6 +166,11 @@ from .surfaces.delegated_admission import (
     handle_delegated_admission,
 )
 from .surfaces.remote_mcp import build_remote_mcp_proxy_app
+from .surfaces.delegated_gateway import (
+    build_delegated_mcp_gateway_app,
+    describe_delegated_gateway_access,
+)
+from .surfaces.delegated_gateway_host import build_hosted_gateway_binding
 
 BUNDLE_ID = "connection-hub@1-0"
 ENTRYPOINT_NAME = "connection-hub"
@@ -607,6 +615,28 @@ def _connections_config(entrypoint: Any) -> Dict[str, Any]:
     return {}
 
 
+def _delegated_gateway_auth_config(entrypoint: Any) -> Dict[str, Any]:
+    default = {
+        "mode": "delegated_proxy",
+        "authority_id": "delegated_client",
+    }
+    props = getattr(entrypoint, "bundle_props", None)
+    if not isinstance(props, Mapping):
+        return default
+    node: Any = props
+    for key in (
+        "surfaces",
+        "as_provider",
+        "mcp",
+        "delegated_mcp_gateway",
+        "auth",
+    ):
+        if not isinstance(node, Mapping):
+            return default
+        node = node.get(key)
+    return dict(node) if isinstance(node, Mapping) else default
+
+
 def _authority_registry_config(entrypoint: Any) -> Dict[str, Any]:
     props = getattr(entrypoint, "bundle_props", None)
     return authority_registry_config(props if isinstance(props, Mapping) else {})
@@ -1034,6 +1064,7 @@ def _automation_access_service_for(entrypoint: Any, config: Any) -> AutomationAc
         resource_overlay_provider=lambda owner_subject: _remote_mcp_resource_overlay(
             entrypoint, owner_subject
         ),
+        invocation_policy_service=_invocation_policy_service(entrypoint),
     )
 
 
@@ -1989,9 +2020,16 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "remote_mcp_connector_start_oauth": {"visibility": {"user_types": []}},
                             "remote_mcp_connector_update_credential": {"visibility": {"user_types": []}},
                             "remote_mcp_connector_delete": {"visibility": {"user_types": []}},
+                            "delegated_mcp_gateway_access": {"visibility": {"user_types": []}},
                         },
                     },
                     "mcp": {
+                        "delegated_mcp_gateway": {
+                            "auth": {
+                                "mode": "delegated_proxy",
+                                "authority_id": "delegated_client",
+                            },
+                        },
                         "remote_mcp_proxy": {
                             "auth": {
                                 "mode": "delegated_proxy",
@@ -2027,6 +2065,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     "public_base_url": "",
                 },
                 "delegated_credentials": {
+                    "gateway": {
+                        "requestable_discovery": {
+                            "caller_types": ["resident"],
+                        },
+                    },
                     "oauth": {
                         "enabled": False,
                         "brand": "KDCube",
@@ -2207,6 +2250,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                         "grants": ["knowledge:read"],
                                     },
                                 },
+                            },
+                            {
+                                "resource": "*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/delegated_mcp_gateway*",
+                                "label": "Connection Hub delegated MCP gateway",
+                                "identity_scope": "grantor",
+                                "resource_selection": True,
                             },
                             {
                                 "resource": "*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/remote_mcp_proxy*",
@@ -2963,6 +3012,70 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             ),
         )
 
+    @mcp(
+        alias="delegated_mcp_gateway",
+        route="public",
+        transport="streamable-http",
+        auth_config="surfaces.as_provider.mcp.delegated_mcp_gateway.auth",
+    )
+    async def delegated_mcp_gateway(
+        self, request: Any = None, **kwargs: Any
+    ) -> Any:
+        del kwargs
+        tenant, project = _runtime_tenant_project(self)
+        binding = await build_hosted_gateway_binding(
+            request=request,
+            access_service=_automation_access_service(self, request),
+            remote_mcp_service=_remote_mcp_service(self),
+            invocation_policy_service=_invocation_policy_service(self),
+            tenant=tenant,
+            project=project,
+            connections=_connections_config(self),
+        )
+        return await build_delegated_mcp_gateway_app(
+            request=request,
+            gateway=binding.gateway,
+            caller_resolver=binding.resolve_caller,
+        )
+
+    @api(
+        method="GET",
+        alias="delegated_mcp_gateway_access",
+        route="public",
+        **_api_visibility("delegated_mcp_gateway_access"),
+    )
+    async def delegated_mcp_gateway_access(
+        self,
+        request: Any = None,
+        include_requestable: Any = False,
+        **kwargs: Any,
+    ) -> Any:
+        del kwargs
+        _bind_delegated_client_request_config(self, request)
+        denial = await authorize_delegated_mcp_proxy_request(
+            request=request,
+            body=b"{}",
+            auth=_delegated_gateway_auth_config(self),
+        )
+        if denial is not None:
+            return denial
+        tenant, project = _runtime_tenant_project(self)
+        binding = await build_hosted_gateway_binding(
+            request=request,
+            access_service=_automation_access_service(self, request),
+            remote_mcp_service=_remote_mcp_service(self),
+            invocation_policy_service=_invocation_policy_service(self),
+            tenant=tenant,
+            project=project,
+            connections=_connections_config(self),
+        )
+        return await describe_delegated_gateway_access(
+            request=request,
+            gateway=binding.gateway,
+            caller_resolver=binding.resolve_caller,
+            include_requestable=_bool(include_requestable, default=False),
+        )
+
     # ── delegated access map (admin, read-only) ────────────────────────────
 
     @api(method="GET", alias="delegated_access_map", route="operations", **_api_visibility("delegated_access_map"))
@@ -3203,6 +3316,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     payload.get("expected_catalog_version") or ""
                 ).strip()
                 or None,
+                accepted_operations=(
+                    dict(payload.get("accepted_operations") or {})
+                    if "accepted_operations" in payload
+                    else None
+                ),
             )
         except ValueError as exc:
             return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}

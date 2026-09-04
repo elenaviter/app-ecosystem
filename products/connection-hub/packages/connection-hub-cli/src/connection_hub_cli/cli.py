@@ -18,16 +18,26 @@ from connection_hub_cli import __version__
 from connection_hub_cli.authorization import (
     BrowserAuthorizationFlow,
     HttpxOAuthTransport,
-    MacOSOAuthSessionCredentialStore,
+    McpOAuthEndpointDiscovery,
+    NativeOAuthProfileCredentialStore,
+    NativeOAuthSessionCredentialStore,
     OAuthClient,
     OAuthDiscovery,
     OAuthSessionRepository,
     OAuthSessionStore,
+    UnavailableOAuthCredentialStore,
+)
+from connection_hub_cli.authorization.profile_session import (
+    OAuthProfileSessionService,
 )
 from connection_hub_cli.clients import ClientService, build_client_adapters
-from connection_hub_cli.credentials import MacOSKeychainCredentialStore
+from connection_hub_cli.credentials import (
+    CredentialStore,
+    NativeCredentialStore,
+    UnavailableCredentialStore,
+)
 from connection_hub_cli.diagnostics import collect_diagnostics
-from connection_hub_cli.errors import ConnectionHubCliError
+from connection_hub_cli.errors import ConnectionHubCliError, CredentialError
 from connection_hub_cli.host import HostService
 from connection_hub_cli.management import (
     DEFAULT_MANAGEMENT_SCOPE,
@@ -50,7 +60,7 @@ from connection_hub_cli.state import HostStore, InstallationStore, ProfileStore
 class Services:
     profiles: ProfileStore
     installations: InstallationStore
-    credentials: MacOSKeychainCredentialStore
+    credentials: CredentialStore
     profile_service: ProfileService
     client_service: ClientService
     host_service: HostService
@@ -59,6 +69,7 @@ class Services:
     authorization_flow: BrowserAuthorizationFlow
     management_service: AuthorizedManagementService
     adapters: dict[str, Any]
+    oauth_profile_sessions: OAuthProfileSessionService | None = None
 
 
 def build_services(*, paths: StatePaths | None = None) -> Services:
@@ -67,22 +78,29 @@ def build_services(*, paths: StatePaths | None = None) -> Services:
     installations = InstallationStore(selected_paths.installations)
     hosts = HostStore(selected_paths.host)
     oauth_sessions = OAuthSessionStore(selected_paths.oauth_sessions)
-    credentials = MacOSKeychainCredentialStore()
-    oauth_credentials = MacOSOAuthSessionCredentialStore()
+    try:
+        native_credentials = NativeCredentialStore()
+    except CredentialError as exc:
+        credentials: CredentialStore = UnavailableCredentialStore(exc)
+        oauth_credentials = UnavailableOAuthCredentialStore(
+            exc,
+            error_prefix="oauth_session",
+        )
+        oauth_profile_credentials = UnavailableOAuthCredentialStore(
+            exc,
+            error_prefix="oauth_profile",
+        )
+    else:
+        credentials = native_credentials
+        oauth_credentials = NativeOAuthSessionCredentialStore(
+            backend=native_credentials.native_backend,
+            platform_name=native_credentials.platform_name,
+        )
+        oauth_profile_credentials = NativeOAuthProfileCredentialStore(
+            backend=native_credentials.native_backend,
+            platform_name=native_credentials.platform_name,
+        )
     adapters = build_client_adapters()
-    profile_service = ProfileService(
-        profiles=profiles,
-        installations=installations,
-        credentials=credentials,
-        probe=probe_remote_tools,
-    )
-    client_service = ClientService(
-        profiles=profiles,
-        installations=installations,
-        credentials=credentials,
-        adapters=adapters,
-        launch=resolve_helper_launch(),
-    )
     host_service = HostService(store=hosts)
     oauth_transport = HttpxOAuthTransport()
     oauth_discovery = OAuthDiscovery(transport=oauth_transport)
@@ -95,6 +113,32 @@ def build_services(*, paths: StatePaths | None = None) -> Services:
         discovery=oauth_discovery,
         client=oauth_client,
         sessions=oauth_repository,
+    )
+    oauth_profile_sessions = OAuthProfileSessionService(
+        profiles=profiles,
+        credentials=oauth_profile_credentials,
+        endpoint_discovery=McpOAuthEndpointDiscovery(
+            transport=oauth_transport,
+        ),
+        discovery=oauth_discovery,
+        authorization=authorization_flow,
+        oauth=oauth_client,
+        probe=probe_remote_tools,
+    )
+    profile_service = ProfileService(
+        profiles=profiles,
+        installations=installations,
+        credentials=credentials,
+        probe=probe_remote_tools,
+        oauth_sessions=oauth_profile_sessions,
+    )
+    client_service = ClientService(
+        profiles=profiles,
+        installations=installations,
+        credentials=credentials,
+        adapters=adapters,
+        launch=resolve_helper_launch(),
+        oauth_sessions=oauth_profile_sessions,
     )
     management_service = AuthorizedManagementService(
         sessions=oauth_repository,
@@ -111,6 +155,7 @@ def build_services(*, paths: StatePaths | None = None) -> Services:
         host_service=host_service,
         oauth_sessions=oauth_sessions,
         oauth_repository=oauth_repository,
+        oauth_profile_sessions=oauth_profile_sessions,
         authorization_flow=authorization_flow,
         management_service=management_service,
         adapters=adapters,
@@ -172,16 +217,31 @@ def _print_manual_authorization_url(url: str) -> bool:
 
 
 def _profile_view(services: Services, profile: Any) -> dict[str, Any]:
-    return {
+    value = {
         "name": profile.name,
         "endpoint": profile.endpoint,
         "access_id": profile.access_id,
+        "auth_type": profile.auth_type,
         "credential": "present"
         if services.profile_service.credential_present(profile)
         else "missing",
         "created_at": profile.created_at,
         "updated_at": profile.updated_at,
     }
+    if profile.auth_type == "oauth":
+        if services.oauth_profile_sessions is None:
+            raise ConnectionHubCliError(
+                "oauth_profiles_unavailable",
+                "OAuth-backed caller profiles are unavailable in this process.",
+            )
+        value.update(services.oauth_profile_sessions.credential_status(profile))
+        value["oauth"] = {
+            "resource": profile.oauth.resource,
+            "issuer": profile.oauth.issuer,
+            "scope": profile.oauth.scope,
+            "client_source": profile.oauth.client_source,
+        }
+    return value
 
 
 async def _run_profile(args: argparse.Namespace, services: Services) -> int:
@@ -202,6 +262,35 @@ async def _run_profile(args: argparse.Namespace, services: Services) -> int:
         )
         return 0
 
+    if args.profile_command == "authorize":
+        if services.oauth_profile_sessions is None:
+            raise ConnectionHubCliError(
+                "oauth_profiles_unavailable",
+                "OAuth-backed caller profiles are unavailable in this process.",
+            )
+        endpoint = args.endpoint or services.host_service.mcp_endpoint()
+        authorization_options: dict[str, Any] = {}
+        if args.no_open:
+            authorization_options["browser_opener"] = _print_manual_authorization_url
+        result = await services.oauth_profile_sessions.authorize(
+            name=args.name,
+            endpoint=endpoint,
+            scope=args.scope,
+            provisioned_client_id=args.client_id,
+            client_metadata_url=args.client_metadata_url,
+            callback_port=args.callback_port,
+            timeout_seconds=args.wait_seconds,
+            **authorization_options,
+        )
+        _print_json(
+            {
+                "authorized": True,
+                "profile": _profile_view(services, result.profile),
+                "probe": result.probe.to_dict(),
+            }
+        )
+        return 0
+
     if args.profile_command == "list":
         values = [_profile_view(services, item) for item in services.profiles.list()]
         if args.json:
@@ -210,7 +299,10 @@ async def _run_profile(args: argparse.Namespace, services: Services) -> int:
             print("No caller profiles configured.")
         else:
             for value in values:
-                print(f"{value['name']}\t{value['credential']}\t{value['endpoint']}")
+                print(
+                    f"{value['name']}\t{value['auth_type']}\t"
+                    f"{value['credential']}\t{value['endpoint']}"
+                )
         return 0
 
     if args.profile_command == "status":
@@ -242,13 +334,38 @@ async def _run_profile(args: argparse.Namespace, services: Services) -> int:
         return 0
 
     if args.profile_command == "remove":
-        removed = services.profile_service.remove(args.name, force=args.force)
+        removed = services.profile_service.remove(
+            args.name,
+            force=args.force,
+            server_card_revoked=args.server_card_revoked,
+            access_id=args.access_id,
+        )
         _print_json(
             {
                 "removed": removed.profile.name,
                 "dangling_client_entries": removed.dangling_installations,
                 "running_helper_stopped": False,
                 "server_card_revoked": False,
+                "server_card_revocation_asserted_by_operator": bool(
+                    args.server_card_revoked
+                ),
+            }
+        )
+        return 0
+
+    if args.profile_command == "disconnect":
+        removed = await services.profile_service.disconnect(
+            args.name,
+            force=args.force,
+        )
+        _print_json(
+            {
+                "disconnected": removed.profile.name,
+                "access_id": removed.profile.access_id,
+                "dangling_client_entries": removed.dangling_installations,
+                "running_helper_stopped": False,
+                "server_card_revoked": True,
+                "local_credential_removed": True,
             }
         )
         return 0
@@ -265,19 +382,33 @@ def _run_client(args: argparse.Namespace, services: Services) -> int:
             print("No managed client entries configured.")
         else:
             for item in installations:
-                print(f"{item['client']}\t{item['server_name']}\t{item['profile']}")
+                target = item["profile"] or item["endpoint"]
+                print(
+                    f"{item['client']}\t{item['server_name']}\t{item['mode']}\t{target}"
+                )
         return 0
 
     if args.client_command == "install":
         result = services.client_service.install(
             client=args.client,
             profile_name=args.profile,
+            endpoint=args.endpoint,
+            mode=args.mode,
             server_name=args.name,
         )
         _print_json(
             {
                 "changed": result.changed,
                 "installation": result.installation.to_dict(),
+                "requested_mode": result.requested_mode,
+                "selected_mode": result.installation.mode,
+                "selection_reason": result.selection_reason,
+                "authorization_required": result.authorization_command is not None,
+                "authorization_command": (
+                    list(result.authorization_command)
+                    if result.authorization_command is not None
+                    else None
+                ),
                 "client_reload_may_be_required": result.changed,
             }
         )
@@ -573,6 +704,7 @@ async def _run(args: argparse.Namespace) -> int:
             profile_name=args.profile,
             profiles=services.profiles,
             credentials=services.credentials,
+            oauth_sessions=services.oauth_profile_sessions,
         )
         return 0
     if args.command == "status":
@@ -617,6 +749,7 @@ async def _run(args: argparse.Namespace) -> int:
             probe=args.probe,
             oauth_sessions=services.oauth_sessions,
             oauth_repository=services.oauth_repository,
+            oauth_profile_sessions=services.oauth_profile_sessions,
         )
         payload = [item.to_dict() for item in diagnostics]
         payload.extend(services.host_service.diagnostics(probe=args.probe))
@@ -799,6 +932,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     profile_add.add_argument("--access-id")
     profile_add.add_argument("--credential-stdin", action="store_true")
+    profile_authorize = profile_commands.add_parser(
+        "authorize",
+        help="Create an OAuth-backed profile through the MCP endpoint's login.",
+    )
+    profile_authorize.add_argument("name")
+    profile_authorize.add_argument(
+        "--endpoint",
+        help="Governed MCP endpoint; defaults to the selected application host.",
+    )
+    profile_authorize.add_argument(
+        "--scope",
+        default="",
+        help="OAuth scopes; defaults to the MCP endpoint's advertised scope.",
+    )
+    client_registration = profile_authorize.add_mutually_exclusive_group()
+    client_registration.add_argument(
+        "--client-id",
+        help="Provisioned public OAuth client ID when registration is unavailable.",
+    )
+    client_registration.add_argument(
+        "--client-metadata-url",
+        help="HTTPS OAuth Client ID Metadata Document URL for CIMD-capable servers.",
+    )
+    profile_authorize.add_argument(
+        "--callback-port",
+        type=int,
+        help="Fixed loopback port published by the selected Client ID Metadata Document.",
+    )
+    profile_authorize.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the authorization URL and wait for a browser callback.",
+    )
+    profile_authorize.add_argument("--wait-seconds", type=float, default=300.0)
     profile_list = profile_commands.add_parser(
         "list", help="List caller profiles without credentials."
     )
@@ -809,10 +976,25 @@ def build_parser() -> argparse.ArgumentParser:
     profile_status.add_argument("name")
     profile_status.add_argument("--probe", action="store_true")
     profile_remove = profile_commands.add_parser(
-        "remove", help="Remove local profile state and Keychain custody."
+        "remove", help="Remove local profile state and native credential custody."
     )
     profile_remove.add_argument("name")
     profile_remove.add_argument("--force", action="store_true")
+    profile_remove.add_argument(
+        "--server-card-revoked",
+        action="store_true",
+        help="Confirm that the recorded OAuth caller card was already revoked.",
+    )
+    profile_remove.add_argument(
+        "--access-id",
+        help="Exact recorded access_id required with --server-card-revoked.",
+    )
+    profile_disconnect = profile_commands.add_parser(
+        "disconnect",
+        help="Revoke an OAuth profile's caller card, then remove local custody.",
+    )
+    profile_disconnect.add_argument("name")
+    profile_disconnect.add_argument("--force", action="store_true")
     profile_credential = profile_commands.add_parser(
         "credential", help="Manage a profile's local credential."
     )
@@ -821,7 +1003,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     credential_replace = credential_commands.add_parser(
         "replace",
-        help="Validate a candidate before replacing the working Keychain credential.",
+        help="Validate a candidate before replacing the native-store credential.",
     )
     credential_replace.add_argument("name")
     credential_replace.add_argument("--credential-stdin", action="store_true")
@@ -835,10 +1017,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     client_list.add_argument("--json", action="store_true")
     client_install = client_commands.add_parser(
-        "install", help="Install one profile into one MCP client."
+        "install", help="Install a native OAuth or local bridge MCP entry."
     )
     client_install.add_argument("client", choices=SUPPORTED_CLIENTS)
-    client_install.add_argument("--profile", required=True)
+    client_install.add_argument(
+        "--mode",
+        choices=("auto", "oauth", "bridge"),
+        default="auto",
+        help="Prefer native OAuth, require native OAuth, or use local OS-store custody.",
+    )
+    client_install.add_argument(
+        "--profile",
+        help="Local caller profile used by bridge mode or as auto fallback.",
+    )
+    client_install.add_argument(
+        "--endpoint",
+        help="Governed MCP URL used by native OAuth mode.",
+    )
     client_install.add_argument("--name", help="Override the MCP server entry name.")
     client_command = client_commands.add_parser(
         "command",

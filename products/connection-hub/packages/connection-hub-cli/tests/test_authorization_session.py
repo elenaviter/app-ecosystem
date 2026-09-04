@@ -5,18 +5,22 @@ import json
 import stat
 
 import pytest
-from keyring.errors import PasswordDeleteError
-
 from connection_hub_cli.authorization.models import OAuthTokenSet
 from connection_hub_cli.authorization.session import (
+    OAUTH_PROFILE_KEYRING_SERVICE,
+    OAUTH_SESSION_KEYRING_SERVICE,
     MacOSOAuthSessionCredentialStore,
+    NativeOAuthProfileCredentialStore,
+    NativeOAuthSessionCredentialStore,
     OAuthSessionRecord,
     OAuthSessionRepository,
     OAuthSessionStore,
     session_id_for_target,
 )
+from connection_hub_cli.credentials import KEYRING_SERVICE, NativeCredentialStore
 from connection_hub_cli.errors import AuthorizationError
 from connection_hub_cli.paths import StatePaths
+from keyring.errors import PasswordDeleteError
 
 
 class _Keyring:
@@ -136,6 +140,58 @@ def test_oauth_tokens_round_trip_as_one_keychain_item_without_repr_leak() -> Non
     assert token.access_token not in repr(loaded)
     assert token.refresh_token not in repr(loaded)
     assert len(backend.values) == 1
+
+
+def test_logical_credentials_use_separate_native_service_names() -> None:
+    backend = _Keyring()
+    static = NativeCredentialStore(
+        backend=backend,
+        platform_name="Darwin",
+        enforce_native_backend=False,
+    )
+    profile = NativeOAuthProfileCredentialStore(
+        backend=backend,
+        platform_name="Darwin",
+        enforce_native_backend=False,
+    )
+    management = NativeOAuthSessionCredentialStore(
+        backend=backend,
+        platform_name="Darwin",
+        enforce_native_backend=False,
+    )
+
+    static.put("1" * 32, "static-bearer")
+    profile.put("2" * 32, _token())
+    management.put("3" * 32, _token())
+
+    assert {service for service, _account in backend.values} == {
+        KEYRING_SERVICE,
+        OAUTH_PROFILE_KEYRING_SERVICE,
+        OAUTH_SESSION_KEYRING_SERVICE,
+    }
+
+
+def test_windows_store_round_trips_the_maximum_accepted_oauth_record() -> None:
+    backend = _Keyring()
+    credentials = NativeOAuthSessionCredentialStore(
+        backend=backend,
+        platform_name="Windows",
+        enforce_native_backend=False,
+    )
+    token = OAuthTokenSet(
+        access_token='"' * 65536,
+        refresh_token="\\" * 65536,
+        expires_at=1_800_000_000,
+        scope="s" * 8192,
+        access_id="access_cli",
+    )
+
+    credentials.put("4" * 32, token)
+
+    assert credentials.get("4" * 32) == token
+    assert len(backend.values) > 1
+    assert credentials.remove("4" * 32) is True
+    assert backend.values == {}
 
 
 def test_keychain_failure_does_not_render_the_token() -> None:

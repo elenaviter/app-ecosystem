@@ -35,9 +35,27 @@ def _sequence_of_text(value: Any, *, maximum_items: int = 128) -> tuple[str, ...
 
 
 def _secret_token(value: Any, *, maximum: int = 65536) -> str:
-    candidate = _text(value, maximum=maximum)
-    if any(character.isspace() or ord(character) < 32 for character in candidate):
+    if not isinstance(value, str):
         return ""
+    candidate = value.strip()
+    if len(candidate) > maximum:
+        return ""
+    if any(not 0x21 <= ord(character) <= 0x7E for character in candidate):
+        return ""
+    return candidate
+
+
+def _scope_value(value: Any, *, code: str, message: str) -> str:
+    if value is None:
+        candidate = ""
+    elif isinstance(value, str):
+        candidate = value.strip()
+    else:
+        raise AuthorizationError(code, message)
+    if len(candidate) > 8192 or any(
+        not 0x20 <= ord(character) <= 0x7E for character in candidate
+    ):
+        raise AuthorizationError(code, message)
     return candidate
 
 
@@ -232,6 +250,7 @@ class AuthorizationServerMetadata:
     scopes_supported: tuple[str, ...]
     supports_refresh: bool
     authorization_response_issuer_required: bool
+    client_id_metadata_document_supported: bool = False
 
     @classmethod
     def from_mapping(
@@ -316,6 +335,9 @@ class AuthorizationServerMetadata:
             authorization_response_issuer_required=bool(
                 value.get("authorization_response_iss_parameter_supported")
             ),
+            client_id_metadata_document_supported=bool(
+                value.get("client_id_metadata_document_supported")
+            ),
         )
 
 
@@ -324,6 +346,8 @@ class OAuthClientRegistration:
     client_id: str
     redirect_uris: tuple[str, ...]
     token_endpoint_auth_method: str = "none"
+    source: str = "dcr"
+    client_metadata_url: str | None = None
 
     @classmethod
     def from_mapping(
@@ -367,6 +391,7 @@ class OAuthClientRegistration:
             client_id=client_id,
             redirect_uris=normalized_redirects,
             token_endpoint_auth_method=method,
+            source="dcr",
         )
 
 
@@ -394,10 +419,19 @@ class OAuthTokenSet:
                 "The authorization server returned an invalid token response.",
             )
         access_token = _secret_token(value.get("access_token"))
-        refresh_token = _secret_token(value.get("refresh_token"))
+        raw_refresh_token = value.get("refresh_token")
+        refresh_token = _secret_token(raw_refresh_token)
         previous_refresh = _secret_token(previous_refresh_token)
         token_type = _text(value.get("token_type")) or "Bearer"
-        scope = _text(value.get("scope"), maximum=8192) or default_scope
+        scope = _scope_value(
+            value.get("scope"),
+            code="oauth_token_response_invalid",
+            message="The authorization server returned an invalid token response.",
+        ) or _scope_value(
+            default_scope,
+            code="oauth_token_response_invalid",
+            message="The authorization server returned an invalid token response.",
+        )
         access_id = _text(value.get("access_id"), maximum=256) or None
         try:
             expires_in = int(value.get("expires_in") or 0)
@@ -408,6 +442,8 @@ class OAuthTokenSet:
             ) from None
         if (
             not access_token
+            or (raw_refresh_token not in (None, "") and not refresh_token)
+            or (previous_refresh_token not in (None, "") and not previous_refresh)
             or token_type.lower() != "bearer"
             or expires_in < 0
             or (access_id is not None and not _ACCESS_ID_RE.fullmatch(access_id))
@@ -433,6 +469,30 @@ class OAuthTokenSet:
         return self.expires_at <= moment + max(0, int(leeway_seconds))
 
     def to_secret_json(self) -> str:
+        scope = _scope_value(
+            self.scope,
+            code="oauth_session_credential_invalid",
+            message="The OAuth session credential is invalid.",
+        )
+        access_id = _text(self.access_id, maximum=256) or None
+        if (
+            _secret_token(self.access_token) != self.access_token
+            or (
+                self.refresh_token
+                and _secret_token(self.refresh_token) != self.refresh_token
+            )
+            or not isinstance(self.token_type, str)
+            or self.token_type.lower() != "bearer"
+            or type(self.expires_at) is not int
+            or self.expires_at < 0
+            or scope != self.scope
+            or access_id != self.access_id
+            or (access_id is not None and not _ACCESS_ID_RE.fullmatch(access_id))
+        ):
+            raise AuthorizationError(
+                "oauth_session_credential_invalid",
+                "The OAuth session credential is invalid.",
+            )
         return json.dumps(
             {
                 "schema": "connection_hub_cli.oauth_token.v1",
@@ -465,9 +525,14 @@ class OAuthTokenSet:
                 "The stored OAuth session credential is invalid.",
             )
         access_token = _secret_token(payload.get("access_token"))
-        refresh_token = _secret_token(payload.get("refresh_token"))
+        raw_refresh_token = payload.get("refresh_token")
+        refresh_token = _secret_token(raw_refresh_token)
         token_type = _text(payload.get("token_type")) or "Bearer"
-        scope = _text(payload.get("scope"), maximum=8192)
+        scope = _scope_value(
+            payload.get("scope"),
+            code="oauth_session_credential_invalid",
+            message="The stored OAuth session credential is invalid.",
+        )
         access_id = _text(payload.get("access_id"), maximum=256) or None
         try:
             expires_at = int(payload.get("expires_at") or 0)
@@ -478,6 +543,7 @@ class OAuthTokenSet:
             ) from None
         if (
             not access_token
+            or (raw_refresh_token not in (None, "") and not refresh_token)
             or token_type.lower() != "bearer"
             or expires_at < 0
             or (access_id is not None and not _ACCESS_ID_RE.fullmatch(access_id))

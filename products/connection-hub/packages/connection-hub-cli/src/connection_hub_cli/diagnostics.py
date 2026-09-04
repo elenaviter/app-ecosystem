@@ -4,7 +4,7 @@ import os
 import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from connection_hub_cli.authorization.session import (
     OAuthSessionRepository,
@@ -15,6 +15,11 @@ from connection_hub_cli.credentials import CredentialStore
 from connection_hub_cli.errors import ConnectionHubCliError
 from connection_hub_cli.profiles import ProfileService
 from connection_hub_cli.state import InstallationStore, ProfileStore
+
+if TYPE_CHECKING:
+    from connection_hub_cli.authorization.profile_session import (
+        OAuthProfileSessionService,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,8 +54,19 @@ async def collect_diagnostics(
     probe: bool,
     oauth_sessions: OAuthSessionStore | None = None,
     oauth_repository: OAuthSessionRepository | None = None,
+    oauth_profile_sessions: OAuthProfileSessionService | None = None,
 ) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
+    platform_name = str(getattr(credentials, "platform_name", "unknown"))
+    store_name = str(
+        getattr(credentials, "store_name", "operating-system credential store")
+    )
+    recovery_hint = getattr(credentials, "recovery_hint", None)
+    recovery = (
+        recovery_hint()
+        if callable(recovery_hint)
+        else "Repair or unlock the operating-system credential store, then run connection-hub doctor again."
+    )
     try:
         credentials.verify_ready()
     except ConnectionHubCliError as exc:
@@ -60,13 +76,9 @@ async def collect_diagnostics(
                 severity="error",
                 summary=(
                     "The configured credential store is not writable: "
-                    f"{credentials.backend_name()}."
+                    f"{credentials.backend_name()} on {platform_name}."
                 ),
-                recovery=(
-                    "Run from the logged-in macOS user session with an unlocked login "
-                    "Keychain. If it still fails, repair that Keychain and run "
-                    "connection-hub doctor again."
-                ),
+                recovery=recovery,
             )
         )
     else:
@@ -76,7 +88,8 @@ async def collect_diagnostics(
                 severity="ok",
                 summary=(
                     "Delegated caller credentials passed a temporary write, read, and "
-                    f"delete check in {credentials.backend_name()}."
+                    f"delete check in {store_name} on {platform_name} "
+                    f"({credentials.backend_name()})."
                 ),
             )
         )
@@ -90,6 +103,18 @@ async def collect_diagnostics(
                 summary=(
                     "The local state directory has not been created because no state "
                     "has been stored."
+                ),
+            )
+        )
+    elif platform_name == "Windows":
+        diagnostics.append(
+            Diagnostic(
+                code="state_permissions_managed_by_windows",
+                severity="ok",
+                summary=(
+                    "Local non-secret state uses the current Windows user profile "
+                    "and its ACLs; delegated credentials remain in Windows "
+                    "Credential Manager."
                 ),
             )
         )
@@ -111,20 +136,21 @@ async def collect_diagnostics(
             )
         )
 
-    state_paths = [profiles.path, installations.path]
-    if oauth_sessions is not None:
-        state_paths.append(oauth_sessions.path)
-    for path in state_paths:
-        mode = _mode(path)
-        if mode is not None and mode & 0o077:
-            diagnostics.append(
-                Diagnostic(
-                    code="state_file_permissions",
-                    severity="error",
-                    summary=f"Local state file permissions are too broad: {path}.",
-                    recovery=f"Run: chmod 600 {path}",
+    if platform_name != "Windows":
+        state_paths = [profiles.path, installations.path]
+        if oauth_sessions is not None:
+            state_paths.append(oauth_sessions.path)
+        for path in state_paths:
+            mode = _mode(path)
+            if mode is not None and mode & 0o077:
+                diagnostics.append(
+                    Diagnostic(
+                        code="state_file_permissions",
+                        severity="error",
+                        summary=f"Local state file permissions are too broad: {path}.",
+                        recovery=f"Run: chmod 600 {path}",
+                    )
                 )
-            )
 
     if oauth_sessions is not None and oauth_repository is not None:
         for session in oauth_sessions.list():
@@ -153,7 +179,7 @@ async def collect_diagnostics(
                         severity="error",
                         summary=(
                             "The delegated management session for "
-                            f"'{session.resource}' has no Keychain credential."
+                            f"'{session.resource}' has no native credential-store record."
                         ),
                         recovery=(
                             "Revoke the matching caller card in Connection Hub "
@@ -168,7 +194,7 @@ async def collect_diagnostics(
                     severity="ok",
                     summary=(
                         "The delegated management session for "
-                        f"'{session.resource}' has a Keychain credential."
+                        f"'{session.resource}' has a native credential-store record."
                     ),
                 )
             )
@@ -187,20 +213,61 @@ async def collect_diagnostics(
             )
             continue
         if not present:
+            if profile.auth_type == "oauth":
+                profile_recovery = (
+                    "Revoke the recorded access_id in Connection Hub, then remove or "
+                    "authorize this OAuth profile again."
+                )
+            else:
+                profile_recovery = (
+                    f"Run: connection-hub profile credential replace {profile.name}"
+                )
             diagnostics.append(
                 Diagnostic(
                     code="credential_missing",
                     severity="error",
-                    summary=f"Caller profile '{profile.name}' has no Keychain credential.",
-                    recovery=f"Run: connection-hub profile credential replace {profile.name}",
+                    summary=(
+                        f"Caller profile '{profile.name}' ({profile.auth_type}) has no "
+                        "native credential-store record."
+                    ),
+                    recovery=profile_recovery,
                 )
             )
             continue
+        profile_detail = ""
+        if profile.auth_type == "oauth" and oauth_profile_sessions is not None:
+            try:
+                status = oauth_profile_sessions.credential_status(profile)
+            except ConnectionHubCliError as exc:
+                diagnostics.append(
+                    Diagnostic(
+                        code=exc.code,
+                        severity="error",
+                        summary=(
+                            f"Caller profile '{profile.name}' has an invalid OAuth "
+                            "credential record."
+                        ),
+                        recovery=(
+                            "Revoke the recorded access_id in Connection Hub before "
+                            "removing local profile state."
+                        ),
+                    )
+                )
+                continue
+            profile_detail = (
+                f" Expiry: {status['expiry']}; refresh ready: "
+                f"{str(status['refresh_ready']).lower()}."
+            )
         diagnostics.append(
             Diagnostic(
                 code="profile_credential_ready",
                 severity="ok",
-                summary=f"Caller profile '{profile.name}' has a Keychain credential.",
+                summary=(
+                    f"Caller profile '{profile.name}' ({profile.auth_type}) has a "
+                    "native credential-store record for "
+                    f"{profile.endpoint}; access_id: {profile.access_id or 'not recorded'}."
+                    f"{profile_detail}"
+                ),
             )
         )
         if probe:
@@ -225,7 +292,7 @@ async def collect_diagnostics(
 
     for installation in installations.list():
         adapter = adapters[installation.client]
-        if installation.profile not in known_profiles:
+        if installation.mode == "bridge" and installation.profile not in known_profiles:
             diagnostics.append(
                 Diagnostic(
                     code="installation_profile_missing",
@@ -238,9 +305,11 @@ async def collect_diagnostics(
                 )
             )
             continue
-        helper_path = Path(installation.command)
-        helper_ready = helper_path.is_file() and os.access(helper_path, os.X_OK)
-        if not helper_ready:
+        helper_ready = True
+        if installation.mode == "bridge":
+            helper_path = Path(str(installation.command))
+            helper_ready = helper_path.is_file() and os.access(helper_path, os.X_OK)
+        if installation.mode == "bridge" and not helper_ready:
             diagnostics.append(
                 Diagnostic(
                     code="helper_executable_missing",
@@ -261,6 +330,24 @@ async def collect_diagnostics(
                     code="client_not_installed",
                     severity="warning",
                     summary=f"The configured {installation.client} client is not currently available.",
+                )
+            )
+            continue
+        try:
+            adapter.ensure_mode(installation.mode)
+        except ConnectionHubCliError as exc:
+            diagnostics.append(
+                Diagnostic(
+                    code=exc.code,
+                    severity="error",
+                    summary=(
+                        f"The configured {installation.client} client no longer "
+                        f"supports the managed {installation.mode} mode."
+                    ),
+                    recovery=(
+                        f"Remove '{installation.server_name}', upgrade the client, "
+                        "and install it again."
+                    ),
                 )
             )
             continue
@@ -288,7 +375,11 @@ async def collect_diagnostics(
                 Diagnostic(
                     code="client_entry_ready",
                     severity="ok",
-                    summary=f"The {installation.client} entry '{installation.server_name}' is installed.",
+                    summary=(
+                        f"The {installation.client} entry "
+                        f"'{installation.server_name}' is installed in "
+                        f"{installation.mode} mode."
+                    ),
                 )
             )
 

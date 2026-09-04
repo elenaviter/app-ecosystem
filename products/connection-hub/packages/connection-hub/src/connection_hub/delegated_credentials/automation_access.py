@@ -27,7 +27,6 @@ import time
 from dataclasses import dataclass, field
 from dataclasses import replace as replace_fields
 from typing import Any, Awaitable, Callable, Iterable, Mapping
-from urllib.parse import urlsplit
 
 from connection_hub.authority_inventory import (
     AuthorityGrantInventory,
@@ -76,6 +75,26 @@ from connection_hub.delegated_credentials.cards.model import (
     CardRecordError,
     NamedServiceSelection,
 )
+from connection_hub.delegated_credentials.cards.identity import (
+    ResidentCallerProfile,
+    is_resident_client_id,
+    legacy_resident_access_id,
+    stable_resident_access_id,
+)
+from connection_hub.delegated_credentials.cards.read_model import (
+    DelegatedCardView,
+    build_card_view,
+    compatible_resource_offers,
+)
+from connection_hub.delegated_credentials.catalog.descriptors import (
+    RESOURCE_KIND_CATALOG,
+    ROW_ATTR_KIND,
+    ROW_ATTR_PROVIDER,
+    ResourceAcceptance,
+    ResourceAcceptanceError,
+    next_resource_acceptance,
+    parse_resource_acceptance,
+)
 from connection_hub.delegated_credentials.cards.cache import (
     DelegatedCardRuntimeCache,
 )
@@ -95,6 +114,7 @@ from connection_hub.delegated_credentials.catalog.resolver import (
 )
 from connection_hub.delegated_credentials.catalog.drift import (
     card_drift,
+    card_resource_states,
     drift_unavailable,
     selected_named_service_operations,
 )
@@ -135,6 +155,8 @@ ResourceOverlayProvider = Callable[[str], Awaitable[Iterable[Any]]]
 # data-bus session at claim time; mutations fan out to every live session of
 # the grantor. Event type consumed by the widget:
 DELEGATED_ACCESS_CHANGED_EVENT = "connection_hub.delegated_access.changed"
+# A resident profile's legacy cards disagree; nothing was folded.
+RESIDENT_MIGRATION_CONFLICT = "resident_profile_migration_conflict"
 
 _LOGGER = __import__("logging").getLogger("connection_hub.delegated_access")
 
@@ -432,14 +454,33 @@ ACCESS_SOURCE_AGENT = "agent"
 
 
 def agent_grant_access_id(grantor_subject: str, client_id: str, resources: Iterable[str]) -> str:
-    """The deterministic record id of a per-agent grant — one record per
-    (grantor, client, resources), shared by the write (`create_access`) and every
-    read, so re-consent updates in place and lookups always hit the same key."""
-    selected = sorted({_clean(r) for r in (resources or ()) if _clean(r)})
-    digest = hashlib.sha256(
-        f"{_clean(grantor_subject)}|{_clean(client_id)}|{'+'.join(selected)}".encode("utf-8")
-    ).hexdigest()[:16]
-    return f"agent-{digest}"
+    """LEGACY: the resource-dependent record id of a per-agent grant, one record
+    per (grantor, client, selected resource set). Nothing is written under it
+    any more; a resident profile's card is ``stable_resident_access_id`` and is
+    independent of its resources. Kept so reads can still find, and migration
+    can fold, the records that were written under this formula."""
+    return legacy_resident_access_id(grantor_subject, client_id, resources)
+
+
+def resident_access_ids(grantor_subject: str, client_id: str, resources: Iterable[str]) -> list[str]:
+    """The stable resident Card id, then its legacy resource-dependent id."""
+    grantor = _clean(grantor_subject)
+    client = _clean(client_id)
+    if not grantor or not is_resident_client_id(client):
+        return []
+    ids = [
+        stable_resident_access_id(grantor, client),
+        legacy_resident_access_id(grantor, client, resources),
+    ]
+    return list(dict.fromkeys(ids))
+
+
+def _record_holds_resources(record: Any, resources: Iterable[str]) -> bool:
+    """Whether a card covers every requested resource (by the guard's match)."""
+    wanted = [_clean(item) for item in (resources or ()) if _clean(item)]
+    if not wanted:
+        return True
+    return all(_card_holds_resource(record, resource) for resource in wanted)
 
 
 async def read_agent_grant_record(
@@ -459,21 +500,28 @@ async def read_agent_grant_record(
     client = _clean(client_id)
     if not grantor or not client:
         return None
-    access_id = agent_grant_access_id(grantor, client, resources)
     cache = DelegatedCardRuntimeCache(redis, tenant=_clean(tenant), project=_clean(project))
-    try:
-        entry = await cache.read(access_id)
-    except Exception:
-        # A probe enriches a picker; it never denies on its own.
-        return None
-    if entry is None or not entry.is_card or entry.authority is None:
-        return None
-    record = record_from_card(entry.authority)
-    if record.source != ACCESS_SOURCE_AGENT:
-        return None
-    if record.expires_at and record.expires_at <= int(time.time()):
-        return None
-    return record
+    # The stable profile card first, then the legacy resource-dependent record a
+    # not-yet-migrated profile may still live under.
+    for access_id in resident_access_ids(grantor, client, resources) or [
+        agent_grant_access_id(grantor, client, resources)
+    ]:
+        try:
+            entry = await cache.read(access_id)
+        except Exception:
+            # A probe enriches a picker; it never denies on its own.
+            return None
+        if entry is None or not entry.is_card or entry.authority is None:
+            continue
+        record = record_from_card(entry.authority)
+        if record.source != ACCESS_SOURCE_AGENT:
+            continue
+        if record.expires_at and record.expires_at <= int(time.time()):
+            continue
+        if not _record_holds_resources(record, resources):
+            continue
+        return record
+    return None
 
 
 def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
@@ -603,6 +651,16 @@ def _parse_named_service_selection(value: Mapping[str, Any]) -> NamedServiceSele
     return selection
 
 
+def _parse_resource_acceptance_field(value: Any) -> dict[str, ResourceAcceptance]:
+    """The stored per-resource acceptance, or empty when absent or unreadable.
+    Unreadable evidence is dropped rather than trusted: the next save stamps it
+    again from the current authority."""
+    try:
+        return parse_resource_acceptance(value)
+    except ResourceAcceptanceError:
+        return {}
+
+
 @dataclass(frozen=True)
 class AutomationAccessRecord:
     access_id: str
@@ -650,6 +708,14 @@ class AutomationAccessRecord:
     # signal: a card whose last_issued_at is old is likely an orphan (the
     # client disconnected without revoking).
     last_issued_at: int = 0
+    # Per resource: the descriptor authority the card accepted at its last
+    # save (kind, revision, digest, claims, one digest per offered operation).
+    # Drift is judged against it resource by resource. Empty on records written
+    # before the field existed; the next save stamps it.
+    resource_acceptance: Mapping[str, ResourceAcceptance] = field(default_factory=dict)
+    # Non-secret lineage written by the resident-profile migration: the legacy
+    # records folded into this card and when. Empty otherwise.
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         normalized = normalize_resource_operations(self.resource_operations)
@@ -700,6 +766,12 @@ class AutomationAccessRecord:
             refresh_token=_clean(value.get("refresh_token")),
             access_token=_clean(value.get("access_token")),
             last_issued_at=int(value.get("last_issued_at") or 0),
+            resource_acceptance=_parse_resource_acceptance_field(value.get("resource_acceptance")),
+            provenance=(
+                dict(value.get("provenance"))
+                if isinstance(value.get("provenance"), Mapping)
+                else {}
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -731,6 +803,11 @@ class AutomationAccessRecord:
             "refresh_token": self.refresh_token,
             "access_token": self.access_token,
             "last_issued_at": self.last_issued_at,
+            "resource_acceptance": {
+                resource: acceptance.to_dict()
+                for resource, acceptance in sorted(self.resource_acceptance.items())
+            },
+            "provenance": dict(self.provenance or {}),
         }
         stored_selection = self.named_service_operations.to_stored()
         if stored_selection is not None:
@@ -797,6 +874,8 @@ def card_authority_from_record(record: AutomationAccessRecord) -> CardAuthority:
         expires_at=record.expires_at,
         last_issued_at=record.last_issued_at,
         last_four=record.last_four,
+        resource_acceptance=dict(record.resource_acceptance or {}),
+        provenance=copy.deepcopy(dict(record.provenance or {})),
     )
 
 
@@ -844,6 +923,8 @@ def record_from_card(
         refresh_token=held.refresh_token,
         access_token=held.access_token,
         last_issued_at=authority.last_issued_at,
+        resource_acceptance=dict(authority.resource_acceptance or {}),
+        provenance=copy.deepcopy(dict(authority.provenance or {})),
     )
 
 
@@ -964,6 +1045,7 @@ class AutomationAccessService:
         named_service_discovery_factory: NamedServiceDiscoveryFactory | None = None,
         relay_factory: RelayFactory | None = None,
         resource_overlay_provider: ResourceOverlayProvider | None = None,
+        invocation_policy_service: Any | None = None,
     ) -> None:
         self._redis = redis
         self._tenant = _clean(tenant)
@@ -984,6 +1066,10 @@ class AutomationAccessService:
         # stored. Composition of the durable implementation belongs to the
         # caller that owns storage.
         self._persistence = card_persistence
+        # Optional: lets the resident-profile migration carry once/always
+        # policies to the stable card and the read model report them. Without
+        # it, migration refuses to fold a record whose policies it cannot see.
+        self._invocation_policies = invocation_policy_service
 
     # -- card persistence -----------------------------------------------------
     #
@@ -1363,6 +1449,13 @@ class AutomationAccessService:
             option = {
                 "resource": resource.resource,
                 "label": resource.label or resource.resource,
+                "kind": (
+                    _clean(getattr(resource, ROW_ATTR_KIND, ""))
+                    or RESOURCE_KIND_CATALOG
+                ),
+                "provider_id": _clean(
+                    getattr(resource, ROW_ATTR_PROVIDER, "")
+                ),
                 "identity_scope": resource.identity_scope,
                 "grants": [
                     grant for grant in resource.grants if grant in delegable
@@ -1506,10 +1599,31 @@ class AutomationAccessService:
             if active is not None
             else None
         )
+        resource_option_rows = await self.resource_options(user)
+        platform_admin = _is_platform_admin(user)
         records = []
         for record in records_found:
             item = record.to_public_dict()
             item["catalog_drift"] = drift_by_card[record.access_id]
+            # The resident profile behind an agent card, and whether this card
+            # already lives under the profile's stable id. A legacy card reads
+            # ``stable_identity: false`` until its profile's next grant folds it.
+            profile = ResidentCallerProfile.parse(
+                record.grantor_subject,
+                record.client_id,
+            )
+            if profile is not None:
+                item["caller_profile"] = profile.to_dict()
+                item["stable_identity"] = record.access_id == profile.access_id
+            # Which owner-visible delegable resources may join this card, and
+            # why the others may not. The editor renders the picker from this;
+            # a resident ceiling (Projection) narrows it further downstream.
+            item["resource_offers"] = compatible_resource_offers(
+                card_resources=record.resource_grants,
+                card_identity_scope=record.identity_scope,
+                options=resource_option_rows,
+                platform_admin=platform_admin,
+            )
             # Reported, never applied: listing does not rewrite a record.
             ambiguity = pre_migration_ambiguity(
                 record,
@@ -1549,7 +1663,7 @@ class AutomationAccessService:
             "ok": True,
             "platform_user_id": grantor_subject,
             "grant_options": await self.grant_options(user),
-            "resources": await self.resource_options(user),
+            "resources": resource_option_rows,
             "items": records,
         }
 
@@ -1779,11 +1893,11 @@ class AutomationAccessService:
                 "resources": selected_resources,
                 "identity_scopes": sorted(identity_scopes),
                 "message": (
-                    "A card issues one credential, so every endpoint on it must run "
-                    "under the same identity. These do not: " + ", ".join(sorted(identity_scopes))
-                    + ". The value is `identity_scope` in connection-hub@1-0 "
-                    "`connections.delegated_credentials.oauth.resources`. Grant "
-                    "endpoints that differ on separate cards."
+                    "A resident agent has one Card, and its current credential can "
+                    "carry resources under one acting identity. These resources use "
+                    "different identity scopes: " + ", ".join(sorted(identity_scopes))
+                    + ". Connection Hub refused the request without creating another "
+                    "Card for the same agent."
                 ),
             }
         identity_scope = next(iter(identity_scopes), "grantor")
@@ -1800,13 +1914,24 @@ class AutomationAccessService:
         created_at_override: int | None = None
         existing: AutomationAccessRecord | None = None
         if requested_client_id:
-            # Deterministic per-agent grant: one record per (grantor, client,
-            # resources). Re-consent MERGES into it — sequential one-click
-            # grants on the same resource (memories today, slack tomorrow)
-            # accumulate; a replace would silently revoke the earlier consent.
+            # A deterministic client (a resident agent above all) has ONE stable
+            # card, independent of the resources it holds (cards/identity.py).
+            # Re-consent MERGES into it: sequential
+            # one-click grants (memories today, slack tomorrow) accumulate on
+            # the same card; a replace would silently revoke the earlier
+            # consent. Records written under the older resource-dependent id
+            # are folded into the stable card first, or the fold reports why it
+            # cannot be done without widening authority.
             client_id = requested_client_id
-            access_id = agent_grant_access_id(grantor_subject, client_id, selected_resources)
+            access_id = stable_resident_access_id(grantor_subject, client_id)
             access_source = ACCESS_SOURCE_AGENT
+            folded = await self._fold_legacy_resident_records(
+                user,
+                client_id=client_id,
+                target_access_id=access_id,
+            )
+            if folded is not None and folded.get("ok") is False:
+                return folded
             try:
                 existing = await self._load_record(
                     access_id, grantor_subject=grantor_subject
@@ -1820,6 +1945,22 @@ class AutomationAccessService:
                     "status": 503,
                 }
             if existing is not None:
+                existing_scope = _clean(existing.identity_scope) or "grantor"
+                if existing_scope != identity_scope:
+                    return {
+                        "ok": False,
+                        "error": "delegated_access_resources_have_conflicting_identity_scopes",
+                        "resources": sorted(
+                            set(existing.resource_grants) | set(selected_resources)
+                        ),
+                        "identity_scopes": sorted({existing_scope, identity_scope}),
+                        "message": (
+                            "This resident agent already has one Card whose resources "
+                            f"act as {existing_scope}. The requested resource acts as "
+                            f"{identity_scope}; Connection Hub refused the change rather "
+                            "than creating a second Card for the same agent."
+                        ),
+                    }
                 created_at_override = existing.created_at or None
                 if not merge_existing and not account_scope_provided:
                     # Replace only dimensions the caller actually submitted.
@@ -2102,6 +2243,22 @@ class AutomationAccessService:
             # consented bearer (looked up by the resolver) rather than minting an
             # unbound one; a manual automation keeps the token client-side only.
             access_token=access_token if access_source == ACCESS_SOURCE_AGENT else "",
+            # What each resource's authority showed when this save accepted it.
+            # A resource the card already held keeps the digests it accepted for
+            # selected operations whose descriptor changed since: a consent
+            # merge is not a review of unrelated changes.
+            resource_acceptance=next_resource_acceptance(
+                resources=selected_resource_grants,
+                row_for=lambda resource: self._configured_resource(resource, config=catalog_config),
+                catalog_version=catalog_version,
+                selected_operations=selected_resource_operations,
+                previous=existing.resource_acceptance if existing is not None else None,
+            ),
+            provenance=(
+                copy.deepcopy(dict(existing.provenance or {}))
+                if existing is not None
+                else {}
+            ),
         )
         try:
             await self._persist_record(record, expected_revision=committed_revision)
@@ -2347,8 +2504,8 @@ class AutomationAccessService:
                     "A card issues one credential, so every endpoint on it must run "
                     "under the same identity. These do not: " + ", ".join(sorted(identity_scopes))
                     + ". The value is `identity_scope` in connection-hub@1-0 "
-                    "`connections.delegated_credentials.oauth.resources`. Grant "
-                    "endpoints that differ on separate cards."
+                    "`connections.delegated_credentials.oauth.resources`. Select "
+                    "resources with one acting identity; the existing card is unchanged."
                 ),
             })
         if account_scope is None:
@@ -2412,8 +2569,15 @@ class AutomationAccessService:
         label: str | None = None,
         expected_card_revision: int | None = None,
         expected_catalog_version: str | None = None,
+        accepted_operations: Mapping[str, Iterable[str]] | None = None,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
+
+        ``accepted_operations`` names, per resource, the selected operations
+        whose CHANGED descriptor the grantor reviewed and accepts with this
+        save. Every other changed selected operation keeps the digest the card
+        accepted before and stays suspended; an ordinary edit never accepts a
+        changed tool as a side effect.
 
         The card keeps its access_id and its credential material; the card is
         the guard's authority (resolved live via resolve_live_grant_card), so
@@ -2508,7 +2672,7 @@ class AutomationAccessService:
         named_services = resolved.named_services
         selected_operations = resolved.operations
         selected_account_scope = resolved.account_scope
-
+        catalog_config = await self._catalog_config(active, owner_subject=grantor_subject)
 
         now = int(time.time())
         if existing.expires_at <= now:
@@ -2547,6 +2711,15 @@ class AutomationAccessService:
             refresh_token=existing.refresh_token,
             access_token=existing.access_token,
             last_issued_at=existing.last_issued_at,
+            resource_acceptance=next_resource_acceptance(
+                resources=selected_resource_grants,
+                row_for=lambda resource: self._configured_resource(resource, config=catalog_config),
+                catalog_version=catalog_version,
+                selected_operations=selected_resource_operations,
+                previous=existing.resource_acceptance,
+                accepted_operations=accepted_operations,
+            ),
+            provenance=copy.deepcopy(dict(existing.provenance or {})),
         )
         del remaining
         try:
@@ -2566,6 +2739,724 @@ class AutomationAccessService:
         saved["catalog_drift"] = card_drift(card=updated, active=active, baseline=active)
         return {"ok": True, "access": saved, "pruned": reconciled.to_public_dict()}
 
+    # -- resident caller profile: stable card, legacy fold, read model --------
+
+    async def _resident_card_for_resources(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+        resources: Iterable[str],
+    ) -> AutomationAccessRecord | None:
+        """The agent card that covers ``resources`` for this client.
+
+        The stable profile card is tried first, then the
+        legacy resource-dependent record a not-yet-folded profile may still
+        live under. A card is returned only when it holds every requested
+        resource, so a caller never receives a bearer for a door the card does
+        not open.
+        """
+        grantor = _clean(grantor_subject)
+        client = _clean(client_id)
+        if not grantor or not client:
+            return None
+        candidates = resident_access_ids(grantor, client, resources) or [
+            stable_resident_access_id(grantor, client),
+            agent_grant_access_id(grantor, client, resources),
+        ]
+        for access_id in dict.fromkeys(candidates):
+            try:
+                record = await self._load_record(access_id, grantor_subject=grantor)
+            except CardUnavailable:
+                raise
+            if record is None or record.source != ACCESS_SOURCE_AGENT:
+                continue
+            if _clean(record.client_id) != client:
+                continue
+            if not _record_holds_resources(record, resources):
+                continue
+            return record
+        return None
+
+    async def _legacy_resident_records(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+        exclude: Iterable[str] = (),
+    ) -> list[AutomationAccessRecord]:
+        """Active agent cards of this client that do not live under the stable
+        id. Scoped to the grantor's own cards and an exact client id, so no
+        other profile's record can be a candidate."""
+        excluded = {_clean(item) for item in exclude if _clean(item)}
+        out: list[AutomationAccessRecord] = []
+        for record in await self._list_active_records(_clean(grantor_subject)):
+            if record.source != ACCESS_SOURCE_AGENT:
+                continue
+            if _clean(record.client_id) != _clean(client_id):
+                continue
+            if record.access_id in excluded:
+                continue
+            out.append(record)
+        out.sort(key=lambda item: (item.created_at, item.access_id))
+        return out
+
+    @staticmethod
+    def _migration_conflict(
+        *, reason: str, target_access_id: str, candidates: Iterable[AutomationAccessRecord], evidence: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error": RESIDENT_MIGRATION_CONFLICT,
+            "status": 409,
+            "reason": reason,
+            "target_access_id": target_access_id,
+            "candidates": [
+                {
+                    "access_id": item.access_id,
+                    "card_revision": item.card_revision,
+                    "resources": sorted(item.resource_grants),
+                }
+                for item in candidates
+            ],
+            "evidence": dict(evidence),
+            "message": (
+                "This agent holds several delegated cards written under the earlier "
+                "resource-dependent identity, and they disagree on authority. Nothing "
+                "was changed: review those cards in Connection Hub, revoke or edit the "
+                "ones that should not carry over, then grant again."
+            ),
+            "recovery": {
+                "action": "review_legacy_resident_cards",
+                "retry_same_request": False,
+            },
+        }
+
+    async def _fold_legacy_resident_records(
+        self,
+        user: Mapping[str, Any],
+        *,
+        client_id: str,
+        target_access_id: str,
+    ) -> dict[str, Any] | None:
+        """Fold the legacy resource-dependent cards of one resident profile into
+        its stable card.
+
+        ``None`` when there is nothing to fold. Otherwise the result of the
+        migration: ``ok`` with the folded ids, or a conflict that changed
+        nothing. The rules, each of them fail-closed:
+
+        - candidates are the grantor's own active agent cards with this exact
+          client id, excluding the target;
+        - source cards must agree on acting identity scope; disagreement is a
+          conflict, never another stable card;
+        - two records holding the same resource must agree on its claims and
+          operations, else conflict;
+        - non-empty account bindings must be identical across every record
+          folded (including the target), else conflict: a binding one card made
+          for its resource is not extended to another card's resource;
+        - the folded card expires when the earliest of its sources would;
+        - invocation policies move with their operation: ``always`` and an
+          unconsumed ``once`` are re-declared on the stable card, a consumed
+          ``once`` drops the operation from the folded card so a spent permit
+          cannot come back to life. Without a policy service the fold cannot
+          see policies and refuses;
+        - the target keeps its own resources, policies, and lineage; the
+          legacy cards are revoked after the target committed, which also
+          invalidates their bearers;
+        - replay is a no-op: a second pass finds no candidates.
+        """
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return None
+        client = _clean(client_id)
+        try:
+            candidates = await self._legacy_resident_records(
+                grantor_subject=grantor_subject,
+                client_id=client,
+                exclude=[target_access_id],
+            )
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_cards_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        if not candidates:
+            return None
+        try:
+            target = await self._load_record(target_access_id, grantor_subject=grantor_subject)
+            target_revision = await self._committed_revision(
+                target_access_id, grantor_subject=grantor_subject
+            )
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_cards_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        sources = ([target] if target is not None else []) + list(candidates)
+
+        identity_scopes = {
+            _clean(record.identity_scope) or "grantor" for record in sources
+        }
+        if len(identity_scopes) > 1:
+            return self._migration_conflict(
+                reason="identity_scope_conflict",
+                target_access_id=target_access_id,
+                candidates=candidates,
+                evidence={"identity_scopes": sorted(identity_scopes)},
+            )
+        scope = next(iter(identity_scopes), "grantor")
+
+        # Account bindings: one agreed non-empty binding, or none.
+        bindings: dict[str, Mapping[str, Any]] = {}
+        for record in sources:
+            if record.account_scope:
+                key = json.dumps(
+                    {p: {a: sorted(c) for a, c in accounts.items()} for p, accounts in record.account_scope.items()},
+                    sort_keys=True,
+                )
+                bindings[key] = record.account_scope
+        if len(bindings) > 1:
+            return self._migration_conflict(
+                reason="account_scope_conflict",
+                target_access_id=target_access_id,
+                candidates=candidates,
+                evidence={"distinct_bindings": len(bindings)},
+            )
+        merged_account_scope: dict[str, dict[str, list[str]]] = {
+            provider: {account_id: list(claims) for account_id, claims in accounts.items()}
+            for provider, accounts in (next(iter(bindings.values())) if bindings else {}).items()
+        }
+
+        # Resources: disjoint by construction of the legacy id, but a resource
+        # held twice must agree exactly.
+        merged_grants: dict[str, list[str]] = {}
+        merged_operations: dict[str, list[str]] = {}
+        merged_acceptance: dict[str, ResourceAcceptance] = {}
+        merged_selection = NamedServiceSelection.none()
+        for record in sources:
+            frozen = _inherited_selection(record)
+            merged_selection = merged_selection.union(frozen) if not merged_selection.is_none else frozen
+            for resource, grants in record.resource_grants.items():
+                held_grants = sorted(_as_list(list(grants)))
+                held_ops = sorted(record.resource_operations.get(resource, ()))
+                if resource in merged_grants:
+                    if merged_grants[resource] != held_grants or merged_operations.get(resource, []) != held_ops:
+                        return self._migration_conflict(
+                            reason="resource_selection_conflict",
+                            target_access_id=target_access_id,
+                            candidates=candidates,
+                            evidence={"resource": resource},
+                        )
+                    continue
+                merged_grants[resource] = held_grants
+                merged_operations[resource] = held_ops
+                accepted = record.resource_acceptance.get(resource)
+                if accepted is not None:
+                    merged_acceptance[resource] = accepted
+
+        # Policies travel with their operation; a spent one-use permit drops it.
+        if self._invocation_policies is None:
+            return self._migration_conflict(
+                reason="invocation_policies_unverifiable",
+                target_access_id=target_access_id,
+                candidates=candidates,
+                evidence={"policy_service": "not_configured"},
+            )
+        from connection_hub.invocation_policy import (
+            POLICY_ALWAYS,
+            POLICY_CONSUMED,
+            POLICY_ONCE,
+            InvocationAuthority,
+        )
+
+        transfers: list[tuple[InvocationAuthority, str]] = []
+        dropped: list[dict[str, str]] = []
+        target_policies: dict[tuple[str, str, str, str], Any] = {}
+        if target is not None:
+            for policy in await self._invocation_policies.list_for_card(
+                owner_subject=grantor_subject, access_id=target.access_id
+            ):
+                auth = policy.authority
+                target_policies[(auth.resource, auth.operation, auth.provider_id, auth.account_id)] = policy
+        for record in candidates:
+            for policy in await self._invocation_policies.list_for_card(
+                owner_subject=grantor_subject, access_id=record.access_id
+            ):
+                auth = policy.authority
+                key = (auth.resource, auth.operation, auth.provider_id, auth.account_id)
+                if policy.mode == POLICY_ONCE and policy.state == POLICY_CONSUMED:
+                    dropped.append({"resource": auth.resource, "operation": auth.operation})
+                    ops = merged_operations.get(auth.resource, [])
+                    merged_operations[auth.resource] = [op for op in ops if op != auth.operation]
+                    continue
+                held = target_policies.get(key)
+                if held is not None and held.mode != policy.mode:
+                    return self._migration_conflict(
+                        reason="invocation_policy_conflict",
+                        target_access_id=target_access_id,
+                        candidates=candidates,
+                        evidence={"resource": auth.resource, "operation": auth.operation},
+                    )
+                if held is None:
+                    transfers.append(
+                        (
+                            InvocationAuthority(
+                                access_id=target_access_id,
+                                resource=auth.resource,
+                                surface=auth.surface,
+                                operation=auth.operation,
+                                provider_id=auth.provider_id,
+                                account_id=auth.account_id,
+                            ),
+                            POLICY_ALWAYS if policy.mode == POLICY_ALWAYS else POLICY_ONCE,
+                        )
+                    )
+
+        merged_grants = {resource: grants for resource, grants in merged_grants.items() if grants}
+        if not merged_grants:
+            return self._migration_conflict(
+                reason="no_authority_to_fold",
+                target_access_id=target_access_id,
+                candidates=candidates,
+                evidence={},
+            )
+        merged_operations = {
+            resource: merged_operations.get(resource, []) for resource in merged_grants
+        }
+
+        try:
+            active = await self._active_catalog()
+            catalog_version = self._version_of(active)
+        except CatalogUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_catalog_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        catalog_config = await self._catalog_config(active, owner_subject=grantor_subject)
+        named_services: dict[str, Any] = {}
+        for resource, grants in merged_grants.items():
+            boundary = self._materialized_boundary_for(
+                selection=merged_selection,
+                resource=resource,
+                grants=grants,
+                account_scope=merged_account_scope,
+                config=catalog_config,
+            )
+            if boundary:
+                named_services = self._merge_named_service_configs(named_services, boundary)
+
+        now = int(time.time())
+        expires_at = min(record.expires_at for record in sources if record.expires_at) if any(
+            record.expires_at for record in sources
+        ) else now + AUTOMATION_ACCESS_DEFAULT_TTL_SECONDS
+        if expires_at <= now:
+            return self._migration_conflict(
+                reason="every_source_expired",
+                target_access_id=target_access_id,
+                candidates=candidates,
+                evidence={},
+            )
+        selected_grants = _as_list([g for grants in merged_grants.values() for g in grants])
+        selected_operations = list(operation_union(merged_operations))
+        minted = await self._mint_card_credential(
+            user,
+            grantor_subject=grantor_subject,
+            client_id=client,
+            access_id=target_access_id,
+            grants=selected_grants,
+            operations=selected_operations,
+            resource_grants=merged_grants,
+            resource_operations=merged_operations,
+            account_scope=merged_account_scope,
+            identity_scope=scope,
+            named_services=named_services,
+            ttl=max(60, expires_at - now),
+            now=now,
+        )
+        # Policies first: they are keyed by the stable id and harmless without a
+        # card, and a card must never exist without the policy it was granted
+        # under.
+        for authority, mode in transfers:
+            await self._invocation_policies.set_policy(
+                owner_subject=grantor_subject, authority=authority, mode=mode
+            )
+        provenance = copy.deepcopy(dict(target.provenance or {})) if target is not None else {}
+        lineage = list(provenance.get("migrated_from") or [])
+        lineage.extend(
+            {
+                "access_id": record.access_id,
+                "card_revision": record.card_revision,
+                "resources": sorted(record.resource_grants),
+            }
+            for record in candidates
+        )
+        provenance["migrated_from"] = lineage
+        provenance["migrated_at"] = now
+        provenance["schema"] = "connection_hub.resident_profile_fold.v1"
+        if dropped:
+            provenance["dropped_consumed_once"] = list(provenance.get("dropped_consumed_once") or []) + dropped
+        record = AutomationAccessRecord(
+            access_id=target_access_id,
+            label=(target.label if target is not None else "") or next(
+                (item.label for item in candidates if item.label), client
+            ),
+            client_id=client,
+            grantor_subject=grantor_subject,
+            delegate_subject=integration_subject(grantor_subject, client_id=client),
+            operations=tuple(selected_operations),
+            resource_grants={key: tuple(value) for key, value in merged_grants.items()},
+            resource_operations={key: tuple(value) for key, value in merged_operations.items()},
+            named_service_operations=merged_selection,
+            named_services=copy.deepcopy(named_services),
+            account_scope={
+                provider: {account_id: tuple(claims) for account_id, claims in accounts.items()}
+                for provider, accounts in merged_account_scope.items()
+            },
+            identity_scope=scope,
+            catalog_version=catalog_version,
+            card_revision=target_revision + 1,
+            session_id=_clean(minted.get("session_id")),
+            created_at=min(item.created_at for item in sources if item.created_at) or now,
+            expires_at=expires_at,
+            last_four=_clean(minted.get("access_token"))[-4:],
+            source=ACCESS_SOURCE_AGENT,
+            access_token=_clean(minted.get("access_token")),
+            resource_acceptance=next_resource_acceptance(
+                resources=merged_grants,
+                row_for=lambda resource: self._configured_resource(resource, config=catalog_config),
+                catalog_version=catalog_version,
+                selected_operations=merged_operations,
+                previous=merged_acceptance,
+            ),
+            provenance=provenance,
+        )
+        try:
+            await self._persist_record(record, expected_revision=target_revision)
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            return {
+                "ok": False,
+                "error": "delegated_card_not_committed",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 503,
+            }
+        folded: list[str] = []
+        for legacy in candidates:
+            outcome = await self.revoke_access({"user_id": grantor_subject}, access_id=legacy.access_id)
+            if outcome.get("ok"):
+                folded.append(legacy.access_id)
+            else:
+                _LOGGER.warning(
+                    "[automation-access] legacy resident card %s not revoked after fold into %s: %s",
+                    legacy.access_id, target_access_id, outcome.get("error"),
+                )
+        _LOGGER.info(
+            "[automation-access] resident profile folded client=%s target=%s revision=%s sources=%s dropped=%d",
+            client, target_access_id, record.card_revision, folded, len(dropped),
+        )
+        await self.notify_change(grantor_subject, action="migrated", access=record.to_public_dict())
+        return {
+            "ok": True,
+            "access_id": target_access_id,
+            "card_revision": record.card_revision,
+            "folded": folded,
+            "dropped_consumed_once": dropped,
+            "expires_at": expires_at,
+        }
+
+    async def migrate_resident_profile(
+        self,
+        user: Mapping[str, Any],
+        *,
+        client_id: str,
+    ) -> dict[str, Any]:
+        """Fold one resident profile's legacy cards into its stable card now.
+
+        The same fold ``create_access`` performs before a grant, callable on its
+        own so an operator or a host can migrate ahead of the next consent.
+        """
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        refusal = _delegate_mutation_refusal(user)
+        if refusal is not None:
+            return refusal
+        client = _clean(client_id)
+        if not client:
+            return {"ok": False, "error": "delegated_access_requires_client_id"}
+        target = stable_resident_access_id(grantor_subject, client)
+        outcome = await self._fold_legacy_resident_records(
+            user, client_id=client, target_access_id=target
+        )
+        if outcome is None:
+            return {"ok": True, "access_id": target, "folded": [], "noop": True}
+        return outcome
+
+    async def _mint_card_credential(
+        self,
+        user: Mapping[str, Any],
+        *,
+        grantor_subject: str,
+        client_id: str,
+        access_id: str,
+        grants: list[str],
+        operations: list[str],
+        resource_grants: Mapping[str, Any],
+        resource_operations: Mapping[str, Any],
+        account_scope: Mapping[str, Any],
+        identity_scope: str,
+        named_services: Mapping[str, Any],
+        ttl: int,
+        now: int,
+    ) -> dict[str, Any]:
+        """Mint and bind the reusable bearer of a card whose authority is
+        ``access_id``: the same credential build, mint, and pointer binding a
+        create performs, factored for the fold."""
+        credential = build_delegated_client_credential(
+            grantor_subject=grantor_subject,
+            client_id=client_id,
+            scopes=list(grants),
+            operations=list(operations),
+            resource_operations={k: list(v) for k, v in resource_operations.items()},
+            tenant=self._tenant,
+            project=self._project,
+            resource_grants={k: list(v) for k, v in resource_grants.items()},
+            account_scope={
+                provider: {account_id: list(claims) for account_id, claims in accounts.items()}
+                for provider, accounts in account_scope.items()
+            },
+            identity_scope=identity_scope,
+            expires_in=ttl,
+            issued_at=now,
+        )
+        minter = self._minter or mint_delegated_client_access_token
+        authority = self._authority
+        if authority is None:
+            if self._authority_factory is None:
+                raise RuntimeError("session authority is not configured")
+            authority = self._authority_factory(tenant=self._tenant, project=self._project)
+        minted = await minter(
+            grantor_subject,
+            list(grants),
+            authority=authority,
+            client_id=client_id,
+            operations=list(operations),
+            credential=credential.to_dict(),
+            ttl_seconds=ttl,
+        )
+        access_token = _clean(minted.get("access_token"))
+        expires_in = int(minted.get("expires_in") or ttl)
+        inventory = await self._available_inventory(user, requested_grants=grants)
+        grantor_authority = _grantor_authority(user, grants=grants, inventory=inventory)
+        await self._store.bind_access_grant(
+            access_token,
+            list(operations),
+            expires_in,
+            credential=credential.to_dict(),
+            resource_operations={k: list(v) for k, v in resource_operations.items()},
+            grantor_authority=grantor_authority,
+            delegation_edges=list(grantor_authority.get("delegation_edges") or []),
+            named_services=dict(named_services or {}),
+            registry_access_id=access_id,
+        )
+        return {
+            "access_token": access_token,
+            "expires_in": expires_in,
+            "session_id": _clean(minted.get("session_id")),
+        }
+
+    async def _card_view(
+        self,
+        record: AutomationAccessRecord,
+        *,
+        active: Any = None,
+        catalog_config: Any = None,
+        policies: Iterable[Any] | None = None,
+    ) -> DelegatedCardView:
+        """The read model of one card against current authority."""
+        if active is None:
+            try:
+                active = await self._active_catalog()
+            except CatalogUnavailable:
+                active = None
+        if active is not None and catalog_config is None:
+            catalog_config = await self._catalog_config(
+                active, owner_subject=record.grantor_subject
+            )
+        states = (
+            card_resource_states(card=record, active=active, active_config=catalog_config)
+            if active is not None
+            else {}
+        )
+        if policies is None:
+            policies = []
+            if self._invocation_policies is not None:
+                try:
+                    policies = await self._invocation_policies.list_for_card(
+                        owner_subject=record.grantor_subject, access_id=record.access_id
+                    )
+                except Exception:
+                    _LOGGER.warning(
+                        "[automation-access] policies unavailable for read model card=%s",
+                        record.access_id,
+                        exc_info=True,
+                    )
+        return build_card_view(
+            card_authority_from_record(record),
+            resource_states=states,
+            row_for=(
+                (lambda resource: self._configured_resource(resource, config=catalog_config))
+                if catalog_config is not None
+                else None
+            ),
+            policies=policies,
+        )
+
+    async def describe_card(self, user: Mapping[str, Any], *, access_id: str) -> dict[str, Any]:
+        """The portable read model of one card the authenticated grantor owns."""
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        try:
+            record = await self._load_record(_clean(access_id), grantor_subject=grantor_subject)
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_cards_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        if record is None or record.grantor_subject != grantor_subject:
+            return {"ok": False, "error": "delegated_access_not_found", "status": 404}
+        view = await self._card_view(record)
+        return {"ok": True, "card": view.to_dict()}
+
+    async def card_for_access_id(
+        self,
+        *,
+        grantor_subject: str,
+        access_id: str,
+    ) -> DelegatedCardView | None:
+        """Resolve one active card for a trusted request-bound host adapter.
+
+        The grantor coordinate must come from authenticated credential facts,
+        never from caller input. Keeping this as a typed internal read avoids
+        making Gateway or Projection parse the public ``describe_card``
+        payload or reach into card persistence directly.
+        """
+
+        grantor = _clean(grantor_subject)
+        selected_access_id = _clean(access_id)
+        if not grantor or not selected_access_id:
+            return None
+        record = await self._load_record(
+            selected_access_id,
+            grantor_subject=grantor,
+        )
+        if record is None or record.grantor_subject != grantor:
+            return None
+        return await self._card_view(record)
+
+    async def resident_profile_card(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+    ) -> DelegatedCardView | None:
+        """The read model of one resident profile's card, or ``None`` when the
+        profile has no active card. Reads the stable card first, then a legacy
+        record that has not been folded yet."""
+        grantor = _clean(grantor_subject)
+        client = _clean(client_id)
+        if not grantor or not client:
+            return None
+        record = await self._load_record(
+            stable_resident_access_id(grantor, client),
+            grantor_subject=grantor,
+        )
+        if record is None:
+            legacy = await self._legacy_resident_records(
+                grantor_subject=grantor,
+                client_id=client,
+            )
+            if len(legacy) == 1:
+                record = legacy[0]
+            elif legacy:
+                # Several legacy records: no single card answers for the profile
+                # until they are folded; report nothing rather than one of them.
+                return None
+        if record is None:
+            return None
+        return await self._card_view(record)
+
+    async def _resident_agent_token_payload(
+        self,
+        record: AutomationAccessRecord,
+    ) -> dict[str, Any] | None:
+        if (
+            record.source != ACCESS_SOURCE_AGENT
+            or not record.access_token
+            or (record.expires_at and record.expires_at <= int(time.time()))
+        ):
+            return None
+        view = await self._card_view(record)
+        if view.state != CARD_STATE_ACTIVE:
+            return None
+        return {
+            "access_token": record.access_token,
+            "expires_at": record.expires_at,
+            "access_id": record.access_id,
+            "client_id": record.client_id,
+            "identity_scope": record.identity_scope or "grantor",
+            "card_revision": record.card_revision,
+            "card": view.to_dict(),
+        }
+
+    async def resident_agent_access_token_for_access_id(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+        access_id: str,
+    ) -> dict[str, Any] | None:
+        """Resolve one exact resident Card credential by its stable id."""
+
+        grantor = _clean(grantor_subject)
+        client = _clean(client_id)
+        selected_access_id = _clean(access_id)
+        if (
+            not grantor
+            or not client
+            or not selected_access_id
+            or not is_resident_client_id(client)
+            or selected_access_id != stable_resident_access_id(grantor, client)
+        ):
+            return None
+        record = await self._load_record(
+            selected_access_id,
+            grantor_subject=grantor,
+        )
+        if (
+            record is None
+            or record.grantor_subject != grantor
+            or _clean(record.client_id) != client
+        ):
+            return None
+        return await self._resident_agent_token_payload(record)
+
     async def agent_access_token(
         self,
         *,
@@ -2578,11 +3469,10 @@ class AutomationAccessService:
         the grant has expired. Keyed by the SAME deterministic access_id
         `create_access(client_id=…)` writes, so the per-turn resolver reuses the
         stored, already-bound token instead of minting an unbound one."""
-        record = await self._load_record(
-            agent_grant_access_id(grantor_subject, client_id, resources),
-            grantor_subject=grantor_subject,
+        record = await self._resident_card_for_resources(
+            grantor_subject=grantor_subject, client_id=client_id, resources=resources,
         )
-        if record is None or record.source != ACCESS_SOURCE_AGENT:
+        if record is None:
             return None
         if not record.access_token:
             return None
@@ -2712,12 +3602,11 @@ class AutomationAccessService:
             if exact_access_id:
                 record = exact_record
             else:
-                record = await self._load_record(
-                    agent_grant_access_id(grantor_subject, client_id, [cfg.resource]),
+                record = await self._resident_card_for_resources(
                     grantor_subject=grantor_subject,
+                    client_id=client_id,
+                    resources=[cfg.resource],
                 )
-                if record is not None and record.source != ACCESS_SOURCE_AGENT:
-                    record = None
             # The namespace survives, but the operation under it may not. A
             # capability the catalog no longer offers is refused outright —
             # consent cannot restore it.
@@ -2991,11 +3880,9 @@ class AutomationAccessService:
         preserved and merged — a refresh rotation (no picks) must never wipe
         the user's per-account ticks, and a re-consent unions with them.
 
-        A fresh consent also SUPERSEDES sibling cards: a DCR client gets a new
-        ``dcr-…`` id on every reconnect, so the old card can never be used
-        again. Siblings (same grantor + resource, different dcr client whose
-        registered redirect origin matches this client's) donate their account
-        binding to the new card and are then revoked.
+        Every DCR ``client_id`` is an independent caller. Redirect URIs are
+        callback channels, not reconnect identity, so a fresh registration
+        never inherits from or retires another client's Card.
         """
         grantor = _clean(grantor_subject)
         client = _clean(client_id)
@@ -3036,8 +3923,6 @@ class AutomationAccessService:
             existing_catalog_version = existing_card.catalog_version
             existing_named_services = copy.deepcopy(dict(existing_card.named_services or {}))
             existing_resource_operations = dict(existing_card.resource_operations)
-        # Initial consent (not a refresh rotation): absorb superseded sibling
-        # cards BEFORE composing this card, so their binding carries over.
         is_initial_consent = existing_card is None
         # A submitted selection is a consent-screen choice and REPLACES what the
         # card held: only the newest consent counts, even if an earlier one said
@@ -3061,17 +3946,6 @@ class AutomationAccessService:
                 )
             except CatalogUnavailable:
                 consent_config = None
-        inherited_account_scope: dict[str, dict[str, list[str]]] = {}
-        superseded: list[AutomationAccessRecord] = []
-        if is_initial_consent:
-            try:
-                inherited_account_scope, superseded = await self._collect_oauth_siblings(
-                    grantor=grantor, client_id=client, resource=resource_value,
-                )
-            except Exception:
-                _LOGGER.exception(
-                    "[automation-access] sibling scan failed grantor=%s client=%s", grantor, client
-                )
         ttl = max(60, int(getattr(self._store, "refresh_ttl", None) or 86400))
         if resource_grants is not None:
             selected_resource_grants = self._resource_grants(resource_grants)
@@ -3090,13 +3964,14 @@ class AutomationAccessService:
             for grant in grants
             if _clean(grant)
         ))
-        # Account binding: consent picks ∪ this card's existing binding ∪ what a
-        # superseded sibling donated. Union per account claim list.
+        # Account binding: consent picks union this exact Card's existing
+        # binding. Another DCR client is a separate caller and cannot donate
+        # authority merely because its callback URI has the same origin.
         merged_account_scope: dict[str, dict[str, list[str]]] = {
             provider: {account_id: list(claims) for account_id, claims in accounts.items()}
             for provider, accounts in normalize_account_scope(account_scope).items()
         }
-        for source_scope in (existing_account_scope, inherited_account_scope):
+        for source_scope in (existing_account_scope,):
             for provider, accounts in source_scope.items():
                 target = merged_account_scope.setdefault(provider, {})
                 for account_id, claims in accounts.items():
@@ -3146,30 +4021,42 @@ class AutomationAccessService:
             refresh_token=_clean(refresh_token),
             access_token=_clean(access_token),
             last_issued_at=now,
+            # A consent accepts each resource as the consent catalog showed it;
+            # a refresh rotation is not a review and carries the card's
+            # acceptance forward untouched.
+            resource_acceptance=(
+                next_resource_acceptance(
+                    resources=selected_resource_grants,
+                    row_for=(
+                        (lambda resource: consent_config.card_selector_config(resource))
+                        if consent_config is not None
+                        else (lambda resource: None)
+                    ),
+                    catalog_version=existing_catalog_version,
+                    selected_operations=selected_resource_operations,
+                    previous=(
+                        existing_card.resource_acceptance if existing_card is not None else None
+                    ),
+                )
+                if materialize_boundary
+                else (
+                    dict(existing_card.resource_acceptance) if existing_card is not None else {}
+                )
+            ),
+            provenance=(
+                copy.deepcopy(dict(existing_card.provenance or {}))
+                if existing_card is not None
+                else {}
+            ),
         )
         await self._persist_record(record, expected_revision=existing_card_revision)
         _LOGGER.info(
             "[automation-access] oauth grant recorded card=%s client=%s initial=%s "
-            "account_scope_providers=%s siblings_superseded=%d",
+            "account_scope_providers=%s",
             access_id, client, is_initial_consent,
-            sorted(merged_account_scope.keys()) or "-", len(superseded),
+            sorted(merged_account_scope.keys()) or "-",
         )
         await self.notify_change(grantor, action="granted", access=record.to_public_dict())
-        # Retire the superseded siblings AFTER the new card exists (revoke kills
-        # their refresh/access tokens and removes the card).
-        for old in superseded:
-            try:
-                await self.revoke_access(
-                    {"user_id": grantor}, access_id=old.access_id,
-                )
-                _LOGGER.info(
-                    "[automation-access] superseded oauth card %s (client=%s) by %s (client=%s)",
-                    old.access_id, old.client_id, access_id, client,
-                )
-            except Exception:
-                _LOGGER.exception(
-                    "[automation-access] failed to supersede card %s", old.access_id
-                )
         return record
 
     async def oauth_seed_account_scope(
@@ -3179,10 +4066,9 @@ class AutomationAccessService:
         client_id: str,
         resource: str,
     ) -> dict[str, dict[str, list[str]]]:
-        """The account binding a consent screen should pre-check for this
-        client: the client's own existing card (re-consent) merged with what a
-        superseded DCR sibling would donate. Read-only — nothing is retired
-        here; supersession happens at token issuance."""
+        """The account binding a consent screen should pre-check from this
+        exact client's existing Card. Another DCR registration is an
+        independent caller and contributes no defaults."""
         grantor = _clean(grantor_subject)
         client = _clean(client_id)
         if not grantor or not client:
@@ -3198,13 +4084,6 @@ class AutomationAccessService:
             own = None
         if own is not None:
             sources.append(own.account_scope)
-        try:
-            donated, _retire = await self._collect_oauth_siblings(
-                grantor=grantor, client_id=client, resource=_clean(resource),
-            )
-            sources.append(donated)
-        except Exception:
-            pass
         for source_scope in sources:
             for provider, accounts in source_scope.items():
                 target = seed.setdefault(str(provider), {})
@@ -3229,9 +4108,9 @@ class AutomationAccessService:
         boundary is that expansion under the version the card is pinned to. So
         the pre-check reproduces exactly what the card grants today.
 
-        Only the client's own card. A superseded DCR sibling donates its
-        account binding at issuance and nothing else, so seeding this dimension
-        from one would promise what the writer does not keep.
+        Only this exact client's Card contributes defaults. Other DCR client
+        ids identify independent callers, even when their redirect URIs use
+        the same loopback host.
         """
         grantor = _clean(grantor_subject)
         client = _clean(client_id)
@@ -3280,69 +4159,6 @@ class AutomationAccessService:
             for selector, operations in record.resource_operations.items()
             if operations
         }
-
-    async def _collect_oauth_siblings(
-        self,
-        *,
-        grantor: str,
-        client_id: str,
-        resource: str,
-    ) -> tuple[dict[str, dict[str, list[str]]], list[AutomationAccessRecord]]:
-        """Sibling cards a fresh OAuth consent supersedes: same grantor and
-        resource, a DIFFERENT dcr-registered client whose registered redirect
-        origin matches this client's. Returns (donated account binding, cards
-        to retire). Non-DCR clients (static ids like ``claude``) are keyed
-        stably and never pile up, so only ``dcr-…`` siblings are considered."""
-        if not client_id.startswith("dcr-"):
-            return {}, []
-        own_origins = await self._client_redirect_origins(client_id)
-        if not own_origins:
-            return {}, []
-        try:
-            candidates = await self._list_active_records(grantor)
-        except CardUnavailable:
-            return {}, []
-        donated: dict[str, dict[str, list[str]]] = {}
-        retire: list[AutomationAccessRecord] = []
-        for candidate in candidates:
-            if candidate.source != ACCESS_SOURCE_OAUTH:
-                continue
-            if candidate.client_id == client_id or not candidate.client_id.startswith("dcr-"):
-                continue
-            if (resource or "*") not in candidate.resource_grants:
-                continue
-            their_origins = await self._client_redirect_origins(candidate.client_id)
-            if not (own_origins & their_origins):
-                continue
-            for provider, accounts in candidate.account_scope.items():
-                target = donated.setdefault(provider, {})
-                for account_id, claims in accounts.items():
-                    held = target.setdefault(account_id, [])
-                    for claim in claims:
-                        if claim not in held:
-                            held.append(claim)
-            retire.append(candidate)
-        return donated, retire
-
-    async def _client_redirect_origins(self, client_id: str) -> set[str]:
-        """The scheme+host origins of a registered client's redirect URIs —
-        the stable identity of the app across DCR re-registrations."""
-        store = self._store
-        if store is None or not hasattr(store, "get_client_record"):
-            return set()
-        try:
-            record = await store.get_client_record(client_id) or {}
-        except Exception:
-            return set()
-        origins: set[str] = set()
-        for uri in record.get("redirect_uris") or []:
-            try:
-                parts = urlsplit(str(uri))
-            except Exception:
-                continue
-            if parts.scheme and parts.hostname:
-                origins.add(f"{parts.scheme}://{parts.hostname}".lower())
-        return origins
 
     async def prune_account_from_grants(
         self, *, grantor_subject: str, provider_id: str, account_id: str
@@ -3631,8 +4447,16 @@ class AutomationAccessService:
             for provider, accounts in resolved.account_scope.items()
         }
         new_label = _clean(label)
+        extend_config = await self._catalog_config(active, owner_subject=grantor_subject)
         updated = replace_fields(
             record,
+            resource_acceptance=next_resource_acceptance(
+                resources=resource_grants,
+                row_for=lambda resource: self._configured_resource(resource, config=extend_config),
+                catalog_version=_clean(getattr(active, "version", "")),
+                selected_operations=resolved.resource_operations,
+                previous=record.resource_acceptance,
+            ),
             resource_grants=resource_grants,
             resource_operations={
                 res: tuple(vals)

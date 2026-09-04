@@ -31,7 +31,11 @@ from connection_hub.remote_mcp.oauth_state import (
     RemoteMCPOAuthStateError,
     RemoteMCPOAuthStateHandle,
 )
-from connection_hub.remote_mcp.catalog import remote_mcp_resource_rows
+from connection_hub.remote_mcp.catalog import (
+    RemoteMCPResourceRow,
+    remote_mcp_resource_row,
+    remote_mcp_resource_rows,
+)
 from connection_hub.remote_mcp.proxy import (
     EXTERNAL_MCP_GRANT,
     RemoteMCPProxy,
@@ -96,5 +100,7 @@ __all__ = [
     "RemoteMCPTransport",
     "connector_id_from_resource",
     "connector_resource",
+    "RemoteMCPResourceRow",
+    "remote_mcp_resource_row",
     "remote_mcp_resource_rows",
 ]

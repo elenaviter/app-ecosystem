@@ -1,82 +1,156 @@
 # Connection Hub CLI
 
-`connection-hub-cli` selects the KDCube application host, keeps delegated
-caller credentials in the operating-system credential store, connects local
-MCP clients to Connection Hub, and operates a running KDCube through exact
-delegated management permissions.
-
-The installed command is `connection-hub`. A local caller profile contains an
-endpoint, a profile name, a keyring reference, and an optional `access_id`.
-The delegated bearer is stored separately in macOS Keychain.
-Set `CONNECTION_HUB_STATE_DIR` when non-secret CLI metadata needs an isolated
-root; keep the logged-in user's real `HOME` so the operating-system credential
-store remains discoverable.
+`connection-hub-cli` starts or selects a KDCube-hosted Connection Hub,
+authorizes exact management operations, and connects desktop MCP clients to a
+governed MCP endpoint. The installed command is `connection-hub`.
 
 ```bash
 uv tool install connection-hub-cli
 connection-hub setup
-connection-hub host authorize
-connection-hub host inspect
-connection-hub profile add coding-agent
-connection-hub client install claude-code --profile coding-agent
 ```
 
-`setup` creates a dedicated local KDCube runtime by default. It can instead
-select an existing local workdir or an existing KDCube endpoint addressed by
-loopback, IP, or DNS. New local setup uses Google login by default, asks for
-the public Google OAuth Web client ID, and accepts `--auth simple` as an
-explicit development option. Endpoint mode currently resolves, probes, and
-opens the deployed Connection Hub application.
+`setup` creates a dedicated local KDCube runtime by default. It can also select
+an existing local workdir or an HTTPS KDCube endpoint. New local setup uses
+Google login by default and accepts `--auth simple` for an explicit development
+environment.
 
-`connection-hub host authorize` uses the identity provider configured by the
-selected KDCube, Authorization Code with PKCE, and an ephemeral loopback
-callback. Before contacting KDCube, it verifies a disposable write/read/remove
-round trip through the local OAuth credential store. Use
-`connection-hub host authorize --no-open` when the CLI cannot launch a browser.
-It prints the short-lived authorization URL and waits for the same loopback
-callback. The callback page confirms only that the authorization response was
-received; the terminal confirms token exchange and Keychain storage.
-Its default request contains deployment inspection and application-surface
-discovery. The resulting access and refresh credentials remain together in
-macOS Keychain. Application reload is requested when it is needed:
+## Connect An MCP Client
+
+Two connection modes cover different credential owners:
+
+| Mode | Remote transport | Credential custody |
+| --- | --- | --- |
+| `oauth` | Client connects directly by Streamable HTTP | The MCP client's OAuth store |
+| `bridge` | Client starts `connection-hub mcp serve` over stdio | The current user's native operating-system store |
+| `auto` | Selects a verified native OAuth path, or a supplied local profile | The selected mode's owner |
+
+For Claude Code, Codex, Hermes, or OpenClaw with native remote OAuth:
 
 ```bash
-connection-hub host surfaces connection-hub@1-0
-connection-hub host reload connection-hub@1-0
+connection-hub client install claude-code \
+  --mode auto \
+  --endpoint https://runtime.example/mcp
 ```
 
-A reload without reusable authority returns an exact consent request containing
-the operation and its currently missing required claims. In an interactive
-terminal the CLI opens it, waits for the user, and retries the unchanged request
-with the same invocation ID and digest. KDCube resolves the live delegated card
-immediately before the operation. The management service controls a running
-deployment; local or infrastructure control starts a stopped deployment.
+The JSON result includes the non-secret interactive authorization command.
+Run it in the client's normal terminal. Claude Desktop remote connectors are
+created in its Settings interface; the CLI manages its local stdio entry.
+Direct OAuth does not construct or probe the Connection Hub native store, so
+it remains available on headless Linux and WSL installations where the MCP
+client has its own secure OAuth custody.
 
-Disconnecting revokes the OAuth grant and its delegated card before removing
-the local Keychain session:
+For a local bridge, first create a profile through browser OAuth and PKCE:
 
 ```bash
-connection-hub host disconnect
+connection-hub profile authorize coding-agent \
+  --endpoint https://runtime.example/mcp
+connection-hub client install claude-code \
+  --mode bridge \
+  --profile coding-agent
 ```
 
-The client entry launches this common local MCP helper:
+The bridge retrieves and refreshes the OAuth token set internally. The client
+configuration contains only this command shape:
 
 ```text
 connection-hub mcp serve --profile coding-agent
 ```
 
-The helper reads the delegated bearer from Keychain, opens the governed
-Streamable HTTP connection, and relays MCP over stdio. The bearer is absent
-from the client file, command arguments, environment, and normal command
-output.
+A manually issued short-lived delegated bearer can initialize a static bridge
+profile through hidden input:
 
-The credential belongs to the intended caller profile. Keychain custody
-reduces accidental copying; the live delegated-access card remains the
-authority. Connection Hub resolves the current card, catalog, expiry,
-invocation policy, and revocation on each covered call.
+```bash
+connection-hub profile add coding-agent \
+  --endpoint https://runtime.example/mcp \
+  --access-id access_example
+```
 
-Python host processes can use the same profile boundary without launching the
-stdio bridge:
+Use `--credential-stdin` only when standard input already comes from a
+controlled secret store. The profile metadata files contain an opaque
+credential reference and optional `access_id`; bearer and OAuth token values
+remain in native custody.
+
+The accepted native backends are:
+
+| Platform | Store | Exact backend |
+| --- | --- | --- |
+| macOS | login Keychain | `keyring.backends.macOS.Keyring` |
+| Windows | Credential Manager | `keyring.backends.Windows.WinVaultKeyring` |
+| Linux desktop | Secret Service | `keyring.backends.SecretService.Keyring` |
+
+Windows values use a bounded, versioned chunk representation with digest
+verification and transactional generation replacement. Its 288 KiB UTF-8
+bound covers every token record accepted by this CLI, including worst-case
+JSON escaping. Linux bridge mode requires a graphical session D-Bus, an
+available Secret Service provider, and an unlocked default collection.
+Backend selection fails closed and has no plaintext fallback.
+
+Command-backed adapters verify add, login, logout, inspection, and removal
+capabilities relevant to the selected mode before writing an entry. A client
+version with an incomplete OAuth lifecycle is rejected; `auto` can use an
+explicitly supplied bridge profile instead.
+
+## Operate The Selected KDCube Host
+
+Authorize the CLI through the identity provider configured by the selected
+KDCube deployment:
+
+```bash
+connection-hub host authorize
+connection-hub host inspect
+connection-hub host surfaces connection-hub@1-0
+connection-hub host reload connection-hub@1-0
+```
+
+`host authorize` performs native-store readiness first, then OAuth discovery,
+Authorization Code with PKCE, browser login, token exchange, and card-bound
+session storage. Reload permission is demand-driven and request-bound. The
+runtime resolves the live delegated card immediately before the operation.
+
+```bash
+connection-hub host disconnect
+```
+
+Disconnect revokes the OAuth grant and its delegated card before removing
+local custody.
+
+## Diagnose And Recover
+
+```bash
+connection-hub status
+connection-hub doctor --probe --json
+connection-hub profile status coding-agent --probe
+connection-hub client list --json
+```
+
+Diagnostics report the platform, exact backend, profile type, expiry state,
+refresh readiness, client mode, and owned-entry state. Credential values are
+excluded from command arguments, environment variables, client configuration,
+state files, output, and ordinary logs.
+
+Static credential replacement validates the candidate before switching:
+
+```bash
+connection-hub profile credential replace coding-agent
+```
+
+OAuth profile disconnection revokes server authority before local retirement:
+
+```bash
+connection-hub profile disconnect coding-agent
+```
+
+If local OAuth custody is missing, revoke the recorded `access_id` through the
+Connection Hub owner interface before using the explicit local-abandonment
+flags on `profile remove`.
+
+Set `CONNECTION_HUB_STATE_DIR` when non-secret CLI metadata needs an isolated
+root. Keep the real desktop user's `HOME` so its native store remains
+discoverable.
+
+## Python Composition
+
+Domain host processes can use the same profile boundary directly:
 
 ```python
 from connection_hub_cli.profile_connection import connect_profile_tools
@@ -85,43 +159,18 @@ async with connect_profile_tools(
     profile_name="coding-agent",
     profiles=profiles,
     credentials=credentials,
+    oauth_sessions=oauth_sessions,
 ) as (remote_tools, _mcp_client):
     tools = await remote_tools.list_tools()
 ```
 
-`connection-hub-cli` owns profile lookup and operating-system credential
-custody. The host-neutral MCP session underneath is provided by
-[`app-foundation`](https://github.com/elenaviter/app-ecosystem/tree/main/packages/app-foundation).
-The application using `remote_tools` still owns its domain calls and result
-interpretation.
+`connect_profile_tools()` uses the same protected OAuth profile session as the
+stdio relay. The domain caller receives connected tools while refresh
+credentials remain inside the profile service.
 
-The same helper can be registered for Claude Code, Claude Desktop local MCP,
-Hermes, or OpenClaw:
-
-```text
-connection-hub client install <client> --profile coding-agent
-```
-
-For another stdio-capable client,
-`connection-hub client command --profile coding-agent` prints the non-secret
-command and arguments. `connection-hub doctor --probe` verifies local file
-permissions, a temporary Keychain write/read/delete, managed client entries,
-and MCP tool listing without invoking a tool.
-
-Removing a local profile removes local metadata and Keychain custody. It does
-not revoke the server-side delegated card. Edit or revoke that authority from
-Connection Hub's authenticated owner surface. Credential replacement applies
-to newly started helpers; reload the MCP client after replacement. Removing
-client wiring or local custody does not terminate a helper process that is
-already running, so revoke the delegated card when access must end
-immediately.
-
-This first implementation verifies macOS Keychain. Windows Credential Manager
-and Linux Secret Service remain subsequent platform work. KDCube lifecycle and
-application-host setup are composed through KDCube's supported control API;
-the CLI does not duplicate or shell out to KDCube deployment logic.
-
-Full setup and security boundaries:
-https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/local-client-helper.md
+The complete command, security, client, recovery, and acceptance contracts are
+documented in [Connect Desktop MCP Clients To Connection Hub](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/local-client-helper.md).
+Real Windows Credential Manager, Linux Secret Service, Hermes, and OpenClaw
+acceptance is recorded separately from mocked portable tests.
 
 License: MIT. Source: https://github.com/elenaviter/app-ecosystem

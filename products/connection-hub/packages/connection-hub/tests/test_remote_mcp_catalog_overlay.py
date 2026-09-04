@@ -123,9 +123,11 @@ async def test_user_owned_connector_is_offered_as_an_exact_card_resource():
     assert requested_owners == ["user-1"]
     assert resources == [
         {
-            "resource": "urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567",
-            "label": "External MCP: Customer records",
-            "identity_scope": "grantor",
+                "resource": "urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567",
+                "label": "External MCP: Customer records",
+                "kind": "remote_mcp",
+                "provider_id": "remote_mcp",
+                "identity_scope": "grantor",
             "grants": [EXTERNAL_MCP_GRANT],
             "admin_only": False,
             "operations": [

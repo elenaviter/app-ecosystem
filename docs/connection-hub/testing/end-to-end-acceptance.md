@@ -1,11 +1,11 @@
 ---
 id: connection-hub/testing/end-to-end-acceptance
 title: "Connection Hub And Governed MCP End-To-End Acceptance"
-summary: "Human-runnable acceptance procedure for delegated cards, once-or-always invocation policy, user-owned external MCP proxying, direct protected-service admission, connected accounts, live consent, revocation, durability, and external clients such as Claude Code."
+summary: "Human-runnable acceptance procedure for delegated cards, invocation policy, external MCP proxying, direct protected-service admission, connected accounts, revocation, durability, and native-OAuth or bridged desktop clients."
 status: current
 tags: ["testing", "connection-hub", "delegated-access", "mcp", "proxy", "admission", "invocation-policy", "consent", "claude-code"]
-keywords: ["Connection Hub acceptance", "delegated card test", "allow once", "allow always", "external MCP proxy", "direct admission", "descriptor drift", "live consent", "operation-only consent", "resource_operations", "named services MCP", "Claude Code OAuth", "revocation test"]
-updated_at: 2026-09-02
+keywords: ["Connection Hub acceptance", "delegated card test", "allow once", "allow always", "external MCP proxy", "delegated MCP gateway", "one resident card", "multi-resource card", "direct admission", "descriptor drift", "live consent", "operation-only consent", "resource_operations", "named services MCP", "Claude Code OAuth", "revocation test"]
+updated_at: 2026-09-04
 see_also:
   - ../connection-hub-architecture.md
   - ../macos-user-presence-helper.md
@@ -24,6 +24,8 @@ with an agent, and every step is explicit enough to automate later.
 The procedure covers:
 
 - a resident KDCube agent using a managed MCP or native named-service tool;
+- one stable resident-agent card projecting multiple compatible resources
+  through one aggregate delegated MCP Gateway;
 - managed MCP resources such as Conversation MCP and Productivity MCP;
 - the named-services MCP door and its exact inner namespace/operation checks;
 - connected-account selection and provider claims;
@@ -104,7 +106,8 @@ pass.
 5. Prepare a conversation whose resident agent can call named services.
 6. Prepare a harmless image and a Slack DM or channel controlled by the test
    user.
-7. Install Claude Code for the external-client phase.
+7. Install `connection-hub-cli` and at least one supported MCP client for the
+   external-client phase.
 8. Keep service logs and the KDCube ReAct timeline available.
 9. For the external-MCP phase, prepare a disposable streamable-HTTP MCP server
    with one harmless tool, one sibling tool, and controls for changing the
@@ -123,6 +126,7 @@ export KDCUBE_PROJECT="<project>"
 
 export NAMED_SERVICES_MCP_URL="$KDCUBE_BASE_URL/api/integrations/bundles/$KDCUBE_TENANT/$KDCUBE_PROJECT/kdcube-services@1-0/public/mcp/named_services"
 export PRODUCTIVITY_MCP_URL="$KDCUBE_BASE_URL/api/integrations/bundles/$KDCUBE_TENANT/$KDCUBE_PROJECT/kdcube-services@1-0/public/mcp/productivity"
+export DELEGATED_GATEWAY_MCP_URL="$KDCUBE_BASE_URL/api/integrations/bundles/$KDCUBE_TENANT/$KDCUBE_PROJECT/connection-hub@1-0/public/mcp/delegated_mcp_gateway"
 ```
 
 Confirm runtime health before testing:
@@ -344,7 +348,93 @@ same-named call to resource B must return
 `resource_operations` is authority and the flat `operations` union is only a
 compatibility projection.
 
-## Phase 6A: User-Owned External MCP Proxy
+## Phase 6A: One Resident Card, Multiple Resources, One Gateway
+
+This phase proves the resident-agent product invariant. It uses one hosted
+agent identity, not an external OAuth connector:
+
+```text
+signed-in grantor + application + agent id
+                    |
+                    v
+          one stable Card / access_id
+                    |
+          +---------+---------+
+          |                   |
+          v                   v
+  managed KDCube MCP   user-owned external MCP
+          |                   |
+          +---------+---------+
+                    |
+                    v
+       one delegated_mcp_gateway binding
+```
+
+1. Open **Connection Hub -> Delegated by KDCube** and find the resident card
+   for the test application and agent. Record its `access_id`, profile id,
+   revision, and resource list. Confirm there is exactly one active card for
+   that grantor/application/agent identity.
+2. In **External MCP**, create or reuse the disposable fixture from Phase 6B.
+   Its accepted descriptor must expose a harmless `search` operation. Do not
+   grant its sibling destructive-looking operation.
+3. Edit the resident card. Retain one harmless managed MCP operation, for
+   example Knowledge `about`, then add the fixture connector resource and its
+   `search` operation with **Always**. Save once.
+4. Reopen the card and record its new revision. Confirm:
+   - the `access_id` and resident profile id did not change;
+   - both resources appear as separate sections on the same card;
+   - each resource has its own accepted descriptor and operation policy;
+   - no second resident card was created.
+5. Open the Workspace capability picker or equivalent resident-agent
+   capability view. Confirm both resources are available, both rows name the
+   same `access_id`, and both use one Gateway server id and endpoint. There
+   must be no duplicate direct delegated MCP binding and no bearer in the
+   response or visible configuration.
+6. Start a fresh agent turn. Ask the agent to inspect its Connection Hub
+   access, call the managed harmless operation, and call the external fixture
+   `search` with a unique query. Require real tool results.
+
+Expected result: both calls pass through the one aggregate Gateway. The
+external fixture verifies its upstream credential and increments exactly once;
+the model never receives that credential or the resident Card bearer.
+
+7. Remove only the managed resource from the same card. Keep the fixture
+   `search` grant and the current conversation open. Refresh capabilities or
+   start the next turn.
+
+Expected result: the managed qualified tool disappears or is denied on its
+next call, external `search` remains callable, and `access_id` is unchanged.
+
+8. Add the managed resource back and remove only external `search`. Confirm the
+   inverse result. Restore `search` as **Once**, call it with one invocation id,
+   replay that exact id and arguments, then call with a new id.
+
+Expected result: the first effect occurs once, exact replay returns without a
+second upstream dispatch, and the new invocation id is exhausted.
+
+9. Revoke the whole resident card while the agent remains available. Both
+   resources must fail on the next request, with no fallback to application
+   authority or an external client's card. Restore a test card only if later
+   phases need it.
+
+The repeatable protocol harness for this phase is:
+
+```bash
+"$PY" -m \
+  kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.remote_mcp.tests.live_resident_gateway_acceptance \
+  --source-root "$KDCUBE_REPO"
+```
+
+Add the documented restart arguments to include application-process durability.
+The harness creates and removes its owner, connector, card, and fixture. It does
+not replace the visible capability-picker and deliberate model-turn checks.
+
+An external client connected directly to `remote_mcp_proxy`, Productivity, or
+another OAuth protected resource keeps its own independent Card and
+`access_id`. Do not merge those OAuth connections into the resident-agent card
+or expect a client connected to one endpoint to discover unrelated endpoints.
+
+## Phase 6B: User-Owned External MCP Proxy
 
 This phase covers an MCP service that does not integrate with Connection Hub.
 Connection Hub owns discovery, card projection, admission, credential
@@ -442,7 +532,7 @@ issued card and bearer when the release also needs coverage of the manual
 credential path. The OAuth run is the primary external-client proof; the manual
 run is an independent issuance and custody test.
 
-## Phase 6B: Direct Protected-Service Admission
+## Phase 6C: Direct Protected-Service Admission
 
 This phase covers a backend that integrates with Connection Hub but executes
 its own domain operation.
@@ -486,16 +576,20 @@ dedicated connector name and card.
 
 ### 7A. Add and authenticate the client
 
-Remove a stale local registration, then add the named-services MCP endpoint:
+Install the named-services MCP endpoint in explicit native-OAuth mode:
 
 ```bash
-claude mcp remove --scope local kdcube-named-services-e2e
-claude mcp add --scope local --transport http kdcube-named-services-e2e "$NAMED_SERVICES_MCP_URL"
+connection-hub client install claude-code \
+  --mode oauth \
+  --endpoint "$NAMED_SERVICES_MCP_URL" \
+  --name kdcube-named-services-e2e
+claude mcp login kdcube-named-services-e2e
 claude
 ```
 
+The install result's `authorization_command` must match the login command.
 Inside Claude Code, run `/mcp`, select `kdcube-named-services-e2e`, and finish
-the browser authorization flow as the test user.
+browser authorization as the test user.
 
 Expected result:
 
@@ -537,8 +631,87 @@ does not affect the other, and neither can use the hosted-agent card.
 Remove the test connector after acceptance:
 
 ```bash
-claude mcp remove --scope local kdcube-named-services-e2e
+connection-hub client remove claude-code kdcube-named-services-e2e
 ```
+
+### 7E. Local bridge and operating-system custody
+
+Run this subsection on macOS, a real Windows desktop, and a graphical Linux
+desktop. WSL without a reachable Secret Service daemon is recorded separately.
+
+1. Run `connection-hub doctor --json` and record the exact backend:
+   `keyring.backends.macOS.Keyring`,
+   `keyring.backends.Windows.WinVaultKeyring`, or
+   `keyring.backends.SecretService.Keyring`.
+2. Create a second caller profile through the protected MCP endpoint:
+
+   ```bash
+   connection-hub profile authorize local-bridge-e2e \
+     --endpoint "$NAMED_SERVICES_MCP_URL"
+   ```
+
+3. Install the same client in explicit bridge mode:
+
+   ```bash
+   connection-hub client install claude-code \
+     --mode bridge \
+     --profile local-bridge-e2e \
+     --name kdcube-named-services-bridge-e2e
+   ```
+
+4. Verify the client entry contains only the stdio helper command and profile
+   name. Search its configuration, CLI state, terminal capture, and ordinary
+   logs for the access-token and refresh-token canaries; both must be absent.
+5. Repeat the minimal grant, live narrowing, regrant, and next-call revocation
+   sequence through the still-running bridge.
+6. Force the OAuth access token into refresh leeway. The next connection must
+   refresh under the profile lock, retain the same `access_id`, and keep the
+   complete token set in the native store.
+7. Disconnect the profile and confirm server revocation precedes local
+   credential removal:
+
+   ```bash
+   connection-hub profile disconnect local-bridge-e2e
+   connection-hub client remove \
+     claude-code kdcube-named-services-bridge-e2e
+   ```
+
+Repeat the direct `oauth` and local `bridge` install round trip for every
+client claimed by a release. Claude Desktop remote OAuth is configured in its
+Settings interface; its CLI-managed acceptance covers the local bridge. The
+command-backed acceptance must prove add, login, logout, inspection, and
+removal before claiming native OAuth support for a client version. Direct
+OAuth must remain usable when the Connection Hub native store is unavailable;
+bridge mode must fail closed in that condition. The
+full platform matrix, Windows maximum-size credential proof, locked Linux
+collection case, restart, and cleanup evidence are release gates in the
+[cross-platform external-client procedure](https://github.com/elenaviter/applications/blob/main/kdcube-docs/procedures/cicd/connection-hub-external-client-cross-platform.md).
+
+### 7F. Automated live Relay-to-Gateway gate
+
+Run the opt-in source acceptance before the native-store and named-client
+matrix. Supply a prepared interpreter with the KDCube live-test dependencies,
+the Connection Hub CLI test dependencies, and all four source roots selected
+on `PYTHONPATH`:
+
+```bash
+"$PY" \
+  "$APP_ECOSYSTEM_REPO/products/connection-hub/packages/connection-hub-cli/tests/live_gateway_relay_acceptance.py" \
+  --base-url "$KDCUBE_BASE_URL" \
+  --tenant "$KDCUBE_TENANT" \
+  --project "$KDCUBE_PROJECT" \
+  --bundle-id connection-hub@1-0 \
+  --cognito-region "$COGNITO_REGION" \
+  --cognito-pool "$COGNITO_USER_POOL_ID" \
+  --cognito-client "$COGNITO_APP_CLIENT_ID" \
+  --source-root "$KDCUBE_REPO"
+```
+
+This disposable gate keeps one local Relay process open and proves a governed
+Gateway call, live Card narrowing, focused regrant, next-call revocation, and
+complete cleanup. The credential adapter is in memory, so this gate does not
+replace 7E: operating-system custody and actual Claude Code, Codex, Hermes,
+OpenClaw, and Claude Desktop installation remain real-platform acceptance.
 
 ## Phase 8: Automation Credential
 
@@ -644,12 +817,18 @@ evidence; the real operation result remains the acceptance authority.
 - [ ] Slack image upload and message both succeed in the real workspace.
 - [ ] Revocation affects the next invocation without restarting the agent.
 - [ ] Conversation/Productivity or another plain managed MCP surface passes.
+- [ ] One resident agent keeps one stable Card and `access_id` while multiple
+      resources appear through one credential-free delegated Gateway binding.
 - [ ] One application-defined managed capability passes the same allow/deny test.
 - [ ] External MCP proxy proves exact tool selection, credential containment,
       descriptor drift, once/always, and no-redispatch replay.
 - [ ] Direct admission proves independent workload authentication, pairwise
       user/profile identity, once/always, and provider-owned effect idempotency.
 - [ ] Claude Code uses its own card and observes grant and revocation live.
+- [ ] Each claimed desktop client passes explicit `oauth` and/or `bridge`
+      installation through its documented credential owner.
+- [ ] macOS, Windows, and Linux bridge runs use their exact accepted native
+      backend and leave no credential in client config, state, output, or logs.
 - [ ] Automation credential is resource- and operation-bounded.
 - [ ] Cards and catalog survive browser and runtime restart.
 - [ ] Every negative case is fail-closed with a structured reason.

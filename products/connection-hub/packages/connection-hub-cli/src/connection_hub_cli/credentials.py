@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import platform
-import secrets
-from typing import Protocol
+from typing import NoReturn, Protocol
 
-import keyring
+from app_foundation.secrets import (
+    NativeSecretError,
+    NativeSecretValueStore,
+    accepted_native_backend,
+)
 from keyring.backend import KeyringBackend
-from keyring.errors import PasswordDeleteError
 
 from connection_hub_cli.errors import CredentialError
 
 KEYRING_SERVICE = "tech.kdcube.connection-hub.delegated-caller"
-KEYRING_HEALTH_ACCOUNT = "health-check"
 
 
 class CredentialStore(Protocol):
@@ -24,6 +25,72 @@ class CredentialStore(Protocol):
     def backend_name(self) -> str: ...
 
     def verify_ready(self) -> None: ...
+
+
+class UnavailableCredentialStore:
+    """Deferred native-store failure for commands that use client-owned OAuth."""
+
+    def __init__(
+        self,
+        error: CredentialError,
+        *,
+        platform_name: str | None = None,
+    ) -> None:
+        self._code = error.code
+        self._message = error.message
+        self._exit_code = error.exit_code
+        self.platform_name = platform_name or platform.system()
+        self.store_name = {
+            "Darwin": "macOS Keychain",
+            "Windows": "Windows Credential Manager",
+            "Linux": "Linux Secret Service",
+        }.get(self.platform_name, "operating-system credential store")
+
+    def put(self, _credential_ref: str, _bearer: str) -> None:
+        self._raise()
+
+    def get(self, _credential_ref: str) -> str | None:
+        self._raise()
+
+    def remove(self, _credential_ref: str) -> bool:
+        self._raise()
+
+    def backend_name(self) -> str:
+        try:
+            module, name = accepted_native_backend(self.platform_name)
+        except NativeSecretError:
+            return "unavailable"
+        return f"{module}.{name} (required, unavailable)"
+
+    def verify_ready(self) -> None:
+        self._raise()
+
+    def recovery_hint(self) -> str:
+        if self.platform_name == "Darwin":
+            return (
+                "Run from the logged-in macOS desktop session and unlock the login "
+                "Keychain before retrying."
+            )
+        if self.platform_name == "Windows":
+            return (
+                "Run from the intended interactive Windows desktop account and verify "
+                "that Windows Credential Manager is available."
+            )
+        if self.platform_name == "Linux":
+            return (
+                "Run from a graphical Linux session with DBUS_SESSION_BUS_ADDRESS set, "
+                "an available Secret Service provider, and an unlocked default collection."
+            )
+        return (
+            "Use a supported desktop operating system or a client's native OAuth mode."
+        )
+
+    def _raise(self) -> NoReturn:
+        raise CredentialError(
+            self._code,
+            self._message,
+            exit_code=self._exit_code,
+        ) from None
 
 
 def normalize_bearer(value: str) -> str:
@@ -44,7 +111,9 @@ def normalize_bearer(value: str) -> str:
     return candidate
 
 
-class MacOSKeychainCredentialStore:
+class NativeCredentialStore:
+    """Connection Hub delegated-caller values in the selected native store."""
+
     def __init__(
         self,
         *,
@@ -52,72 +121,105 @@ class MacOSKeychainCredentialStore:
         platform_name: str | None = None,
         enforce_native_backend: bool = True,
     ) -> None:
-        self._backend = backend or keyring.get_keyring()
-        current_platform = platform_name or platform.system()
-        if current_platform != "Darwin":
-            raise CredentialError(
-                "unsupported_credential_store",
-                "This release verifies macOS Keychain only; Windows Credential Manager and Linux Secret Service remain pending.",
+        try:
+            self._values = NativeSecretValueStore(
+                service=KEYRING_SERVICE,
+                backend=backend,
+                platform_name=platform_name,
+                enforce_native_backend=enforce_native_backend,
             )
-        backend_module = type(self._backend).__module__
-        if enforce_native_backend and backend_module != "keyring.backends.macOS":
-            raise CredentialError(
-                "insecure_keyring_backend",
-                "A native macOS Keychain backend is required for delegated caller credentials.",
-            )
-        if getattr(self._backend, "priority", 0) <= 0:
-            raise CredentialError(
-                "unavailable_keyring_backend",
-                "The macOS Keychain backend is unavailable.",
-            )
+        except NativeSecretError as exc:
+            self._raise(exc)
+
+    @property
+    def platform_name(self) -> str:
+        return self._values.platform_name
+
+    @property
+    def store_name(self) -> str:
+        return self._values.store_name
+
+    @property
+    def native_backend(self) -> KeyringBackend:
+        return self._values.native_backend
+
+    def recovery_hint(self) -> str:
+        return self._values.recovery_hint()
 
     def put(self, credential_ref: str, bearer: str) -> None:
         candidate = normalize_bearer(bearer)
         try:
-            self._backend.set_password(KEYRING_SERVICE, credential_ref, candidate)
-        except Exception as exc:
-            raise CredentialError(
-                "credential_store_write_failed",
-                "The delegated caller credential could not be stored in macOS Keychain.",
-            ) from exc
+            self._values.replace(credential_ref, candidate)
+        except NativeSecretError as exc:
+            self._raise(exc)
 
     def get(self, credential_ref: str) -> str | None:
         try:
-            value = self._backend.get_password(KEYRING_SERVICE, credential_ref)
-        except Exception as exc:
-            raise CredentialError(
-                "credential_store_read_failed",
-                "The delegated caller credential could not be read from macOS Keychain.",
-            ) from exc
+            value = self._values.get(credential_ref)
+        except NativeSecretError as exc:
+            self._raise(exc)
         return normalize_bearer(value) if value is not None else None
 
     def remove(self, credential_ref: str) -> bool:
         try:
-            self._backend.delete_password(KEYRING_SERVICE, credential_ref)
-        except PasswordDeleteError:
-            return False
-        except Exception as exc:
-            raise CredentialError(
-                "credential_store_delete_failed",
-                "The delegated caller credential could not be removed from macOS Keychain.",
-            ) from exc
-        return True
+            return self._values.remove(credential_ref)
+        except NativeSecretError as exc:
+            self._raise(exc)
 
     def backend_name(self) -> str:
-        return f"{type(self._backend).__module__}.{type(self._backend).__qualname__}"
+        return self._values.backend_name()
 
     def verify_ready(self) -> None:
-        account = f"{KEYRING_HEALTH_ACCOUNT}-{secrets.token_hex(16)}"
-        candidate = secrets.token_urlsafe(32)
-        stored = False
         try:
-            self.put(account, candidate)
-            stored = True
-            if self.get(account) != candidate:
-                raise CredentialError(
-                    "credential_store_verification_failed",
-                    "macOS Keychain did not return the temporary verification credential.",
-                )
-        finally:
-            if stored:
-                self.remove(account)
+            self._values.verify_ready()
+        except NativeSecretError as exc:
+            self._raise(exc)
+
+    def _raise(self, exc: NativeSecretError) -> None:
+        code = {
+            "unsupported_native_secret_platform": "unsupported_credential_store",
+            "insecure_native_secret_backend": "insecure_keyring_backend",
+            "unavailable_native_secret_backend": "unavailable_keyring_backend",
+            "native_secret_write_failed": "credential_store_write_failed",
+            "native_secret_read_failed": "credential_store_read_failed",
+            "native_secret_delete_failed": "credential_store_delete_failed",
+            "native_secret_cleanup_failed": "credential_store_delete_failed",
+            "native_secret_corrupt": "credential_store_read_failed",
+            "native_secret_verification_failed": "credential_store_verification_failed",
+            "native_secret_rollback_failed": "credential_rollback_failed",
+            "native_secret_too_large": "invalid_credential",
+            "native_secret_key_invalid": "invalid_credential_ref",
+        }.get(exc.code, "credential_store_failed")
+        raise CredentialError(code, exc.message) from None
+
+
+class MacOSKeychainCredentialStore(NativeCredentialStore):
+    """Compatibility name for callers that explicitly require macOS."""
+
+    def __init__(
+        self,
+        *,
+        backend: KeyringBackend | None = None,
+        platform_name: str | None = None,
+        enforce_native_backend: bool = True,
+    ) -> None:
+        if platform_name is not None and platform_name != "Darwin":
+            raise CredentialError(
+                "unsupported_credential_store",
+                "This compatibility class requires macOS Keychain.",
+            )
+        super().__init__(
+            backend=backend,
+            platform_name="Darwin",
+            enforce_native_backend=enforce_native_backend,
+        )
+
+
+__all__ = [
+    "KEYRING_SERVICE",
+    "CredentialStore",
+    "MacOSKeychainCredentialStore",
+    "NativeCredentialStore",
+    "UnavailableCredentialStore",
+    "normalize_bearer",
+]

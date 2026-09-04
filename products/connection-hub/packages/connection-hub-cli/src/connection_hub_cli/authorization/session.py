@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import platform
 import re
 import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
@@ -11,21 +10,21 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
-import keyring
+from app_foundation.secrets import NativeSecretError, NativeSecretValueStore
 from filelock import AsyncFileLock, FileLock, Timeout
 from keyring.backend import KeyringBackend
-from keyring.errors import PasswordDeleteError
 
 from connection_hub_cli.authorization.models import (
     OAuthTokenSet,
     validate_resource_identifier,
     validate_web_url,
 )
-from connection_hub_cli.errors import AuthorizationError
+from connection_hub_cli.errors import AuthorizationError, CredentialError
 from connection_hub_cli.models import utc_now
 from connection_hub_cli.state import AtomicJsonState
 
 OAUTH_SESSION_KEYRING_SERVICE = "tech.kdcube.connection-hub.oauth-session"
+OAUTH_PROFILE_KEYRING_SERVICE = "tech.kdcube.connection-hub.oauth-profile"
 _SESSION_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _CREDENTIAL_REF_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -238,7 +237,7 @@ def _validated_client_id(value: str) -> str:
 def _validated_scope(value: str) -> str:
     candidate = str(value or "").strip()
     if len(candidate) > 8192 or any(
-        ord(character) < 32 or ord(character) == 127 for character in candidate
+        not 0x20 <= ord(character) <= 0x7E for character in candidate
     ):
         raise AuthorizationError(
             "oauth_scope_invalid",
@@ -349,7 +348,123 @@ class OAuthSessionCredentialStore(Protocol):
     def remove(self, credential_ref: str) -> bool: ...
 
 
-class MacOSOAuthSessionCredentialStore:
+class UnavailableOAuthCredentialStore:
+    """Deferred OAuth-store failure paired with an unavailable native backend."""
+
+    def __init__(self, error: CredentialError, *, error_prefix: str) -> None:
+        self._message = error.message
+        self._exit_code = error.exit_code
+        self._code = {
+            "unsupported_credential_store": f"unsupported_{error_prefix}_store",
+            "insecure_keyring_backend": f"insecure_{error_prefix}_store",
+            "unavailable_keyring_backend": f"unavailable_{error_prefix}_store",
+        }.get(error.code, f"{error_prefix}_store_failed")
+
+    def put(self, _credential_ref: str, _token: OAuthTokenSet) -> None:
+        self._raise()
+
+    def get(self, _credential_ref: str) -> OAuthTokenSet | None:
+        self._raise()
+
+    def remove(self, _credential_ref: str) -> bool:
+        self._raise()
+
+    def _raise(self) -> None:
+        raise AuthorizationError(
+            self._code,
+            self._message,
+            exit_code=self._exit_code,
+        ) from None
+
+
+class NativeOAuthSessionCredentialStore:
+    def __init__(
+        self,
+        *,
+        backend: KeyringBackend | None = None,
+        platform_name: str | None = None,
+        enforce_native_backend: bool = True,
+        service: str = OAUTH_SESSION_KEYRING_SERVICE,
+        error_prefix: str = "oauth_session",
+    ) -> None:
+        self._error_prefix = error_prefix
+        try:
+            self._values = NativeSecretValueStore(
+                service=service,
+                backend=backend,
+                platform_name=platform_name,
+                enforce_native_backend=enforce_native_backend,
+            )
+        except NativeSecretError as exc:
+            self._raise(exc)
+
+    @property
+    def platform_name(self) -> str:
+        return self._values.platform_name
+
+    @property
+    def store_name(self) -> str:
+        return self._values.store_name
+
+    def backend_name(self) -> str:
+        return self._values.backend_name()
+
+    def recovery_hint(self) -> str:
+        return self._values.recovery_hint()
+
+    def put(self, credential_ref: str, token: OAuthTokenSet) -> None:
+        _validate_credential_ref(credential_ref)
+        value = token.to_secret_json()
+        try:
+            self._values.replace(credential_ref, value)
+        except NativeSecretError as exc:
+            self._raise(exc)
+
+    def get(self, credential_ref: str) -> OAuthTokenSet | None:
+        _validate_credential_ref(credential_ref)
+        try:
+            value = self._values.get(credential_ref)
+        except NativeSecretError as exc:
+            self._raise(exc)
+        if value is None:
+            return None
+        try:
+            return OAuthTokenSet.from_secret_json(value)
+        except AuthorizationError:
+            raise AuthorizationError(
+                f"{self._error_prefix}_credential_invalid",
+                "The stored OAuth credential is invalid.",
+            ) from None
+
+    def remove(self, credential_ref: str) -> bool:
+        _validate_credential_ref(credential_ref)
+        try:
+            return self._values.remove(credential_ref)
+        except NativeSecretError as exc:
+            self._raise(exc)
+
+    def _raise(self, exc: NativeSecretError) -> None:
+        prefix = self._error_prefix
+        code = {
+            "unsupported_native_secret_platform": f"unsupported_{prefix}_store",
+            "insecure_native_secret_backend": f"insecure_{prefix}_store",
+            "unavailable_native_secret_backend": f"unavailable_{prefix}_store",
+            "native_secret_write_failed": f"{prefix}_store_write_failed",
+            "native_secret_read_failed": f"{prefix}_store_read_failed",
+            "native_secret_delete_failed": f"{prefix}_store_delete_failed",
+            "native_secret_cleanup_failed": f"{prefix}_store_delete_failed",
+            "native_secret_corrupt": f"{prefix}_credential_invalid",
+            "native_secret_verification_failed": f"{prefix}_store_probe_failed",
+            "native_secret_rollback_failed": f"{prefix}_store_rollback_failed",
+            "native_secret_too_large": f"{prefix}_credential_invalid",
+            "native_secret_key_invalid": f"{prefix}_credential_ref_invalid",
+        }.get(exc.code, f"{prefix}_store_failed")
+        raise AuthorizationError(code, exc.message) from None
+
+
+class NativeOAuthProfileCredentialStore(NativeOAuthSessionCredentialStore):
+    """OAuth token sets for generic governed MCP profiles."""
+
     def __init__(
         self,
         *,
@@ -357,71 +472,35 @@ class MacOSOAuthSessionCredentialStore:
         platform_name: str | None = None,
         enforce_native_backend: bool = True,
     ) -> None:
-        self._backend = backend or keyring.get_keyring()
-        current_platform = platform_name or platform.system()
-        if current_platform != "Darwin":
+        super().__init__(
+            backend=backend,
+            platform_name=platform_name,
+            enforce_native_backend=enforce_native_backend,
+            service=OAUTH_PROFILE_KEYRING_SERVICE,
+            error_prefix="oauth_profile",
+        )
+
+
+class MacOSOAuthSessionCredentialStore(NativeOAuthSessionCredentialStore):
+    """Compatibility name for callers that explicitly require macOS."""
+
+    def __init__(
+        self,
+        *,
+        backend: KeyringBackend | None = None,
+        platform_name: str | None = None,
+        enforce_native_backend: bool = True,
+    ) -> None:
+        if platform_name is not None and platform_name != "Darwin":
             raise AuthorizationError(
                 "unsupported_oauth_session_store",
-                "This release verifies OAuth session storage in macOS Keychain.",
+                "This compatibility class requires macOS Keychain.",
             )
-        backend_module = type(self._backend).__module__
-        if enforce_native_backend and backend_module != "keyring.backends.macOS":
-            raise AuthorizationError(
-                "insecure_oauth_session_store",
-                "A native macOS Keychain backend is required for OAuth sessions.",
-            )
-        if getattr(self._backend, "priority", 0) <= 0:
-            raise AuthorizationError(
-                "unavailable_oauth_session_store",
-                "The macOS Keychain backend is unavailable.",
-            )
-
-    def put(self, credential_ref: str, token: OAuthTokenSet) -> None:
-        _validate_credential_ref(credential_ref)
-        value = token.to_secret_json()
-        try:
-            self._backend.set_password(
-                OAUTH_SESSION_KEYRING_SERVICE,
-                credential_ref,
-                value,
-            )
-        except Exception:  # noqa: BLE001
-            raise AuthorizationError(
-                "oauth_session_store_write_failed",
-                "The OAuth session could not be stored in macOS Keychain. "
-                "Open or unlock the login Keychain, then retry from a logged-in "
-                "desktop terminal.",
-            ) from None
-
-    def get(self, credential_ref: str) -> OAuthTokenSet | None:
-        _validate_credential_ref(credential_ref)
-        try:
-            value = self._backend.get_password(
-                OAUTH_SESSION_KEYRING_SERVICE,
-                credential_ref,
-            )
-        except Exception:  # noqa: BLE001
-            raise AuthorizationError(
-                "oauth_session_store_read_failed",
-                "The OAuth session could not be read from macOS Keychain.",
-            ) from None
-        return OAuthTokenSet.from_secret_json(value) if value is not None else None
-
-    def remove(self, credential_ref: str) -> bool:
-        _validate_credential_ref(credential_ref)
-        try:
-            self._backend.delete_password(
-                OAUTH_SESSION_KEYRING_SERVICE,
-                credential_ref,
-            )
-        except PasswordDeleteError:
-            return False
-        except Exception:  # noqa: BLE001
-            raise AuthorizationError(
-                "oauth_session_store_delete_failed",
-                "The OAuth session could not be removed from macOS Keychain.",
-            ) from None
-        return True
+        super().__init__(
+            backend=backend,
+            platform_name="Darwin",
+            enforce_native_backend=enforce_native_backend,
+        )
 
 
 def _validate_credential_ref(value: str) -> str:

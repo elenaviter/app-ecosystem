@@ -112,18 +112,18 @@ PKCE verifier and an ephemeral localhost callback, discovers KDCube's
 Connection Hub authorization server, and asks for a delegated caller profile
 scoped to this tenant and project. The default request contains only deployment
 inspection and application-surface discovery. The OAuth access and refresh
-credentials remain together in macOS Keychain.
+credentials remain together in the current user's native operating-system
+store: macOS Keychain, Windows Credential Manager, or Linux Secret Service.
 
 Before contacting KDCube, `host authorize` proves a disposable random
 write/read/remove round trip through that credential store. A failure stops
 before OAuth discovery, client registration, browser login, or card creation.
-Do not replace a failed Keychain check with a bearer file or environment
-variable.
+Resolve the native-store failure before continuing.
 
-The current source CLI uses its ordinary Keychain session for these host
-commands. A separately signed Rust helper for keeping management credentials
-behind macOS user presence is in pre-release acceptance. Installing its source
-artifact alone does not change this command path. See
+The source CLI uses the selected platform's ordinary native-store session for
+these host commands. A separately signed Rust helper for keeping management
+credentials behind macOS user presence is in pre-release acceptance. Its
+installation does not change the ordinary command path. See
 [Protect KDCube Management On macOS With User Presence](macos-user-presence-helper.md)
 for the exact release gates, user installation contract, and security boundary.
 
@@ -137,7 +137,7 @@ connection-hub host authorize --no-open
 Open that URL in a browser on the same machine and complete the selected
 KDCube deployment's normal login and approval flow. The callback page confirms
 that the authorization response reached the CLI. Return to the terminal to
-confirm token exchange and Keychain storage.
+confirm token exchange and native-store custody.
 
 Application reload is demand-driven:
 
@@ -174,7 +174,7 @@ connection-hub host disconnect
 ```
 
 The command revokes the OAuth grant and matching delegated card before it
-removes the local Keychain session. A second authorization creates a new
+removes the local native-store session. A second authorization creates a new
 caller profile.
 
 KDCube is the host in this workflow. It supplies login, durable app and user
@@ -216,7 +216,41 @@ When discovery completes, inspect the exact tools and accept any reviewed
 descriptor change. Newly discovered tools do not become caller permissions by
 being discovered.
 
-## 3. Create A Caller Profile
+Record the protected Connection Hub MCP endpoint shown by the application. For
+the default local runtime and external-MCP gateway it is:
+
+```bash
+export CONNECTION_HUB_MCP_URL="http://localhost:5173/api/integrations/bundles/local/connection-hub/connection-hub@1-0/public/mcp/remote_mcp_proxy"
+```
+
+## 3. Choose The Caller Authorization
+
+The governed MCP endpoint supports three local-client paths.
+
+### Client-Owned OAuth
+
+A client with native remote-MCP OAuth connects directly to the endpoint. Its
+browser consent creates a distinct delegated card, and the client owns its
+OAuth credentials. This path remains available on headless Linux or WSL when
+the Connection Hub CLI cannot reach Secret Service. Continue with the direct
+installation in section 4.
+
+### OAuth-Backed Local Bridge
+
+Create a local profile through browser Authorization Code + PKCE when the
+credential should remain in the operating-system store used by the Connection
+Hub CLI:
+
+```bash
+connection-hub profile authorize local-coding-agent \
+  --endpoint "$CONNECTION_HUB_MCP_URL"
+```
+
+The command discovers the protected resource and authorization server, probes
+the admitted endpoint, stores the complete token set in native custody, and
+commits only non-secret profile metadata.
+
+### Manually Issued Local Bridge
 
 Open **Delegated by KDCube**, then **Create automation access**.
 
@@ -238,18 +272,41 @@ service's credential.
 
 ## 4. Connect An External MCP Client
 
-For a local MCP client on macOS, install the Connection Hub helper and import
-the one-time-shown bearer through hidden input:
+For client-owned OAuth, let `auto` verify and select the installed client's
+native path:
+
+```bash
+connection-hub client install claude-code \
+  --mode auto \
+  --endpoint "$CONNECTION_HUB_MCP_URL"
+```
+
+Run the `authorization_command` returned by the CLI in an interactive terminal.
+The same shape applies to `codex`, `hermes`, and `openclaw`. Claude Desktop
+remote OAuth connectors are added in its Settings interface.
+
+For an OAuth-backed profile created in section 3, install the local bridge:
 
 ```bash
 uv tool install connection-hub-cli
-connection-hub profile add local-coding-agent
-connection-hub client install claude-code --profile local-coding-agent
+connection-hub client install claude-code \
+  --mode bridge \
+  --profile local-coding-agent
 ```
 
-Replace `claude-code` with `claude-desktop`, `hermes`, or `openclaw` for those
-clients. The generated client entry starts a local stdio helper. The bearer
-stays in macOS Keychain and is absent from the client configuration. See
+For a manually issued profile, first import the one-time bearer through hidden
+input, then run the same bridge installation:
+
+```bash
+connection-hub profile add local-coding-agent \
+  --endpoint "$CONNECTION_HUB_MCP_URL" \
+  --access-id access_example
+```
+
+Replace `claude-code` with `claude-desktop`, `codex`, `hermes`, or `openclaw`
+for those clients. The generated bridge entry starts a local stdio helper. Its
+credential remains in macOS Keychain, Windows Credential Manager, or Linux
+Secret Service and is absent from the client configuration. See
 [Connect Local MCP Clients Without Bearer Files](local-client-helper.md) for
 the complete commands, diagnostics, generic-client entry, and removal
 semantics.
@@ -272,7 +329,7 @@ tool descriptor, invocation policy, and upstream credential on every call.
 
 ## 5. Prove Live Enforcement
 
-Keep the external client running and keep its bearer unchanged.
+Keep the external client running and keep its authorization unchanged.
 
 1. Return to **Delegated by KDCube** and remove one tool from the profile.
 2. Ask the client to list or call that tool again.

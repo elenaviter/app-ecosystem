@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import pytest
-
-from connection_hub_cli.errors import ProfileError, UpstreamError
+from connection_hub_cli.errors import CredentialError, ProfileError, UpstreamError
 from connection_hub_cli.models import HelperLaunch, ManagedInstallation, ProbeResult
 from connection_hub_cli.profiles import ProfileService
 from connection_hub_cli.state import InstallationStore, ProfileStore
@@ -11,6 +10,7 @@ from connection_hub_cli.state import InstallationStore, ProfileStore
 class _Credentials:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
+        self.remove_error: CredentialError | None = None
 
     def put(self, credential_ref: str, bearer: str) -> None:
         self.values[credential_ref] = bearer
@@ -19,6 +19,8 @@ class _Credentials:
         return self.values.get(credential_ref)
 
     def remove(self, credential_ref: str) -> bool:
+        if self.remove_error is not None:
+            raise self.remove_error
         return self.values.pop(credential_ref, None) is not None
 
     def backend_name(self) -> str:
@@ -84,6 +86,38 @@ async def test_failed_add_probe_leaves_no_profile_or_keychain_record(tmp_path) -
 
     assert profiles.list() == []
     assert credentials.values == {}
+
+
+@pytest.mark.asyncio
+async def test_failed_profile_state_and_native_cleanup_report_a_safe_error(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    async def probe(**_kwargs) -> ProbeResult:
+        return ProbeResult(tool_count=1)
+
+    service, profiles, _, credentials = _service(tmp_path, probe)
+    canary = "native-backend-secret-canary"
+    credentials.remove_error = CredentialError(
+        "credential_store_delete_failed",
+        canary,
+    )
+
+    def fail_state_write(_profile) -> None:
+        raise RuntimeError("state write failed")
+
+    monkeypatch.setattr(profiles, "add", fail_state_write)
+
+    with pytest.raises(CredentialError) as raised:
+        await service.add(
+            name="agent",
+            endpoint="https://hub.example/mcp",
+            bearer="candidate-bearer",
+        )
+
+    assert raised.value.code == "credential_cleanup_failed"
+    assert canary not in str(raised.value)
+    assert raised.value.__cause__ is None
 
 
 @pytest.mark.asyncio

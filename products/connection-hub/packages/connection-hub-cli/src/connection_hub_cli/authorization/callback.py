@@ -137,6 +137,7 @@ class LoopbackCallbackServer:
         expected_state: str,
         expected_issuer: str,
         issuer_required: bool,
+        port: int = 0,
     ) -> None:
         state = str(expected_state or "").strip()
         if not state:
@@ -149,6 +150,18 @@ class LoopbackCallbackServer:
             code="oauth_callback_configuration_invalid",
             allow_query=False,
         ).rstrip("/")
+        try:
+            selected_port = int(port)
+        except (TypeError, ValueError):
+            raise AuthorizationError(
+                "oauth_callback_configuration_invalid",
+                "The OAuth callback port is invalid.",
+            ) from None
+        if selected_port < 0 or selected_port > 65535:
+            raise AuthorizationError(
+                "oauth_callback_configuration_invalid",
+                "The OAuth callback port is invalid.",
+            )
         # KDCube's native-client DCR policy allows an ephemeral loopback port
         # while keeping the registered callback path exact.
         path = "/callback"
@@ -160,7 +173,7 @@ class LoopbackCallbackServer:
         )
         try:
             self._server = ThreadingHTTPServer(
-                ("127.0.0.1", 0),
+                ("127.0.0.1", selected_port),
                 _handler_for(self._state),
             )
         except OSError as exc:

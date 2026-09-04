@@ -17,6 +17,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping
 
+from connection_hub.delegated_credentials.catalog.descriptors import (
+    ResourceAcceptance,
+    ResourceAcceptanceError,
+    parse_resource_acceptance,
+)
 from connection_hub.delegated_credentials.catalog.models import (
     utc_stamp,
     utc_timestamp,
@@ -32,7 +37,16 @@ from connection_hub.delegated_credentials.resource_operations import (
 )
 
 CARD_AUTHORITY_SCHEMA_V1 = "connection_hub.delegated_card_authority.v1"
-CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v2"
+CARD_AUTHORITY_SCHEMA_V2 = "connection_hub.delegated_card_authority.v2"
+# v3 adds per-resource accepted descriptor state and card provenance. Both are
+# optional on read, so v2 (and projected v1) revisions load unchanged; the next
+# successful write persists v3.
+CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v3"
+CARD_AUTHORITY_SCHEMAS = (
+    CARD_AUTHORITY_SCHEMA_V1,
+    CARD_AUTHORITY_SCHEMA_V2,
+    CARD_AUTHORITY_SCHEMA,
+)
 CARD_POINTER_SCHEMA = "connection_hub.delegated_card_current.v1"
 
 CARD_STATE_ACTIVE = "active"
@@ -220,14 +234,31 @@ class CardAuthority:
     expires_at: int = 0
     last_issued_at: int = 0
     last_four: str = ""
+    # Per resource: the descriptor authority (catalog row or connector), the
+    # revision and digest accepted at the last save, and one digest per
+    # offered operation. Drift is judged against this, resource by resource.
+    # Absent for revisions written before v3.
+    resource_acceptance: Mapping[str, ResourceAcceptance] = field(default_factory=dict)
+    # Non-secret lineage: which records were merged into this card and when.
+    # Written by the resident-profile migration; empty otherwise.
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, value: Any) -> "CardAuthority":
         if not isinstance(value, Mapping):
             raise CardRecordError("record_not_object")
         schema = str(value.get("schema") or "").strip()
-        if schema not in {CARD_AUTHORITY_SCHEMA_V1, CARD_AUTHORITY_SCHEMA}:
+        if schema not in CARD_AUTHORITY_SCHEMAS:
             raise CardRecordError("schema_mismatch")
+        try:
+            resource_acceptance = parse_resource_acceptance(value.get("resource_acceptance"))
+        except ResourceAcceptanceError as exc:
+            raise CardRecordError("resource_acceptance_invalid") from exc
+        provenance = value.get("provenance", {})
+        if provenance is None:
+            provenance = {}
+        if not isinstance(provenance, Mapping):
+            raise CardRecordError("provenance_invalid")
         resource_grants = value.get("resource_grants")
         if not isinstance(resource_grants, Mapping):
             raise CardRecordError("resource_grants_invalid")
@@ -292,6 +323,8 @@ class CardAuthority:
             expires_at=int(value.get("expires_at") or 0),
             last_issued_at=int(value.get("last_issued_at") or 0),
             last_four=clean_text(value.get("last_four")),
+            resource_acceptance=resource_acceptance,
+            provenance=copy.deepcopy(dict(provenance)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -324,6 +357,11 @@ class CardAuthority:
             "expires_at": self.expires_at,
             "last_issued_at": self.last_issued_at,
             "last_four": self.last_four,
+            "resource_acceptance": {
+                resource: acceptance.to_dict()
+                for resource, acceptance in sorted(self.resource_acceptance.items())
+            },
+            "provenance": copy.deepcopy(dict(self.provenance or {})),
         }
         stored_selection = self.named_service_operations.to_stored()
         if stored_selection is not None:
@@ -341,6 +379,14 @@ class CardAuthority:
             )
         object.__setattr__(self, "resource_operations", normalized)
         object.__setattr__(self, "operations", operation_union(normalized))
+        acceptance = {
+            clean_text(resource): entry
+            for resource, entry in dict(self.resource_acceptance or {}).items()
+            if clean_text(resource) and isinstance(entry, ResourceAcceptance)
+        }
+        object.__setattr__(self, "resource_acceptance", acceptance)
+        if not isinstance(self.provenance, Mapping):
+            raise CardRecordError("provenance_invalid")
 
     def content_hash(self) -> str:
         return card_authority_payload_hash(self.to_dict())
@@ -458,7 +504,9 @@ class CardCurrentPointer:
 
 __all__ = [
     "CARD_AUTHORITY_SCHEMA",
+    "CARD_AUTHORITY_SCHEMAS",
     "CARD_AUTHORITY_SCHEMA_V1",
+    "CARD_AUTHORITY_SCHEMA_V2",
     "CARD_POINTER_SCHEMA",
     "CARD_STATE_ACTIVE",
     "CARD_STATE_REVOKED",

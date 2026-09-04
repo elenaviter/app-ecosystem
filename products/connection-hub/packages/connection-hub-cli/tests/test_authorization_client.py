@@ -3,7 +3,6 @@ from __future__ import annotations
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-
 from connection_hub_cli.authorization.client import OAuthClient
 from connection_hub_cli.authorization.discovery import (
     HttpxOAuthTransport,
@@ -183,6 +182,36 @@ async def test_provisioned_public_client_avoids_registration() -> None:
         provisioned_client_id="provisioned-client",
     )
     assert registration.client_id == "provisioned-client"
+    assert transport.posts == []
+
+
+@pytest.mark.asyncio
+async def test_cimd_client_uses_the_metadata_url_without_dcr() -> None:
+    transport = _Transport()
+    base = _server_metadata()
+    metadata = AuthorizationServerMetadata(
+        issuer=base.issuer,
+        authorization_endpoint=base.authorization_endpoint,
+        token_endpoint=base.token_endpoint,
+        registration_endpoint=base.registration_endpoint,
+        revocation_endpoint=base.revocation_endpoint,
+        scopes_supported=base.scopes_supported,
+        supports_refresh=base.supports_refresh,
+        authorization_response_issuer_required=(
+            base.authorization_response_issuer_required
+        ),
+        client_id_metadata_document_supported=True,
+    )
+
+    registration = await OAuthClient(transport=transport).register_native_client(
+        metadata=metadata,
+        redirect_uri="http://127.0.0.1:9123/callback",
+        client_metadata_url="https://client.example.test/oauth/metadata.json",
+    )
+
+    assert registration.client_id == ("https://client.example.test/oauth/metadata.json")
+    assert registration.source == "cimd"
+    assert registration.client_metadata_url == registration.client_id
     assert transport.posts == []
 
 

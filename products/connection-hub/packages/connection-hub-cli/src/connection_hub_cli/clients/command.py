@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from connection_hub_cli.errors import ClientConfigurationError
 
@@ -12,6 +13,7 @@ from connection_hub_cli.errors import ClientConfigurationError
 class CommandResult:
     returncode: int
     stdout: str = ""
+    stderr: str = ""
 
 
 class CommandRunner(Protocol):
@@ -33,8 +35,7 @@ class SubprocessCommandRunner:
                 list(argv),
                 check=False,
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
                 shell=False,
@@ -44,4 +45,8 @@ class SubprocessCommandRunner:
                 "client_command_failed",
                 f"The {argv[0]} client command could not be completed.",
             ) from exc
-        return CommandResult(returncode=completed.returncode, stdout=completed.stdout)
+        return CommandResult(
+            returncode=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )

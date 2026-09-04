@@ -17,6 +17,7 @@ see_also:
   - ./connection-hub-architecture.md
   - ./testing/end-to-end-acceptance.md
   - ./package/extraction-architecture.md
+  - ./package/delegated-mcp-gateway.md
   - ./frontend/README.md
   - ./service/README.md
   - ./recipes/direct-protected-service.md
@@ -52,9 +53,10 @@ local helper boundaries, and its planned standalone host:
 - **[`testing/`](testing/end-to-end-acceptance.md)** - the complete human-runnable
   acceptance procedure for cards, accounts, managed MCP, named services, live
   consent, Claude Code, revocation, and durability.
-- **[Local MCP client helper](local-client-helper.md)** - KDCube host selection,
-  macOS Keychain custody, one stdio bridge, and verified registration paths for
-  Claude Code, Claude Desktop, Hermes, OpenClaw, and other stdio clients.
+- **[Local MCP client helper](local-client-helper.md)** - native remote OAuth,
+  a cross-platform stdio bridge backed by macOS Keychain, Windows Credential
+  Manager, or Linux Secret Service, and managed registration for Claude Code,
+  Codex, Claude Desktop, Hermes, and OpenClaw.
 - **[macOS user-presence helper](macos-user-presence-helper.md)** - the
   pre-release, separately signed Rust boundary for protected KDCube management
   OAuth sessions and exact request-bound operations.
@@ -79,6 +81,7 @@ The package contracts are:
 - [Protect KDCube management on macOS with user presence](macos-user-presence-helper.md)
 - [Connection Hub architecture and semantic requirements](connection-hub-architecture.md)
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
+- [Aggregate delegated MCP gateway](package/delegated-mcp-gateway.md)
 - [Delegated access cards](package/delegated-cards.md)
 - [OAuth delegated credential protocol](package/oauth-delegated-credential-protocol.md)
 - [Connection Hub and governed MCP end-to-end acceptance](testing/end-to-end-acceptance.md)

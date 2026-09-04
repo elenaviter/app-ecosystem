@@ -5,7 +5,6 @@ from typing import ClassVar
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
-
 from connection_hub_cli.authorization.callback import AuthorizationCallback
 from connection_hub_cli.authorization.client import OAuthClient
 from connection_hub_cli.authorization.discovery import OAuthDiscovery
@@ -21,6 +20,7 @@ class _Transport:
         self.fail_revoke = False
         self.publish_revocation = True
         self.publish_access_id = True
+        self.publish_cimd = False
 
     async def get_json(self, url: str):
         self.get_urls.append(url)
@@ -48,6 +48,8 @@ class _Transport:
         }
         if not self.publish_revocation:
             metadata.pop("revocation_endpoint")
+        if self.publish_cimd:
+            metadata["client_id_metadata_document_supported"] = True
         return metadata
 
     async def post_json(self, _url: str, payload):
@@ -80,7 +82,8 @@ class _Callback:
 
     def __init__(self, **values) -> None:
         self.values = values
-        self.redirect_uri = "http://127.0.0.1:9123/oauth/callback/random"
+        port = values.get("port", 9123)
+        self.redirect_uri = f"http://127.0.0.1:{port}/callback"
         self.closed = False
         self.__class__.instances.append(self)
 
@@ -224,6 +227,52 @@ async def test_browser_flow_can_use_a_per_request_browser_opener() -> None:
     assert default_opened == []
     assert len(selected_opened) == 1
     assert "code_verifier" not in selected_opened[0]
+
+
+@pytest.mark.asyncio
+async def test_cimd_requires_and_uses_a_published_fixed_callback_port() -> None:
+    _Callback.instances.clear()
+    transport = _Transport()
+    transport.publish_cimd = True
+    discovery = OAuthDiscovery(transport=transport)
+    discovered = await discovery.discover(
+        protected_resource_metadata_url=(
+            "https://runtime.example.test/oauth-protected-resource"
+        ),
+        expected_resource=("urn:kdcube:management:deployment:demo-tenant:demo-project"),
+    )
+    flow = BrowserAuthorizationFlow(
+        discovery=discovery,
+        client=OAuthClient(transport=transport),
+        sessions=_Sessions(),
+        browser_opener=lambda _url: True,
+        callback_factory=_Callback,
+    )
+
+    with pytest.raises(AuthorizationError) as missing_port:
+        await flow.authorize_discovered(
+            protected_resource_metadata_url=(
+                "https://runtime.example.test/oauth-protected-resource"
+            ),
+            discovered=discovered,
+            client_metadata_url=("https://client.example.test/oauth/metadata.json"),
+            timeout_seconds=5,
+        )
+    assert missing_port.value.code == "oauth_cimd_callback_port_required"
+    assert _Callback.instances == []
+
+    grant = await flow.authorize_discovered(
+        protected_resource_metadata_url=(
+            "https://runtime.example.test/oauth-protected-resource"
+        ),
+        discovered=discovered,
+        client_metadata_url="https://client.example.test/oauth/metadata.json",
+        callback_port=9124,
+        timeout_seconds=5,
+    )
+
+    assert _Callback.instances[-1].values["port"] == 9124
+    assert grant.registration.source == "cimd"
 
 
 @pytest.mark.asyncio

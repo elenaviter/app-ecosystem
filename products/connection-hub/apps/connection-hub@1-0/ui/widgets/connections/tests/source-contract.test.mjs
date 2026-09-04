@@ -138,7 +138,7 @@ test('an ungranted operation offers one atomic once-or-always grant, chosen besi
   // the focused grant with its mode).
   assert.match(panel, /<InvocationPolicyControl\n\s*operation=\{operation\.name\}/)
   assert.match(panel, /\) : selected \? \(\n(?:.*\n){3}\s*<OperationInvocationChoice/)
-  assert.match(panel, /disabled=\{busy \|\| editMissingChoices\(item\)\.length > 0\}/)
+  assert.match(panel, /disabled=\{busy \|\| editSaveProblems\(item\)\.length > 0\}/)
   assert.match(panel, /Object\.entries\(splits\)\.map\(\(\[resource, split\]\) => \[resource, split\.kept\]\)/)
   assert.match(panel, /changeId: editChangeId\(item\.access_id, operation, randomNonce\(\)\)/)
 
@@ -212,6 +212,12 @@ test('the card editor shows a persisted account claim as granted, not pending', 
 
   const projection = source('src/features/delegatedAccess/pendingGrantProjection.ts')
   assert.match(projection, /if \(alreadyGranted\) return 'Already granted'/)
+})
+
+test('the resource editor never suggests another card for one resident profile', () => {
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.match(panel, /It cannot be added to this card\./)
+  assert.doesNotMatch(panel, /grant it on a separate card/i)
 })
 
 test('external MCP tab exposes the client endpoint, summons the connector form, and discloses tool schemas', () => {
@@ -312,4 +318,53 @@ test('granted-access cards filter from the action row, by exact rules the explai
     assert.ok(css.includes(cls), `styles.css lacks ${cls}`)
   }
   assert.doesNotMatch(css, /\.grant-search/)
+})
+
+test('a card edits several resources under one stable identity: sections, add, remove, acceptance', () => {
+  const rules = source('src/features/delegatedAccess/resourceEditing.ts')
+  assert.match(rules, /export function editedResourceKeys\(/)
+  assert.match(rules, /export function saveProblems\(/)
+  assert.match(rules, /'no_resources_left'/)
+  assert.match(rules, /export function toggleAccepted\(/)
+
+  const parts = source('src/features/delegatedAccess/ResourceEditorParts.tsx')
+  assert.match(parts, /export function ResourceSectionHead\(/)
+  assert.match(parts, /export function RemovedResourceStub\(/)
+  assert.match(parts, /export function ResourceDriftReview\(/)
+  assert.match(parts, /export function ResourceOfferPicker\(/)
+  // The review says a changed selected operation is suspended until accepted,
+  // and a newly advertised one is not granted.
+  assert.match(parts, /Changed, suspended until you accept/)
+  assert.match(parts, /Newly advertised, not granted/)
+  assert.match(parts, /offerReasonText\(offer\)/)
+
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  // Both edit paths (agent rows and flat cards) render the same per-resource
+  // sections; nothing is duplicated.
+  assert.equal((panel.match(/renderEditResourceSections\(item\)/g) || []).length, 2)
+  assert.match(panel, /const \[editAddedResources, setEditAddedResources\]/)
+  assert.match(panel, /const \[editRemovedResources, setEditRemovedResources\]/)
+  assert.match(panel, /const \[editAcceptedOperations, setEditAcceptedOperations\]/)
+  // An added resource grants no operation yet, whatever equal names other
+  // resources carry; the save submits exactly the edited resource set.
+  assert.match(panel, /resource in \(item\.resource_grants \|\| \{\}\) \? \(item\.resource_operations\?\.\[resource\] \|\| \[\]\) : \[\]/)
+  assert.match(panel, /editResourceKeys\(item\)\.forEach\(\(resource\) => \{\n\s*kept\[resource\] = editKeptClaims\(item, resource\);/)
+  assert.match(panel, /acceptedOperations: editAcceptedOperations,/)
+  assert.match(panel, /if \(editSaveProblems\(item\)\.length\) return;/)
+  // The drift review is per resource and never rendered for a resource being added.
+  assert.match(panel, /state=\{item\.catalog_drift\?\.resources\?\.\[resource\]\}/)
+  assert.match(panel, /\{!isNew \? \(\n\s*<ResourceDriftReview/)
+
+  const slice = source('src/features/delegatedAccess/delegatedAccessSlice.ts')
+  assert.match(slice, /accepted_operations: acceptedOperations/)
+
+  const types = source('src/api/types.ts')
+  for (const name of ['resource_acceptance?', 'caller_profile?', 'stable_identity?', 'resource_offers?', 'DelegatedResourceDriftState', 'DelegatedDriftChange']) {
+    assert.ok(types.includes(name), `types.ts lacks ${name}`)
+  }
+
+  const css = source('src/styles.css')
+  for (const cls of ['.resource-section-head', '.resource-removed-stub', '.resource-drift-review', '.resource-offer-picker', '.edit-save-problems']) {
+    assert.ok(css.includes(cls), `styles.css lacks ${cls}`)
+  }
 })

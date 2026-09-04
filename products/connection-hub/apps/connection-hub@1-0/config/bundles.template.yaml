@@ -89,7 +89,13 @@ bundles:
                 visibility: *default_visibility
               remote_mcp_connector_delete:
                 visibility: *default_visibility
+              delegated_mcp_gateway_access:
+                visibility: *default_visibility
           mcp:
+            delegated_mcp_gateway:
+              auth:
+                mode: delegated_proxy
+                authority_id: delegated_client
             remote_mcp_proxy:
               auth:
                 mode: delegated_proxy
@@ -105,6 +111,9 @@ bundles:
             # Empty -> derived from the request host at runtime.
           public_base_url: "https://<PUBLIC_HOST>"
         delegated_credentials:
+          gateway:
+            requestable_discovery:
+              caller_types: [resident]
             # Redis residency of the delegated-service catalog projections.
             # These bound how long a cached document survives before a validated
             # read-through; they never grant, extend, or revoke authority.
@@ -1472,6 +1481,10 @@ bundles:
                             grants:
                             - "named_services:use"
                             - "linkedin:org:read"
+            - resource: "*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/delegated_mcp_gateway*"
+              label: "Connection Hub delegated MCP gateway"
+              identity_scope: "grantor"
+              resource_selection: true
             - resource: "*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/remote_mcp_proxy*"
               label: "Connected external MCP tools"
               identity_scope: "grantor"

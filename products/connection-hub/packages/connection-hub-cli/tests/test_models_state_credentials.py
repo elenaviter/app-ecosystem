@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
+from types import SimpleNamespace
 
 import pytest
-from keyring.errors import PasswordDeleteError
-
 from connection_hub_cli.credentials import (
     MacOSKeychainCredentialStore,
     normalize_bearer,
 )
 from connection_hub_cli.errors import CredentialError, ProfileError, StateError
-from connection_hub_cli.models import CallerProfile
+from connection_hub_cli.models import CallerProfile, ManagedInstallation
 from connection_hub_cli.state import ProfileStore
+from keyring.errors import PasswordDeleteError
 
 
 class _Keyring:
@@ -93,6 +94,55 @@ def test_profile_store_is_atomic_private_and_contains_no_credential(tmp_path) ->
     assert "delegated-test-bearer" not in raw
     assert json.loads(raw)["schema"] == ProfileStore.SCHEMA
     assert not list(path.parent.glob("*.tmp"))
+
+
+def test_state_write_uses_path_chmod_when_fchmod_is_unavailable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "connection_hub_cli.filesystem.os",
+        SimpleNamespace(chmod=os.chmod),
+    )
+    store = ProfileStore(tmp_path / "profiles.json")
+    profile = CallerProfile.create(name="agent", endpoint="https://hub.example/mcp")
+
+    store.add(profile)
+
+    assert store.require("agent") == profile
+
+
+def test_legacy_client_installation_migrates_to_explicit_bridge_mode() -> None:
+    legacy = {
+        "installation_id": "a" * 32,
+        "client": "claude-code",
+        "profile": "agent",
+        "server_name": "connection-hub-agent",
+        "command": "/opt/tools/connection-hub",
+        "args": ["mcp", "serve", "--profile", "agent"],
+        "created_at": "2026-09-02T15:00:00+00:00",
+    }
+
+    installation = ManagedInstallation.from_dict(legacy)
+
+    assert installation.mode == "bridge"
+    assert installation.endpoint is None
+    assert installation.to_dict()["record_version"] == 2
+
+
+def test_native_oauth_client_installation_round_trips_without_a_credential() -> None:
+    installation = ManagedInstallation.create_oauth(
+        client="codex",
+        endpoint="https://hub.example/mcp",
+        server_name="connection-hub-codex",
+        installation_id="b" * 32,
+    )
+
+    loaded = ManagedInstallation.from_dict(installation.to_dict())
+
+    assert loaded == installation
+    assert loaded.profile is None
+    assert "credential" not in json.dumps(loaded.to_dict()).lower()
 
 
 def test_reading_empty_state_does_not_create_local_state(tmp_path) -> None:

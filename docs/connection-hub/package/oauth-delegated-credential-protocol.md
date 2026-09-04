@@ -4,7 +4,7 @@ title: "OAuth Delegated Credential Protocol Adapter"
 summary: "How the OAuth2 protocol adapter resolves pre-registered, Client ID Metadata Document, and DCR clients, issues least-privilege Connection Hub credentials, and advertises managed or direct protected-resource admission."
 tags: ["sdk", "solutions", "connections", "delegated-credentials", "oauth", "mcp", "descriptor"]
 keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "tool consent", "live grant lookup", "operation csrf protection", "descriptor configuration"]
-updated_at: 2026-08-30
+updated_at: 2026-09-04
 see_also:
   - ../connection-hub-architecture.md
   - ./delegated-authority-and-admission.md
@@ -654,13 +654,14 @@ explicit revoke-all operation.
   token material. Unknown tokens still return 200 (idempotent, non-probing).
   The `revocation_endpoint` is advertised in the RFC 8414 metadata, so a
   disconnecting client that honors it leaves no orphan card.
-- **DCR sibling supersession.** A dynamically-registered client gets a new
-  `dcr-…` id on every reconnect, so its previous card could never be used
-  again. A fresh consent therefore supersedes sibling cards — same grantor and
-  resource, a different `dcr-…` client whose registered redirect ORIGIN
-  matches (the app's stable identity across re-registrations). The sibling
-  donates its per-account binding to the new card, then is revoked. Statically
-  registered client ids are keyed stably and never pile up.
+- **DCR client independence.** Every server-issued `dcr-…` client id names one
+  delegated caller. Loopback redirect hosts, ports, and paths are callback
+  channels rather than application identity, so a fresh DCR registration gets
+  its own Card and never inherits from or retires another client's Card.
+  Reconsent and refresh under the same client id update that exact Card.
+  Clients cleanly disconnect through RFC 7009; the owner can revoke any
+  remaining Card independently, and abandoned registrations and Cards expire
+  under their configured TTLs.
 - **CIMD identity is stable at the URL.** The client id is the metadata URL,
   so reconnects address the same client identity. The consent POST re-resolves
   the client and compares a digest of the metadata shown to the user; a change

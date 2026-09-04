@@ -13,6 +13,7 @@ import yaml
 from filelock import FileLock, Timeout
 
 from connection_hub_cli.errors import ClientConfigurationError
+from connection_hub_cli.filesystem import apply_open_file_mode
 
 
 def _reject_symlink(path: Path) -> None:
@@ -111,7 +112,7 @@ def mutate_json_object(path: Path, operation: Callable[[dict[str, Any]], bool]) 
             )
             temporary = Path(temporary_name)
             try:
-                os.fchmod(descriptor, original_mode)
+                apply_open_file_mode(descriptor, temporary, original_mode)
                 stream = os.fdopen(descriptor, "wb", closefd=True)
                 descriptor = -1
                 with stream:

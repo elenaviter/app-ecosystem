@@ -3,6 +3,17 @@
 
 """Versioned delegated-service catalog: source, documents, and durable storage."""
 
+from connection_hub.delegated_credentials.catalog.descriptors import (
+    RESOURCE_KIND_CATALOG,
+    RESOURCE_KIND_REMOTE_MCP,
+    ResourceAcceptance,
+    ResourceAcceptanceError,
+    next_resource_acceptance,
+    operation_descriptor_digest,
+    resource_descriptor_state,
+    resource_row_digest,
+    row_acceptance,
+)
 from connection_hub.delegated_credentials.catalog.hashing import (
     connections_content_hash,
 )
@@ -34,6 +45,15 @@ from connection_hub.delegated_credentials.catalog.store import (
 )
 
 __all__ = [
+    "RESOURCE_KIND_CATALOG",
+    "RESOURCE_KIND_REMOTE_MCP",
+    "ResourceAcceptance",
+    "ResourceAcceptanceError",
+    "next_resource_acceptance",
+    "operation_descriptor_digest",
+    "resource_descriptor_state",
+    "resource_row_digest",
+    "row_acceptance",
     "BundleStorageDelegatedCatalogStore",
     "CatalogDocument",
     "CatalogDocumentError",

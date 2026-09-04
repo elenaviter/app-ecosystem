@@ -142,6 +142,9 @@ export interface UpdateDelegatedAccessArgs {
    *  newer catalog. */
   expectedCardRevision?: number;
   expectedCatalogVersion?: string;
+  /** Per resource, the selected operations whose CHANGED descriptor the
+   *  grantor reviewed and accepts with this save. Others stay suspended. */
+  acceptedOperations?: Record<string, string[]>;
 }
 
 /** Edit a manual automation IN PLACE — the card keeps its access_id/client_id,
@@ -165,6 +168,7 @@ export const updateDelegatedAccess = createAsyncThunk<
       accountScope,
       expectedCardRevision,
       expectedCatalogVersion,
+      acceptedOperations,
     },
     { rejectWithValue },
   ) => {
@@ -186,6 +190,9 @@ export const updateDelegatedAccess = createAsyncThunk<
           : {}),
         ...(expectedCatalogVersion
           ? { expected_catalog_version: expectedCatalogVersion }
+          : {}),
+        ...(acceptedOperations && Object.keys(acceptedOperations).length
+          ? { accepted_operations: acceptedOperations }
           : {}),
       });
       // A precondition failure is not an error to show and forget: it carries
