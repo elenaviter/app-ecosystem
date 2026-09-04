@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import anyio
 import pytest
+import yaml
 from connection_hub_cli import cli
 from connection_hub_cli.authorization.session import OAuthSessionStore
 from connection_hub_cli.clients.adapters import ClaudeDesktopAdapter
@@ -15,10 +16,12 @@ from connection_hub_cli.errors import CredentialError
 from connection_hub_cli.management import (
     DEFAULT_MANAGEMENT_SCOPE,
     ConsentRecovery,
+    ExportedSecret,
     ManagementDenial,
     ManagementRequest,
     ManagementResult,
     ManagementTarget,
+    SecretExportResult,
 )
 from connection_hub_cli.models import (
     CallerProfile,
@@ -122,6 +125,29 @@ class _ManagementService:
 
     async def disconnect(self, target_key: str):
         return SimpleNamespace(access_id="access-cli", target_key=target_key)
+
+
+class _SecretExportService:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.marker = "secret-export-marker"
+
+    async def export(self, **kwargs):
+        self.calls.append(kwargs)
+        return SecretExportResult(
+            transaction_id="transaction-a",
+            request_digest="b" * 64,
+            assurance="session_confirmation",
+            approval_method="test_browser_session",
+            approval_verified_at=int(time.time()),
+            values=tuple(
+                ExportedSecret(
+                    target=target,
+                    value=f"{self.marker}::{target.scope}::{target.key}",
+                )
+                for target in kwargs["targets"]
+            ),
+        )
 
 
 class _OAuthRepository:
@@ -237,6 +263,7 @@ def _services(tmp_path):
         oauth_repository=_OAuthRepository(),
         authorization_flow=_AuthorizationFlow(),
         management_service=_ManagementService(),
+        secret_export_service=_SecretExportService(),
         adapters={},
     )
 
@@ -244,7 +271,7 @@ def _services(tmp_path):
 def _management_result(request: ManagementRequest) -> ManagementResult:
     return ManagementResult(
         operation=request.operation,
-        resource=request.target.resource,
+        resource=request.resource,
         invocation_id=request.invocation_id,
         replay=False,
         authority={"access_id": "access-cli"},
@@ -334,11 +361,11 @@ def _management_denial(
                 "connection-hub%401-0/widgets/connections_settings?request=opaque"
             ),
             access_id="access-cli",
-            resource=request.target.resource,
+            resource=request.resource,
             operation=request.operation,
             application_id=request.application_id,
             invocation_id=request.invocation_id,
-            request_digest=request.request_digest,
+            request_digest=request.request_digest or ("a" * 64),
             card_revision=4,
             catalog_version="catalog-7",
             expires_at=(int(time.time()) + 600 if expires_at is None else expires_at),
@@ -1106,3 +1133,293 @@ def test_expired_reload_recovery_never_opens_or_retries(
     assert payload["recovery"]["expires_at"] < int(time.time())
     assert opened == []
     assert services.management_service.calls == [request]
+
+
+def test_secret_set_reads_exact_stdin_without_rendering_value(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    target = services.host_service.management_target()
+    request = ManagementRequest.secret_write(
+        target,
+        scope="bundle",
+        bundle_id="connection-hub@1-0",
+        key="provider.api_key",
+        value="secret-input-marker\n",
+        invocation_id="secret-write-1",
+    )
+    services.management_service.results = [
+        ManagementResult(
+            operation=request.operation,
+            resource=request.resource,
+            invocation_id=request.invocation_id,
+            replay=False,
+            authority={"access_id": "access-cli"},
+            result={
+                "scope": "bundle",
+                "bundle_id": "connection-hub@1-0",
+                "key": "provider.api_key",
+                "state": "stored",
+                "created": True,
+                "provider": "secrets-service",
+            },
+        )
+    ]
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("secret-input-marker\n"))
+
+    result = cli.main(
+        [
+            "host",
+            "secret",
+            "set",
+            "provider.api_key",
+            "--scope",
+            "bundle",
+            "--bundle-id",
+            "connection-hub@1-0",
+            "--value-stdin",
+            "--invocation-id",
+            "secret-write-1",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert "secret-input-marker" not in captured.out
+    assert "secret-input-marker" not in captured.err
+    assert services.management_service.calls == [request]
+    assert services.management_service.calls[0].request_digest == ""
+    assert services.management_service.calls[0].body["value"] == (
+        "secret-input-marker\n"
+    )
+
+
+def test_secret_get_writes_private_file_and_never_renders_value(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    output = tmp_path / "provider.secret"
+    target = services.host_service.management_target()
+    request = ManagementRequest.secret_read(
+        target,
+        scope="platform",
+        key="provider.api_key",
+        invocation_id="secret-read-1",
+    )
+    services.management_service.results = [
+        ManagementResult(
+            operation=request.operation,
+            resource=request.resource,
+            invocation_id=request.invocation_id,
+            replay=False,
+            authority={"access_id": "access-cli"},
+            result={
+                "scope": "platform",
+                "key": "provider.api_key",
+                "value": "secret-output-marker",
+            },
+        )
+    ]
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "host",
+            "secret",
+            "get",
+            "provider.api_key",
+            "--scope",
+            "platform",
+            "--output",
+            str(output),
+            "--invocation-id",
+            "secret-read-1",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 0
+    assert output.read_text() == "secret-output-marker"
+    assert output.stat().st_mode & 0o777 == 0o600
+    assert "secret-output-marker" not in captured.out
+    assert "secret-output-marker" not in captured.err
+    assert payload["result"]["output"] == str(output.absolute())
+    assert payload["result"]["disclosed"] is True
+    assert payload["result"]["permissions"] == {"file_mode": "0600"}
+
+
+def test_secret_get_rejects_existing_output_before_disclosure(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    output = tmp_path / "provider.secret"
+    output.write_text("existing")
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "host",
+            "secret",
+            "get",
+            "provider.api_key",
+            "--scope",
+            "platform",
+            "--output",
+            str(output),
+            "--invocation-id",
+            "secret-read-must-not-disclose",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "secret_output_exists" in captured.err
+    assert output.read_text() == "existing"
+    assert services.management_service.calls == []
+
+
+def test_secret_denial_renders_server_bound_recovery_without_value_digest(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    request = ManagementRequest.secret_write(
+        services.host_service.management_target(),
+        scope="platform",
+        key="provider.api_key",
+        value="secret-denial-marker",
+        invocation_id="secret-write-denied-1",
+    )
+    services.management_service.results = [_management_denial(request)]
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("secret-denial-marker"))
+
+    result = cli.main(
+        [
+            "host",
+            "secret",
+            "set",
+            "provider.api_key",
+            "--scope",
+            "platform",
+            "--value-stdin",
+            "--invocation-id",
+            "secret-write-denied-1",
+            "--no-open",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 3
+    assert "request_digest" not in {
+        key: value for key, value in payload.items() if key != "recovery"
+    }
+    assert payload["recovery"]["request_digest"] == "a" * 64
+    assert "secret-denial-marker" not in captured.out
+    assert "secret-denial-marker" not in captured.err
+
+
+def test_human_secret_export_writes_descriptor_pair_without_rendering_values(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    output = tmp_path / "exported-descriptors"
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "host",
+            "secret",
+            "export",
+            "--platform-key",
+            "services.brave.api_key",
+            "--bundle-key",
+            "connection-hub@1-0=connections.oauth_state_secret",
+            "--output-directory",
+            str(output),
+            "--wait-seconds",
+            "5",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert services.secret_export_service.marker not in captured.out
+    assert services.secret_export_service.marker not in captured.err
+    payload = json.loads(captured.out)
+    assert payload["request_digest"] == "b" * 64
+    assert payload["approval"]["verified_at"] <= int(time.time())
+    assert payload["output"]["platform_secret_count"] == 1
+    assert payload["output"]["bundle_secret_count"] == 1
+    platform = yaml.safe_load((output / "secrets.yaml").read_text())
+    bundles = yaml.safe_load((output / "bundles.secrets.yaml").read_text())
+    assert platform == {
+        "services": {
+            "brave": {
+                "api_key": "secret-export-marker::platform::services.brave.api_key"
+            }
+        }
+    }
+    assert bundles == {
+        "bundles": {
+            "version": "1",
+            "items": [
+                {
+                    "id": "connection-hub@1-0",
+                    "secrets": {
+                        "connections": {
+                            "oauth_state_secret": (
+                                "secret-export-marker::bundle::"
+                                "connections.oauth_state_secret"
+                            )
+                        }
+                    },
+                }
+            ],
+        }
+    }
+    assert len(services.secret_export_service.calls) == 1
+    assert services.management_service.calls == []
+    if cli.sys.platform != "win32":
+        assert output.stat().st_mode & 0o777 == 0o700
+        assert (output / "secrets.yaml").stat().st_mode & 0o777 == 0o600
+        assert (output / "bundles.secrets.yaml").stat().st_mode & 0o777 == 0o600
+
+
+def test_human_secret_export_preflights_output_before_browser(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    output = tmp_path / "existing"
+    output.mkdir()
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "host",
+            "secret",
+            "export",
+            "--platform-key",
+            "services.brave.api_key",
+            "--output-directory",
+            str(output),
+        ]
+    )
+
+    assert result == 2
+    assert "secret_export_output_exists" in capsys.readouterr().err
+    assert services.secret_export_service.calls == []

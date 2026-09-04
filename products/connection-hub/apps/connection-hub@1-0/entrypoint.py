@@ -2119,6 +2119,30 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 "delegable_roles": ["kdcube:role:super-admin"],
                             },
                             {
+                                "grant": "kdcube.management.secret.metadata.read",
+                                "label": "Inspect KDCube secret metadata",
+                                "description": "Check whether one exact deployment or application secret exists without returning its value.",
+                                "delegable_roles": ["kdcube:role:super-admin"],
+                            },
+                            {
+                                "grant": "kdcube.management.secret.value.read",
+                                "label": "Reveal KDCube secret value",
+                                "description": "Return one exact deployment or application secret value to the delegated caller.",
+                                "delegable_roles": ["kdcube:role:super-admin"],
+                            },
+                            {
+                                "grant": "kdcube.management.secret.value.write",
+                                "label": "Store KDCube secret value",
+                                "description": "Set or replace one exact deployment or application secret through the configured provider.",
+                                "delegable_roles": ["kdcube:role:super-admin"],
+                            },
+                            {
+                                "grant": "kdcube.management.secret.delete",
+                                "label": "Delete KDCube secret",
+                                "description": "Delete one exact deployment or application secret through the configured provider.",
+                                "delegable_roles": ["kdcube:role:super-admin"],
+                            },
+                            {
                                 "grant": "conversations:read",
                                 "label": "Read your conversations",
                                 "description": "Read the approving user's own KDCube conversations through delegated named-service tools.",
@@ -2210,6 +2234,43 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 },
                             },
                             {
+                                "resource": "urn:kdcube:management:secret:*:*:*:*:*",
+                                "label": "KDCube secret management",
+                                "description": "Manage explicitly selected deployment and application secret keys through the configured provider.",
+                                "admin_only": True,
+                                "resource_selection": True,
+                                "operations": {
+                                    "kdcube.management.secret.metadata.read": {
+                                        "label": "Inspect secret metadata",
+                                        "description": "Check whether the exact secret exists without revealing its value.",
+                                        "grants": [
+                                            "kdcube.management.secret.metadata.read"
+                                        ],
+                                    },
+                                    "kdcube.management.secret.value.read": {
+                                        "label": "Reveal secret value",
+                                        "description": "Return the exact secret value to this delegated caller.",
+                                        "grants": [
+                                            "kdcube.management.secret.value.read"
+                                        ],
+                                    },
+                                    "kdcube.management.secret.value.write": {
+                                        "label": "Store secret value",
+                                        "description": "Set or replace the exact secret through the configured provider.",
+                                        "grants": [
+                                            "kdcube.management.secret.value.write"
+                                        ],
+                                    },
+                                    "kdcube.management.secret.delete": {
+                                        "label": "Delete secret",
+                                        "description": "Delete the exact secret through the configured provider.",
+                                        "grants": [
+                                            "kdcube.management.secret.delete"
+                                        ],
+                                    },
+                                },
+                            },
+                            {
                                 "resource": "*/api/integrations/bundles/*/*/user-memories@2026-06-26/public/mcp/memories*",
                                 "label": "User memories MCP",
                                 "tools": {
@@ -2277,10 +2338,15 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 "enabled": True,
                                 "secret_ref": "connections.delegated_credentials.admission.services.kdcube-management.signing_secret",
                                 "resources": [
-                                    "urn:kdcube:management:deployment:*:*"
+                                    "urn:kdcube:management:deployment:*:*",
+                                    "urn:kdcube:management:secret:*:*:*:*:*",
                                 ],
                                 "request_bound_operations": [
-                                    "kdcube.management.application.reload"
+                                    "kdcube.management.application.reload",
+                                    "kdcube.management.secret.metadata.read",
+                                    "kdcube.management.secret.value.read",
+                                    "kdcube.management.secret.value.write",
+                                    "kdcube.management.secret.delete",
                                 ],
                                 "request_permit_ttl_seconds": 600,
                             }

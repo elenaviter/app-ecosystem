@@ -42,11 +42,20 @@ from connection_hub_cli.host import HostService
 from connection_hub_cli.management import (
     DEFAULT_MANAGEMENT_SCOPE,
     AuthorizedManagementService,
+    BrowserSecretExportService,
     HttpxManagementTransport,
+    HttpxSecretExportTransport,
     ManagementClient,
     ManagementDenial,
     ManagementRequest,
     ManagementResult,
+    ManagementSecretTarget,
+    SECRET_VALUE_READ,
+    SecretExportClient,
+    validate_private_secret_output,
+    validate_secret_descriptor_export,
+    write_secret_descriptors,
+    write_private_secret,
 )
 from connection_hub_cli.mcp_relay import serve_profile
 from connection_hub_cli.models import SUPPORTED_CLIENTS
@@ -68,6 +77,7 @@ class Services:
     oauth_repository: OAuthSessionRepository
     authorization_flow: BrowserAuthorizationFlow
     management_service: AuthorizedManagementService
+    secret_export_service: BrowserSecretExportService
     adapters: dict[str, Any]
     oauth_profile_sessions: OAuthProfileSessionService | None = None
 
@@ -146,6 +156,9 @@ def build_services(*, paths: StatePaths | None = None) -> Services:
         oauth=oauth_client,
         management=ManagementClient(transport=HttpxManagementTransport()),
     )
+    secret_export_service = BrowserSecretExportService(
+        client=SecretExportClient(transport=HttpxSecretExportTransport())
+    )
     return Services(
         profiles=profiles,
         installations=installations,
@@ -158,6 +171,7 @@ def build_services(*, paths: StatePaths | None = None) -> Services:
         oauth_profile_sessions=oauth_profile_sessions,
         authorization_flow=authorization_flow,
         management_service=management_service,
+        secret_export_service=secret_export_service,
         adapters=adapters,
     )
 
@@ -172,6 +186,17 @@ def _credential_from_input(*, stdin: bool, prompt: str) -> str:
             )
         return value
     return getpass.getpass(prompt)
+
+
+def _secret_from_input(*, stdin: bool) -> str:
+    if stdin:
+        return sys.stdin.read()
+    if not sys.stdin.isatty():
+        raise ConnectionHubCliError(
+            "secret_input_mode_required",
+            "Use --value-stdin when standard input is not an interactive terminal.",
+        )
+    return getpass.getpass("Secret value: ")
 
 
 def _new_local_auth(args: argparse.Namespace) -> tuple[str, str | None, str | None]:
@@ -514,6 +539,10 @@ def _management_view(
     result: ManagementResult | ManagementDenial,
 ) -> dict[str, Any]:
     if isinstance(result, ManagementResult):
+        projected_result = dict(result.result)
+        if request.operation == SECRET_VALUE_READ:
+            projected_result.pop("value", None)
+            projected_result["disclosed"] = True
         return {
             "schema": "connection_hub_cli.management_result.v1",
             "ok": True,
@@ -524,18 +553,19 @@ def _management_view(
                 "replay": result.replay,
             },
             "authority": dict(result.authority),
-            "result": dict(result.result),
+            "result": projected_result,
         }
     value: dict[str, Any] = {
         "schema": "connection_hub_cli.management_error.v1",
         "ok": False,
         "status": result.status,
         "operation": request.operation,
-        "resource": request.target.resource,
+        "resource": request.resource,
         "invocation_id": request.invocation_id,
-        "request_digest": request.request_digest,
         "error": {"code": result.code, "retryable": result.retryable},
     }
+    if request.request_digest:
+        value["request_digest"] = request.request_digest
     if result.recovery is not None:
         recovery = result.recovery
         value["recovery"] = {
@@ -556,11 +586,11 @@ def _management_view(
     return value
 
 
-async def _execute_management(
+async def _management_result_with_consent(
     args: argparse.Namespace,
     services: Services,
     request: ManagementRequest,
-) -> int:
+) -> ManagementResult | ManagementDenial:
     result = await services.management_service.execute(request)
     if isinstance(result, ManagementDenial) and result.recovery is not None:
         recovery = result.recovery
@@ -573,8 +603,141 @@ async def _execute_management(
         if opened and sys.stdin.isatty() and not args.no_wait:
             input("Approve the exact operation in the browser, then press Enter: ")
             result = await services.management_service.execute(request)
+    return result
+
+
+async def _execute_management(
+    args: argparse.Namespace,
+    services: Services,
+    request: ManagementRequest,
+) -> int:
+    result = await _management_result_with_consent(args, services, request)
     _print_json(_management_view(request, result))
     return 0 if isinstance(result, ManagementResult) else 3
+
+
+async def _execute_secret_read(
+    args: argparse.Namespace,
+    services: Services,
+    request: ManagementRequest,
+) -> int:
+    output_target = validate_private_secret_output(
+        Path(args.output),
+        replace=bool(args.replace),
+    )
+    result = await _management_result_with_consent(args, services, request)
+    view = _management_view(request, result)
+    if isinstance(result, ManagementResult):
+        secret_value = result.result.get("value")
+        if not isinstance(secret_value, str):
+            raise ConnectionHubCliError(
+                "management_secret_result_invalid",
+                "KDCube did not return the requested secret value.",
+            )
+        output = write_private_secret(
+            output_target,
+            secret_value,
+            replace=bool(args.replace),
+        )
+        view["result"] = {
+            key: value
+            for key, value in dict(view["result"]).items()
+            if key != "disclosed"
+        }
+        view["result"].update(
+            {
+                "disclosed": True,
+                "output": str(output),
+                "permissions": (
+                    {"file_mode": "0600"}
+                    if sys.platform != "win32"
+                    else {"windows_acl": "inherited_from_output_parent"}
+                ),
+            }
+        )
+    _print_json(view)
+    return 0 if isinstance(result, ManagementResult) else 3
+
+
+def _secret_export_targets(args: argparse.Namespace) -> tuple[ManagementSecretTarget, ...]:
+    targets = [
+        ManagementSecretTarget.create(scope="platform", key=key)
+        for key in (args.platform_key or [])
+    ]
+    for value in args.bundle_key or []:
+        bundle_id, separator, key = str(value or "").partition("=")
+        if not separator:
+            raise ConnectionHubCliError(
+                "secret_export_bundle_target_invalid",
+                "Each --bundle-key must use BUNDLE_ID=KEY.",
+            )
+        targets.append(
+            ManagementSecretTarget.create(
+                scope="bundle",
+                bundle_id=bundle_id,
+                key=key,
+            )
+        )
+    if not targets:
+        raise ConnectionHubCliError(
+            "secret_export_targets_required",
+            "Secret export requires at least one --platform-key or --bundle-key.",
+        )
+    ordered = tuple(sorted(targets, key=lambda item: item.identity))
+    if len({item.identity for item in ordered}) != len(ordered):
+        raise ConnectionHubCliError(
+            "secret_export_target_duplicate",
+            "Each secret export target must be named once.",
+        )
+    return ordered
+
+
+async def _execute_secret_export(
+    args: argparse.Namespace,
+    services: Services,
+) -> int:
+    target = services.host_service.management_target()
+    targets = _secret_export_targets(args)
+    output_directory = validate_secret_descriptor_export(
+        Path(args.output_directory),
+        targets,
+    )
+    browser_options: dict[str, Any] = {}
+    if args.no_open:
+        browser_options["browser_opener"] = _print_manual_authorization_url
+    result = await services.secret_export_service.export(
+        target=target,
+        targets=targets,
+        timeout_seconds=args.wait_seconds,
+        **browser_options,
+    )
+    exported = write_secret_descriptors(output_directory, result.values)
+    _print_json(
+        {
+            "schema": "connection_hub_cli.secret_descriptor_export.v1",
+            "ok": True,
+            "target": {"tenant": target.tenant, "project": target.project},
+            "request_digest": result.request_digest,
+            "approval": {
+                "assurance": result.assurance,
+                "method": result.approval_method,
+                "verified_at": result.approval_verified_at,
+            },
+            "output": {
+                "directory": str(exported.directory),
+                "platform_descriptor": str(exported.platform_path),
+                "bundles_descriptor": str(exported.bundles_path),
+                "platform_secret_count": exported.platform_count,
+                "bundle_secret_count": exported.bundle_count,
+                "permissions": (
+                    {"directory_mode": "0700", "file_mode": "0600"}
+                    if sys.platform != "win32"
+                    else {"windows_acl": "inherited_from_output_parent"}
+                ),
+            },
+        }
+    )
+    return 0
 
 
 async def _run_host(args: argparse.Namespace, services: Services) -> int:
@@ -672,6 +835,32 @@ async def _run_host(args: argparse.Namespace, services: Services) -> int:
                 invocation_id=args.invocation_id,
             ),
         )
+    if args.host_command == "secret":
+        if args.secret_command == "export":
+            return await _execute_secret_export(args, services)
+        target = services.host_service.management_target()
+        request_options = {
+            "scope": args.scope,
+            "key": args.key,
+            "bundle_id": args.bundle_id,
+            "invocation_id": args.invocation_id,
+        }
+        if args.secret_command == "metadata":
+            request = ManagementRequest.secret_metadata(target, **request_options)
+        elif args.secret_command == "get":
+            request = ManagementRequest.secret_read(target, **request_options)
+            return await _execute_secret_read(args, services, request)
+        elif args.secret_command == "set":
+            request = ManagementRequest.secret_write(
+                target,
+                value=_secret_from_input(stdin=args.value_stdin),
+                **request_options,
+            )
+        elif args.secret_command == "delete":
+            request = ManagementRequest.secret_delete(target, **request_options)
+        else:
+            raise AssertionError("unhandled secret command")
+        return await _execute_management(args, services, request)
     raise AssertionError("unhandled host command")
 
 
@@ -906,6 +1095,94 @@ def build_parser() -> argparse.ArgumentParser:
     )
     host_reload.add_argument("application_id")
     add_management_options(host_reload)
+
+    host_secret = host_commands.add_parser(
+        "secret",
+        help="Manage exact secrets through the deployment-selected provider.",
+    )
+    secret_commands = host_secret.add_subparsers(
+        dest="secret_command",
+        required=True,
+    )
+
+    secret_export = secret_commands.add_parser(
+        "export",
+        help=(
+            "Export exact secrets once after explicit browser confirmation; "
+            "this does not use or change delegated Card authority."
+        ),
+    )
+    secret_export.add_argument(
+        "--platform-key",
+        action="append",
+        default=[],
+        help="Exact platform secret key; repeat for each key.",
+    )
+    secret_export.add_argument(
+        "--bundle-key",
+        action="append",
+        default=[],
+        metavar="BUNDLE_ID=KEY",
+        help="Exact bundle id and secret key; repeat for each key.",
+    )
+    secret_export.add_argument(
+        "--output-directory",
+        required=True,
+        help="New directory that will receive secrets.yaml and bundles.secrets.yaml.",
+    )
+    secret_export.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the approval URL and wait for the browser callback.",
+    )
+    secret_export.add_argument("--wait-seconds", type=float, default=300.0)
+
+    def add_secret_target(command: argparse.ArgumentParser) -> None:
+        command.add_argument("key", help="Exact provider-relative secret key.")
+        command.add_argument(
+            "--scope",
+            choices=("platform", "bundle"),
+            required=True,
+            help="Deployment platform scope or one declared application bundle.",
+        )
+        command.add_argument(
+            "--bundle-id",
+            default="",
+            help="Exact application id; required for --scope bundle.",
+        )
+        add_management_options(command)
+
+    secret_metadata = secret_commands.add_parser(
+        "metadata",
+        help="Check existence and provider capability without reading a value.",
+    )
+    add_secret_target(secret_metadata)
+    secret_get = secret_commands.add_parser(
+        "get",
+        help="Disclose one exact value into a local file without printing it.",
+    )
+    add_secret_target(secret_get)
+    secret_get.add_argument("--output", required=True)
+    secret_get.add_argument(
+        "--replace",
+        action="store_true",
+        help="Atomically replace an existing output file.",
+    )
+    secret_set = secret_commands.add_parser(
+        "set",
+        help="Set one exact value from a hidden prompt or standard input.",
+    )
+    add_secret_target(secret_set)
+    secret_set.add_argument(
+        "--value-stdin",
+        action="store_true",
+        help="Read the exact value from standard input without trimming it.",
+    )
+    secret_delete = secret_commands.add_parser(
+        "delete",
+        help="Delete one exact secret through the selected provider.",
+    )
+    add_secret_target(secret_delete)
 
     commands.add_parser(
         "status", help="Show non-secret local Connection Hub client state."

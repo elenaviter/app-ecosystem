@@ -120,7 +120,7 @@ class _Management:
 def _result(request: ManagementRequest) -> ManagementResult:
     return ManagementResult(
         operation=request.operation,
-        resource=request.target.resource,
+        resource=request.resource,
         invocation_id=request.invocation_id,
         replay=False,
         authority={},
@@ -163,7 +163,7 @@ async def test_consent_retry_reuses_the_exact_request_object() -> None:
     recovery = ConsentRecovery(
         authorization_url="https://runtime.example.test/approve",
         access_id="access_cli",
-        resource=request.target.resource,
+        resource=request.resource,
         operation=request.operation,
         application_id=request.application_id,
         invocation_id=request.invocation_id,
@@ -213,7 +213,7 @@ async def test_expired_consent_never_calls_handler_or_retries() -> None:
     recovery = ConsentRecovery(
         authorization_url="https://runtime.example.test/approve",
         access_id="access_cli",
-        resource=request.target.resource,
+        resource=request.resource,
         operation=request.operation,
         application_id=request.application_id,
         invocation_id=request.invocation_id,

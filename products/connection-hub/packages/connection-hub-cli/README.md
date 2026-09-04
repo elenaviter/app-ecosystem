@@ -114,6 +114,69 @@ connection-hub host disconnect
 Disconnect revokes the OAuth grant and its delegated card before removing
 local custody.
 
+## Manage And Export Secrets
+
+An authorized operator or automation can manage one exact secret through its
+live Connection Hub Card:
+
+```bash
+connection-hub host secret metadata services.brave.api_key --scope platform
+connection-hub host secret set services.brave.api_key --scope platform
+connection-hub host secret get services.brave.api_key --scope platform \
+  --output ./brave-api-key
+connection-hub host secret delete services.brave.api_key --scope platform
+```
+
+`set` uses a hidden prompt by default. `get` writes a `0600` local file on
+POSIX, uses the selected parent directory's ACL on Windows, and reports
+disclosure metadata without printing the value. Connection Hub checks the
+exact target and operation on every call; its Card editor supplies `Once` and
+`Always` invocation policy. Before requesting disclosure, `get` rejects a
+missing parent, an existing destination without `--replace`, or a non-file
+replacement target. The atomic writer repeats these checks when publishing so
+a filesystem race cannot silently clobber another path.
+
+Descriptor export is an owner-performed path with independent authority:
+
+```bash
+connection-hub host secret export \
+  --platform-key services.brave.api_key \
+  --bundle-key connection-hub@1-0=connections.oauth_state_secret \
+  --output-directory ./kdcube-secret-export-20260904
+```
+
+The command starts a PKCE-bound loopback callback and opens the KDCube approval
+page. When no platform browser session exists, KDCube redirects through the
+identity provider configured by that deployment. The signed-in platform
+administrator sees the exact deployment, callback, digest, and key list, then
+chooses `Export once`. One authorization code permits one exchange for that
+manifest. The flow leaves delegated Cards unchanged and stores no reusable
+export credential.
+
+The destination must be a new directory. The CLI validates a bounded response,
+stages and flushes canonical `secrets.yaml` and `bundles.secrets.yaml`, then
+atomically reserves the destination without replacing any existing path. It
+moves only complete files into that owned directory and returns success after
+both are durable; a handled failure removes its partial destination. POSIX
+permissions are `0700` for the directory and `0600` for each file. Windows
+inherits the ACL of the selected parent directory, so that parent must already
+be private to the intended Windows user. The CLI prints only paths, counts,
+request digest, and assurance evidence.
+
+Key names are explicit because every supported provider can resolve an exact
+key while some secure providers intentionally cannot enumerate original key
+names. Repeat `--platform-key` and `--bundle-key BUNDLE_ID=KEY` for the desired
+manifest. The same command works with local and remote KDCube hosts and with
+the file, host-vault, and cloud secret backends.
+
+The built-in `session_confirmation` assurance proves a current KDCube admin
+browser session plus the exact click. Deployments configured for
+`fresh_authentication` or `user_verification` fail closed until their
+configured identity authority installs a verifier that can redirect through a
+fresh IdP or WebAuthn/passkey challenge and return evidence bound to the exact
+request digest and verification time. The transaction and CLI protocol remain
+the same for those stronger verifiers.
+
 ## Diagnose And Recover
 
 ```bash

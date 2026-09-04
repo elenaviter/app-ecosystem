@@ -5,7 +5,7 @@ import json
 import re
 import secrets
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
@@ -15,6 +15,18 @@ from connection_hub_cli.errors import AuthorizationError
 DEPLOYMENT_INSPECT = "kdcube.management.deployment.inspect"
 APPLICATION_SURFACES_READ = "kdcube.management.application.surfaces.read"
 APPLICATION_RELOAD = "kdcube.management.application.reload"
+SECRET_METADATA_READ = "kdcube.management.secret.metadata.read"
+SECRET_VALUE_READ = "kdcube.management.secret.value.read"
+SECRET_VALUE_WRITE = "kdcube.management.secret.value.write"
+SECRET_DELETE = "kdcube.management.secret.delete"
+SECRET_OPERATIONS = frozenset(
+    {
+        SECRET_METADATA_READ,
+        SECRET_VALUE_READ,
+        SECRET_VALUE_WRITE,
+        SECRET_DELETE,
+    }
+)
 DEFAULT_MANAGEMENT_SCOPE = f"{DEPLOYMENT_INSPECT} {APPLICATION_SURFACES_READ}"
 
 MANAGEMENT_REQUEST_SCHEMA = "kdcube.management.request.v1"
@@ -24,6 +36,9 @@ MANAGEMENT_ERROR_SCHEMA = "kdcube.management.error.v1"
 _ERROR_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 _HEX_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _CHOICES = frozenset({"allow_once", "allow_always"})
+_SECRET_SCOPES = frozenset({"platform", "bundle"})
+_SECRET_KEY_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,511}$")
+_MAX_SECRET_VALUE_BYTES = 64 * 1024
 
 
 def _text(value: Any, *, maximum: int = 4096) -> str:
@@ -93,6 +108,108 @@ def _invocation_id(value: str | None = None) -> str:
     return candidate
 
 
+def _secret_scope(value: str) -> str:
+    candidate = _text(value, maximum=32).lower()
+    if candidate not in _SECRET_SCOPES:
+        raise AuthorizationError(
+            "management_secret_scope_invalid",
+            "The secret scope must be platform or bundle.",
+        )
+    return candidate
+
+
+def _secret_key(value: str, *, scope: str) -> str:
+    candidate = _text(value, maximum=512)
+    if (
+        not _SECRET_KEY_RE.fullmatch(candidate)
+        or ".." in candidate
+        or candidate.endswith(".")
+        or candidate == "__keys"
+        or candidate.endswith(".__keys")
+        or (
+            scope == "platform"
+            and candidate.startswith(("bundles.", "users."))
+        )
+    ):
+        raise AuthorizationError(
+            "management_secret_key_invalid",
+            "The secret key must name one exact non-metadata key.",
+        )
+    return candidate
+
+
+def _secret_value(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or value == ""
+        or len(value.encode("utf-8")) > _MAX_SECRET_VALUE_BYTES
+    ):
+        raise AuthorizationError(
+            "management_secret_value_invalid",
+            "The secret value must be a non-empty string no larger than 65536 UTF-8 bytes.",
+        )
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class ManagementSecretTarget:
+    scope: str
+    key: str
+    bundle_id: str = ""
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        scope: str,
+        key: str,
+        bundle_id: str = "",
+    ) -> ManagementSecretTarget:
+        normalized_scope = _secret_scope(scope)
+        normalized_key = _secret_key(key, scope=normalized_scope)
+        normalized_bundle = ""
+        if normalized_scope == "bundle":
+            normalized_bundle = _application_id(bundle_id)
+        elif bundle_id:
+            raise AuthorizationError(
+                "management_secret_scope_invalid",
+                "A bundle identifier is valid only for a bundle secret.",
+            )
+        return cls(
+            scope=normalized_scope,
+            key=normalized_key,
+            bundle_id=normalized_bundle,
+        )
+
+    @property
+    def identity(self) -> tuple[str, str, str]:
+        return (self.scope, self.bundle_id, self.key)
+
+    def to_dict(self) -> dict[str, str]:
+        result = {"scope": self.scope, "key": self.key}
+        if self.bundle_id:
+            result["bundle_id"] = self.bundle_id
+        return result
+
+
+def _secret_body(
+    *,
+    scope: str,
+    key: str,
+    bundle_id: str = "",
+    value: Any = None,
+    include_value: bool = False,
+) -> dict[str, Any]:
+    body: dict[str, Any] = ManagementSecretTarget.create(
+        scope=scope,
+        key=key,
+        bundle_id=bundle_id,
+    ).to_dict()
+    if include_value:
+        body["value"] = _secret_value(value)
+    return body
+
+
 @dataclass(frozen=True, slots=True)
 class ManagementTarget:
     public_base_url: str
@@ -134,6 +251,22 @@ class ManagementTarget:
             f"{_coordinate_segment(self.tenant)}:{_coordinate_segment(self.project)}"
         )
 
+    def secret_resource(self, body: Mapping[str, Any]) -> str:
+        secret_target = ManagementSecretTarget.create(
+            scope=body.get("scope"),
+            key=body.get("key"),
+            bundle_id=body.get("bundle_id", ""),
+        )
+        scope_id = secret_target.bundle_id or "_"
+        encoded = (
+            quote(self.tenant, safe="-._~"),
+            quote(self.project, safe="-._~"),
+            quote(secret_target.scope, safe="-._~"),
+            quote(scope_id, safe="-._~@"),
+            quote(secret_target.key, safe="-._~@"),
+        )
+        return "urn:kdcube:management:secret:" + ":".join(encoded)
+
     @property
     def protected_resource_metadata_url(self) -> str:
         return (
@@ -165,6 +298,8 @@ class ManagementRequest:
     path: str
     application_id: str
     invocation_id: str
+    resource: str
+    body: Mapping[str, Any] = field(repr=False)
 
     @classmethod
     def inspect(
@@ -180,6 +315,8 @@ class ManagementRequest:
             path=target.route("deployment"),
             application_id="",
             invocation_id=_invocation_id(invocation_id),
+            resource=target.resource,
+            body={},
         )
 
     @classmethod
@@ -199,6 +336,8 @@ class ManagementRequest:
             path=target.route(f"applications/{segment}/surfaces"),
             application_id=exact,
             invocation_id=_invocation_id(invocation_id),
+            resource=target.resource,
+            body={},
         )
 
     @classmethod
@@ -218,11 +357,124 @@ class ManagementRequest:
             path=target.route(f"applications/{segment}/reload"),
             application_id=exact,
             invocation_id=_invocation_id(invocation_id),
+            resource=target.resource,
+            body={},
         )
 
-    @property
-    def body(self) -> dict[str, Any]:
-        return {}
+    @classmethod
+    def secret_metadata(
+        cls,
+        target: ManagementTarget,
+        *,
+        scope: str,
+        key: str,
+        bundle_id: str = "",
+        invocation_id: str | None = None,
+    ) -> ManagementRequest:
+        return cls._secret(
+            target,
+            operation=SECRET_METADATA_READ,
+            path="secrets/metadata/read",
+            scope=scope,
+            key=key,
+            bundle_id=bundle_id,
+            invocation_id=invocation_id,
+        )
+
+    @classmethod
+    def secret_read(
+        cls,
+        target: ManagementTarget,
+        *,
+        scope: str,
+        key: str,
+        bundle_id: str = "",
+        invocation_id: str | None = None,
+    ) -> ManagementRequest:
+        return cls._secret(
+            target,
+            operation=SECRET_VALUE_READ,
+            path="secrets/value/read",
+            scope=scope,
+            key=key,
+            bundle_id=bundle_id,
+            invocation_id=invocation_id,
+        )
+
+    @classmethod
+    def secret_write(
+        cls,
+        target: ManagementTarget,
+        *,
+        scope: str,
+        key: str,
+        value: str,
+        bundle_id: str = "",
+        invocation_id: str | None = None,
+    ) -> ManagementRequest:
+        return cls._secret(
+            target,
+            operation=SECRET_VALUE_WRITE,
+            path="secrets/value/write",
+            scope=scope,
+            key=key,
+            bundle_id=bundle_id,
+            value=value,
+            include_value=True,
+            invocation_id=invocation_id,
+        )
+
+    @classmethod
+    def secret_delete(
+        cls,
+        target: ManagementTarget,
+        *,
+        scope: str,
+        key: str,
+        bundle_id: str = "",
+        invocation_id: str | None = None,
+    ) -> ManagementRequest:
+        return cls._secret(
+            target,
+            operation=SECRET_DELETE,
+            path="secrets/delete",
+            scope=scope,
+            key=key,
+            bundle_id=bundle_id,
+            invocation_id=invocation_id,
+        )
+
+    @classmethod
+    def _secret(
+        cls,
+        target: ManagementTarget,
+        *,
+        operation: str,
+        path: str,
+        scope: str,
+        key: str,
+        bundle_id: str,
+        invocation_id: str | None,
+        value: Any = None,
+        include_value: bool = False,
+    ) -> ManagementRequest:
+        body = _secret_body(
+            scope=scope,
+            key=key,
+            bundle_id=bundle_id,
+            value=value,
+            include_value=include_value,
+        )
+        return cls(
+            target=target,
+            operation=operation,
+            method="POST",
+            path=target.route(path),
+            application_id="",
+            invocation_id=_invocation_id(invocation_id),
+            resource=target.secret_resource(body),
+            body=body,
+        )
 
     @property
     def target_key(self) -> str:
@@ -236,14 +488,19 @@ class ManagementRequest:
     def canonical_payload(self) -> dict[str, Any]:
         return {
             "application_id": self.application_id,
-            "body": {},
+            "body": dict(self.body),
             "operation": self.operation,
-            "resource": self.target.resource,
+            "resource": self.resource,
             "schema": MANAGEMENT_REQUEST_SCHEMA,
         }
 
     @property
     def request_digest(self) -> str:
+        # Secret-operation digests are keyed and calculated only by KDCube.
+        # Returning an unkeyed value digest here would create an offline
+        # verifier for low-entropy provider credentials.
+        if self.operation in SECRET_OPERATIONS:
+            return ""
         encoded = json.dumps(
             self.canonical_payload,
             ensure_ascii=True,
@@ -326,12 +583,16 @@ class ConsentRecovery:
             expires_at=expires_at,
             choices=choices,
         )
+        digest_matches = (
+            request.operation in SECRET_OPERATIONS
+            or recovery.request_digest == request.request_digest
+        )
         if (
-            recovery.resource != request.target.resource
+            recovery.resource != request.resource
             or recovery.operation != request.operation
             or recovery.application_id != request.application_id
             or recovery.invocation_id != request.invocation_id
-            or recovery.request_digest != request.request_digest
+            or not digest_matches
             or not _HEX_DIGEST_RE.fullmatch(recovery.request_digest)
             or not recovery.choices
             or any(choice not in _CHOICES for choice in recovery.choices)
@@ -355,7 +616,7 @@ class ManagementResult:
     invocation_id: str
     replay: bool
     authority: Mapping[str, Any]
-    result: Mapping[str, Any]
+    result: Mapping[str, Any] = field(repr=False)
 
     @classmethod
     def from_mapping(
@@ -372,7 +633,7 @@ class ManagementResult:
             value.get("schema") != MANAGEMENT_RESULT_SCHEMA
             or value.get("ok") is not True
             or value.get("operation") != request.operation
-            or value.get("resource") != request.target.resource
+            or value.get("resource") != request.resource
             or not isinstance(target, Mapping)
             or target.get("tenant") != request.target.tenant
             or target.get("project") != request.target.project
@@ -388,7 +649,7 @@ class ManagementResult:
             )
         return cls(
             operation=request.operation,
-            resource=request.target.resource,
+            resource=request.resource,
             invocation_id=request.invocation_id,
             replay=bool(invocation["replay"]),
             authority=_public_authority(authority),
@@ -417,7 +678,7 @@ class ManagementDenial:
             value.get("schema") != MANAGEMENT_ERROR_SCHEMA
             or value.get("ok") is not False
             or value.get("operation") != request.operation
-            or value.get("resource") != request.target.resource
+            or value.get("resource") != request.resource
             or value.get("invocation_id") != request.invocation_id
             or not isinstance(target, Mapping)
             or target.get("tenant") != request.target.tenant
@@ -481,6 +742,13 @@ def _public_result(
         return _surfaces_result(value, application_id=request.application_id)
     if request.operation == APPLICATION_RELOAD:
         return _reload_result(value, application_id=request.application_id)
+    if request.operation in {
+        SECRET_METADATA_READ,
+        SECRET_VALUE_READ,
+        SECRET_VALUE_WRITE,
+        SECRET_DELETE,
+    }:
+        return _secret_result(value, request=request)
     raise AuthorizationError(
         "management_result_invalid",
         "KDCube returned an invalid management result.",
@@ -611,3 +879,78 @@ def _reload_result(
         "changed_application_ids": changed_ids,
         "generation": _optional_text(value.get("generation")),
     }
+
+
+def _secret_result(
+    value: Mapping[str, Any],
+    *,
+    request: ManagementRequest,
+) -> dict[str, Any]:
+    expected = dict(request.body)
+    scope = expected["scope"]
+    key = expected["key"]
+    if value.get("scope") != scope or value.get("key") != key:
+        raise AuthorizationError(
+            "management_result_invalid",
+            "KDCube returned a secret result for another target.",
+        )
+    bundle_id = expected.get("bundle_id", "")
+    if value.get("bundle_id", "") != bundle_id:
+        raise AuthorizationError(
+            "management_result_invalid",
+            "KDCube returned a secret result for another target.",
+        )
+    projected: dict[str, Any] = {"scope": scope, "key": key}
+    if bundle_id:
+        projected["bundle_id"] = bundle_id
+
+    if request.operation == SECRET_METADATA_READ:
+        exists = value.get("exists")
+        writable = value.get("writable")
+        if not isinstance(exists, bool) or not isinstance(writable, bool):
+            raise AuthorizationError(
+                "management_result_invalid",
+                "KDCube returned invalid secret metadata.",
+            )
+        projected.update(
+            {
+                "exists": exists,
+                "provider": _text(value.get("provider"), maximum=128),
+                "writable": writable,
+            }
+        )
+        return projected
+    if request.operation == SECRET_VALUE_READ:
+        projected["value"] = _secret_value(value.get("value"))
+        return projected
+    if request.operation == SECRET_VALUE_WRITE:
+        if value.get("state") != "stored" or not isinstance(
+            value.get("created"), bool
+        ):
+            raise AuthorizationError(
+                "management_result_invalid",
+                "KDCube returned an invalid secret-write receipt.",
+            )
+        projected.update(
+            {
+                "created": value["created"],
+                "provider": _text(value.get("provider"), maximum=128),
+                "state": "stored",
+            }
+        )
+        return projected
+    if value.get("state") != "deleted" or not isinstance(
+        value.get("existed"), bool
+    ):
+        raise AuthorizationError(
+            "management_result_invalid",
+            "KDCube returned an invalid secret-delete receipt.",
+        )
+    projected.update(
+        {
+            "existed": value["existed"],
+            "provider": _text(value.get("provider"), maximum=128),
+            "state": "deleted",
+        }
+    )
+    return projected

@@ -9,6 +9,9 @@ from connection_hub_cli.errors import AuthorizationError
 from connection_hub_cli.management import (
     APPLICATION_RELOAD,
     DEPLOYMENT_INSPECT,
+    SECRET_METADATA_READ,
+    SECRET_VALUE_READ,
+    SECRET_VALUE_WRITE,
     ConsentRecovery,
     HttpxManagementTransport,
     ManagementClient,
@@ -41,7 +44,7 @@ def _success(request: ManagementRequest, result: dict | None = None) -> dict:
         "schema": "kdcube.management.result.v1",
         "ok": True,
         "operation": request.operation,
-        "resource": request.target.resource,
+        "resource": request.resource,
         "target": {
             "tenant": request.target.tenant,
             "project": request.target.project,
@@ -61,7 +64,7 @@ def _denial(request: ManagementRequest, *, recovery: dict | None = None) -> dict
         "schema": "kdcube.management.error.v1",
         "ok": False,
         "operation": request.operation,
-        "resource": request.target.resource,
+        "resource": request.resource,
         "target": {
             "tenant": request.target.tenant,
             "project": request.target.project,
@@ -88,7 +91,7 @@ def _recovery(request: ManagementRequest) -> dict:
             "connections_settings?request=opaque"
         ),
         "access_id": "access-1",
-        "resource": request.target.resource,
+        "resource": request.resource,
         "operation": request.operation,
         "application_id": request.application_id,
         "invocation_id": request.invocation_id,
@@ -133,6 +136,101 @@ def test_target_and_requests_match_the_frozen_protocol() -> None:
         separators=(",", ":"),
     ).encode()
     assert reload_request.request_digest == hashlib.sha256(encoded).hexdigest()
+
+
+def test_secret_requests_are_exact_and_have_no_client_side_value_digest() -> None:
+    target = _target()
+    request = ManagementRequest.secret_write(
+        target,
+        scope="bundle",
+        bundle_id="connection-hub@1-0",
+        key="provider.api_key",
+        value="write-value-marker",
+        invocation_id="secret-write-1",
+    )
+
+    assert request.operation == SECRET_VALUE_WRITE
+    assert request.path.endswith("/secrets/value/write")
+    assert request.resource == (
+        "urn:kdcube:management:secret:demo-tenant:demo-project:bundle:"
+        "connection-hub@1-0:provider.api_key"
+    )
+    assert request.body == {
+        "scope": "bundle",
+        "bundle_id": "connection-hub@1-0",
+        "key": "provider.api_key",
+        "value": "write-value-marker",
+    }
+    assert request.request_digest == ""
+    assert "write-value-marker" not in repr(request)
+
+    with pytest.raises(AuthorizationError) as empty:
+        ManagementRequest.secret_write(
+            target,
+            scope="platform",
+            key="services.provider.api_key",
+            value="",
+            invocation_id="secret-write-empty",
+        )
+    assert empty.value.code == "management_secret_value_invalid"
+
+
+def test_secret_recovery_accepts_only_a_server_digest_and_exact_target() -> None:
+    request = ManagementRequest.secret_metadata(
+        _target(),
+        scope="platform",
+        key="connections.signing_secret",
+        invocation_id="secret-metadata-1",
+    )
+    recovery = _recovery(request)
+    recovery["request_digest"] = "a" * 64
+
+    parsed = ConsentRecovery.from_mapping(recovery, request=request)
+
+    assert request.operation == SECRET_METADATA_READ
+    assert parsed.request_digest == "a" * 64
+    recovery["resource"] = request.target.resource
+    with pytest.raises(AuthorizationError) as raised:
+        ConsentRecovery.from_mapping(recovery, request=request)
+    assert raised.value.code == "management_recovery_request_mismatch"
+
+
+def test_secret_read_result_is_bound_to_the_exact_target() -> None:
+    request = ManagementRequest.secret_read(
+        _target(),
+        scope="bundle",
+        bundle_id="connection-hub@1-0",
+        key="provider.api_key",
+        invocation_id="secret-read-1",
+    )
+    result = ManagementResult.from_mapping(
+        _success(
+            request,
+            {
+                "scope": "bundle",
+                "bundle_id": "connection-hub@1-0",
+                "key": "provider.api_key",
+                "value": "read-value-marker",
+            },
+        ),
+        request=request,
+    )
+
+    assert request.operation == SECRET_VALUE_READ
+    assert result.result["value"] == "read-value-marker"
+    assert "read-value-marker" not in repr(result)
+
+    wrong = _success(
+        request,
+        {
+            "scope": "bundle",
+            "bundle_id": "other@1-0",
+            "key": "provider.api_key",
+            "value": "read-value-marker",
+        },
+    )
+    with pytest.raises(AuthorizationError):
+        ManagementResult.from_mapping(wrong, request=request)
 
 
 @pytest.mark.parametrize(
