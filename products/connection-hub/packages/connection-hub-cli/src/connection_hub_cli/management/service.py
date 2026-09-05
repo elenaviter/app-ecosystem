@@ -3,6 +3,14 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable, Callable
 
+from kdcube_cli.management.client import ManagementClient
+from kdcube_cli.management.models import (
+    ConsentRecovery,
+    ManagementDenial,
+    ManagementRequest,
+    ManagementResult,
+)
+
 from connection_hub_cli.authorization.client import OAuthClient
 from connection_hub_cli.authorization.discovery import OAuthDiscovery
 from connection_hub_cli.authorization.models import (
@@ -16,13 +24,6 @@ from connection_hub_cli.authorization.session import (
     session_id_for_target,
 )
 from connection_hub_cli.errors import AuthorizationError
-from connection_hub_cli.management.client import ManagementClient
-from connection_hub_cli.management.models import (
-    ConsentRecovery,
-    ManagementDenial,
-    ManagementRequest,
-    ManagementResult,
-)
 
 ConsentHandler = Callable[[ConsentRecovery], Awaitable[None]]
 

@@ -116,15 +116,20 @@ local custody.
 
 ## Manage And Export Secrets
 
+KDCube owns the backend-neutral management protocol and the canonical
+`kdcube secrets metadata|get|set|delete|export` commands. Connection Hub's
+`secrets host` commands wrap the same KDCube library, select the configured
+host, and supply the OAuth session held in the native credential store.
+
 An authorized operator or automation can manage one exact secret through its
 live Connection Hub Card:
 
 ```bash
-connection-hub host secret metadata services.brave.api_key --scope platform
-connection-hub host secret set services.brave.api_key --scope platform
-connection-hub host secret get services.brave.api_key --scope platform \
+connection-hub secrets host metadata services.brave.api_key --scope platform
+connection-hub secrets host set services.brave.api_key --scope platform
+connection-hub secrets host get services.brave.api_key --scope platform \
   --output ./brave-api-key
-connection-hub host secret delete services.brave.api_key --scope platform
+connection-hub secrets host delete services.brave.api_key --scope platform
 ```
 
 `set` uses a hidden prompt by default. `get` writes a `0600` local file on
@@ -139,7 +144,7 @@ a filesystem race cannot silently clobber another path.
 Descriptor export is an owner-performed path with independent authority:
 
 ```bash
-connection-hub host secret export \
+connection-hub secrets host export \
   --platform-key services.brave.api_key \
   --bundle-key connection-hub@1-0=connections.oauth_state_secret \
   --output-directory ./kdcube-secret-export-20260904

@@ -22,9 +22,9 @@ from kdcube_cli.control import (
     SurfaceSelector,
     select_local_target,
 )
+from kdcube_cli.management.models import ManagementTarget
 
 from connection_hub_cli.errors import HostControlError
-from connection_hub_cli.management.models import ManagementTarget
 from connection_hub_cli.models import HostSelection
 from connection_hub_cli.state import HostStore
 

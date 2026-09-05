@@ -1,30 +1,5 @@
-from __future__ import annotations
+"""Compatibility import for KDCube-owned PKCE primitives."""
 
-import base64
-import hashlib
-import secrets
-from dataclasses import dataclass
+from kdcube_cli.management.pkce import PKCEParameters, code_challenge, generate_pkce
 
-
-@dataclass(frozen=True, slots=True)
-class PKCEParameters:
-    code_verifier: str
-    code_challenge: str
-    state: str
-
-
-def _base64url(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
-
-
-def code_challenge(code_verifier: str) -> str:
-    return _base64url(hashlib.sha256(code_verifier.encode("ascii")).digest())
-
-
-def generate_pkce() -> PKCEParameters:
-    verifier = secrets.token_urlsafe(64)
-    return PKCEParameters(
-        code_verifier=verifier,
-        code_challenge=code_challenge(verifier),
-        state=secrets.token_urlsafe(32),
-    )
+__all__ = ["PKCEParameters", "code_challenge", "generate_pkce"]

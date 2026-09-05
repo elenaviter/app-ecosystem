@@ -33,11 +33,11 @@ from connection_hub_cli.management.secret_export import (
     SecretExportStart,
     SecretExportTransport,
 )
-from connection_hub_cli.management.service import AuthorizedManagementService
 from connection_hub_cli.management.secret_output import (
     validate_private_secret_output,
     write_private_secret,
 )
+from connection_hub_cli.management.service import AuthorizedManagementService
 from connection_hub_cli.management.transport import (
     HttpxManagementTransport,
     ManagementTransport,
@@ -54,7 +54,9 @@ __all__ = [
     "SECRET_VALUE_READ",
     "SECRET_VALUE_WRITE",
     "AuthorizedManagementService",
+    "BrowserSecretExportService",
     "ConsentRecovery",
+    "ExportedSecret",
     "HttpxManagementTransport",
     "HttpxSecretExportTransport",
     "ManagementClient",
@@ -64,16 +66,14 @@ __all__ = [
     "ManagementSecretTarget",
     "ManagementTarget",
     "ManagementTransport",
-    "BrowserSecretExportService",
-    "ExportedSecret",
     "SecretDescriptorExport",
     "SecretExportClient",
     "SecretExportRequest",
     "SecretExportResult",
     "SecretExportStart",
     "SecretExportTransport",
-    "validate_secret_descriptor_export",
     "validate_private_secret_output",
-    "write_secret_descriptors",
+    "validate_secret_descriptor_export",
     "write_private_secret",
+    "write_secret_descriptors",
 ]

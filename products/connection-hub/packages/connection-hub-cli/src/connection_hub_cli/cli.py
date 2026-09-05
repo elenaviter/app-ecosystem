@@ -13,6 +13,8 @@ from typing import Any
 
 import anyio
 from kdcube_cli.control import DEFAULT_RUNTIME_ROOT, LocalPlatformSourceRequest
+from kdcube_cli.management.errors import ManagementCliError
+from kdcube_cli.management.presentation import management_view
 
 from connection_hub_cli import __version__
 from connection_hub_cli.authorization import (
@@ -50,12 +52,11 @@ from connection_hub_cli.management import (
     ManagementRequest,
     ManagementResult,
     ManagementSecretTarget,
-    SECRET_VALUE_READ,
     SecretExportClient,
     validate_private_secret_output,
     validate_secret_descriptor_export,
-    write_secret_descriptors,
     write_private_secret,
+    write_secret_descriptors,
 )
 from connection_hub_cli.mcp_relay import serve_profile
 from connection_hub_cli.models import SUPPORTED_CLIENTS
@@ -538,52 +539,12 @@ def _management_view(
     request: ManagementRequest,
     result: ManagementResult | ManagementDenial,
 ) -> dict[str, Any]:
-    if isinstance(result, ManagementResult):
-        projected_result = dict(result.result)
-        if request.operation == SECRET_VALUE_READ:
-            projected_result.pop("value", None)
-            projected_result["disclosed"] = True
-        return {
-            "schema": "connection_hub_cli.management_result.v1",
-            "ok": True,
-            "operation": result.operation,
-            "resource": result.resource,
-            "invocation": {
-                "id": result.invocation_id,
-                "replay": result.replay,
-            },
-            "authority": dict(result.authority),
-            "result": projected_result,
-        }
-    value: dict[str, Any] = {
-        "schema": "connection_hub_cli.management_error.v1",
-        "ok": False,
-        "status": result.status,
-        "operation": request.operation,
-        "resource": request.resource,
-        "invocation_id": request.invocation_id,
-        "error": {"code": result.code, "retryable": result.retryable},
-    }
-    if request.request_digest:
-        value["request_digest"] = request.request_digest
-    if result.recovery is not None:
-        recovery = result.recovery
-        value["recovery"] = {
-            "type": "consent_required",
-            "reason": "delegated_request_permit_required",
-            "authorization_url": recovery.authorization_url,
-            "access_id": recovery.access_id,
-            "resource": recovery.resource,
-            "operation": recovery.operation,
-            "application_id": recovery.application_id,
-            "invocation_id": recovery.invocation_id,
-            "request_digest": recovery.request_digest,
-            "card_revision": recovery.card_revision,
-            "catalog_version": recovery.catalog_version,
-            "expires_at": recovery.expires_at,
-            "choices": list(recovery.choices),
-        }
-    return value
+    return management_view(
+        request,
+        result,
+        result_schema="connection_hub_cli.management_result.v1",
+        error_schema="connection_hub_cli.management_error.v1",
+    )
 
 
 async def _management_result_with_consent(
@@ -659,7 +620,9 @@ async def _execute_secret_read(
     return 0 if isinstance(result, ManagementResult) else 3
 
 
-def _secret_export_targets(args: argparse.Namespace) -> tuple[ManagementSecretTarget, ...]:
+def _secret_export_targets(
+    args: argparse.Namespace,
+) -> tuple[ManagementSecretTarget, ...]:
     targets = [
         ManagementSecretTarget.create(scope="platform", key=key)
         for key in (args.platform_key or [])
@@ -738,6 +701,34 @@ async def _execute_secret_export(
         }
     )
     return 0
+
+
+async def _run_host_secret(args: argparse.Namespace, services: Services) -> int:
+    if args.secret_command == "export":
+        return await _execute_secret_export(args, services)
+    target = services.host_service.management_target()
+    request_options = {
+        "scope": args.scope,
+        "key": args.key,
+        "bundle_id": args.bundle_id,
+        "invocation_id": args.invocation_id,
+    }
+    if args.secret_command == "metadata":
+        request = ManagementRequest.secret_metadata(target, **request_options)
+    elif args.secret_command == "get":
+        request = ManagementRequest.secret_read(target, **request_options)
+        return await _execute_secret_read(args, services, request)
+    elif args.secret_command == "set":
+        request = ManagementRequest.secret_write(
+            target,
+            value=_secret_from_input(stdin=args.value_stdin),
+            **request_options,
+        )
+    elif args.secret_command == "delete":
+        request = ManagementRequest.secret_delete(target, **request_options)
+    else:
+        raise AssertionError("unhandled secret command")
+    return await _execute_management(args, services, request)
 
 
 async def _run_host(args: argparse.Namespace, services: Services) -> int:
@@ -835,32 +826,6 @@ async def _run_host(args: argparse.Namespace, services: Services) -> int:
                 invocation_id=args.invocation_id,
             ),
         )
-    if args.host_command == "secret":
-        if args.secret_command == "export":
-            return await _execute_secret_export(args, services)
-        target = services.host_service.management_target()
-        request_options = {
-            "scope": args.scope,
-            "key": args.key,
-            "bundle_id": args.bundle_id,
-            "invocation_id": args.invocation_id,
-        }
-        if args.secret_command == "metadata":
-            request = ManagementRequest.secret_metadata(target, **request_options)
-        elif args.secret_command == "get":
-            request = ManagementRequest.secret_read(target, **request_options)
-            return await _execute_secret_read(args, services, request)
-        elif args.secret_command == "set":
-            request = ManagementRequest.secret_write(
-                target,
-                value=_secret_from_input(stdin=args.value_stdin),
-                **request_options,
-            )
-        elif args.secret_command == "delete":
-            request = ManagementRequest.secret_delete(target, **request_options)
-        else:
-            raise AssertionError("unhandled secret command")
-        return await _execute_management(args, services, request)
     raise AssertionError("unhandled host command")
 
 
@@ -870,6 +835,10 @@ async def _run(args: argparse.Namespace) -> int:
         return _run_setup(args, services)
     if args.command == "host":
         return await _run_host(args, services)
+    if args.command == "secrets":
+        if args.secrets_target == "host":
+            return await _run_host_secret(args, services)
+        raise AssertionError("unhandled secrets target")
     if args.command == "open":
         _print_json(services.host_service.open())
         return 0
@@ -1096,93 +1065,111 @@ def build_parser() -> argparse.ArgumentParser:
     host_reload.add_argument("application_id")
     add_management_options(host_reload)
 
-    host_secret = host_commands.add_parser(
-        "secret",
-        help="Manage exact secrets through the deployment-selected provider.",
-    )
-    secret_commands = host_secret.add_subparsers(
-        dest="secret_command",
-        required=True,
-    )
-
-    secret_export = secret_commands.add_parser(
-        "export",
-        help=(
-            "Export exact secrets once after explicit browser confirmation; "
-            "this does not use or change delegated Card authority."
-        ),
-    )
-    secret_export.add_argument(
-        "--platform-key",
-        action="append",
-        default=[],
-        help="Exact platform secret key; repeat for each key.",
-    )
-    secret_export.add_argument(
-        "--bundle-key",
-        action="append",
-        default=[],
-        metavar="BUNDLE_ID=KEY",
-        help="Exact bundle id and secret key; repeat for each key.",
-    )
-    secret_export.add_argument(
-        "--output-directory",
-        required=True,
-        help="New directory that will receive secrets.yaml and bundles.secrets.yaml.",
-    )
-    secret_export.add_argument(
-        "--no-open",
-        action="store_true",
-        help="Print the approval URL and wait for the browser callback.",
-    )
-    secret_export.add_argument("--wait-seconds", type=float, default=300.0)
-
-    def add_secret_target(command: argparse.ArgumentParser) -> None:
-        command.add_argument("key", help="Exact provider-relative secret key.")
-        command.add_argument(
-            "--scope",
-            choices=("platform", "bundle"),
+    def add_host_secret_commands(command: argparse.ArgumentParser) -> None:
+        secret_commands = command.add_subparsers(
+            dest="secret_command",
             required=True,
-            help="Deployment platform scope or one declared application bundle.",
         )
-        command.add_argument(
-            "--bundle-id",
-            default="",
-            help="Exact application id; required for --scope bundle.",
-        )
-        add_management_options(command)
 
-    secret_metadata = secret_commands.add_parser(
-        "metadata",
-        help="Check existence and provider capability without reading a value.",
+        secret_export = secret_commands.add_parser(
+            "export",
+            help=(
+                "Export exact secrets once after explicit browser confirmation; "
+                "this does not use or change delegated Card authority."
+            ),
+        )
+        secret_export.add_argument(
+            "--platform-key",
+            action="append",
+            default=[],
+            help="Exact platform secret key; repeat for each key.",
+        )
+        secret_export.add_argument(
+            "--bundle-key",
+            action="append",
+            default=[],
+            metavar="BUNDLE_ID=KEY",
+            help="Exact bundle id and secret key; repeat for each key.",
+        )
+        secret_export.add_argument(
+            "--output-directory",
+            required=True,
+            help=(
+                "New directory that will receive secrets.yaml and "
+                "bundles.secrets.yaml."
+            ),
+        )
+        secret_export.add_argument(
+            "--no-open",
+            action="store_true",
+            help="Print the approval URL and wait for the browser callback.",
+        )
+        secret_export.add_argument("--wait-seconds", type=float, default=300.0)
+
+        def add_secret_target(target_command: argparse.ArgumentParser) -> None:
+            target_command.add_argument(
+                "key", help="Exact provider-relative secret key."
+            )
+            target_command.add_argument(
+                "--scope",
+                choices=("platform", "bundle"),
+                required=True,
+                help=(
+                    "Deployment platform scope or one declared application bundle."
+                ),
+            )
+            target_command.add_argument(
+                "--bundle-id",
+                default="",
+                help="Exact application id; required for --scope bundle.",
+            )
+            add_management_options(target_command)
+
+        secret_metadata = secret_commands.add_parser(
+            "metadata",
+            help="Check existence and provider capability without reading a value.",
+        )
+        add_secret_target(secret_metadata)
+        secret_get = secret_commands.add_parser(
+            "get",
+            help="Disclose one exact value into a local file without printing it.",
+        )
+        add_secret_target(secret_get)
+        secret_get.add_argument("--output", required=True)
+        secret_get.add_argument(
+            "--replace",
+            action="store_true",
+            help="Atomically replace an existing output file.",
+        )
+        secret_set = secret_commands.add_parser(
+            "set",
+            help="Set one exact value from a hidden prompt or standard input.",
+        )
+        add_secret_target(secret_set)
+        secret_set.add_argument(
+            "--value-stdin",
+            action="store_true",
+            help="Read the exact value from standard input without trimming it.",
+        )
+        secret_delete = secret_commands.add_parser(
+            "delete",
+            help="Delete one exact secret through the selected provider.",
+        )
+        add_secret_target(secret_delete)
+
+    secrets = commands.add_parser(
+        "secrets",
+        help="Manage secrets associated with Connection Hub and its selected host.",
     )
-    add_secret_target(secret_metadata)
-    secret_get = secret_commands.add_parser(
-        "get",
-        help="Disclose one exact value into a local file without printing it.",
+    secrets_targets = secrets.add_subparsers(
+        dest="secrets_target",
+        required=True,
     )
-    add_secret_target(secret_get)
-    secret_get.add_argument("--output", required=True)
-    secret_get.add_argument(
-        "--replace",
-        action="store_true",
-        help="Atomically replace an existing output file.",
+    secrets_host = secrets_targets.add_parser(
+        "host",
+        help="Manage exact secrets through the selected KDCube host.",
     )
-    secret_set = secret_commands.add_parser(
-        "set",
-        help="Set one exact value from a hidden prompt or standard input.",
-    )
-    add_secret_target(secret_set)
-    secret_set.add_argument(
-        "--value-stdin",
-        action="store_true",
-        help="Read the exact value from standard input without trimming it.",
-    )
-    secret_delete = secret_commands.add_parser(
-        "delete",
-        help="Delete one exact secret through the selected provider.",
-    )
-    add_secret_target(secret_delete)
+    add_host_secret_commands(secrets_host)
 
     commands.add_parser(
         "status", help="Show non-secret local Connection Hub client state."
@@ -1338,7 +1325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return anyio.run(_run, args)
-    except ConnectionHubCliError as exc:
+    except (ConnectionHubCliError, ManagementCliError) as exc:
         sys.stderr.write(f"error[{exc.code}]: {exc.message}\n")
         return exc.exit_code
     except KeyboardInterrupt:

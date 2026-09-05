@@ -1,17 +1,8 @@
 from __future__ import annotations
 
+from kdcube_cli.management.errors import ManagementCliError
 
-class ConnectionHubCliError(RuntimeError):
-    """A user-facing failure whose text is safe to render."""
-
-    def __init__(self, code: str, message: str, *, exit_code: int = 2) -> None:
-        super().__init__(message)
-        self.code = code
-        self.message = message
-        self.exit_code = exit_code
-
-    def __str__(self) -> str:
-        return self.message
+ConnectionHubCliError = ManagementCliError
 
 
 class StateError(ConnectionHubCliError):
@@ -38,5 +29,4 @@ class HostControlError(ConnectionHubCliError):
     pass
 
 
-class AuthorizationError(ConnectionHubCliError):
-    pass
+AuthorizationError = ManagementCliError

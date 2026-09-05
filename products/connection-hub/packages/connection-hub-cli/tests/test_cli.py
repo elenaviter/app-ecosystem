@@ -682,6 +682,35 @@ def test_parser_has_no_argument_that_places_a_bearer_on_argv() -> None:
     assert "--bearer" not in help_text
 
 
+def test_secret_parser_puts_domain_before_selected_host() -> None:
+    args = cli.build_parser().parse_args(
+        [
+            "secrets",
+            "host",
+            "metadata",
+            "services.brave.api_key",
+            "--scope",
+            "platform",
+        ]
+    )
+
+    assert args.command == "secrets"
+    assert args.secrets_target == "host"
+    assert args.secret_command == "metadata"
+
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(
+            [
+                "host",
+                "secret",
+                "metadata",
+                "services.brave.api_key",
+                "--scope",
+                "platform",
+            ]
+        )
+
+
 def test_generic_client_command_contains_no_credential(
     tmp_path, monkeypatch, capsys
 ) -> None:
@@ -1172,8 +1201,8 @@ def test_secret_set_reads_exact_stdin_without_rendering_value(
 
     result = cli.main(
         [
+            "secrets",
             "host",
-            "secret",
             "set",
             "provider.api_key",
             "--scope",
@@ -1229,8 +1258,8 @@ def test_secret_get_writes_private_file_and_never_renders_value(
 
     result = cli.main(
         [
+            "secrets",
             "host",
-            "secret",
             "get",
             "provider.api_key",
             "--scope",
@@ -1266,8 +1295,8 @@ def test_secret_get_rejects_existing_output_before_disclosure(
 
     result = cli.main(
         [
+            "secrets",
             "host",
-            "secret",
             "get",
             "provider.api_key",
             "--scope",
@@ -1305,8 +1334,8 @@ def test_secret_denial_renders_server_bound_recovery_without_value_digest(
 
     result = cli.main(
         [
+            "secrets",
             "host",
-            "secret",
             "set",
             "provider.api_key",
             "--scope",
@@ -1340,8 +1369,8 @@ def test_human_secret_export_writes_descriptor_pair_without_rendering_values(
 
     result = cli.main(
         [
+            "secrets",
             "host",
-            "secret",
             "export",
             "--platform-key",
             "services.brave.api_key",
@@ -1410,8 +1439,8 @@ def test_human_secret_export_preflights_output_before_browser(
 
     result = cli.main(
         [
+            "secrets",
             "host",
-            "secret",
             "export",
             "--platform-key",
             "services.brave.api_key",
