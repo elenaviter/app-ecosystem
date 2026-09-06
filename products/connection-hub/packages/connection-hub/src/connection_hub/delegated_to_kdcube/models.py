@@ -534,6 +534,10 @@ class ClaimResolution:
     connect_url: str = ""
     candidates: tuple[dict[str, Any], ...] = ()
     retry_hint: bool = False
+    # The connected account's login identity (its email). Password-kind
+    # connectors (IMAP app passwords) need it beside the secret, and it is an
+    # account attribute, not a credential field, so the verdict carries it.
+    account_email: str = ""
 
     @property
     def consent_required(self) -> bool:
@@ -547,6 +551,8 @@ class ClaimResolution:
             "connector_app_id": self.connector_app_id,
             "account_id": self.account_id,
         }
+        if self.account_email:
+            data["account_email"] = self.account_email
         if self.credential is not None:
             data["credential"] = self.credential.to_dict(include_credential=include_credential)
         if self.error:

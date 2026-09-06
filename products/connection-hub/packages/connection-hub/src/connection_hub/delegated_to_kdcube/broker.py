@@ -368,6 +368,7 @@ class DelegatedToKdcubeBroker:
             connector_app_id=connector_key,
             account_id=account.account_id,
             credential=handle,
+            account_email=as_str(account.email),
         )
 
     async def _resolve_client_secret(self, *, provider_id: str, connector_app_id: str, connector_app: Any) -> str:

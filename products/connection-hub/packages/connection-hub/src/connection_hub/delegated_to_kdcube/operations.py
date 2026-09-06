@@ -343,6 +343,14 @@ class DelegatedToKdcubeOperations:
             "claims": list(claims),
             **credential,
         }
+        # An app password or password is only usable with its login. The form
+        # sends the login as the account's email (an account attribute), so a
+        # credential stored without it would fail every IMAP/SMTP call with
+        # "missing username": complete the record here.
+        if any(key in credential for key in ("app_password", "password")) and not as_str(credential.get("username")):
+            login = as_str(payload.get("username") or payload.get("email") or stored.email)
+            if login:
+                credential_with_metadata["username"] = login
         await self.store.set_credential(credential_id, credential_with_metadata)
         LOGGER.info(
             "[delegated.ops] connect credential persisted user=%s provider=%s connector=%s account=%s credential=%s claims=%s",
