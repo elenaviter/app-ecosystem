@@ -121,6 +121,11 @@ from connection_hub.invocation_policy import (
     InvocationPolicyConflict,
     InvocationPolicyRecordError,
 )
+from connection_hub.delegated_credentials.secret_resources import (
+    SECRET_RESOURCE_PREFIX,
+    SecretResource,
+    SecretResourceError,
+)
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.remote_mcp import (
     RemoteMCPOAuthFlowError,
     build_remote_mcp_connector_service,
@@ -344,6 +349,58 @@ def _resource_operations_for_resource(value: Any, resource: str) -> list[str]:
     if not isinstance(value, Mapping):
         return []
     return _safe_list(value.get(resource))
+
+
+def _invocation_modes(value: Any) -> Dict[str, Dict[str, str]]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("invocation_policies must be an object")
+    selected: Dict[str, Dict[str, str]] = {}
+    for raw_resource, raw_operations in value.items():
+        resource = str(raw_resource or "").strip()
+        if not resource or not isinstance(raw_operations, Mapping):
+            raise ValueError("invocation_policies must be keyed by resource")
+        operations: Dict[str, str] = {}
+        for raw_operation, raw_mode in raw_operations.items():
+            operation = str(raw_operation or "").strip()
+            mode = str(raw_mode or "").strip().lower()
+            if not operation or mode not in {POLICY_ALWAYS, POLICY_ONCE}:
+                raise ValueError("invocation policy entries require an operation and mode")
+            _validate_secret_invocation_mode(resource=resource, mode=mode)
+            operations[operation] = mode
+        selected[resource] = operations
+    return selected
+
+
+def _validate_create_invocation_modes(
+    *,
+    resource_operations: Any,
+    invocation_modes: Mapping[str, Mapping[str, str]],
+) -> None:
+    if not isinstance(resource_operations, Mapping):
+        raise ValueError("resource_operations must be an object")
+    selected = {
+        str(resource or "").strip(): set(_safe_list(operations))
+        for resource, operations in resource_operations.items()
+        if str(resource or "").strip()
+    }
+    for resource, operation_modes in invocation_modes.items():
+        unknown = sorted(set(operation_modes) - selected.get(resource, set()))
+        if unknown:
+            raise ValueError(
+                "invocation policy names an unselected operation: "
+                + ", ".join(unknown)
+            )
+    for resource, operations in selected.items():
+        if not resource.startswith(SECRET_RESOURCE_PREFIX):
+            continue
+        missing = sorted(operations - set(invocation_modes.get(resource, {})))
+        if missing:
+            raise ValueError(
+                "secret management operations require Once or Always: "
+                + ", ".join(missing)
+            )
 
 
 def _safe_list(value: Any) -> list[str]:
@@ -987,6 +1044,21 @@ def _expected_invocation_policy_revision(payload: Mapping[str, Any]) -> int | No
     if revision < 0:
         raise InvocationPolicyRecordError("expected_revision_invalid")
     return revision
+
+
+def _validate_secret_invocation_mode(*, resource: str, mode: str) -> None:
+    """Standing wildcard secret authority is reusable by definition."""
+
+    if not str(resource or "").startswith(SECRET_RESOURCE_PREFIX):
+        return
+    try:
+        selected = SecretResource.parse(resource)
+    except SecretResourceError as exc:
+        raise InvocationPolicyRecordError(exc.args[0]) from exc
+    if selected.broad and mode == POLICY_ONCE:
+        raise InvocationPolicyRecordError(
+            "broad_secret_selector_requires_always"
+        )
 
 
 async def _remote_mcp_resource_overlay(
@@ -2239,6 +2311,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 "description": "Manage explicitly selected deployment and application secret keys through the configured provider.",
                                 "admin_only": True,
                                 "resource_selection": True,
+                                "selector_type": "kdcube_secret",
                                 "operations": {
                                     "kdcube.management.secret.metadata.read": {
                                         "label": "Inspect secret metadata",
@@ -2343,10 +2416,6 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 ],
                                 "request_bound_operations": [
                                     "kdcube.management.application.reload",
-                                    "kdcube.management.secret.metadata.read",
-                                    "kdcube.management.secret.value.read",
-                                    "kdcube.management.secret.value.write",
-                                    "kdcube.management.secret.delete",
                                 ],
                                 "request_permit_ttl_seconds": 600,
                             }
@@ -3262,6 +3331,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if mode not in {POLICY_ALWAYS, POLICY_ONCE}:
             return {"ok": False, "error": "policy_mode_invalid", "status": 400}
         try:
+            _validate_secret_invocation_mode(resource=resource, mode=mode)
             policy = await _invocation_policy_service(self).set_policy(
                 owner_subject=str(listing.get("platform_user_id") or ""),
                 authority=InvocationAuthority(
@@ -3300,16 +3370,43 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
         try:
-            return await _automation_access_service(self, request).create_access(
+            resource_operations = (
+                dict(payload.get("resource_operations") or {})
+                if "resource_operations" in payload
+                else None
+            )
+            invocation_modes = _invocation_modes(
+                payload.get("invocation_policies")
+                if "invocation_policies" in payload
+                else None
+            )
+            requested_resources = {
+                str(resource or "").strip()
+                for resource in dict(payload.get("resource_grants") or {})
+                if str(resource or "").strip()
+            }
+            if resource_operations is None and (
+                invocation_modes
+                or any(
+                    resource.startswith(SECRET_RESOURCE_PREFIX)
+                    for resource in requested_resources
+                )
+            ):
+                raise ValueError(
+                    "secret or policy-bearing access requires explicit resource_operations"
+                )
+            if resource_operations is not None:
+                _validate_create_invocation_modes(
+                    resource_operations=resource_operations,
+                    invocation_modes=invocation_modes,
+                )
+            access_service = _automation_access_service(self, request)
+            result = await access_service.create_access(
                 user,
                 label=str(payload.get("label") or "").strip(),
                 resource_grants=dict(payload.get("resource_grants") or {}),
                 operations=_safe_list(payload.get("operations")),
-                resource_operations=(
-                    dict(payload.get("resource_operations") or {})
-                    if "resource_operations" in payload
-                    else None
-                ),
+                resource_operations=resource_operations,
                 # Both preserve absent vs empty. An omitted selection keeps the
                 # record's own state; "*" is the full policy of the saved
                 # catalog, and {} allows no named-service operation.
@@ -3325,8 +3422,50 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 ),
                 ttl_seconds=payload.get("ttl_seconds"),
             )
+            if result.get("ok") is not True or not invocation_modes:
+                return result
+
+            access_id = str(result.get("access_id") or "").strip()
+            if not access_id:
+                access = result.get("access")
+                access_id = str(
+                    (access or {}).get("access_id")
+                    if isinstance(access, Mapping)
+                    else ""
+                ).strip()
+            if not access_id:
+                raise InvocationPolicyRecordError("access_id_missing")
+            owner_subject = str(
+                user.get("user_id") or user.get("sub") or ""
+            ).strip()
+            policy_service = _invocation_policy_service(self)
+            policies = []
+            try:
+                for resource, operations in sorted(invocation_modes.items()):
+                    for operation, mode in sorted(operations.items()):
+                        policy = await policy_service.set_policy(
+                            owner_subject=owner_subject,
+                            authority=InvocationAuthority(
+                                access_id=access_id,
+                                resource=resource,
+                                surface=SURFACE_OUTER,
+                                operation=operation,
+                            ),
+                            mode=mode,
+                            expected_revision=0,
+                        )
+                        policies.append(policy.to_public_dict())
+            except Exception:
+                await access_service.revoke_access(user, access_id=access_id)
+                raise
+            result["invocation_policies"] = policies
+            if isinstance(result.get("access"), dict):
+                result["access"]["invocation_policies"] = policies
+            return result
         except ValueError as exc:
             return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+        except Exception as exc:
+            return _invocation_policy_failure(exc)
 
     @api(
         method="POST",
@@ -3478,6 +3617,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if invocation_mode:
             if invocation_mode not in {POLICY_ALWAYS, POLICY_ONCE}:
                 return {"ok": False, "error": "policy_mode_invalid", "status": 400}
+            try:
+                _validate_secret_invocation_mode(
+                    resource=resource,
+                    mode=invocation_mode,
+                )
+            except Exception as exc:
+                return _invocation_policy_failure(exc)
             selected_outer_operations = _resource_operations_for_resource(
                 resource_operations,
                 resource,

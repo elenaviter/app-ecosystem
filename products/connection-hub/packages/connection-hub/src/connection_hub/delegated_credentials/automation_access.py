@@ -86,6 +86,10 @@ from connection_hub.delegated_credentials.cards.read_model import (
     build_card_view,
     compatible_resource_offers,
 )
+from connection_hub.delegated_credentials.secret_resources import (
+    SecretResourceError,
+    validate_secret_card_resource,
+)
 from connection_hub.delegated_credentials.catalog.descriptors import (
     RESOURCE_KIND_CATALOG,
     ROW_ATTR_KIND,
@@ -1472,6 +1476,15 @@ class AutomationAccessService:
                     if _grants_delegable(tool.grants, delegable)
                 ],
             }
+            selector_type = str(
+                getattr(resource, "selector_type", "") or ""
+            ).strip()
+            if selector_type:
+                option["selector_type"] = selector_type
+                option["selector_context"] = {
+                    "tenant": self._tenant,
+                    "project": self._project,
+                }
             if isinstance(resource.named_services, Mapping):
                 named_services = _delegable_named_service_options(
                     await self._named_service_options(resource.named_services),
@@ -1490,6 +1503,14 @@ class AutomationAccessService:
         to the process descriptor; a save passes the registered catalog."""
         text = _clean(resource)
         if not text:
+            return None
+        try:
+            validate_secret_card_resource(
+                text,
+                tenant=self._tenant,
+                project=self._project,
+            )
+        except SecretResourceError:
             return None
         return (config or self._config).card_selector_config(text)
 

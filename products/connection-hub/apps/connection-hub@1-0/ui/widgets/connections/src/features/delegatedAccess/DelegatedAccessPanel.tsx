@@ -7,6 +7,7 @@ import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
 import { GrantFilterControls, GrantFilterInfo, GrantFilterSettings } from './GrantFilterBar';
 import { InvocationPolicyControl, OperationInvocationChoice } from './InvocationControls';
+import { SecretResourceSelector } from './SecretResourceSelector';
 import {
   RemovedResourceStub,
   ResourceDriftReview,
@@ -29,6 +30,10 @@ import {
   splitEditedOperations,
   type InvocationMode,
 } from './invocationChoice';
+import {
+  isBroadSecretResource,
+  secretResourceLabel,
+} from './secretResourceSelection';
 import {
   agentGroupMatches,
   compareAgentGroups,
@@ -747,6 +752,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       if (!asked?.resource || !asked.outerOperation) return {};
       return { [asked.resource]: [asked.outerOperation] };
     });
+  const [createInvocationModes, setCreateInvocationModes] =
+    useState<Record<string, InvocationMode>>({});
+  const [createSecretCatalogRows, setCreateSecretCatalogRows] =
+    useState<Record<string, string>>({});
   const [namedServiceOperations, setNamedServiceOperations] = useState<DelegatedAccessNamedServiceOperations>(
     // The demand names the operation it was refused; approval grants that one.
     () => {
@@ -848,11 +857,36 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     () => new Map(grantOptions.map((item) => [item.grant, item])),
     [grantOptions],
   );
+  const secretSelectorOption = useMemo(
+    () => resources.find((item) => item.selector_type === 'kdcube_secret'),
+    [resources],
+  );
+  const createResources = useMemo(() => {
+    const generated = Object.entries(createSecretCatalogRows).flatMap(([resource, row]) => {
+      const option = resources.find((item) => item.resource === row);
+      return option ? [{ ...option, resource, label: secretResourceLabel(resource) }] : [];
+    });
+    return [...resources, ...generated];
+  }, [createSecretCatalogRows, resources]);
   const selectedResourceEntries = useMemo(
     () => Object.entries(resourceGrants).filter(([, grants]) => grants.length > 0),
     [resourceGrants],
   );
-  const canSubmit = selectedResourceEntries.length > 0;
+  const createMissingInvocationChoices = useMemo(
+    () => {
+      const selected = new Set(selectedResourceEntries.map(([resource]) => resource));
+      return Object.entries(resourceOperations).flatMap(([resource, operations]) => (
+        selected.has(resource)
+          ? (operations || [])
+            .filter((operation) => !createInvocationModes[`${resource}:${operation}`])
+            .map((operation) => ({ resource, operation }))
+          : []
+      ));
+    },
+    [createInvocationModes, resourceOperations, selectedResourceEntries],
+  );
+  const canSubmit = selectedResourceEntries.length > 0
+    && createMissingInvocationChoices.length === 0;
 
   // Live delivery: a grant can land out-of-band (an OAuth consent completing
   // in another tab/app) or be revoked elsewhere — refetch when the registry
@@ -872,7 +906,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const toggleResourceGrant = (resource: string, grant: string, checked: boolean) => {
-    const resourceOption = resources.find((item) => item.resource === resource);
+    const resourceOption = createResources.find((item) => item.resource === resource);
     const currentGrants = resourceGrants[resource] || [];
     const updatedGrants = checked
       ? Array.from(new Set([...currentGrants, grant]))
@@ -953,6 +987,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       next[resource.resource] = Array.from(selected);
       return next;
     });
+    if (!checked) {
+      setCreateInvocationModes((current) => {
+        const next = { ...current };
+        delete next[`${resource.resource}:${operation}`];
+        return next;
+      });
+    }
   };
 
   const toggleNamedServiceOperation = (
@@ -963,7 +1004,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     checked: boolean,
   ) => {
     if (checked) {
-      const resourceOption = resources.find((item) => item.resource === resource);
+      const resourceOption = createResources.find((item) => item.resource === resource);
       const namespaceOption = resourceOption?.named_services?.find(
         (item) => item.namespace === namespace,
       );
@@ -1008,10 +1049,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           resourceOperations[resource] || [],
         ]),
       ),
+      invocationModes: Object.fromEntries(
+        selectedResourceEntries.map(([resource]) => [
+          resource,
+          Object.fromEntries(
+            (resourceOperations[resource] || []).map((operation) => [
+              operation,
+              createInvocationModes[`${resource}:${operation}`],
+            ]),
+          ),
+        ]),
+      ),
       namedServiceOperations: encodeNamedServiceSelection(
         selectedNamedServiceOperations,
         offeredNamedServiceOperations(
-          resources,
+          createResources,
           selectedResourceEntries.map(([resource]) => resource),
         ),
       ),
@@ -1023,6 +1075,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setCreateOpen(false);
     setCreateAccountScope({});
     setResourceOperations({});
+    setCreateInvocationModes({});
+    setCreateSecretCatalogRows({});
     void dispatch(loadDelegatedAccess());
   };
 
@@ -1892,18 +1946,49 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // manual create flow AND in the pending agent card's "add more" section.
   // The search narrows the CARDS; selections live outside the filter, so a
   // grant checked earlier stays selected while the user searches on.
-  const visibleResources = resources.filter((item) => resourceMatchesQuery(item, resourceQuery, grantOptionByName));
+  const visibleResources = createResources.filter((item) => resourceMatchesQuery(item, resourceQuery, grantOptionByName));
   const searching = Boolean(resourceQuery.trim());
   // The identity the card in progress has already committed to, or '' while
   // nothing is selected and every door is still reachable.
   const committedIdentityScope = (() => {
     const scopes = new Set(
-      resources
+      createResources
         .filter((item) => (resourceGrants[item.resource] || []).length)
         .map((item) => item.identity_scope || 'grantor'),
     );
     return scopes.size === 1 ? Array.from(scopes)[0] : '';
   })();
+  const addCreateSecretResources = (selected: string[]) => {
+    if (!secretSelectorOption) return;
+    setCreateSecretCatalogRows((current) => ({
+      ...current,
+      ...Object.fromEntries(selected.map((resource) => [resource, secretSelectorOption.resource])),
+    }));
+    setOpenResources((current) => ({
+      ...current,
+      ...Object.fromEntries(selected.map((resource) => [resource, true])),
+    }));
+  };
+  const dropCreateSecretResource = (resource: string) => {
+    setCreateSecretCatalogRows((current) => {
+      const next = { ...current };
+      delete next[resource];
+      return next;
+    });
+    setResourceGrants((current) => {
+      const next = { ...current };
+      delete next[resource];
+      return next;
+    });
+    setResourceOperations((current) => {
+      const next = { ...current };
+      delete next[resource];
+      return next;
+    });
+    setCreateInvocationModes((current) => Object.fromEntries(
+      Object.entries(current).filter(([key]) => !key.startsWith(`${resource}:`)),
+    ));
+  };
   const renderResourceList = () => (
     <div className="resource-list">
       <input
@@ -1926,6 +2011,35 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         // makes that refusal a surprise.
         const scope = item.identity_scope || 'grantor';
         const scopeBlocked = Boolean(committedIdentityScope) && scope !== committedIdentityScope;
+        const isSecretSelectorCatalog = item.selector_type === 'kdcube_secret'
+          && item.resource === secretSelectorOption?.resource;
+        const isGeneratedSecretSelector = item.resource in createSecretCatalogRows;
+        if (isSecretSelectorCatalog) {
+          return (
+            <div className="resource-option resource-option-stack" key={item.resource}>
+              <button
+                type="button"
+                className="resource-option__toggle"
+                onClick={() => setOpenResources((current) => ({ ...current, [item.resource]: !isOpen }))}
+                aria-expanded={isOpen}
+              >
+                <span aria-hidden="true" className="muted">{isOpen ? '▾' : '▸'}</span>
+                <span>
+                  <strong>{item.label || 'KDCube secret management'}</strong>
+                  <span className="badge badge-admin">admin</span>
+                </span>
+              </button>
+              {isOpen && item.selector_context ? (
+                <SecretResourceSelector
+                  context={item.selector_context}
+                  existing={Object.keys(createSecretCatalogRows)}
+                  disabled={busy}
+                  onAdd={addCreateSecretResources}
+                />
+              ) : null}
+            </div>
+          );
+        }
         return (
           <div className="resource-option resource-option-stack" key={item.resource}>
             <button
@@ -1952,6 +2066,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </button>
             {isOpen ? (
               <>
+                {isGeneratedSecretSelector ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost resource-section-head__remove"
+                    onClick={() => dropCreateSecretResource(item.resource)}
+                  >
+                    Remove authority
+                  </button>
+                ) : null}
                 {scopeBlocked ? (
                   <p className="resource-boundaries-empty">
                     This endpoint runs under <code>{scope}</code>, while the resources
@@ -1985,26 +2108,45 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   <>
                     <div className="account-title">Operations</div>
                     <div className="resource-grants">
-                      {item.operations.map((operation) => (
-                        <label
-                          className={`grant-chip${scopeBlocked ? ' grant-chip-blocked' : ''}`}
-                          key={`${item.resource}:operation:${operation.name}`}
-                          title={operation.description || operation.label || undefined}
-                        >
-                          <input
-                            type="checkbox"
-                            disabled={scopeBlocked}
-                            checked={(resourceOperations[item.resource] || []).includes(operation.name)}
-                            onChange={(event) => toggleResourceOperation(
-                              item,
-                              operation.name,
-                              operation.grants || [],
-                              event.target.checked,
-                            )}
-                          />
-                          <span>{operation.label || operation.name}</span>
-                        </label>
-                      ))}
+                      {item.operations.map((operation) => {
+                        const selected = (resourceOperations[item.resource] || []).includes(operation.name);
+                        return (
+                          <div
+                            className={selected ? 'outer-operation-editor outer-operation-editor--policy' : 'outer-operation-editor'}
+                            key={`${item.resource}:operation:${operation.name}`}
+                          >
+                            <label
+                              className={`grant-chip${scopeBlocked ? ' grant-chip-blocked' : ''}`}
+                              title={operation.description || operation.label || undefined}
+                            >
+                              <input
+                                type="checkbox"
+                                disabled={scopeBlocked}
+                                checked={selected}
+                                onChange={(event) => toggleResourceOperation(
+                                  item,
+                                  operation.name,
+                                  operation.grants || [],
+                                  event.target.checked,
+                                )}
+                              />
+                              <span>{operation.label || operation.name}</span>
+                            </label>
+                            {selected ? (
+                              <OperationInvocationChoice
+                                operation={operation.name}
+                                mode={createInvocationModes[`${item.resource}:${operation.name}`] || null}
+                                busy={busy}
+                                onceDisabled={isBroadSecretResource(item.resource)}
+                                onChoose={(mode) => setCreateInvocationModes((current) => ({
+                                  ...current,
+                                  [`${item.resource}:${operation.name}`]: mode,
+                                }))}
+                              />
+                            ) : null}
+                          </div>
+                        );
+                      })}
                     </div>
                   </>
                 ) : null}
@@ -2413,7 +2555,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const editResourceTitle = (item: DelegatedAccessRecord, resource: string): string => (
     resource === '*'
       ? 'all resources'
-      : (doorAlias(resource) || resourceLabelFor(resource) || resourceOfferLabel(item, resource) || resource)
+      : (secretResourceLabel(resource)
+        || doorAlias(resource)
+        || resourceLabelFor(resource)
+        || resourceOfferLabel(item, resource)
+        || resource)
   );
 
   /** One resource of the card in edit mode: its claims, outer operations with
@@ -2497,6 +2643,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         operation={operation.name}
                         policy={policy}
                         busy={busy}
+                        onceDisabled={isBroadSecretResource(resource)}
                         onSet={(mode, expectedRevision) => {
                           void setOperationInvocationPolicy(
                             item, resource, operation.name, mode, expectedRevision,
@@ -2511,6 +2658,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         operation={operation.name}
                         mode={editInvocationModes[`${resource}:${operation.name}`] || null}
                         busy={busy}
+                        onceDisabled={isBroadSecretResource(resource)}
                         onChoose={(mode) => setEditInvocationModes((current) => ({
                           ...current, [`${resource}:${operation.name}`]: mode,
                         }))}
@@ -2557,6 +2705,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
    *  else may join, and the reasons Save is not yet possible. */
   const renderEditResourceSections = (item: DelegatedAccessRecord) => {
     const problems = editSaveProblems(item);
+    const secretOffer = (item.resource_offers || []).find(
+      (offer) => offer.resource === secretSelectorOption?.resource,
+    );
+    const ordinaryOffers = (item.resource_offers || []).filter(
+      (offer) => offer.resource !== secretSelectorOption?.resource,
+    );
     return (
       <>
         {Object.keys(item.resource_grants || {}).map((resource) => (
@@ -2570,12 +2724,37 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ))}
         {editAddedResources.map((resource) => renderEditResourceSection(item, resource, true))}
         <ResourceOfferPicker
-          offers={item.resource_offers || []}
+          offers={ordinaryOffers}
           added={editAddedResources}
           onAdd={(resource) => setEditAddedResources((current) => (
             current.includes(resource) ? current : [...current, resource]
           ))}
         />
+        {secretOffer?.compatible && secretSelectorOption?.selector_context ? (
+          <div className="resource-offer-picker">
+            <div className="account-title">Add secret authority to this card</div>
+            <SecretResourceSelector
+              context={secretSelectorOption.selector_context}
+              existing={[
+                ...Object.keys(item.resource_grants || {}),
+                ...editAddedResources,
+              ]}
+              disabled={busy}
+              onAdd={(selected) => {
+                setEditAddedResources((current) => Array.from(new Set([
+                  ...current,
+                  ...selected,
+                ])));
+                setEditCatalogRows((current) => ({
+                  ...current,
+                  ...Object.fromEntries(
+                    selected.map((resource) => [resource, secretSelectorOption.resource]),
+                  ),
+                }));
+              }}
+            />
+          </div>
+        ) : null}
         {problems.length ? (
           <ul className="edit-save-problems">
             {problems.map((problem) => (
@@ -3051,7 +3230,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <p className="muted">No delegable resources are configured.</p>
         ) : null}
         {resources.length && !canSubmit ? (
-          <p className="muted">Select at least one resource grant.</p>
+          <p className="muted">
+            {selectedResourceEntries.length
+              ? `Choose Once or Always for ${createMissingInvocationChoices.map((item) => item.operation).join(', ')}.`
+              : 'Select at least one resource grant.'}
+          </p>
         ) : null}
         <div className="form-actions">
           <button className="btn" type="submit" disabled={busy || !canSubmit}>

@@ -27,6 +27,9 @@ from connection_hub.delegated_credentials.request_approval import (
     RequestApprovalTicket,
     issue_request_approval_ticket,
 )
+from connection_hub.delegated_credentials.secret_resources import (
+    SECRET_RESOURCE_PREFIX,
+)
 from connection_hub.invocation_policy import (
     SURFACE_OUTER,
     InvocationAuthority,
@@ -664,6 +667,14 @@ async def handle_delegated_admission(
             provider_id=admission_request.account.provider_id,
             account_id=admission_request.account.account_id,
         )
+        policy_authority = InvocationAuthority(
+            access_id=view.registry_access_id,
+            resource=result.decision.matched_resource,
+            surface=SURFACE_OUTER,
+            operation=admission_request.operation,
+            provider_id=admission_request.account.provider_id,
+            account_id=admission_request.account.account_id,
+        )
         try:
             invocation_decision = await context.invocation_policies.begin(
                 owner_subject=grantor_user_id,
@@ -673,6 +684,10 @@ async def handle_delegated_admission(
                 card_revision=view.card_revision,
                 authority_revision=result.catalog.version,
                 require_request_permit=request_bound,
+                require_explicit_policy=admission_request.resource.startswith(
+                    SECRET_RESOURCE_PREFIX
+                ),
+                policy_authority=policy_authority,
             )
         except Exception:
             LOGGER.exception(

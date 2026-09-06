@@ -24,6 +24,9 @@ The product documentation remains in
 [`docs/connection-hub`](../../docs/connection-hub/README.md). Runnable
 integrations remain in
 [`examples/connection-hub`](../../examples/connection-hub/README.md).
+The provider-neutral secret delegation and descriptor-maintenance contract is
+documented in
+[`Delegated Secret Administration`](../../docs/connection-hub/package/delegated-secret-administration.md).
 
 To run the current product locally, follow
 [`Run Connection Hub locally with KDCube`](../../docs/connection-hub/quick-start-local.md).

@@ -61,7 +61,7 @@ def _assert_secret_management_contract(config: Mapping[str, Any]) -> None:
         assert secret_resource["operations"][operation]["grants"] == [operation]
 
     assert SECRET_RESOURCE_SELECTOR in admission["resources"]
-    assert set(SECRET_OPERATIONS).issubset(
+    assert not set(SECRET_OPERATIONS).intersection(
         admission["request_bound_operations"]
     )
 

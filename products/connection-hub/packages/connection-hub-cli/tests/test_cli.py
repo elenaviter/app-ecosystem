@@ -20,8 +20,10 @@ from connection_hub_cli.management import (
     ManagementDenial,
     ManagementRequest,
     ManagementResult,
+    ManagementSecretTarget,
     ManagementTarget,
     SecretExportResult,
+    write_secret_descriptors,
 )
 from connection_hub_cli.models import (
     CallerProfile,
@@ -134,6 +136,24 @@ class _SecretExportService:
 
     async def export(self, **kwargs):
         self.calls.append(kwargs)
+        targets = kwargs["targets"]
+        if kwargs.get("selection") == "all":
+            targets = (
+                ManagementSecretTarget.create(
+                    scope="platform",
+                    key="platform.services.fixture.token",
+                ),
+                ManagementSecretTarget.create(
+                    scope="bundle",
+                    bundle_id="fixture@1-0",
+                    key="provider.token",
+                ),
+                ManagementSecretTarget.create(
+                    scope="user",
+                    user_id="owner-1",
+                    key="provider.token",
+                ),
+            )
         return SecretExportResult(
             transaction_id="transaction-a",
             request_digest="b" * 64,
@@ -145,7 +165,7 @@ class _SecretExportService:
                     target=target,
                     value=f"{self.marker}::{target.scope}::{target.key}",
                 )
-                for target in kwargs["targets"]
+                for target in targets
             ),
         )
 
@@ -688,7 +708,7 @@ def test_secret_parser_puts_domain_before_selected_host() -> None:
             "secrets",
             "host",
             "metadata",
-            "services.brave.api_key",
+            "platform.services.brave.api_key",
             "--scope",
             "platform",
         ]
@@ -704,7 +724,7 @@ def test_secret_parser_puts_domain_before_selected_host() -> None:
                 "host",
                 "secret",
                 "metadata",
-                "services.brave.api_key",
+                "platform.services.brave.api_key",
                 "--scope",
                 "platform",
             ]
@@ -1237,7 +1257,7 @@ def test_secret_get_writes_private_file_and_never_renders_value(
     request = ManagementRequest.secret_read(
         target,
         scope="platform",
-        key="provider.api_key",
+        key="platform.provider.api_key",
         invocation_id="secret-read-1",
     )
     services.management_service.results = [
@@ -1249,7 +1269,7 @@ def test_secret_get_writes_private_file_and_never_renders_value(
             authority={"access_id": "access-cli"},
             result={
                 "scope": "platform",
-                "key": "provider.api_key",
+                "key": "platform.provider.api_key",
                 "value": "secret-output-marker",
             },
         )
@@ -1261,7 +1281,7 @@ def test_secret_get_writes_private_file_and_never_renders_value(
             "secrets",
             "host",
             "get",
-            "provider.api_key",
+            "platform.provider.api_key",
             "--scope",
             "platform",
             "--output",
@@ -1298,7 +1318,7 @@ def test_secret_get_rejects_existing_output_before_disclosure(
             "secrets",
             "host",
             "get",
-            "provider.api_key",
+            "platform.provider.api_key",
             "--scope",
             "platform",
             "--output",
@@ -1324,7 +1344,7 @@ def test_secret_denial_renders_server_bound_recovery_without_value_digest(
     request = ManagementRequest.secret_write(
         services.host_service.management_target(),
         scope="platform",
-        key="provider.api_key",
+        key="platform.provider.api_key",
         value="secret-denial-marker",
         invocation_id="secret-write-denied-1",
     )
@@ -1337,7 +1357,7 @@ def test_secret_denial_renders_server_bound_recovery_without_value_digest(
             "secrets",
             "host",
             "set",
-            "provider.api_key",
+            "platform.provider.api_key",
             "--scope",
             "platform",
             "--value-stdin",
@@ -1373,7 +1393,7 @@ def test_human_secret_export_writes_descriptor_pair_without_rendering_values(
             "host",
             "export",
             "--platform-key",
-            "services.brave.api_key",
+            "platform.services.brave.api_key",
             "--bundle-key",
             "connection-hub@1-0=connections.oauth_state_secret",
             "--output-directory",
@@ -1392,12 +1412,19 @@ def test_human_secret_export_writes_descriptor_pair_without_rendering_values(
     assert payload["approval"]["verified_at"] <= int(time.time())
     assert payload["output"]["platform_secret_count"] == 1
     assert payload["output"]["bundle_secret_count"] == 1
+    assert payload["output"]["user_secret_count"] == 0
+    assert payload["output"]["total_secret_count"] == 2
     platform = yaml.safe_load((output / "secrets.yaml").read_text())
     bundles = yaml.safe_load((output / "bundles.secrets.yaml").read_text())
     assert platform == {
-        "services": {
-            "brave": {
-                "api_key": "secret-export-marker::platform::services.brave.api_key"
+        "platform": {
+            "services": {
+                "brave": {
+                    "api_key": (
+                        "secret-export-marker::platform::"
+                        "platform.services.brave.api_key"
+                    )
+                }
             }
         }
     }
@@ -1427,6 +1454,41 @@ def test_human_secret_export_writes_descriptor_pair_without_rendering_values(
         assert (output / "bundles.secrets.yaml").stat().st_mode & 0o777 == 0o600
 
 
+def test_human_secret_export_all_includes_user_owned_values(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    output = tmp_path / "complete-export"
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "secrets",
+            "host",
+            "export",
+            "--all",
+            "--output-directory",
+            str(output),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 0
+    assert services.secret_export_service.calls[0]["selection"] == "all"
+    assert services.secret_export_service.calls[0]["targets"] == ()
+    assert payload["output"]["platform_secret_count"] == 1
+    assert payload["output"]["bundle_secret_count"] == 1
+    assert payload["output"]["user_secret_count"] == 1
+    assert payload["output"]["total_secret_count"] == 3
+    platform = yaml.safe_load((output / "secrets.yaml").read_text())
+    assert platform["users"]["owner-1"]["secrets"]["provider"]["token"]
+    assert services.secret_export_service.marker not in captured.out
+    assert services.secret_export_service.marker not in captured.err
+
+
 def test_human_secret_export_preflights_output_before_browser(
     tmp_path,
     monkeypatch,
@@ -1443,7 +1505,7 @@ def test_human_secret_export_preflights_output_before_browser(
             "host",
             "export",
             "--platform-key",
-            "services.brave.api_key",
+            "platform.services.brave.api_key",
             "--output-directory",
             str(output),
         ]
@@ -1452,3 +1514,171 @@ def test_human_secret_export_preflights_output_before_browser(
     assert result == 2
     assert "secret_export_output_exists" in capsys.readouterr().err
     assert services.secret_export_service.calls == []
+
+
+def _secret_import_directory(tmp_path, marker: str):
+    return write_secret_descriptors(
+        tmp_path / "secret-import",
+        (
+            ExportedSecret(
+                target=ManagementSecretTarget.create(
+                    scope="platform",
+                    key="platform.services.fixture.token",
+                ),
+                value=f"{marker}-platform",
+            ),
+            ExportedSecret(
+                target=ManagementSecretTarget.create(
+                    scope="bundle",
+                    bundle_id="fixture@1-0",
+                    key="provider.token",
+                ),
+                value=f"{marker}-bundle",
+            ),
+            ExportedSecret(
+                target=ManagementSecretTarget.create(
+                    scope="user",
+                    user_id="owner-1",
+                    key="provider.token",
+                ),
+                value=f"{marker}-user",
+            ),
+        ),
+    ).directory
+
+
+def test_secret_import_dry_run_validates_without_management_calls(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    marker = "secret-import-dry-run-marker"
+    source = _secret_import_directory(tmp_path, marker)
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "secrets",
+            "host",
+            "import",
+            "--input-directory",
+            str(source),
+            "--dry-run",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 0
+    assert payload["dry_run"] is True
+    assert payload["input"]["platform_secret_count"] == 1
+    assert payload["input"]["bundle_secret_count"] == 1
+    assert payload["input"]["user_secret_count"] == 1
+    assert payload["input"]["total_secret_count"] == 3
+    assert payload["applied"] == 0
+    assert services.management_service.calls == []
+    assert marker not in captured.out
+    assert marker not in captured.err
+
+
+def test_secret_import_uses_stored_session_and_never_renders_values(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    marker = "secret-import-apply-marker"
+    source = _secret_import_directory(tmp_path, marker)
+    target = services.host_service.management_target()
+    result_template = ManagementRequest.secret_write(
+        target,
+        scope="platform",
+        key="platform.services.fixture.token",
+        value="result-template-value",
+    )
+    services.management_service.results = [
+        _management_result(result_template),
+        _management_result(result_template),
+        _management_result(result_template),
+    ]
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "secrets",
+            "host",
+            "import",
+            "--input-directory",
+            str(source),
+            "--yes",
+            "--no-open",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 0
+    assert payload["ok"] is True
+    assert payload["applied"] == 3
+    assert [request.body["value"] for request in services.management_service.calls] == [
+        f"{marker}-bundle",
+        f"{marker}-platform",
+        f"{marker}-user",
+    ]
+    assert marker not in captured.out
+    assert marker not in captured.err
+
+
+def test_secret_import_stops_on_first_denial_and_reports_progress_without_values(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    marker = "secret-import-denial-marker"
+    source = _secret_import_directory(tmp_path, marker)
+    target = services.host_service.management_target()
+    first = ManagementRequest.secret_write(
+        target,
+        scope="bundle",
+        bundle_id="fixture@1-0",
+        key="provider.token",
+        value="result-template-value",
+    )
+    denied = ManagementRequest.secret_write(
+        target,
+        scope="platform",
+        key="platform.services.fixture.token",
+        value="result-template-value",
+    )
+    services.management_service.results = [
+        _management_result(first),
+        _management_denial(denied),
+    ]
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    result = cli.main(
+        [
+            "secrets",
+            "host",
+            "import",
+            "--input-directory",
+            str(source),
+            "--yes",
+            "--no-open",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert result == 3
+    assert payload["ok"] is False
+    assert payload["applied"] == 1
+    assert payload["failed_target"] == {
+        "scope": "platform",
+        "key": "platform.services.fixture.token",
+    }
+    assert len(services.management_service.calls) == 2
+    assert marker not in captured.out
+    assert marker not in captured.err

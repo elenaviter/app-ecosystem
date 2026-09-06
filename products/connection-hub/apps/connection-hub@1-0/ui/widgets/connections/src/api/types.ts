@@ -111,6 +111,11 @@ export interface DelegatedAccessResourceOption {
   identity_scope?: string;
   grants?: string[];
   admin_only?: boolean;
+  selector_type?: string;
+  selector_context?: {
+    tenant: string;
+    project: string;
+  };
   operations?: DelegatedAccessOperationOption[];
   named_services?: DelegatedAccessNamedServiceNamespaceOption[];
 }

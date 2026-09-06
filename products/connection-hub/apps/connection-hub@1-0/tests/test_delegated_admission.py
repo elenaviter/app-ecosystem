@@ -65,10 +65,10 @@ async def _lock(**_kwargs):
     yield {}
 
 
-def _connections(*, request_bound: bool = False) -> dict:
+def _connections(*, request_bound: bool = False, resource: str = RESOURCE) -> dict:
     service = {
         "secret_ref": "admission.crm-api.secret",
-        "resources": [RESOURCE],
+        "resources": [resource],
     }
     if request_bound:
         service.update(
@@ -139,7 +139,13 @@ def _request(
     )
 
 
-def _allowed_result(*, account_scope: dict | None = None):
+def _allowed_result(
+    *,
+    account_scope: dict | None = None,
+    resource: str = RESOURCE,
+    operation: str = "customers.search",
+    matched_resource: str | None = None,
+):
     envelope = CredentialEnvelope(
         credential_kind="delegated_client_access",
         issuer_authority_id="delegated_client",
@@ -147,7 +153,7 @@ def _allowed_result(*, account_scope: dict | None = None):
         attrs={
             "client_id": "external-client",
             "grantor_subject": "user-1",
-            "resource_grants": {RESOURCE: ["crm:read"]},
+            "resource_grants": {matched_resource or resource: ["crm:read"]},
             "account_scope": account_scope or {},
         },
     )
@@ -163,12 +169,31 @@ def _allowed_result(*, account_scope: dict | None = None):
         },
         runtime={"grantor_user_id": "user-1"},
         decision=SurfacePolicyDecision.allow(
-            matched_resource=RESOURCE,
+            matched_resource=matched_resource or resource,
             available_grants=("crm:read",),
-            granted_operations=("customers.search",),
+            granted_operations=(operation,),
         ),
         catalog=SimpleNamespace(version="catalog-active"),
     )
+
+
+def test_broad_secret_selector_is_reusable_while_exact_key_can_be_once():
+    module = _load_entrypoint_module()
+    exact = (
+        "urn:kdcube:management:secret:tenant-a:project-a:"
+        "platform:_:platform.services.brave.api_key"
+    )
+    broad = (
+        "urn:kdcube:management:secret:tenant-a:project-a:"
+        "platform:_:platform.services.*"
+    )
+
+    module._validate_secret_invocation_mode(resource=exact, mode=POLICY_ONCE)
+    with pytest.raises(
+        module.InvocationPolicyRecordError,
+        match="broad_secret_selector_requires_always",
+    ):
+        module._validate_secret_invocation_mode(resource=broad, mode=POLICY_ONCE)
 
 
 @pytest.mark.asyncio
@@ -697,6 +722,139 @@ async def test_direct_admission_once_replays_the_recorded_allow(monkeypatch, tmp
     }
     # Live authority is intentionally re-evaluated before replay is served.
     assert evaluations == 3
+
+
+@pytest.mark.asyncio
+async def test_direct_admission_uses_matched_selector_policy_for_concrete_effect(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+    selector = "https://service.example/*"
+
+    async def _evaluate(**kwargs):
+        del kwargs
+        result = _allowed_result()
+        result.decision = SurfacePolicyDecision.allow(
+            matched_resource=selector,
+            available_grants=("crm:read",),
+            granted_operations=("customers.search",),
+        )
+        return result
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    policies = InvocationPolicyService(
+        store=BundleStorageInvocationPolicyStore(tmp_path),
+        mutation_lock=_lock,
+    )
+    selector_authority = InvocationAuthority(
+        access_id="access-1",
+        resource=selector,
+        surface=SURFACE_OUTER,
+        operation="customers.search",
+    )
+    await policies.set_policy(
+        owner_subject="user-1",
+        authority=selector_authority,
+        mode=POLICY_ONCE,
+        now=100,
+    )
+    payload = {
+        "resource": RESOURCE,
+        "operation": "customers.search",
+        "invocation_id": "selector-invoke-1",
+        "request_digest": canonical_request_digest({"customer_id": "customer-7"}),
+    }
+
+    response = await module.handle_delegated_admission(
+        context=module.AdmissionHostContext(
+            connections=_connections(),
+            redis=_Redis(),
+            tenant="tenant-a",
+            project="project-a",
+            resolve_secret=_secret,
+            bind_delegated_request=lambda request: None,
+            invocation_policies=policies,
+        ),
+        payload=payload,
+        request=_request(payload, nonce="nonce-1234567890abc9"),
+    )
+
+    body = json.loads(response.body)
+    assert response.status_code == 200
+    assert body["invocation_policy"]["remaining"] == 0
+    concrete_authority = InvocationAuthority(
+        access_id="access-1",
+        resource=RESOURCE,
+        surface=SURFACE_OUTER,
+        operation="customers.search",
+    )
+    replay = await policies.begin(
+        owner_subject="user-1",
+        authority=concrete_authority,
+        policy_authority=selector_authority,
+        invocation_id="selector-invoke-1",
+        request_digest=payload["request_digest"],
+        now=101,
+    )
+    assert replay.replay is True
+
+
+@pytest.mark.asyncio
+async def test_secret_admission_requires_explicit_invocation_policy(
+    monkeypatch,
+    tmp_path,
+):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+    concrete = (
+        "urn:kdcube:management:secret:tenant-a:project-a:"
+        "platform:_:platform.services.brave.api_key"
+    )
+    selector = (
+        "urn:kdcube:management:secret:tenant-a:project-a:"
+        "platform:_:platform.services.*"
+    )
+    operation = "kdcube.management.secret.value.write"
+
+    async def _evaluate(**kwargs):
+        del kwargs
+        return _allowed_result(
+            resource=concrete,
+            matched_resource=selector,
+            operation=operation,
+        )
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    policies = InvocationPolicyService(
+        store=BundleStorageInvocationPolicyStore(tmp_path),
+        mutation_lock=_lock,
+    )
+    payload = {
+        "resource": concrete,
+        "operation": operation,
+        "invocation_id": "secret-write-without-policy",
+        "request_digest": canonical_request_digest({"value": "opaque"}),
+    }
+
+    response = await module.handle_delegated_admission(
+        context=module.AdmissionHostContext(
+            connections=_connections(resource=concrete),
+            redis=_Redis(),
+            tenant="tenant-a",
+            project="project-a",
+            resolve_secret=_secret,
+            bind_delegated_request=lambda request: None,
+            invocation_policies=policies,
+        ),
+        payload=payload,
+        request=_request(payload, nonce="nonce-1234567890abca"),
+    )
+
+    body = json.loads(response.body)
+    assert response.status_code == 403
+    assert body["error"]["code"] == "delegated_invocation_policy_required"
 
 
 @pytest.mark.asyncio

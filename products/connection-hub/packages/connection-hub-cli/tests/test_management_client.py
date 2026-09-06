@@ -168,7 +168,7 @@ def test_secret_requests_are_exact_and_have_no_client_side_value_digest() -> Non
         ManagementRequest.secret_write(
             target,
             scope="platform",
-            key="services.provider.api_key",
+            key="platform.services.provider.api_key",
             value="",
             invocation_id="secret-write-empty",
         )
@@ -179,7 +179,7 @@ def test_secret_recovery_accepts_only_a_server_digest_and_exact_target() -> None
     request = ManagementRequest.secret_metadata(
         _target(),
         scope="platform",
-        key="connections.signing_secret",
+        key="platform.connections.signing_secret",
         invocation_id="secret-metadata-1",
     )
     recovery = _recovery(request)

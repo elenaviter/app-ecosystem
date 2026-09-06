@@ -26,8 +26,8 @@ def test_descriptor_export_rejects_scalar_mapping_conflicts_before_writing(
         write_secret_descriptors(
             output,
             [
-                _exported(key="provider", value="secret-a"),
-                _exported(key="provider.api_key", value="secret-b"),
+                _exported(key="platform.provider", value="secret-a"),
+                _exported(key="platform.provider.api_key", value="secret-b"),
             ],
         )
 
@@ -47,7 +47,7 @@ def test_descriptor_export_never_clobbers_an_existing_directory(tmp_path) -> Non
     with pytest.raises(ConnectionHubCliError) as raised:
         write_secret_descriptors(
             output,
-            [_exported(key="provider.api_key", value="secret-marker")],
+            [_exported(key="platform.provider.api_key", value="secret-marker")],
         )
 
     assert raised.value.code == "secret_export_output_exists"
@@ -59,14 +59,14 @@ def test_descriptor_export_writes_complete_private_pair(tmp_path) -> None:
 
     result = write_secret_descriptors(
         output,
-        [_exported(key="provider.api_key", value="secret-marker")],
+        [_exported(key="platform.provider.api_key", value="secret-marker")],
     )
 
     assert result.directory == output.absolute()
     assert result.platform_count == 1
     assert result.bundle_count == 0
     assert result.platform_path.read_text(encoding="utf-8") == (
-        "provider:\n  api_key: secret-marker\n"
+        "platform:\n  provider:\n    api_key: secret-marker\n"
     )
     assert result.bundles_path.read_text(encoding="utf-8") == (
         "bundles:\n  version: '1'\n  items: []\n"
@@ -96,7 +96,7 @@ def test_descriptor_export_detects_target_created_during_staging(
     with pytest.raises(ConnectionHubCliError) as raised:
         write_secret_descriptors(
             output,
-            [_exported(key="provider.api_key", value="secret-marker")],
+            [_exported(key="platform.provider.api_key", value="secret-marker")],
         )
 
     assert raised.value.code == "secret_export_output_exists"
@@ -124,7 +124,7 @@ def test_descriptor_export_removes_owned_partial_destination(
     with pytest.raises(ConnectionHubCliError) as raised:
         write_secret_descriptors(
             output,
-            [_exported(key="provider.api_key", value="secret-marker")],
+            [_exported(key="platform.provider.api_key", value="secret-marker")],
         )
 
     assert raised.value.code == "secret_export_output_write_failed"
@@ -154,7 +154,7 @@ def test_descriptor_export_closes_file_when_private_mode_application_fails(
     with pytest.raises(ConnectionHubCliError) as raised:
         write_secret_descriptors(
             tmp_path / "export",
-            [_exported(key="provider.api_key", value="secret-marker")],
+            [_exported(key="platform.provider.api_key", value="secret-marker")],
         )
 
     assert raised.value.code == "secret_export_output_write_failed"

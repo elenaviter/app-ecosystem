@@ -63,6 +63,7 @@ export interface CreateDelegatedAccessArgs {
   label: string;
   resourceGrants: Record<string, string[]>;
   resourceOperations: DelegatedAccessResourceOperations;
+  invocationModes: Record<string, Record<string, 'always' | 'once'>>;
   operations?: string[];
   /** `"*"` when every operation the current catalog offers for the selected
    *  resources is ticked, an exact map otherwise, {} for nothing. */
@@ -79,12 +80,13 @@ export const createDelegatedAccess = createAsyncThunk<
   { rejectValue: string }
 >(
   'delegatedAccess/create',
-  async ({ label, resourceGrants, resourceOperations, operations, namedServiceOperations, accountScope, ttlSeconds }, { rejectWithValue }) => {
+  async ({ label, resourceGrants, resourceOperations, invocationModes, operations, namedServiceOperations, accountScope, ttlSeconds }, { rejectWithValue }) => {
     try {
       const res = await postOp<DelegatedAccessCreateResult>('delegated_access_create', {
         label,
         resource_grants: resourceGrants || {},
         resource_operations: resourceOperations || {},
+        invocation_policies: invocationModes || {},
         ...(operations !== undefined ? { operations } : {}),
         named_service_operations: namedServiceOperations || {},
         ...(accountScope !== undefined

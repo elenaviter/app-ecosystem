@@ -121,42 +121,56 @@ KDCube owns the backend-neutral management protocol and the canonical
 `secrets host` commands wrap the same KDCube library, select the configured
 host, and supply the OAuth session held in the native credential store.
 
-An authorized operator or automation can manage one exact secret through its
-live Connection Hub Card:
+An authorized operator or automation can manage exact secrets through its live
+Connection Hub Card:
 
 ```bash
-connection-hub secrets host metadata services.brave.api_key --scope platform
-connection-hub secrets host set services.brave.api_key --scope platform
-connection-hub secrets host get services.brave.api_key --scope platform \
+connection-hub secrets host metadata platform.services.brave.api_key --scope platform
+connection-hub secrets host set platform.services.brave.api_key --scope platform
+connection-hub secrets host get platform.services.brave.api_key --scope platform \
   --output ./brave-api-key
-connection-hub secrets host delete services.brave.api_key --scope platform
+connection-hub secrets host delete platform.services.brave.api_key --scope platform
 ```
 
 `set` uses a hidden prompt by default. `get` writes a `0600` local file on
 POSIX, uses the selected parent directory's ACL on Windows, and reports
 disclosure metadata without printing the value. Connection Hub checks the
-exact target and operation on every call; its Card editor supplies `Once` and
-`Always` invocation policy. Before requesting disclosure, `get` rejects a
+exact target and operation on every call. Its Card editor can grant one exact
+key (`Once` or `Always`), a namespace such as
+`platform.services.brave.*` (`Always`), or an entire platform, bundle, or user
+scope (`Always`). Before requesting disclosure, `get` rejects a
 missing parent, an existing destination without `--replace`, or a non-file
 replacement target. The atomic writer repeats these checks when publishing so
 a filesystem race cannot silently clobber another path.
 
-Descriptor export is an owner-performed path with independent authority:
+Descriptor export is an administrator-performed path with independent authority:
 
 ```bash
 connection-hub secrets host export \
-  --platform-key services.brave.api_key \
+  --platform-key platform.services.brave.api_key \
   --bundle-key connection-hub@1-0=connections.oauth_state_secret \
-  --output-directory ./kdcube-secret-export-20260904
+  --user-key USER_ID~connection-hub@1-0=provider.refresh_token \
+  --output-directory ./kdcube-secret-export
+```
+
+Export the complete provider inventory, including every user value:
+
+```bash
+connection-hub secrets host export \
+  --all \
+  --output-directory ./kdcube-secret-export-all
 ```
 
 The command starts a PKCE-bound loopback callback and opens the KDCube approval
 page. When no platform browser session exists, KDCube redirects through the
 identity provider configured by that deployment. The signed-in platform
-administrator sees the exact deployment, callback, digest, and key list, then
-chooses `Export once`. One authorization code permits one exchange for that
-manifest. The flow leaves delegated Cards unchanged and stores no reusable
-export credential.
+administrator sees the exact deployment, callback, digest, and frozen key
+counts or selected key list, then chooses `Export once`. A whole-export start
+response exposes only the count and digest; provider key names reach the CLI
+only in the approved one-use exchange, where their frozen digest is verified
+again. One authorization code permits one exchange for that manifest. The
+flow leaves delegated Cards unchanged and stores no reusable export
+credential.
 
 The destination must be a new directory. The CLI validates a bounded response,
 stages and flushes canonical `secrets.yaml` and `bundles.secrets.yaml`, then
@@ -168,11 +182,30 @@ inherits the ACL of the selected parent directory, so that parent must already
 be private to the intended Windows user. The CLI prints only paths, counts,
 request digest, and assurance evidence.
 
-Key names are explicit because every supported provider can resolve an exact
-key while some secure providers intentionally cannot enumerate original key
-names. Repeat `--platform-key` and `--bundle-key BUNDLE_ID=KEY` for the desired
-manifest. The same command works with local and remote KDCube hosts and with
-the file, host-vault, and cloud secret backends.
+Repeat `--platform-key`, `--bundle-key BUNDLE_ID=KEY`, and
+`--user-key USER_ID[~BUNDLE_ID]=KEY` for a selected manifest, or use `--all`
+by itself. KDCube freezes whole provider inventory before approval. The same
+command works with local and remote KDCube hosts and with file, Host Vault, and
+cloud secret backends.
+
+Restore or synchronize the literal pair through the selected host without
+extracting its stored OAuth bearer:
+
+```bash
+connection-hub secrets host import \
+  --input-directory ./kdcube-secret-export-all \
+  --dry-run
+connection-hub secrets host import \
+  --input-directory ./kdcube-secret-export-all \
+  --yes
+```
+
+Import is an upsert of every present platform, bundle, and user value. Omitted
+keys remain unchanged; deletion is always an explicit `secrets host delete`.
+The CLI stops on the first denied target and reports how many prior idempotent
+upserts completed. Grant an exact key as `Once` or `Always`, or grant a
+namespace/scope as `Always`, in the same live CLI Card before retrying. Secret
+values remain absent from command arguments, output, state metadata, and logs.
 
 The built-in `session_confirmation` assurance proves a current KDCube admin
 browser session plus the exact click. Deployments configured for

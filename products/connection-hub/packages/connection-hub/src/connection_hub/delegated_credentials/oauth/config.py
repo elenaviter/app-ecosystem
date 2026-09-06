@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
-from typing import Any, Mapping, Tuple
+from typing import Any, Mapping
 
 from connection_hub.hub.resolver import (
     DEFAULT_DELEGATED_IDENTITY_SCOPE,
@@ -102,6 +102,7 @@ class OAuthDelegatedResourceConfig:
     named_services: Mapping[str, Any] = field(default_factory=dict)
     admin_only: bool = False
     resource_selection: bool = False
+    selector_type: str = ""
 
 
 @dataclass(frozen=True)
@@ -494,6 +495,10 @@ def _parse_resources(raw: Any) -> tuple[OAuthDelegatedResourceConfig, ...]:
                     item.get("resource_selection") or item.get("resourceSelection"),
                     default=False,
                 ),
+                selector_type=_coerce_str(
+                    item.get("selector_type") or item.get("selectorType")
+                )
+                or "",
             )
         )
     return tuple(out)

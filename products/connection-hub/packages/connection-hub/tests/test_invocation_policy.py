@@ -15,6 +15,7 @@ from connection_hub.invocation_policy import (
     InvocationPolicyService,
     canonical_request_digest,
 )
+from connection_hub.invocation_policy.models import InvocationPolicyRecordError
 
 
 class _Locks:
@@ -497,6 +498,98 @@ async def test_account_policy_overrides_operation_policy(tmp_path):
     assert other_account_decision.policy is not None
     assert other_account_decision.policy.authority == general
     assert other_account_decision.policy.remaining == 0
+
+
+@pytest.mark.asyncio
+async def test_selector_policy_governs_concrete_resource_and_records_exact_effect(
+    tmp_path,
+):
+    service = _service(tmp_path)
+    selector = InvocationAuthority(
+        access_id="access_demo",
+        resource=(
+            "urn:kdcube:management:secret:tenant-a:project-a:"
+            "platform:_:platform.services.*"
+        ),
+        surface=SURFACE_OUTER,
+        operation="kdcube.management.secret.write",
+    )
+    concrete = InvocationAuthority(
+        access_id="access_demo",
+        resource=(
+            "urn:kdcube:management:secret:tenant-a:project-a:"
+            "platform:_:platform.services.brave.api_key"
+        ),
+        surface=SURFACE_OUTER,
+        operation="kdcube.management.secret.write",
+    )
+    policy = await service.set_policy(
+        owner_subject="user-1",
+        authority=selector,
+        mode=POLICY_ALWAYS,
+        now=100,
+    )
+
+    decision = await service.begin(
+        owner_subject="user-1",
+        authority=concrete,
+        policy_authority=selector,
+        invocation_id="secret-write-1",
+        request_digest=canonical_request_digest({"value": "opaque"}),
+        require_request_permit=True,
+        now=101,
+    )
+
+    assert decision.allowed is True
+    assert decision.dispatch is True
+    assert decision.policy == policy
+    assert decision.invocation is not None
+    assert decision.invocation.authority == concrete
+
+
+@pytest.mark.asyncio
+async def test_selector_policy_cannot_cross_resource_or_authority_boundary(tmp_path):
+    service = _service(tmp_path)
+    concrete = _authority(operation="secret.write")
+    unrelated = InvocationAuthority(
+        access_id=concrete.access_id,
+        resource="urn:kdcube:management:secret:tenant-a:project-a:platform:_:platform.mail.*",
+        surface=concrete.surface,
+        operation=concrete.operation,
+    )
+
+    with pytest.raises(InvocationPolicyRecordError, match="policy_authority_invalid"):
+        await service.begin(
+            owner_subject="user-1",
+            authority=concrete,
+            policy_authority=unrelated,
+        )
+
+
+@pytest.mark.asyncio
+async def test_explicit_policy_requirement_denies_missing_secret_policy(tmp_path):
+    service = _service(tmp_path)
+    authority = InvocationAuthority(
+        access_id="access_demo",
+        resource=(
+            "urn:kdcube:management:secret:tenant-a:project-a:"
+            "platform:_:platform.services.brave.api_key"
+        ),
+        surface=SURFACE_OUTER,
+        operation="kdcube.management.secret.value.write",
+    )
+
+    decision = await service.begin(
+        owner_subject="user-1",
+        authority=authority,
+        invocation_id="secret-write-without-policy",
+        request_digest=canonical_request_digest({"value": "opaque"}),
+        require_explicit_policy=True,
+    )
+
+    assert decision.allowed is False
+    assert decision.dispatch is False
+    assert decision.reason == "delegated_invocation_policy_required"
 
 
 @pytest.mark.asyncio

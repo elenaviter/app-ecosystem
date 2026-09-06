@@ -17,6 +17,10 @@ def _entrypoint_module():
 
 
 class _Access:
+    def __init__(self):
+        self.create_calls = []
+        self.revoke_calls = []
+
     async def list_access(self, _user):
         return {
             "ok": True,
@@ -35,6 +39,21 @@ class _Access:
             "resources": [],
             "grant_options": [],
         }
+
+    async def create_access(self, user, **kwargs):
+        self.create_calls.append((user, kwargs))
+        return {
+            "ok": True,
+            "access": {
+                "access_id": "aut-secret-1",
+                "resource_operations": kwargs.get("resource_operations") or {},
+            },
+            "access_token": "not-returned-until-policies-exist",
+        }
+
+    async def revoke_access(self, user, *, access_id):
+        self.revoke_calls.append((user, access_id))
+        return {"ok": True, "removed": True}
 
 
 class _Policy:
@@ -152,3 +171,75 @@ async def test_account_specific_policy_requires_that_exact_card_binding(entrypoi
 
     assert response["error"] == "invocation_policy_account_not_granted"
     assert entrypoint.policies.set_calls == []
+
+
+@pytest.mark.asyncio
+async def test_manual_secret_card_sets_every_policy_before_returning_bearer(entrypoint):
+    resource = (
+        "urn:kdcube:management:secret:tenant-a:project-a:"
+        "platform:_:platform.services.brave.api_key"
+    )
+    response = await entrypoint.module.ConnectionHubEntrypoint.delegated_access_create(
+        entrypoint.instance,
+        data={
+            "label": "Secret operator",
+            "resource_grants": {resource: ["kdcube.management.secret.value.write"]},
+            "resource_operations": {
+                resource: [
+                    "kdcube.management.secret.metadata.read",
+                    "kdcube.management.secret.value.write",
+                ]
+            },
+            "invocation_policies": {
+                resource: {
+                    "kdcube.management.secret.metadata.read": "once",
+                    "kdcube.management.secret.value.write": "always",
+                }
+            },
+        },
+    )
+
+    assert response["ok"] is True
+    assert response["access_token"] == "not-returned-until-policies-exist"
+    assert [call["mode"] for call in entrypoint.policies.set_calls] == [
+        "once",
+        "always",
+    ]
+    assert all(call["authority"].access_id == "aut-secret-1" for call in entrypoint.policies.set_calls)
+    assert response["access"]["invocation_policies"]
+
+
+@pytest.mark.asyncio
+async def test_manual_secret_card_requires_modes_and_broad_scope_rejects_once(entrypoint):
+    exact = (
+        "urn:kdcube:management:secret:tenant-a:project-a:"
+        "platform:_:platform.services.brave.api_key"
+    )
+    missing = await entrypoint.module.ConnectionHubEntrypoint.delegated_access_create(
+        entrypoint.instance,
+        data={
+            "resource_grants": {exact: ["kdcube.management.secret.value.write"]},
+            "resource_operations": {
+                exact: ["kdcube.management.secret.value.write"]
+            },
+        },
+    )
+    broad = exact.rsplit(".", 1)[0] + ".*"
+    rejected = await entrypoint.module.ConnectionHubEntrypoint.delegated_access_create(
+        entrypoint.instance,
+        data={
+            "resource_grants": {broad: ["kdcube.management.secret.value.write"]},
+            "resource_operations": {
+                broad: ["kdcube.management.secret.value.write"]
+            },
+            "invocation_policies": {
+                broad: {"kdcube.management.secret.value.write": "once"}
+            },
+        },
+    )
+
+    assert missing["error"] == "invalid_delegated_access_request"
+    assert "require Once or Always" in missing["message"]
+    assert rejected["error"] == "invalid_delegated_access_request"
+    assert "broad_secret_selector_requires_always" in rejected["message"]
+    assert entrypoint.access.create_calls == []

@@ -18,6 +18,7 @@ see_also:
   - ./testing/end-to-end-acceptance.md
   - ./package/extraction-architecture.md
   - ./package/delegated-mcp-gateway.md
+  - ./package/delegated-secret-administration.md
   - ./frontend/README.md
   - ./service/README.md
   - ./recipes/direct-protected-service.md
@@ -81,6 +82,7 @@ The package contracts are:
 - [Protect KDCube management on macOS with user presence](macos-user-presence-helper.md)
 - [Connection Hub architecture and semantic requirements](connection-hub-architecture.md)
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
+- [Delegated secret administration](package/delegated-secret-administration.md)
 - [Aggregate delegated MCP gateway](package/delegated-mcp-gateway.md)
 - [Delegated access cards](package/delegated-cards.md)
 - [OAuth delegated credential protocol](package/oauth-delegated-credential-protocol.md)

@@ -66,6 +66,7 @@ def test_resource_can_enable_owner_resource_selection_for_oauth_consent():
                             "resource": "https://hub.example.test/mcp/proxy",
                             "grants": ["external_mcp:use"],
                             "resource_selection": True,
+                            "selector_type": "kdcube_secret",
                         }
                     ],
                 }
@@ -76,3 +77,4 @@ def test_resource_can_enable_owner_resource_selection_for_oauth_consent():
     resource = config.resource_config("https://hub.example.test/mcp/proxy")
     assert resource is not None
     assert resource.resource_selection is True
+    assert resource.selector_type == "kdcube_secret"

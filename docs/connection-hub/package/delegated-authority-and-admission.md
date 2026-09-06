@@ -9,6 +9,7 @@ updated_at: 2026-09-03
 see_also:
   - ../connection-hub-architecture.md
   - ./delegated-cards.md
+  - ./delegated-secret-administration.md
   - ./oauth-delegated-credential-protocol.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/arch/security-and-trust-model-README.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
@@ -35,6 +36,9 @@ The focused documents remain the implementation references:
 
 - [Delegated Access Cards](./delegated-cards.md)
   owns card/catalog storage, rendering, drift, mutation, and recovery.
+- [Delegated Secret Administration](./delegated-secret-administration.md)
+  owns secret-resource selectors, invocation policy, and the separate
+  human-only descriptor export ceremony.
 - [Authenticated MCP](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md)
   owns the full managed MCP configuration and connected-account consent chain.
 - [Platform MCP Over Connection Hub](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/mcp/platform-mcp-over-connection-hub-README.md)

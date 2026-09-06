@@ -51,7 +51,7 @@ def _request() -> SecretExportRequest:
         targets=[
             ManagementSecretTarget.create(
                 scope="platform",
-                key="services.brave.api_key",
+                key="platform.services.brave.api_key",
             ),
             ManagementSecretTarget.create(
                 scope="bundle",
@@ -88,7 +88,7 @@ def _result_payload(
             },
             {
                 "scope": "platform",
-                "key": "services.brave.api_key",
+                "key": "platform.services.brave.api_key",
                 "value": "platform-secret-marker",
             },
         ],
@@ -115,6 +115,8 @@ async def test_client_validates_exact_start_and_export_result() -> None:
                 ),
                 "required_assurance": "session_confirmation",
                 "expires_at": int(time.time()) + 180,
+                "target_count": len(request.targets),
+                "targets": [item.to_dict() for item in request.targets],
             },
         ),
         (
@@ -139,7 +141,7 @@ async def test_client_validates_exact_start_and_export_result() -> None:
                     },
                     {
                         "scope": "platform",
-                        "key": "services.brave.api_key",
+                        "key": "platform.services.brave.api_key",
                         "value": "platform-secret-marker",
                     },
                 ],
@@ -158,8 +160,8 @@ async def test_client_validates_exact_start_and_export_result() -> None:
     assert started.request_digest == request.request_digest
     assert result.approval_verified_at <= int(time.time())
     assert [item.target.identity for item in result.values] == [
-        ("bundle", "connection-hub@1-0", "connections.oauth_state_secret"),
-        ("platform", "", "services.brave.api_key"),
+        ("bundle", "", "connection-hub@1-0", "connections.oauth_state_secret"),
+        ("platform", "", "", "platform.services.brave.api_key"),
     ]
     assert "bundle-secret-marker" not in repr(result)
     assert "platform-secret-marker" not in repr(result)
@@ -191,6 +193,8 @@ async def test_client_rejects_authorization_url_on_another_origin() -> None:
                 ),
                 "required_assurance": "session_confirmation",
                 "expires_at": int(time.time()) + 180,
+                "target_count": len(request.targets),
+                "targets": [item.to_dict() for item in request.targets],
             },
         )
     ]
@@ -221,6 +225,8 @@ async def test_client_rejects_unbounded_transaction_expiry() -> None:
                 ),
                 "required_assurance": "session_confirmation",
                 "expires_at": int(time.time()) + 901,
+                "target_count": len(request.targets),
+                "targets": [item.to_dict() for item in request.targets],
             },
         )
     ]
@@ -251,6 +257,8 @@ async def test_client_rejects_value_for_an_unrequested_target() -> None:
                 ),
                 "required_assurance": "session_confirmation",
                 "expires_at": int(time.time()) + 180,
+                "target_count": len(request.targets),
+                "targets": [item.to_dict() for item in request.targets],
             },
         ),
         (
@@ -275,7 +283,7 @@ async def test_client_rejects_value_for_an_unrequested_target() -> None:
                     },
                     {
                         "scope": "platform",
-                        "key": "services.openai.api_key",
+                        "key": "platform.services.openai.api_key",
                         "value": "wrong-secret-marker",
                     },
                 ],
@@ -306,6 +314,7 @@ async def test_client_rejects_values_above_protocol_total(monkeypatch) -> None:
         authorization_url="https://runtime.example/export/authorize",
         required_assurance="session_confirmation",
         expires_at=int(time.time()) + 180,
+        targets=request.targets,
     )
     monkeypatch.setattr(secret_export_module, "MAX_EXPORTED_SECRET_TOTAL_BYTES", 5)
     transport.responses = [
@@ -360,6 +369,7 @@ async def test_client_rejects_assurance_downgrade_at_exchange() -> None:
         authorization_url="https://runtime.example/export/authorize",
         required_assurance="fresh_authentication",
         expires_at=int(time.time()) + 180,
+        targets=request.targets,
     )
     transport.responses = [
         (
@@ -384,7 +394,7 @@ async def test_client_rejects_assurance_downgrade_at_exchange() -> None:
                     },
                     {
                         "scope": "platform",
-                        "key": "services.brave.api_key",
+                        "key": "platform.services.brave.api_key",
                         "value": "platform-secret-marker",
                     },
                 ],
@@ -414,6 +424,7 @@ async def test_client_rejects_stale_approval_evidence() -> None:
         authorization_url="https://runtime.example/export/authorize",
         required_assurance="session_confirmation",
         expires_at=int(time.time()) + 180,
+        targets=request.targets,
     )
     transport.responses = [
         (
@@ -530,6 +541,7 @@ async def test_browser_service_closes_callback_after_exact_exchange() -> None:
                 authorization_url="https://runtime.example/export/authorize",
                 required_assurance="session_confirmation",
                 expires_at=int(time.time()) + 180,
+                targets=request.targets,
             )
 
         async def exchange(self, request, start, **kwargs):
@@ -555,7 +567,7 @@ async def test_browser_service_closes_callback_after_exact_exchange() -> None:
     targets = [
         ManagementSecretTarget.create(
             scope="platform",
-            key="services.brave.api_key",
+            key="platform.services.brave.api_key",
         )
     ]
 

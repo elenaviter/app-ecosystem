@@ -38,6 +38,7 @@ from connection_hub.invocation_policy.store import (
     InvocationPolicyStore,
     owner_hash_for,
 )
+from connection_hub.delegated_credentials.resource_operations import resource_matches
 
 POLICY_LOCK_WAIT_SECONDS = 30.0
 
@@ -95,6 +96,26 @@ class InvocationPolicyService:
             operation=authority.operation,
         )
         return tuple(sorted((authority, general), key=lambda item: item.key))
+
+    @staticmethod
+    def _validated_policy_authority(
+        authority: InvocationAuthority,
+        policy_authority: InvocationAuthority | None,
+    ) -> InvocationAuthority:
+        selected = policy_authority or authority
+        same_boundary = (
+            selected.access_id == authority.access_id
+            and selected.surface == authority.surface
+            and selected.operation == authority.operation
+            and selected.provider_id == authority.provider_id
+            and selected.account_id == authority.account_id
+        )
+        if not same_boundary or not resource_matches(
+            selected.resource,
+            authority.resource,
+        ):
+            raise InvocationPolicyRecordError("policy_authority_invalid")
+        return selected
 
     async def list_for_card(
         self, *, owner_subject: str, access_id: str
@@ -410,6 +431,8 @@ class InvocationPolicyService:
         card_revision: int = 0,
         authority_revision: str = "",
         require_request_permit: bool = False,
+        require_explicit_policy: bool = False,
+        policy_authority: InvocationAuthority | None = None,
         now: int | None = None,
     ) -> InvocationDecision:
         owner = str(owner_subject or "").strip()
@@ -417,23 +440,36 @@ class InvocationPolicyService:
             raise InvocationPolicyRecordError("owner_subject_missing")
         owner_hash = owner_hash_for(owner)
         moment = int(now if now is not None else time.time())
-        policy_authorities = self._policy_authorities(authority)
+        selected_policy_authority = self._validated_policy_authority(
+            authority,
+            policy_authority,
+        )
+        policy_authorities = self._policy_authorities(selected_policy_authority)
+        lock_authorities = tuple(
+            sorted(
+                {
+                    *self._policy_authorities(authority),
+                    *policy_authorities,
+                },
+                key=lambda item: item.key,
+            )
+        )
         async with AsyncExitStack() as stack:
-            for policy_authority in policy_authorities:
+            for lock_authority in lock_authorities:
                 await stack.enter_async_context(
                     self._critical_section(
                         owner_hash=owner_hash,
-                        authority=policy_authority,
+                        authority=lock_authority,
                     )
                 )
 
             exact_policy = await self._store.read_policy(
                 owner_hash=owner_hash,
-                authority=authority,
+                authority=selected_policy_authority,
             )
             exact_change = await self._store.read_policy_change(
                 owner_hash=owner_hash,
-                authority=authority,
+                authority=selected_policy_authority,
             )
             if (
                 exact_change is not None
@@ -449,7 +485,9 @@ class InvocationPolicyService:
             policy = exact_policy
             if policy is None and len(policy_authorities) > 1:
                 general_authority = next(
-                    item for item in policy_authorities if item != authority
+                    item
+                    for item in policy_authorities
+                    if item != selected_policy_authority
                 )
                 general_change = await self._store.read_policy_change(
                     owner_hash=owner_hash,
@@ -478,6 +516,7 @@ class InvocationPolicyService:
                 card_revision=card_revision,
                 authority_revision=authority_revision,
                 require_request_permit=require_request_permit,
+                require_explicit_policy=require_explicit_policy,
                 moment=moment,
             )
 
@@ -492,8 +531,15 @@ class InvocationPolicyService:
         card_revision: int,
         authority_revision: str,
         require_request_permit: bool,
+        require_explicit_policy: bool,
         moment: int,
     ) -> InvocationDecision:
+        if require_explicit_policy and policy is None:
+            return InvocationDecision(
+                allowed=False,
+                reason="delegated_invocation_policy_required",
+                dispatch=False,
+            )
         mode = policy.mode if policy is not None else POLICY_ALWAYS
         if require_request_permit and policy is None:
             return InvocationDecision(

@@ -15,14 +15,16 @@ export function InvocationPolicyControl({
   operation,
   policy,
   busy,
+  onceDisabled = false,
   onSet,
 }: {
   operation: string;
   policy?: DelegatedInvocationPolicy;
   busy: boolean;
+  onceDisabled?: boolean;
   onSet: (mode: InvocationMode, expectedRevision: number) => void;
 }) {
-  const mode = policy?.mode || 'always';
+  const mode = policy?.mode || null;
   const onceAvailable = mode === 'once' && policy?.remaining === 1;
   return (
     <span className="operation-policy" data-operation={operation}>
@@ -46,8 +48,10 @@ export function InvocationPolicyControl({
           className={mode === 'once' ? 'active' : ''}
           aria-pressed={mode === 'once'}
           aria-label={`${operation}: once`}
-          title={onceAvailable ? `One ${operation} invocation remains` : `Allow the next ${operation} invocation once`}
-          disabled={busy || onceAvailable}
+          title={onceDisabled
+            ? 'Namespace and all-scope secret authority is reusable; choose Always or grant one exact key'
+            : (onceAvailable ? `One ${operation} invocation remains` : `Allow the next ${operation} invocation once`)}
+          disabled={busy || onceAvailable || onceDisabled}
           onClick={() => onSet('once', policy?.revision || 0)}
         >
           Once
@@ -56,6 +60,7 @@ export function InvocationPolicyControl({
           <small>used</small>
         ) : null}
       </span>
+      {!mode ? <span className="operation-policy__status">policy not set</span> : null}
     </span>
   );
 }
@@ -64,11 +69,13 @@ export function OperationInvocationChoice({
   operation,
   mode,
   busy,
+  onceDisabled = false,
   onChoose,
 }: {
   operation: string;
   mode: InvocationMode | null;
   busy: boolean;
+  onceDisabled?: boolean;
   onChoose: (mode: InvocationMode) => void;
 }) {
   return (
@@ -82,8 +89,10 @@ export function OperationInvocationChoice({
           className={mode === 'once' ? 'active' : ''}
           aria-pressed={mode === 'once'}
           aria-label={`${operation}: once`}
-          title={`Allow ${operation} for ${INVOCATION_MODE_TEXT.once}`}
-          disabled={busy}
+          title={onceDisabled
+            ? 'Namespace and all-scope secret authority is reusable; choose Always or grant one exact key'
+            : `Allow ${operation} for ${INVOCATION_MODE_TEXT.once}`}
+          disabled={busy || onceDisabled}
           onClick={() => onChoose('once')}
         >
           Once

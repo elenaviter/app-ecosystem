@@ -392,6 +392,7 @@ bundles:
               description: "Manage explicitly selected deployment and application secret keys through the configured provider."
               admin_only: true
               resource_selection: true
+              selector_type: kdcube_secret
               operations:
                 kdcube.management.secret.metadata.read:
                   label: "Inspect secret metadata"
@@ -1548,10 +1549,6 @@ bundles:
                 - "urn:kdcube:management:secret:*:*:*:*:*"
                 request_bound_operations:
                 - "kdcube.management.application.reload"
-                - "kdcube.management.secret.metadata.read"
-                - "kdcube.management.secret.value.read"
-                - "kdcube.management.secret.value.write"
-                - "kdcube.management.secret.delete"
                 request_permit_ttl_seconds: 600
           # Legacy connection-provider app registry. New per-user delegated
           # external credentials live under delegated_to_kdcube below.

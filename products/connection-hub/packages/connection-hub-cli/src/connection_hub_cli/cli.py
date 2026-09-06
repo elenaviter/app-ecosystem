@@ -53,6 +53,8 @@ from connection_hub_cli.management import (
     ManagementResult,
     ManagementSecretTarget,
     SecretExportClient,
+    SecretDescriptorImport,
+    load_secret_descriptors,
     validate_private_secret_output,
     validate_secret_descriptor_export,
     write_private_secret,
@@ -641,10 +643,31 @@ def _secret_export_targets(
                 key=key,
             )
         )
-    if not targets:
+    for value in args.user_key or []:
+        owner, separator, key = str(value or "").partition("=")
+        if not separator:
+            raise ConnectionHubCliError(
+                "secret_export_user_target_invalid",
+                "Each --user-key must use USER_ID=KEY or USER_ID~BUNDLE_ID=KEY.",
+            )
+        user_id, bundle_separator, bundle_id = owner.partition("~")
+        targets.append(
+            ManagementSecretTarget.create(
+                scope="user",
+                user_id=user_id,
+                bundle_id=bundle_id if bundle_separator else "",
+                key=key,
+            )
+        )
+    if args.all_secrets and targets:
+        raise ConnectionHubCliError(
+            "secret_export_selection_invalid",
+            "Use --all by itself or select exact keys.",
+        )
+    if not args.all_secrets and not targets:
         raise ConnectionHubCliError(
             "secret_export_targets_required",
-            "Secret export requires at least one --platform-key or --bundle-key.",
+            "Secret export requires --all or at least one exact key.",
         )
     ordered = tuple(sorted(targets, key=lambda item: item.identity))
     if len({item.identity for item in ordered}) != len(ordered):
@@ -671,6 +694,7 @@ async def _execute_secret_export(
     result = await services.secret_export_service.export(
         target=target,
         targets=targets,
+        selection="all" if args.all_secrets else "",
         timeout_seconds=args.wait_seconds,
         **browser_options,
     )
@@ -692,6 +716,8 @@ async def _execute_secret_export(
                 "bundles_descriptor": str(exported.bundles_path),
                 "platform_secret_count": exported.platform_count,
                 "bundle_secret_count": exported.bundle_count,
+                "user_secret_count": exported.user_count,
+                "total_secret_count": exported.total_count,
                 "permissions": (
                     {"directory_mode": "0700", "file_mode": "0600"}
                     if sys.platform != "win32"
@@ -703,14 +729,111 @@ async def _execute_secret_export(
     return 0
 
 
+def _secret_import_view(
+    imported: SecretDescriptorImport,
+    *,
+    tenant: str,
+    project: str,
+    dry_run: bool,
+    applied: int,
+    failed_target: ManagementSecretTarget | None = None,
+    denial: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    view: dict[str, Any] = {
+        "schema": "connection_hub_cli.secret_descriptor_import.v1",
+        "ok": failed_target is None,
+        "dry_run": dry_run,
+        "target": {"tenant": tenant, "project": project},
+        "input": {
+            "directory": str(imported.directory),
+            "platform_secret_count": imported.platform_count,
+            "bundle_secret_count": imported.bundle_count,
+            "user_secret_count": imported.user_count,
+            "total_secret_count": imported.total_count,
+        },
+        "applied": applied,
+        "semantics": "upsert_present_values",
+    }
+    if failed_target is not None:
+        view["failed_target"] = failed_target.to_dict()
+    if denial is not None:
+        view["denial"] = denial
+    return view
+
+
+async def _execute_secret_import(
+    args: argparse.Namespace,
+    services: Services,
+) -> int:
+    imported = load_secret_descriptors(Path(args.input_directory))
+    target = services.host_service.management_target()
+    if args.dry_run:
+        _print_json(
+            _secret_import_view(
+                imported,
+                tenant=target.tenant,
+                project=target.project,
+                dry_run=True,
+                applied=0,
+            )
+        )
+        return 0
+    if not args.yes:
+        raise ConnectionHubCliError(
+            "secret_import_confirmation_required",
+            "Secret import requires --yes after reviewing --dry-run.",
+        )
+
+    applied = 0
+    for exported in imported.values:
+        selected = exported.target
+        request = ManagementRequest.secret_write(
+            target,
+            scope=selected.scope,
+            key=selected.key,
+            bundle_id=selected.bundle_id,
+            user_id=selected.user_id,
+            value=exported.value,
+        )
+        result = await _management_result_with_consent(args, services, request)
+        if isinstance(result, ManagementDenial):
+            _print_json(
+                _secret_import_view(
+                    imported,
+                    tenant=target.tenant,
+                    project=target.project,
+                    dry_run=False,
+                    applied=applied,
+                    failed_target=selected,
+                    denial=_management_view(request, result),
+                )
+            )
+            return 3
+        applied += 1
+
+    _print_json(
+        _secret_import_view(
+            imported,
+            tenant=target.tenant,
+            project=target.project,
+            dry_run=False,
+            applied=applied,
+        )
+    )
+    return 0
+
+
 async def _run_host_secret(args: argparse.Namespace, services: Services) -> int:
     if args.secret_command == "export":
         return await _execute_secret_export(args, services)
+    if args.secret_command == "import":
+        return await _execute_secret_import(args, services)
     target = services.host_service.management_target()
     request_options = {
         "scope": args.scope,
         "key": args.key,
         "bundle_id": args.bundle_id,
+        "user_id": args.user_id,
         "invocation_id": args.invocation_id,
     }
     if args.secret_command == "metadata":
@@ -1079,6 +1202,12 @@ def build_parser() -> argparse.ArgumentParser:
             ),
         )
         secret_export.add_argument(
+            "--all",
+            action="store_true",
+            dest="all_secrets",
+            help="Export the selected provider's complete deployment inventory.",
+        )
+        secret_export.add_argument(
             "--platform-key",
             action="append",
             default=[],
@@ -1090,6 +1219,13 @@ def build_parser() -> argparse.ArgumentParser:
             default=[],
             metavar="BUNDLE_ID=KEY",
             help="Exact bundle id and secret key; repeat for each key.",
+        )
+        secret_export.add_argument(
+            "--user-key",
+            action="append",
+            default=[],
+            metavar="USER_ID[~BUNDLE_ID]=KEY",
+            help="Exact user or user-application secret; repeat for each key.",
         )
         secret_export.add_argument(
             "--output-directory",
@@ -1106,22 +1242,60 @@ def build_parser() -> argparse.ArgumentParser:
         )
         secret_export.add_argument("--wait-seconds", type=float, default=300.0)
 
+        secret_import = secret_commands.add_parser(
+            "import",
+            help=(
+                "Upsert values from canonical secrets.yaml and "
+                "bundles.secrets.yaml through the selected host."
+            ),
+        )
+        secret_import.add_argument(
+            "--input-directory",
+            required=True,
+            help="Directory containing the literal secret descriptor pair.",
+        )
+        secret_import.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Validate and count values without contacting the management API.",
+        )
+        secret_import.add_argument(
+            "--yes",
+            action="store_true",
+            help="Confirm provider upserts after reviewing --dry-run.",
+        )
+        secret_import.add_argument(
+            "--no-open",
+            action="store_true",
+            help="Return consent recovery without opening its browser page.",
+        )
+        secret_import.add_argument(
+            "--no-wait",
+            action="store_true",
+            help="Open consent without waiting for an interactive retry.",
+        )
+
         def add_secret_target(target_command: argparse.ArgumentParser) -> None:
             target_command.add_argument(
                 "key", help="Exact provider-relative secret key."
             )
             target_command.add_argument(
                 "--scope",
-                choices=("platform", "bundle"),
+                choices=("platform", "bundle", "user"),
                 required=True,
                 help=(
-                    "Deployment platform scope or one declared application bundle."
+                    "Deployment platform, application bundle, or user-owned scope."
                 ),
             )
             target_command.add_argument(
                 "--bundle-id",
                 default="",
                 help="Exact application id; required for --scope bundle.",
+            )
+            target_command.add_argument(
+                "--user-id",
+                default="",
+                help="Exact user id; required for --scope user.",
             )
             add_management_options(target_command)
 

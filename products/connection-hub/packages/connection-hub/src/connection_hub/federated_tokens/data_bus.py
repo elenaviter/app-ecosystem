@@ -19,7 +19,7 @@ TokenKeyBuilder = Callable[..., str]
 
 FEDERATED_TOKEN_SCHEMA = "kdcube.federated_token.v1"
 FEDERATED_TOKEN_PREFIX = "kft1"
-FEDERATED_TOKEN_SECRET_KEY = "services.federated_token.secret"
+FEDERATED_TOKEN_SECRET_KEY = "platform.services.federated_token.secret"
 FEDERATED_TOKEN_DEFAULT_TTL_SECONDS = 900
 FEDERATED_TOKEN_MAX_TTL_SECONDS = 3600
 FEDERATED_TOKEN_REDIS_BASE = "kdcube:federated-idp:token"

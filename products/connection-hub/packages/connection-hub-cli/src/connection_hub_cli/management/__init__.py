@@ -20,6 +20,8 @@ from connection_hub_cli.management.models import (
 )
 from connection_hub_cli.management.secret_descriptors import (
     SecretDescriptorExport,
+    SecretDescriptorImport,
+    load_secret_descriptors,
     validate_secret_descriptor_export,
     write_secret_descriptors,
 )
@@ -67,11 +69,13 @@ __all__ = [
     "ManagementTarget",
     "ManagementTransport",
     "SecretDescriptorExport",
+    "SecretDescriptorImport",
     "SecretExportClient",
     "SecretExportRequest",
     "SecretExportResult",
     "SecretExportStart",
     "SecretExportTransport",
+    "load_secret_descriptors",
     "validate_private_secret_output",
     "validate_secret_descriptor_export",
     "write_private_secret",
