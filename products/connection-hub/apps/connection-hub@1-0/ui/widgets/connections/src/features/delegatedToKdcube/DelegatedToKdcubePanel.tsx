@@ -221,6 +221,12 @@ function oauthEnabled(provider?: DelegatedToKdcubeProvider, connectorAppId?: str
   return Boolean(provider?.adapter?.includes('oauth') && app?.client_id);
 }
 
+// One-line help lives behind a small info mark next to a label, so a form
+// stays bare; the mark reveals its line on hover or keyboard focus.
+function Info({ tip }: { tip: string }) {
+  return <span className="info" tabIndex={0} role="img" aria-label={tip} data-tip={tip}>i</span>;
+}
+
 export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<string, string> } = {}) {
   const dispatch = useAppDispatch();
   const { enabled, providers, accounts, busy } = useAppSelector((s) => s.delegatedToKdcube);
@@ -510,6 +516,20 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     setManagedAccountId('');
   };
 
+  // Closing the summoned form forgets everything typed into it, including a
+  // managed account it was editing, so reopening starts clean.
+  const closeConnectForm = () => {
+    setConnectOpen(false);
+    setEmail('');
+    setDisplayName('');
+    setWorkspace('');
+    setSecretValue('');
+    setClaims([]);
+    setManagedAccountId('');
+    setFormNotice('');
+    setDroppedNotice('');
+  };
+
   const submit = async () => {
     if (
       !selectedProviderId
@@ -754,6 +774,9 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
                   />
                   <span className="connector-option-body">
                     <span className="connector-option-title">{connectorAppLabel(app, app.connector_app_id)}</span>
+                    {app.description ? (
+                      <span className="connector-option-sub connector-option-description">{app.description}</span>
+                    ) : null}
                     <span className="connector-option-sub">
                       {app.allowed_claims?.length
                         ? app.allowed_claims.map((claimId) => claimLabel(selectedProvider?.claims?.[claimId], claimId)).join(' · ')
@@ -788,49 +811,80 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
         ) : null}
 
         {canStartOAuth ? (
-          <div className="oauth-connect">
-            <button className="btn" type="button" disabled={busy} onClick={() => void startOAuth()}>
-              {managedAccount
-                ? `Re-approve with ${providerLabel(selectedProvider)}`
-                : `Connect with ${providerLabel(selectedProvider)}`}
-            </button>
-            <span className="small">
-              Opens {providerLabel(selectedProvider)}'s approval page in a new tab; the account
-              details come back from the provider.
-            </span>
-          </div>
+          <>
+            <p className="small">
+              Opens {providerLabel(selectedProvider)}'s approval page in a new tab. The account
+              details come back from the provider and the result appears in Connected accounts.
+            </p>
+            <div className="form-actions form-actions--sticky">
+              <button className="btn" type="button" disabled={busy} onClick={() => void startOAuth()}>
+                {managedAccount
+                  ? `Re-approve with ${providerLabel(selectedProvider)}`
+                  : `Connect with ${providerLabel(selectedProvider)}`}
+              </button>
+              <button className="btn btn-ghost" type="button" disabled={busy} onClick={closeConnectForm}>
+                Cancel
+              </button>
+            </div>
+          </>
         ) : (
           <>
-            <p className="muted">
-              This provider uses a credential you paste in (for example an app
-              password created in the provider's security settings).
-            </p>
-            <div className="inline-fields">
-              <input className="input" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="account email" />
-              <input className="input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="label shown in KDCube (optional)" />
+            <div className="field-grid">
+              <label className="field">
+                <span className="field-label">
+                  Account email
+                  <Info tip="The login of the account you are connecting. It names the account in KDCube." />
+                </span>
+                <input className="input" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@example.com" autoComplete="username" />
+              </label>
+              <label className="field">
+                <span className="field-label">
+                  Label <span className="muted">(optional)</span>
+                  <Info tip="A friendlier name for this account wherever KDCube lists it." />
+                </span>
+                <input className="input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="for example: Work mail" />
+              </label>
+              <label className="field">
+                <span className="field-label">
+                  Mailbox or workspace <span className="muted">(optional)</span>
+                  <Info tip="Only when the credential reaches several mailboxes or workspaces and you want one of them. Empty means the default." />
+                </span>
+                <input className="input" value={workspace} onChange={(event) => setWorkspace(event.target.value)} />
+              </label>
+              <label className="field">
+                <span className="field-label">
+                  Credential type
+                  <Info tip="What the provider issued. An app password is created in the account's security settings, separate from the account's own password." />
+                </span>
+                <select className="input" value={secretKind} onChange={(event) => setSecretKind(event.target.value as ConnectCredentialArgs['secretKind'])}>
+                  <option value="app_password">App password</option>
+                  <option value="access_token">Access token</option>
+                  <option value="api_key">API key</option>
+                  <option value="secret">Other secret</option>
+                </select>
+              </label>
+              <label className="field field--wide">
+                <span className="field-label">
+                  Credential
+                  <Info tip={`Paste it once. KDCube keeps it on the trusted side, uses it only for the access ticked above, and never shows it again.`} />
+                </span>
+                <input
+                  className="input"
+                  type="password"
+                  value={secretValue}
+                  onChange={(event) => setSecretValue(event.target.value)}
+                  autoComplete="new-password"
+                />
+              </label>
             </div>
-            <div className="inline-fields">
-              <input className="input" value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="mailbox / workspace (optional)" />
+            <div className="form-actions form-actions--sticky">
+              <button className="btn" type="submit" disabled={busy || !selectedProviderId || !selectedConnectorAppId || !secretValue || selectedClaims.length === 0}>
+                {managedAccount ? 'Reconnect' : 'Connect'}
+              </button>
+              <button className="btn btn-ghost" type="button" disabled={busy} onClick={closeConnectForm}>
+                Cancel
+              </button>
             </div>
-            <div className="inline-fields">
-              <select className="input" value={secretKind} onChange={(event) => setSecretKind(event.target.value as ConnectCredentialArgs['secretKind'])}>
-                <option value="app_password">app password</option>
-                <option value="access_token">access token</option>
-                <option value="api_key">API key</option>
-                <option value="secret">secret</option>
-              </select>
-              <input
-                className="input"
-                type="password"
-                value={secretValue}
-                onChange={(event) => setSecretValue(event.target.value)}
-                placeholder="credential"
-                autoComplete="new-password"
-              />
-            </div>
-            <button className="btn" type="submit" disabled={busy || !selectedProviderId || !selectedConnectorAppId || !secretValue || selectedClaims.length === 0}>
-              {managedAccount ? 'Reconnect' : 'Connect'}
-            </button>
           </>
         )}
       </form>
@@ -857,6 +911,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
             title: managedAccount ? 'Manage account access' : 'Connect a new account',
             content: connectPane,
             lead: true,
+            onClose: closeConnectForm,
           }] : []),
           { id: 'accounts', title: 'Connected accounts', content: existingPane },
         ]}

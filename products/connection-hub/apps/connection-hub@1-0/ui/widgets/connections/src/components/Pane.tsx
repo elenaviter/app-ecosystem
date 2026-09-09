@@ -36,6 +36,9 @@ export interface PaneDef {
    *  siblings stay visible beneath — for a pane whose content is THE pending
    *  action (an agent access request). */
   lead?: boolean;
+  /** A summoned pane (a form the user opened) offers a way back: the bar
+   *  renders a close control that calls this. Standing panes leave it unset. */
+  onClose?: () => void;
 }
 
 const ICON_UNPIN = (
@@ -51,6 +54,11 @@ const ICON_DOCK = (
 const ICON_EXPAND = (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3" />
+  </svg>
+);
+const ICON_CLOSE = (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M6 6l12 12M18 6 6 18" />
   </svg>
 );
 const ICON_COLLAPSE = (
@@ -223,6 +231,17 @@ export function PaneGroup({ panes }: { panes: PaneDef[] }) {
           >
             {state.floating ? ICON_DOCK : ICON_UNPIN}
           </button>
+          {pane.onClose ? (
+            <button
+              type="button"
+              className="pane-btn"
+              title={`Close ${pane.title}`}
+              aria-label={`Close ${pane.title}`}
+              onClick={() => pane.onClose?.()}
+            >
+              {ICON_CLOSE}
+            </button>
+          ) : null}
         </span>
       </header>
     );

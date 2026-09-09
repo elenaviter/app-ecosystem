@@ -76,15 +76,13 @@ body {
 }
 
 .page {
-  /* Fluid with the window: the hub renders in anything from a 760px scene
-     window to a full-screen tab, so the column grows with the viewport up to
-     a wide-reading cap instead of pinning to a narrow fixed width. The
-     special narrow flows (.telegram-link-page, .claim-page) keep their own
-     caps. */
+  /* Fluid with the window, uncapped: the hub renders in anything from a
+     400px side panel to a wide monitor, and uses whatever width it is given
+     (operator ruling 2026-09-09: no ribbon). The special narrow flows
+     (.telegram-link-page, .claim-page) keep their own caps. */
   width: 100%;
-  max-width: 1160px;
   margin: 0 auto;
-  padding: 16px clamp(14px, 3vw, 32px) 28px;
+  padding: 16px clamp(14px, 2vw, 28px) 28px;
   box-sizing: border-box;
 }
 
@@ -117,7 +115,14 @@ body {
    that gives way: an overflow-x strip has NO automatic minimum height
    (overflow != visible), so without flex:none a tall panel silently
    compressed it to zero — the "tabs gone" trap. */
-.tabs-wrap { position: relative; margin: 0 0 14px; flex: 0 0 auto; }
+.tabs-wrap {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin: 0 0 14px;
+  flex: 0 0 auto;
+  background: var(--bg);
+}
 .tabs {
   display: flex;
   align-items: center;
@@ -1191,6 +1196,7 @@ code {
 .connector-option-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .connector-option-title { font-size: 13px; color: var(--ink); }
 .connector-option-sub { font-size: 12px; color: var(--muted); }
+.connector-option-description { color: var(--body, #3A5672); }
 .connector-option-reason { color: var(--warn-text); }
 
 .auth-grid {
@@ -1758,18 +1764,20 @@ code {
 }
 
 /* ─── Pane system: pinned stack, floating windows, viewport-bound ───
-   The page never scrolls; every pane body scrolls internally. */
+   The PAGE scrolls (operator ruling 2026-09-09): panes take their natural
+   height and the document grows with them; the tab strip stays pinned at the
+   top, and a form's action row stays pinned at the viewport bottom while the
+   form is in view. The earlier viewport-bound, share-the-height model made
+   every section a short box with its own scrollbar - "editing in a slot". */
 .page-viewport {
-  height: 100vh;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
   padding-bottom: 12px;
 }
 
 .page-viewport .pane-group {
-  flex: 1 1 auto;
-  min-height: 0;
+  flex: 0 0 auto;
 }
 
 .pane-group {
@@ -1777,62 +1785,34 @@ code {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 0;
-  /* Per-SECTION scroll: the group is bounded to the viewport (the page-viewport
-     wrapper, or this max-height fallback) and does NOT scroll as a whole.
-     Instead each pane shrinks to share the height and its OWN body scrolls
-     internally — so the tab is never one long scroll, and growing one section
-     shrinks the others rather than overlapping them. */
-  max-height: calc(100vh - 96px);
-  overflow: hidden;
 }
 
 .pane {
   position: relative;
   display: flex;
   flex-direction: column;
-  /* Each pane FILLS its share of the group height (never content-tiny) and its
-     OWN body scrolls internally — one scrollbar per section, so a long section
-     scrolls itself instead of pushing the others out or leaving them stranded. */
-  flex: 1 1 0;
-  min-height: 120px;
+  /* A pane is as tall as its content; the page scrolls. Overflow stays
+     visible so an info mark's tooltip can escape the box. */
+  flex: 0 0 auto;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
   box-shadow: 0 1px 2px rgba(13, 30, 44, 0.04);
-  overflow: hidden;
 }
 
-.pane--fill {
-  flex: 1 1 auto;
-  min-height: 0;
-}
+/* The tab's lead pane (a summoned form, a pending agent access request)
+   spans the full row ahead of the standing panes: see the grid rule below. */
 
-/* The tab's lead pane (a pending agent access request): keeps its natural
-   height while siblings shrink around it — the action is never below a
-   shrunken pane's fold, and the rest of the tab stays visible. */
-.pane--lead {
-  /* The lead (a pending request) takes a larger share than its siblings, but
-     still fills-and-scrolls like them — its body scrolls and the Grant footer
-     stays pinned at the bottom. */
-  flex-grow: 1.7;
-  min-height: 240px;
-}
-
-/* Wide windows: the pinned panes tile TWO-UP so the width works instead of
-   one narrow over-tall column — each pane caps at the viewport and scrolls
-   internally (same shrink-and-scroll contract as the column mode). An
-   expanded pane and a lone pane span the full row; floating panes are
-   position:fixed and unaffected. */
-@media (min-width: 1000px) {
+/* Wide windows: standing panes tile by available width (two columns from
+   about 900px, three on a wide monitor), each at its natural height. The lead
+   pane, an expanded pane, and a lone pane span the full row; floating panes
+   are position:fixed and unaffected. */
+@media (min-width: 900px) {
   .pane-group {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    /* Rows STRETCH to equal fractions of the group height so each pane fills its
-       cell and scrolls its OWN body — never content-tiny, never a whole-tab
-       scroll. The lead spans the full width as its own row. */
-    grid-auto-rows: minmax(0, 1fr);
-    align-items: stretch;
+    grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+    grid-auto-rows: auto;
+    align-items: start;
     gap: 12px;
   }
   .pane--fill,
@@ -1843,11 +1823,14 @@ code {
   }
 }
 
+/* A popped-out pane keeps a fixed window: its body scrolls internally. */
 .pane--floating {
   position: fixed;
   box-shadow: var(--shadow);
   border-color: var(--line-strong);
+  overflow: hidden;
 }
+.pane--floating .pane-body { overflow: auto; }
 
 .pane-bar {
   flex: 0 0 auto;
@@ -1857,6 +1840,7 @@ code {
   gap: 8px;
   padding: 7px 10px 7px 12px;
   border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
   background: var(--surface-2);
   user-select: none;
 }
@@ -1916,8 +1900,6 @@ code {
 
 .pane-body {
   flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
   padding: 12px;
 }
 
@@ -2099,6 +2081,66 @@ code {
 
 /* Submit + Cancel row of a folded creation form. */
 .form-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* A form's action row that stays reachable however short the pane is: same
+   flush, sticky base as .pending-actions. */
+.form-actions--sticky {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 8px -12px -12px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border-top: 1px solid var(--line-soft);
+}
+/* Labeled fields with a help line, tiling by available width. */
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px 12px;
+}
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field--wide { grid-column: 1 / -1; }
+.field-label { font-size: 12px; font-weight: 600; color: var(--ink); display: inline-flex; align-items: center; gap: 6px; }
+.field-label .muted { font-weight: 400; }
+/* The info mark: a quiet circle beside a label that reveals its one line of
+   help on hover or keyboard focus. The form stays bare; the help is one
+   pointer-length away. */
+.info {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--muted);
+  color: var(--muted);
+  font: 700 9.5px/1 var(--font-family, Inter, system-ui, sans-serif);
+  font-style: normal;
+  cursor: help;
+  flex: 0 0 auto;
+}
+.info:hover, .info:focus-visible { color: var(--teal-dark); border-color: var(--teal-dark); outline: none; }
+.info::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: max-content;
+  max-width: 280px;
+  padding: 6px 9px;
+  border-radius: 6px;
+  background: var(--ink);
+  color: #FFFFFF;
+  font: 400 11.5px/1.4 var(--font-family, Inter, system-ui, sans-serif);
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 6;
+}
+.info:hover::after, .info:focus-visible::after { opacity: 1; }
 
 
 /* Tab-level action row: the "create/connect/add" trigger lives here, above the
@@ -2673,3 +2715,82 @@ code {
   .secret-selector__grid { grid-template-columns: minmax(0, 1fr); }
   .secret-selector__field--wide { grid-column: auto; }
 }
+
+/* ── Delegated-access cards: the workbench and compact rows ──────────────
+   Editing a card happens on a workbench that replaces the list: a rail of
+   every matched card on the left (the edited one marked), the edited card
+   alone on the right. Compact view reuses the rail's rows at full width. */
+.card-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+@media (min-width: 900px) {
+  .card-workbench { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); }
+  .card-rail {
+    position: sticky;
+    top: 60px;
+    max-height: calc(100vh - 76px);
+    overflow: auto;
+  }
+}
+.card-rail { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.rail-group { display: flex; flex-direction: column; gap: 4px; }
+.rail-group__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.rail-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md, 8px);
+  background: var(--surface);
+  min-width: 0;
+}
+.rail-row--selectable { cursor: pointer; }
+.rail-row--selectable:hover { border-color: var(--line); background: var(--surface-2); }
+.rail-row--selectable:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+.rail-row--active { border-color: var(--teal-dark); background: var(--teal-pale); }
+.rail-row__main { min-width: 0; flex: 1 1 auto; }
+.rail-row__title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-row__meta { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-row__actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.compact-list { display: flex; flex-direction: column; gap: 12px; }
+.compact-list .rail-row { padding: 9px 12px; }
+.card-editor {
+  position: relative;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  min-width: 0;
+}
+.card-editor__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+

@@ -254,6 +254,57 @@ account at call time.
 - `email_accounts_status`, `email_connect_app_password`, `email_disconnect_account`
   (operations) — older iCloud-only email integration surface.
 - `connections_settings` (widget) — the React/Redux settings UI.
+- `site_config` (public) — what the standalone site shell needs before any
+  user is signed in: the application id, site alias, widget alias, tenant,
+  project, and the platform endpoints it bootstraps from. Nothing
+  user-specific.
+
+## Standalone site
+
+Connection Hub also ships as its own site. The application declares a main
+view (`ui/main`: `index.html`, `site.js`, `styles.css`, copied as-is at build)
+and registers it as an application site:
+
+```yaml
+ui:
+  main_view:
+    src_folder: ui/main
+    build_command: cp index.html site.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/
+    site:
+      enabled: true
+      alias: connections     # served at /sites/connections/
+      default: false         # true would also make it the runtime's root site
+      hosts: []              # public hostnames that resolve to this site at /
+      title: Connection Hub
+```
+
+The platform serves the shell at `/sites/<alias>/` (and at the root of every
+host in `hosts`), sets `<base href>` accordingly, and injects a
+`#kdcube-site-context` script carrying tenant, project, and application id.
+The platform requires `proxy.route_prefix` to be non-root while any site is
+enabled.
+
+What the shell owns, and what it does not:
+
+- It owns the page chrome (brand, tenant/project scope, identity, sign in and
+  sign out, a link back to the platform) and the signed-out state. It
+  bootstraps from `public/site_config`, then `/api/cp-frontend-config` and
+  `/profile`, and re-probes on `kdcube-auth-changed`.
+- It hosts the `connections_settings` widget in an iframe served from the
+  widget's own bundle route, so the widget resolves tenant, project, and
+  application from its URL exactly as in every other host. A `?tab=` (or
+  `#tab`) on the site URL is passed through, so
+  `/sites/connections/?tab=delegated_by_kdcube` opens that tab.
+- Because the widget route is authenticated and an iframe request is not a
+  top-level navigation, the shell mounts the widget only after `/profile`
+  confirms a session; signed out, it shows its own sign-in card and opens the
+  platform login (popup with polling, or a redirect carrying `next`).
+- It answers the widget's `CONFIG_REQUEST` with the runtime configuration and
+  relays `kdcube-auth-required` into the login flow.
+
+Directly opening the widget as a page still works without the site:
+`/api/integrations/bundles/<tenant>/<project>/connection-hub@1-0/widgets/connections_settings?tab=<tab>`
+bounces a signed-out top-level navigation through the platform sign-in.
 
 ## Telegram Mini App embedding
 

@@ -1896,3 +1896,16 @@ bundles:
             enabled: true
             src_folder: "ui/widgets/connections"
             build_command: "npm install --no-package-lock && OUTDIR=<VI_BUILD_DEST_ABSOLUTE_PATH> npm run build"
+        # The standalone site: page chrome plus the connections widget, served
+        # by the platform at /sites/<alias>/ (and at any host in `hosts`) when
+        # `site.enabled` is true. The platform requires proxy.route_prefix to be
+        # non-root while any application site is enabled.
+        main_view:
+          src_folder: "ui/main"
+          build_command: "cp index.html site.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/"
+          site:
+            enabled: false
+            alias: "connections"
+            default: false
+            hosts: []
+            title: "Connection Hub"

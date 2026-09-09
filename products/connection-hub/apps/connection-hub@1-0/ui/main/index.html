@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light" />
+  <title>Connection Hub</title>
+  <script data-kdcube-resize-reporter="opt-out">
+    // This site owns its frame height: the header is fixed and the connections
+    // widget below it is viewport-bound. The marker keeps the platform's
+    // intrinsic-content resize reporter reserved for content-sized UI.
+  </script>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="hub-header">
+    <a class="brand" id="brand-link" href="/" aria-label="Connection Hub home">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-text">Connection Hub</span>
+    </a>
+    <div class="runtime-scope" id="runtime-scope" aria-live="polite">Connecting...</div>
+    <nav class="hub-actions" aria-label="Account and platform">
+      <span class="identity" id="identity"></span>
+      <button class="auth-button" id="auth-button" type="button">Sign in</button>
+      <a class="platform-link" id="platform-link" href="/platform/chat">Platform</a>
+    </nav>
+  </header>
+
+  <main class="hub-main">
+    <div class="hub-notice" id="hub-notice" role="status">Loading Connection Hub...</div>
+
+    <section class="signin-card" id="signin-card" hidden>
+      <h1>Your connections, in one place</h1>
+      <p>
+        Sign in to connect your accounts, see which agents and apps you have
+        granted access to, and change or revoke any grant. Edits apply on the
+        next call.
+      </p>
+      <button class="auth-button primary" id="signin-card-button" type="button">Sign in</button>
+    </section>
+
+    <iframe
+      id="connections-frame"
+      title="Connection Hub connections"
+      allow="clipboard-read; clipboard-write"
+      hidden
+    ></iframe>
+  </main>
+
+  <script type="module" src="./site.js"></script>
+</body>
+</html>

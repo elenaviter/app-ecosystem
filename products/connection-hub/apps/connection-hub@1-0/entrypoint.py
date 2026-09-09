@@ -36,6 +36,8 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     dispatch_named_service_api_request,
 )
 from kdcube_ai_app.infra.plugin.bundle_loader import api, bundle_entrypoint, bundle_id, mcp, ui_widget
+
+SITE_BUILD_COMMAND = "cp index.html site.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/"
 from kdcube_ai_app.infra.service_hub.inventory import Config
 
 from connection_hub.hub.authenticator_store import AuthenticatorStore
@@ -2494,6 +2496,22 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                         "enabled": True,
                         "src_folder": "ui/widgets/connections",
                         "build_command": "npm install --no-package-lock && OUTDIR=<VI_BUILD_DEST_ABSOLUTE_PATH> npm run build",
+                    },
+                },
+                # The standalone site shell (ui/main): page chrome, signed-out
+                # state, and the connections widget in an iframe served from
+                # its own bundle route. Registered as an application site when
+                # ui.main_view.site.enabled is true; reachable at
+                # /sites/<alias>/ and at any host listed in site.hosts.
+                "main_view": {
+                    "src_folder": "ui/main",
+                    "build_command": SITE_BUILD_COMMAND,
+                    "site": {
+                        "enabled": False,
+                        "alias": "connections",
+                        "default": False,
+                        "hosts": [],
+                        "title": "Connection Hub",
                     },
                 },
             },
@@ -5623,3 +5641,31 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             "The Connections settings widget is served from ui/widgets/connections after build."
             "</div>"
         ]
+
+    # ── Standalone site shell configuration (public) ─────────────────────────
+
+    @api(method="GET", alias="site_config", route="public")
+    async def site_config(self, **kwargs: Any) -> Dict[str, Any]:
+        """What the ui/main shell needs before any user is signed in.
+
+        Public by design: it carries only the application's own identity
+        (tenant, project, application id, site alias, widget alias) and the
+        platform endpoints the shell bootstraps from. Nothing user-specific.
+        """
+        del kwargs
+        identity = self.runtime_identity()
+        spec = getattr(self.config, "ai_bundle_spec", None)
+        application_id = str(getattr(spec, "id", None) or "").strip()
+        site = self.bundle_prop("ui.main_view.site", {}) or {}
+        if not isinstance(site, dict):
+            site = {}
+        return {
+            "application_id": application_id,
+            "site_alias": str(site.get("alias") or "connections").strip(),
+            "title": str(site.get("title") or "Connection Hub").strip(),
+            "widget_alias": "connections_settings",
+            "tenant": str(identity.get("tenant") or "").strip(),
+            "project": str(identity.get("project") or "").strip(),
+            "platform_config_url": "/api/cp-frontend-config",
+            "profile_url": "/profile",
+        }

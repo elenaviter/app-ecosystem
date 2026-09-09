@@ -862,6 +862,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [grantSettingsOpen, setGrantSettingsOpen] = useState(false);
   const [grantInfoOpen, setGrantInfoOpen] = useState(false);
   const [grantLimit, setGrantLimit] = useState(GRANT_PAGE_SIZE);
+  // Compact view: every matched card as one row (name, kind, doors, access
+  // count, expiry) with its actions - for scanning many cards at once. The
+  // detailed view stays the default.
+  const [compactList, setCompactList] = useState(false);
+  // Editing happens on a workbench (rail of cards + one editor column) that
+  // replaces the list; entering edit brings it into view.
+  const workbenchRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!editingAccessId) return;
+    workbenchRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [editingAccessId]);
   const updateGrantFilter = (patch: Partial<GrantFilter>) => {
     setGrantFilter((current) => ({ ...current, ...patch }));
     setGrantLimit(GRANT_PAGE_SIZE);
@@ -2814,6 +2825,223 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
   };
 
+  // ── The workbench and the compact rows ─────────────────────────────────
+  const editingRecord = editingAccessId
+    ? items.find((it) => it.access_id === editingAccessId) || null
+    : null;
+  const isEditableRecord = (item: DelegatedAccessRecord): boolean =>
+    item.source === 'agent'
+    || (item.source === 'oauth' && Boolean(item.client_id))
+    || item.source === 'manual';
+  const cardTitle = (item: DelegatedAccessRecord, inGroup = false): string => {
+    if (item.source === 'agent' && item.client_id) {
+      if (inGroup) {
+        const doors = Object.keys(item.resource_grants || {});
+        return doors.length
+          ? doors.map((r) => (r === '*' ? 'all resources' : (doorAlias(r) || resourceLabelFor(r) || r))).join(', ')
+          : (item.label || item.access_id);
+      }
+      const who = parseAgentClientId(item.client_id);
+      return who ? `${who.agent} · ${who.app}` : item.client_id;
+    }
+    return item.label || item.access_id;
+  };
+  const cardBadge = (item: DelegatedAccessRecord) => (
+    item.source === 'agent'
+      ? <span className="badge badge-ok">agent</span>
+      : item.source === 'oauth'
+        ? <span className="badge badge-ok">connected app</span>
+        : <span className="badge badge-warn">manual token</span>
+  );
+  const cardDoors = (item: DelegatedAccessRecord): string => Array.from(new Set(
+    Object.keys(item.resource_grants || {}).map((r) => (r === '*' ? 'all resources' : (doorAlias(r) || resourceLabelFor(r) || r))),
+  )).join(', ');
+  const cardAccessCount = (item: DelegatedAccessRecord): number =>
+    new Set(Object.values(item.resource_grants || {}).flat()).size;
+  // Switching cards while editing discards the edit in progress: ask first.
+  const switchEdit = (item: DelegatedAccessRecord) => {
+    if (item.access_id === editingAccessId) return;
+    if (!window.confirm('Leave this card? Changes you have not saved will be discarded.')) return;
+    startEdit(item);
+  };
+  const renderCompactRow = (
+    item: DelegatedAccessRecord,
+    opts: { active?: boolean; inGroup?: boolean; onSelect?: () => void; actions?: React.ReactNode } = {},
+  ) => {
+    const selectable = Boolean(opts.onSelect);
+    const meta = [
+      cardDoors(item) || 'no door',
+      `${cardAccessCount(item)} access`,
+      `expires ${formatDate(item.expires_at) || 'unknown'}`,
+    ].join(' · ');
+    return (
+      <div
+        key={item.access_id}
+        className={[
+          'rail-row',
+          opts.active ? 'rail-row--active' : '',
+          selectable ? 'rail-row--selectable' : '',
+        ].filter(Boolean).join(' ')}
+        role={selectable ? 'button' : undefined}
+        tabIndex={selectable ? 0 : undefined}
+        aria-current={opts.active ? 'true' : undefined}
+        onClick={opts.onSelect}
+        onKeyDown={selectable ? (event) => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); opts.onSelect?.(); }
+        } : undefined}
+      >
+        <div className="rail-row__main">
+          <div className="rail-row__title">{cardTitle(item, opts.inGroup)} {opts.inGroup ? null : cardBadge(item)}</div>
+          <div className="rail-row__meta">{meta}</div>
+        </div>
+        {opts.actions ? (
+          <div className="rail-row__actions" onClick={(event) => event.stopPropagation()}>{opts.actions}</div>
+        ) : null}
+      </div>
+    );
+  };
+  const renderAgentGroupHead = (clientId: string) => {
+    const who = parseAgentClientId(clientId);
+    return (
+      <div className="rail-group__head">
+        <strong>{who ? `${who.agent} · ${who.app}` : clientId}</strong>
+        <span className="badge badge-ok">agent</span>
+      </div>
+    );
+  };
+  // Every matched card as compact rows, no page cap (rows are cheap).
+  const renderCompactList = () => (
+    <div className="compact-list">
+      {matchedAgentEntries.map(([clientId, records]) => (
+        <div className="rail-group" key={clientId}>
+          {renderAgentGroupHead(clientId)}
+          {records.map((item) => renderCompactRow(item, {
+            inGroup: true,
+            actions: (
+              <>
+                <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>Edit</button>
+                {renderRevokeControl(item)}
+              </>
+            ),
+          }))}
+        </div>
+      ))}
+      {matchedOtherItems.length ? (
+        <div className="rail-group">
+          {matchedAgentEntries.length ? <div className="rail-group__head"><strong>Apps and automations</strong></div> : null}
+          {matchedOtherItems.map((item) => renderCompactRow(item, {
+            actions: (
+              <>
+                {isEditableRecord(item) ? (
+                  <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>Edit</button>
+                ) : null}
+                {renderRevokeControl(item)}
+              </>
+            ),
+          }))}
+        </div>
+      ) : null}
+    </div>
+  );
+  // The workbench: the rail on the left lists every matched card and marks the
+  // one being edited; the editor on the right is that card alone, with its
+  // Save and Cancel pinned at the viewport bottom while it is in view.
+  const renderWorkbench = (record: DelegatedAccessRecord) => {
+    const roleLabel = record.source === 'agent' ? 'this agent' : record.source === 'manual' ? 'this automation' : 'this app';
+    const problems = editSaveProblems(record);
+    return (
+      <div className="card-workbench" ref={workbenchRef}>
+        <aside className="card-rail" aria-label="Access cards">
+          {matchedAgentEntries.map(([clientId, records]) => (
+            <div className="rail-group" key={clientId}>
+              {renderAgentGroupHead(clientId)}
+              {records.map((item) => renderCompactRow(item, {
+                inGroup: true,
+                active: item.access_id === record.access_id,
+                onSelect: () => switchEdit(item),
+              }))}
+            </div>
+          ))}
+          {matchedOtherItems.length ? (
+            <div className="rail-group">
+              {matchedAgentEntries.length ? <div className="rail-group__head"><strong>Apps and automations</strong></div> : null}
+              {matchedOtherItems.map((item) => renderCompactRow(item, {
+                active: item.access_id === record.access_id,
+                onSelect: isEditableRecord(item) ? () => switchEdit(item) : undefined,
+              }))}
+            </div>
+          ) : null}
+        </aside>
+        <section className="card-editor" aria-label={`Editing ${cardTitle(record)}`}>
+          <div className="card-editor__head">
+            <div>
+              <div className="account-title">{cardTitle(record)} {cardBadge(record)}</div>
+              {record.source === 'manual'
+                ? <ClientIdRef value={record.access_id} kind="access" />
+                : (record.client_id ? <ClientIdRef value={record.client_id} kind="client" /> : null)}
+            </div>
+            <button className="btn btn-ghost" type="button" disabled={busy} onClick={clearEditState}>
+              All cards
+            </button>
+          </div>
+          {manualFocus?.accessId === record.access_id ? (
+            <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
+              <strong>Access update required</strong>
+              {manualFocus.accountClaim ? (
+                <div>
+                  Allow <code>{manualFocus.accountClaim}</code>
+                  {manualFocus.accountId ? <> on <code>{manualFocus.accountId}</code></> : null},
+                  then save and retry the operation.
+                </div>
+              ) : manualFocus.claims.length ? (
+                <div>
+                  Review <code>{manualFocus.claims.join(', ')}</code>, save, and retry the operation.
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          <CatalogDriftNotice drift={record.catalog_drift} />
+          {record.source !== 'agent' ? (
+            <label className="rename-row">
+              <span className="card-field-label">Name</span>
+              <input
+                type="text"
+                value={editLabel}
+                placeholder={record.label || 'Name this connection'}
+                onChange={(event) => setEditLabel(event.target.value)}
+              />
+            </label>
+          ) : null}
+          {record.source === 'agent' || Object.keys(record.resource_grants || {}).length
+            ? renderEditResourceSections(record)
+            : null}
+          {renderAccountScopePicker(
+            editAccountScope,
+            toggleEditAccount,
+            roleLabel,
+            { existingScope: seedAccountScopeFromRecord(record) },
+          )}
+          <div className="form-actions form-actions--sticky">
+            <button
+              className="btn"
+              type="button"
+              disabled={busy || problems.length > 0}
+              title={problems
+                .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(record, resource)))
+                .join(' ') || undefined}
+              onClick={() => saveEdit(record)}
+            >
+              Save
+            </button>
+            <button className="btn btn-ghost" type="button" disabled={busy} onClick={clearEditState}>
+              Cancel
+            </button>
+          </div>
+        </section>
+      </div>
+    );
+  };
+
   const grantedPane = (
     <section className="card">
       <div className="card-head">
@@ -2831,7 +3059,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ) : null}
       </div>
 
-      {agentEntries.length ? (
+      {editingRecord ? renderWorkbench(editingRecord) : null}
+      {!editingRecord && compactList ? renderCompactList() : null}
+      {/* The detailed list. While a card is being edited the workbench above
+          replaces it, so the inline edit branches below no longer render. */}
+      {!editingRecord && !compactList && agentEntries.length ? (
         <div>
           {agentEntries.map(([clientId, records]) => {
             const who = parseAgentClientId(clientId);
@@ -2981,7 +3213,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         </div>
       ) : null}
 
-      {otherItems.length ? (
+      {!editingRecord && !compactList && otherItems.length ? (
         <ul className="accounts">
           {otherItems.map((item) => {
             // Both callers here are editable in place: the card is the authority
@@ -3200,7 +3432,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         </ul>
       ) : null}
 
-      {hiddenGrantCount + hiddenAgentCount > 0 ? (
+      {!editingRecord && !compactList && hiddenGrantCount + hiddenAgentCount > 0 ? (
         <button
           type="button"
           className="inline-more"
@@ -3343,6 +3575,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               onToggleSettings={() => setGrantSettingsOpen((v) => !v)}
               onOpenInfo={() => setGrantInfoOpen(true)}
             />
+          ) : null}
+          {items.length > 0 ? (
+            <button
+              className="btn btn-ghost"
+              type="button"
+              aria-pressed={compactList}
+              title={compactList ? 'Show every card in full' : 'Show every card as one row'}
+              onClick={() => setCompactList((v) => !v)}
+            >
+              {compactList ? 'Detailed view' : 'Compact view'}
+            </button>
           ) : null}
           {!createOpen ? (
             <button className="btn" type="button" onClick={() => setCreateOpen(true)}>

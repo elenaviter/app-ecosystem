@@ -503,6 +503,8 @@ export interface DelegatedToKdcubeConnectorApp {
   connector_app_id: string;
   provider_id: string;
   label?: string;
+  /** Operator-authored one-liner shown under the label: what connecting through this app means for the user. */
+  description?: string;
   enabled?: boolean;
   client_id?: string;
   redirect_uri?: string;
