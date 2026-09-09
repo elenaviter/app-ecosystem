@@ -219,8 +219,10 @@ The package owns portable authority semantics: versioned cards and catalogs,
 once-or-always invocation policy and idempotency records, external MCP
 connector/proxy contracts, per-call admission for managed REST, MCP, and
 named-service calls, the OAuth protocol builders, connected-account policy,
-structured denials, the client SDK, and explicit ports for storage, identity,
-dispatch, secrets, and live delivery. The host supplies the HTTP surfaces,
+structured denials, the client SDK, the server-held browser session
+(`connection_hub.browser_session`: one HttpOnly cookie, sliding renewal, an
+OIDC code-flow upstream and a Google Identity Services upstream), and explicit
+ports for storage, identity, dispatch, secrets, and live delivery. The host supplies the HTTP surfaces,
 authenticated sessions, durable storage and its Redis projections, secret
 resolution, and the UI.
 The boundary is documented in
@@ -233,6 +235,7 @@ The boundary is documented in
 - [Delegated authority and admission](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-authority-and-admission.md)
 - [Delegated access cards](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/delegated-cards.md)
 - [OAuth delegated credential protocol](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/oauth-delegated-credential-protocol.md)
+- [Browser session](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/browser-session.md)
 - [Direct protected-service recipe](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/recipes/direct-protected-service.md)
 - [Release procedure](https://github.com/elenaviter/app-ecosystem/blob/main/docs/releases.md)
 
