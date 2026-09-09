@@ -14,6 +14,7 @@ from connection_hub.delegated_credentials.cards.model import (
 from connection_hub.delegated_credentials.cards.read_model import (
     CALLER_KIND_MANUAL,
     CALLER_KIND_OAUTH,
+    DelegatedCardView,
     CALLER_KIND_RESIDENT,
     OFFER_ALREADY_ON_CARD,
     OFFER_COMPATIBLE,
@@ -158,3 +159,69 @@ def test_compatible_offers_explain_every_excluded_resource():
         card_resources=[MEMORIES], card_identity_scope="grantor", options=options, platform_admin=True
     )
     assert {item["resource"]: item["compatible"] for item in admin}["*"] is True
+
+
+def test_the_view_carries_the_token_issuance_stamp_only_where_it_exists():
+    """An orphaned OAuth card is told apart from its replacement by this stamp.
+
+    Only the OAuth token endpoint writes it, at consent and on each refresh
+    rotation, so a manual or agent card has none and the owner surface must not
+    read zero there as "never used".
+    """
+
+    def _authority(client_id, source, last_issued_at):
+        return CardAuthority(
+            access_id="card-x",
+            client_id=client_id,
+            grantor_subject="user-1",
+            delegate_subject="integration:user-1",
+            source=source,
+            label="card",
+            card_revision=1,
+            catalog_version="v1",
+            resource_grants={MEMORIES: ("memories:read",)},
+            resource_operations={MEMORIES: ("search",)},
+            named_service_operations=NamedServiceSelection.none(),
+            identity_scope="grantor",
+            created_at=NOW,
+            expires_at=NOW + 3600,
+            last_issued_at=last_issued_at,
+        )
+
+    refreshed = build_card_view(_authority("dcr-live", "oauth", NOW + 900))
+    assert refreshed.caller_kind == CALLER_KIND_OAUTH
+    assert refreshed.last_issued_at == NOW + 900
+    assert refreshed.to_dict()["last_issued_at"] == NOW + 900
+
+    # Never refreshed since consent: the stamp has not moved off creation.
+    orphaned = build_card_view(_authority("dcr-dead", "oauth", NOW))
+    assert orphaned.last_issued_at == orphaned.created_at
+
+    for client_id, source in (("automation:aut_1", "manual"), ("kdcube-agent:a@1-0:x", "agent")):
+        view = build_card_view(_authority(client_id, source, 0))
+        assert view.caller_kind != CALLER_KIND_OAUTH
+        assert view.last_issued_at == 0
+        assert view.to_dict()["last_issued_at"] == 0
+
+
+def test_the_issuance_stamp_survives_a_read_model_round_trip():
+    view = build_card_view(
+        CardAuthority(
+            access_id="card-y",
+            client_id="dcr-live",
+            grantor_subject="user-1",
+            delegate_subject="integration:user-1",
+            source="oauth",
+            label="card",
+            card_revision=2,
+            catalog_version="v1",
+            resource_grants={MEMORIES: ("memories:read",)},
+            resource_operations={MEMORIES: ("search",)},
+            named_service_operations=NamedServiceSelection.none(),
+            identity_scope="grantor",
+            created_at=NOW,
+            expires_at=NOW + 3600,
+            last_issued_at=NOW + 120,
+        )
+    )
+    assert DelegatedCardView.from_dict(view.to_dict()).last_issued_at == NOW + 120

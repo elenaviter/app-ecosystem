@@ -76,9 +76,13 @@ export async function requestRemoteMcpOAuth(
     label: args.label,
     endpoint: args.endpoint,
     return_hint: args.returnHint || '',
-    connector_id: args.connectorId || '',
-    expected_revision: args.expectedRevision || 0,
   };
+  // The revision precondition guards a connector mutation, so it travels with
+  // the connector it guards. A new connector names neither.
+  if (args.connectorId) {
+    payload.connector_id = args.connectorId;
+    payload.expected_revision = args.expectedRevision ?? 0;
+  }
   if (args.oauthClientMode) payload.oauth_client_mode = args.oauthClientMode;
   if (args.oauthClient) {
     payload.oauth_client = {

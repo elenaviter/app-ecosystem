@@ -66,33 +66,74 @@ def connection_hub_bundle_id(entrypoint: Any, *, default: str = DEFAULT_CONNECTI
     return _str(default) or DEFAULT_CONNECTION_HUB_BUNDLE_ID
 
 
-def request_origin(request: Any) -> str:
-    """Best-effort public origin for links returned to a browser.
+def _forwarded_parts(raw: Any) -> dict[str, str]:
+    """First element of an RFC 7239 ``Forwarded`` header, as key/value pairs."""
+    out: dict[str, str] = {}
+    for item in _str(raw).split(",", 1)[0].split(";"):
+        key, _, value = item.partition("=")
+        key = key.strip().lower()
+        value = value.strip().strip('"')
+        if key and value:
+            out[key] = value
+    return out
 
-    The origin is passed explicitly through the SDK payload because the
-    request-bound bundle operation bridge carries user/session context, not the
-    original HTTP request object.
+
+def _first_header_value(raw: Any) -> str:
+    return _str(raw).split(",", 1)[0].strip()
+
+
+def is_local_or_internal_host(host: Any) -> bool:
+    """Whether a host names this machine or a name with no public authority."""
+    name = _str(host).split(":", 1)[0].lower()
+    return (
+        not name
+        or name == "localhost"
+        or name.startswith("127.")
+        or name == "::1"
+        or name.endswith(".local")
+        or "." not in name
+    )
+
+
+def public_proto(proto: Any, host: Any) -> str:
+    """A public host reached over http is behind a terminator that dropped the
+    provenance; a local one is genuinely http."""
+    value = _str(proto).lower() or "http"
+    if value == "http" and not is_local_or_internal_host(host):
+        return "https"
+    return value
+
+
+def request_origin(request: Any) -> str:
+    """Public origin for links and callbacks returned to a browser.
+
+    Scheme provenance in descending order of authority: RFC 7239 ``Forwarded``,
+    then ``X-Forwarded-Proto`` (what the deployment's proxy sets under its
+    declared ``proxy.forwarded_proto.source`` policy), then the scheme the
+    request actually arrived on. Never a constant: a deployment reached over
+    plain http must not be told it is https, or every callback and RP origin it
+    mints is unreachable.
     """
 
     if request is None:
         return ""
     try:
         headers = request.headers
-        host = _str(headers.get("x-forwarded-host") or headers.get("host"))
-        proto = _str(headers.get("x-forwarded-proto")).split(",", 1)[0].strip()
+        forwarded = _forwarded_parts(headers.get("forwarded"))
+        proto = (
+            forwarded.get("proto")
+            or _first_header_value(headers.get("x-forwarded-proto"))
+            or _str(getattr(getattr(request, "url", None), "scheme", ""))
+            or "http"
+        )
+        host = (
+            forwarded.get("host")
+            or _first_header_value(headers.get("x-forwarded-host"))
+            or _first_header_value(headers.get("host"))
+            or _str(getattr(getattr(request, "url", None), "netloc", ""))
+        )
         if host:
-            host_name = host.split(":", 1)[0].strip().lower()
-            if (
-                (not proto or proto == "http")
-                and host_name
-                and host_name != "localhost"
-                and not host_name.startswith("127.")
-                and host_name != "::1"
-                and not host_name.endswith(".local")
-                and "." in host_name
-            ):
-                proto = "https"
-            return f"{proto or 'https'}://{host}"
+            return f"{public_proto(proto, host)}://{host}"
     except Exception:
         pass
     try:
@@ -205,5 +246,7 @@ __all__ = [
     "ConnectionEdgesClient",
     "connection_hub_bundle_id",
     "connection_hub_bundle_id_from_entrypoint",
+    "is_local_or_internal_host",
+    "public_proto",
     "request_origin",
 ]

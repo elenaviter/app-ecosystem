@@ -8,18 +8,11 @@ KDCUBE_ICON_PATH = "/img/favicon.svg"
 
 
 def _request_public_base_url(request: Any = None) -> str:
-    headers = getattr(request, "headers", None)
-    if headers is not None:
-        proto = str(headers.get("x-forwarded-proto") or headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip()
-        host = str(
-            headers.get("x-forwarded-host")
-            or headers.get("X-Forwarded-Host")
-            or headers.get("host")
-            or headers.get("Host")
-            or ""
-        ).split(",", 1)[0].strip()
-        if host:
-            return f"{proto or 'https'}://{host}".rstrip("/")
+    from connection_hub.connection_edges import request_origin
+
+    origin = request_origin(request).rstrip("/")
+    if origin:
+        return origin
 
     base_url = str(getattr(request, "base_url", "") or "").strip().rstrip("/")
     if not base_url:

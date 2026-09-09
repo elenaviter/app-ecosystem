@@ -177,6 +177,11 @@ export interface DelegatedAccessRecord {
   identity_scope?: string;
   created_at?: number;
   expires_at?: number;
+  /** When the OAuth token endpoint last issued credentials for this card — at
+   *  consent, and on each refresh rotation. Absent on a manual or agent card,
+   *  which never reaches that endpoint. Not a "last used": a client holding a
+   *  valid access token need not have renewed recently. */
+  last_issued_at?: number;
   last_four?: string;
   source?: 'manual' | 'oauth' | string;
   /** Monotonic revision; sent back on save so a stale editor is refused. */

@@ -30,6 +30,9 @@ from connection_hub.delegated_credentials.automation_access import (
 from connection_hub.delegated_credentials.credential_view import (
     delegated_credential_view,
 )
+from connection_hub.delegated_to_kdcube.public_base import (
+    is_openable_hub_url,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -94,15 +97,15 @@ def connection_hub_grant_url(
 
     Openable outside the app origin — an external agent (Claude Code) relays
     it verbatim; the user signs in with their platform credentials and sees the
-    focused card. Empty when the deployment's public base URL is unknown."""
+    focused card. Absolute when the deployment's public base URL is known,
+    relative otherwise; empty only when the card cannot be addressed at all."""
     from urllib.parse import quote, urlencode
 
     from connection_hub.delegated_to_kdcube.public_base import (
-        connection_hub_public_base_url,
+        connection_hub_public_url,
     )
 
-    base = connection_hub_public_base_url()
-    if not base or not tenant or not project or not client_id or not resource:
+    if not tenant or not project or not client_id or not resource:
         return ""
     # The pending pane's only save is delegated_agent_grant_create, which serves
     # hosted agents and OAuth clients. A manual automation record is keyed by a
@@ -144,8 +147,8 @@ def connection_hub_grant_url(
             clean_value = str(value or "").strip()
             if clean_key and clean_value:
                 query[f"approval_{clean_key}"] = clean_value
-        return (
-            f"{base}/api/integrations/bundles/"
+        return connection_hub_public_url(
+            f"/api/integrations/bundles/"
             f"{quote(str(tenant), safe='')}/{quote(str(project), safe='')}/"
             f"{quote(hub_bundle_id, safe='')}/widgets/connections_settings?"
             f"{urlencode(query)}"
@@ -191,8 +194,8 @@ def connection_hub_grant_url(
     if str(account_claim or "").strip():
         query["account_claim"] = str(account_claim).strip()
     params = urlencode(query)
-    return (
-        f"{base}/api/integrations/bundles/"
+    return connection_hub_public_url(
+        f"/api/integrations/bundles/"
         f"{quote(str(tenant), safe='')}/{quote(str(project), safe='')}/"
         f"{quote(hub_bundle_id, safe='')}/widgets/connections_settings?{params}"
     )
@@ -211,13 +214,12 @@ def connection_hub_invocation_policy_url(
     from urllib.parse import quote, urlencode
 
     from connection_hub.delegated_to_kdcube.public_base import (
-        connection_hub_public_base_url,
+        connection_hub_public_url,
     )
 
-    base = connection_hub_public_base_url()
     if not all(
         str(value or "").strip()
-        for value in (base, tenant, project, access_id, resource, operation)
+        for value in (tenant, project, access_id, resource, operation)
     ):
         return ""
     query = urlencode(
@@ -229,8 +231,8 @@ def connection_hub_invocation_policy_url(
             "invocation_policy": "1",
         }
     )
-    return (
-        f"{base}/api/integrations/bundles/"
+    return connection_hub_public_url(
+        f"/api/integrations/bundles/"
         f"{quote(str(tenant), safe='')}/{quote(str(project), safe='')}/"
         f"{quote(hub_bundle_id, safe='')}/widgets/connections_settings?{query}"
     )
@@ -315,7 +317,7 @@ def agent_grant_consent_denial(
         "namespace": namespace,
         "operation": operation,
     }
-    if hub_url:
+    if is_openable_hub_url(hub_url):
         consent["connection_hub_url"] = hub_url
         denial["connection_hub_url"] = hub_url
     if client_id:
@@ -610,7 +612,7 @@ async def connect_first_denial_for_identity(
                 "Retry the same call after both steps."
             ),
         }
-        if url:
+        if is_openable_hub_url(url):
             denial["connection_hub_url"] = url
         LOGGER.info(
             "[connect-first] gate-2 connect leads (namespace=%s operation=%s provider=%s grantor=%s agent=%s)",

@@ -126,6 +126,12 @@ from connection_hub.delegated_credentials.secret_resources import (
     SecretResource,
     SecretResourceError,
 )
+from connection_hub.connection_edges import request_origin as _request_origin
+from connection_hub.delegated_to_kdcube.public_base import (
+    PUBLIC_BASE_URL_CONFIG_KEY,
+    public_base_url_from_hub_props,
+    set_connection_hub_public_base_url,
+)
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.remote_mcp import (
     RemoteMCPOAuthFlowError,
     build_remote_mcp_connector_service,
@@ -733,6 +739,11 @@ def _oauth_adapter_config(entrypoint: Any, request: Any) -> Dict[str, Any]:
 
 
 def _oauth_public_base_url(request: Any) -> str:
+    """The deployment's public OAuth surface for this request.
+
+    The path is this request's own, trimmed to the bundle's public OAuth mount;
+    the origin comes from the one shared derivation so every surface agrees.
+    """
     if request is None:
         return ""
     path = str(getattr(getattr(request, "url", None), "path", "") or "")
@@ -741,45 +752,9 @@ def _oauth_public_base_url(request: Any) -> str:
         public_path = path.split(marker, 1)[0] + marker
     else:
         public_path = path.rstrip("/")
-    try:
-        headers = getattr(request, "headers", {}) or {}
-        forwarded = str(headers.get("forwarded") or "").split(",", 1)[0].strip()
-        forwarded_parts: Dict[str, str] = {}
-        for item in forwarded.split(";"):
-            if "=" not in item:
-                continue
-            key, value = item.split("=", 1)
-            key = key.strip().lower()
-            value = value.strip().strip('"')
-            if key and value:
-                forwarded_parts[key] = value
-        raw_proto = (
-            forwarded_parts.get("proto")
-            or str(headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip()
-            or str(getattr(getattr(request, "url", None), "scheme", "") or "").strip()
-            or "http"
-        )
-        host = (
-            forwarded_parts.get("host")
-            or str(headers.get("x-forwarded-host") or headers.get("host") or "").split(",", 1)[0].strip()
-            or str(getattr(getattr(request, "url", None), "netloc", "") or "").strip()
-        )
-        if host:
-            host_name = host.split(":", 1)[0].strip().lower()
-            proto = raw_proto
-            if (
-                raw_proto == "http"
-                and host_name
-                and host_name != "localhost"
-                and not host_name.startswith("127.")
-                and host_name != "::1"
-                and not host_name.endswith(".local")
-                and "." in host_name
-            ):
-                proto = "https"
-            return f"{proto}://{host}{public_path}".rstrip("/")
-    except Exception:
-        pass
+    origin = _request_origin(request).rstrip("/")
+    if origin:
+        return f"{origin}{public_path}".rstrip("/")
     return f"{str(request.base_url).rstrip('/')}{public_path}".rstrip("/")
 
 
@@ -1109,13 +1084,6 @@ def _expected_remote_mcp_revision(payload: Mapping[str, Any]) -> int:
     return revision
 
 
-def _optional_remote_mcp_revision(payload: Mapping[str, Any]) -> int:
-    raw = payload.get("expected_revision")
-    if raw in (None, ""):
-        return 0
-    return _expected_remote_mcp_revision(payload)
-
-
 def _automation_access_service_for(entrypoint: Any, config: Any) -> AutomationAccessService:
     """Build the service against an already-resolved delegated-client config.
 
@@ -1428,22 +1396,6 @@ async def _bootstrap_descriptor_authenticators(entrypoint: Any) -> int:
     return count
 
 
-def _request_origin(request: Any) -> str:
-    if request is None:
-        return ""
-    try:
-        headers = request.headers
-        host = str(headers.get("x-forwarded-host") or headers.get("host") or "").strip()
-        proto = str(headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip()
-        if host:
-            return f"{proto or 'https'}://{host}"
-    except Exception:
-        pass
-    try:
-        url = request.url
-        return f"{url.scheme}://{url.netloc}"
-    except Exception:
-        return ""
 
 
 def _same_origin_return_link(*, origin: str, candidate: str) -> str:
@@ -2027,6 +1979,18 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         # BaseEntrypoint.on_bundle_load (via super) publishes named-service
         # discovery from _named_service_providers().
         await super().on_bundle_load(**kwargs)
+        # Consent deep links ship absolute from every surface, including those
+        # that never construct a delegated client. Seeding here binds the value
+        # once per loaded bundle rather than as a side effect of an unrelated
+        # construction, and a reload re-reads a changed descriptor.
+        base = public_base_url_from_hub_props(getattr(self, "bundle_props", None) or {})
+        set_connection_hub_public_base_url(base)
+        if not base:
+            LOGGER.warning(
+                "[connection-hub] on_bundle_load: %s is unset; consent deep links "
+                "stay relative and external clients cannot open them",
+                PUBLIC_BASE_URL_CONFIG_KEY,
+            )
         pg_pool = self.pg_pool or kwargs.get("pg_pool")
         if pg_pool is not None:
             self.pg_pool = pg_pool
@@ -2879,6 +2843,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if not owner:
             return {"ok": False, "error": "remote_mcp_requires_authenticated_user"}
         payload = _payload(data, **kwargs)
+        # The revision precondition guards a connector mutation. Starting OAuth
+        # without a connector id creates one, so no revision applies.
+        connector_id = str(payload.get("connector_id") or "")
         try:
             started = await _remote_mcp_oauth_service(self).start(
                 owner_subject=owner,
@@ -2889,8 +2856,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     self, request
                 ),
                 return_hint=str(payload.get("return_hint") or ""),
-                connector_id=str(payload.get("connector_id") or ""),
-                expected_revision=_optional_remote_mcp_revision(payload),
+                connector_id=connector_id,
+                expected_revision=(
+                    _expected_remote_mcp_revision(payload) if connector_id else 0
+                ),
                 oauth_client_mode=str(payload.get("oauth_client_mode") or ""),
                 oauth_client=payload.get("oauth_client"),
             )
