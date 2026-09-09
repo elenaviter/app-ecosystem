@@ -5,8 +5,10 @@
  * server's.
  */
 import {
+  doorName,
   driftNeedsReview,
   offerReasonText,
+  pickerOffers,
   type ResourceDriftState,
   type ResourceOffer,
 } from './resourceEditing';
@@ -166,13 +168,17 @@ export function ResourceOfferPicker({
   added: string[];
   onAdd: (resource: string) => void;
 }) {
-  const candidates = offers.filter((offer) => offer.reason !== 'already_on_card' && !added.includes(offer.resource));
-  if (!candidates.length) return null;
-  const compatible = candidates.filter((offer) => offer.compatible);
-  const blocked = candidates.filter((offer) => !offer.compatible);
+  const { compatible, blocked, clientDoor } = pickerOffers(offers, added);
+  if (!compatible.length && !blocked.length && !clientDoor) return null;
   return (
     <div className="resource-offer-picker">
       <div className="account-title">Add a resource to this card</div>
+      {clientDoor ? (
+        <p className="muted resource-offer-picker__door">
+          This client is connected to <code>{doorName(clientDoor)}</code>. Only what that door serves
+          can join this card; the platform's other doors are out of its reach.
+        </p>
+      ) : null}
       {compatible.length ? (
         <div className="resource-offer-picker__row">
           {compatible.map((offer) => (
@@ -188,7 +194,11 @@ export function ResourceOfferPicker({
           ))}
         </div>
       ) : (
-        <p className="muted resource-offer-picker__empty">Nothing else compatible is delegable to this card.</p>
+        <p className="muted resource-offer-picker__empty">
+          {clientDoor
+            ? 'Nothing else is served through that door.'
+            : 'Nothing else compatible is delegable to this card.'}
+        </p>
       )}
       {blocked.length ? (
         <ul className="resource-offer-picker__blocked">

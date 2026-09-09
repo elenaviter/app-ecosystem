@@ -220,6 +220,7 @@ durable read.
 | `effective_named_service_operations` | The selection expanded under the catalog version the card was saved against. Derived, never authority. | yes when the card covers any operation |
 | `catalog_version`, `card_revision` | The catalog generation this card was last saved against, and its monotonic revision. | yes |
 | `account_scope` | Provider -> account -> exact connected-account claims this caller may use. | yes when non-empty |
+| `entry_resource` | OAuth cards: the protected resource the client connected to (the OAuth `resource` of its consent), the one door that client can reach. Empty on manual and resident cards. A card written before the field existed is derived at list time: its selection door, else its first catalog-row resource. | yes when non-empty |
 | `identity_scope` | Which identity boundary the delegated resource uses. | yes |
 | `created_at`, `expires_at`, `last_issued_at` | Lifecycle timestamps. | yes when present |
 | `last_four`, `source` | Token fingerprint and card family. | yes |
@@ -724,6 +725,22 @@ live card and the existing pointer-backed bearer sees the new authority on its
 next call. A refresh rotation updates credential handles, expiry, and
 `last_issued_at` only — it neither restores an older operation selection nor
 widens one.
+
+#### The client's one door
+
+An MCP client such as Claude Code, Hermes or OpenClaw is configured with one
+URL and connects to that protected resource only; it cannot learn another
+door exists, let alone call it. The card records that resource as
+`entry_resource`, and the editor offers it only what consent at that door
+offers: the door's own selection rows (a proxy door's connectors), computed
+by `_reachable_through_door` from the same `resource_selection_rows` the
+consent screen uses. Every other catalog row comes back in `resource_offers`
+with reason `outside_client_door`, and the editor hides those instead of
+listing doors the client will never call, naming the door once. A door
+without `resource_selection` reaches nothing else. Manual and resident cards
+pass no reachable set and keep every delegable door, because their callers
+address doors by configuration. The read-only card leads with the entry door,
+badged `client door`, and shows the rest as served through it.
 
 ## Multi-Resource Cards
 

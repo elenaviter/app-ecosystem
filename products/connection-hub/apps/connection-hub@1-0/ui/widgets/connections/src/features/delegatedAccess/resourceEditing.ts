@@ -15,6 +15,7 @@ export type ResourceOfferReason =
   | 'already_on_card'
   | 'identity_scope_incompatible'
   | 'admin_only'
+  | 'outside_client_door'
   | string;
 
 export interface ResourceOffer {
@@ -24,6 +25,33 @@ export interface ResourceOffer {
   compatible: boolean;
   reason: ResourceOfferReason;
   card_identity_scope?: string;
+  /** On an OAuth card's offers: the door the client connected to. */
+  client_door?: string;
+}
+
+/** The short name of a door: the last path segment of an MCP surface
+ *  (".../mcp/remote_mcp_proxy" -> "remote_mcp_proxy"), else the resource. */
+export function doorName(resource: string): string {
+  const path = String(resource || '').replace(/[?#].*$/, '').replace(/\*+$/, '').replace(/\/+$/, '');
+  const match = path.match(/\/mcp\/([^/]+)$/);
+  return match ? match[1] : path;
+}
+
+/** What the picker shows of a card's offers. An OAuth client reaches one
+ *  door, so the resources outside it are not listed at all, not even as
+ *  blocked: the client will never call them, and a grantor reading a list of
+ *  doors would grant authority nothing can use. The door is named once. */
+export function pickerOffers(
+  offers: ResourceOffer[],
+  added: string[],
+): { compatible: ResourceOffer[]; blocked: ResourceOffer[]; clientDoor: string } {
+  const candidates = offers.filter((offer) => offer.reason !== 'already_on_card' && !added.includes(offer.resource));
+  const clientDoor = offers.find((offer) => offer.client_door)?.client_door || '';
+  return {
+    compatible: candidates.filter((offer) => offer.compatible),
+    blocked: candidates.filter((offer) => !offer.compatible && offer.reason !== 'outside_client_door'),
+    clientDoor,
+  };
 }
 
 export interface ResourceDriftState {
@@ -70,6 +98,8 @@ export function offerReasonText(offer: ResourceOffer): string {
       return `Runs under ${offer.identity_scope}; this card acts as ${offer.card_identity_scope || 'grantor'}, so it cannot be added.`;
     case 'admin_only':
       return 'Only a platform administrator may delegate it.';
+    case 'outside_client_door':
+      return `Not reachable from ${doorName(offer.client_door || '')}, the door this client is connected to.`;
     default:
       return offer.reason.replace(/_/g, ' ');
   }

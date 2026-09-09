@@ -531,6 +531,7 @@ OFFER_COMPATIBLE = "compatible"
 OFFER_ALREADY_ON_CARD = "already_on_card"
 OFFER_IDENTITY_SCOPE_INCOMPATIBLE = "identity_scope_incompatible"
 OFFER_ADMIN_ONLY = "admin_only"
+OFFER_OUTSIDE_CLIENT_DOOR = "outside_client_door"
 
 
 def compatible_resource_offers(
@@ -539,6 +540,8 @@ def compatible_resource_offers(
     card_identity_scope: str,
     options: Iterable[Mapping[str, Any]],
     platform_admin: bool = False,
+    entry_resource: str = "",
+    reachable: Iterable[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Which owner-visible delegable resources may join this card, and why the
     others may not.
@@ -547,9 +550,19 @@ def compatible_resource_offers(
     to what the grantor may delegate and, for connectors, to the grantor's own
     connectors). This is the filtering seam a resident ceiling narrows further;
     it embeds no runtime rule of its own.
+
+    ``reachable`` is set for a card an OAuth client holds: that client connected
+    to ONE protected resource (``entry_resource``) and can reach nothing else,
+    so only the resources consent offers through that door may join the card.
+    Every other option is reported as ``outside_client_door``; a surface hides
+    those rather than listing doors the client will never call.
     """
     held = {_clean(item) for item in card_resources if _clean(item)}
     scope = _clean(card_identity_scope) or "grantor"
+    door = _clean(entry_resource)
+    within_door = (
+        {_clean(item) for item in reachable if _clean(item)} if reachable is not None else None
+    )
     offers: list[dict[str, Any]] = []
     for option in options or ():
         resource = _clean(option.get("resource"))
@@ -558,22 +571,25 @@ def compatible_resource_offers(
         option_scope = _clean(option.get("identity_scope")) or "grantor"
         if resource in held:
             reason = OFFER_ALREADY_ON_CARD
+        elif within_door is not None and resource not in within_door:
+            reason = OFFER_OUTSIDE_CLIENT_DOOR
         elif bool(option.get("admin_only")) and not platform_admin:
             reason = OFFER_ADMIN_ONLY
         elif option_scope != scope:
             reason = OFFER_IDENTITY_SCOPE_INCOMPATIBLE
         else:
             reason = OFFER_COMPATIBLE
-        offers.append(
-            {
-                "resource": resource,
-                "label": _clean(option.get("label")) or resource,
-                "identity_scope": option_scope,
-                "compatible": reason == OFFER_COMPATIBLE,
-                "reason": reason,
-                "card_identity_scope": scope,
-            }
-        )
+        offer = {
+            "resource": resource,
+            "label": _clean(option.get("label")) or resource,
+            "identity_scope": option_scope,
+            "compatible": reason == OFFER_COMPATIBLE,
+            "reason": reason,
+            "card_identity_scope": scope,
+        }
+        if door:
+            offer["client_door"] = door
+        offers.append(offer)
     return offers
 
 
@@ -585,6 +601,7 @@ __all__ = [
     "OFFER_ALREADY_ON_CARD",
     "OFFER_COMPATIBLE",
     "OFFER_IDENTITY_SCOPE_INCOMPATIBLE",
+    "OFFER_OUTSIDE_CLIENT_DOOR",
     "OPERATION_STATE_CHANGED",
     "OPERATION_STATE_CURRENT",
     "OPERATION_STATE_REMOVED",

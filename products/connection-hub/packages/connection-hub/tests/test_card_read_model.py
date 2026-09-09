@@ -158,3 +158,75 @@ def test_compatible_offers_explain_every_excluded_resource():
         card_resources=[MEMORIES], card_identity_scope="grantor", options=options, platform_admin=True
     )
     assert {item["resource"]: item["compatible"] for item in admin}["*"] is True
+
+
+def test_oauth_card_offers_only_what_its_door_serves():
+    """An OAuth client connected to one door: the proxy's connectors may join,
+    the platform's other doors are outside the client's reach and say so."""
+    from connection_hub.delegated_credentials.cards.read_model import (
+        OFFER_OUTSIDE_CLIENT_DOOR,
+    )
+
+    proxy = "https://host/api/integrations/bundles/t/p/connection-hub@1-0/public/mcp/remote_mcp_proxy"
+    wiki = "urn:connection-hub:remote-mcp:mcp_wiki"
+    fixture = "urn:connection-hub:remote-mcp:mcp_fixture"
+    options = [
+        {"resource": proxy, "label": "Connected external MCP tools", "identity_scope": "grantor"},
+        {"resource": wiki, "label": "External MCP: Deep wiki", "identity_scope": "grantor"},
+        {"resource": fixture, "label": "External MCP: fixture", "identity_scope": "grantor"},
+        {"resource": MEMORIES, "label": "Memories", "identity_scope": "grantor"},
+        {"resource": TASKS, "label": "Tasks", "identity_scope": "grantor"},
+        {"resource": "*", "label": "Everything", "identity_scope": "grantor", "admin_only": True},
+    ]
+    offers = compatible_resource_offers(
+        card_resources=[proxy, wiki],
+        card_identity_scope="grantor",
+        options=options,
+        entry_resource=proxy,
+        reachable={wiki, fixture},
+    )
+    by_resource = {item["resource"]: item for item in offers}
+    assert by_resource[proxy]["reason"] == OFFER_ALREADY_ON_CARD
+    assert by_resource[wiki]["reason"] == OFFER_ALREADY_ON_CARD
+    assert by_resource[fixture]["reason"] == OFFER_COMPATIBLE and by_resource[fixture]["compatible"]
+    for outside in (MEMORIES, TASKS, "*"):
+        assert by_resource[outside]["reason"] == OFFER_OUTSIDE_CLIENT_DOOR
+        assert by_resource[outside]["compatible"] is False
+    assert all(item["client_door"] == proxy for item in offers)
+
+    # A door without resource selection reaches nothing else.
+    alone = compatible_resource_offers(
+        card_resources=[MEMORIES],
+        card_identity_scope="grantor",
+        options=options,
+        entry_resource=MEMORIES,
+        reachable=set(),
+    )
+    assert all(item["reason"] in (OFFER_ALREADY_ON_CARD, OFFER_OUTSIDE_CLIENT_DOOR) for item in alone)
+
+    # Manual and resident cards pass no reachable set and keep every door.
+    manual = compatible_resource_offers(
+        card_resources=[MEMORIES], card_identity_scope="grantor", options=options
+    )
+    assert {item["resource"]: item["reason"] for item in manual}[TASKS] == OFFER_COMPATIBLE
+    assert "client_door" not in manual[0]
+
+
+def test_card_authority_keeps_the_entry_door_across_serialization():
+    from connection_hub.delegated_credentials.cards.model import CardAuthority
+
+    authority = CardAuthority(
+        access_id="oauth-abc", client_id="dcr-x", grantor_subject="user-1",
+        delegate_subject="integration:dcr-x:user-1", source="oauth",
+        resource_grants={MEMORIES: ("memories:read",)},
+        resource_operations={MEMORIES: ("search",)},
+        named_service_operations=NamedServiceSelection.none(), expires_at=NOW + 10,
+        entry_resource=MEMORIES,
+    )
+    payload = authority.to_dict()
+    assert payload["entry_resource"] == MEMORIES
+    assert CardAuthority.from_mapping(payload).entry_resource == MEMORIES
+    # A record written before the field existed reads as empty, never as an error.
+    legacy = dict(payload)
+    legacy.pop("entry_resource")
+    assert CardAuthority.from_mapping(legacy).entry_resource == ""

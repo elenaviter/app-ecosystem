@@ -296,6 +296,24 @@ function doorAlias(resource?: string): string {
   return match ? match[1] : '';
 }
 
+/** The one door an OAuth client is connected to: what the consent recorded,
+ *  or for a card written before that was recorded, its first resource that is
+ *  not a connector served through a proxy. Empty for manual and agent cards,
+ *  which hold any set of doors by construction. */
+function clientDoorFor(item: DelegatedAccessRecord): string {
+  if (item.source !== 'oauth') return '';
+  if (item.entry_resource) return item.entry_resource;
+  const resources = Object.keys(item.resource_grants || {}).filter((resource) => resource !== '*');
+  return resources.find((resource) => !resource.startsWith('urn:connection-hub:remote-mcp:')) || resources[0] || '';
+}
+
+/** Card resources with the client's door first, the rest in stored order. */
+function orderedDoors(item: DelegatedAccessRecord, clientDoor: string): string[] {
+  const resources = Object.keys(item.resource_grants || {});
+  if (!clientDoor || !resources.includes(clientDoor)) return resources;
+  return [clientDoor, ...resources.filter((resource) => resource !== clientDoor)];
+}
+
 /** How many granted-access cards render before "show more". */
 const GRANT_PAGE_SIZE = 5;
 
@@ -2947,9 +2965,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             const editable = (item.source === 'oauth' && Boolean(item.client_id))
               || item.source === 'manual';
             const editing = editable && editingAccessId === item.access_id;
-            const door = Array.from(new Set(
-              Object.keys(item.resource_grants || {}).map(doorAlias).filter(Boolean),
-            )).join(', ');
+            // An OAuth client is connected to exactly one door; the card's
+            // other resources are served through it. Title and Door rows lead
+            // with that door so the reader sees where the client really is.
+            const clientDoor = clientDoorFor(item);
+            const door = clientDoor
+              ? (doorAlias(clientDoor) || '')
+              : Array.from(new Set(
+                Object.keys(item.resource_grants || {}).map(doorAlias).filter(Boolean),
+              )).join(', ');
             return (
               <li className="account" key={item.access_id}>
                 <div>
@@ -3005,9 +3029,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       {Object.keys(item.resource_grants || {}).length ? (
                         <>
                           <Field label="Door">
-                            {Object.keys(item.resource_grants || {}).map((resource) => (
-                              <span className="door-line" key={resource}>
+                            {orderedDoors(item, clientDoor).map((resource, index) => (
+                              <span
+                                className={`door-line${clientDoor ? (resource === clientDoor ? ' door-line--entry' : ' door-line--through') : ''}`}
+                                key={resource}
+                              >
+                                {clientDoor && index === 1 ? (
+                                  <span className="door-line__through-label">served through it</span>
+                                ) : null}
                                 <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
+                                {clientDoor && resource === clientDoor
+                                  ? <span className="badge badge-door" title="The resource this client connected to">client door</span>
+                                  : null}
                                 {resource !== '*' ? <DoorRef value={resource} /> : null}
                               </span>
                             ))}

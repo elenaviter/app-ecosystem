@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  doorName,
   driftNeedsReview,
   editedResourceKeys,
   offerReasonText,
+  pickerOffers,
   saveProblemText,
   saveProblems,
   toggleAccepted,
@@ -72,4 +74,43 @@ test('the review renders only when the resource itself changed', () => {
   assert.equal(driftNeedsReview({ status: 'changed', changed_operations: ['delete'] }), true)
   assert.equal(driftNeedsReview({ status: 'changed', added_operations: ['export'] }), true)
   assert.equal(driftNeedsReview({ status: 'removed' }), true)
+})
+
+const PROXY = 'https://host/api/integrations/bundles/t/p/connection-hub@1-0/public/mcp/remote_mcp_proxy'
+const WIKI = 'urn:connection-hub:remote-mcp:mcp_wiki'
+
+test('a door is named by its last MCP path segment', () => {
+  assert.equal(doorName(PROXY), 'remote_mcp_proxy')
+  assert.equal(doorName('https://host/api/mcp/memories*'), 'memories')
+  assert.equal(doorName(WIKI), WIKI)
+})
+
+test('the picker hides what an OAuth client cannot reach and names its door once', () => {
+  const offers = [
+    { resource: PROXY, label: 'Proxy', identity_scope: 'grantor', compatible: false, reason: 'already_on_card', client_door: PROXY },
+    { resource: WIKI, label: 'Deep wiki', identity_scope: 'grantor', compatible: true, reason: 'compatible', client_door: PROXY },
+    { resource: MEMORIES, label: 'Memories', identity_scope: 'grantor', compatible: false, reason: 'outside_client_door', client_door: PROXY },
+    { resource: MAIL, label: 'Mail', identity_scope: 'grantor_identity_family', compatible: false, reason: 'identity_scope_incompatible', client_door: PROXY },
+  ]
+  const shown = pickerOffers(offers, [])
+  assert.deepEqual(shown.compatible.map((offer) => offer.resource), [WIKI])
+  assert.deepEqual(shown.blocked.map((offer) => offer.resource), [MAIL])
+  assert.equal(shown.clientDoor, PROXY)
+  assert.equal(
+    offerReasonText(offers[2]),
+    'Not reachable from remote_mcp_proxy, the door this client is connected to.',
+  )
+  const added = pickerOffers(offers, [WIKI])
+  assert.deepEqual(added.compatible, [])
+})
+
+test('a manual card keeps every offer and names no door', () => {
+  const offers = [
+    { resource: TASKS, label: 'Tasks', identity_scope: 'grantor', compatible: true, reason: 'compatible' },
+    { resource: '*', label: 'All', identity_scope: 'grantor', compatible: false, reason: 'admin_only' },
+  ]
+  const shown = pickerOffers(offers, [])
+  assert.deepEqual(shown.compatible.map((offer) => offer.resource), [TASKS])
+  assert.deepEqual(shown.blocked.map((offer) => offer.resource), ['*'])
+  assert.equal(shown.clientDoor, '')
 })
