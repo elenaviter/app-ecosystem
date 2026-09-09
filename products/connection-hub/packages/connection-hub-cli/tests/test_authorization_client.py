@@ -174,6 +174,43 @@ async def test_dcr_authorization_exchange_and_refresh() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dcr_sends_client_name_and_identification_metadata() -> None:
+    transport = _Transport()
+    transport.values["https://auth.example.test/oauth/register"] = {
+        "client_id": "native-worker",
+        "redirect_uris": ["http://127.0.0.1:9123/callback"],
+        "token_endpoint_auth_method": "none",
+    }
+
+    await OAuthClient(transport=transport).register_native_client(
+        metadata=_server_metadata(),
+        redirect_uri="http://127.0.0.1:9123/callback",
+        client_name="Connection Hub CLI · worker_stream · codex:session-1",
+        client_metadata={
+            "kdcube_agent_id": "codex:session-1",
+            "kdcube_machine_id": "machine-1",
+        },
+    )
+
+    registration = transport.posts[0][1]
+    assert registration["client_name"].endswith("codex:session-1")
+    assert registration["kdcube_agent_id"] == "codex:session-1"
+    assert registration["kdcube_machine_id"] == "machine-1"
+
+
+@pytest.mark.asyncio
+async def test_dcr_metadata_cannot_replace_oauth_registration_fields() -> None:
+    with pytest.raises(AuthorizationError) as raised:
+        await OAuthClient(transport=_Transport()).register_native_client(
+            metadata=_server_metadata(),
+            redirect_uri="http://127.0.0.1:9123/callback",
+            client_metadata={"redirect_uris": ["https://attacker.example/callback"]},
+        )
+
+    assert raised.value.code == "oauth_client_metadata_reserved"
+
+
+@pytest.mark.asyncio
 async def test_provisioned_public_client_avoids_registration() -> None:
     transport = _Transport()
     registration = await OAuthClient(transport=transport).register_native_client(

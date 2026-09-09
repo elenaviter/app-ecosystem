@@ -196,6 +196,10 @@ async def test_dcr_loopback_clients_keep_independent_cards(loopback_host):
             account_scope={
                 "fixture": {f"account-{index}": [f"claim-{index}"]}
             },
+            client_metadata={
+                "kdcube_agent_id": f"codex:session-{index}",
+                "kdcube_machine_id": f"machine-{index}",
+            },
         )
         assert record is not None
         assert record.source == ACCESS_SOURCE_OAUTH
@@ -246,6 +250,7 @@ async def test_dcr_loopback_clients_keep_independent_cards(loopback_host):
     assert refreshed.access_id == first.access_id
     assert refreshed.card_revision == first.card_revision + 1
     assert refreshed.account_scope == first.account_scope
+    assert refreshed.client_metadata == first.client_metadata
     assert len(await service._list_active_records(GRANTOR)) == 3
 
     user = {"user_id": GRANTOR}

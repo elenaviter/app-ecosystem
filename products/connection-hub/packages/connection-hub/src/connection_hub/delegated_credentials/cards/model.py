@@ -30,6 +30,9 @@ from connection_hub.delegated_credentials.named_service_policy import (
     as_string_list,
     clean_text,
 )
+from connection_hub.delegated_credentials.oauth.clients import (
+    normalize_public_client_metadata,
+)
 from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_operations,
     operation_union,
@@ -38,13 +41,14 @@ from connection_hub.delegated_credentials.resource_operations import (
 
 CARD_AUTHORITY_SCHEMA_V1 = "connection_hub.delegated_card_authority.v1"
 CARD_AUTHORITY_SCHEMA_V2 = "connection_hub.delegated_card_authority.v2"
-# v3 adds per-resource accepted descriptor state and card provenance. Both are
-# optional on read, so v2 (and projected v1) revisions load unchanged; the next
-# successful write persists v3.
-CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v3"
+CARD_AUTHORITY_SCHEMA_V3 = "connection_hub.delegated_card_authority.v3"
+# v4 adds bounded, non-secret metadata asserted by an OAuth client. It is
+# operator-facing identification only and never participates in admission.
+CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v4"
 CARD_AUTHORITY_SCHEMAS = (
     CARD_AUTHORITY_SCHEMA_V1,
     CARD_AUTHORITY_SCHEMA_V2,
+    CARD_AUTHORITY_SCHEMA_V3,
     CARD_AUTHORITY_SCHEMA,
 )
 CARD_POINTER_SCHEMA = "connection_hub.delegated_card_current.v1"
@@ -246,6 +250,9 @@ class CardAuthority:
     # client can reach. Empty on manual and resident cards, and on OAuth cards
     # written before the field existed (the service derives it then).
     entry_resource: str = ""
+    # Bounded public metadata asserted by the connecting OAuth client. This is
+    # display/search evidence, not authenticated worker or machine authority.
+    client_metadata: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, value: Any) -> "CardAuthority":
@@ -277,13 +284,21 @@ class CardAuthority:
             )
         except ValueError as exc:
             raise CardRecordError("resource_operations_invalid") from exc
-        if schema == CARD_AUTHORITY_SCHEMA and not isinstance(
+        if schema in {CARD_AUTHORITY_SCHEMA_V3, CARD_AUTHORITY_SCHEMA} and not isinstance(
             value.get("resource_operations"), Mapping
         ):
             raise CardRecordError("resource_operations_invalid")
         for name in ("named_services", "account_scope"):
             if not isinstance(value.get(name, {}), Mapping):
                 raise CardRecordError(f"{name}_invalid")
+        try:
+            client_metadata = normalize_public_client_metadata(
+                value.get("client_metadata")
+                if isinstance(value.get("client_metadata"), Mapping)
+                else {}
+            )
+        except ValueError as exc:
+            raise CardRecordError("client_metadata_invalid") from exc
         state = clean_text(value.get("state")) or CARD_STATE_ACTIVE
         if state not in (CARD_STATE_ACTIVE, CARD_STATE_REVOKED):
             raise CardRecordError("state_invalid")
@@ -330,6 +345,7 @@ class CardAuthority:
             resource_acceptance=resource_acceptance,
             provenance=copy.deepcopy(dict(provenance)),
             entry_resource=clean_text(value.get("entry_resource")),
+            client_metadata=client_metadata,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -368,6 +384,7 @@ class CardAuthority:
             },
             "provenance": copy.deepcopy(dict(self.provenance or {})),
             "entry_resource": self.entry_resource,
+            "client_metadata": copy.deepcopy(dict(self.client_metadata or {})),
         }
         stored_selection = self.named_service_operations.to_stored()
         if stored_selection is not None:
@@ -393,6 +410,11 @@ class CardAuthority:
         object.__setattr__(self, "resource_acceptance", acceptance)
         if not isinstance(self.provenance, Mapping):
             raise CardRecordError("provenance_invalid")
+        try:
+            metadata = normalize_public_client_metadata(self.client_metadata)
+        except ValueError as exc:
+            raise CardRecordError("client_metadata_invalid") from exc
+        object.__setattr__(self, "client_metadata", metadata)
 
     def content_hash(self) -> str:
         return card_authority_payload_hash(self.to_dict())
@@ -513,6 +535,7 @@ __all__ = [
     "CARD_AUTHORITY_SCHEMAS",
     "CARD_AUTHORITY_SCHEMA_V1",
     "CARD_AUTHORITY_SCHEMA_V2",
+    "CARD_AUTHORITY_SCHEMA_V3",
     "CARD_POINTER_SCHEMA",
     "CARD_STATE_ACTIVE",
     "CARD_STATE_REVOKED",

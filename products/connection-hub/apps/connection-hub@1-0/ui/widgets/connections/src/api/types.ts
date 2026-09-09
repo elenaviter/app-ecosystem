@@ -199,6 +199,9 @@ export interface DelegatedAccessRecord {
   resource_acceptance?: Record<string, DelegatedResourceAcceptance>;
   /** Non-secret lineage: legacy records folded into this card, and when. */
   provenance?: Record<string, unknown>;
+  /** Bounded public metadata asserted by the OAuth client at registration.
+   *  It helps the owner identify and search a caller; it is not authority. */
+  client_metadata?: Record<string, unknown>;
   /** The resident profile behind an agent card (grantor, app, agent) and the
    *  stable card id that profile owns. */
   caller_profile?: DelegatedCallerProfile;

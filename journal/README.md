@@ -46,6 +46,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-09 | External client findings closed against a live runtime | The zero-revision OAuth start, openable recovery links, OAuth issuance projection, and first-edit invocation-policy evidence from the completed external-client acceptance run. |
 | 2026-09-09 | One public origin derivation | One exported request-origin contract now serves callbacks, consent links, relying-party metadata, and MCP metadata while preserving direct loopback HTTP and forwarded public HTTPS. |
 | 2026-09-09 | Worker authorization custody and session delivery | Nested MCP `401/403` preservation, secret-safe Connection Hub error mapping, app-scoped worker-profile recovery, and the distinction between credential rejection and transport failure used by Problem Board. |
+| 2026-09-09 | Connected-client metadata becomes inspectable | DCR and CIMD public metadata now survives client resolution, Card writes, refresh, state changes, and the public read model. The delegated-access UI folds the reported fields into each Card and supports text plus key/value filtering; Problem Board supplies machine, provider, native session, stable worker, and alias coordinates without turning them into authority. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

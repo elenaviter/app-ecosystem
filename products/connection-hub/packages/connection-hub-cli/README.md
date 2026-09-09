@@ -56,6 +56,27 @@ configuration contains only this command shape:
 connection-hub mcp serve --profile coding-agent
 ```
 
+An application embedding the profile-session API can identify one concrete
+client instance during dynamic registration:
+
+```python
+await oauth_profile_sessions.authorize(
+    name=profile_name,
+    endpoint=endpoint,
+    client_name="Connection Hub CLI · worker_stream · codex:session-1",
+    client_metadata={
+        "kdcube_agent_id": "codex:session-1",
+        "kdcube_machine_id": "machine-1",
+    },
+)
+```
+
+These fields are sent only for dynamic client registration. Connection Hub
+bounds and stores accepted values for Card display and search; neither the CLI
+nor Connection Hub treats them as identity or access authority. Provisioned
+and metadata-document clients already own their registration metadata and
+therefore cannot be overlaid with a second client-supplied block here.
+
 A manually issued short-lived delegated bearer can initialize a static bridge
 profile through hidden input:
 

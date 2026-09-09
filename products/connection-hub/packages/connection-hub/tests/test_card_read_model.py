@@ -289,10 +289,19 @@ def test_card_authority_keeps_the_entry_door_across_serialization():
         resource_operations={MEMORIES: ("search",)},
         named_service_operations=NamedServiceSelection.none(), expires_at=NOW + 10,
         entry_resource=MEMORIES,
+        client_metadata={
+            "kdcube_agent_id": "codex:session-1",
+            "kdcube_machine_id": "machine-1",
+        },
     )
     payload = authority.to_dict()
     assert payload["entry_resource"] == MEMORIES
-    assert CardAuthority.from_mapping(payload).entry_resource == MEMORIES
+    restored = CardAuthority.from_mapping(payload)
+    assert restored.entry_resource == MEMORIES
+    assert restored.client_metadata == authority.client_metadata
+    assert DelegatedCardView.from_dict(build_card_view(authority).to_dict()).client_metadata == (
+        authority.client_metadata
+    )
     # A record written before the field existed reads as empty, never as an error.
     legacy = dict(payload)
     legacy.pop("entry_resource")

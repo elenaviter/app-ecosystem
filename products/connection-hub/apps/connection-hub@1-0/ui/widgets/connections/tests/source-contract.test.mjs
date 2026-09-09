@@ -300,6 +300,8 @@ test('granted-access cards filter from the action row, by exact rules the explai
   assert.match(rules, /export const EXPIRING_SOON_SECONDS = 7 \* 24 \* 3600/)
   assert.match(rules, /export function recordMatches\(/)
   assert.match(rules, /export function agentGroupMatches\(/)
+  assert.match(rules, /export function clientMetadataKeys\(/)
+  assert.match(rules, /Object\.prototype\.hasOwnProperty\.call\(metadata, key\)/)
   // A missing timestamp matches only an empty window; it is never guessed.
   assert.match(rules, /if \(from === null && to === null\) return true;\n  if \(!seconds\) return false;/)
   // "Active" keeps a credential that is about to expire.
@@ -315,6 +317,8 @@ test('granted-access cards filter from the action row, by exact rules the explai
   assert.match(bar, /aria-pressed=\{settingsOpen\}/)
   assert.match(bar, /aria-controls="grant-filter-settings"/)
   assert.match(bar, /id="grant-filter-settings"/)
+  assert.match(bar, /aria-label="Client metadata key"/)
+  assert.match(bar, /aria-label="Client metadata value"/)
   assert.match(bar, /aria-label="How card filtering works"/)
   assert.match(bar, /role="dialog"/)
   // The explainer quotes the implemented expiry window rather than a literal.
@@ -329,6 +333,8 @@ test('granted-access cards filter from the action row, by exact rules the explai
   assert.match(panel, /items\.length > 0 && grantSettingsOpen \? \(\n\s*<GrantFilterSettings/)
   assert.match(panel, /recordMatches\(item, grantFilter, grantFilterContext\)/)
   assert.match(panel, /agentGroupMatches\(clientId, records, grantFilter, grantFilterContext\)/)
+  assert.match(panel, /<ClientMetadataDetails metadata=\{item\.client_metadata\}/)
+  assert.match(panel, /Reported by the client; not access authority\./)
   // Any filter change returns to the first page.
   assert.match(panel, /setGrantFilter\(\(current\) => \(\{ \.\.\.current, \.\.\.patch \}\)\);\n\s*setGrantLimit\(GRANT_PAGE_SIZE\);/)
 
