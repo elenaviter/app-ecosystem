@@ -11,6 +11,7 @@ credential-value storage.
 ```bash
 python -m pip install 'app-foundation[mcp]'
 python -m pip install 'app-foundation[native-secrets]'
+python -m pip install 'app-foundation[data-bus]'
 ```
 
 The package API is under `app_foundation.mcp`:
@@ -21,6 +22,12 @@ The package API is under `app_foundation.mcp`:
 - `connect_remote_tools(...)` and `probe_remote_tools(...)` provide a
   Streamable HTTP convenience surface for callers that already possess an
   endpoint and bearer.
+
+Remote connection failures use stable, secret-safe codes. An HTTP `401` or
+`403`, including one wrapped by the MCP transport's exception group, becomes
+`mcp_authorization_rejected`; response bodies do not cross the boundary.
+Timeouts and other connection failures retain their separate codes so a host
+can retry connectivity without treating an outage as a credential verdict.
 
 The caller remains responsible for credential custody, authority decisions,
 and product-specific error language. Supplying a bearer to the transport does
@@ -46,6 +53,23 @@ the Connection Hub CLI after JSON escaping.
 The shared store knows only service names, account keys, and text values. A
 consuming product owns serialization, logical namespaces, access policy,
 recovery, and the meaning of each secret.
+
+The Data Bus client API is under `app_foundation.data_bus`:
+
+- `DataBusClaim.from_mapping(...)` validates a short-lived, bundle-scoped
+  claim without rendering its token;
+- `FederatedDataBusClient.connect()` opens the authenticated Socket.IO lane;
+- `request(...)` distinguishes ingress acceptance from the handler's
+  correlated terminal result;
+- `wait_for_event(...)` receives application push events that are not replies
+  to an in-flight request.
+
+The client constructs transport envelopes and correlates replies. The
+application owns subjects, operation names, domain authorization, and the
+meaning of pushed events. It refuses an expired claim before connection,
+bounds event waits by claim expiry, and reports an accepted request with no
+terminal result as outcome unknown so the product can retry with the same
+operation identity.
 
 ## Boundary
 

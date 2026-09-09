@@ -242,6 +242,10 @@ class CardAuthority:
     # Non-secret lineage: which records were merged into this card and when.
     # Written by the resident-profile migration; empty otherwise.
     provenance: Mapping[str, Any] = field(default_factory=dict)
+    # The protected resource an OAuth client connected to: the one door that
+    # client can reach. Empty on manual and resident cards, and on OAuth cards
+    # written before the field existed (the service derives it then).
+    entry_resource: str = ""
 
     @classmethod
     def from_mapping(cls, value: Any) -> "CardAuthority":
@@ -325,6 +329,7 @@ class CardAuthority:
             last_four=clean_text(value.get("last_four")),
             resource_acceptance=resource_acceptance,
             provenance=copy.deepcopy(dict(provenance)),
+            entry_resource=clean_text(value.get("entry_resource")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -362,6 +367,7 @@ class CardAuthority:
                 for resource, acceptance in sorted(self.resource_acceptance.items())
             },
             "provenance": copy.deepcopy(dict(self.provenance or {})),
+            "entry_resource": self.entry_resource,
         }
         stored_selection = self.named_service_operations.to_stored()
         if stored_selection is not None:

@@ -14,6 +14,7 @@ Hub's route shape.
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Mapping
+from urllib.parse import urlsplit
 
 BundleOperationCaller = Callable[..., Awaitable[Mapping[str, Any]]]
 
@@ -84,7 +85,11 @@ def _first_header_value(raw: Any) -> str:
 
 def is_local_or_internal_host(host: Any) -> bool:
     """Whether a host names this machine or a name with no public authority."""
-    name = _str(host).split(":", 1)[0].lower()
+    authority = _str(host)
+    try:
+        name = str(urlsplit(f"//{authority}").hostname or "").lower()
+    except ValueError:
+        name = ""
     return (
         not name
         or name == "localhost"
@@ -98,7 +103,9 @@ def is_local_or_internal_host(host: Any) -> bool:
 def public_proto(proto: Any, host: Any) -> str:
     """A public host reached over http is behind a terminator that dropped the
     provenance; a local one is genuinely http."""
-    value = _str(proto).lower() or "http"
+    value = _str(proto).lower()
+    if value not in {"http", "https"}:
+        value = "http"
     if value == "http" and not is_local_or_internal_host(host):
         return "https"
     return value

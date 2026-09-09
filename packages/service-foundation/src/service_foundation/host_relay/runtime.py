@@ -152,6 +152,12 @@ class HostRelayRuntime:
         return result
 
     async def _wait(self, delay: float, stop_event: asyncio.Event | None) -> bool:
+        wait_for_wakeup = getattr(self.adapter, "wait_for_wakeup", None)
+        if callable(wait_for_wakeup):
+            result = wait_for_wakeup(delay, stop_event)
+            if inspect.isawaitable(result):
+                result = await result
+            return bool(result)
         if stop_event is None:
             await asyncio.sleep(delay)
             return False
@@ -161,14 +167,31 @@ class HostRelayRuntime:
             return False
         return True
 
+    def _delay_after(self, result: Mapping[str, Any]) -> float:
+        """The policy interval, unless the adapter names a longer or shorter one.
+
+        A domain adapter knows when a cycle found nothing to do and can ask
+        for a slower next cycle through ``next_poll_seconds``; the runtime
+        stays ignorant of why. The hint is bounded below so a mistaken zero
+        cannot turn the loop into a hot spin.
+        """
+
+        hint = result.get("next_poll_seconds")
+        if isinstance(hint, bool) or not isinstance(hint, (int, float)):
+            return self.policy.poll_interval_seconds
+        if hint <= 0:
+            return self.policy.poll_interval_seconds
+        floor = min(1.0, self.policy.poll_interval_seconds)
+        return max(floor, float(hint))
+
     async def run(self, *, stop_event: asyncio.Event | None = None) -> None:
         self._state = "starting"
         await self._emit("runtime.started")
         try:
             while stop_event is None or not stop_event.is_set():
                 try:
-                    await self.run_once()
-                    delay = self.policy.poll_interval_seconds
+                    result = await self.run_once()
+                    delay = self._delay_after(result)
                 except HostRelayRetryableError:
                     delay = self.policy.retry_delay(self._consecutive_failures)
                 if await self._wait(delay, stop_event):

@@ -452,6 +452,12 @@ h2 {
    it on the clipboard (it is what an operator pastes into a client config). */
 .door-line { display: block; min-width: 0; }
 .door-line b { font-weight: 600; color: var(--ink); }
+/* An OAuth client's own door: the resource it connected to. Its other
+   resources are served through it, so they read as one step behind. */
+.door-line--entry { border-left: 3px solid var(--teal); padding-left: 8px; }
+.door-line--through { padding-left: 11px; border-left: 3px solid var(--line-soft); }
+.door-line__through-label { display: block; font-size: 11px; color: var(--muted); margin: 2px 0 0 11px; }
+.badge-door { background: var(--teal-pale); color: var(--teal-dark); }
 .door-ref { display: flex; align-items: flex-start; gap: 6px; margin-top: 5px; min-width: 0; }
 .door-uri {
   flex: 1;
@@ -2585,6 +2591,7 @@ code {
 .resource-offer-picker__row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .resource-offer { padding: 4px 10px; font-size: 12.5px; }
 .resource-offer-picker__empty { margin: 6px 0 0; font-size: 12px; }
+.resource-offer-picker__door { margin: 4px 0 0; font-size: 12px; }
 .resource-offer-picker__blocked {
   list-style: none;
   margin: 6px 0 0;

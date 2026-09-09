@@ -725,6 +725,9 @@ so the origin comes from the request itself. One derivation serves every
 surface that builds an external link, and it reads provenance in this order:
 the first RFC 7239 `Forwarded` element, then `X-Forwarded-Proto` and
 `X-Forwarded-Host`, then the request's own scheme and `Host`.
+Only `http` and `https` survive origin construction; any other scheme is
+normalized before a callback or recovery link is emitted. Bracketed IPv6
+loopback authorities remain local.
 
 The scheme that provenance yields is reconciled with the host it names. A
 public host reached over `http` is published as `https`, because a public
@@ -1185,3 +1188,5 @@ Use focused tests and one live connector test.
     schemes and falls back to its received scheme for any other value.
 32. Reached directly over plain http, a loopback or internal host keeps `http`
     in every generated link, and a public host is published as `https`.
+33. Origin construction emits only `http` or `https` and recognizes bracketed
+    IPv6 loopback hosts with ports.

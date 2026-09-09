@@ -73,6 +73,7 @@ def test_no_request_and_no_headers_yield_no_origin():
         ("localhost:8020", True),
         ("127.0.0.1", True),
         ("::1", True),
+        ("[::1]:8020", True),
         ("box.local", True),
         ("chat-proc", True),          # single label: no public authority
         ("demo.kdcube.tech", False),
@@ -88,3 +89,11 @@ def test_public_proto_never_downgrades_and_never_invents_https_locally():
     assert public_proto("http", "localhost") == "http"
     assert public_proto("http", "demo.kdcube.tech") == "https"
     assert public_proto("", "localhost") == "http"
+
+
+def test_public_proto_rejects_non_http_schemes():
+    assert public_proto("javascript", "localhost") == "http"
+    assert public_proto("javascript", "demo.kdcube.tech") == "https"
+    assert request_origin(
+        _Request({"host": "localhost:8020", "x-forwarded-proto": "javascript"})
+    ) == "http://localhost:8020"

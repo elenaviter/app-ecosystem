@@ -30,6 +30,9 @@ def _connection_hub_error(exc: RemoteMcpConnectionError) -> UpstreamError:
         "mcp_connection_failed": (
             "The Connection Hub MCP endpoint rejected or could not complete the MCP connection."
         ),
+        "mcp_authorization_rejected": (
+            "The Connection Hub MCP endpoint rejected the selected caller profile."
+        ),
     }
     return UpstreamError(
         exc.code,

@@ -208,6 +208,9 @@ export interface DelegatedAccessRecord {
   /** Owner-visible delegable resources that may join this card, and why the
    *  others may not. */
   resource_offers?: DelegatedResourceOffer[];
+  /** OAuth cards only: the protected resource the client connected to, the
+   *  one door it can reach. Its other resources are served through it. */
+  entry_resource?: string;
 }
 
 export interface DelegatedResourceAcceptance {
@@ -234,8 +237,10 @@ export interface DelegatedResourceOffer {
   label: string;
   identity_scope: string;
   compatible: boolean;
-  reason: 'compatible' | 'already_on_card' | 'identity_scope_incompatible' | 'admin_only' | string;
+  reason: 'compatible' | 'already_on_card' | 'identity_scope_incompatible' | 'admin_only' | 'outside_client_door' | string;
   card_identity_scope?: string;
+  /** Set on an OAuth card's offers: the door the client connected to. */
+  client_door?: string;
 }
 
 /** Per-resource descriptor state: what changed on this resource's own

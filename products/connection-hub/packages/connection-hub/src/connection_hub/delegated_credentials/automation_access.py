@@ -720,6 +720,10 @@ class AutomationAccessRecord:
     # Non-secret lineage written by the resident-profile migration: the legacy
     # records folded into this card and when. Empty otherwise.
     provenance: Mapping[str, Any] = field(default_factory=dict)
+    # The protected resource an OAuth client connected to (the OAuth
+    # ``resource`` of its consent): the one door that client can reach. Empty
+    # on manual and resident cards; derived for OAuth cards written before it.
+    entry_resource: str = ""
 
     def __post_init__(self) -> None:
         normalized = normalize_resource_operations(self.resource_operations)
@@ -776,6 +780,7 @@ class AutomationAccessRecord:
                 if isinstance(value.get("provenance"), Mapping)
                 else {}
             ),
+            entry_resource=_clean(value.get("entry_resource")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -812,6 +817,7 @@ class AutomationAccessRecord:
                 for resource, acceptance in sorted(self.resource_acceptance.items())
             },
             "provenance": dict(self.provenance or {}),
+            "entry_resource": self.entry_resource,
         }
         stored_selection = self.named_service_operations.to_stored()
         if stored_selection is not None:
@@ -880,6 +886,7 @@ def card_authority_from_record(record: AutomationAccessRecord) -> CardAuthority:
         last_four=record.last_four,
         resource_acceptance=dict(record.resource_acceptance or {}),
         provenance=copy.deepcopy(dict(record.provenance or {})),
+        entry_resource=record.entry_resource,
     )
 
 
@@ -929,6 +936,7 @@ def record_from_card(
         last_issued_at=authority.last_issued_at,
         resource_acceptance=dict(authority.resource_acceptance or {}),
         provenance=copy.deepcopy(dict(authority.provenance or {})),
+        entry_resource=authority.entry_resource,
     )
 
 
@@ -1495,6 +1503,57 @@ class AutomationAccessService:
             out.append(option)
         return out
 
+    def _entry_resource_for(self, record: Any, *, config: Any = None) -> str:
+        """The door an OAuth card's client connected to. The stored value when
+        the consent wrote it; for an OAuth card written before the field
+        existed, the card resource whose row is a selection door (a proxy), or
+        failing that its first catalog-row resource. Empty for manual and
+        resident cards: those hold any set of doors by construction."""
+        if _clean(getattr(record, "source", "")) != ACCESS_SOURCE_OAUTH:
+            return ""
+        stored = _clean(getattr(record, "entry_resource", ""))
+        if stored:
+            return stored
+        resources = [
+            _clean(resource)
+            for resource in dict(getattr(record, "resource_grants", None) or {})
+            if _clean(resource) and _clean(resource) != "*"
+        ]
+        rows = [(resource, self._configured_resource(resource, config=config)) for resource in resources]
+        for resource, row in rows:
+            if row is not None and bool(getattr(row, "resource_selection", False)):
+                return resource
+        for resource, row in rows:
+            kind = _clean(getattr(row, ROW_ATTR_KIND, "")) if row is not None else ""
+            if row is not None and (not kind or kind == RESOURCE_KIND_CATALOG):
+                return resource
+        return resources[0] if resources else ""
+
+    def _reachable_through_door(self, entry_resource: str, *, config: Any = None) -> set[str]:
+        """The resources a consent at ``entry_resource`` can add to the card:
+        the door's own selection rows (its child resources within the door's
+        grants). A door without ``resource_selection`` reaches nothing else."""
+        door = _clean(entry_resource)
+        if not door:
+            return set()
+        catalog = config or self._config
+        row = self._configured_resource(door, config=catalog)
+        if row is None or not bool(getattr(row, "resource_selection", False)):
+            return set()
+        from connection_hub.delegated_credentials.oauth.consent import (
+            resource_selection_rows,
+        )
+
+        try:
+            rows = resource_selection_rows(
+                tuple(getattr(row, "grants", ()) or ()),
+                config=catalog,
+                resource=door,
+            )
+        except Exception:  # noqa: BLE001 - an unreadable catalog offers nothing
+            return set()
+        return {_clean(item.get("resource")) for item in rows if _clean(item.get("resource"))}
+
     def _configured_resource(
         self, resource: str, *, config: Any = None
     ) -> Any | None:
@@ -1639,11 +1698,24 @@ class AutomationAccessService:
             # Which owner-visible delegable resources may join this card, and
             # why the others may not. The editor renders the picker from this;
             # a resident ceiling (Projection) narrows it further downstream.
+            # An OAuth client reaches ONE door, the resource it connected to;
+            # what it may also hold is what consent offers through that door
+            # (a proxy door's connectors). Everything else is out of its reach
+            # and is not offered to the grantor as if it were.
+            entry_resource = self._entry_resource_for(record, config=listing_config)
+            if entry_resource:
+                item["entry_resource"] = entry_resource
             item["resource_offers"] = compatible_resource_offers(
                 card_resources=record.resource_grants,
                 card_identity_scope=record.identity_scope,
                 options=resource_option_rows,
                 platform_admin=platform_admin,
+                entry_resource=entry_resource,
+                reachable=(
+                    self._reachable_through_door(entry_resource, config=listing_config)
+                    if record.source == ACCESS_SOURCE_OAUTH
+                    else None
+                ),
             )
             # Reported, never applied: listing does not rewrite a record.
             ambiguity = pre_migration_ambiguity(
@@ -4068,6 +4140,12 @@ class AutomationAccessService:
                 copy.deepcopy(dict(existing_card.provenance or {}))
                 if existing_card is not None
                 else {}
+            ),
+            # The door the client connected to. A refresh rotation passes no
+            # resource, so the card's own value carries forward.
+            entry_resource=(
+                resource_value
+                or (existing_card.entry_resource if existing_card is not None else "")
             ),
         )
         await self._persist_record(record, expected_revision=existing_card_revision)

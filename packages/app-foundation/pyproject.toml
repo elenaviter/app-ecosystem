@@ -23,12 +23,16 @@ mcp = [
 native-secrets = [
     "keyring>=25,<26",
 ]
+data-bus = [
+    "python-socketio[asyncio-client]>=5.13,<6",
+]
 test = [
     "httpx2>=2.5,<3",
     "keyring>=25,<26",
     "mcp==2.0.0",
     "pytest>=8,<10",
     "pytest-asyncio>=0.23,<2",
+    "python-socketio[asyncio-client]>=5.13,<6",
     "uvicorn>=0.30,<1",
 ]
 
