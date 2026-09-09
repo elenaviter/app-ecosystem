@@ -367,6 +367,8 @@ def replace_state(authority: CardAuthority, state: str) -> CardAuthority:
         last_four=authority.last_four,
         resource_acceptance=authority.resource_acceptance,
         provenance=authority.provenance,
+        entry_resource=authority.entry_resource,
+        client_metadata=authority.client_metadata,
     )
 
 

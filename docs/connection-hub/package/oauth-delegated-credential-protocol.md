@@ -1,10 +1,10 @@
 ---
 id: connection-hub/package/oauth-delegated-credential-protocol
 title: "OAuth Delegated Credential Protocol Adapter"
-summary: "How the OAuth2 protocol adapter resolves pre-registered, Client ID Metadata Document, and DCR clients, issues least-privilege Connection Hub credentials, and advertises managed or direct protected-resource admission."
+summary: "How the OAuth2 protocol adapter resolves and identifies pre-registered, Client ID Metadata Document, and DCR clients, issues least-privilege Connection Hub credentials, and advertises managed or direct protected-resource admission."
 tags: ["sdk", "solutions", "connections", "delegated-credentials", "oauth", "mcp", "descriptor"]
-keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "tool consent", "live grant lookup", "operation csrf protection", "descriptor configuration"]
-updated_at: 2026-09-04
+keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "client metadata", "tool consent", "live grant lookup", "operation csrf protection", "descriptor configuration"]
+updated_at: 2026-09-09
 see_also:
   - ../connection-hub-architecture.md
   - ./delegated-authority-and-admission.md
@@ -62,6 +62,43 @@ All three paths lead into the same PKCE, consent, grant, token, refresh, and
 revocation machinery. Registration does not grant authority. It establishes
 the client identity and valid callback URIs that the user sees before deciding
 what to delegate.
+
+### Client-reported identification
+
+CIMD and DCR clients may report descriptive metadata that lets an owner tell
+two instances of the same program apart. Connection Hub retains the complete
+accepted public registration document on the resulting Card: standard OAuth
+fields and extension fields for DCR, or the validated metadata document for
+CIMD. Values are JSON-safe, bounded in depth, count, length, and encoded size,
+and cannot contain control characters or secret-bearing fields.
+
+The Card label starts with the reported `client_name`, adds the connected door
+when the name does not already contain it, and may add a reported
+`kdcube_agent_id`. The complete accepted metadata stays folded under the Card
+and can be searched as plain text or filtered by exact metadata key and
+substring value. For example, a worker-aware client can report:
+
+```json
+{
+  "client_name": "Connection Hub CLI · worker_stream · codex:session-1",
+  "kdcube_agent_provider": "codex",
+  "kdcube_agent_id": "codex:session-1",
+  "kdcube_agent_session_id": "session-1",
+  "kdcube_machine_id": "machine-1",
+  "kdcube_worker_alias": "reviewer"
+}
+```
+
+Every value in this block is client-asserted operator evidence. It does not
+select a principal, grant a role, bind a worker, or participate in admission;
+the Card, token binding, and protected-resource policy remain the authority.
+Connection Hub never invents metadata a client did not send. In particular, a
+Claude Code, Hermes, or other third-party connector's local configuration name
+is visible only when that client includes it in CIMD or DCR metadata.
+
+Cards written before this field remain valid and empty. Metadata appears after
+that exact client registers and completes consent again; it is not inferred or
+backfilled from an unrelated local profile.
 
 CIMD resolution is an SSRF-sensitive server operation. KDCube accepts HTTPS
 metadata URLs with a path, resolves every address before connecting, rejects
@@ -670,8 +707,10 @@ explicit revoke-all operation.
 - **Refresh rotations preserve the card.** Re-registration on token issuance
   merges the card's existing grants and per-account binding (a rotation never
   wipes the user's ticks), and rotated refresh records keep the registry-card
-  pointer. The replacement refresh record receives the card's current scopes
-  and operations rather than the token's older snapshot. Cards stamp
+  pointer. Client-reported identification metadata is retained with the same
+  Card and cannot disappear merely because a refresh request carries no
+  registration body. The replacement refresh record receives the card's
+  current scopes and operations rather than the token's older snapshot. Cards stamp
   `last_issued_at` on every issuance — a stale value marks a disconnect
   orphan; cards also expire with the refresh-token TTL.
 - **Single-use state is consumed atomically.** Authorization-code exchange and
@@ -751,7 +790,7 @@ store, normally Redis.
 
 | Record | Purpose | Lifetime |
 |---|---|---|
-| Dynamic client record | Stores registered public client metadata and redirect URIs. | Until registration expiry or cleanup policy. |
+| Dynamic client record | Stores the accepted bounded public registration metadata and redirect URIs. Client-reported values are identification evidence, not authority. | Until registration expiry or cleanup policy. |
 | Valid CIMD cache entry | Stores one validated public client snapshot. Errors and malformed documents are not cached. | Response cache policy, capped by descriptor TTL. |
 | CSRF token | Single-use consent POST protection bound to grantor subject plus client metadata digest. | Short TTL. |
 | Bundle operation CSRF token | Protects cookie-authenticated state-changing bundle operations; binds subject, tenant, project, bundle, operation, and method. Connection Hub keeps an exhaustive protected-or-exempt inventory of every effective POST surface. | Ten minutes, single use. |

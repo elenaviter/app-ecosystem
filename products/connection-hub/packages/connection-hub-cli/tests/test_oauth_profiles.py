@@ -167,8 +167,10 @@ class _Discovery:
 class _Authorization:
     def __init__(self, token: OAuthTokenSet | None = None) -> None:
         self.token = token or _token()
+        self.calls: list[dict] = []
 
     async def authorize_discovered(self, **kwargs):
+        self.calls.append(dict(kwargs))
         return BrowserAuthorizationGrant(
             protected_resource_metadata_url=METADATA_URL,
             discovered=kwargs["discovered"],
@@ -202,7 +204,12 @@ class _OAuth:
         self.events.append("server.revoke")
 
 
-def _service(tmp_path, *, oauth: _OAuth | None = None):
+def _service(
+    tmp_path,
+    *,
+    oauth: _OAuth | None = None,
+    authorization: _Authorization | None = None,
+):
     profiles = ProfileStore(tmp_path / "profiles.json")
     credentials = _TokenStore()
 
@@ -214,7 +221,7 @@ def _service(tmp_path, *, oauth: _OAuth | None = None):
         credentials=credentials,
         endpoint_discovery=_EndpointDiscovery(),
         discovery=_Discovery(),
-        authorization=_Authorization(),
+        authorization=authorization or _Authorization(),
         oauth=oauth or _OAuth(),
         probe=probe,
     )
@@ -382,6 +389,31 @@ async def test_authorization_stores_tokens_only_in_native_custody(tmp_path) -> N
     assert "access-secret" not in state
     assert "refresh-secret" not in state
     assert "access-agent" in state
+
+
+@pytest.mark.asyncio
+async def test_profile_authorization_forwards_client_identification_metadata(tmp_path) -> None:
+    authorization = _Authorization()
+    service, _profiles, _credentials = _service(
+        tmp_path, authorization=authorization
+    )
+
+    await service.authorize(
+        name="agent",
+        endpoint=ENDPOINT,
+        client_name="Connection Hub CLI · worker_stream · codex:session-1",
+        client_metadata={
+            "kdcube_agent_id": "codex:session-1",
+            "kdcube_machine_id": "machine-1",
+        },
+    )
+
+    call = authorization.calls[0]
+    assert call["client_name"].endswith("codex:session-1")
+    assert call["client_metadata"] == {
+        "kdcube_agent_id": "codex:session-1",
+        "kdcube_machine_id": "machine-1",
+    }
 
 
 @pytest.mark.asyncio

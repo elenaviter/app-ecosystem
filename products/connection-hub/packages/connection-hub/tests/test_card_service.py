@@ -24,6 +24,7 @@ from connection_hub.delegated_credentials.cards.service import (
     CardConflict,
     CardMutationLockTimeout,
     DelegatedCardService,
+    replace_state,
 )
 from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
 from connection_hub.delegated_credentials.durable_io import write_json_atomic
@@ -74,6 +75,24 @@ def _authority() -> CardAuthority:
         created_at=NOW,
         expires_at=NOW + 3600,
     )
+
+
+def test_state_change_preserves_entry_door_and_client_metadata() -> None:
+    authority = CardAuthority.from_mapping(
+        {
+            **_authority().to_dict(),
+            "entry_resource": "https://example.test/mcp",
+            "client_metadata": {
+                "kdcube_agent_id": "codex:session-1",
+                "kdcube_machine_id": "machine-1",
+            },
+        }
+    )
+
+    revoked = replace_state(authority, "revoked")
+
+    assert revoked.entry_resource == "https://example.test/mcp"
+    assert revoked.client_metadata == authority.client_metadata
 
 
 @pytest.mark.asyncio

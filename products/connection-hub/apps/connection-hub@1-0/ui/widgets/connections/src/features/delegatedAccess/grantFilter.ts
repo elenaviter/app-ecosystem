@@ -12,7 +12,7 @@
  */
 import type { DelegatedAccessRecord } from '../../api/types';
 
-export type GrantSearchField = 'name' | 'app' | 'client' | 'door';
+export type GrantSearchField = 'name' | 'app' | 'client' | 'door' | 'metadata';
 export type GrantKind = 'any' | 'agent' | 'oauth' | 'manual';
 export type GrantState = 'any' | 'active' | 'expiring' | 'expired';
 export type GrantSort = 'newest' | 'expiring' | 'name';
@@ -29,10 +29,13 @@ export interface GrantFilter {
   grantedTo: string;
   expiresFrom: string;
   expiresTo: string;
+  /** Exact client-metadata key plus an optional plain-substring value. */
+  metadataKey: string;
+  metadataValue: string;
   sort: GrantSort;
 }
 
-export const ALL_SEARCH_FIELDS: GrantSearchField[] = ['name', 'app', 'client', 'door'];
+export const ALL_SEARCH_FIELDS: GrantSearchField[] = ['name', 'app', 'client', 'door', 'metadata'];
 
 export const DEFAULT_GRANT_FILTER: GrantFilter = {
   query: '',
@@ -43,6 +46,8 @@ export const DEFAULT_GRANT_FILTER: GrantFilter = {
   grantedTo: '',
   expiresFrom: '',
   expiresTo: '',
+  metadataKey: '',
+  metadataValue: '',
   sort: 'newest',
 };
 
@@ -122,12 +127,43 @@ export function recordSearchText(
 ): Record<GrantSearchField, string[]> {
   const who = record.client_id ? ctx.parseAgent(record.client_id) : null;
   const doors = Object.keys(record.resource_grants || {});
+  const metadata = Object.entries(record.client_metadata || {}).flatMap(([key, value]) => {
+    const rendered = metadataValueText(value);
+    return [key, rendered, `${key}=${rendered}`];
+  });
   return {
     name: [record.label || ''],
     app: who ? [who.agent, who.app] : [],
     client: [record.client_id || '', record.access_id],
     door: doors.flatMap((resource) => [resource, ctx.doorAlias(resource), ctx.doorLabel(resource)]),
+    metadata,
   };
+}
+
+export function metadataValueText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === undefined) return '';
+  try {
+    const rendered = JSON.stringify(value);
+    return rendered === undefined ? String(value) : rendered;
+  } catch {
+    return String(value);
+  }
+}
+
+export function clientMetadataKeys(records: DelegatedAccessRecord[]): string[] {
+  return Array.from(new Set(
+    records.flatMap((record) => Object.keys(record.client_metadata || {})),
+  )).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+}
+
+function metadataMatches(record: DelegatedAccessRecord, filter: GrantFilter): boolean {
+  const key = filter.metadataKey.trim();
+  if (!key) return !filter.metadataValue.trim();
+  const metadata = record.client_metadata || {};
+  if (!Object.prototype.hasOwnProperty.call(metadata, key)) return false;
+  const needle = filter.metadataValue.trim().toLowerCase();
+  return !needle || metadataValueText(metadata[key]).toLowerCase().includes(needle);
 }
 
 function textMatches(haystacks: string[], needle: string): boolean {
@@ -145,6 +181,7 @@ function recordPassesSettings(record: DelegatedAccessRecord, filter: GrantFilter
   }
   if (!inWindow(record.created_at, filter.grantedFrom, filter.grantedTo)) return false;
   if (!inWindow(record.expires_at, filter.expiresFrom, filter.expiresTo)) return false;
+  if (!metadataMatches(record, filter)) return false;
   return true;
 }
 
@@ -182,6 +219,7 @@ export function agentGroupMatches(
     app: who ? [who.agent, who.app] : [],
     client: [clientId],
     door: [],
+    metadata: [],
   };
   const haystacks = fields.flatMap((field) => [
     ...own[field],
@@ -232,6 +270,7 @@ export function activeSettingCount(filter: GrantFilter): number {
   if (filter.state !== 'any') count += 1;
   if (filter.grantedFrom || filter.grantedTo) count += 1;
   if (filter.expiresFrom || filter.expiresTo) count += 1;
+  if (filter.metadataKey || filter.metadataValue) count += 1;
   return count;
 }
 

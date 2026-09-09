@@ -5,11 +5,11 @@ from __future__ import annotations
 import os
 import secrets
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from filelock import AsyncFileLock, Timeout
 
@@ -84,6 +84,8 @@ class OAuthProfileSessionService:
         name: str,
         endpoint: str,
         scope: str = "",
+        client_name: str = "Connection Hub CLI",
+        client_metadata: Mapping[str, Any] | None = None,
         provisioned_client_id: str | None = None,
         client_metadata_url: str | None = None,
         callback_port: int | None = None,
@@ -106,6 +108,8 @@ class OAuthProfileSessionService:
                 ),
                 discovered=discovered,
                 scope=selected_scope,
+                client_name=client_name,
+                client_metadata=client_metadata,
                 provisioned_client_id=provisioned_client_id,
                 client_metadata_url=client_metadata_url,
                 callback_port=callback_port,

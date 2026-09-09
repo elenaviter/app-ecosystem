@@ -36,10 +36,12 @@ import {
 } from './secretResourceSelection';
 import {
   agentGroupMatches,
+  clientMetadataKeys,
   compareAgentGroups,
   compareRecords,
   DEFAULT_GRANT_FILTER,
   isUnfiltered,
+  metadataValueText,
   recordMatches,
   type GrantFilter,
   type GrantFilterContext,
@@ -324,6 +326,31 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <span className="card-field-label">{label}</span>
       <span className="card-field-value">{children}</span>
     </>
+  );
+}
+
+function ClientMetadataDetails({ metadata }: { metadata?: Record<string, unknown> }) {
+  const entries = Object.entries(metadata || {}).sort(([left], [right]) => (
+    left.localeCompare(right, undefined, { sensitivity: 'base' })
+  ));
+  if (!entries.length) return null;
+  return (
+    <details className="client-metadata">
+      <summary>
+        Client metadata <span className="account-sub">{entries.length}</span>
+      </summary>
+      <div className="client-metadata__body">
+        <div className="client-metadata__note">Reported by the client; not access authority.</div>
+        <dl className="client-metadata__rows">
+          {entries.map(([key, value]) => (
+            <Fragment key={key}>
+              <dt>{key}</dt>
+              <dd>{metadataValueText(value)}</dd>
+            </Fragment>
+          ))}
+        </dl>
+      </div>
+    </details>
   );
 }
 
@@ -2549,6 +2576,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     doorLabel: resourceLabelFor,
     parseAgent: parseAgentClientId,
   };
+  const availableClientMetadataKeys = clientMetadataKeys(items);
   const grantNarrowed = !isUnfiltered(grantFilter);
   const matchedOtherItems = allOtherItems
     .filter((item) => recordMatches(item, grantFilter, grantFilterContext))
@@ -3124,6 +3152,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       </Field>
                     </div>
                   ) : null}
+                  {!editing ? <ClientMetadataDetails metadata={item.client_metadata} /> : null}
                   {editing
                     ? renderAccountScopePicker(
                         editAccountScope,
@@ -3323,7 +3352,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         </div>
       ) : null}
       {items.length > 0 && grantSettingsOpen ? (
-        <GrantFilterSettings filter={grantFilter} onChange={updateGrantFilter} />
+        <GrantFilterSettings
+          filter={grantFilter}
+          onChange={updateGrantFilter}
+          metadataKeys={availableClientMetadataKeys}
+        />
       ) : null}
       {grantInfoOpen ? <GrantFilterInfo onClose={() => setGrantInfoOpen(false)} /> : null}
       <PaneGroup

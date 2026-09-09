@@ -4,8 +4,8 @@ title: "Connection Hub Design"
 summary: "KDCube-hosted application composition for connection-hub@1-0: connection edges, connected accounts, delegated credentials, direct admission, OAuth callbacks, named-service boundaries, and the Connections widget."
 status: active
 tags: ["app", "connection-hub", "identity", "connections", "named-services", "mcp", "oauth", "delegated-credentials", "email", "design"]
-keywords: ["connection hub app", "delegated access", "connected accounts", "grant mutation csrf", "live grant authority"]
-updated_at: 2026-08-30
+keywords: ["connection hub app", "delegated access", "connected accounts", "client metadata", "grant mutation csrf", "live grant authority"]
+updated_at: 2026-09-09
 see_also:
   - ../../connection-hub-architecture.md
   - ../../package/extraction-architecture.md
@@ -77,12 +77,21 @@ A user-scoped hub that:
   connect/disconnect accounts;
 - issues and revokes external-client credentials through OAuth consent or
   **Delegated by KDCube -> Create automation access**;
+- presents bounded client-reported metadata on connected-app Cards, and lets
+  the owner search all metadata text or filter by an exact key and value;
 - renders exact named-service namespace operations for manual automation access,
   validates them against the descriptor, and persists the narrowed policy in
   the delegated grant record.
 - authenticates a registered external protected service and evaluates its
   bearer/resource/operation request against the same current card and active
   catalog used by KDCube-managed REST/MCP guards.
+
+Client metadata is folded by default because registration documents may carry
+many fields. The filter's metadata-key menu is the sorted union of keys on the
+Cards currently returned to the owner; its value input uses case-insensitive
+substring matching. The panel labels this data as client-reported. It never
+uses it to decide authority, and it does not manufacture a machine, session,
+connector alias, or worker identity that the OAuth client did not report.
 
 ## Building blocks it wires
 

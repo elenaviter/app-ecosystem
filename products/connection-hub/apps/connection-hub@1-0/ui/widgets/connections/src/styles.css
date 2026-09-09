@@ -434,6 +434,31 @@ h2 {
   line-height: 1.5;
 }
 
+.client-metadata {
+  margin-top: 8px;
+  border-top: 1px solid var(--line-soft);
+  padding-top: 7px;
+  font-size: 12px;
+}
+.client-metadata > summary {
+  color: var(--text-2);
+  cursor: pointer;
+  font-weight: 600;
+  list-style-position: outside;
+}
+.client-metadata__body { padding: 7px 0 0 14px; }
+.client-metadata__note { color: var(--muted); margin-bottom: 5px; }
+.client-metadata__rows {
+  display: grid;
+  grid-template-columns: minmax(0, 170px) minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.client-metadata__rows dt { color: var(--muted); overflow-wrap: anywhere; }
+.client-metadata__rows dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+
 /* Read-only permission/claim tokens. */
 .chip-row { display: flex; flex-wrap: wrap; gap: 4px; }
 .claim-chip {
@@ -2439,6 +2464,8 @@ code {
 .grant-filter__date-label { font-size: 11px; color: var(--muted); }
 .grant-filter__date .input { padding: 4px 8px; font-size: 12px; }
 .grant-filter__controls select.input { padding: 4px 8px; font-size: 12px; }
+.grant-filter__metadata select.input { max-width: min(100%, 280px); }
+.grant-filter__metadata-value { width: min(280px, 100%); padding: 4px 8px; font-size: 12px; }
 .grant-filter__hint { margin: 0; font-size: 11.5px; color: var(--muted); line-height: 1.45; }
 
 .grant-filter__dialog { width: min(640px, 100%); font-size: 12.5px; line-height: 1.5; color: var(--text-2); }
@@ -2479,6 +2506,7 @@ code {
   .grant-filter__row { grid-template-columns: minmax(0, 1fr); }
   .grant-filter__terms { grid-template-columns: minmax(0, 1fr); }
   .grant-filter__terms dd { margin-bottom: 4px; }
+  .client-metadata__rows { grid-template-columns: minmax(0, 1fr); }
 }
 
 /* ── Invocation policy, named per operation ───────────────────────────────

@@ -49,6 +49,9 @@ from connection_hub.delegated_credentials.oauth.grants import (
     integration_subject,
     mint_delegated_client_access_token,
 )
+from connection_hub.delegated_credentials.oauth.clients import (
+    normalize_public_client_metadata,
+)
 from connection_hub.delegated_credentials.oauth.store import (
     GrantStore,
 )
@@ -724,6 +727,9 @@ class AutomationAccessRecord:
     # ``resource`` of its consent): the one door that client can reach. Empty
     # on manual and resident cards; derived for OAuth cards written before it.
     entry_resource: str = ""
+    # Public, client-asserted identification retained for operator review and
+    # search. It never participates in an authority decision.
+    client_metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         normalized = normalize_resource_operations(self.resource_operations)
@@ -733,6 +739,11 @@ class AutomationAccessRecord:
             )
         object.__setattr__(self, "resource_operations", normalized)
         object.__setattr__(self, "operations", operation_union(normalized))
+        object.__setattr__(
+            self,
+            "client_metadata",
+            normalize_public_client_metadata(self.client_metadata),
+        )
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "AutomationAccessRecord":
@@ -781,6 +792,11 @@ class AutomationAccessRecord:
                 else {}
             ),
             entry_resource=_clean(value.get("entry_resource")),
+            client_metadata=(
+                dict(value.get("client_metadata"))
+                if isinstance(value.get("client_metadata"), Mapping)
+                else {}
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -818,6 +834,7 @@ class AutomationAccessRecord:
             },
             "provenance": dict(self.provenance or {}),
             "entry_resource": self.entry_resource,
+            "client_metadata": copy.deepcopy(dict(self.client_metadata or {})),
         }
         stored_selection = self.named_service_operations.to_stored()
         if stored_selection is not None:
@@ -887,6 +904,7 @@ def card_authority_from_record(record: AutomationAccessRecord) -> CardAuthority:
         resource_acceptance=dict(record.resource_acceptance or {}),
         provenance=copy.deepcopy(dict(record.provenance or {})),
         entry_resource=record.entry_resource,
+        client_metadata=copy.deepcopy(dict(record.client_metadata or {})),
     )
 
 
@@ -937,6 +955,7 @@ def record_from_card(
         resource_acceptance=dict(authority.resource_acceptance or {}),
         provenance=copy.deepcopy(dict(authority.provenance or {})),
         entry_resource=authority.entry_resource,
+        client_metadata=copy.deepcopy(dict(authority.client_metadata or {})),
     )
 
 
@@ -2813,6 +2832,7 @@ class AutomationAccessService:
                 accepted_operations=accepted_operations,
             ),
             provenance=copy.deepcopy(dict(existing.provenance or {})),
+            client_metadata=copy.deepcopy(dict(existing.client_metadata or {})),
         )
         del remaining
         try:
@@ -3232,6 +3252,19 @@ class AutomationAccessService:
                 previous=merged_acceptance,
             ),
             provenance=provenance,
+            client_metadata=copy.deepcopy(
+                dict(
+                    (target.client_metadata if target is not None else {})
+                    or next(
+                        (
+                            item.client_metadata
+                            for item in candidates
+                            if item.client_metadata
+                        ),
+                        {},
+                    )
+                )
+            ),
         )
         try:
             await self._persist_record(record, expected_revision=target_revision)
@@ -3959,6 +3992,7 @@ class AutomationAccessService:
         account_scope: Mapping[str, Any] | None = None,
         named_service_operations: Any = None,
         catalog_version: str = "",
+        client_metadata: Mapping[str, Any] | None = None,
     ) -> AutomationAccessRecord | None:
         """Register (or update) an OAuth-flow delegated grant in the registry.
 
@@ -3995,6 +4029,7 @@ class AutomationAccessService:
         # Token rotation is not an authority change: the card keeps the catalog
         # generation it was last saved against and only advances its revision.
         existing_catalog_version = ""
+        existing_client_metadata: dict[str, Any] = {}
         try:
             existing_card_revision = await self._committed_revision(
                 access_id, grantor_subject=grantor
@@ -4016,6 +4051,11 @@ class AutomationAccessService:
             existing_catalog_version = existing_card.catalog_version
             existing_named_services = copy.deepcopy(dict(existing_card.named_services or {}))
             existing_resource_operations = dict(existing_card.resource_operations)
+            existing_client_metadata = copy.deepcopy(
+                dict(existing_card.client_metadata or {})
+            )
+        submitted_client_metadata = normalize_public_client_metadata(client_metadata)
+        selected_client_metadata = submitted_client_metadata or existing_client_metadata
         is_initial_consent = existing_card is None
         # A submitted selection is a consent-screen choice and REPLACES what the
         # card held: only the newest consent counts, even if an earlier one said
@@ -4147,6 +4187,7 @@ class AutomationAccessService:
                 resource_value
                 or (existing_card.entry_resource if existing_card is not None else "")
             ),
+            client_metadata=selected_client_metadata,
         )
         await self._persist_record(record, expected_revision=existing_card_revision)
         _LOGGER.info(

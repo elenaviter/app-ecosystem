@@ -28,6 +28,21 @@ _RESERVED_AUTHORIZATION_PARAMETERS = frozenset(
     }
 )
 
+_RESERVED_REGISTRATION_METADATA = frozenset(
+    {
+        "application_type",
+        "client_id",
+        "client_secret",
+        "client_secret_expires_at",
+        "grant_types",
+        "redirect_uris",
+        "registration_access_token",
+        "registration_client_uri",
+        "response_types",
+        "token_endpoint_auth_method",
+    }
+)
+
 
 def _oauth_value(value: Any, *, maximum: int = 8192) -> str:
     candidate = str(value or "").strip()
@@ -39,6 +54,20 @@ def _oauth_value(value: Any, *, maximum: int = 8192) -> str:
         raise AuthorizationError(
             "oauth_value_invalid",
             "An OAuth request value is invalid.",
+        )
+    return candidate
+
+
+def _oauth_display_value(value: Any, *, maximum: int) -> str:
+    candidate = str(value or "").strip()
+    if (
+        not candidate
+        or len(candidate) > maximum
+        or any(ord(character) < 0x20 or ord(character) == 0x7F for character in candidate)
+    ):
+        raise AuthorizationError(
+            "oauth_value_invalid",
+            "An OAuth display value is invalid.",
         )
     return candidate
 
@@ -77,6 +106,7 @@ class OAuthClient:
         metadata: AuthorizationServerMetadata,
         redirect_uri: str,
         client_name: str = "Connection Hub CLI",
+        client_metadata: Mapping[str, Any] | None = None,
         provisioned_client_id: str | None = None,
         client_metadata_url: str | None = None,
     ) -> OAuthClientRegistration:
@@ -85,6 +115,22 @@ class OAuthClient:
             code="oauth_callback_invalid",
             loopback_only=True,
         )
+        asserted_metadata = dict(client_metadata or {})
+        if asserted_metadata and (provisioned_client_id or client_metadata_url):
+            raise AuthorizationError(
+                "oauth_client_metadata_requires_registration",
+                "Client identification metadata requires dynamic client registration.",
+            )
+        conflicts = sorted(
+            key
+            for key in asserted_metadata
+            if str(key).strip().lower() in _RESERVED_REGISTRATION_METADATA
+        )
+        if conflicts:
+            raise AuthorizationError(
+                "oauth_client_metadata_reserved",
+                "Client identification metadata cannot replace OAuth registration fields.",
+            )
         if provisioned_client_id:
             return OAuthClientRegistration(
                 client_id=_oauth_value(provisioned_client_id, maximum=4096),
@@ -116,7 +162,7 @@ class OAuthClient:
                 "This authorization server requires a provisioned client identifier.",
             )
         payload = {
-            "client_name": _oauth_value(client_name, maximum=160),
+            "client_name": _oauth_display_value(client_name, maximum=160),
             "redirect_uris": [callback],
             "application_type": "native",
             "token_endpoint_auth_method": "none",
@@ -126,6 +172,7 @@ class OAuthClient:
             ],
             "response_types": ["code"],
         }
+        payload.update(asserted_metadata)
         registered = await self._transport.post_json(
             metadata.registration_endpoint,
             payload,

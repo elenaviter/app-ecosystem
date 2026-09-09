@@ -27,6 +27,7 @@ const FIELD_LABELS: Record<GrantSearchField, string> = {
   app: 'App',
   client: 'Client id',
   door: 'Door',
+  metadata: 'Metadata',
 };
 
 const KINDS: Array<{ id: GrantKind; label: string }> = [
@@ -79,8 +80,8 @@ export function GrantFilterControls({
         type="search"
         className="input grant-filter__input"
         value={filter.query}
-        placeholder="Filter cards by name, app, client id, or door"
-        aria-label="Filter cards by name, app, client id, or door"
+        placeholder="Filter cards by name, app, client id, door, or metadata"
+        aria-label="Filter cards by name, app, client id, door, or metadata"
         onChange={(event) => onChange({ query: event.target.value })}
         onKeyDown={(event) => {
           if (event.key === 'Escape' && filter.query) {
@@ -188,7 +189,11 @@ function DateRange({
 }
 
 /** The settings panel: placed by the panel under the action row. */
-export function GrantFilterSettings({ filter, onChange }: GrantFilterProps) {
+export function GrantFilterSettings({
+  filter,
+  onChange,
+  metadataKeys,
+}: GrantFilterProps & { metadataKeys: string[] }) {
   const fields = filter.fields.length ? filter.fields : ALL_SEARCH_FIELDS;
   const toggleField = (field: GrantSearchField) => {
     const next = fields.includes(field) ? fields.filter((item) => item !== field) : [...fields, field];
@@ -223,6 +228,32 @@ export function GrantFilterSettings({ filter, onChange }: GrantFilterProps) {
               {kind.label}
             </Chip>
           ))}
+        </div>
+      </div>
+      <div className="grant-filter__row">
+        <span className="grant-filter__label">metadata</span>
+        <div className="grant-filter__controls grant-filter__metadata">
+          <select
+            className="input input-inline"
+            value={filter.metadataKey}
+            aria-label="Client metadata key"
+            onChange={(event) => onChange({
+              metadataKey: event.target.value,
+              metadataValue: event.target.value ? filter.metadataValue : '',
+            })}
+          >
+            <option value="">select a key</option>
+            {metadataKeys.map((key) => <option key={key} value={key}>{key}</option>)}
+          </select>
+          <input
+            type="search"
+            className="input input-inline grant-filter__metadata-value"
+            value={filter.metadataValue}
+            disabled={!filter.metadataKey}
+            aria-label="Client metadata value"
+            placeholder="value contains"
+            onChange={(event) => onChange({ metadataValue: event.target.value })}
+          />
         </div>
       </div>
       <div className="grant-filter__row">
@@ -315,7 +346,7 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
         <div className="grant-filter__step">
           <div className="grant-filter__step-title">Step 1: every setting must pass</div>
           <p>A card stays visible only when it passes all of them. There is no scoring, so a card is either shown or hidden.</p>
-          <pre className="grant-filter__formula">visible = your cards ∩ where (text) ∩ kind ∩ state ∩ granted window ∩ expires window</pre>
+          <pre className="grant-filter__formula">visible = your cards ∩ where (text) ∩ metadata key/value ∩ kind ∩ state ∩ granted window ∩ expires window</pre>
         </div>
 
         <div className="grant-filter__step">
@@ -342,6 +373,11 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
             <dd>
               The protected resource a card opens. Its short alias counts, so <code>…/mcp/productivity</code> reads as
               <code>productivity</code>, and so do its full address and its catalog label.
+            </dd>
+            <dt>Metadata</dt>
+            <dd>
+              Public values the connecting client reported about itself, such as its machine,
+              runtime, or native session. They identify a card for the owner and do not grant access.
             </dd>
           </dl>
         </div>

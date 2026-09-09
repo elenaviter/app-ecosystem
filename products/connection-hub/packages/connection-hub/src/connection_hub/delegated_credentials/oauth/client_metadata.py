@@ -27,6 +27,7 @@ import aiohttp
 from connection_hub.delegated_credentials.oauth.clients import (
     CLIENT_REGISTRATION_METADATA_DOCUMENT,
     PublicClient,
+    normalize_public_client_metadata,
 )
 from connection_hub.delegated_credentials.oauth.config import (
     OAuthDelegatedClientMetadataDocumentsConfig,
@@ -476,6 +477,13 @@ def validate_client_metadata_document(client_id: str, document: Mapping[str, Any
             "unauthorized_client",
             "client metadata must support response type code",
         )
+    try:
+        public_metadata = normalize_public_client_metadata(document)
+    except ValueError as exc:
+        raise ClientMetadataError(
+            "invalid_client_metadata",
+            "client metadata contains an unsupported or sensitive field",
+        ) from exc
     return PublicClient(
         client_id=client_id,
         redirect_uris=tuple(redirects),
@@ -485,6 +493,7 @@ def validate_client_metadata_document(client_id: str, document: Mapping[str, Any
         client_name=client_name,
         client_uri=_metadata_text(document, "client_uri"),
         logo_uri=_metadata_text(document, "logo_uri"),
+        client_metadata=public_metadata,
     )
 
 
@@ -529,7 +538,7 @@ async def resolve_client_metadata_document(
     if fetched.cacheable and fetched.cache_ttl_seconds:
         await store.cache_client_metadata_document(
             client_id,
-            client.snapshot(),
+            dict(client.client_metadata),
             ttl_seconds=min(fetched.cache_ttl_seconds, config.cache_max_ttl_seconds),
         )
     return client
