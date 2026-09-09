@@ -11,6 +11,9 @@ host-relay lifecycle under `service_foundation.host_relay`:
 - `HostRelayAdapter` defines one asynchronous `poll_once()` domain boundary;
 - `HostRelayRuntime` owns repeated execution, health, stop, and bounded retry;
 - `HostRelayPolicy` defines poll and retry timing;
+- an adapter may return `next_poll_seconds` and implement
+  `wait_for_wakeup(timeout_seconds, stop_event)` so a live transport can start
+  the next reconciliation cycle immediately;
 - entry-point discovery uses `service_foundation.host_relay.adapters` for
   separately packaged adapters.
 
@@ -33,9 +36,11 @@ A standalone service needs a host layer around its application logic:
 - migration invocation, while the application owns its migrations;
 - lifecycle for a local or remote companion process.
 
-The host-relay runtime does not know MCP, credentials, agents, mail, journals,
-or any product vocabulary. A product composition root supplies an adapter and
-opens whatever governed transport that adapter needs.
+The host-relay runtime does not know MCP, Data Bus, credentials, agents, mail,
+journals, or any product vocabulary. A product composition root supplies an
+adapter, opens whatever governed transport that adapter needs, and translates
+transport events into wakeups. Poll timing remains reconciliation policy even
+when ordinary work is push-driven.
 
 `service-foundation` does not import `app-foundation`, and `app-foundation`
 does not import `service-foundation`. Products may depend on either or both.
