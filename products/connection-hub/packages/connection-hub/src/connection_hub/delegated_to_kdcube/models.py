@@ -145,6 +145,7 @@ class ConnectorApp:
     connector_app_id: str
     provider_id: str
     label: str = ""
+    description: str = ""
     enabled: bool = True
     client_id: str = ""
     client_secret_ref: str = ""
@@ -156,6 +157,7 @@ class ConnectorApp:
             "connector_app_id": self.connector_app_id,
             "provider_id": self.provider_id,
             "label": self.label,
+            "description": self.description,
             "enabled": self.enabled,
             "redirect_uri": self.redirect_uri,
             "allowed_claims": list(self.allowed_claims),
@@ -173,6 +175,7 @@ class ConnectorApp:
             connector_app_id=as_str(connector_app_id),
             provider_id=as_str(provider_id),
             label=as_str(data.get("label")),
+            description=as_str(data.get("description")),
             enabled=as_bool(data.get("enabled"), default=True),
             client_id=as_str(data.get("client_id")),
             client_secret_ref=as_str(data.get("client_secret_ref")),
@@ -187,6 +190,7 @@ class ConnectorApp:
             connector_app_id=as_str(data.get("connector_app_id")),
             provider_id=as_str(data.get("provider_id")),
             label=as_str(data.get("label")),
+            description=as_str(data.get("description")),
             enabled=as_bool(data.get("enabled"), default=True),
             client_id=as_str(data.get("client_id")),
             client_secret_ref=as_str(data.get("client_secret_ref")),

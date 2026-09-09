@@ -78,7 +78,11 @@ Each provider can have **multiple connector apps**
 (`connections.delegated_to_kdcube.providers.<provider>.connector_apps`), each
 with its own connector-app id + `client_id` (config) and `client_secret`
 (secret) when OAuth is used. The Connections widget lets the user pick which
-connector app to connect through. The per-provider articles show the exact keys.
+connector app to connect through, so when a provider has more than one, give
+each a `label` that states its purpose in the user's terms (for example
+"personal profile" against "organization pages") and a one-line
+`description` of what connecting through it means; the widget shows both
+under the choice. The per-provider articles show the exact keys.
 
 This section configures connector apps only. Application tools that need Gmail,
 Slack, iCloud, or another provider declare their required provider claims in the
@@ -122,6 +126,7 @@ connections:
         connector_apps:
           default:
             label: S1 connector
+            description: Reads and writes S1 data as the approving user.
             enabled: true
             client_id: <S1_CLIENT_ID>
             client_secret_ref: connections.delegated_to_kdcube.providers.s1.connector_apps.default.client_secret
