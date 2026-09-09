@@ -23,6 +23,12 @@ The package API is under `app_foundation.mcp`:
   Streamable HTTP convenience surface for callers that already possess an
   endpoint and bearer.
 
+Remote connection failures use stable, secret-safe codes. An HTTP `401` or
+`403`, including one wrapped by the MCP transport's exception group, becomes
+`mcp_authorization_rejected`; response bodies do not cross the boundary.
+Timeouts and other connection failures retain their separate codes so a host
+can retry connectivity without treating an outage as a credential verdict.
+
 The caller remains responsible for credential custody, authority decisions,
 and product-specific error language. Supplying a bearer to the transport does
 not grant or evaluate authority.

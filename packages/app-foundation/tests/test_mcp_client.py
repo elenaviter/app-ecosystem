@@ -17,6 +17,7 @@ from app_foundation.mcp import (
     normalize_mcp_tool_result,
     probe_remote_tools,
 )
+from app_foundation.mcp.client import _safe_connection_error
 
 
 class _CaptureHeaders:
@@ -172,3 +173,23 @@ def test_tool_schema_and_result_normalization_preserve_extracted_contract() -> N
         "summary": "ready",
         "is_error": False,
     }
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_remote_connection_preserves_authorization_rejection_without_response_body(
+    status_code: int,
+) -> None:
+    rejected = RuntimeError("upstream response included sensitive detail")
+    rejected.response = SimpleNamespace(  # type: ignore[attr-defined]
+        status_code=status_code,
+        text="secret upstream detail",
+    )
+    source = ExceptionGroup("transport initialization failed", [rejected])
+
+    error = _safe_connection_error(source)
+
+    assert error.code == "mcp_authorization_rejected"
+    assert error.message == (
+        "The remote MCP endpoint rejected the supplied authorization."
+    )
+    assert "secret" not in error.message

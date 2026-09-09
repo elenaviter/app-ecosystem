@@ -10,6 +10,7 @@ from mcp import types
 from mcp.server.mcpserver import MCPServer
 from mcp.server.subscriptions import InMemorySubscriptionBus, ToolsListChanged
 
+from app_foundation.mcp import RemoteMcpConnectionError
 from connection_hub_cli import remote_mcp
 from connection_hub_cli.errors import UpstreamError
 from connection_hub_cli.remote_mcp import connect_remote_tools, probe_remote_tools
@@ -36,6 +37,21 @@ async def test_invalid_connection_inputs_keep_connection_hub_error_contract() ->
             pass
 
     assert raised.value.code == "mcp_connection_failed"
+
+
+def test_authorization_rejection_remains_distinct_from_transport_failure() -> None:
+    error = remote_mcp._connection_hub_error(
+        RemoteMcpConnectionError(
+            "mcp_authorization_rejected",
+            "upstream detail must not cross this boundary",
+        )
+    )
+
+    assert error.code == "mcp_authorization_rejected"
+    assert error.message == (
+        "The Connection Hub MCP endpoint rejected the selected caller profile."
+    )
+    assert "upstream detail" not in error.message
 
 
 @pytest.mark.asyncio

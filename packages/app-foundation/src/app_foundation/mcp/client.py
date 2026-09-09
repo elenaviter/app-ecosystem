@@ -312,6 +312,35 @@ class ConnectedRemoteTools:
 
 
 def _safe_connection_error(exc: Exception) -> RemoteMcpConnectionError:
+    pending: list[BaseException] = [exc]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        response = getattr(current, "response", None)
+        status = getattr(response, "status_code", None)
+        if status is None:
+            status = getattr(current, "status_code", None)
+        try:
+            status_value = int(status) if status is not None else 0
+        except (TypeError, ValueError):
+            status_value = 0
+        if status_value in {401, 403}:
+            return RemoteMcpConnectionError(
+                "mcp_authorization_rejected",
+                "The remote MCP endpoint rejected the supplied authorization.",
+            )
+        grouped = getattr(current, "exceptions", ())
+        if isinstance(grouped, Sequence):
+            pending.extend(
+                value for value in grouped if isinstance(value, BaseException)
+            )
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
     if isinstance(exc, httpx2.TimeoutException):
         return RemoteMcpConnectionError(
             "mcp_connection_timeout",

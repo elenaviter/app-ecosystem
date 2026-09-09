@@ -229,6 +229,12 @@ refresh readiness, client mode, and owned-entry state. Credential values are
 excluded from command arguments, environment variables, client configuration,
 state files, output, and ordinary logs.
 
+Profile probes preserve `mcp_authorization_rejected` when the exact governed
+endpoint returns HTTP `401` or `403`, even when the MCP transport wraps that
+response. Upstream response text is not returned. Connection and timeout errors
+remain separate, allowing a caller to request new consent only after an actual
+authorization rejection instead of rotating a healthy Card during an outage.
+
 Static credential replacement validates the candidate before switching:
 
 ```bash
