@@ -3109,6 +3109,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           // ever redisplaying it. Rendered as a value, not prose.
                           <> · token ends with <code className="claim-chip">{item.last_four}</code></>
                         ) : null}
+                        {/* Every reconnect mints a client, so two cards of one
+                            program can sit here looking identical. This stamp is
+                            the only field that tells them apart: the token
+                            endpoint moves it at consent and on each refresh, so
+                            the abandoned one stops at its consent date. Stated as
+                            the fact, never as a verdict about the client — an
+                            idle client with a valid token reads the same. */}
+                        {item.source === 'oauth' && item.last_issued_at ? (
+                          item.last_issued_at === item.created_at
+                            ? <> · not renewed since consent</>
+                            : <> · credentials last issued {formatDate(item.last_issued_at)}</>
+                        ) : null}
                       </Field>
                     </div>
                   ) : null}

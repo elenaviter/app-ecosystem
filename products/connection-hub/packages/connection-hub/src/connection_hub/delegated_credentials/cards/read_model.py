@@ -248,6 +248,9 @@ class DelegatedCardView:
     created_at: int
     expires_at: int
     identity_scope: str
+    # Set only by the OAuth token endpoint, at consent and on each refresh
+    # rotation. Zero for a manual or agent card, which never reaches it.
+    last_issued_at: int = 0
     resources: tuple[CardResourceView, ...] = ()
     profile: ResidentCallerProfile | None = None
     account_scope: Mapping[str, Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
@@ -279,6 +282,7 @@ class DelegatedCardView:
             "state": self.state,
             "created_at": self.created_at,
             "expires_at": self.expires_at,
+            "last_issued_at": self.last_issued_at,
             "identity_scope": self.identity_scope,
             "resources": [item.to_dict() for item in self.resources],
             "account_scope": {
@@ -358,7 +362,10 @@ class DelegatedCardView:
         card_revision = _integer(data.get("card_revision"), field_name="revision")
         created_at = _integer(data.get("created_at"), field_name="created_at")
         expires_at = _integer(data.get("expires_at"), field_name="expires_at")
-        if card_revision < 0 or created_at < 0 or expires_at < 0:
+        last_issued_at = _integer(
+            data.get("last_issued_at", 0), field_name="last_issued_at"
+        )
+        if card_revision < 0 or created_at < 0 or expires_at < 0 or last_issued_at < 0:
             raise ValueError("delegated card timestamps or revision are invalid")
         return cls(
             access_id=access_id,
@@ -374,6 +381,7 @@ class DelegatedCardView:
             state=state,
             created_at=created_at,
             expires_at=expires_at,
+            last_issued_at=last_issued_at,
             identity_scope=identity_scope,
             resources=resources,
             account_scope=account_scope,
@@ -520,6 +528,7 @@ def build_card_view(
         state=authority.state,
         created_at=authority.created_at,
         expires_at=authority.expires_at,
+        last_issued_at=int(getattr(authority, "last_issued_at", 0) or 0),
         identity_scope=authority.identity_scope or "grantor",
         resources=tuple(resources),
         account_scope=authority.account_scope,

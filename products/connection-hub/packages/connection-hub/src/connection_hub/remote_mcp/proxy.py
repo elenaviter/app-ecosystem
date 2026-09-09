@@ -26,6 +26,7 @@ from connection_hub.remote_mcp.models import (
     connector_id_from_resource,
 )
 from connection_hub.remote_mcp.service import RemoteMCPConnectorService
+from connection_hub.delegated_to_kdcube.public_base import is_openable_hub_url
 
 EXTERNAL_MCP_GRANT = "external_mcp:use"
 
@@ -101,9 +102,10 @@ class RemoteMCPProxyError(PermissionError):
                 "resource": self.resource,
                 "outer_operation": self.operation,
                 "tool_name": self.proxy_name,
-                "connection_hub_url": self.recovery_url,
                 "available_choices": ["allow_once", "allow_always"],
             }
+            if is_openable_hub_url(self.recovery_url):
+                out["consent"]["connection_hub_url"] = self.recovery_url
         elif self.reason in {
             "connector_grant_not_consented",
             "operation_not_consented",
@@ -129,7 +131,6 @@ class RemoteMCPProxyError(PermissionError):
                 "claims": [EXTERNAL_MCP_GRANT],
                 "outer_operation": self.operation,
                 "tool_name": self.proxy_name,
-                "connection_hub_url": self.recovery_url,
                 "invocation_change_id": self.invocation_id,
                 "invocation_policy": "choose",
                 "available_choices": choices,
@@ -138,6 +139,8 @@ class RemoteMCPProxyError(PermissionError):
                     "payload": grant_payload,
                 },
             }
+            if is_openable_hub_url(self.recovery_url):
+                out["consent"]["connection_hub_url"] = self.recovery_url
         return out
 
 

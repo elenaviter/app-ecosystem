@@ -689,10 +689,13 @@ explicit revoke-all operation.
   refresh token's older grant snapshot. Legacy records without a card pointer
   retain their snapshot contract.
 
-## External URLs Behind A Proxy
+## External URL Schemes
 
 OAuth callback, consent, upload, and recovery links must reflect the scheme the
-client used at the trusted edge.
+client used at the trusted edge. Where that scheme is read from depends on
+whether a proxy stands in front of the deployment.
+
+### Behind a proxy
 
 `X-Forwarded-Proto` is a trail rather than a single value: each proxy appends
 its own observation, and repeated headers arrive joined with `, `. The bundled
@@ -714,6 +717,32 @@ Overwriting the header at the trusted edge remains the cleaner deployment, but
 it is no longer a precondition for correct links. Validation prevents malformed
 schemes from entering generated links; it is not trusted-proxy authentication by
 itself.
+
+### Reached directly
+
+A deployment with nothing in front of it receives no forwarded header at all,
+so the origin comes from the request itself. One derivation serves every
+surface that builds an external link, and it reads provenance in this order:
+the first RFC 7239 `Forwarded` element, then `X-Forwarded-Proto` and
+`X-Forwarded-Host`, then the request's own scheme and `Host`.
+Only `http` and `https` survive origin construction; any other scheme is
+normalized before a callback or recovery link is emitted. Bracketed IPv6
+loopback authorities remain local.
+
+The scheme that provenance yields is reconciled with the host it names. A
+public host reached over `http` is published as `https`, because a public
+deployment terminates TLS somewhere and an `http` link sends the client to a
+port that redirects at best. A loopback or internal host keeps `http`:
+`localhost`, `127.0.0.0/8`, `::1`, a `.local` name, and any single-label host
+are never promoted, because nothing there terminates TLS and a promoted link
+fails the handshake outright.
+
+Defaulting the scheme is what this replaces, and a default of `https` is the
+dangerous one. `Host` arrives on every HTTP/1.1 request, so a fallback that
+reads the request's real scheme after it can never run; a deployment reached
+over plain http then builds `https` callback URLs that no client can follow.
+Loopback is not a corner case here — the acceptance procedure permits it
+explicitly for a deployment on the operator's own machine.
 
 ## Storage
 
@@ -1157,3 +1186,7 @@ Use focused tests and one live connector test.
     operation or change the grant automatically.
 31. Bundled proxy configuration accepts only `http` and `https` as forwarded
     schemes and falls back to its received scheme for any other value.
+32. Reached directly over plain http, a loopback or internal host keeps `http`
+    in every generated link, and a public host is published as `https`.
+33. Origin construction emits only `http` or `https` and recognizes bracketed
+    IPv6 loopback hosts with ports.

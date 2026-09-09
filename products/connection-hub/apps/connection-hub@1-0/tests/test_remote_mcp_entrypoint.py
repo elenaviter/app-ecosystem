@@ -386,3 +386,28 @@ def test_proxy_tool_does_not_return_upstream_exception_details():
         "retryable": True,
     }
     assert secret not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_oauth_start_without_a_connector_id_ignores_a_submitted_revision(
+    entrypoint,
+):
+    """No connector named means nothing to mutate, so no revision precondition.
+
+    The owner UI sends both fields from one optional connector object, so a new
+    connector arrives as an empty id with revision 0.
+    """
+    for submitted in (0, 7, "", None):
+        response = await entrypoint.module.ConnectionHubEntrypoint.remote_mcp_connector_start_oauth(
+            entrypoint.instance,
+            data={
+                "label": "OAuth records",
+                "endpoint": "https://mcp.example.test/mcp",
+                "connector_id": "",
+                "expected_revision": submitted,
+            },
+            request=SimpleNamespace(),
+        )
+
+        assert response["ok"] is True, submitted
+        assert entrypoint.oauth_service.calls[-1]["expected_revision"] == 0

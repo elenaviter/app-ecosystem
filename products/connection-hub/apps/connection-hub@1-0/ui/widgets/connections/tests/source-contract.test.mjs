@@ -147,6 +147,13 @@ test('an ungranted operation offers one atomic once-or-always grant, chosen besi
   assert.match(controls, /aria-label=\{`\$\{operation\}: once`\}/)
   assert.match(controls, /aria-label=\{`\$\{operation\}: always`\}/)
 
+  // An existing grant with no policy runs as always by design, so the control
+  // must not report a policy the user never chose: the operator has to tell
+  // "not set" from "Always set" to audit which operations carry a decision.
+  assert.match(controls, /const mode = policy\?\.mode \|\| null;/)
+  assert.doesNotMatch(controls, /const mode = policy\?\.mode \|\| 'always';/)
+  assert.match(controls, /\{!mode \? <span className="operation-policy__status">policy not set<\/span> : null\}/)
+
   const css = source('src/styles.css')
   for (const cls of ['.outer-operation-editor--policy', '.operation-policy__label', '.pending-operation-policy']) {
     assert.ok(css.includes(cls), `styles.css lacks ${cls}`)
@@ -165,12 +172,24 @@ test('provider-console OAuth stays transient and issued MCP access is client-rea
   assert.match(remoteSlice, /without retaining provider client credentials in Redux/)
   assert.match(remoteSlice, /Omit<StartRemoteMcpOAuthArgs, 'oauthClient'>/)
   assert.match(remoteSlice, /token_endpoint_auth_method/)
+  // A new connector names no connector, so it carries no revision precondition.
+  assert.match(remoteSlice, /if \(args\.connectorId\) \{\n\s*payload\.connector_id = args\.connectorId;\n\s*payload\.expected_revision = args\.expectedRevision \?\? 0;\n\s*\}/)
+  assert.doesNotMatch(remoteSlice, /expected_revision: args\.expectedRevision \|\| 0/)
 
   const delegatedPanel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(delegatedPanel, /publicMcpUrl\('remote_mcp_proxy'\)/)
   assert.match(delegatedPanel, /Streamable HTTP endpoint/)
   assert.match(delegatedPanel, /<Field label="Header"><code>Authorization<\/code><\/Field>/)
   assert.match(delegatedPanel, /issuedHeader \|\| `Bearer \$\{issuedToken\}`/)
+
+  // Two cards of one program look identical after a reconnect; the issuance
+  // stamp is the only field that separates them. It is scoped to OAuth cards,
+  // because a manual or agent card never reaches the token endpoint and its
+  // zero would read as "never used".
+  assert.match(delegatedPanel, /item\.source === 'oauth' && item\.last_issued_at \?/)
+  assert.match(delegatedPanel, /not renewed since consent/)
+  assert.match(delegatedPanel, /credentials last issued \{formatDate\(item\.last_issued_at\)\}/)
+  assert.doesNotMatch(delegatedPanel, /last used|last sign-?in/i)
 })
 
 test('connections widget announces readiness only after installing its command listener', () => {
