@@ -228,15 +228,17 @@ export const revokeDelegatedAccess = createAsyncThunk<
 
 /** A fresh token on an existing manual card, every grant kept. The server
  *  answers like creation, so the same one-time token banner shows it. */
+export type DelegatedAccessRenewMode = 'prolong' | 'reissue';
+
 export const renewDelegatedAccess = createAsyncThunk<
   DelegatedAccessRenewResult,
-  { accessId: string },
+  { accessId: string; mode: DelegatedAccessRenewMode },
   { rejectValue: string }
 >(
   'delegatedAccess/renew',
-  async ({ accessId }, { rejectWithValue }) => {
+  async ({ accessId, mode }, { rejectWithValue }) => {
     try {
-      const res = await postOp<DelegatedAccessRenewResult>('delegated_access_renew', { access_id: accessId });
+      const res = await postOp<DelegatedAccessRenewResult>('delegated_access_renew', { access_id: accessId, mode });
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to renew delegated access'));
       return res || {};
     } catch (e) {

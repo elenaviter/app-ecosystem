@@ -4004,6 +4004,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             user,
             access_id=str(payload.get("access_id") or "").strip(),
             ttl_seconds=payload.get("ttl_seconds"),
+            mode=str(payload.get("mode") or "reissue"),
         )
         if result.get("ok") is not True or not isinstance(result.get("access"), dict):
             return result

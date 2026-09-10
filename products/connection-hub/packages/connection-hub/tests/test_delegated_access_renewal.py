@@ -129,3 +129,90 @@ async def test_renewal_refusals(tmp_path):
     unknown = await harness.service.renew_access(USER, access_id="missing")
     assert unknown["ok"] is False and unknown["error"] == "delegated_access_not_found"
     assert GRANTOR == USER["user_id"]
+
+
+class _ProlongingGrantStore:
+    """A grant store whose refresh tokens can be extended, as the real one."""
+
+    refresh_ttl = 86400
+
+    def __init__(self) -> None:
+        self.bindings: dict[str, dict] = {}
+        self.extended_refresh: list[tuple[str, int]] = []
+        self.extended_grants: list[tuple[str, int]] = []
+        self.refresh_alive = True
+
+    async def bind_access_grant(self, token, operations, expires_in, **kwargs):
+        self.bindings[token] = {"operations": list(operations), **kwargs}
+
+    async def revoke_access_grant(self, token):
+        self.bindings.pop(token, None)
+
+    async def revoke_refresh_token(self, token):
+        return True
+
+    async def extend_refresh_token(self, token, ttl_seconds):
+        if not self.refresh_alive:
+            return False
+        self.extended_refresh.append((token, int(ttl_seconds)))
+        return True
+
+    async def extend_access_grant(self, token, ttl_seconds):
+        self.extended_grants.append((token, int(ttl_seconds)))
+        return True
+
+
+def _as_connected_app(harness: _Harness, access_id: str, *, refresh_token: str, access_token: str) -> None:
+    from connection_hub.delegated_credentials.cards.model import CardCredentialHandles
+    authority, _ = harness.persistence.cards[access_id]
+    harness.persistence.cards[access_id] = (
+        dataclasses.replace(authority, source=ACCESS_SOURCE_OAUTH),
+        CardCredentialHandles(access_id=access_id, access_token=access_token, refresh_token=refresh_token),
+    )
+
+
+@pytest.mark.asyncio
+async def test_prolonging_a_connected_app_extends_its_refresh_token_and_the_card(tmp_path):
+    harness = _Harness(tmp_path)
+    store = _ProlongingGrantStore()
+    harness.service._store = store
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    old_revision = harness.persistence.cards[access_id][0].card_revision
+
+    prolonged = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert prolonged["ok"] is True, prolonged
+    assert prolonged["mode"] == "prolong"
+    assert "access_token" not in prolonged, "prolonging never hands out a token"
+    now = int(time.time())
+    assert now + 3600 - 5 <= prolonged["access"]["expires_at"] <= now + 3600 + 5
+    assert prolonged["access"]["card_revision"] == old_revision + 1
+    assert prolonged["access"]["provenance"]["prolongations"] == 1
+    assert store.extended_refresh == [("rt-1", 3600)]
+    assert store.extended_grants == [("at-1", 3600)]
+    # The client's handles are untouched: it keeps what it has.
+    handles = harness.persistence.cards[access_id][1]
+    assert (handles.refresh_token, handles.access_token) == ("rt-1", "at-1")
+
+
+@pytest.mark.asyncio
+async def test_prolonging_refusals(tmp_path):
+    harness = _Harness(tmp_path)
+    store = _ProlongingGrantStore()
+    harness.service._store = store
+    created = await _manual_card(harness)
+    access_id = created["access"]["access_id"]
+
+    # A manual bearer carries its own end date: reissue, never prolong.
+    manual = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert manual["ok"] is False and manual["error"] == "delegated_access_prolong_unsupported"
+
+    # A connected app whose refresh token already ended must reconnect.
+    _as_connected_app(harness, access_id, refresh_token="rt-gone", access_token="at-1")
+    store.refresh_alive = False
+    ended = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert ended["ok"] is False and ended["error"] == "delegated_access_credential_expired"
+
+    unknown_mode = await harness.service.renew_access(USER, access_id=access_id, mode="forever")
+    assert unknown_mode["ok"] is False and unknown_mode["error"] == "invalid_renew_mode"

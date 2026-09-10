@@ -2814,8 +2814,8 @@ class AutomationAccessService:
         catalog_config = await self._catalog_config(active, owner_subject=grantor_subject)
 
         now = int(time.time())
-        if existing.expires_at <= now:
-            return {"ok": False, "error": "delegated_access_expired"}
+        # Editing is about the grants, expiry about the credential. An expired
+        # card is edited like any other; its credential comes back by renewal.
         remaining = max(1, int(existing.expires_at) - now)
         updated = AutomationAccessRecord(
             access_id=existing.access_id,
@@ -4670,8 +4670,21 @@ class AutomationAccessService:
         *,
         access_id: str,
         ttl_seconds: Any = None,
+        mode: Any = "reissue",
     ) -> dict[str, Any]:
-        """Issue a fresh credential on an existing manual automation card.
+        """Renew a card's credential, one of two ways.
+
+        ``mode="prolong"`` keeps the credential a connected app already holds
+        and extends its life: the card's expiry, the app's refresh token and
+        its current access binding. Nothing on the client changes, which is
+        the point for a client whose token is buried in its own configuration.
+        It works only while the refresh token still exists; an ended one
+        answers ``delegated_access_credential_expired`` (reconnect from the
+        client). A manual or agent bearer carries its own end date inside the
+        token, so it is never prolonged: ``delegated_access_prolong_unsupported``.
+
+        ``mode="reissue"`` issues a fresh credential on an existing manual
+        automation card, expired or live.
 
         Why: the grants, operation selections, account bindings and policies on
         a card are the grantor's work; the token is only the key. When the key
@@ -4712,6 +4725,11 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
         if state != CARD_STATE_ACTIVE:
             return {"ok": False, "error": "delegated_access_revoked", "status": 409}
+        mode_value = (_clean(mode) or "reissue").lower()
+        if mode_value not in ("reissue", "prolong"):
+            return {"ok": False, "error": "invalid_renew_mode", "mode": mode_value}
+        if mode_value == "prolong":
+            return await self._prolong_access(user, record=record, ttl_seconds=ttl_seconds)
         if record.source != ACCESS_SOURCE_MANUAL:
             return {
                 "ok": False,
@@ -4810,6 +4828,87 @@ class AutomationAccessService:
             "access_token": access_token,
             "authorization_header": f"Bearer {access_token}" if access_token else "",
         }
+
+    async def _prolong_access(
+        self,
+        user: Mapping[str, Any],
+        *,
+        record: AutomationAccessRecord,
+        ttl_seconds: Any,
+    ) -> dict[str, Any]:
+        """Extend the life of the credential the client already holds."""
+        now = int(time.time())
+        previous_lifetime = (
+            int(record.expires_at) - int(record.created_at)
+            if record.expires_at and record.created_at and record.expires_at > record.created_at
+            else 0
+        )
+        requested = ttl_seconds if ttl_seconds not in (None, "", 0, "0") else previous_lifetime
+        ttl = _bounded_ttl(requested or None)
+        new_expires_at = now + ttl
+        store = self._store
+
+        def expired(way_back: str) -> dict[str, Any]:
+            return {
+                "ok": False,
+                "error": "delegated_access_credential_expired",
+                "status": 409,
+                "message": f"The credential has already ended, so it cannot be prolonged. {way_back} The card and everything on it are kept.",
+            }
+
+        if record.source != ACCESS_SOURCE_OAUTH:
+            # A bearer minted here carries its own end date inside the token,
+            # so extending anything server-side would not extend it. A manual
+            # token is reissued; an agent's renews itself on the next grant.
+            return {
+                "ok": False,
+                "error": "delegated_access_prolong_unsupported",
+                "source": record.source,
+                "status": 409,
+                "message": (
+                    "A manual token carries its own end date and cannot be prolonged. Reissue it; the card keeps everything."
+                    if record.source == ACCESS_SOURCE_MANUAL
+                    else "An agent's credential renews itself the next time the agent is granted from the chat."
+                ),
+            }
+        extend_refresh = getattr(store, "extend_refresh_token", None)
+        if not record.refresh_token or extend_refresh is None:
+            return expired("Reconnect from the client.")
+        if not await extend_refresh(record.refresh_token, ttl):
+            return expired("Reconnect from the client.")
+        if record.access_token:
+            extend_grant = getattr(store, "extend_access_grant", None)
+            if extend_grant is not None:
+                await extend_grant(record.access_token, ttl)
+
+        committed_revision = await self._committed_revision(
+            record.access_id, grantor_subject=record.grantor_subject
+        )
+        provenance = dict(record.provenance or {})
+        provenance["prolongations"] = int(provenance.get("prolongations") or 0) + 1
+        provenance["prolonged_at"] = now
+        prolonged = dataclasses.replace(
+            record,
+            card_revision=committed_revision + 1,
+            expires_at=new_expires_at,
+            provenance=provenance,
+        )
+        try:
+            await self._persist_record(prolonged, expected_revision=committed_revision)
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            return {
+                "ok": False,
+                "error": "delegated_card_not_committed",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 503,
+            }
+        await self.notify_change(
+            record.grantor_subject, action="renewed", access=prolonged.to_public_dict()
+        )
+        return {"ok": True, "mode": "prolong", "access": prolonged.to_public_dict()}
 
     async def revoke_access(self, user: Mapping[str, Any], *, access_id: str) -> dict[str, Any]:
         grantor_subject = _subject_from_user(user)

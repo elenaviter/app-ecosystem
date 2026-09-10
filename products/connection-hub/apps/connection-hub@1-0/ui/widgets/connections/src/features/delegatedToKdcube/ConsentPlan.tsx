@@ -102,7 +102,7 @@ function agentName(clientId: string): string {
 
 const AUTOMATION_CLIENT_PREFIX = 'automation:';
 
-// The agent-grant card URL: this same widget, on the Delegated by KDCube tab,
+// The agent-grant card URL: this same widget, on the Access cards tab,
 // with the pending agent grant pre-filled (account + claim focused).
 //
 // A manual automation takes `manual_access_id` instead: the pending pane's only

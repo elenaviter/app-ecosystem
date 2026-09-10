@@ -37,11 +37,11 @@ export function InvocationPolicyControl({
           className={mode === 'always' ? 'active' : ''}
           aria-pressed={mode === 'always'}
           aria-label={`${operation}: always`}
-          title={`Allow every ${operation} invocation while the card remains active`}
+          title={`Allow every ${operation} call while the card is active`}
           disabled={busy || mode === 'always'}
           onClick={() => onSet('always', policy?.revision || 0)}
         >
-          Always
+          Every time
         </button>
         <button
           type="button"
@@ -60,7 +60,14 @@ export function InvocationPolicyControl({
           <small>used</small>
         ) : null}
       </span>
-      {!mode ? <span className="operation-policy__status">policy not set</span> : null}
+      {!mode ? (
+        <span
+          className="operation-policy__status"
+          title="No choice recorded: the tool runs every time. Choose Once to limit it to a single run."
+        >
+          every time (default)
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -106,13 +113,13 @@ export function OperationInvocationChoice({
           disabled={busy}
           onClick={() => onChoose('always')}
         >
-          Always
+          Every time
         </button>
       </span>
       <span className="operation-policy__status" aria-live="polite">
         {mode
-          ? <><code>{operation}</code>: {mode} ({INVOCATION_MODE_TEXT[mode]})</>
-          : 'not chosen yet'}
+          ? <>{mode === 'always' ? 'every time' : 'once'} ({INVOCATION_MODE_TEXT[mode]})</>
+          : <span className="operation-policy__status--attention">choose one</span>}
       </span>
     </span>
   );

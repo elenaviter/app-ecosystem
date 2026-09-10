@@ -12,6 +12,7 @@ import {
   type ResourceDriftState,
   type ResourceOffer,
 } from './resourceEditing';
+import { InfoMark } from '../../components/InfoMark';
 
 /** The head of one resource section in edit mode: name, address hint, and
  *  the per-resource remove action. */
@@ -47,8 +48,7 @@ export function RemovedResourceStub({ title, onUndo }: { title: string; onUndo: 
   return (
     <div className="resource-removed-stub">
       <span>
-        <b>{title}</b> is removed from this card when you save. Its other resources, their policies,
-        and the credential are not affected.
+        Removed when you save: <b>{title}</b>. The card's other resources and its credential stay as they are.
       </span>
       <button type="button" className="inline-more" onClick={onUndo}>Undo</button>
     </div>
@@ -169,16 +169,18 @@ export function ResourceOfferPicker({
   onAdd: (resource: string) => void;
 }) {
   const { compatible, blocked, clientDoor } = pickerOffers(offers, added);
-  if (!compatible.length && !blocked.length && !clientDoor) return null;
+  // Nothing to add and nothing to explain: no section at all.
+  if (!compatible.length && !blocked.length) return null;
   return (
     <div className="resource-offer-picker">
-      <div className="account-title">Add a resource to this card</div>
-      {clientDoor ? (
-        <p className="muted resource-offer-picker__door">
-          This client is connected to <code>{doorName(clientDoor)}</code>. Only what that door serves
-          can join this card; the platform's other doors are out of its reach.
-        </p>
-      ) : null}
+      <div className="edit-section__head">
+        <span className="edit-section__name">Add to this card</span>
+        <InfoMark
+          text={clientDoor
+            ? `This client is connected through the ${doorName(clientDoor)} door, so only what that door serves can be added.`
+            : 'Resources this card may take in addition to what it holds.'}
+        />
+      </div>
       {compatible.length ? (
         <div className="resource-offer-picker__row">
           {compatible.map((offer) => (
@@ -194,11 +196,7 @@ export function ResourceOfferPicker({
           ))}
         </div>
       ) : (
-        <p className="muted resource-offer-picker__empty">
-          {clientDoor
-            ? 'Nothing else is served through that door.'
-            : 'Nothing else compatible is delegable to this card.'}
-        </p>
+        <p className="muted resource-offer-picker__empty">Nothing more can be added.</p>
       )}
       {blocked.length ? (
         <ul className="resource-offer-picker__blocked">

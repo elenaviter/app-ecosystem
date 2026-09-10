@@ -40,6 +40,14 @@
   --danger-rgb:   248, 113, 113;
   --danger-text:  #B91C1C;
   --gold-gate:    #B8860B;   /* governance gold, light theme */
+  /* A muted banana yellow for the kind of caller that is a connected app,
+     and for the selected card: warm, quiet, and not teal. */
+  --banana:       #F2DC8A;
+  --banana-pale:  #FFF6D8;   /* the notice yellow: warm, pale, not bright */
+  --banana-line:  #EAD48C;
+  --banana-text:  #6F5600;
+  --lilac-pale:   #ECEBFF;
+  --lilac-line:   #C9C6FF;
 
   --focus:        rgba(1, 190, 178, 0.40);
 
@@ -751,7 +759,7 @@ h2 {
 .claim-chip {
   font-family: var(--mono);
   border: 1px solid var(--line-soft);
-  background: rgba(1, 190, 178, 0.08);
+  background: var(--surface-2);
   color: var(--text-2);
   border-radius: var(--r-sm);
   padding: 2.5px 8px;
@@ -2758,7 +2766,7 @@ code {
 .rail-row--selectable { cursor: pointer; }
 .rail-row--selectable:hover { border-color: var(--line); background: var(--surface-2); }
 .rail-row--selectable:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
-.rail-row--active { border-color: var(--teal-dark); background: var(--teal-pale); }
+.rail-row--active { border-color: var(--banana-line); background: var(--banana-pale); }
 .rail-row__main { min-width: 0; flex: 1 1 auto; }
 .rail-row__title {
   font-size: 12.5px;
@@ -2879,3 +2887,111 @@ code {
    comes back; Renew issues a new token on a manual card, in place. */
 .card-expiry-hint { margin: 4px 0 8px; font-size: 12px; color: var(--text-2); }
 .renew-confirm .revoke-confirm__q { color: var(--text-2); }
+
+
+/* ---------------------------------------------------------------------------
+   Kind-of-caller badges, the confirm dialog, info marks, collapsible tool
+   list, actions in columns. Why: colour should carry meaning, not decorate.
+   Teal stays for the interactive (links, focus) and for "ready"; the three
+   kinds of caller get three quiet colours of their own, and the selected
+   card a warm one. */
+
+.badge-app { color: var(--banana-text); background: var(--banana-pale); border-color: var(--banana-line); }
+.badge-agent { color: var(--purple-dark); background: var(--lilac-pale); border-color: var(--lilac-line); }
+.badge-neutral { color: var(--text-2); background: var(--surface-2); border-color: var(--line); }
+
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(13, 30, 44, 0.28);
+}
+.confirm-dialog {
+  width: min(420px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  padding: 16px 18px 14px;
+}
+.confirm-dialog__title { font-size: 14px; font-weight: 700; color: var(--ink); }
+.confirm-dialog__body { margin-top: 6px; font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+.confirm-dialog__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+.info-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 5px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font: 700 9.5px/1 var(--mono);
+  color: var(--muted);
+  background: var(--surface);
+  cursor: help;
+  vertical-align: 1px;
+}
+.info-mark:hover, .info-mark:focus-visible { color: var(--ink); border-color: var(--text-2); outline: none; }
+
+/* Section heads of the editor: a name, an info mark, a count, and the fold. */
+.edit-section { margin-top: 10px; border-top: 1px solid var(--line-soft); }
+.edit-section > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 2px;
+  cursor: pointer;
+  list-style: none;
+}
+.edit-section > summary::-webkit-details-marker { display: none; }
+.edit-section > summary::before {
+  content: '▸';
+  color: var(--muted);
+  font-size: 11px;
+  width: 10px;
+}
+.edit-section[open] > summary::before { content: '▾'; }
+.edit-section__name { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+.edit-section__count { font-size: 11.5px; color: var(--muted); margin-left: auto; }
+.edit-section__body { padding: 2px 0 8px 18px; }
+.edit-section--open-static { border-top: 1px solid var(--line-soft); margin-top: 10px; padding-top: 6px; }
+.edit-section--open-static .edit-section__head {
+  display: flex; align-items: center; gap: 8px; min-height: 30px;
+}
+
+/* One line per tool: the name and its policy, the status inline. */
+.resource-operations .outer-operation-editor {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 1px 4px;
+}
+.resource-operations .outer-operation-editor--policy { padding: 2px 6px; }
+.operation-policy { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.operation-policy__label { font-size: 11.5px; color: var(--muted); }
+.operation-policy__status { font-size: 11px; color: var(--muted); }
+.operation-policy__status--attention { color: var(--warn-text); }
+
+/* Actions per service: columns when the pane is wide, one column when it
+   is not, so a service with twenty-five actions is a screen, not a scroll. */
+.namespace-operation-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 0 18px;
+}
+.namespace-operation { border-bottom: 1px solid var(--line-soft); }
+@media (max-width: 720px) {
+  .namespace-operation-list { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* The editor head's one-line summary of what the card holds. */
+.card-editor__summary { font-size: 12px; color: var(--text-2); margin-top: 2px; }
+
+/* Group-by control on the card rail. */
+.rail-groupby { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); padding: 0 2px 4px; }
+.rail-groupby select { font: inherit; font-size: 11.5px; color: var(--text-2); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--surface); padding: 2px 6px; }

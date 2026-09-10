@@ -626,6 +626,36 @@ class GrantStore:
             json.dumps(payload),
         )
 
+    async def extend_access_grant(self, access_token: str, ttl_seconds: int) -> bool:
+        """Give a live binding ``ttl_seconds`` more of life. False when the
+        binding is gone: an expired credential is reissued, never revived."""
+        token = str(access_token or "").strip()
+        if not token:
+            return False
+        return bool(
+            await self._redis_call(
+                "access_grant.extend",
+                "expire",
+                self._agrant_key(token),
+                max(1, int(ttl_seconds)),
+            )
+        )
+
+    async def extend_refresh_token(self, refresh_token: str, ttl_seconds: int) -> bool:
+        """Give a live refresh token ``ttl_seconds`` more of life, so a
+        connected client keeps refreshing without reconnecting."""
+        token = str(refresh_token or "").strip()
+        if not token:
+            return False
+        return bool(
+            await self._redis_call(
+                "refresh.extend",
+                "expire",
+                self._key("refresh", token),
+                max(1, int(ttl_seconds)),
+            )
+        )
+
     async def revoke_access_grant(self, access_token: str) -> bool:
         token = str(access_token or "").strip()
         if not token:

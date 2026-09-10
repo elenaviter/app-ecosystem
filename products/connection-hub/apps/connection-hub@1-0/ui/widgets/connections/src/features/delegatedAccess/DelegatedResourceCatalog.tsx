@@ -7,6 +7,7 @@ import type {
 } from '../../api/types';
 import { consentPlanState, type ConsentPlanAction } from '../delegatedToKdcube/ConsentPlan';
 import { doorGrantsForOperation } from './pendingGrantProjection';
+import { InfoMark } from '../../components/InfoMark';
 
 interface NamedServiceOperationRow {
   operation: string;
@@ -217,29 +218,31 @@ export function DelegatedResourceCatalog({
   return (
     <div className="resource-boundaries">
       <div className="resource-boundaries-head">
-        <strong>Named-service access</strong>
+        <span className="edit-section__name">Actions per service</span>
+        <InfoMark text="Which actions of each service this caller may perform through this door. A service starts closed: open it to pick single actions, or use All and None on its line." />
         <span className="resource-boundaries-bulk">
           <button
             type="button"
+            title="Every action these services offer today. Actions a service adds later are not included until you tick them."
             onClick={() => setEveryOperation(true)}
             disabled={selectedCount >= offeredRows.length}
           >
-            Select all currently available
+            All available
           </button>
           <button
             type="button"
             onClick={() => setEveryOperation(false)}
             disabled={!selectedCount}
           >
-            Clear
+            None
           </button>
         </span>
-        <span className="badge">{namespaces.length} namespaces</span>
+        <span className="badge badge-neutral">{selectedCount} of {offeredRows.length}</span>
       </div>
       {offeredRows.length && !selectedCount ? (
         <p className="resource-boundaries-empty">
-          No operations selected - this card will reach no named-service
-          operation on this door.
+          No actions selected: this card can perform nothing through this door
+          until you pick some.
         </p>
       ) : null}
       {namespaces.map((namespace) => {

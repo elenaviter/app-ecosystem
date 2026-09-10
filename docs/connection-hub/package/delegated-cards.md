@@ -1280,28 +1280,28 @@ the portable package. Every field is non-secret.
   admits expired cards and excludes revoked ones; guards and pickers keep
   reading `list_active`.
 - **Renewal** (`delegated_access_renew`, `AutomationAccessService.renew_access`)
-  issues a fresh credential on an existing manual card, expired or live,
-  keeping the card, its `access_id` and everything it holds. It reads the
-  durable current revision through `load_current` (any state), refuses a
-  revoked card (`delegated_access_revoked`) and another owner's card
-  (`delegated_access_not_found`), mints a new bearer with the card's own
-  authority for `ttl_seconds` (default: the card's previous lifetime),
-  commits the next revision with the new `expires_at`, `last_issued_at` and
-  `last_four`, counts it in `provenance.renewals`, and retires the previous
-  session. A renewal before expiry is therefore a rotation. The new token
-  returns once, as at creation. Only manual cards renew here
-  (`delegated_access_renew_unsupported` otherwise): a connected app renews by
-  reconnecting from its client and a hosted agent by being granted again from
-  the chat, both onto the same card.
-- Manual revoke commits a durable `revoked` revision, logs out the bound
-  platform session, and removes live access-grant state.
-- Agent revoke commits the same durable state and removes its reusable
-  server-side bearer authority.
-- OAuth revoke commits the durable state and removes current access-grant and
-  refresh-token state.
-- Every mutation publishes a best-effort
-  `connection_hub.delegated_access.changed` event so open Connection Hub
-  widgets refetch the authoritative list.
+  brings a card's credential back, two ways, chosen by `mode`:
+  - `prolong` keeps the credential a connected app already holds and
+    extends its life: the card's `expires_at`, the app's refresh token and
+    its current access binding get `ttl_seconds` more (default: the card's
+    previous lifetime). Nothing on the client changes, which is the point
+    for a client whose token is buried in its own configuration. It works
+    only while the refresh token still exists; an ended one answers
+    `delegated_access_credential_expired` (reconnect from the client, onto
+    the same card). A manual or agent bearer carries its own end date inside
+    the token, so it is never prolonged (`delegated_access_prolong_unsupported`).
+  - `reissue` issues a fresh bearer on an existing manual card, expired or
+    live, keeping the card, its `access_id` and everything it holds. It
+    reads the durable current revision through `load_current` (any state),
+    refuses a revoked card (`delegated_access_revoked`) and another owner's
+    card (`delegated_access_not_found`), mints the new bearer with the
+    card's own authority, commits the next revision with the new
+    `expires_at`, `last_issued_at` and `last_four`, retires the previous
+    session, and returns the token once, as at creation. Only manual cards
+    reissue here (`delegated_access_renew_unsupported` otherwise).
+  Both count in `provenance` (`prolongations`, `renewals`). Editing a card
+  is independent of its expiry: `delegated_access_update` works on an
+  expired card, and the credential comes back by renewal.
 
 ## Implementation Map
 

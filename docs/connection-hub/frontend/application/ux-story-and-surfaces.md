@@ -42,12 +42,12 @@ the questions, in that order. Operator surfaces sit apart.
  operator                           Access map · Authenticators
 ```
 
-Today the widget shows, in this order: External MCP, Identity, Delegated to
-KDCube, Provider connections, Delegated by KDCube, Access map,
-Authenticators. Two of them answer question 2 twice (one by claims, one by
-connector-app tiers), and "delegated to" versus "delegated by" asks the
-reader to keep a direction in mind that the three questions make
-unnecessary.
+The tabs now read in that order: Identity, Accounts, Provider connections,
+External MCP, Access cards, then the operator tabs. "Accounts" was
+"Delegated to KDCube" and "Access cards" was "Delegated by KDCube": the
+direction words asked the reader to keep a mental arrow that the three
+questions make unnecessary. Two tabs still answer question 2 twice (one by
+claims, one by connector-app tiers); merging them is the open item.
 
 ## The reading rules
 
@@ -75,11 +75,18 @@ read every card.
   by the client, never as authority.
 - **Help behind information marks.** No paragraph above a form. A control
   explains itself in its label, and the rest is a tooltip.
-- **An expired card stays.** Expiry ends the token, not the grants. The card
-  keeps its place on the list with an "expired" badge and one line saying
-  how it comes back: Renew on a manual token (a new token, in place, every
-  grant kept), reconnect from the client for a connected app, grant again
+- **An expired card stays, and stays editable.** Expiry ends the credential,
+  not the grants. The card keeps its place on the list with an "expired"
+  badge and one line saying how it comes back: Prolong on a connected app
+  whose credential has not ended yet (the client keeps its token), Reissue
+  on a manual token (a new token, in place, every grant kept), a new grant
   from the chat for a hosted agent. Revoke is the only way a card leaves.
+- **Leaving a dirty edit asks once, in the widget.** Switching cards or
+  leaving the editor with unsaved changes opens the widget's own dialog;
+  a clean edit leaves without a question.
+- **Colour carries meaning.** Teal for the interactive and for "ready", a
+  muted banana yellow for a connected app and for the selected card, lilac
+  for an agent, grey for a manual token, red for expired. Chips are neutral.
 
 ## What a card reads like after the first wave
 
@@ -131,26 +138,26 @@ The editor keeps every choice it had and changes only how it reads:
 These change what the widget says, not only how much of it shows, so they
 wait for a decision.
 
-1. **Tabs tell the story.** Order and names: Identity · Accounts · External
-   MCP · Granted access · (operator) Access map · Authenticators. "Granted
-   access" is what the panel already calls itself. "Accounts" merges
-   Delegated to KDCube and Provider connections into one list of providers,
-   each provider showing its own way of asking (claims or tiers) as a
-   detail of the connect step rather than as a tab. The two state slices
-   and consent flows stay; the tab is one.
-2. **A card is a summary row with details.** The list shows one row per
-   caller: name, kind, door, "38 permissions on 12 services · 3 accounts ·
-   11 operations", approved and expiry, Edit and Revoke. Details open in
-   place. The workbench (rail plus editor) stays for editing.
-3. **Policy wording.** "runs Always | Once" and "policy not set" name a
-   real state (an operation granted without a policy is refused until one
-   is chosen). The row should say so in the person's words: "How may this
-   run? Every time · Once", and "choose one" instead of "policy not set".
-4. **Catalog rows in Read / Write groups.** Inside a namespace, operations
-   grouped as Read and Write with one checkbox per group and the exact
-   operations as the expandable detail, the way consent windows already
-   speak (see the grant vocabulary rule in the platform's capability
-   surfaces).
+Done in the second wave: the tabs renamed and ordered as the story, the
+editor head with a one-line summary of what the card holds, section heads
+with an info mark each (Door, Permissions, Tools, Actions per service),
+Tools folded by default with its count, one line per tool, policy in the
+person's words ("Every time · Once", "every time (default)", "choose one"),
+actions in columns on a wide pane, the resource picker in plain words,
+group-by on the rail (kind, door, state), the styled leave dialog.
+
+Still open:
+
+1. **Merge Accounts and Provider connections** into one list of providers,
+   each showing its own way of asking (claims or tiers) as a detail of the
+   connect step. The two state slices and consent flows stay; the tab is
+   one.
+2. **A card is a summary row with details.** One row per caller with the
+   summary line, details opening in place; the workbench stays for editing.
+3. **Catalog rows in Read / Write groups** inside a namespace, with the
+   exact actions as the expandable detail.
+4. **Group by metadata fields** on the rail, the client-reported fields
+   the filter already knows.
 
 ## Where the rules live in code
 

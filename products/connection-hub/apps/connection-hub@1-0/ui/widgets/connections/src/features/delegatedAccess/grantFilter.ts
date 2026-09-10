@@ -1,5 +1,5 @@
 /**
- * Filtering of the granted-access cards on the "Delegated by KDCube" tab.
+ * Filtering of the granted-access cards on the "Access cards" tab.
  *
  * Every card is one caller's authority, so the list hides what does not match
  * and never reorders by a guessed relevance: a card that should be revoked must

@@ -83,13 +83,6 @@ export function AppShell({
       <nav className="tabs" aria-label="Connection Hub sections" ref={(el) => { tabsRef.current = el; }}>
         <button
           type="button"
-          className={`tab ${activeTab === 'remoteMcp' ? 'active' : ''}`}
-          onClick={() => onTabChange('remoteMcp')}
-        >
-          External MCP
-        </button>
-        <button
-          type="button"
           className={`tab ${activeTab === 'identity' ? 'active' : ''}`}
           onClick={() => onTabChange('identity')}
         >
@@ -100,7 +93,7 @@ export function AppShell({
           className={`tab ${activeTab === 'delegatedToKdcube' ? 'active' : ''}`}
           onClick={() => onTabChange('delegatedToKdcube')}
         >
-          Delegated to KDCube
+          Accounts
         </button>
         <button
           type="button"
@@ -111,10 +104,17 @@ export function AppShell({
         </button>
         <button
           type="button"
+          className={`tab ${activeTab === 'remoteMcp' ? 'active' : ''}`}
+          onClick={() => onTabChange('remoteMcp')}
+        >
+          External MCP
+        </button>
+        <button
+          type="button"
           className={`tab ${activeTab === 'delegatedAccess' ? 'active' : ''}`}
           onClick={() => onTabChange('delegatedAccess')}
         >
-          Delegated by KDCube
+          Access cards
         </button>
         {showAuthenticators ? (
           <button

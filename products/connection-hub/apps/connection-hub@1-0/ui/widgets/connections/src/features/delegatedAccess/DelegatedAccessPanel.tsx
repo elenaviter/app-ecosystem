@@ -8,6 +8,9 @@ import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCata
 import { GrantFilterControls, GrantFilterInfo, GrantFilterSettings } from './GrantFilterBar';
 import { InvocationPolicyControl, OperationInvocationChoice } from './InvocationControls';
 import { FoldedChipRow } from '../../components/ChipFold';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
+import { InfoMark } from '../../components/InfoMark';
+import { CARD_GROUP_OPTIONS, groupCards, type CardGroupBy } from './cardGroups';
 import { groupClaimsByService } from '../../components/claimGroups';
 import { SecretResourceSelector } from './SecretResourceSelector';
 import {
@@ -85,6 +88,11 @@ import {
  *  (tokens and their vocabulary labels), its operations, and its named-service
  *  namespaces/tools all count — matching keeps the WHOLE card so the row stays
  *  understandable in context. */
+// One sentence per section of the editor, behind an info mark.
+const HELP_PERMISSIONS = 'What this caller may reach on this door, per service. Read is read-only, write allows changes. Unticking narrows the card on the caller\'s next call.';
+const HELP_TOOLS = 'The tools of this door the caller may call. A ticked tool runs every time by default; choose Once to allow a single run that you renew by hand. Unticking a tool removes it on the caller\'s next call.';
+const HELP_DOOR = 'The endpoint this caller enters. Everything on this card is reached through it.';
+
 function resourceMatchesQuery(
   item: DelegatedAccessResourceOption,
   query: string,
@@ -1144,8 +1152,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // confirm (our own .btn family, never a native browser dialog): the Revoke
   // button arms a "Revoke? Confirm / Cancel" row on the same spot.
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
-  const [confirmRenewId, setConfirmRenewId] = useState<string | null>(null);
+  const [confirmRenew, setConfirmRenew] = useState<{ accessId: string; mode: 'prolong' | 'reissue' } | null>(null);
   const nowSeconds = Math.floor(Date.now() / 1000);
+  const [railGroupBy, setRailGroupBy] = useState<CardGroupBy>('kind');
+  const [pendingLeave, setPendingLeave] = useState<{ kind: 'switch'; item: DelegatedAccessRecord } | { kind: 'leave' } | null>(null);
   const revoke = async (accessId: string) => {
     setConfirmRevokeId(null);
     await dispatch(revokeDelegatedAccess({ accessId })).unwrap().catch(() => undefined);
@@ -1170,47 +1180,50 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const how = item.source === 'oauth'
       ? 'Reconnect from the client to renew it.'
       : item.source === 'agent'
-        ? 'Grant it again from the chat to renew it.'
-        : 'Renew it to issue a new token.';
+        ? 'It renews itself the next time the agent is granted from the chat.'
+        : 'Reissue the token to make it work again. Prolonging is for a token that has not ended yet.';
     return (
       <div className="card-expiry-hint">
         The token has expired. Every grant on this card is kept. {how}
       </div>
     );
   };
-  const renew = async (accessId: string) => {
-    setConfirmRenewId(null);
-    await dispatch(renewDelegatedAccess({ accessId })).unwrap().catch(() => undefined);
+  const renew = async (accessId: string, mode: 'prolong' | 'reissue') => {
+    setConfirmRenew(null);
+    await dispatch(renewDelegatedAccess({ accessId, mode })).unwrap().catch(() => undefined);
   };
-  const editButton = (item: DelegatedAccessRecord, compact = false) => {
-    const expired = cardState(item) === 'expired';
-    return (
-      <button
-        className="btn"
-        type="button"
-        disabled={busy || expired}
-        title={expired ? 'Expired: renew it first, then edit' : undefined}
-        onClick={() => startEdit(item)}
-      >
-        {compact ? 'Edit' : <>Edit</>}
-      </button>
-    );
-  };
+  // Editing is about the grants, expiry about the credential: one never
+  // blocks the other.
+  const editButton = (item: DelegatedAccessRecord, compact = false) => (
+    <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
+      {compact ? 'Edit' : <>Edit</>}
+    </button>
+  );
+  // Two ways back for a credential: prolong keeps the one the client holds
+  // and extends it (only while it still exists); reissue mints a new manual
+  // token (also after expiry). An agent's credential renews itself.
   const renderRenewControl = (item: DelegatedAccessRecord) => {
-    if (item.source !== 'manual') return null;
     const state = cardState(item);
-    if (state === 'active') return null;
+    if (state === 'active' || item.source === 'agent') return null;
+    // Only a connected app's credential lives server-side (its refresh
+    // token); a manual bearer carries its own end date and is reissued.
+    const canProlong = item.source === 'oauth' && state !== 'expired';
+    const canReissue = item.source === 'manual';
+    if (!canProlong && !canReissue) return null;
     const accessId = item.access_id;
-    if (confirmRenewId === accessId) {
+    if (confirmRenew?.accessId === accessId) {
+      const prolong = confirmRenew.mode === 'prolong';
       return (
         <span className="revoke-confirm renew-confirm">
           <span className="revoke-confirm__q">
-            {state === 'expired' ? 'Issue a new token?' : 'Issue a new token now? The current one stops working.'}
+            {prolong
+              ? 'Extend this credential by its previous lifetime? The client keeps the token it has.'
+              : 'Issue a new token? The current one stops working, and the new one shows once.'}
           </span>
-          <button className="btn" type="button" disabled={busy} onClick={() => renew(accessId)}>
-            Renew
+          <button className="btn" type="button" disabled={busy} onClick={() => renew(accessId, confirmRenew.mode)}>
+            {prolong ? 'Prolong' : 'Reissue'}
           </button>
-          <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => setConfirmRenewId(null)}>
+          <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => setConfirmRenew(null)}>
             Cancel
           </button>
         </span>
@@ -1218,15 +1231,28 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
     return (
       <span className="action-row">
-        <button
-          className="btn"
-          type="button"
-          disabled={busy}
-          title="Issue a new token on this card. Every grant, selection and policy stays as it is."
-          onClick={() => setConfirmRenewId(accessId)}
-        >
-          Renew
-        </button>
+        {canProlong ? (
+          <button
+            className="btn"
+            type="button"
+            disabled={busy}
+            title="Keep the credential the client holds and extend its lifetime. The client keeps working as it is."
+            onClick={() => setConfirmRenew({ accessId, mode: 'prolong' })}
+          >
+            Prolong
+          </button>
+        ) : null}
+        {canReissue ? (
+          <button
+            className="btn btn-ghost"
+            type="button"
+            disabled={busy}
+            title="Issue a new token on this card. Every grant, selection and policy stays; the current token stops working."
+            onClick={() => setConfirmRenew({ accessId, mode: 'reissue' })}
+          >
+            Reissue token
+          </button>
+        ) : null}
       </span>
     );
   };
@@ -1505,6 +1531,27 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     return scope;
   }, [providersWithAccounts]);
+  // Dirty means the edit state differs from what startEdit seeded. Leaving a
+  // clean edit asks nothing; leaving a dirty one asks once, in the widget.
+  const editSnapshot = () => JSON.stringify({
+    editPicks,
+    editResourceOperations,
+    editNamedServiceOperations,
+    editAccountScope,
+    editLabel,
+    editAddedResources,
+    editRemovedResources,
+    editInvocationModes,
+    editAcceptedOperations,
+  });
+  const editSeedRef = useRef<string>('');
+  const currentSnapshot = editSnapshot();
+  useEffect(() => {
+    editSeedRef.current = editingAccessId ? currentSnapshot : '';
+    // The seed is taken once per card, when the edit opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingAccessId]);
+  const editDirty = editingAccessId !== null && currentSnapshot !== editSeedRef.current;
   const startEdit = useCallback((item: DelegatedAccessRecord) => {
     const picks: Record<string, boolean> = {};
     Object.entries(item.resource_grants || {}).forEach(([resource, grants]) => {
@@ -2732,10 +2779,26 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             }
           }}
         />
-        {resource !== '*' ? <DoorRef value={resource} /> : null}
+        {resource !== '*' ? (
+          <div className="edit-section__head">
+            <span className="edit-section__name">Door</span>
+            <InfoMark text={HELP_DOOR} />
+            <DoorRef value={resource} />
+          </div>
+        ) : null}
         {/* One row per service, its verbs as the checkboxes: "canvas: read,
             write" is how the grantor thinks about it. The full token stays in
             the tooltip and in the data-claim attribute. */}
+        <div className="edit-section--open-static" data-section="permissions">
+        <div className="edit-section__head">
+          <span className="edit-section__name">Permissions</span>
+          <InfoMark text={HELP_PERMISSIONS} />
+          <span className="edit-section__count">
+            {editableClaimsFor(item, resource).filter((claim) => editPicks[`${resource}:${claim}`] === true).length}
+            {' of '}
+            {editableClaimsFor(item, resource).length}
+          </span>
+        </div>
         <div className="claim-groups claim-groups--edit">
           {groupClaimsByService(editableClaimsFor(item, resource)).map((group) => (
             <div className="claim-group" key={`${resource}:${group.service}`}>
@@ -2769,10 +2832,24 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </div>
           ))}
         </div>
+        </div>
         {resourceOption?.operations?.length ? (
-          <>
-            <div className="account-title">Operations</div>
-            <div className="resource-grants resource-operations">
+          <details className="edit-section" data-section="tools">
+            <summary>
+              <span className="edit-section__name">Tools</span>
+              <InfoMark text={HELP_TOOLS} />
+              <span className="edit-section__count">
+                {(editResourceOperations[resource] || []).length} of {resourceOption.operations.length} selected
+                {(() => {
+                  const undecided = (editResourceOperations[resource] || []).filter((name) => (
+                    !invocationPolicyFor(item, resource, name)?.mode
+                    && !editInvocationModes[`${resource}:${name}`]
+                  )).length;
+                  return undecided ? ` · ${undecided} on the default (every time)` : '';
+                })()}
+              </span>
+            </summary>
+            <div className="edit-section__body resource-grants resource-operations">
               {resourceOption.operations.map((operation) => {
                 const selected = (editResourceOperations[resource] || []).includes(operation.name);
                 const alreadyGranted = editGrantedOperations(item, resource).includes(operation.name);
@@ -2822,7 +2899,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 );
               })}
             </div>
-          </>
+          </details>
         ) : null}
         {/* Every family: the card type decides how the credential is managed,
             not whether its grantor may change authority. */}
@@ -2946,10 +3023,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const cardBadge = (item: DelegatedAccessRecord) => (
     <>
       {item.source === 'agent'
-        ? <span className="badge badge-ok">agent</span>
+        ? <span className="badge badge-agent">agent</span>
         : item.source === 'oauth'
-          ? <span className="badge badge-ok">connected app</span>
-          : <span className="badge badge-warn">manual token</span>}
+          ? <span className="badge badge-app">connected app</span>
+          : <span className="badge badge-neutral">manual token</span>}
       {expiryBadge(item)}
     </>
   );
@@ -2961,8 +3038,40 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Switching cards while editing discards the edit in progress: ask first.
   const switchEdit = (item: DelegatedAccessRecord) => {
     if (item.access_id === editingAccessId) return;
-    if (!window.confirm('Leave this card? Changes you have not saved will be discarded.')) return;
-    startEdit(item);
+    if (!editDirty) { startEdit(item); return; }
+    setPendingLeave({ kind: 'switch', item });
+  };
+  const renderLeaveDialog = () => (
+    <ConfirmDialog
+      open={pendingLeave !== null}
+      title="Leave this card?"
+      body="Changes you made here are not saved. Leave anyway and discard them?"
+      confirmLabel="Discard and leave"
+      tone="danger"
+      onCancel={() => setPendingLeave(null)}
+      onConfirm={() => {
+        const action = pendingLeave;
+        setPendingLeave(null);
+        if (!action) return;
+        if (action.kind === 'switch') startEdit(action.item);
+        else clearEditState();
+      }}
+    />
+  );
+  // One line on what the card holds, for the editor head.
+  const cardSummary = (item: DelegatedAccessRecord): string => {
+    const claims = Array.from(new Set(Object.values(item.resource_grants || {}).flat()));
+    const services = new Set(claims.map((claim) => claim.split(':')[0]));
+    const tools = outerOperationRows(item).length;
+    const actionServices = namedServiceRows(item).length;
+    const accountIds = Object.values(item.account_scope || {}).flatMap((accounts) => Object.keys(accounts || {}));
+    const parts = [
+      `${claims.length} permission${claims.length === 1 ? '' : 's'} on ${services.size} service${services.size === 1 ? '' : 's'}`,
+      tools ? `${tools} tool${tools === 1 ? '' : 's'}` : '',
+      actionServices ? `actions on ${actionServices} service${actionServices === 1 ? '' : 's'}` : '',
+      accountIds.length ? `${accountIds.length} account${accountIds.length === 1 ? '' : 's'}` : '',
+    ].filter(Boolean);
+    return parts.join(' · ');
   };
   const renderCompactRow = (
     item: DelegatedAccessRecord,
@@ -3004,43 +3113,87 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const who = parseAgentClientId(clientId);
     return (
       <div className="rail-group__head">
-        <strong>{who ? `${who.agent} · ${who.app}` : clientId}</strong>
-        <span className="badge badge-ok">agent</span>
+        <strong>{who ? who.agent : clientId}</strong>
+        {who ? <span className="account-sub">agent in {who.app}</span> : null}
+        <span className="badge badge-agent">agent</span>
       </div>
+    );
+  };
+  const renderRailGroupBy = () => (
+    <div className="rail-groupby">
+      <span>Group by</span>
+      <select
+        value={railGroupBy}
+        aria-label="Group cards by"
+        onChange={(event) => setRailGroupBy(event.target.value as CardGroupBy)}
+      >
+        {CARD_GROUP_OPTIONS.map((option) => (
+          <option key={option.id} value={option.id}>{option.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+  // The rail's groups: by kind (agents first, each agent its own group, then
+  // apps and automations), or by a trait the reader picked.
+  const renderRailGroups = (opts: {
+    activeId?: string;
+    selectFor?: (item: DelegatedAccessRecord) => (() => void) | undefined;
+    actionsFor?: (item: DelegatedAccessRecord) => React.ReactNode;
+  }) => {
+    const rowOpts = (item: DelegatedAccessRecord, inGroup: boolean) => ({
+      inGroup,
+      active: opts.activeId ? item.access_id === opts.activeId : undefined,
+      onSelect: opts.selectFor?.(item),
+      actions: opts.actionsFor?.(item),
+    });
+    if (railGroupBy === 'kind') {
+      return (
+        <>
+          {renderRailGroupBy()}
+          {matchedAgentEntries.map(([clientId, records]) => (
+            <div className="rail-group" key={clientId}>
+              {renderAgentGroupHead(clientId)}
+              {records.map((item) => renderCompactRow(item, rowOpts(item, true)))}
+            </div>
+          ))}
+          {matchedOtherItems.length ? (
+            <div className="rail-group">
+              {matchedAgentEntries.length ? <div className="rail-group__head"><strong>Apps and automations</strong></div> : null}
+              {matchedOtherItems.map((item) => renderCompactRow(item, rowOpts(item, false)))}
+            </div>
+          ) : null}
+        </>
+      );
+    }
+    const all = [...matchedAgentEntries.flatMap(([, records]) => records), ...matchedOtherItems];
+    const groups = groupCards(all, railGroupBy, { stateOf: cardState, doorLabel: cardDoors });
+    return (
+      <>
+        {renderRailGroupBy()}
+        {groups.map((group) => (
+          <div className="rail-group" key={group.key}>
+            <div className="rail-group__head">
+              <strong>{group.label}</strong>
+              <span className="account-sub">{group.records.length}</span>
+            </div>
+            {group.records.map((item) => renderCompactRow(item, rowOpts(item, false)))}
+          </div>
+        ))}
+      </>
     );
   };
   // Every matched card as compact rows, no page cap (rows are cheap).
   const renderCompactList = () => (
     <div className="compact-list">
-      {matchedAgentEntries.map(([clientId, records]) => (
-        <div className="rail-group" key={clientId}>
-          {renderAgentGroupHead(clientId)}
-          {records.map((item) => renderCompactRow(item, {
-            inGroup: true,
-            actions: (
-              <>
-                {editButton(item, true)}
-                {renderRenewControl(item)}
-                {renderRevokeControl(item)}
-              </>
-            ),
-          }))}
-        </div>
-      ))}
-      {matchedOtherItems.length ? (
-        <div className="rail-group">
-          {matchedAgentEntries.length ? <div className="rail-group__head"><strong>Apps and automations</strong></div> : null}
-          {matchedOtherItems.map((item) => renderCompactRow(item, {
-            actions: (
-              <>
-                {isEditableRecord(item) ? editButton(item, true) : null}
-                {renderRenewControl(item)}
-                {renderRevokeControl(item)}
-              </>
-            ),
-          }))}
-        </div>
-      ) : null}
+      {renderRailGroups({
+        actionsFor: (item) => (
+          <>
+            {item.source === 'agent' || isEditableRecord(item) ? editButton(item, true) : null}
+            {renderRenewControl(item)}
+            {renderRevokeControl(item)}
+          </>
+        ),
+      })}
     </div>
   );
   // The workbench: the rail on the left lists every matched card and marks the
@@ -3052,35 +3205,29 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     return (
       <div className="card-workbench" ref={workbenchRef}>
         <aside className="card-rail" aria-label="Access cards">
-          {matchedAgentEntries.map(([clientId, records]) => (
-            <div className="rail-group" key={clientId}>
-              {renderAgentGroupHead(clientId)}
-              {records.map((item) => renderCompactRow(item, {
-                inGroup: true,
-                active: item.access_id === record.access_id,
-                onSelect: () => switchEdit(item),
-              }))}
-            </div>
-          ))}
-          {matchedOtherItems.length ? (
-            <div className="rail-group">
-              {matchedAgentEntries.length ? <div className="rail-group__head"><strong>Apps and automations</strong></div> : null}
-              {matchedOtherItems.map((item) => renderCompactRow(item, {
-                active: item.access_id === record.access_id,
-                onSelect: isEditableRecord(item) ? () => switchEdit(item) : undefined,
-              }))}
-            </div>
-          ) : null}
+          {renderRailGroups({
+            activeId: record.access_id,
+            selectFor: (item) => (
+              item.source === 'agent' || isEditableRecord(item) ? () => switchEdit(item) : undefined
+            ),
+          })}
+          {renderLeaveDialog()}
         </aside>
         <section className="card-editor" aria-label={`Editing ${cardTitle(record)}`}>
           <div className="card-editor__head">
             <div>
               <div className="account-title">{cardTitle(record)} {cardBadge(record)}</div>
+              <div className="card-editor__summary">{cardSummary(record)}</div>
               {record.source === 'manual'
                 ? <ClientIdRef value={record.access_id} kind="access" />
                 : (record.client_id ? <ClientIdRef value={record.client_id} kind="client" /> : null)}
             </div>
-            <button className="btn btn-ghost" type="button" disabled={busy} onClick={clearEditState}>
+            <button
+              className="btn btn-ghost"
+              type="button"
+              disabled={busy}
+              onClick={() => (editDirty ? setPendingLeave({ kind: 'leave' }) : clearEditState())}
+            >
               All cards
             </button>
           </div>
@@ -3342,8 +3489,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       ? <span className="door-suffix">· {door}</span>
                       : null}
                     {item.source === 'oauth'
-                      ? <span className="badge badge-ok">connected app</span>
-                      : <span className="badge badge-warn">manual token</span>}
+                      ? <span className="badge badge-app">connected app</span>
+                      : <span className="badge badge-neutral">manual token</span>}
                     {expiryBadge(item)}
                   </div>
                   {expiryHint(item)}

@@ -155,10 +155,13 @@ test('an ungranted operation offers one atomic once-or-always grant, chosen besi
 
   // An existing grant with no policy runs as always by design, so the control
   // must not report a policy the user never chose: the operator has to tell
-  // "not set" from "Always set" to audit which operations carry a decision.
+  // the default ("every time (default)", no button active) from a chosen
+  // "Every time" (button active, no status) to audit which operations carry
+  // a decision.
   assert.match(controls, /const mode = policy\?\.mode \|\| null;/)
   assert.doesNotMatch(controls, /const mode = policy\?\.mode \|\| 'always';/)
-  assert.match(controls, /\{!mode \? <span className="operation-policy__status">policy not set<\/span> : null\}/)
+  assert.match(controls, /\{!mode \? \(\n\s*<span\n\s*className="operation-policy__status"/)
+  assert.match(controls, />\s*every time \(default\)\s*</)
 
   const css = source('src/styles.css')
   for (const cls of ['.outer-operation-editor--policy', '.operation-policy__label', '.pending-operation-policy']) {

@@ -587,7 +587,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     return (
       <section className="card">
         <div className="card-head">
-          <h2>Delegated to KDCube</h2>
+          <h2>Accounts</h2>
         </div>
         <p className="muted">No external account delegation providers are enabled in this environment.</p>
       </section>
@@ -601,7 +601,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
           External accounts this user allows KDCube applications or automation
           to use. Connecting an account is only step one: each agent or app
           still needs its own grant, per account, for what it may do with it
-          (approved under Delegated by KDCube).
+          (approved under Access cards).
         </p>
         <span className="badge badge-ok">{providerList.length} providers</span>
       </div>

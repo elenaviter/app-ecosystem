@@ -386,9 +386,9 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
           <div className="grant-filter__step-title">Step 3: kind and state are exact</div>
           <p>
             <b>Kind</b> is who holds the credential, the same badge the card shows:{' '}
-            <span className="badge badge-ok">agent</span> a hosted agent's grant,{' '}
-            <span className="badge badge-ok">connected app</span> an OAuth client such as Claude,{' '}
-            <span className="badge badge-warn">manual token</span> a token issued here for your own script or job.
+            <span className="badge badge-agent">agent</span> a hosted agent's grant,{' '}
+            <span className="badge badge-app">connected app</span> an OAuth client such as Claude,{' '}
+            <span className="badge badge-neutral">manual token</span> a token issued here for your own script or job.
           </p>
           <p>
             <b>State</b> reads the card's expiry against now. <b>Active</b>: the expiry is ahead, or none is recorded.{' '}

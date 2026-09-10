@@ -80,7 +80,7 @@ export default function App() {
   // A fresh nonce remounts the delegated panel so it re-reads the URL deep
   // link a summon just wrote (0 = stable initial mount).
   const [delegatedSummonNonce, setDelegatedSummonNonce] = useState(0);
-  // Same remount trick for the delegated-access panel (Delegated by KDCube):
+  // Same remount trick for the delegated-access panel (Access cards):
   // the `connections.hub.open` command carries its pending grant request as
   // PROPS (the URL write is deep-link parity only — an embedded frame may not
   // allow history mutation, and the pane must not depend on it).
