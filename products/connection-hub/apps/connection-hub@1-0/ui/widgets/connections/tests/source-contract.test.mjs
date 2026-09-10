@@ -32,13 +32,19 @@ test('access map is read-only and visible only to platform administrators', () =
 
 test('tab strip remains a single-row overflow carousel', () => {
   const css = source('src/styles.css')
+  const tabsWrapBlock = css.slice(
+    css.indexOf('.tabs-wrap {'),
+    css.indexOf('}', css.indexOf('.tabs-wrap {')),
+  )
   const tabsBlock = css.slice(css.indexOf('.tabs {'), css.indexOf('}', css.indexOf('.tabs {')))
+  assert.match(tabsWrapBlock, /position: sticky/)
+  assert.match(tabsWrapBlock, /top: 0/)
+  assert.match(tabsWrapBlock, /flex: 0 0 auto/)
   assert.match(tabsBlock, /flex-wrap: nowrap/)
   assert.match(tabsBlock, /overflow-x: auto/)
   assert.doesNotMatch(css, /@media \(max-width: 479px\)/)
   assert.match(css, /\.tabs-wrap\[data-fade-left\]::before \{ opacity: 1; \}/)
   assert.match(css, /\.tabs-wrap\[data-fade-right\]::after \{ opacity: 1; \}/)
-  assert.match(css, /\.tabs-wrap \{ position: relative; margin: 0 0 14px; flex: 0 0 auto; \}/)
 
   const shell = source('src/components/AppShell.tsx')
   assert.match(shell, /querySelector\('\.tab\.active'\)/)
@@ -217,7 +223,7 @@ test('the card editor shows a persisted account claim as granted, not pending', 
     .filter((call) => call.slice(0, 200).includes('editAccountScope'))
   assert.ok(editCalls.length >= 2)
   for (const call of editCalls) {
-    assert.match(call.slice(0, 400), /existingScope: seedAccountScopeFromRecord\(item\)/)
+    assert.match(call.slice(0, 400), /existingScope: seedAccountScopeFromRecord\((?:item|record)\)/)
   }
 
   // The create flow deliberately passes no persisted scope: a card being
