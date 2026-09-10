@@ -5664,6 +5664,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             "site_alias": str(site.get("alias") or "connections").strip(),
             "title": str(site.get("title") or "Connection Hub").strip(),
             "widget_alias": "connections_settings",
+            # The platform sign-in page the shell sends a signed-out visitor to,
+            # with `next` appended. Defaults to the page the platform's own
+            # widget bounce uses; a deployment without it names its own.
+            "sign_in_url": str(site.get("sign_in_url") or "/signin/").strip(),
             "tenant": str(identity.get("tenant") or "").strip(),
             "project": str(identity.get("project") or "").strip(),
             "platform_config_url": "/api/cp-frontend-config",

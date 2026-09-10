@@ -297,8 +297,12 @@ What the shell owns, and what it does not:
   `/sites/connections/?tab=delegated_by_kdcube` opens that tab.
 - Because the widget route is authenticated and an iframe request is not a
   top-level navigation, the shell mounts the widget only after `/profile`
-  confirms a session; signed out, it shows its own sign-in card and opens the
-  platform login (popup with polling, or a redirect carrying `next`).
+  confirms a session. Signed out, it sends the visitor to the platform
+  sign-in page with `next` set to the site URL (`/signin/` by default, the
+  page the platform's own widget bounce uses; `site.sign_in_url` overrides
+  it) - automatically once per page load, so an expired session cookie heals
+  without a click, and again on the Sign in button. The session itself is
+  owned by the platform frontend; the shell only reads `/profile`.
 - It answers the widget's `CONFIG_REQUEST` with the runtime configuration and
   relays `kdcube-auth-required` into the login flow.
 

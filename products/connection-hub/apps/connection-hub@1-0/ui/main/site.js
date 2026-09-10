@@ -8,7 +8,11 @@
 
 const DEFAULT_PLATFORM_PREFIX = '/platform'
 const DEFAULT_WIDGET_ALIAS = 'connections_settings'
+const DEFAULT_SIGN_IN_PATH = '/signin/'
 const WIDGET_TAB_PARAMS = ['tab', 'view']
+// One automatic sign-in attempt per page load: a stale session cookie heals
+// without a click, and a genuinely signed-out visitor is not bounced in a loop.
+const SIGN_IN_ATTEMPT_KEY = 'kdcube-connection-hub-signin-attempted'
 
 const frame = document.getElementById('connections-frame')
 const notice = document.getElementById('hub-notice')
@@ -107,12 +111,30 @@ function returnPath() {
   return `${window.location.pathname}${window.location.search}` || siteHomePath()
 }
 
-function loginUrl() {
-  const configured = String(platformConfig?.auth?.loginUrl || '').trim()
-  const target = configured || platformPath()
-  const url = new URL(target, window.location.origin)
-  if (configured) url.searchParams.set('next', returnPath())
+// The platform sign-in page: it reuses a live session (refreshing the
+// session cookies) or runs the identity provider flow, then returns to
+// `next`. The same page the platform bounces a signed-out widget URL to.
+function signInUrl() {
+  const configured = String(platformConfig?.auth?.loginUrl || siteConfig?.sign_in_url || '').trim()
+  const url = new URL(configured || DEFAULT_SIGN_IN_PATH, window.location.origin)
+  url.searchParams.set('next', returnPath())
   return url.toString()
+}
+
+function signInAttempted() {
+  try { return window.sessionStorage.getItem(SIGN_IN_ATTEMPT_KEY) === '1' } catch (_error) { return false }
+}
+
+function markSignInAttempt(value) {
+  try {
+    if (value) window.sessionStorage.setItem(SIGN_IN_ATTEMPT_KEY, '1')
+    else window.sessionStorage.removeItem(SIGN_IN_ATTEMPT_KEY)
+  } catch (_error) {}
+}
+
+function goSignIn() {
+  markSignInAttempt(true)
+  window.location.assign(signInUrl())
 }
 
 // The widget URL: the widget's own bundle route, so its route resolver wins.
@@ -228,25 +250,6 @@ async function refreshProfile(reason = 'profile') {
   return profile
 }
 
-function openLogin() {
-  const target = loginUrl()
-  const popup = window.open(target, 'kdcube_platform_login', 'width=620,height=760')
-  if (!popup) {
-    window.location.assign(target)
-    return
-  }
-  const deadline = Date.now() + 5 * 60 * 1000
-  const timer = window.setInterval(async () => {
-    const current = await refreshProfile('login-poll')
-    if (isAuthenticated(current)) {
-      window.clearInterval(timer)
-      try { popup.close() } catch (_error) {}
-      return
-    }
-    if (popup.closed || Date.now() > deadline) window.clearInterval(timer)
-  }, 1200)
-}
-
 async function signOut() {
   const logoutUrl = String(platformConfig?.auth?.logoutUrl || '/api/platform/logout')
   try {
@@ -256,6 +259,7 @@ async function signOut() {
       body: new URLSearchParams({ next: siteHomePath() }).toString(),
     })
   } finally {
+    markSignInAttempt(true)
     await refreshProfile('logout')
   }
 }
@@ -289,7 +293,16 @@ async function bootstrap() {
       setNotice('')
       notifyWidget('widget-load')
     })
-    await refreshProfile('initial')
+    const current = await refreshProfile('initial')
+    if (isAuthenticated(current)) {
+      markSignInAttempt(false)
+    } else if (!signInAttempted()) {
+      // Expired or missing session cookie: let the sign-in page try to reuse
+      // the live session before showing anyone a sign-in card.
+      setNotice('Checking your session...')
+      goSignIn()
+      return
+    }
     setNotice('')
   } catch (error) {
     setNotice(error instanceof Error ? error.message : String(error), true)
@@ -299,9 +312,9 @@ async function bootstrap() {
 
 authButton.addEventListener('click', () => {
   if (isAuthenticated(profile)) void signOut()
-  else openLogin()
+  else goSignIn()
 })
-signinCardButton.addEventListener('click', () => openLogin())
+signinCardButton.addEventListener('click', () => goSignIn())
 
 // Another tab or the platform login page reports an auth change: re-probe.
 window.addEventListener('kdcube-auth-changed', () => { void refreshProfile('auth-changed') })
@@ -310,7 +323,7 @@ window.addEventListener('message', (event) => {
   if (event.origin !== window.location.origin || event.source !== frame.contentWindow) return
   const message = asObject(event.data)
   if (message.type === 'kdcube-auth-required') {
-    openLogin()
+    goSignIn()
     return
   }
   if (message.type !== 'CONFIG_REQUEST') return
