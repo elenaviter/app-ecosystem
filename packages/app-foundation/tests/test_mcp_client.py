@@ -12,6 +12,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.subscriptions import InMemorySubscriptionBus, ToolsListChanged
 
 from app_foundation.mcp import (
+    RemoteMcpConnectionError,
     connect_remote_tools,
     mcp_tool_schema,
     normalize_mcp_tool_result,
@@ -193,3 +194,59 @@ def test_remote_connection_preserves_authorization_rejection_without_response_bo
         "The remote MCP endpoint rejected the supplied authorization."
     )
     assert "secret" not in error.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [401, 403])
+async def test_streamable_transport_preserves_authorization_status(
+    status_code: int,
+) -> None:
+    async def rejected_app(scope, receive, send) -> None:
+        assert scope["type"] == "http"
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status_code,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b'{"error":"authorization rejected"}',
+            }
+        )
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.setblocking(False)
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(
+            rejected_app,
+            log_config=None,
+            log_level="critical",
+            access_log=False,
+            lifespan="off",
+        )
+    )
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(server.serve, [listener])
+        with anyio.fail_after(5):
+            while not server.started:
+                await anyio.sleep(0.01)
+        try:
+            with pytest.raises(RemoteMcpConnectionError) as caught:
+                await probe_remote_tools(
+                    endpoint=f"http://127.0.0.1:{port}/mcp",
+                    bearer="rejected-bearer",
+                    client_name="foundation-test",
+                    client_version="1",
+                )
+        finally:
+            server.should_exit = True
+
+    assert caught.value.code == "mcp_authorization_rejected"
+    assert "authorization rejected" not in caught.value.message

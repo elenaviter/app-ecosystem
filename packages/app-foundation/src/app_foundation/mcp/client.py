@@ -21,6 +21,14 @@ ProgressHandler = Callable[[float, float | None, str | None], Awaitable[None]]
 TransportFactory = Callable[..., Any]
 
 
+class _RemoteHttpStatusEvidenceError(RuntimeError):
+    """Carry a bounded HTTP status through transports that synthesize MCP errors."""
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__("The remote MCP transport observed an HTTP error status.")
+        self.status_code = status_code
+
+
 @asynccontextmanager
 async def open_mcp_client(
     *,
@@ -229,19 +237,35 @@ async def _streamable_http_transport(
         read=read_timeout_seconds,
         connect=(connect_timeout_seconds or timeout_seconds),
     )
+    authorization_status = 0
+
+    async def record_response_status(response: httpx2.Response) -> None:
+        nonlocal authorization_status
+        if response.status_code in {401, 403}:
+            authorization_status = response.status_code
+
     async with httpx2.AsyncClient(
         headers=dict(headers or {}),
         timeout=timeout,
         follow_redirects=bool(follow_redirects),
         transport=http_transport,
         trust_env=bool(trust_env),
+        event_hooks={"response": [record_response_status]},
     ) as http_client:
-        async with transport_factory(
-            endpoint,
-            http_client=http_client,
-            terminate_on_close=terminate_on_close,
-        ) as streams:
-            yield streams
+        try:
+            async with transport_factory(
+                endpoint,
+                http_client=http_client,
+                terminate_on_close=terminate_on_close,
+            ) as streams:
+                yield streams
+        except Exception as exc:
+            # The MCP SDK intentionally converts a non-2xx POST into a generic
+            # JSON-RPC error. Retain only the status needed to distinguish a
+            # rejected credential from an unreachable or malformed endpoint.
+            if authorization_status:
+                raise _RemoteHttpStatusEvidenceError(authorization_status) from exc
+            raise
 
 
 class RemoteMcpConnectionError(RuntimeError):
