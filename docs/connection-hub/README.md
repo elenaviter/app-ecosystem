@@ -11,6 +11,7 @@ keywords:
   - identity cards
 see_also:
   - ./quick-start-local.md
+  - ./custom-mcp-connector.md
   - ./local-client-helper.md
   - ./macos-user-presence-helper.md
   - ./configuration-and-capabilities.md
@@ -84,6 +85,7 @@ The package contracts are:
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
 - [Delegated secret administration](package/delegated-secret-administration.md)
 - [Aggregate delegated MCP gateway](package/delegated-mcp-gateway.md)
+- [Custom MCP connectors and governed invocation](custom-mcp-connector.md)
 - [Delegated access cards](package/delegated-cards.md)
 - [OAuth delegated credential protocol](package/oauth-delegated-credential-protocol.md)
 - [Connection Hub and governed MCP end-to-end acceptance](testing/end-to-end-acceptance.md)

@@ -38,7 +38,7 @@ from connection_hub.browser_session.model import (
     SessionState,
     VerifiedIdentity,
 )
-from connection_hub.browser_session.next_url import safe_next_path
+from connection_hub.browser_session.next_url import safe_next_target
 from connection_hub.browser_session.protocols import (
     CookiePolicy,
     LoginAttemptStore,
@@ -119,6 +119,10 @@ class BrowserSessionFlow:
     def upstream(self) -> UpstreamIdentity:
         return self._upstream
 
+    @property
+    def cookies(self) -> CookiePolicy:
+        return self._cookies
+
     def _now(self) -> int:
         return int(self._clock())
 
@@ -129,7 +133,7 @@ class BrowserSessionFlow:
             binding=self._token(32),
             nonce=self._token(32),
             code_verifier=self._token(64),
-            next_path=safe_next_path(next_raw),
+            next_path=safe_next_target(next_raw, allowed_origins=self._policy.return_origins),
             created_at=now,
             expires_at=now + self._policy.attempt_ttl_seconds,
             upstream=self._upstream.name,

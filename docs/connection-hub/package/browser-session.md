@@ -4,7 +4,7 @@ title: "Browser Session: one server-held session for every surface"
 summary: "The host-neutral browser session in the connection-hub package: one HttpOnly cookie, server-held upstream identity, sliding renewal, an OIDC code-flow upstream and a Google Identity Services upstream, and the protocols a host implements."
 status: "active"
 tags: ["connection-hub", "package", "browser-session", "oidc", "cognito", "google", "session", "bff"]
-updated_at: 2026-09-09
+updated_at: 2026-09-10
 see_also:
   - "./delegated-authority-and-admission.md"
   - "./oauth-delegated-credential-protocol.md"
@@ -44,7 +44,7 @@ Everything a host owns is injected through protocols:
 | `SessionBackend` | `login_or_register(identity, expires_at)`, `validate(token, now)`, `touch(session_id, expires_at, now)`, `logout(token)`: sessions and the platform user record behind them (KDCube: its Redis session registry and user records). |
 | `LoginAttemptStore` | `put(attempt)`, `take(state)`: one-time login attempts; `take` returns an attempt at most once. |
 | `UpstreamIdentity` | `begin(attempt) -> redirect url`, `complete(params, attempt) -> VerifiedIdentity`, `logout_url()`: who proves the identity. |
-| `CookiePolicy` | Names and attributes of the session and attempt cookies, from deployment configuration. `StandardCookiePolicy` is the default. |
+| `CookiePolicy` | Names and attributes of the session cookie, the login-attempt cookie, and the return cookie that carries the destination across the identity provider's sign-out (so one fixed post-logout URL per origin is registered upstream). `StandardCookiePolicy` is the default. |
 | `IdTokenVerifier` | Signature, issuer, audience and expiry of an upstream ID token. `oidc_jwt.PyJwtVerifier` when PyJWT is installed (`pip install connection-hub[oidc]`). |
 
 `BrowserSessionFlow` is the flow itself, four pure methods a host's router
@@ -67,7 +67,11 @@ authorization code cannot be replayed, and requires the binding cookie to
 match, so only the browser that started the sign-in can finish it. The
 destination goes through `safe_next_path` when the login starts: a same-origin
 absolute path or the default, never a host, a scheme, `//`, or a backslash.
-The callback never chooses where the browser goes.
+The callback never chooses where the browser goes. A deployment with a
+website on another origin lists that origin in `SessionPolicy.return_origins`
+(exact, or `https://*.example.com`); `safe_next_target` then also accepts an
+absolute URL on a listed origin, for the sign-in and for the return after
+the identity provider's sign-out.
 
 ## Sliding renewal
 

@@ -19,6 +19,10 @@ from connection_hub.browser_session.model import CookieSpec
 
 DEFAULT_SESSION_COOKIE = "__Secure-LATC"
 DEFAULT_ATTEMPT_COOKIE = "__Host-kdcube-login"
+# Carries the destination across the identity provider's sign-out round trip,
+# so the registered post-logout URL is one fixed route per origin and the
+# browser still lands where it was.
+DEFAULT_RETURN_COOKIE = "__Host-kdcube-return"
 _ALLOWED_SAME_SITE = ("lax", "strict", "none")
 
 
@@ -28,6 +32,7 @@ class StandardCookiePolicy:
 
     session_name: str = DEFAULT_SESSION_COOKIE
     attempt_name: str = DEFAULT_ATTEMPT_COOKIE
+    return_name: str = DEFAULT_RETURN_COOKIE
     secure: bool = True
     same_site: str = "lax"
     domain: str = ""
@@ -45,6 +50,10 @@ class StandardCookiePolicy:
         if attempt_name.startswith("__Host-") and (self.domain or not self.secure or self.path != "/"):
             attempt_name = "kdcube-login"
         object.__setattr__(self, "attempt_name", attempt_name)
+        return_name = str(self.return_name or "").strip() or DEFAULT_RETURN_COOKIE
+        if return_name.startswith("__Host-") and (self.domain or not self.secure or self.path != "/"):
+            return_name = "kdcube-return"
+        object.__setattr__(self, "return_name", return_name)
 
     def _spec(self, name: str, value: str, max_age: int, *, host_only: bool = False) -> CookieSpec:
         return CookieSpec(
@@ -70,5 +79,12 @@ class StandardCookiePolicy:
     def clear_attempt_cookie(self) -> CookieSpec:
         return self._spec(self.attempt_name, "", 0, host_only=self.attempt_name.startswith("__Host-"))
 
+    def return_cookie(self, next_path: str, *, max_age: int) -> CookieSpec:
+        """The destination to resume after the identity provider's sign-out."""
+        return self._spec(self.return_name, next_path, max(1, int(max_age)), host_only=self.return_name.startswith("__Host-"))
 
-__all__ = ["DEFAULT_ATTEMPT_COOKIE", "DEFAULT_SESSION_COOKIE", "StandardCookiePolicy"]
+    def clear_return_cookie(self) -> CookieSpec:
+        return self._spec(self.return_name, "", 0, host_only=self.return_name.startswith("__Host-"))
+
+
+__all__ = ["DEFAULT_ATTEMPT_COOKIE", "DEFAULT_RETURN_COOKIE", "DEFAULT_SESSION_COOKIE", "StandardCookiePolicy"]

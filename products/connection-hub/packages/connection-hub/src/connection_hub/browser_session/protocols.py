@@ -104,6 +104,10 @@ class CookiePolicy(Protocol):
 
     def clear_attempt_cookie(self) -> CookieSpec: ...
 
+    def return_cookie(self, next_path: str, *, max_age: int) -> CookieSpec: ...
+
+    def clear_return_cookie(self) -> CookieSpec: ...
+
 
 @runtime_checkable
 class IdTokenVerifier(Protocol):

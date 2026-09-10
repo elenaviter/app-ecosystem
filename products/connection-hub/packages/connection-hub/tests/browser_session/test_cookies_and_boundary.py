@@ -60,3 +60,15 @@ def test_browser_session_imports_nothing_from_a_platform_or_the_rest_of_the_hub(
 def _stdlib(root: str) -> bool:
     import sys
     return root in sys.stdlib_module_names
+
+
+def test_return_cookie_carries_the_destination_across_the_upstream_sign_out():
+    from connection_hub.browser_session.cookies import StandardCookiePolicy
+
+    policy = StandardCookiePolicy(secure=True)
+    spec = policy.return_cookie("/chat?tab=2", max_age=300)
+    assert spec.name == "__Host-kdcube-return" and spec.value == "/chat?tab=2"
+    assert spec.http_only and spec.secure and spec.path == "/" and spec.domain == ""
+    assert policy.clear_return_cookie().max_age == 0
+    relaxed = StandardCookiePolicy(secure=False)
+    assert relaxed.return_cookie("/", max_age=1).name == "kdcube-return", "no __Host- without Secure"

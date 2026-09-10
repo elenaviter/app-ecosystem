@@ -240,6 +240,10 @@ This upstream OAuth flow authenticates Connection Hub to the remote MCP
 server. The separate delegated OAuth server at `public/oauth/*` authenticates
 an external caller to Connection Hub and creates that caller's delegated card.
 
+The end-to-end picture for readers, including how a hosted KDCube agent takes
+a connector through the application's `delegated_resource_families` ceiling:
+[Custom MCP Connectors And Governed Invocation](custom-mcp-connector.md).
+
 For every list or call, the proxy resolves the exact current card and connector
 for their common owner. A tool is visible and callable only when all of these
 facts hold:

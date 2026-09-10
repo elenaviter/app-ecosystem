@@ -30,8 +30,13 @@ class SessionPolicy:
     max_ttl_seconds: int = DEFAULT_MAX_TTL_SECONDS
     touch_interval_seconds: int = DEFAULT_TOUCH_INTERVAL_SECONDS
     attempt_ttl_seconds: int = DEFAULT_ATTEMPT_TTL_SECONDS
+    # Origins a sign-in or sign-out may return to besides the platform's own:
+    # a website on another origin of the same deployment. Exact origins, or
+    # ``https://*.example.com`` for its subdomains. Empty: same-origin paths only.
+    return_origins: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "return_origins", tuple(str(o or "").strip().lower().rstrip("/") for o in self.return_origins if str(o or "").strip()))
         if self.idle_ttl_seconds <= 0 or self.max_ttl_seconds <= 0:
             raise ValueError("session ttls must be positive")
         if self.idle_ttl_seconds > self.max_ttl_seconds:

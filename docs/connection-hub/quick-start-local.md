@@ -223,6 +223,10 @@ the default local runtime and external-MCP gateway it is:
 export CONNECTION_HUB_MCP_URL="http://localhost:5173/api/integrations/bundles/local/connection-hub/connection-hub@1-0/public/mcp/remote_mcp_proxy"
 ```
 
+What happens to the connector from here, the two doors, the flattened tool
+list, and how a hosted KDCube agent takes it through its descriptor ceiling:
+[Custom MCP Connectors And Governed Invocation](custom-mcp-connector.md).
+
 ## 3. Choose The Caller Authorization
 
 The governed MCP endpoint supports three local-client paths.
