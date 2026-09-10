@@ -227,7 +227,7 @@ export function AuthenticatorsPanel() {
   return (
     <PaneGroup
       panes={[
-          { id: 'authorities', title: 'Sign-in authorities', content: <AuthoritiesPane /> },
+        { id: 'authorities', title: 'Sign-in authorities', content: <AuthoritiesPane /> },
         { id: 'authenticators', title: 'Request authenticators', content: listPane },
         { id: 'authenticator-form', title: editing ? 'Edit authenticator' : 'Add authenticator', content: formPane },
       ]}
