@@ -345,10 +345,16 @@ export default function App() {
         />
       ) : null}
       {activeTab === 'delegatedToKdcube' ? (
-        <>
-          <DelegatedToKdcubePanel key={delegatedSummonNonce} openParams={delegatedToKdcubeOpenParams ?? undefined} />
-          <ConnectionEdgesPanel telegramConnectStatus={telegramConnectStatus} />
-        </>
+        // Accounts and links side by side on a wide pane, so both are in
+        // reach without scrolling past an unbounded list; stacked when narrow.
+        <div className="tab-split">
+          <div className="tab-split__main">
+            <DelegatedToKdcubePanel key={delegatedSummonNonce} openParams={delegatedToKdcubeOpenParams ?? undefined} />
+          </div>
+          <aside className="tab-split__side">
+            <ConnectionEdgesPanel telegramConnectStatus={telegramConnectStatus} />
+          </aside>
+        </div>
       ) : null}
       {activeTab === 'providerConnections' ? <ProviderConnectionsPanel summon={hubSummon ?? undefined} /> : null}
       {activeTab === 'remoteMcp' ? <RemoteMcpPanel /> : null}
