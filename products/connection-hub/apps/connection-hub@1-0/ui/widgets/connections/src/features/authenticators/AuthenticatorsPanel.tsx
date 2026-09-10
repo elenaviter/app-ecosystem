@@ -2,6 +2,7 @@ import { FormEvent, useMemo, useState } from 'react';
 import type { AuthenticatorRow } from '../../api/types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
+import { AuthoritiesPane } from './AuthoritiesPane';
 import { loadAuthenticators, removeAuthenticator, upsertAuthenticator } from './authenticatorsSlice';
 
 const providerOrder = ['telegram', 'slack', 'oidc', 'google', 'webhook', 'api-key'];
@@ -132,11 +133,6 @@ export function AuthenticatorsPanel() {
 
   const listPane = (
     <section className="card">
-      <p className="muted" style={{ margin: 0 }}>
-        Authenticator modules that can prove an incoming request identity.
-        Secrets are referenced here, but stored through the platform
-        bundle-secret lifecycle.
-      </p>
 
       {localError ? <div className="error" role="alert">{localError}</div> : null}
 
@@ -231,6 +227,7 @@ export function AuthenticatorsPanel() {
   return (
     <PaneGroup
       panes={[
+          { id: 'authorities', title: 'Sign-in authorities', content: <AuthoritiesPane /> },
         { id: 'authenticators', title: 'Request authenticators', content: listPane },
         { id: 'authenticator-form', title: editing ? 'Edit authenticator' : 'Add authenticator', content: formPane },
       ]}

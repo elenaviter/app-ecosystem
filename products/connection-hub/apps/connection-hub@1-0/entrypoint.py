@@ -199,6 +199,7 @@ AGENT_GRANT_DEFAULT_TTL_SECONDS = 7 * 24 * 3600
 CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "authenticators_remove",
     "authenticators_upsert",
+    "authorities_describe",
     "connection_edge_challenge_claim",
     "connection_edge_challenge_create",
     "connection_edge_remove",
@@ -1434,6 +1435,163 @@ def _append_query(url: str, params: Mapping[str, str]) -> str:
     extra = urlencode({k: v for k, v in params.items() if v})
     query = f"{existing}&{extra}" if existing and extra else existing or extra
     return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+
+_SECRET_LIKE_KEYS = {"id_token", "cookie", "client_secret", "secret", "secret_ref", "token"}
+
+
+def _pool_row(raw: Mapping[str, Any], *, primary: bool = False) -> Dict[str, Any]:
+    return {
+        "alias": str(raw.get("alias") or "").strip(),
+        "kind": str(raw.get("kind") or "cognito").strip(),
+        "region": str(raw.get("region") or "").strip(),
+        "user_pool_id": str(raw.get("user_pool_id") or raw.get("pool_id") or "").strip(),
+        "app_client_id": str(raw.get("app_client_id") or raw.get("client_id") or "").strip(),
+        "hosted_ui_domain": str(raw.get("hosted_ui_domain") or "").strip(),
+        "primary": bool(primary),
+    }
+
+
+def _authenticator_facts(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    """The public facts of an authenticator block: never a token, a cookie
+    name, or a secret reference."""
+    return {
+        key: str(raw.get(key) or "").strip()
+        for key in ("type", "region", "user_pool_id", "app_client_id", "hosted_ui_domain", "issuer", "service_client_id")
+        if str(raw.get(key) or "").strip()
+    }
+
+
+async def _describe_authorities(entrypoint: Any) -> Dict[str, Any]:
+    from kdcube_ai_app.apps.middleware.platform_auth import platform_authenticator_descriptor
+    from kdcube_ai_app.auth.bundle.browser_session import browser_session_config, upstream_cognito_providers
+
+    settings = get_settings()
+    bundle = _entrypoint_bundle_id(entrypoint)
+    # 1. The platform's selection, and what the runtime built from it.
+    platform_auth: Dict[str, Any] = {}
+    try:
+        platform_auth = dict(settings.connection_hub_platform_auth_config() or {})
+    except Exception:
+        platform_auth = {}
+    descriptor: Dict[str, Any] = {}
+    try:
+        descriptor = dict(platform_authenticator_descriptor(settings) or {})
+    except Exception:
+        descriptor = {}
+    session_cfg = None
+    try:
+        session_cfg = browser_session_config(settings)
+    except Exception:
+        session_cfg = None
+    pools: list[Dict[str, Any]] = []
+    if session_cfg is not None:
+        try:
+            for cfg in upstream_cognito_providers(session_cfg, settings):
+                pools.append(_pool_row(
+                    {
+                        "alias": getattr(cfg, "alias", ""),
+                        "kind": getattr(cfg, "kind", "cognito"),
+                        "region": getattr(cfg, "region", ""),
+                        "user_pool_id": getattr(cfg, "user_pool_id", ""),
+                        "app_client_id": getattr(cfg, "app_client_id", ""),
+                        "hosted_ui_domain": getattr(cfg, "hosted_ui_domain", "") or "",
+                    },
+                    primary=bool(session_cfg.client_id and getattr(cfg, "app_client_id", "") == session_cfg.client_id),
+                ))
+        except Exception:
+            pools = []
+    selected_provider_id = str(platform_auth.get("provider_id") or "").strip()
+    selected_authority_id = str(platform_auth.get("authority_id") or "").strip()
+    platform_row: Dict[str, Any] = {
+        "authority_id": selected_authority_id,
+        "provider_id": selected_provider_id,
+        "provider_type": str(platform_auth.get("provider_type") or "").strip(),
+        "authenticator": str(descriptor.get("provider") or "").strip(),
+        "authenticator_id": str(descriptor.get("authenticator_id") or "").strip(),
+        "selected_by": str(descriptor.get("source") or "").strip(),
+        "hosted_sign_in": session_cfg is not None,
+        "upstream": (
+            {
+                "type": session_cfg.upstream_type,
+                "issuer_url": session_cfg.issuer_url,
+                "client_id": session_cfg.client_id,
+                "hosted_ui_domain": session_cfg.hosted_ui_domain,
+            }
+            if session_cfg is not None
+            else {}
+        ),
+        "pools": pools,
+        "where": "assembly.yaml: auth.connection_hub.provider_id (auth.type says which lane)",
+    }
+    # 2. Every authority and provider this app's registry declares.
+    registry = authority_registry_config(getattr(entrypoint, "bundle_props", None) or {})
+    authorities_out: list[Dict[str, Any]] = []
+    raw_authorities = registry.get("authorities") if isinstance(registry, Mapping) else None
+    for authority_id, raw_authority in (raw_authorities or {}).items() if isinstance(raw_authorities, Mapping) else []:
+        if not isinstance(raw_authority, Mapping):
+            continue
+        providers_out: list[Dict[str, Any]] = []
+        raw_providers = raw_authority.get("providers")
+        for provider_id, raw_provider in (raw_providers or {}).items() if isinstance(raw_providers, Mapping) else []:
+            if not isinstance(raw_provider, Mapping):
+                continue
+            authenticator = raw_provider.get("authenticator")
+            authenticator = dict(authenticator) if isinstance(authenticator, Mapping) else {}
+            trusted = authenticator.get("trusted_providers")
+            primary_client = str(authenticator.get("app_client_id") or "").strip()
+            row: Dict[str, Any] = {
+                "authority_id": str(authority_id),
+                "provider_id": str(provider_id),
+                "type": str(raw_provider.get("type") or "").strip(),
+                "label": str(raw_provider.get("label") or "").strip(),
+                "enabled": raw_provider.get("enabled") is not False,
+                "platform": str(authority_id) == selected_authority_id and str(provider_id) == selected_provider_id,
+                "authenticator": _authenticator_facts(authenticator),
+                "trusted_providers": [
+                    _pool_row(item, primary=str(item.get("app_client_id") or "").strip() == primary_client)
+                    for item in (trusted if isinstance(trusted, list) else [])
+                    if isinstance(item, Mapping)
+                ],
+                "where": f"bundles.yaml: {bundle}.authority_registry.authorities.{authority_id}.providers.{provider_id}",
+            }
+            input_cfg = raw_provider.get("input")
+            issuer_cfg = raw_provider.get("issuer")
+            if isinstance(input_cfg, Mapping) and isinstance(input_cfg.get("authenticator_ref"), Mapping):
+                ref = input_cfg.get("authenticator_ref") or {}
+                row["session"] = {
+                    "authenticator_ref": {
+                        "authority_id": str(ref.get("authority_id") or "").strip(),
+                        "provider_id": str(ref.get("provider_id") or ref.get("authenticator_id") or "").strip(),
+                    },
+                    "scopes": [str(x) for x in (input_cfg.get("scopes") or []) if str(x).strip()],
+                    "groups_claim": str(input_cfg.get("groups_claim") or "").strip(),
+                    "return_origins": [
+                        str(x) for x in ((issuer_cfg or {}).get("return_origins") or []) if str(x).strip()
+                    ] if isinstance(issuer_cfg, Mapping) else [],
+                }
+            providers_out.append(row)
+        authorities_out.append({
+            "authority_id": str(authority_id),
+            "label": str(raw_authority.get("label") or "").strip(),
+            "platform": bool(raw_authority.get("platform")) or str(authority_id) == selected_authority_id,
+            "providers": providers_out,
+        })
+    # 3. What apps registered when they loaded.
+    discovered: list[Dict[str, Any]] = []
+    redis = getattr(entrypoint, "redis", None)
+    if redis is not None:
+        try:
+            from connection_hub.authority_registry import RedisAuthorityDiscovery
+
+            tenant, project = _runtime_tenant_project(entrypoint)
+            for spec in await RedisAuthorityDiscovery(redis, tenant=tenant, project=project).list_providers():
+                item = spec.to_dict()
+                item.pop("metadata", None)
+                discovered.append(item)
+        except Exception:
+            discovered = []
+    return {"ok": True, "platform": platform_row, "authorities": authorities_out, "discovered": discovered}
 
 
 def _runtime_tenant_project(entrypoint: Any) -> tuple[str, str]:
@@ -5372,6 +5530,20 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             credential=raw_credential,
             grantor_authority=grantor_authority if isinstance(grantor_authority, Mapping) else {},
         )
+
+    @api(method="GET", alias="authorities_describe", route="operations", **_api_visibility("authorities_describe"))
+    async def authorities_describe(self, **kwargs: Any) -> Dict[str, Any]:
+        """The deployment's sign-in authorities, for an administrator: the
+        platform's own sign-in as assembly.yaml selects it and as the runtime
+        built it, every provider of every authority in this app's registry
+        with the pools it trusts (mixed mode), and the authority providers
+        apps registered when they loaded. Read-only: these rows are owned by
+        the descriptors, and each says where it lives."""
+        del kwargs
+        denied = _platform_admin_denied(self)
+        if denied:
+            return {**denied, "message": "The sign-in authorities are available to platform administrators only."}
+        return await _describe_authorities(self)
 
     @api(method="GET", alias="authenticators_list", route="operations", **_api_visibility("authenticators_list"))
     async def authenticators_list(

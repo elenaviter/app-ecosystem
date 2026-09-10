@@ -169,14 +169,18 @@ Still open:
 4. **Group by metadata fields** on the rail, the client-reported fields
    the filter already knows.
 5. **Authenticators shows every authority, the platform's one highlighted.**
-   Today the tab lists only the request authenticators the widget stores
-   itself (Telegram bots, from `authenticators_list`). The platform sign-in
-   authority (Cognito or an OIDC issuer, resolved from the descriptor) and
-   the federated authorities of a mixed deployment (the hub's authority
-   registry, `AuthorityRegistry.list_providers`) do not appear. They belong
-   on the same list, read-only where the descriptor owns them, with the
-   platform's row marked as such and a path to change what can be changed
-   from here. Operator surface; after the user flow.
+   Done in a first form: the tab opens with "Sign-in authorities", read
+   by the administrator operation `authorities_describe`: the platform's
+   selection as assembly.yaml makes it and as the runtime built it (the
+   authenticator kind, which key selected it, hosted sign-in on or off,
+   the upstream issuer and client), every authority and provider of this
+   app's `authority_registry` with the pools it trusts (mixed mode) and
+   the descriptor path each lives at, and the authority providers apps
+   registered at load. Descriptor-owned rows are read-only here: the
+   platform authenticator is built at start-up, so a change is a
+   descriptor edit and a refresh. Editing from the widget would need a
+   write to the Connection Hub bundle props plus a runtime restart hook;
+   open if Elena wants it.
 6. **Access map** is the least clear surface; operator surface; after the
    user flow and the authenticators.
 

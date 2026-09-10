@@ -490,6 +490,86 @@ export interface AuthenticatorsListResult {
   message?: string;
 }
 
+/** The deployment's sign-in authorities, as an administrator reads them. */
+export interface AuthorityPoolRow {
+  alias: string;
+  kind?: string;
+  region?: string;
+  user_pool_id?: string;
+  app_client_id?: string;
+  hosted_ui_domain?: string;
+  /** The pool the platform's own authenticator signs in against. */
+  primary?: boolean;
+}
+
+export interface AuthorityProviderRow {
+  authority_id: string;
+  provider_id: string;
+  type?: string;
+  label?: string;
+  enabled?: boolean;
+  /** The provider assembly.yaml selects as the platform's sign-in. */
+  platform?: boolean;
+  authenticator?: {
+    type?: string;
+    region?: string;
+    user_pool_id?: string;
+    app_client_id?: string;
+    hosted_ui_domain?: string;
+    issuer?: string;
+    service_client_id?: string;
+  };
+  /** Mixed mode: the pools this provider trusts besides its own. */
+  trusted_providers?: AuthorityPoolRow[];
+  /** A session provider: what it takes from its upstream and hands back. */
+  session?: {
+    authenticator_ref?: { authority_id?: string; provider_id?: string };
+    scopes?: string[];
+    groups_claim?: string;
+    return_origins?: string[];
+  };
+  where?: string;
+}
+
+export interface AuthorityRow {
+  authority_id: string;
+  label?: string;
+  platform?: boolean;
+  providers: AuthorityProviderRow[];
+}
+
+export interface DiscoveredAuthorityRow {
+  authority_id: string;
+  provider_id?: string;
+  bundle_id?: string;
+  label?: string;
+  credential_kinds?: string[];
+  authenticators?: string[];
+  transports?: string[];
+}
+
+export interface AuthoritiesDescribeResult {
+  ok?: boolean;
+  platform?: {
+    authority_id?: string;
+    provider_id?: string;
+    provider_type?: string;
+    /** The runtime authenticator built from it: cognito, multi-cognito, oidc, simple. */
+    authenticator?: string;
+    authenticator_id?: string;
+    /** Which descriptor key selected it. */
+    selected_by?: string;
+    hosted_sign_in?: boolean;
+    upstream?: { type?: string; issuer_url?: string; client_id?: string; hosted_ui_domain?: string };
+    pools?: AuthorityPoolRow[];
+    where?: string;
+  };
+  authorities?: AuthorityRow[];
+  discovered?: DiscoveredAuthorityRow[];
+  error?: string;
+  message?: string;
+}
+
 export interface AuthenticatorMutationResult {
   ok?: boolean;
   authenticator?: AuthenticatorRow;

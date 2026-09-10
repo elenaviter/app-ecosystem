@@ -1,6 +1,7 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
 import type {
+  AuthoritiesDescribeResult,
   AuthenticatorMutationResult,
   AuthenticatorRow,
   AuthenticatorsListResult,
@@ -15,6 +16,8 @@ export interface AuthenticatorsState {
   error: string;
   // Operator surface: false when the backend answered platform_admin_required.
   allowed: boolean;
+  authorities: AuthoritiesDescribeResult | null;
+  authoritiesError: string;
 }
 
 const initialState: AuthenticatorsState = {
@@ -24,6 +27,8 @@ const initialState: AuthenticatorsState = {
   busy: false,
   error: '',
   allowed: true,
+  authorities: null,
+  authoritiesError: '',
 };
 
 function message(e: unknown): string {
@@ -54,6 +59,21 @@ export interface UpsertAuthenticatorArgs {
   verifier?: Record<string, unknown>;
   properties?: Record<string, unknown>;
 }
+
+/** The deployment's sign-in authorities: the platform's selection, the
+ *  providers registry with its trusted pools, and what apps registered. */
+export const loadAuthorities = createAsyncThunk<AuthoritiesDescribeResult, void, { rejectValue: string }>(
+  'authenticators/authorities',
+  async (_, { rejectWithValue }) => {
+    try {
+      const res = await getOp<AuthoritiesDescribeResult>('authorities_describe');
+      if (res?.ok === false) return rejectWithValue(res.message || res.error || 'Failed to read the authorities');
+      return res || {};
+    } catch (e) {
+      return rejectWithValue(e instanceof Error ? e.message : String(e));
+    }
+  },
+);
 
 export const upsertAuthenticator = createAsyncThunk<
   AuthenticatorMutationResult,
@@ -117,6 +137,13 @@ const authenticatorsSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
+      .addCase(loadAuthorities.fulfilled, (state, action) => {
+        state.authorities = action.payload;
+        state.authoritiesError = '';
+      })
+      .addCase(loadAuthorities.rejected, (state, action) => {
+        state.authoritiesError = action.payload ?? 'Failed to read the authorities';
+      })
       .addCase(loadAuthenticators.fulfilled, (state, action: PayloadAction<AuthenticatorsListResult>) => {
         state.loading = false;
         if (action.payload.ok === false && action.payload.error === 'platform_admin_required') {

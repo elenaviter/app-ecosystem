@@ -148,8 +148,9 @@ const GUIDES: Record<ConnectionsTab, Guide> = {
   },
   authenticators: {
     summary:
-      'Operator surface: configure the authenticator modules that prove incoming request identities. '
-      + 'Metadata only — secret values stay in the bundle-secret lifecycle and are referenced here by secret_ref.',
+      'Operator surface. The platform\'s own sign-in and every sign-in authority this deployment trusts, '
+      + 'with the pools it accepts in mixed mode, read from the descriptors; and the request authenticators '
+      + '(Telegram bots and the like) you manage here. Secret values stay in the bundle-secret lifecycle.',
     links: [
       {
         label: 'Request authenticators',
