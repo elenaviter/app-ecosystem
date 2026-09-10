@@ -26,6 +26,7 @@ from connection_hub.delegated_credentials.cards.identity import (
     stable_resident_access_id,
 )
 from connection_hub.delegated_credentials.cards.model import (
+    CARD_STATE_ACTIVE,
     CARD_STATE_REVOKED,
     CardAuthority,
     CardCredentialHandles,
@@ -161,6 +162,19 @@ class _Persistence:
             authority
             for authority, _ in self.cards.values()
             if self._owned(authority, subject_hash) and authority_is_usable(authority, moment)
+        ]
+
+    async def load_current(self, access_id, *, subject_hash):
+        entry = self.cards.get(access_id)
+        if entry is None or not self._owned(entry[0], subject_hash):
+            return None
+        return entry
+
+    async def list_current(self, *, subject_hash):
+        return [
+            authority
+            for authority, _ in self.cards.values()
+            if self._owned(authority, subject_hash) and authority.state == CARD_STATE_ACTIVE
         ]
 
     def seed(self, authority: CardAuthority, *, access_token: str = "") -> None:

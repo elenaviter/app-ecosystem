@@ -42,6 +42,7 @@ import {
   compareAgentGroups,
   compareRecords,
   DEFAULT_GRANT_FILTER,
+  recordState,
   isUnfiltered,
   metadataValueText,
   recordMatches,
@@ -74,6 +75,7 @@ import {
   createDelegatedAccess,
   grantAgentAccess,
   loadDelegatedAccess,
+  renewDelegatedAccess,
   revokeDelegatedAccess,
   setDelegatedInvocationPolicy,
   updateDelegatedAccess,
@@ -1142,11 +1144,93 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // confirm (our own .btn family, never a native browser dialog): the Revoke
   // button arms a "Revoke? Confirm / Cancel" row on the same spot.
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [confirmRenewId, setConfirmRenewId] = useState<string | null>(null);
+  const nowSeconds = Math.floor(Date.now() / 1000);
   const revoke = async (accessId: string) => {
     setConfirmRevokeId(null);
     await dispatch(revokeDelegatedAccess({ accessId })).unwrap().catch(() => undefined);
     void dispatch(loadDelegatedAccess());
   };
+  // Expiry as the server saw it, else against the browser clock. An expired
+  // card stays listed: its grants are the work, the token is only the key.
+  const cardState = (item: DelegatedAccessRecord) => (
+    item.expired ? 'expired' : recordState(item, nowSeconds)
+  );
+  const expiryBadge = (item: DelegatedAccessRecord) => {
+    const state = cardState(item);
+    if (state === 'expired') return <span className="badge badge-error">expired</span>;
+    if (state === 'expiring') return <span className="badge badge-warn">expires soon</span>;
+    return null;
+  };
+  // How an expired card of each kind comes back. Only a manual token renews
+  // here; the other two keep their card and renew where their credential is
+  // issued.
+  const expiryHint = (item: DelegatedAccessRecord) => {
+    if (cardState(item) !== 'expired') return null;
+    const how = item.source === 'oauth'
+      ? 'Reconnect from the client to renew it.'
+      : item.source === 'agent'
+        ? 'Grant it again from the chat to renew it.'
+        : 'Renew it to issue a new token.';
+    return (
+      <div className="card-expiry-hint">
+        The token has expired. Every grant on this card is kept. {how}
+      </div>
+    );
+  };
+  const renew = async (accessId: string) => {
+    setConfirmRenewId(null);
+    await dispatch(renewDelegatedAccess({ accessId })).unwrap().catch(() => undefined);
+  };
+  const editButton = (item: DelegatedAccessRecord, compact = false) => {
+    const expired = cardState(item) === 'expired';
+    return (
+      <button
+        className="btn"
+        type="button"
+        disabled={busy || expired}
+        title={expired ? 'Expired: renew it first, then edit' : undefined}
+        onClick={() => startEdit(item)}
+      >
+        {compact ? 'Edit' : <>Edit</>}
+      </button>
+    );
+  };
+  const renderRenewControl = (item: DelegatedAccessRecord) => {
+    if (item.source !== 'manual') return null;
+    const state = cardState(item);
+    if (state === 'active') return null;
+    const accessId = item.access_id;
+    if (confirmRenewId === accessId) {
+      return (
+        <span className="revoke-confirm renew-confirm">
+          <span className="revoke-confirm__q">
+            {state === 'expired' ? 'Issue a new token?' : 'Issue a new token now? The current one stops working.'}
+          </span>
+          <button className="btn" type="button" disabled={busy} onClick={() => renew(accessId)}>
+            Renew
+          </button>
+          <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => setConfirmRenewId(null)}>
+            Cancel
+          </button>
+        </span>
+      );
+    }
+    return (
+      <span className="action-row">
+        <button
+          className="btn"
+          type="button"
+          disabled={busy}
+          title="Issue a new token on this card. Every grant, selection and policy stays as it is."
+          onClick={() => setConfirmRenewId(accessId)}
+        >
+          Renew
+        </button>
+      </span>
+    );
+  };
+
   const renderRevokeControl = (item: DelegatedAccessRecord) => {
     const accessId = item.access_id;
     if (confirmRevokeId === accessId) {
@@ -2860,11 +2944,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     return item.label || item.access_id;
   };
   const cardBadge = (item: DelegatedAccessRecord) => (
-    item.source === 'agent'
-      ? <span className="badge badge-ok">agent</span>
-      : item.source === 'oauth'
-        ? <span className="badge badge-ok">connected app</span>
-        : <span className="badge badge-warn">manual token</span>
+    <>
+      {item.source === 'agent'
+        ? <span className="badge badge-ok">agent</span>
+        : item.source === 'oauth'
+          ? <span className="badge badge-ok">connected app</span>
+          : <span className="badge badge-warn">manual token</span>}
+      {expiryBadge(item)}
+    </>
   );
   const cardDoors = (item: DelegatedAccessRecord): string => Array.from(new Set(
     Object.keys(item.resource_grants || {}).map((r) => (r === '*' ? 'all resources' : (doorAlias(r) || resourceLabelFor(r) || r))),
@@ -2932,7 +3019,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             inGroup: true,
             actions: (
               <>
-                <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>Edit</button>
+                {editButton(item, true)}
+                {renderRenewControl(item)}
                 {renderRevokeControl(item)}
               </>
             ),
@@ -2945,9 +3033,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           {matchedOtherItems.map((item) => renderCompactRow(item, {
             actions: (
               <>
-                {isEditableRecord(item) ? (
-                  <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>Edit</button>
-                ) : null}
+                {isEditableRecord(item) ? editButton(item, true) : null}
+                {renderRenewControl(item)}
                 {renderRevokeControl(item)}
               </>
             ),
@@ -3207,11 +3294,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           ) : (
                             <>
                               <span className="action-row">
-                                <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
-                                  Edit
-                                </button>
+                                {editButton(item)}
                                 <span className="action-slot" aria-hidden="true" />
                               </span>
+                              {renderRenewControl(item)}
                               {renderRevokeControl(item)}
                             </>
                           )}
@@ -3258,7 +3344,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     {item.source === 'oauth'
                       ? <span className="badge badge-ok">connected app</span>
                       : <span className="badge badge-warn">manual token</span>}
+                    {expiryBadge(item)}
                   </div>
+                  {expiryHint(item)}
                   {item.source === 'manual'
                     ? <ClientIdRef value={item.access_id} kind="access" />
                     : (item.client_id && item.client_id !== item.label
@@ -3430,12 +3518,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     <>
                       {editable ? (
                         <span className="action-row">
-                          <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
-                            Edit
-                          </button>
+                          {editButton(item)}
                           <span className="action-slot" aria-hidden="true" />
                         </span>
                       ) : null}
+                      {renderRenewControl(item)}
                       {renderRevokeControl(item)}
                     </>
                   )}

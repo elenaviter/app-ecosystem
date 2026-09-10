@@ -2874,3 +2874,8 @@ code {
   color: var(--warn-text);
   align-self: center;
 }
+
+/* An expired card stays on the list with its grants. The hint says how it
+   comes back; Renew issues a new token on a manual card, in place. */
+.card-expiry-hint { margin: 4px 0 8px; font-size: 12px; color: var(--text-2); }
+.renew-confirm .revoke-confirm__q { color: var(--text-2); }

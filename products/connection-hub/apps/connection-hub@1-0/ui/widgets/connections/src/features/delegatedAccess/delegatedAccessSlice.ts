@@ -6,6 +6,7 @@ import type {
   DelegatedAccessGrantOption,
   DelegatedAccessListResult,
   DelegatedAccessRecord,
+  DelegatedAccessRenewResult,
   DelegatedAccessResourceOperations,
   DelegatedAccessResourceOption,
   DelegatedAccessRevokeResult,
@@ -225,6 +226,25 @@ export const revokeDelegatedAccess = createAsyncThunk<
   },
 );
 
+/** A fresh token on an existing manual card, every grant kept. The server
+ *  answers like creation, so the same one-time token banner shows it. */
+export const renewDelegatedAccess = createAsyncThunk<
+  DelegatedAccessRenewResult,
+  { accessId: string },
+  { rejectValue: string }
+>(
+  'delegatedAccess/renew',
+  async ({ accessId }, { rejectWithValue }) => {
+    try {
+      const res = await postOp<DelegatedAccessRenewResult>('delegated_access_renew', { access_id: accessId });
+      if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to renew delegated access'));
+      return res || {};
+    } catch (e) {
+      return rejectWithValue(message(e));
+    }
+  },
+);
+
 export interface SetDelegatedInvocationPolicyArgs {
   accessId: string;
   resource: string;
@@ -362,6 +382,27 @@ const delegatedAccessSlice = createSlice({
       .addCase(updateDelegatedAccess.rejected, (state, action) => {
         state.busy = false;
         state.error = action.payload ?? 'Failed to update delegated access';
+      })
+      .addCase(renewDelegatedAccess.pending, (state) => {
+        state.busy = true;
+        state.error = '';
+        state.issuedToken = '';
+        state.issuedHeader = '';
+        state.issuedAccess = undefined;
+      })
+      .addCase(renewDelegatedAccess.fulfilled, (state, action: PayloadAction<DelegatedAccessRenewResult>) => {
+        state.busy = false;
+        state.issuedToken = action.payload.access_token || '';
+        state.issuedHeader = action.payload.authorization_header || '';
+        state.issuedAccess = action.payload.access;
+        const renewed = action.payload.access;
+        if (renewed) {
+          state.items = state.items.map((item) => (item.access_id === renewed.access_id ? renewed : item));
+        }
+      })
+      .addCase(renewDelegatedAccess.rejected, (state, action) => {
+        state.busy = false;
+        state.error = action.payload ?? 'Failed to renew delegated access';
       })
       .addCase(revokeDelegatedAccess.pending, (state) => {
         state.busy = true;

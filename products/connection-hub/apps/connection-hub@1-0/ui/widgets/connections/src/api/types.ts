@@ -182,6 +182,9 @@ export interface DelegatedAccessRecord {
    *  which never reaches that endpoint. Not a "last used": a client holding a
    *  valid access token need not have renewed recently. */
   last_issued_at?: number;
+  /** The server's word, against its own clock: the credential has expired.
+   *  The card stays listed so its grants can be renewed. */
+  expired?: boolean;
   last_four?: string;
   source?: 'manual' | 'oauth' | string;
   /** Monotonic revision; sent back on save so a stale editor is refused. */
@@ -350,6 +353,9 @@ export interface DelegatedAccessCreateResult {
     catalog_version?: { expected: string; actual: string };
   };
 }
+
+/** Renewal answers like creation: the renewed card and its new token, once. */
+export type DelegatedAccessRenewResult = DelegatedAccessCreateResult;
 
 export interface DelegatedAccessRevokeResult {
   ok?: boolean;

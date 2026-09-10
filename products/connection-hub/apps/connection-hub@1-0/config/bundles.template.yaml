@@ -51,6 +51,8 @@ bundles:
                 visibility: *default_visibility
               delegated_invocation_policy_set:
                 visibility: *default_visibility
+              delegated_access_renew:
+                visibility: *default_visibility
               delegated_access_revoke:
                 visibility: *default_visibility
               delegated_to_kdcube_catalog:

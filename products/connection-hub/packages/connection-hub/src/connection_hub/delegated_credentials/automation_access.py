@@ -18,6 +18,8 @@ The Connection Hub bundle should only adapt UI operations to this service.
 
 from __future__ import annotations
 
+import dataclasses
+
 import copy
 import hashlib
 import json
@@ -1124,6 +1126,28 @@ class AutomationAccessService:
         authority, handles = loaded
         return record_from_card(authority, handles)
 
+    async def _load_record_any_state(
+        self, access_id: str, *, grantor_subject: str
+    ) -> tuple[AutomationAccessRecord, str] | None:
+        """The owner's card in any state, expired included, with its state.
+        Owner-facing only (listing, renewal); never authority for a call."""
+        loaded = await self._cards().load_current(
+            access_id, subject_hash=_subject_key(grantor_subject)
+        )
+        if loaded is None:
+            return None
+        authority, handles = loaded
+        return record_from_card(authority, handles), str(authority.state)
+
+    async def _list_owner_records(self, grantor_subject: str) -> list[AutomationAccessRecord]:
+        """Every card the grantor still owns: active ones and expired ones,
+        which stay listed for renewal until revoked. Guards and pickers keep
+        reading the active list."""
+        authorities = await self._cards().list_current(
+            subject_hash=_subject_key(grantor_subject)
+        )
+        return [record_from_card(authority) for authority in authorities]
+
     async def _committed_revision(self, access_id: str, *, grantor_subject: str) -> int:
         """The write precondition for this id. A revoked or expired card is not
         live authority but still owns the counter, so this is not derived from
@@ -1676,7 +1700,7 @@ class AutomationAccessService:
 
         now = int(time.time())
         try:
-            records_found = await self._list_active_records(grantor_subject, now=now)
+            records_found = await self._list_owner_records(grantor_subject)
         except CardUnavailable as exc:
             return {
                 "ok": False,
@@ -1703,6 +1727,9 @@ class AutomationAccessService:
         records = []
         for record in records_found:
             item = record.to_public_dict()
+            # Expired cards stay listed so their grants can be renewed; the
+            # flag is the server's word on it, read against its own clock.
+            item["expired"] = bool(record.expires_at and record.expires_at <= now)
             item["catalog_drift"] = drift_by_card[record.access_id]
             # The resident profile behind an agent card, and whether this card
             # already lives under the profile's stable id. A legacy card reads
@@ -4635,6 +4662,153 @@ class AutomationAccessService:
             "account_scope": {
                 p: {a: list(cl) for a, cl in accounts.items()} for p, accounts in account_scope_out.items()
             },
+        }
+
+    async def renew_access(
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        ttl_seconds: Any = None,
+    ) -> dict[str, Any]:
+        """Issue a fresh credential on an existing manual automation card.
+
+        Why: the grants, operation selections, account bindings and policies on
+        a card are the grantor's work; the token is only the key. When the key
+        expires, the work must not have to be redone. Renewal keeps the card,
+        its ``access_id`` and everything it holds, mints a new bearer with the
+        same authority for ``ttl_seconds`` (default: the card's previous
+        lifetime), retires the previous bearer, and returns the new token once,
+        as creation does. It works on an expired card as well as on a live
+        one. Only manual cards renew here: a connected app renews by
+        reconnecting from the client, a hosted agent by being granted again
+        from the chat; both keep their card.
+        """
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        refusal = _delegate_mutation_refusal(user)
+        if refusal is not None:
+            return refusal
+        access_id_value = _clean(access_id)
+        if not access_id_value:
+            return {"ok": False, "error": "delegated_access_id_required"}
+        try:
+            loaded = await self._load_record_any_state(
+                access_id_value, grantor_subject=grantor_subject
+            )
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_cards_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        if loaded is None:
+            return {"ok": False, "error": "delegated_access_not_found", "status": 404}
+        record, state = loaded
+        if record.grantor_subject != grantor_subject:
+            return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
+        if state != CARD_STATE_ACTIVE:
+            return {"ok": False, "error": "delegated_access_revoked", "status": 409}
+        if record.source != ACCESS_SOURCE_MANUAL:
+            return {
+                "ok": False,
+                "error": "delegated_access_renew_unsupported",
+                "source": record.source,
+                "message": (
+                    "A connected app renews by reconnecting from the client."
+                    if record.source == ACCESS_SOURCE_OAUTH
+                    else "A hosted agent renews when it is granted again from the chat."
+                ),
+            }
+        now = int(time.time())
+        previous_lifetime = (
+            int(record.expires_at) - int(record.created_at)
+            if record.expires_at and record.created_at and record.expires_at > record.created_at
+            else 0
+        )
+        requested = ttl_seconds if ttl_seconds not in (None, "", 0, "0") else previous_lifetime
+        ttl = _bounded_ttl(requested or None)
+        committed_revision = await self._committed_revision(
+            access_id_value, grantor_subject=grantor_subject
+        )
+        grants = list(dict.fromkeys(
+            grant
+            for held in record.resource_grants.values()
+            for grant in held
+            if _clean(grant)
+        ))
+        minted = await self._mint_card_credential(
+            user,
+            grantor_subject=grantor_subject,
+            client_id=record.client_id,
+            access_id=access_id_value,
+            grants=grants,
+            operations=list(record.operations),
+            resource_grants=record.resource_grants,
+            resource_operations=record.resource_operations,
+            account_scope=record.account_scope,
+            identity_scope=record.identity_scope,
+            named_services=record.named_services,
+            ttl=ttl,
+            now=now,
+        )
+        access_token = _clean(minted.get("access_token"))
+        expires_in = int(minted.get("expires_in") or ttl)
+        provenance = dict(record.provenance or {})
+        provenance["renewals"] = int(provenance.get("renewals") or 0) + 1
+        provenance["renewed_at"] = now
+        renewed = dataclasses.replace(
+            record,
+            card_revision=committed_revision + 1,
+            session_id=_clean(minted.get("session_id")),
+            expires_at=now + expires_in,
+            last_issued_at=now,
+            last_four=access_token[-4:] if access_token else "",
+            # A manual automation keeps its token client-side only.
+            access_token="",
+            provenance=provenance,
+        )
+        try:
+            await self._persist_record(renewed, expected_revision=committed_revision)
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            return {
+                "ok": False,
+                "error": "delegated_card_not_committed",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 503,
+            }
+        # One live token per manual card: the previous session ends now, so a
+        # renewal before expiry is also a rotation. Best effort; the old
+        # bearer's binding runs out with its own TTL regardless.
+        if record.session_id and record.session_id != renewed.session_id:
+            try:
+                authority = self._authority
+                if authority is None and self._authority_factory is not None:
+                    authority = self._authority_factory(
+                        tenant=self._tenant, project=self._project
+                    )
+                if authority is not None:
+                    await authority.logout(session_id=record.session_id)
+            except Exception:
+                _LOGGER.warning(
+                    "[connection-hub.delegated-access] previous session logout failed card=%s",
+                    access_id_value,
+                    exc_info=True,
+                )
+        await self.notify_change(
+            grantor_subject, action="renewed", access=renewed.to_public_dict()
+        )
+        return {
+            "ok": True,
+            "access": renewed.to_public_dict(),
+            "access_token": access_token,
+            "authorization_header": f"Bearer {access_token}" if access_token else "",
         }
 
     async def revoke_access(self, user: Mapping[str, Any], *, access_id: str) -> dict[str, Any]:

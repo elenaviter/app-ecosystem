@@ -208,6 +208,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "dcr_allowlist_set",
     "delegated_access_create",
     "delegated_invocation_policy_set",
+    "delegated_access_renew",
     "delegated_access_revoke",
     "delegated_access_update",
     "delegated_agent_grant_create",
@@ -3973,6 +3974,54 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 "[connection-hub.agent_grant] granted event authoring failed (non-fatal): client=%s resource=%s",
                 client_id, resource, exc_info=True,
             )
+
+    @api(
+        method="POST",
+        alias="delegated_access_renew",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_access_renew"),
+    )
+    async def delegated_access_renew(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Issue a fresh token on an existing manual automation card, expired
+        or not, keeping every grant, selection, account binding and policy it
+        holds. The previous token is retired. The new token is returned once,
+        as at creation. Optional ``ttl_seconds``; default is the card's
+        previous lifetime."""
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        result = await _automation_access_service(self, request).renew_access(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            ttl_seconds=payload.get("ttl_seconds"),
+        )
+        if result.get("ok") is not True or not isinstance(result.get("access"), dict):
+            return result
+        # Policies key on the card id and survive renewal untouched; the
+        # renewed card carries them so the UI need not reload the list.
+        try:
+            owner_subject = str(user.get("user_id") or user.get("sub") or "").strip()
+            policies = [
+                policy.to_public_dict()
+                for policy in await _invocation_policy_service(self).list_for_card(
+                    owner_subject=owner_subject,
+                    access_id=str(result["access"].get("access_id") or ""),
+                )
+            ]
+        except Exception as exc:
+            return _invocation_policy_failure(exc)
+        result["access"]["invocation_policies"] = policies
+        return result
 
     @api(
         method="POST",

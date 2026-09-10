@@ -1269,9 +1269,30 @@ the portable package. Every field is non-secret.
 
 ## Revocation And Expiry
 
-- Expired cards disappear from the normal active list and cease to resolve.
-  Redis removes their live projection, while their durable revisions remain
-  available to history/audit views.
+- An expired card ceases to resolve: Redis drops its live projection and the
+  resolver refuses the durable revision, so no guard, gateway or picker sees
+  it. The durable revision itself remains, with every grant, selection,
+  account binding and policy the card held.
+- The owner's list (`delegated_access_list`) keeps showing an expired card,
+  flagged `expired: true`, until it is revoked. Why: the grants are the
+  grantor's work and the token is only the key, so expiry must not cost the
+  work. The list reads durable membership through `list_current`, which
+  admits expired cards and excludes revoked ones; guards and pickers keep
+  reading `list_active`.
+- **Renewal** (`delegated_access_renew`, `AutomationAccessService.renew_access`)
+  issues a fresh credential on an existing manual card, expired or live,
+  keeping the card, its `access_id` and everything it holds. It reads the
+  durable current revision through `load_current` (any state), refuses a
+  revoked card (`delegated_access_revoked`) and another owner's card
+  (`delegated_access_not_found`), mints a new bearer with the card's own
+  authority for `ttl_seconds` (default: the card's previous lifetime),
+  commits the next revision with the new `expires_at`, `last_issued_at` and
+  `last_four`, counts it in `provenance.renewals`, and retires the previous
+  session. A renewal before expiry is therefore a rotation. The new token
+  returns once, as at creation. Only manual cards renew here
+  (`delegated_access_renew_unsupported` otherwise): a connected app renews by
+  reconnecting from its client and a hosted agent by being granted again from
+  the chat, both onto the same card.
 - Manual revoke commits a durable `revoked` revision, logs out the bound
   platform session, and removes live access-grant state.
 - Agent revoke commits the same durable state and removes its reusable
@@ -1296,6 +1317,7 @@ the portable package. Every field is non-secret.
 | Per-resource accepted descriptor state | `...delegated_credentials.catalog.descriptors` |
 | Portable card read model and compatible-resource offers | `...delegated_credentials.cards.read_model` |
 | Resident-profile fold of legacy records | `automation_access.AutomationAccessService.migrate_resident_profile` |
+| Renewal of a manual card, expired or live | `automation_access.AutomationAccessService.renew_access`; owner reads that see expired cards: `cards.persistence.DurableCardPersistence.load_current`, `.list_current` |
 | Pre-encoding record interpretation | `...delegated_credentials.cards.migration` |
 | Durable catalog history and publication | `...delegated_credentials.catalog.store` and `.publisher`, immutable version documents and complete `active.json` |
 | Current catalog resolution and read-through recovery | `...delegated_credentials.catalog.resolver` |

@@ -75,6 +75,11 @@ read every card.
   by the client, never as authority.
 - **Help behind information marks.** No paragraph above a form. A control
   explains itself in its label, and the rest is a tooltip.
+- **An expired card stays.** Expiry ends the token, not the grants. The card
+  keeps its place on the list with an "expired" badge and one line saying
+  how it comes back: Renew on a manual token (a new token, in place, every
+  grant kept), reconnect from the client for a connected app, grant again
+  from the chat for a hosted agent. Revoke is the only way a card leaves.
 
 ## What a card reads like after the first wave
 
