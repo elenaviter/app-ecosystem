@@ -1,4 +1,5 @@
 import { UserManager, type UserManagerSettings } from 'oidc-client-ts';
+import { connectSession, type SessionClient } from '@kdcube/components-core/session';
 import { settings } from './settings';
 
 type FrontendAuthConfig = {
@@ -14,7 +15,18 @@ type FrontendConfig = {
 };
 
 let configPromise: Promise<FrontendConfig | null> | null = null;
+let sessionPromise: Promise<SessionClient | null> | null = null;
 const FORCE_PROMPT_KEY = 'connection_hub_force_platform_login_prompt';
+
+// The server-held session (platform-hosted sign-in, or an application-hosted
+// one): the shared helper probes /profile, redirects to the sign-in with a
+// same-origin `next`, and posts the logout. No token reaches this widget.
+function sessionClient(): Promise<SessionClient | null> {
+  if (!sessionPromise) {
+    sessionPromise = connectSession({}, `${settings.getBaseUrl()}/api/cp-frontend-config`).catch(() => null);
+  }
+  return sessionPromise;
+}
 
 function normalizePrefix(value: unknown): string {
   const raw = String(value || '/platform').trim() || '/platform';
@@ -109,6 +121,12 @@ function userManagerSettings(config: FrontendConfig): UserManagerSettings | null
 }
 
 export async function startPlatformSignIn(returnTo = window.location.href): Promise<boolean> {
+  // A deployment with a server-side sign-in route (auth.loginUrl) needs no
+  // identity client here: the browser goes there and comes back signed in.
+  const client = await sessionClient();
+  if (client && client.config.loginUrl) {
+    return client.signIn(returnTo);
+  }
   const config = await loadFrontendConfig();
   if (!config) return false;
   const managerSettings = userManagerSettings(config);
@@ -130,6 +148,11 @@ export async function startPlatformSignIn(returnTo = window.location.href): Prom
 }
 
 export async function signOutPlatformSession(): Promise<void> {
+  // The session cookie is HttpOnly: only the server ends it.
+  const client = await sessionClient();
+  if (client) {
+    await client.signOut().catch(() => undefined);
+  }
   const config = await loadFrontendConfig();
   const managerSettings = config ? userManagerSettings(config) : null;
   if (managerSettings) {

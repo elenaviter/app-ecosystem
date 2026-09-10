@@ -15,7 +15,11 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "types": ["node"]
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@kdcube/components-core/session": ["./_shared/components-core/session/index.ts"]
+    }
   },
   "include": ["src", "vite.config.ts"]
 }
