@@ -204,12 +204,14 @@ agent's card, and each grant is intersected with the ceiling.
 
 **Whose concept it is.** It is a KDCube descriptor concept, on the same level
 as `mcp.services` and `agents.<id>.tools`: the application's outbound
-contract. Connection Hub has no field of that name. Connection Hub knows
-cards, resources, grants, policies, and doors. The only thing it receives
-from the ceiling is the list of resource patterns, passed as the caller's
-`resource_ceiling` when the resident agent asks which of the user's resources
-it could request, so that requestable discovery offers only resources the
-agent could actually take.
+contract. Connection Hub has no field of that name and receives nothing
+from it. Connection Hub knows cards, resources, grants, policies, and doors.
+Its caller model carries an optional `resource_ceiling`, a pattern list that
+would narrow requestable discovery for a caller that presents one, and the
+hosted door does not fill it today. So the offers the user sees at consent
+come from the card and the connector list alone, and the ceiling is applied
+when KDCube binds the resources: a grant outside it is not silently dropped,
+it shows in the Extensions list as refused, with the reason.
 
 **Who reads it and where it is enforced.** KDCube reads it, in two places,
 both on the KDCube side of the boundary:
@@ -260,9 +262,12 @@ case-sensitive.
 | `max_resources` | no, default 8 | positive integer | At most this many resources of the family bind in one turn. |
 | `max_tools_per_resource` | no, default 64 | positive integer | At most this many tools per resource. |
 
-A family missing `id`, `resource_kinds`, `transports` or `resource_patterns`
-fails descriptor parsing with `resource_family_<field>_required`, and the
-agent binds no user-owned resource until it is fixed. The agent id is matched
+A family missing a required field fails descriptor parsing with
+`resource_family_id_required`, `resource_family_kinds_required:<id>`,
+`resource_family_transports_required:<id>` or
+`resource_family_patterns_required:<id>`, and an unlisted authority source
+with `unknown_resource_authority_source:<value>`. The agent then binds no
+user-owned resource until the descriptor is fixed. The agent id is matched
 as written, then with dots and dashes folded to underscores.
 
 ### 3.4 What the user sees
