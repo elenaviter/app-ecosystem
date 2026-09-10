@@ -393,9 +393,9 @@ function ScriptBlock({ title, script, note }: { title: string; script: string; n
 
 /** What this card's caller can be done TO from a script, with its identifiers
  *  already inlined. A grant can always be revoked by access id; it can also be
- *  NARROWED in place — the card is the authority the guard resolves live, so a
- *  smaller claim set takes effect on that caller's very next call, on the
- *  credential it already holds. A caller with a stable client identity (a
+ *  EDITED in place, up or down: the card is the authority the guard resolves
+ *  live, so the submitted claim set takes effect on that caller's very next
+ *  call, on the credential it already holds. A caller with a stable client identity (a
  *  connected app, a hosted agent) narrows through the agent-grant op keyed on
  *  its client id; a manual automation narrows through the automation-update op
  *  keyed on its access id — same card-is-authority idea, and the token the
@@ -508,9 +508,9 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
             </div>
             {canNarrow ? (
               <ScriptBlock
-                title="Narrow this caller"
+                title="Edit this caller's access"
                 script={narrow}
-                note="Edit the claims list to the smaller set you want. It becomes the record exactly, and applies on this caller's next call."
+                note="Set the claims to exactly what you want, more or fewer. The list becomes the record and applies on this caller's next call."
               />
             ) : null}
             {canReissue ? (

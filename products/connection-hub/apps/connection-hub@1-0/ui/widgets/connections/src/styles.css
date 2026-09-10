@@ -3043,3 +3043,34 @@ code {
 .rail-group__head strong { font-weight: 700; color: inherit; }
 .rail-group__head .account-sub { font-weight: 600; color: var(--muted); letter-spacing: 0; text-transform: none; }
 .rail-group:first-child .rail-group__head { margin-top: 0; }
+
+
+/* Filter settings as a grid of fields: label above its controls, several
+   fields per row on a wide pane, one under the other on a narrow one. The
+   chips are quiet; a chosen one takes the action blue as an outline. */
+.grant-filter__settings {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 10px 20px;
+  padding: 10px 14px 12px;
+  background: var(--surface);
+  border-color: var(--line);
+}
+.grant-filter__settings-head { grid-column: 1 / -1; align-items: center; padding-bottom: 4px; border-bottom: 1px solid var(--line-soft); }
+.grant-filter__settings-title { display: inline-flex; align-items: center; }
+.grant-filter__row { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; }
+.grant-filter__label { color: var(--text-2); }
+.grant-filter__chip {
+  border-radius: var(--r-md);
+  padding: 4px 10px;
+  min-height: 26px;
+  line-height: 1.2;
+}
+.grant-filter__chip:hover { border-color: var(--text-2); color: var(--ink); }
+.grant-filter__chip.on { border-color: var(--blue); background: rgba(67, 114, 195, 0.08); color: var(--blue-dark); font-weight: 600; }
+.grant-filter__metadata { flex-wrap: nowrap; width: 100%; }
+.grant-filter__metadata select.input { flex: 0 1 45%; }
+.grant-filter__metadata-value { flex: 1 1 auto; width: auto; }
+.grant-filter__dates { gap: 6px 10px; }
+.grant-filter__date .input,
+.grant-filter__controls select.input { min-height: 26px; }

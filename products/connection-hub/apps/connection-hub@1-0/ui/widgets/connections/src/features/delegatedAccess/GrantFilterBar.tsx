@@ -10,6 +10,7 @@
  * explainer describes that module and nothing more.
  */
 import { useEffect } from 'react';
+import { InfoMark } from '../../components/InfoMark';
 import {
   ALL_SEARCH_FIELDS,
   activeSettingCount,
@@ -205,7 +206,10 @@ export function GrantFilterSettings({
   return (
     <div className="grant-filter__settings" id="grant-filter-settings">
       <div className="grant-filter__settings-head">
-        <span className="grant-filter__settings-title">Filter settings</span>
+        <span className="grant-filter__settings-title">
+          Filter settings
+          <InfoMark text="Filters apply as you type. Text is matched plainly over the fields ticked under Where. Nothing is ranked: a card either matches or is hidden." />
+        </span>
         <button type="button" className="inline-more" onClick={reset}>
           reset to defaults
         </button>
@@ -305,9 +309,6 @@ export function GrantFilterSettings({
           </select>
         </div>
       </div>
-      <p className="grant-filter__hint">
-        Filters apply as you type. Text is matched plainly over the fields ticked under where. Nothing is ranked.
-      </p>
     </div>
   );
 }
