@@ -15,6 +15,14 @@ import { AUTH_CONSTRUCTS, constructFacts } from './authConstructs';
 import { loadAuthorities, setPlatformSignIn } from './authenticatorsSlice';
 import { ProviderEditor } from './ProviderEditor';
 
+// Two questions hide in one `type`: who identifies the user (an authority:
+// Cognito pools, an OIDC issuer, the development IDP) and where the sign-in
+// runs (a lane: in the browser with tokens presented, or on the server with
+// one platform session). The pane reads them apart.
+const LANE_TYPES = new Set(['bundle_session_login', 'bundle-session-login', 'bundle_session', 'bundle-session', 'session']);
+const isLane = (row: AuthorityProviderRow) => LANE_TYPES.has((row.type || '').toLowerCase());
+const laneUpstream = (row: AuthorityProviderRow) => row.session?.authenticator_ref?.provider_id || '';
+
 interface Editing {
   authorityId: string;
   providerId: string;
@@ -61,7 +69,7 @@ function Provider({ row, onEdit }: { row: AuthorityProviderRow; onEdit?: (row: A
         <span className="authority-provider__name">
           <strong>{row.provider_id}</strong>
           <span className="account-sub">{row.type || ''}</span>
-          {row.platform ? <span className="badge badge-app">platform sign-in</span> : null}
+          {row.platform ? <span className="badge badge-app">{isLane(row) ? 'current lane' : 'platform authority'}</span> : null}
           {row.enabled === false ? <span className="badge badge-neutral">disabled</span> : null}
         </span>
         {onEdit && row.yaml ? (
@@ -129,6 +137,13 @@ export function AuthoritiesPane() {
   useEffect(() => { void dispatch(loadAuthorities()); }, [dispatch]);
   const { authorityEdit, authorityEditBusy, authorityEditError } = useAppSelector((s) => s.authenticators);
   const platform = authorities?.platform;
+  const platformAuthority = authorities?.authorities?.find((row) => row.authority_id === platform?.authority_id)
+    || authorities?.authorities?.find((row) => row.platform);
+  const providerRows = platformAuthority?.providers || [];
+  const selectedRow = providerRows.find((row) => row.provider_id === platform?.provider_id);
+  const selectedLane = selectedRow && isLane(selectedRow) ? selectedRow : null;
+  const selectedAuthorityId = selectedLane ? laneUpstream(selectedLane) : (selectedRow?.provider_id || '');
+  const selectedAuthorityRow = providerRows.find((row) => row.provider_id === selectedAuthorityId);
   const options = platform?.switch_options || [];
   const [target, setTarget] = useState('');
   const chosen = options.find((option) => option.provider_id === (target || options.find((o) => !o.current)?.provider_id || ''));
@@ -169,21 +184,26 @@ export function AuthoritiesPane() {
             <InfoMark text="The authority every browser and API caller of this deployment signs in against. Selected in assembly.yaml; a change there needs a refresh." />
           </div>
           <div className="authority-platform__grid">
-            <span className="authority-platform__k">provider</span>
+            <span className="authority-platform__k">authority</span>
             <span className="authority-platform__v">
-              <strong>{platform.provider_id || '?'}</strong>
-              <span className="account-sub">{platform.provider_type || ''}</span>
-              <span className="badge badge-app">platform</span>
+              <strong>{selectedAuthorityId || '?'}</strong>
+              <span className="account-sub">{selectedAuthorityRow?.type || ''}</span>
+              <InfoMark text="Who identifies the user: the Cognito pool or pools, an OIDC issuer, or the development IDP. Mixed mode is a property of this authority, its trusted pools." />
+            </span>
+            <span className="authority-platform__k">login lane</span>
+            <span className="authority-platform__v">
+              <strong>{selectedLane ? 'server-side' : 'browser-side'}</strong>
+              <span className="account-sub">
+                {selectedLane
+                  ? `the platform runs the sign-in through ${selectedAuthorityId} and keeps one session; lane provider ${selectedLane.provider_id}`
+                  : `the browser signs in with ${selectedAuthorityId} and presents tokens; the platform verifies each request`}
+              </span>
+              <InfoMark text={selectedLane
+                ? 'Server-side: sites and clients hold no tokens; the platform holds the session (auth.type bundle). The lane provider names its upstream authority.'
+                : 'Browser-side: the site or the client runs the OIDC sign-in and presents the tokens it received; the platform verifies them on every request (auth.type cognito).'} />
             </span>
             <span className="authority-platform__k">runtime authenticator</span>
-            <span className="authority-platform__v"><code>{platform.authenticator || '?'}</code> <span className="account-sub">selected by <code>{platform.selected_by || '?'}</code></span></span>
-            <span className="authority-platform__k">server-side login</span>
-            <span className="authority-platform__v">
-              {platform.hosted_sign_in ? 'on' : 'off'}
-              <InfoMark text={platform.hosted_sign_in
-                ? 'On: the platform runs the sign-in itself and keeps the session server-side (provider browser_session, auth.type bundle). Sites and clients hold no tokens.'
-                : 'Off: a site or a client runs the sign-in on its own and presents the tokens it received; the platform verifies them (provider cognito, auth.type cognito). Switch by changing both keys in assembly.yaml and refreshing.'} />
-            </span>
+            <span className="authority-platform__v"><code>{platform.authenticator || '?'}</code> <span className="account-sub">selected by <code>{platform.selected_by || '?'}</code> as provider <code>{platform.provider_id || '?'}</code></span></span>
             {platform.upstream?.issuer_url ? (
               <>
                 <span className="authority-platform__k">upstream</span>
@@ -201,7 +221,7 @@ export function AuthoritiesPane() {
             ) : null}
             {options.length > 1 ? (
               <>
-                <span className="authority-platform__k">switch to</span>
+                <span className="authority-platform__k">run the sign-in</span>
                 <span className="authority-platform__v">
                   <select
                     className="input input-inline"
@@ -209,13 +229,20 @@ export function AuthoritiesPane() {
                     value={chosen?.provider_id || ''}
                     onChange={(event) => setTarget(event.target.value)}
                   >
-                    {options.map((option) => (
-                      <option key={option.provider_id} value={option.provider_id}>
-                        {option.provider_id}{option.current ? ' (current)' : ''}{option.auth_type === 'bundle' ? ' · server-side login on' : option.auth_type === 'cognito' ? ' · server-side login off' : ''}
-                      </option>
-                    ))}
+                    {options.map((option) => {
+                      const row = providerRows.find((item) => item.provider_id === option.provider_id);
+                      const lane = row && isLane(row);
+                      const label = lane
+                        ? `server-side, through ${laneUpstream(row) || 'its upstream'} (lane ${option.provider_id})`
+                        : `browser-side, with ${option.provider_id}`;
+                      return (
+                        <option key={option.provider_id} value={option.provider_id}>
+                          {label}{option.current ? ' (current)' : ''}
+                        </option>
+                      );
+                    })}
                   </select>
-                  <InfoMark text="Until editing lands here, the switch is these two lines in assembly.yaml. Change both together, keep bundle_id and authority_id, then refresh the runtime. Before turning server-side login on, the identity provider client must carry the origin's two session URLs." />
+                  <InfoMark text="Where the sign-in runs. Browser-side: the site or client signs in with the authority and presents tokens. Server-side: the platform signs in through the authority and keeps one session. Apply writes the two assembly lines; the lane changes on the next refresh. Before going server-side, the identity provider client must carry each origin's two session URLs." />
                 </span>
               </>
             ) : null}
@@ -280,17 +307,40 @@ export function AuthoritiesPane() {
           onClose={() => setEditing(null)}
         />
       ) : null}
-      {(authorities?.authorities || []).map((authority) => (
-        <div className="authority" key={authority.authority_id}>
-          <div className="rail-group__head">
-            <strong>{authority.label || authority.authority_id}</strong>
-            <span className="account-sub">{authority.authority_id}</span>
-            {authority.platform ? <span className="badge badge-app">platform authority</span> : null}
-            <span className="account-sub">{authority.providers.length} provider{authority.providers.length === 1 ? '' : 's'}</span>
+      {(authorities?.authorities || []).map((authority) => {
+        const rows = authority.providers;
+        const who = rows.filter((row) => !isLane(row));
+        const lanes = rows.filter(isLane);
+        return (
+          <div className="authority" key={authority.authority_id}>
+            <div className="rail-group__head">
+              <strong>{authority.label || authority.authority_id}</strong>
+              <span className="account-sub">{authority.authority_id}</span>
+              {authority.platform ? <span className="badge badge-app">platform authority</span> : null}
+            </div>
+            <div className="authority__axis">
+              <span className="edit-section__name">Who identifies users</span>
+              <InfoMark text="The authorities: a Cognito pool or several (mixed mode is the trusted pools of one authority), an OIDC issuer, or the development IDP. The one the platform signs in with is marked." />
+              <span className="account-sub">{who.length}</span>
+            </div>
+            {who.map((row) => (
+              <Provider key={`${authority.authority_id}:${row.provider_id}`} row={{ ...row, platform: row.provider_id === selectedAuthorityId }} onEdit={openEdit} />
+            ))}
+            {lanes.length ? (
+              <>
+                <div className="authority__axis">
+                  <span className="edit-section__name">Server-side login lanes</span>
+                  <InfoMark text="A lane runs the sign-in on the server through one of the authorities above (its upstream) and hands the browser one platform session. The platform is on a lane when server-side login is on." />
+                  <span className="account-sub">{lanes.length}</span>
+                </div>
+                {lanes.map((row) => (
+                  <Provider key={`${authority.authority_id}:${row.provider_id}`} row={{ ...row, platform: Boolean(selectedLane && row.provider_id === selectedLane.provider_id) }} onEdit={openEdit} />
+                ))}
+              </>
+            ) : null}
           </div>
-          {authority.providers.map((row) => <Provider key={`${authority.authority_id}:${row.provider_id}`} row={row} onEdit={openEdit} />)}
-        </div>
-      ))}
+        );
+      })}
       {authorities?.discovered?.length ? (
         <div className="authority">
           <div className="rail-group__head">

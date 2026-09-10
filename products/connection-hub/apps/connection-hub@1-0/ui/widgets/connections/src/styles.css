@@ -3276,3 +3276,7 @@ code {
 .provider-editor__result { margin-top: 8px; padding: 8px 10px; border: 1px solid var(--banana-line); border-radius: var(--r-md); background: var(--banana-pale); font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
 .authority-provider__actions { display: flex; gap: 6px; margin-top: 6px; }
 .constructs { margin-top: 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-2); }
+
+/* The two axes inside an authority group: who identifies users, and the
+   server-side lanes that sign in through them. */
+.authority__axis { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding: 2px 2px 0; font-size: 12px; color: var(--text-2); }
