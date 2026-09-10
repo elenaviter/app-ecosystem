@@ -38,6 +38,8 @@ export function AuthenticatorsPanel() {
   }, [items, supportedProviders]);
 
   const [editing, setEditing] = useState<AuthenticatorRow | null>(null);
+  // The form is summoned: from the tab's action row to add, from a row to edit.
+  const [formOpen, setFormOpen] = useState(false);
   const [provider, setProvider] = useState(providerOptions[0] || 'telegram');
   const [authenticatorId, setAuthenticatorId] = useState(newAuthenticatorId(providerOptions[0] || 'telegram'));
   const [authorityId, setAuthorityId] = useState('');
@@ -52,6 +54,7 @@ export function AuthenticatorsPanel() {
   const [localError, setLocalError] = useState('');
 
   const beginEdit = (row: AuthenticatorRow) => {
+    setFormOpen(true);
     setEditing(row);
     setProvider(row.provider || 'telegram');
     setAuthenticatorId(row.authenticator_id);
@@ -114,6 +117,7 @@ export function AuthenticatorsPanel() {
       })).unwrap();
       await dispatch(loadAuthenticators()).unwrap().catch(() => undefined);
       resetForm(provider);
+      setFormOpen(false);
     } catch (e) {
       setLocalError(e instanceof Error ? e.message : String(e));
     }
@@ -215,7 +219,7 @@ export function AuthenticatorsPanel() {
               {editing ? 'Save authenticator' : 'Add authenticator'}
             </button>
             {editing ? (
-              <button className="btn btn-ghost" type="button" onClick={() => resetForm(provider)}>
+              <button className="btn btn-ghost" type="button" onClick={() => { resetForm(provider); setFormOpen(false); }}>
                 Cancel
               </button>
             ) : null}
@@ -224,13 +228,29 @@ export function AuthenticatorsPanel() {
     </section>
   );
 
+  const closeForm = () => { setFormOpen(false); resetForm(); };
   return (
-    <PaneGroup
-      panes={[
-        { id: 'authorities', title: 'Sign-in authorities', content: <AuthoritiesPane /> },
-        { id: 'authenticators', title: 'Request authenticators', content: listPane },
-        { id: 'authenticator-form', title: editing ? 'Edit authenticator' : 'Add authenticator', content: formPane },
-      ]}
-    />
+    <>
+      {!formOpen ? (
+        <div className="tab-actions">
+          <button className="btn" type="button" onClick={() => { resetForm(); setFormOpen(true); }}>
+            Add authenticator
+          </button>
+        </div>
+      ) : null}
+      <PaneGroup
+        panes={[
+          ...(formOpen ? [{
+            id: 'authenticator-form',
+            title: editing ? 'Edit authenticator' : 'Add authenticator',
+            content: formPane,
+            lead: true,
+            onClose: closeForm,
+          }] : []),
+          { id: 'authorities', title: 'Sign-in authorities', content: <AuthoritiesPane /> },
+          { id: 'authenticators', title: 'Request authenticators', content: listPane },
+        ]}
+      />
+    </>
   );
 }

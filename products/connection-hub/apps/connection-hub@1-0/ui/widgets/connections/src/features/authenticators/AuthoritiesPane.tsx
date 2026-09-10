@@ -16,11 +16,11 @@ function Pool({ pool }: { pool: AuthorityPoolRow }) {
   return (
     <div className="authority-pool">
       <span className="authority-pool__alias">
-        {pool.alias}
+        <span>{pool.alias}</span>
         {pool.primary ? <span className="badge badge-app">platform pool</span> : null}
       </span>
-      <code className="authority-pool__id" title="user pool">{pool.user_pool_id || '?'}</code>
-      <code className="authority-pool__id" title="app client">{pool.app_client_id || '?'}</code>
+      <span className="authority-pool__cell"><span className="authority-pool__k">pool</span><code className="authority-pool__id">{pool.user_pool_id || '?'}</code></span>
+      <span className="authority-pool__cell"><span className="authority-pool__k">client</span><code className="authority-pool__id">{pool.app_client_id || '?'}</code></span>
       <span className="authority-pool__meta">{pool.region || ''}{pool.hosted_ui_domain ? ` · ${pool.hosted_ui_domain.replace(/^https?:\/\//, '')}` : ''}</span>
     </div>
   );
@@ -38,14 +38,15 @@ function Provider({ row }: { row: AuthorityProviderRow }) {
           {row.platform ? <span className="badge badge-app">platform sign-in</span> : null}
           {row.enabled === false ? <span className="badge badge-neutral">disabled</span> : null}
         </span>
-        {row.where ? (
-          <span className="authority-provider__where">
-            <code>{row.where}</code>
-            <CopyButton value={row.where} label="Copy the descriptor path" />
-          </span>
-        ) : null}
       </div>
       {row.label ? <div className="account-sub">{row.label}</div> : null}
+      {row.where ? (
+        <div className="authority-provider__where">
+          <span className="authority-platform__k">where</span>
+          <code>{row.where}</code>
+          <CopyButton value={row.where} label="Copy the descriptor path" />
+        </div>
+      ) : null}
       {!isSession && (auth.user_pool_id || auth.issuer) ? (
         <div className="authority-provider__facts">
           {auth.issuer ? <span>issuer <code>{auth.issuer}</code></span> : null}
@@ -103,8 +104,13 @@ export function AuthoritiesPane() {
             </span>
             <span className="authority-platform__k">runtime authenticator</span>
             <span className="authority-platform__v"><code>{platform.authenticator || '?'}</code> <span className="account-sub">selected by <code>{platform.selected_by || '?'}</code></span></span>
-            <span className="authority-platform__k">hosted sign-in</span>
-            <span className="authority-platform__v">{platform.hosted_sign_in ? 'on: the platform runs the login and holds the session' : 'off: the site or the client signs in and presents tokens'}</span>
+            <span className="authority-platform__k">server-side login</span>
+            <span className="authority-platform__v">
+              {platform.hosted_sign_in ? 'on' : 'off'}
+              <InfoMark text={platform.hosted_sign_in
+                ? 'On: the platform runs the sign-in itself and keeps the session server-side (provider browser_session, auth.type bundle). Sites and clients hold no tokens.'
+                : 'Off: a site or a client runs the sign-in on its own and presents the tokens it received; the platform verifies them (provider cognito, auth.type cognito). Switch by changing both keys in assembly.yaml and refreshing.'} />
+            </span>
             {platform.upstream?.issuer_url ? (
               <>
                 <span className="authority-platform__k">upstream</span>
