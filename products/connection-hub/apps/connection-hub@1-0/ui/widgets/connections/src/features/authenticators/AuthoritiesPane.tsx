@@ -69,7 +69,7 @@ function Provider({ row, onEdit }: { row: AuthorityProviderRow; onEdit?: (row: A
         <span className="authority-provider__name">
           <strong>{row.provider_id}</strong>
           <span className="account-sub">{row.type || ''}</span>
-          {row.platform ? <span className="badge badge-app">{isLane(row) ? 'current lane' : 'platform authority'}</span> : null}
+          {row.platform ? <span className="badge badge-app">{isLane(row) ? 'current lane' : "platform's authenticator"}</span> : null}
           {row.enabled === false ? <span className="badge badge-neutral">disabled</span> : null}
         </span>
         {onEdit && row.yaml ? (
@@ -98,7 +98,7 @@ function Provider({ row, onEdit }: { row: AuthorityProviderRow; onEdit?: (row: A
       {isSession ? (
         <div className="authority-provider__facts">
           <span>
-            upstream <code>{row.session?.authenticator_ref?.provider_id || '?'}</code>
+            authenticator <code>{row.session?.authenticator_ref?.provider_id || '?'}</code>
           </span>
           {row.session?.scopes?.length ? <span>scopes <code>{row.session.scopes.join(' ')}</code></span> : null}
           {row.session?.groups_claim ? <span>groups <code>{row.session.groups_claim}</code></span> : null}
@@ -184,22 +184,22 @@ export function AuthoritiesPane() {
             <InfoMark text="The authority every browser and API caller of this deployment signs in against. Selected in assembly.yaml; a change there needs a refresh." />
           </div>
           <div className="authority-platform__grid">
-            <span className="authority-platform__k">authority</span>
+            <span className="authority-platform__k">authenticator</span>
             <span className="authority-platform__v">
               <strong>{selectedAuthorityId || '?'}</strong>
               <span className="account-sub">{selectedAuthorityRow?.type || ''}</span>
-              <InfoMark text="Who identifies the user: the Cognito pool or pools, an OIDC issuer, or the development IDP. Mixed mode is a property of this authority, its trusted pools." />
+              <InfoMark text="The authenticator that proves who the user is: the Cognito pool or pools, an OIDC issuer, a Google client, or the development IDP. Mixed mode is a property of one Cognito authenticator, its trusted pools." />
             </span>
             <span className="authority-platform__k">login lane</span>
             <span className="authority-platform__v">
               <strong>{selectedLane ? 'server-side' : 'browser-side'}</strong>
               <span className="account-sub">
                 {selectedLane
-                  ? `the platform runs the sign-in through ${selectedAuthorityId} and keeps one session; lane provider ${selectedLane.provider_id}`
-                  : `the browser signs in with ${selectedAuthorityId} and presents tokens; the platform verifies each request`}
+                  ? `the platform runs the sign-in through the authenticator ${selectedAuthorityId} and keeps one session; lane ${selectedLane.provider_id}`
+                  : `the browser signs in with the authenticator ${selectedAuthorityId} and presents tokens; the platform verifies each request`}
               </span>
               <InfoMark text={selectedLane
-                ? 'Server-side: sites and clients hold no tokens; the platform holds the session (auth.type bundle). The lane provider names its upstream authority.'
+                ? 'Server-side: sites and clients hold no tokens; the platform holds the session (auth.type bundle). The lane names the authenticator it signs in through by authenticator_ref.'
                 : 'Browser-side: the site or the client runs the OIDC sign-in and presents the tokens it received; the platform verifies them on every request (auth.type cognito).'} />
             </span>
             <span className="authority-platform__k">runtime authenticator</span>
@@ -233,8 +233,8 @@ export function AuthoritiesPane() {
                       const row = providerRows.find((item) => item.provider_id === option.provider_id);
                       const lane = row && isLane(row);
                       const label = lane
-                        ? `server-side, through ${laneUpstream(row) || 'its upstream'} (lane ${option.provider_id})`
-                        : `browser-side, with ${option.provider_id}`;
+                        ? `server-side, through the authenticator ${laneUpstream(row) || '?'} (lane ${option.provider_id})`
+                        : `browser-side, with the authenticator ${option.provider_id}`;
                       return (
                         <option key={option.provider_id} value={option.provider_id}>
                           {label}{option.current ? ' (current)' : ''}
@@ -242,7 +242,7 @@ export function AuthoritiesPane() {
                       );
                     })}
                   </select>
-                  <InfoMark text="Where the sign-in runs. Browser-side: the site or client signs in with the authority and presents tokens. Server-side: the platform signs in through the authority and keeps one session. Apply writes the two assembly lines; the lane changes on the next refresh. Before going server-side, the identity provider client must carry each origin's two session URLs." />
+                  <InfoMark text="Where the sign-in runs. Browser-side: the site or client signs in with the authenticator and presents tokens. Server-side: the platform signs in through the authenticator and keeps one session. Apply writes the two assembly lines; the lane changes on the next refresh. Before going server-side, the identity provider client must carry each origin's two session URLs." />
                 </span>
               </>
             ) : null}
@@ -319,8 +319,8 @@ export function AuthoritiesPane() {
               {authority.platform ? <span className="badge badge-app">platform authority</span> : null}
             </div>
             <div className="authority__axis">
-              <span className="edit-section__name">Who identifies users</span>
-              <InfoMark text="The authorities: a Cognito pool or several (mixed mode is the trusted pools of one authority), an OIDC issuer, or the development IDP. The one the platform signs in with is marked." />
+              <span className="edit-section__name">Authenticators</span>
+              <InfoMark text="What proves who a user is: a Cognito pool or several (mixed mode is the trusted pools of one authenticator), an OIDC issuer, a Google client, the development IDP. The one the platform signs in with is marked. A server-side lane below points at one of these by authenticator_ref." />
               <span className="account-sub">{who.length}</span>
             </div>
             {who.map((row) => (
@@ -330,7 +330,7 @@ export function AuthoritiesPane() {
               <>
                 <div className="authority__axis">
                   <span className="edit-section__name">Server-side login lanes</span>
-                  <InfoMark text="A lane runs the sign-in on the server through one of the authorities above (its upstream) and hands the browser one platform session. The platform is on a lane when server-side login is on." />
+                  <InfoMark text="A lane runs the sign-in on the server through one of the authenticators above, named by its authenticator_ref, and hands the browser one platform session. The platform is on a lane when server-side login is on." />
                   <span className="account-sub">{lanes.length}</span>
                 </div>
                 {lanes.map((row) => (
