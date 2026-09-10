@@ -7,6 +7,8 @@ import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
 import { GrantFilterControls, GrantFilterInfo, GrantFilterSettings } from './GrantFilterBar';
 import { InvocationPolicyControl, OperationInvocationChoice } from './InvocationControls';
+import { FoldedChipRow } from '../../components/ChipFold';
+import { groupClaimsByService } from '../../components/claimGroups';
 import { SecretResourceSelector } from './SecretResourceSelector';
 import {
   RemovedResourceStub,
@@ -2647,35 +2649,46 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           }}
         />
         {resource !== '*' ? <DoorRef value={resource} /> : null}
-        <div className="resource-grants">
-          {editableClaimsFor(item, resource).map((claim) => {
-            const stale = withdrawnClaims(item, resource).has(claim);
-            return (
-              <label
-                className={stale ? 'grant-chip grant-chip-stale' : 'grant-chip'}
-                key={`${resource}:${claim}`}
-                title={
-                  stale
-                    ? 'No longer offered by the service catalog — already ineffective, removed when you save'
-                    : grantOptionByName.get(claim)?.label || undefined
-                }
-              >
-                <input
-                  type="checkbox"
-                  checked={editPicks[`${resource}:${claim}`] === true}
-                  disabled={stale}
-                  onChange={(event) => toggleEditClaim(resource, claim, event.target.checked)}
-                />
-                <span>{claim}</span>
-                {stale ? <span className="badge badge-warn">withdrawn</span> : null}
-              </label>
-            );
-          })}
+        {/* One row per service, its verbs as the checkboxes: "canvas: read,
+            write" is how the grantor thinks about it. The full token stays in
+            the tooltip and in the data-claim attribute. */}
+        <div className="claim-groups claim-groups--edit">
+          {groupClaimsByService(editableClaimsFor(item, resource)).map((group) => (
+            <div className="claim-group" key={`${resource}:${group.service}`}>
+              <span className="claim-group__service">{group.service}</span>
+              <span className="claim-group__verbs">
+                {group.claims.map(({ token: claim, verb }) => {
+                  const stale = withdrawnClaims(item, resource).has(claim);
+                  return (
+                    <label
+                      className={stale ? 'grant-chip grant-chip-stale' : 'grant-chip'}
+                      key={`${resource}:${claim}`}
+                      data-claim={claim}
+                      title={
+                        stale
+                          ? 'No longer offered by the service catalog: already ineffective, removed when you save'
+                          : `${claim}${grantOptionByName.get(claim)?.label ? `: ${grantOptionByName.get(claim)?.label}` : ''}`
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={editPicks[`${resource}:${claim}`] === true}
+                        disabled={stale}
+                        onChange={(event) => toggleEditClaim(resource, claim, event.target.checked)}
+                      />
+                      <span>{verb || claim}</span>
+                      {stale ? <span className="badge badge-warn">withdrawn</span> : null}
+                    </label>
+                  );
+                })}
+              </span>
+            </div>
+          ))}
         </div>
         {resourceOption?.operations?.length ? (
           <>
             <div className="account-title">Operations</div>
-            <div className="resource-grants">
+            <div className="resource-grants resource-operations">
               {resourceOption.operations.map((operation) => {
                 const selected = (editResourceOperations[resource] || []).includes(operation.name);
                 const alreadyGranted = editGrantedOperations(item, resource).includes(operation.name);
@@ -3101,7 +3114,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                     </span>
                                   </Field>
                                   <Field label="Access">
-                                    <ChipRow entries={grants} title={(claim) => grantOptionByName.get(claim)?.label || undefined} />
+                                    <FoldedChipRow entries={grants} expanded="groups" title={(claim) => grantOptionByName.get(claim)?.label || undefined} />
                                   </Field>
                                 </Fragment>
                               ))}
@@ -3114,7 +3127,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               </Field>
                               {invocationPolicyRows(item).length ? (
                                 <Field label="Invocation">
-                                  <ChipRow entries={invocationPolicyRows(item)} />
+                                  <FoldedChipRow entries={invocationPolicyRows(item)} />
                                 </Field>
                               ) : null}
                               {namedServiceRows(item).length ? (
@@ -3151,7 +3164,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                               : (accountLabelById.get(accountId)
                                                   || <>account no longer connected <span className="acct-stale">(binding kept)</span></>)}
                                           </span>
-                                          <ChipRow entries={(claims || []).includes('*') ? ['all'] : (claims || [])} />
+                                          <FoldedChipRow entries={(claims || []).includes('*') ? ['all'] : (claims || [])} expanded="groups" />
                                         </span>
                                       ))}
                                     </span>
@@ -3306,8 +3319,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             ))}
                           </Field>
                           <Field label="Access">
-                            <ChipRow
+                            <FoldedChipRow
                               entries={Array.from(new Set(Object.values(item.resource_grants || {}).flat()))}
+                              expanded="groups"
                               title={(claim) => grantOptionByName.get(claim)?.label || undefined}
                             />
                           </Field>
@@ -3322,7 +3336,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       </Field>
                       {invocationPolicyRows(item).length ? (
                         <Field label="Invocation">
-                          <ChipRow entries={invocationPolicyRows(item)} />
+                          <FoldedChipRow entries={invocationPolicyRows(item)} />
                         </Field>
                       ) : null}
                       {(() => {
@@ -3353,7 +3367,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                       : (accountLabelById.get(accountId)
                                           || <>account no longer connected <span className="acct-stale">(binding kept)</span></>)}
                                   </span>
-                                  <ChipRow entries={(claims || []).includes('*') ? ['all'] : (claims || [])} />
+                                  <FoldedChipRow entries={(claims || []).includes('*') ? ['all'] : (claims || [])} expanded="groups" />
                                 </span>
                               ))}
                             </span>

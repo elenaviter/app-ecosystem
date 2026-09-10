@@ -202,6 +202,17 @@ export function DelegatedResourceCatalog({
       onOperationChange(namespace, row.operation, row.grants, checked);
     });
   };
+  const setNamespaceOperations = (
+    namespace: string,
+    rows: NamedServiceOperationRow[],
+    checked: boolean,
+  ) => {
+    const held = new Set(selectedOperations[namespace] || []);
+    rows.forEach((row) => {
+      if (held.has(row.operation) === checked) return;
+      onOperationChange(namespace, row.operation, row.grants, checked);
+    });
+  };
 
   return (
     <div className="resource-boundaries">
@@ -248,12 +259,39 @@ export function DelegatedResourceCatalog({
           <details
             className="namespace-boundary"
             key={namespace.namespace}
-            open={includedRows.length > 0}
           >
+            {/* Closed until opened: twelve services with five to twenty-five
+                operations each is a page of checkboxes nobody asked to read.
+                The summary carries the count and All / None, so a whole
+                service is granted or withdrawn without expanding it. */}
             <summary>
               <span>
                 <strong>{namespace.label || namespace.namespace}</strong>
                 <small>{namespace.description || namespace.namespace}</small>
+              </span>
+              <span className="namespace-boundary__quick">
+                <button
+                  type="button"
+                  disabled={includedRows.length >= rows.length}
+                  title={`Grant every operation of ${namespace.label || namespace.namespace}`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setNamespaceOperations(namespace.namespace, rows, true);
+                  }}
+                >
+                  All
+                </button>
+                <button
+                  type="button"
+                  disabled={!includedRows.length}
+                  title={`Withdraw every operation of ${namespace.label || namespace.namespace}`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setNamespaceOperations(namespace.namespace, rows, false);
+                  }}
+                >
+                  None
+                </button>
               </span>
               <span className={`badge${includedRows.length ? ' badge-ok' : ''}`}>
                 {includedRows.length}/{rows.length}
@@ -273,6 +311,7 @@ export function DelegatedResourceCatalog({
                   <label
                     className={`namespace-operation${included ? ' namespace-operation-included' : ''}`}
                     key={`${namespace.namespace}:${row.operation}:${row.grants.join(':')}`}
+                    title={row.grants.length ? `door access: ${row.grants.join(', ')}` : undefined}
                   >
                     <input
                       type="checkbox"
@@ -288,15 +327,18 @@ export function DelegatedResourceCatalog({
                       <strong>{row.label}</strong>
                       {row.description ? <small>{row.description}</small> : null}
                     </span>
+                    {/* The door tokens an operation rides on are the tooltip,
+                        not the row: they only matter when one is not ticked
+                        on the door, and then the row says so. */}
                     <span className="namespace-operation-grants">
-                      {row.grants.map((grant) => (
-                        <code
-                          className={grantsReady ? 'namespace-operation-grant-ready' : ''}
-                          key={`${row.operation}:${grant}`}
-                        >
-                          {grant}
-                        </code>
-                      ))}
+                      {grantsReady ? null : (
+                        <>
+                          <span className="namespace-operation-needs">needs</span>
+                          {row.grants.map((grant) => (
+                            <code key={`${row.operation}:${grant}`}>{grant}</code>
+                          ))}
+                        </>
+                      )}
                     </span>
                   </label>
                 );

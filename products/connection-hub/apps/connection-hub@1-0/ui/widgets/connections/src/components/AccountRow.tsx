@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { FoldedChipRow } from './ChipFold';
 
 export type AccountStatusTone = 'ok' | 'warn' | 'error';
 
@@ -44,9 +45,7 @@ export function AccountRow({
         </div>
         {grantedChips && grantedChips.length ? (
           <div className="claim-list claim-list-granted">
-            {grantedChips.map((chip) => (
-              <span className="claim-chip claim-chip-granted" key={chip}>{chip}</span>
-            ))}
+            <FoldedChipRow entries={grantedChips} chipClass="claim-chip claim-chip-granted" expanded="groups" />
           </div>
         ) : null}
         {subtitle ? <div className="account-sub">{subtitle}</div> : null}

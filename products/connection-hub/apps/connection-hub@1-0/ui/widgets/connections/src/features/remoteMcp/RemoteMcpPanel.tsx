@@ -1,4 +1,5 @@
 import { type FormEvent, useMemo, useState } from 'react';
+import { FoldedChipRow } from '../../components/ChipFold';
 import type { RemoteMcpConnector, RemoteMcpTool } from '../../api/types';
 import { publicMcpUrl, publicOperationUrl } from '../../api/client';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
@@ -224,11 +225,7 @@ function ToolDisclosure({ tool, stateKey, open, onToggle, pending }: ToolDisclos
                       {parameter.enumValues.length ? (
                         <div className="tool-param__meta">
                           <span className="tool-param__meta-label">one of</span>
-                          <span className="chip-row">
-                            {parameter.enumValues.map((value) => (
-                              <code className="claim-chip tool-enum" key={value}>{value}</code>
-                            ))}
-                          </span>
+                          <FoldedChipRow entries={parameter.enumValues} chipClass="claim-chip tool-enum" />
                         </div>
                       ) : null}
                       {parameter.defaultValue ? (
