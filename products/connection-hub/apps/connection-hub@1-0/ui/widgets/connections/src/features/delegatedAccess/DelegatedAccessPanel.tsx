@@ -448,6 +448,18 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
   ].join('\n');
   const narrow = !canNarrow ? '' : isManual ? narrowManual : narrowAgent;
   const script = revoke;
+  // Renewal from a script, the same two ways as the buttons: a manual token
+  // is reissued (the response carries the new token once), a connected app is
+  // prolonged (nothing on the client changes).
+  const renewCommand = (mode: 'reissue' | 'prolong') => [
+    `curl -s -X POST \\`,
+    `  "${operationUrl('delegated_access_renew')}" \\`,
+    `  -H "Authorization: Bearer $TOKEN" \\`,
+    `  -H 'Content-Type: application/json' \\`,
+    `  -d '{"access_id": "${accessId}", "mode": "${mode}"}'`,
+  ].join('\n');
+  const canReissue = isManual;
+  const canProlong = item.source === 'oauth';
   return (
     <>
       <button
@@ -499,6 +511,20 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
                 title="Narrow this caller"
                 script={narrow}
                 note="Edit the claims list to the smaller set you want. It becomes the record exactly, and applies on this caller's next call."
+              />
+            ) : null}
+            {canReissue ? (
+              <ScriptBlock
+                title="Reissue the token"
+                script={renewCommand('reissue')}
+                note={'Works on an expired card too. The response carries the new token once; the previous one stops working. Add "ttl_seconds" to choose a lifetime; the default is the previous one.'}
+              />
+            ) : null}
+            {canProlong ? (
+              <ScriptBlock
+                title="Prolong the credential"
+                script={renewCommand('prolong')}
+                note={'Extends the credential the client holds, while it has not ended. Nothing on the client changes. Add "ttl_seconds" to choose a lifetime; the default is the previous one.'}
               />
             ) : null}
             <ScriptBlock
@@ -3149,7 +3175,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (railGroupBy === 'kind') {
       return (
         <>
-          {renderRailGroupBy()}
           {matchedAgentEntries.map(([clientId, records]) => (
             <div className="rail-group" key={clientId}>
               {renderAgentGroupHead(clientId)}
@@ -3169,7 +3194,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const groups = groupCards(all, railGroupBy, { stateOf: cardState, doorLabel: cardDoors });
     return (
       <>
-        {renderRailGroupBy()}
         {groups.map((group) => (
           <div className="rail-group" key={group.key}>
             <div className="rail-group__head">
@@ -3289,19 +3313,360 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
   };
 
+  // One hosted agent's card in the detailed list.
+  const renderDetailedAgentCard = (item: DelegatedAccessRecord) => {
+                        const editing = editingAccessId === item.access_id;
+                        return (
+                          <li className="account" key={item.access_id}>
+                            <div>
+                              {/* Edit mode keeps the per-claim checkboxes; the
+                                  read-only view is the same labelled-row card the
+                                  connected-app grants use. */}
+                              {editing ? renderEditResourceSections(item) : (
+                                <div className="card-fields">
+                                  {/* Door and Access are paired per door, so which claims
+                                      belong to which door survives on a multi-door grant.
+                                      Connected apps flatten to one Access row; naming the
+                                      row the same way keeps the two cards readable as the
+                                      same kind of entry. */}
+                                  {Object.entries(item.resource_grants || {}).map(([resource, grants]) => (
+                                    <Fragment key={resource}>
+                                      <Field label="Door">
+                                        <span className="door-line">
+                                          <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
+                                          {resource !== '*' ? <DoorRef value={resource} /> : null}
+                                        </span>
+                                      </Field>
+                                      <Field label="Access">
+                                        <FoldedChipRow entries={grants} expanded="groups" title={(claim) => grantOptionByName.get(claim)?.label || undefined} />
+                                      </Field>
+                                    </Fragment>
+                                  ))}
+                                  <Field label="Operations">
+                                    {outerOperationRows(item).length ? (
+                                      <CountFold entries={outerOperationRows(item)} noun="operation" />
+                                    ) : (
+                                      <small>None selected on these doors.</small>
+                                    )}
+                                  </Field>
+                                  {invocationPolicyRows(item).length ? (
+                                    <Field label="Invocation">
+                                      <FoldedChipRow entries={invocationPolicyRows(item)} />
+                                    </Field>
+                                  ) : null}
+                                  {namedServiceRows(item).length ? (
+                                    <Field label="Services">
+                                      <CountFold entries={namedServiceRows(item)} noun="service" />
+                                      {isWildcardNamedServices(item.named_service_operations) ? (
+                                        <small>
+                                          Every operation these services offered when this card was
+                                          last saved. Operations added since are not included.
+                                        </small>
+                                      ) : null}
+                                    </Field>
+                                  ) : cardOffersNamedServices(item, resources) ? (
+                                    // The door offers named services and none were
+                                    // selected: an empty selection reaches nothing,
+                                    // so this may not read as "not narrowed".
+                                    <Field label="Services">
+                                      <small>
+                                        None selected - this card reaches no named-service
+                                        operation on this door.
+                                      </small>
+                                    </Field>
+                                  ) : null}
+                                  {Object.keys(item.account_scope || {}).length ? (
+                                    <Field label="Accounts">
+                                      {Object.entries(item.account_scope || {}).map(([provider, accountsMap]) => (
+                                        <span className="acct-block" key={provider}>
+                                          <span className="acct-provider">{providers[provider]?.label || provider}</span>
+                                          {Object.entries(accountsMap || {}).map(([accountId, claims]) => (
+                                            <span className="acct-line" key={accountId}>
+                                              <span className="acct-name" title={accountId}>
+                                                {accountId === '*'
+                                                  ? 'any account'
+                                                  : (accountLabelById.get(accountId)
+                                                      || <>account no longer connected <span className="acct-stale">(binding kept)</span></>)}
+                                              </span>
+                                              <FoldedChipRow entries={(claims || []).includes('*') ? ['all'] : (claims || [])} expanded="groups" />
+                                            </span>
+                                          ))}
+                                        </span>
+                                      ))}
+                                    </Field>
+                                  ) : null}
+                                </div>
+                              )}
+                              {editing ? renderAccountScopePicker(
+                                editAccountScope,
+                                toggleEditAccount,
+                                'this agent',
+                                { existingScope: seedAccountScopeFromRecord(item) },
+                              ) : null}
+                              <div className="card-fields">
+                                <Field label="Granted">
+                                  {formatDate(item.created_at) || 'unknown'}
+                                  {' · expires '}{formatDate(item.expires_at) || 'unknown'}
+                                </Field>
+                              </div>
+                            </div>
+                            <div className="account-actions">
+                              {editing ? (
+                                <>
+                                  <button
+      className="btn"
+      type="button"
+      disabled={busy || editSaveProblems(item).length > 0}
+      title={editSaveProblems(item)
+        .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
+        .join(' ') || undefined}
+      onClick={() => saveEdit(item)}
+    >
+                                    Save
+                                  </button>
+                                  <button className="btn" type="button" disabled={busy} onClick={clearEditState}>
+                                    Cancel
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="action-row">
+                                    {editButton(item)}
+                                    <span className="action-slot" aria-hidden="true" />
+                                  </span>
+                                  {renderRenewControl(item)}
+                                  {renderRevokeControl(item)}
+                                </>
+                              )}
+                            </div>
+                          </li>
+                        );
+  };
+  // One app's or automation's card in the detailed list.
+  const renderDetailedOtherCard = (item: DelegatedAccessRecord) => {
+                // Both callers here are editable in place: the card is the authority
+                // the guard resolves live, so ticking/unticking claims narrows or
+                // extends what the caller may do on the credential it already holds —
+                // an OAuth app (Claude Code) on the bearer it connected with, a
+                // manual automation on the token the operator already copied. Neither
+                // re-issues a credential; only the scope (and label) change.
+                const editable = (item.source === 'oauth' && Boolean(item.client_id))
+                  || item.source === 'manual';
+                const editing = editable && editingAccessId === item.access_id;
+                // An OAuth client is connected to exactly one door; the card's
+                // other resources are served through it. Title and Door rows lead
+                // with that door so the reader sees where the client really is.
+                const clientDoor = clientDoorFor(item);
+                const door = clientDoor
+                  ? (doorAlias(clientDoor) || '')
+                  : Array.from(new Set(
+                    Object.keys(item.resource_grants || {}).map(doorAlias).filter(Boolean),
+                  )).join(', ');
+                return (
+                  <li className="account" key={item.access_id}>
+                    <div>
+                      <div className="account-title">
+                        {item.label || item.access_id}
+                        {door && !(item.label || '').includes(door)
+                          ? <span className="door-suffix">· {door}</span>
+                          : null}
+                        {item.source === 'oauth'
+                          ? <span className="badge badge-app">connected app</span>
+                          : <span className="badge badge-neutral">manual token</span>}
+                        {expiryBadge(item)}
+                      </div>
+                      {expiryHint(item)}
+                      {item.source === 'manual'
+                        ? <ClientIdRef value={item.access_id} kind="access" />
+                        : (item.client_id && item.client_id !== item.label
+                            ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
+                      {manualFocus?.accessId === item.access_id ? (
+                        <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
+                          <strong>Access update required</strong>
+                          {manualFocus.accountClaim ? (
+                            <div>
+                              Allow <code>{manualFocus.accountClaim}</code>
+                              {manualFocus.accountId ? <> on <code>{manualFocus.accountId}</code></> : null},
+                              then save and retry the operation.
+                            </div>
+                          ) : manualFocus.claims.length ? (
+                            <div>
+                              Review <code>{manualFocus.claims.join(', ')}</code>, save, and retry the operation.
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      <CatalogDriftNotice drift={item.catalog_drift} />
+                      {editing ? (
+                        <label className="rename-row">
+                          <span className="card-field-label">Name</span>
+                          <input
+                            type="text"
+                            value={editLabel}
+                            placeholder={item.label || 'Name this connection'}
+                            onChange={(event) => setEditLabel(event.target.value)}
+                          />
+                        </label>
+                      ) : null}
+                      {item.resource_grants && Object.keys(item.resource_grants).length ? (
+                        editing ? renderEditResourceSections(item) : null
+                      ) : null}
+                      {/* Read-only view: labelled rows, values as chips. A grant can
+                          carry a long resource URL and dozens of operations, so the
+                          card shows structure at a glance and folds the long lists. */}
+                      {!editing ? (
+                        <div className="card-fields">
+                          {Object.keys(item.resource_grants || {}).length ? (
+                            <>
+                              <Field label="Door">
+                                {orderedDoors(item, clientDoor).map((resource, index) => (
+                                  <span
+                                    className={`door-line${clientDoor ? (resource === clientDoor ? ' door-line--entry' : ' door-line--through') : ''}`}
+                                    key={resource}
+                                  >
+                                    {clientDoor && index === 1 ? (
+                                      <span className="door-line__through-label">served through it</span>
+                                    ) : null}
+                                    <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
+                                    {clientDoor && resource === clientDoor
+                                      ? <span className="badge badge-door" title="The resource this client connected to">client door</span>
+                                      : null}
+                                    {resource !== '*' ? <DoorRef value={resource} /> : null}
+                                  </span>
+                                ))}
+                              </Field>
+                              <Field label="Access">
+                                <FoldedChipRow
+                                  entries={Array.from(new Set(Object.values(item.resource_grants || {}).flat()))}
+                                  expanded="groups"
+                                  title={(claim) => grantOptionByName.get(claim)?.label || undefined}
+                                />
+                              </Field>
+                            </>
+                          ) : null}
+                          <Field label="Operations">
+                            {outerOperationRows(item).length ? (
+                              <CountFold entries={outerOperationRows(item)} noun="operation" />
+                            ) : (
+                              <small>None selected on these doors.</small>
+                            )}
+                          </Field>
+                          {invocationPolicyRows(item).length ? (
+                            <Field label="Invocation">
+                              <FoldedChipRow entries={invocationPolicyRows(item)} />
+                            </Field>
+                          ) : null}
+                          {(() => {
+                            const services = namedServiceRows(item);
+                            if (services.length) {
+                              return <Field label="Services"><CountFold entries={services} noun="service" /></Field>;
+                            }
+                            if (!cardOffersNamedServices(item, resources)) return null;
+                            return (
+                              <Field label="Services">
+                                <small>
+                                  None selected — this card reaches no named-service
+                                  operation on this door.
+                                </small>
+                              </Field>
+                            );
+                          })()}
+                          {Object.keys(item.account_scope || {}).length ? (
+                            <Field label="Accounts">
+                              {Object.entries(item.account_scope || {}).map(([provider, accountsMap]) => (
+                                <span className="acct-block" key={provider}>
+                                  <span className="acct-provider">{providers[provider]?.label || provider}</span>
+                                  {Object.entries(accountsMap || {}).map(([accountId, claims]) => (
+                                    <span className="acct-line" key={accountId}>
+                                      <span className="acct-name" title={accountId}>
+                                        {accountId === '*'
+                                          ? 'any account'
+                                          : (accountLabelById.get(accountId)
+                                              || <>account no longer connected <span className="acct-stale">(binding kept)</span></>)}
+                                      </span>
+                                      <FoldedChipRow entries={(claims || []).includes('*') ? ['all'] : (claims || [])} expanded="groups" />
+                                    </span>
+                                  ))}
+                                </span>
+                              ))}
+                            </Field>
+                          ) : null}
+                          <Field label={item.source === 'oauth' ? 'Approved' : 'Created'}>
+                            {formatDate(item.created_at) || 'unknown'}
+                            {' · expires '}{formatDate(item.expires_at) || 'unknown'}
+                            {item.last_four ? (
+                              // The credential's last characters: a fingerprint that
+                              // identifies WHICH saved token this card is, without
+                              // ever redisplaying it. Rendered as a value, not prose.
+                              <> · token ends with <code className="claim-chip">{item.last_four}</code></>
+                            ) : null}
+                            {/* Every reconnect mints a client, so two cards of one
+                                program can sit here looking identical. This stamp is
+                                the only field that tells them apart: the token
+                                endpoint moves it at consent and on each refresh, so
+                                the abandoned one stops at its consent date. Stated as
+                                the fact, never as a verdict about the client — an
+                                idle client with a valid token reads the same. */}
+                            {item.source === 'oauth' && item.last_issued_at ? (
+                              item.last_issued_at === item.created_at
+                                ? <> · not renewed since consent</>
+                                : <> · credentials last issued {formatDate(item.last_issued_at)}</>
+                            ) : null}
+                          </Field>
+                        </div>
+                      ) : null}
+                      {!editing ? <ClientMetadataDetails metadata={item.client_metadata} /> : null}
+                      {editing
+                        ? renderAccountScopePicker(
+                            editAccountScope,
+                            toggleEditAccount,
+                            item.source === 'manual' ? 'this automation' : 'this app',
+                            { existingScope: seedAccountScopeFromRecord(item) },
+                          )
+                        : null}
+                    </div>
+                    <div className="account-actions">
+                      {editing ? (
+                        <>
+                          <button
+      className="btn"
+      type="button"
+      disabled={busy || editSaveProblems(item).length > 0}
+      title={editSaveProblems(item)
+        .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
+        .join(' ') || undefined}
+      onClick={() => saveEdit(item)}
+    >
+                            Save
+                          </button>
+                          <button className="btn" type="button" disabled={busy} onClick={clearEditState}>
+                            Cancel
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          {editable ? (
+                            <span className="action-row">
+                              {editButton(item)}
+                              <span className="action-slot" aria-hidden="true" />
+                            </span>
+                          ) : null}
+                          {renderRenewControl(item)}
+                          {renderRevokeControl(item)}
+                        </>
+                      )}
+                    </div>
+                  </li>
+                );
+  };
   const grantedPane = (
     <section className="card">
-      <div className="card-head">
-        <p className="muted" style={{ margin: 0 }}>
-          Access this user granted to agents, automations, and external clients —
-          each grant is per caller: an agent or connected app gets exactly what
-          you approve here, nothing more. Edit narrows or extends it live;
-          revoking stops that caller immediately.
-        </p>
+      <div className="card-head card-head--ids">
         {platformUserId ? (
-          <span className="whose-list" title={`Signed in as ${platformUserId}`}>
-            <span className="badge badge-ok">you</span>
+          <span className="whose-list" title="Your platform user id: the owner of every card here, and what a script names as the grantor.">
+            <span className="whose-list-label">your user id</span>
             <code className="whose-list-id">{platformUserId}</code>
+            <CopyButton value={platformUserId} label="Copy your user id" />
           </span>
         ) : null}
       </div>
@@ -3310,7 +3675,32 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       {!editingRecord && compactList ? renderCompactList() : null}
       {/* The detailed list. While a card is being edited the workbench above
           replaces it, so the inline edit branches below no longer render. */}
-      {!editingRecord && !compactList && agentEntries.length ? (
+      {!editingRecord && !compactList && railGroupBy !== 'kind' ? (
+        <div>
+          {groupCards(
+            [...agentEntries.flatMap(([, records]) => records), ...otherItems],
+            railGroupBy,
+            { stateOf: cardState, doorLabel: cardDoors },
+          ).map((group) => (
+            <div className="resource-option resource-option-stack" key={group.key}>
+              <span>
+                <strong>
+                  {group.label}
+                  <span className="account-sub">{group.records.length}</span>
+                </strong>
+              </span>
+              <ul className="accounts">
+                {group.records.map((item) => (
+                  item.source === 'agent'
+                    ? renderDetailedAgentCard(item)
+                    : renderDetailedOtherCard(item)
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {!editingRecord && !compactList && railGroupBy === 'kind' && agentEntries.length ? (
         <div>
           {agentEntries.map(([clientId, records]) => {
             const who = parseAgentClientId(clientId);
@@ -3318,140 +3708,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               <div className="resource-option resource-option-stack" key={clientId}>
                 <span>
                   <strong>
-                    {who ? `${who.agent} · ${who.app}` : clientId}
-                    <span className="badge badge-ok">agent</span>
+                    {who ? who.agent : clientId}
+                    {who ? <span className="account-sub">agent in {who.app}</span> : null}
+                    <span className="badge badge-agent">agent</span>
                   </strong>
                   <ClientIdRef value={clientId} kind="client" />
                 </span>
                 <ul className="accounts">
-                  {records.map((item) => {
-                    const editing = editingAccessId === item.access_id;
-                    return (
-                      <li className="account" key={item.access_id}>
-                        <div>
-                          {/* Edit mode keeps the per-claim checkboxes; the
-                              read-only view is the same labelled-row card the
-                              connected-app grants use. */}
-                          {editing ? renderEditResourceSections(item) : (
-                            <div className="card-fields">
-                              {/* Door and Access are paired per door, so which claims
-                                  belong to which door survives on a multi-door grant.
-                                  Connected apps flatten to one Access row; naming the
-                                  row the same way keeps the two cards readable as the
-                                  same kind of entry. */}
-                              {Object.entries(item.resource_grants || {}).map(([resource, grants]) => (
-                                <Fragment key={resource}>
-                                  <Field label="Door">
-                                    <span className="door-line">
-                                      <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
-                                      {resource !== '*' ? <DoorRef value={resource} /> : null}
-                                    </span>
-                                  </Field>
-                                  <Field label="Access">
-                                    <FoldedChipRow entries={grants} expanded="groups" title={(claim) => grantOptionByName.get(claim)?.label || undefined} />
-                                  </Field>
-                                </Fragment>
-                              ))}
-                              <Field label="Operations">
-                                {outerOperationRows(item).length ? (
-                                  <CountFold entries={outerOperationRows(item)} noun="operation" />
-                                ) : (
-                                  <small>None selected on these doors.</small>
-                                )}
-                              </Field>
-                              {invocationPolicyRows(item).length ? (
-                                <Field label="Invocation">
-                                  <FoldedChipRow entries={invocationPolicyRows(item)} />
-                                </Field>
-                              ) : null}
-                              {namedServiceRows(item).length ? (
-                                <Field label="Services">
-                                  <CountFold entries={namedServiceRows(item)} noun="service" />
-                                  {isWildcardNamedServices(item.named_service_operations) ? (
-                                    <small>
-                                      Every operation these services offered when this card was
-                                      last saved. Operations added since are not included.
-                                    </small>
-                                  ) : null}
-                                </Field>
-                              ) : cardOffersNamedServices(item, resources) ? (
-                                // The door offers named services and none were
-                                // selected: an empty selection reaches nothing,
-                                // so this may not read as "not narrowed".
-                                <Field label="Services">
-                                  <small>
-                                    None selected - this card reaches no named-service
-                                    operation on this door.
-                                  </small>
-                                </Field>
-                              ) : null}
-                              {Object.keys(item.account_scope || {}).length ? (
-                                <Field label="Accounts">
-                                  {Object.entries(item.account_scope || {}).map(([provider, accountsMap]) => (
-                                    <span className="acct-block" key={provider}>
-                                      <span className="acct-provider">{providers[provider]?.label || provider}</span>
-                                      {Object.entries(accountsMap || {}).map(([accountId, claims]) => (
-                                        <span className="acct-line" key={accountId}>
-                                          <span className="acct-name" title={accountId}>
-                                            {accountId === '*'
-                                              ? 'any account'
-                                              : (accountLabelById.get(accountId)
-                                                  || <>account no longer connected <span className="acct-stale">(binding kept)</span></>)}
-                                          </span>
-                                          <FoldedChipRow entries={(claims || []).includes('*') ? ['all'] : (claims || [])} expanded="groups" />
-                                        </span>
-                                      ))}
-                                    </span>
-                                  ))}
-                                </Field>
-                              ) : null}
-                            </div>
-                          )}
-                          {editing ? renderAccountScopePicker(
-                            editAccountScope,
-                            toggleEditAccount,
-                            'this agent',
-                            { existingScope: seedAccountScopeFromRecord(item) },
-                          ) : null}
-                          <div className="card-fields">
-                            <Field label="Granted">
-                              {formatDate(item.created_at) || 'unknown'}
-                              {' · expires '}{formatDate(item.expires_at) || 'unknown'}
-                            </Field>
-                          </div>
-                        </div>
-                        <div className="account-actions">
-                          {editing ? (
-                            <>
-                              <button
-  className="btn"
-  type="button"
-  disabled={busy || editSaveProblems(item).length > 0}
-  title={editSaveProblems(item)
-    .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
-    .join(' ') || undefined}
-  onClick={() => saveEdit(item)}
->
-                                Save
-                              </button>
-                              <button className="btn" type="button" disabled={busy} onClick={clearEditState}>
-                                Cancel
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <span className="action-row">
-                                {editButton(item)}
-                                <span className="action-slot" aria-hidden="true" />
-                              </span>
-                              {renderRenewControl(item)}
-                              {renderRevokeControl(item)}
-                            </>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
+                  {records.map((item) => renderDetailedAgentCard(item))}
                 </ul>
               </div>
             );
@@ -3459,224 +3723,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         </div>
       ) : null}
 
-      {!editingRecord && !compactList && otherItems.length ? (
+      {!editingRecord && !compactList && railGroupBy === 'kind' && otherItems.length ? (
         <ul className="accounts">
-          {otherItems.map((item) => {
-            // Both callers here are editable in place: the card is the authority
-            // the guard resolves live, so ticking/unticking claims narrows or
-            // extends what the caller may do on the credential it already holds —
-            // an OAuth app (Claude Code) on the bearer it connected with, a
-            // manual automation on the token the operator already copied. Neither
-            // re-issues a credential; only the scope (and label) change.
-            const editable = (item.source === 'oauth' && Boolean(item.client_id))
-              || item.source === 'manual';
-            const editing = editable && editingAccessId === item.access_id;
-            // An OAuth client is connected to exactly one door; the card's
-            // other resources are served through it. Title and Door rows lead
-            // with that door so the reader sees where the client really is.
-            const clientDoor = clientDoorFor(item);
-            const door = clientDoor
-              ? (doorAlias(clientDoor) || '')
-              : Array.from(new Set(
-                Object.keys(item.resource_grants || {}).map(doorAlias).filter(Boolean),
-              )).join(', ');
-            return (
-              <li className="account" key={item.access_id}>
-                <div>
-                  <div className="account-title">
-                    {item.label || item.access_id}
-                    {door && !(item.label || '').includes(door)
-                      ? <span className="door-suffix">· {door}</span>
-                      : null}
-                    {item.source === 'oauth'
-                      ? <span className="badge badge-app">connected app</span>
-                      : <span className="badge badge-neutral">manual token</span>}
-                    {expiryBadge(item)}
-                  </div>
-                  {expiryHint(item)}
-                  {item.source === 'manual'
-                    ? <ClientIdRef value={item.access_id} kind="access" />
-                    : (item.client_id && item.client_id !== item.label
-                        ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
-                  {manualFocus?.accessId === item.access_id ? (
-                    <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
-                      <strong>Access update required</strong>
-                      {manualFocus.accountClaim ? (
-                        <div>
-                          Allow <code>{manualFocus.accountClaim}</code>
-                          {manualFocus.accountId ? <> on <code>{manualFocus.accountId}</code></> : null},
-                          then save and retry the operation.
-                        </div>
-                      ) : manualFocus.claims.length ? (
-                        <div>
-                          Review <code>{manualFocus.claims.join(', ')}</code>, save, and retry the operation.
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                  <CatalogDriftNotice drift={item.catalog_drift} />
-                  {editing ? (
-                    <label className="rename-row">
-                      <span className="card-field-label">Name</span>
-                      <input
-                        type="text"
-                        value={editLabel}
-                        placeholder={item.label || 'Name this connection'}
-                        onChange={(event) => setEditLabel(event.target.value)}
-                      />
-                    </label>
-                  ) : null}
-                  {item.resource_grants && Object.keys(item.resource_grants).length ? (
-                    editing ? renderEditResourceSections(item) : null
-                  ) : null}
-                  {/* Read-only view: labelled rows, values as chips. A grant can
-                      carry a long resource URL and dozens of operations, so the
-                      card shows structure at a glance and folds the long lists. */}
-                  {!editing ? (
-                    <div className="card-fields">
-                      {Object.keys(item.resource_grants || {}).length ? (
-                        <>
-                          <Field label="Door">
-                            {orderedDoors(item, clientDoor).map((resource, index) => (
-                              <span
-                                className={`door-line${clientDoor ? (resource === clientDoor ? ' door-line--entry' : ' door-line--through') : ''}`}
-                                key={resource}
-                              >
-                                {clientDoor && index === 1 ? (
-                                  <span className="door-line__through-label">served through it</span>
-                                ) : null}
-                                <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
-                                {clientDoor && resource === clientDoor
-                                  ? <span className="badge badge-door" title="The resource this client connected to">client door</span>
-                                  : null}
-                                {resource !== '*' ? <DoorRef value={resource} /> : null}
-                              </span>
-                            ))}
-                          </Field>
-                          <Field label="Access">
-                            <FoldedChipRow
-                              entries={Array.from(new Set(Object.values(item.resource_grants || {}).flat()))}
-                              expanded="groups"
-                              title={(claim) => grantOptionByName.get(claim)?.label || undefined}
-                            />
-                          </Field>
-                        </>
-                      ) : null}
-                      <Field label="Operations">
-                        {outerOperationRows(item).length ? (
-                          <CountFold entries={outerOperationRows(item)} noun="operation" />
-                        ) : (
-                          <small>None selected on these doors.</small>
-                        )}
-                      </Field>
-                      {invocationPolicyRows(item).length ? (
-                        <Field label="Invocation">
-                          <FoldedChipRow entries={invocationPolicyRows(item)} />
-                        </Field>
-                      ) : null}
-                      {(() => {
-                        const services = namedServiceRows(item);
-                        if (services.length) {
-                          return <Field label="Services"><CountFold entries={services} noun="service" /></Field>;
-                        }
-                        if (!cardOffersNamedServices(item, resources)) return null;
-                        return (
-                          <Field label="Services">
-                            <small>
-                              None selected — this card reaches no named-service
-                              operation on this door.
-                            </small>
-                          </Field>
-                        );
-                      })()}
-                      {Object.keys(item.account_scope || {}).length ? (
-                        <Field label="Accounts">
-                          {Object.entries(item.account_scope || {}).map(([provider, accountsMap]) => (
-                            <span className="acct-block" key={provider}>
-                              <span className="acct-provider">{providers[provider]?.label || provider}</span>
-                              {Object.entries(accountsMap || {}).map(([accountId, claims]) => (
-                                <span className="acct-line" key={accountId}>
-                                  <span className="acct-name" title={accountId}>
-                                    {accountId === '*'
-                                      ? 'any account'
-                                      : (accountLabelById.get(accountId)
-                                          || <>account no longer connected <span className="acct-stale">(binding kept)</span></>)}
-                                  </span>
-                                  <FoldedChipRow entries={(claims || []).includes('*') ? ['all'] : (claims || [])} expanded="groups" />
-                                </span>
-                              ))}
-                            </span>
-                          ))}
-                        </Field>
-                      ) : null}
-                      <Field label={item.source === 'oauth' ? 'Approved' : 'Created'}>
-                        {formatDate(item.created_at) || 'unknown'}
-                        {' · expires '}{formatDate(item.expires_at) || 'unknown'}
-                        {item.last_four ? (
-                          // The credential's last characters: a fingerprint that
-                          // identifies WHICH saved token this card is, without
-                          // ever redisplaying it. Rendered as a value, not prose.
-                          <> · token ends with <code className="claim-chip">{item.last_four}</code></>
-                        ) : null}
-                        {/* Every reconnect mints a client, so two cards of one
-                            program can sit here looking identical. This stamp is
-                            the only field that tells them apart: the token
-                            endpoint moves it at consent and on each refresh, so
-                            the abandoned one stops at its consent date. Stated as
-                            the fact, never as a verdict about the client — an
-                            idle client with a valid token reads the same. */}
-                        {item.source === 'oauth' && item.last_issued_at ? (
-                          item.last_issued_at === item.created_at
-                            ? <> · not renewed since consent</>
-                            : <> · credentials last issued {formatDate(item.last_issued_at)}</>
-                        ) : null}
-                      </Field>
-                    </div>
-                  ) : null}
-                  {!editing ? <ClientMetadataDetails metadata={item.client_metadata} /> : null}
-                  {editing
-                    ? renderAccountScopePicker(
-                        editAccountScope,
-                        toggleEditAccount,
-                        item.source === 'manual' ? 'this automation' : 'this app',
-                        { existingScope: seedAccountScopeFromRecord(item) },
-                      )
-                    : null}
-                </div>
-                <div className="account-actions">
-                  {editing ? (
-                    <>
-                      <button
-  className="btn"
-  type="button"
-  disabled={busy || editSaveProblems(item).length > 0}
-  title={editSaveProblems(item)
-    .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
-    .join(' ') || undefined}
-  onClick={() => saveEdit(item)}
->
-                        Save
-                      </button>
-                      <button className="btn" type="button" disabled={busy} onClick={clearEditState}>
-                        Cancel
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      {editable ? (
-                        <span className="action-row">
-                          {editButton(item)}
-                          <span className="action-slot" aria-hidden="true" />
-                        </span>
-                      ) : null}
-                      {renderRenewControl(item)}
-                      {renderRevokeControl(item)}
-                    </>
-                  )}
-                </div>
-              </li>
-            );
-          })}
+          {otherItems.map((item) => renderDetailedOtherCard(item))}
         </ul>
       ) : null}
 
@@ -3824,6 +3873,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               onOpenInfo={() => setGrantInfoOpen(true)}
             />
           ) : null}
+          {items.length > 0 ? renderRailGroupBy() : null}
           {items.length > 0 ? (
             <button
               className="btn btn-ghost"

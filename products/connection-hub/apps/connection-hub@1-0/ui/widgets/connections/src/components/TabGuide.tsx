@@ -95,9 +95,9 @@ const GUIDES: Record<ConnectionsTab, Guide> = {
   },
   delegatedAccess: {
     summary:
-      'Access you granted to automations and external clients. Create bounded tokens for your own '
-      + 'scripts and jobs, review apps connected through OAuth, and revoke any grant — revocation is immediate. '
-      + 'An expired card keeps its grants: renew a manual token in place, or reconnect a client, and it works again.',
+      'Access you granted, one card per caller: a hosted agent, a connected app, or a token for your own script. '
+      + 'Each caller gets exactly what its card says. Edit applies on the caller\'s next call; revoke stops it at once. '
+      + 'An expired card keeps its grants: reissue a manual token, or prolong a connected app, and it works again.',
     links: [
       {
         label: 'Create delegated automation access',
