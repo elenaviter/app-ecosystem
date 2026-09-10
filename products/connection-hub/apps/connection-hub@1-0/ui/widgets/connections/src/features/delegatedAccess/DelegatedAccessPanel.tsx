@@ -1276,7 +1276,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             title="Issue a new token on this card. Every grant, selection and policy stays; the current token stops working."
             onClick={() => setConfirmRenew({ accessId, mode: 'reissue' })}
           >
-            Reissue token
+            Reissue
           </button>
         ) : null}
       </span>

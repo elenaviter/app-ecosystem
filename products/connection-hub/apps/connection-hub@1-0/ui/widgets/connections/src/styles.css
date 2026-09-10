@@ -3003,3 +3003,43 @@ code {
 .whose-list-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .whose-list-id { font-family: var(--mono); font-size: 11px; color: var(--text-2); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-groupby { padding: 0; }
+
+/* Action rows: every control one height, one baseline, one line. A label
+   that wraps makes a tall button beside short ones; a row reads as a row
+   only when its buttons share a size. */
+.rail-row__actions .btn,
+.account-actions .btn,
+.action-row .btn,
+.revoke-confirm .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 11px;
+  white-space: nowrap;
+  line-height: 1;
+  align-self: center;
+  border-radius: var(--r-md);
+}
+.rail-row__actions .icon-btn,
+.account-actions .icon-btn,
+.action-row .icon-btn { height: 28px; width: 28px; align-self: center; }
+.action-row .btn { flex: 0 0 auto; }
+.rail-row__actions { gap: 6px; }
+.account-actions .action-row { justify-content: flex-end; }
+
+/* Group heads are boundaries: the label in the action blue, small caps, a
+   rule under it, so the eye finds where one group ends and the next begins. */
+.rail-group__head {
+  margin-top: 6px;
+  padding: 6px 2px 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--blue);
+}
+.rail-group__head strong { font-weight: 700; color: inherit; }
+.rail-group__head .account-sub { font-weight: 600; color: var(--muted); letter-spacing: 0; text-transform: none; }
+.rail-group:first-child .rail-group__head { margin-top: 0; }
