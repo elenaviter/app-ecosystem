@@ -1445,10 +1445,19 @@ _SECRET_LIKE_KEYS = {"id_token", "cookie", "client_secret", "secret", "secret_re
 # comment: a session-login provider means the server owns the login (bundle);
 # a Cognito provider means the browser runs the OIDC client (cognito).
 _AUTH_TYPE_FOR_PROVIDER_TYPE = {
+    # every spelling the registry resolver accepts for the session-login type
     "bundle_session_login": "bundle",
+    "bundle-session-login": "bundle",
+    "bundle_session": "bundle",
+    "bundle-session": "bundle",
+    "session": "bundle",
     "multi_cognito": "cognito",
+    "multi-cognito": "cognito",
     "cognito": "cognito",
     "cognito_id_token": "cognito",
+    "simple_idp": "simple",
+    "simple-idp": "simple",
+    "simple": "simple",
 }
 
 
