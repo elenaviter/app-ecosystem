@@ -200,6 +200,9 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "authenticators_remove",
     "authenticators_upsert",
     "authorities_describe",
+    "authority_provider_set",
+    "authority_provider_validate",
+    "platform_sign_in_set",
     "connection_edge_challenge_claim",
     "connection_edge_challenge_create",
     "connection_edge_remove",
@@ -1472,6 +1475,67 @@ def _provider_yaml_block(provider_id: str, raw_provider: Mapping[str, Any]) -> s
             return [scrub(item) for item in value]
         return value
     return _yaml_text({str(provider_id): scrub(dict(raw_provider))})
+
+
+def _parse_provider_yaml(raw: Any) -> Dict[str, Any]:
+    """The editing buffer as a mapping: `<provider_id>: {...}` or the block
+    itself. Problems come back as sentences, never as a traceback."""
+    import yaml
+
+    text = str(raw or "")
+    if not text.strip():
+        return {"ok": False, "error": "yaml_empty", "problems": ["The buffer is empty."]}
+    try:
+        loaded = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        where = f" at line {mark.line + 1}, column {mark.column + 1}" if mark is not None else ""
+        return {"ok": False, "error": "yaml_invalid", "problems": [f"The YAML does not parse{where}: {getattr(exc, 'problem', exc)}"]}
+    if isinstance(loaded, Mapping) and len(loaded) == 1 and isinstance(next(iter(loaded.values())), Mapping) and "type" not in loaded:
+        loaded = next(iter(loaded.values()))
+    if not isinstance(loaded, Mapping):
+        return {"ok": False, "error": "yaml_not_a_block", "problems": ["The buffer must be one provider block: a mapping with a `type`."]}
+    return {"ok": True, "provider": {str(k): v for k, v in loaded.items()}}
+
+
+def _render_provider_row(authority_id: str, provider_id: str, raw_provider: Mapping[str, Any], *, bundle: str) -> Dict[str, Any]:
+    """One provider as the pane shows it, from a block that may not be in
+    the file yet: the same whitelist the describer applies."""
+    authenticator = raw_provider.get("authenticator")
+    authenticator = dict(authenticator) if isinstance(authenticator, Mapping) else {}
+    trusted = authenticator.get("trusted_providers")
+    primary_client = str(authenticator.get("app_client_id") or "").strip()
+    row: Dict[str, Any] = {
+        "authority_id": authority_id,
+        "provider_id": provider_id,
+        "type": str(raw_provider.get("type") or "").strip(),
+        "label": str(raw_provider.get("label") or "").strip(),
+        "enabled": raw_provider.get("enabled") is not False,
+        "authenticator": _authenticator_facts(authenticator),
+        "trusted_providers": [
+            _pool_row(item, primary=str(item.get("app_client_id") or "").strip() == primary_client)
+            for item in (trusted if isinstance(trusted, list) else [])
+            if isinstance(item, Mapping)
+        ],
+        "where": f"bundles.yaml: {bundle}.authority_registry.authorities.{authority_id}.providers.{provider_id}",
+        "auth_type": _auth_type_for(str(raw_provider.get("type") or "")),
+    }
+    input_cfg = raw_provider.get("input")
+    issuer_cfg = raw_provider.get("issuer")
+    if isinstance(input_cfg, Mapping) and isinstance(input_cfg.get("authenticator_ref"), Mapping):
+        ref = input_cfg.get("authenticator_ref") or {}
+        row["session"] = {
+            "authenticator_ref": {
+                "authority_id": str(ref.get("authority_id") or "").strip(),
+                "provider_id": str(ref.get("provider_id") or ref.get("authenticator_id") or "").strip(),
+            },
+            "scopes": [str(x) for x in (input_cfg.get("scopes") or []) if str(x).strip()],
+            "groups_claim": str(input_cfg.get("groups_claim") or "").strip(),
+            "return_origins": [
+                str(x) for x in ((issuer_cfg or {}).get("return_origins") or []) if str(x).strip()
+            ] if isinstance(issuer_cfg, Mapping) else [],
+        }
+    return row
 
 
 def _switch_fragment(provider_id: str, auth_type: str) -> str:
@@ -5607,6 +5671,107 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if denied:
             return {**denied, "message": "The sign-in authorities are available to platform administrators only."}
         return await _describe_authorities(self)
+
+    @api(method="POST", alias="authority_provider_validate", route="operations", **_api_visibility("authority_provider_validate"))
+    async def authority_provider_validate(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """The editing buffer, checked before it is applied: the submitted
+        YAML parsed, merged with the file's secret-bearing keys where it says
+        <unchanged>, validated as a provider the platform can resolve, and
+        rendered the way the pane shows a provider. Nothing is written."""
+        denied = _platform_admin_denied(self)
+        if denied:
+            return {**denied, "message": "The sign-in authorities are available to platform administrators only."}
+        payload = _payload(data, **kwargs)
+        parsed = _parse_provider_yaml(payload.get("yaml"))
+        if not parsed.get("ok"):
+            return parsed
+        from kdcube_ai_app.infra.descriptors.edit import validate_authority_provider
+
+        provider = parsed["provider"]
+        problems = validate_authority_provider(provider)
+        rendered = _render_provider_row(
+            str(payload.get("authority_id") or ""),
+            str(payload.get("provider_id") or ""),
+            provider,
+            bundle=_entrypoint_bundle_id(self),
+        )
+        return {"ok": True, "valid": not problems, "problems": problems, "rendered": rendered}
+
+    @api(
+        method="POST",
+        alias="authority_provider_set",
+        route="operations",
+        csrf=True,
+        **_api_visibility("authority_provider_set"),
+    )
+    async def authority_provider_set(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Apply the buffer: replace one provider block in the staged
+        bundles.yaml through the platform's descriptor editor (comments and
+        every other key kept, a backup beside the file, secret-bearing keys
+        merged from the file). Activation is a runtime refresh until the
+        live reload lands; the answer says so."""
+        denied = _platform_admin_denied(self)
+        if denied:
+            return {**denied, "message": "The sign-in authorities are available to platform administrators only."}
+        payload = _payload(data, **kwargs)
+        parsed = _parse_provider_yaml(payload.get("yaml"))
+        if not parsed.get("ok"):
+            return parsed
+        from kdcube_ai_app.infra.descriptors.edit import DescriptorEditRefused, edit_bundle_authority_provider
+
+        try:
+            edit = edit_bundle_authority_provider(
+                bundle_id=_entrypoint_bundle_id(self),
+                authority_id=str(payload.get("authority_id") or "").strip(),
+                provider_id=str(payload.get("provider_id") or "").strip(),
+                provider=parsed["provider"],
+                allow_secret_removal=bool(payload.get("allow_secret_removal")),
+                create=bool(payload.get("create")),
+            )
+        except DescriptorEditRefused as refused:
+            return refused.to_dict()
+        described = await _describe_authorities(self)
+        return {**described, "edit": edit.to_dict(), "activation": edit.activation}
+
+    @api(
+        method="POST",
+        alias="platform_sign_in_set",
+        route="operations",
+        csrf=True,
+        **_api_visibility("platform_sign_in_set"),
+    )
+    async def platform_sign_in_set(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Point the platform at another sign-in provider of its authority:
+        the two lines auth.type and auth.connection_hub.provider_id in the
+        staged assembly.yaml, changed together through the platform's
+        descriptor editor. The lane applies on a runtime refresh, by design."""
+        denied = _platform_admin_denied(self)
+        if denied:
+            return {**denied, "message": "The sign-in authorities are available to platform administrators only."}
+        payload = _payload(data, **kwargs)
+        from kdcube_ai_app.infra.descriptors.edit import DescriptorEditRefused, edit_assembly_platform_sign_in
+
+        try:
+            edit = edit_assembly_platform_sign_in(
+                provider_id=str(payload.get("provider_id") or "").strip(),
+                bundle_id=_entrypoint_bundle_id(self),
+            )
+        except DescriptorEditRefused as refused:
+            return refused.to_dict()
+        described = await _describe_authorities(self)
+        return {**described, "edit": edit.to_dict(), "activation": edit.activation}
 
     @api(method="GET", alias="authenticators_list", route="operations", **_api_visibility("authenticators_list"))
     async def authenticators_list(

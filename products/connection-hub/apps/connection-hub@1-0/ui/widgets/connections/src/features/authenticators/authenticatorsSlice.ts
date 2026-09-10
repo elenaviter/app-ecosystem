@@ -2,6 +2,8 @@ import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/tool
 import { getOp, postOp } from '../../api/client';
 import type {
   AuthoritiesDescribeResult,
+  AuthorityEditResult,
+  AuthorityProviderValidateResult,
   AuthenticatorMutationResult,
   AuthenticatorRow,
   AuthenticatorsListResult,
@@ -18,6 +20,9 @@ export interface AuthenticatorsState {
   allowed: boolean;
   authorities: AuthoritiesDescribeResult | null;
   authoritiesError: string;
+  authorityEdit: AuthorityEditResult | null;
+  authorityEditError: string;
+  authorityEditBusy: boolean;
 }
 
 const initialState: AuthenticatorsState = {
@@ -29,6 +34,9 @@ const initialState: AuthenticatorsState = {
   allowed: true,
   authorities: null,
   authoritiesError: '',
+  authorityEdit: null,
+  authorityEditError: '',
+  authorityEditBusy: false,
 };
 
 function message(e: unknown): string {
@@ -68,6 +76,63 @@ export const loadAuthorities = createAsyncThunk<AuthoritiesDescribeResult, void,
     try {
       const res = await getOp<AuthoritiesDescribeResult>('authorities_describe');
       if (res?.ok === false) return rejectWithValue(res.message || res.error || 'Failed to read the authorities');
+      return res || {};
+    } catch (e) {
+      return rejectWithValue(e instanceof Error ? e.message : String(e));
+    }
+  },
+);
+
+/** The editing buffer checked on the server before anything is applied. */
+export const validateAuthorityProvider = createAsyncThunk<
+  AuthorityProviderValidateResult,
+  { authorityId: string; providerId: string; yaml: string },
+  { rejectValue: string }
+>(
+  'authenticators/authorityValidate',
+  async ({ authorityId, providerId, yaml }, { rejectWithValue }) => {
+    try {
+      const res = await postOp<AuthorityProviderValidateResult>('authority_provider_validate', {
+        authority_id: authorityId, provider_id: providerId, yaml,
+      });
+      return res || {};
+    } catch (e) {
+      return rejectWithValue(e instanceof Error ? e.message : String(e));
+    }
+  },
+);
+
+/** The buffer applied to the staged bundles.yaml through the platform's editor. */
+export const setAuthorityProvider = createAsyncThunk<
+  AuthorityEditResult,
+  { authorityId: string; providerId: string; yaml: string; allowSecretRemoval?: boolean; create?: boolean },
+  { rejectValue: string }
+>(
+  'authenticators/authoritySet',
+  async ({ authorityId, providerId, yaml, allowSecretRemoval, create }, { rejectWithValue }) => {
+    try {
+      const res = await postOp<AuthorityEditResult>('authority_provider_set', {
+        authority_id: authorityId,
+        provider_id: providerId,
+        yaml,
+        allow_secret_removal: Boolean(allowSecretRemoval),
+        create: Boolean(create),
+      });
+      if (res?.ok === false) return rejectWithValue([res.message || res.error || 'The edit was refused', ...(res.problems || [])].join(' '));
+      return res || {};
+    } catch (e) {
+      return rejectWithValue(e instanceof Error ? e.message : String(e));
+    }
+  },
+);
+
+/** The platform's sign-in provider changed in the staged assembly.yaml. */
+export const setPlatformSignIn = createAsyncThunk<AuthorityEditResult, { providerId: string }, { rejectValue: string }>(
+  'authenticators/platformSignInSet',
+  async ({ providerId }, { rejectWithValue }) => {
+    try {
+      const res = await postOp<AuthorityEditResult>('platform_sign_in_set', { provider_id: providerId });
+      if (res?.ok === false) return rejectWithValue([res.message || res.error || 'The switch was refused', ...(res.problems || [])].join(' '));
       return res || {};
     } catch (e) {
       return rejectWithValue(e instanceof Error ? e.message : String(e));
@@ -137,6 +202,26 @@ const authenticatorsSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
+      .addCase(setAuthorityProvider.pending, (state) => { state.authorityEditBusy = true; state.authorityEditError = ''; })
+      .addCase(setAuthorityProvider.fulfilled, (state, action) => {
+        state.authorityEditBusy = false;
+        state.authorityEdit = action.payload;
+        if (action.payload.authorities || action.payload.platform) state.authorities = action.payload;
+      })
+      .addCase(setAuthorityProvider.rejected, (state, action) => {
+        state.authorityEditBusy = false;
+        state.authorityEditError = action.payload ?? 'The edit was refused';
+      })
+      .addCase(setPlatformSignIn.pending, (state) => { state.authorityEditBusy = true; state.authorityEditError = ''; })
+      .addCase(setPlatformSignIn.fulfilled, (state, action) => {
+        state.authorityEditBusy = false;
+        state.authorityEdit = action.payload;
+        if (action.payload.authorities || action.payload.platform) state.authorities = action.payload;
+      })
+      .addCase(setPlatformSignIn.rejected, (state, action) => {
+        state.authorityEditBusy = false;
+        state.authorityEditError = action.payload ?? 'The switch was refused';
+      })
       .addCase(loadAuthorities.fulfilled, (state, action) => {
         state.authorities = action.payload;
         state.authoritiesError = '';

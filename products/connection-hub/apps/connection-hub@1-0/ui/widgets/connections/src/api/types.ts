@@ -586,6 +586,33 @@ export interface AuthoritiesDescribeResult {
   message?: string;
 }
 
+export interface DescriptorEditResult {
+  path?: string;
+  backup?: string;
+  changed?: string[];
+  scope?: string;
+  activation?: string;
+}
+
+/** The buffer checked: problems as sentences, and the provider as the pane would show it. */
+export interface AuthorityProviderValidateResult {
+  ok?: boolean;
+  valid?: boolean;
+  problems?: string[];
+  rendered?: AuthorityProviderRow;
+  error?: string;
+  reason?: string;
+  message?: string;
+}
+
+/** An applied edit: the refreshed authorities, the edit made, and how it activates. */
+export interface AuthorityEditResult extends AuthoritiesDescribeResult {
+  edit?: DescriptorEditResult;
+  activation?: string;
+  reason?: string;
+  problems?: string[];
+}
+
 export interface AuthenticatorMutationResult {
   ok?: boolean;
   authenticator?: AuthenticatorRow;

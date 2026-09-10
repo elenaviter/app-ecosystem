@@ -8,9 +8,20 @@
 import { useEffect, useState } from 'react';
 import type { AuthorityPoolRow, AuthorityProviderRow } from '../../api/types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
+import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { InfoMark } from '../../components/InfoMark';
 import { CopyButton } from '../../components/CopyControls';
-import { loadAuthorities } from './authenticatorsSlice';
+import { AUTH_CONSTRUCTS, constructFacts } from './authConstructs';
+import { loadAuthorities, setPlatformSignIn } from './authenticatorsSlice';
+import { ProviderEditor } from './ProviderEditor';
+
+interface Editing {
+  authorityId: string;
+  providerId: string;
+  yaml: string;
+  create: boolean;
+  where: string;
+}
 
 /** A piece of YAML the admin pastes, with where it goes and what follows. */
 function Fragment({ yaml, where, then }: { yaml: string; where: string; then: string }) {
@@ -41,7 +52,7 @@ function Pool({ pool }: { pool: AuthorityPoolRow }) {
   );
 }
 
-function Provider({ row }: { row: AuthorityProviderRow }) {
+function Provider({ row, onEdit }: { row: AuthorityProviderRow; onEdit?: (row: AuthorityProviderRow) => void }) {
   const auth = row.authenticator || {};
   const isSession = Boolean(row.session);
   return (
@@ -53,6 +64,11 @@ function Provider({ row }: { row: AuthorityProviderRow }) {
           {row.platform ? <span className="badge badge-app">platform sign-in</span> : null}
           {row.enabled === false ? <span className="badge badge-neutral">disabled</span> : null}
         </span>
+        {onEdit && row.yaml ? (
+          <button className="btn btn-ghost" type="button" onClick={() => onEdit(row)} title="Open this block in the editing buffer">
+            Edit
+          </button>
+        ) : null}
       </div>
       {row.label ? <div className="account-sub">{row.label}</div> : null}
       {row.where ? (
@@ -86,8 +102,8 @@ function Provider({ row }: { row: AuthorityProviderRow }) {
       {row.yaml ? (
         <details className="edit-section edit-section--tight">
           <summary>
-            <span className="edit-section__name">Edit as YAML</span>
-            <InfoMark text="This provider's block as it stands in the descriptor. Keys that carry a secret reference or a cookie name read <unchanged>: keep them as they are in the file. Paste the block over the existing one, then refresh the runtime." />
+            <span className="edit-section__name">As YAML</span>
+            <InfoMark text="This provider's block as it stands in the descriptor, to copy. Keys that carry a secret reference or a cookie name read <unchanged>: keep them as they are in the file. Edit opens the same block in the editing buffer." />
           </summary>
           <div className="edit-section__body">
             <Fragment yaml={row.yaml} where={row.where || ''} then="Then refresh the runtime. Pools and providers take effect after the refresh." />
@@ -111,10 +127,38 @@ export function AuthoritiesPane() {
   const dispatch = useAppDispatch();
   const { authorities, authoritiesError } = useAppSelector((s) => s.authenticators);
   useEffect(() => { void dispatch(loadAuthorities()); }, [dispatch]);
+  const { authorityEdit, authorityEditBusy, authorityEditError } = useAppSelector((s) => s.authenticators);
   const platform = authorities?.platform;
   const options = platform?.switch_options || [];
   const [target, setTarget] = useState('');
   const chosen = options.find((option) => option.provider_id === (target || options.find((o) => !o.current)?.provider_id || ''));
+  const [confirmSwitch, setConfirmSwitch] = useState(false);
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const [constructId, setConstructId] = useState(AUTH_CONSTRUCTS[0].id);
+  const [newProviderId, setNewProviderId] = useState('');
+  const facts = constructFacts(authorities);
+  const bundlePath = (authorityId: string, providerId: string) => (
+    `bundles.yaml: <this app>.authority_registry.authorities.${authorityId}.providers.${providerId}`
+  );
+  const openEdit = (row: AuthorityProviderRow) => setEditing({
+    authorityId: row.authority_id,
+    providerId: row.provider_id,
+    yaml: row.yaml || '',
+    create: false,
+    where: row.where || bundlePath(row.authority_id, row.provider_id),
+  });
+  const openConstruct = () => {
+    const construct = AUTH_CONSTRUCTS.find((item) => item.id === constructId) || AUTH_CONSTRUCTS[0];
+    const providerId = newProviderId.trim() || construct.defaultProviderId;
+    setEditing({
+      authorityId: facts.authorityId,
+      providerId,
+      yaml: construct.yaml(facts),
+      create: true,
+      where: bundlePath(facts.authorityId, providerId),
+    });
+  };
+  const switchApplied = authorityEdit?.edit?.scope === 'lane' ? authorityEdit.edit : null;
   return (
     <section className="card">
       {authoritiesError ? <div className="error" role="alert">{authoritiesError}</div> : null}
@@ -177,13 +221,64 @@ export function AuthoritiesPane() {
             ) : null}
           </div>
           {chosen && !chosen.current ? (
-            <Fragment
-              yaml={chosen.yaml}
-              where={platform.switch_where || 'assembly.yaml'}
-              then="Then refresh the runtime. The lane changes on the refresh, never live."
-            />
+            <>
+              <Fragment
+                yaml={chosen.yaml}
+                where={platform.switch_where || 'assembly.yaml'}
+                then="Apply writes these two lines into the staged assembly.yaml, with the previous file kept beside it. The lane changes on the next runtime refresh, never live."
+              />
+              <div className="authority-provider__actions">
+                <button className="btn" type="button" disabled={authorityEditBusy} onClick={() => setConfirmSwitch(true)}>
+                  Apply
+                </button>
+              </div>
+            </>
           ) : null}
+          {authorityEditError ? <div className="error" role="alert">{authorityEditError}</div> : null}
+          {switchApplied ? (
+            <div className="provider-editor__result">
+              <strong>Written</strong> to <code>{switchApplied.path}</code>
+              {switchApplied.backup ? <>, previous file kept as <code>{switchApplied.backup}</code></> : null}
+              {switchApplied.changed?.length ? <>: {switchApplied.changed.join(', ')}. Refresh the runtime to activate the new lane.</> : '. Nothing to change.'}
+            </div>
+          ) : null}
+          <ConfirmDialog
+            open={confirmSwitch}
+            title={`Sign in through ${chosen?.provider_id || ''}?`}
+            body={`auth.type becomes ${chosen?.auth_type || ''} and auth.connection_hub.provider_id becomes ${chosen?.provider_id || ''}, in the staged assembly.yaml. Nothing changes until the runtime is refreshed; before turning server-side login on, the identity provider client must carry each origin's two session URLs.`}
+            confirmLabel="Write"
+            onCancel={() => setConfirmSwitch(false)}
+            onConfirm={() => { setConfirmSwitch(false); if (chosen) void dispatch(setPlatformSignIn({ providerId: chosen.provider_id })); }}
+          />
         </div>
+      ) : null}
+      <div className="constructs">
+        <span>New provider from a construct</span>
+        <InfoMark text="The shapes the platform can sign in with, as templates: one Cognito pool; several pools (mixed mode); server-side login on Cognito; server-side login on an OIDC issuer; the development IDP. The editor opens with the block, values known from the current platform filled in, placeholders in angle brackets for the rest. Validate, then Apply writes it as a new provider of the platform authority; make it the sign-in with the switch above." />
+        <select className="input input-inline" aria-label="Construct" value={constructId} onChange={(event) => setConstructId(event.target.value)}>
+          {AUTH_CONSTRUCTS.map((construct) => <option key={construct.id} value={construct.id}>{construct.title}</option>)}
+        </select>
+        <input
+          className="input input-inline"
+          aria-label="Provider id"
+          placeholder={(AUTH_CONSTRUCTS.find((item) => item.id === constructId) || AUTH_CONSTRUCTS[0]).defaultProviderId}
+          value={newProviderId}
+          onChange={(event) => setNewProviderId(event.target.value)}
+        />
+        <button className="btn btn-ghost" type="button" onClick={openConstruct}>Open in editor</button>
+        <span className="account-sub">{(AUTH_CONSTRUCTS.find((item) => item.id === constructId) || AUTH_CONSTRUCTS[0]).summary}</span>
+      </div>
+      {editing ? (
+        <ProviderEditor
+          key={`${editing.authorityId}:${editing.providerId}:${editing.create ? 'new' : 'edit'}`}
+          authorityId={editing.authorityId}
+          providerId={editing.providerId}
+          initialYaml={editing.yaml}
+          create={editing.create}
+          where={editing.where}
+          renderPreview={(row) => <Provider row={row} />}
+          onClose={() => setEditing(null)}
+        />
       ) : null}
       {(authorities?.authorities || []).map((authority) => (
         <div className="authority" key={authority.authority_id}>
@@ -193,7 +288,7 @@ export function AuthoritiesPane() {
             {authority.platform ? <span className="badge badge-app">platform authority</span> : null}
             <span className="account-sub">{authority.providers.length} provider{authority.providers.length === 1 ? '' : 's'}</span>
           </div>
-          {authority.providers.map((row) => <Provider key={`${authority.authority_id}:${row.provider_id}`} row={row} />)}
+          {authority.providers.map((row) => <Provider key={`${authority.authority_id}:${row.provider_id}`} row={row} onEdit={openEdit} />)}
         </div>
       ))}
       {authorities?.discovered?.length ? (

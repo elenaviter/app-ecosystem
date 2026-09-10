@@ -168,19 +168,26 @@ Still open:
    exact actions as the expandable detail.
 4. **Group by metadata fields** on the rail, the client-reported fields
    the filter already knows.
-5. **Authenticators shows every authority, the platform's one highlighted.**
-   Done in a first form: the tab opens with "Sign-in authorities", read
+5. **Authenticators shows every authority, the platform's one highlighted,
+   and edits them.** Done. The tab opens with "Sign-in authorities", read
    by the administrator operation `authorities_describe`: the platform's
-   selection as assembly.yaml makes it and as the runtime built it (the
-   authenticator kind, which key selected it, hosted sign-in on or off,
-   the upstream issuer and client), every authority and provider of this
-   app's `authority_registry` with the pools it trusts (mixed mode) and
-   the descriptor path each lives at, and the authority providers apps
-   registered at load. Descriptor-owned rows are read-only here: the
-   platform authenticator is built at start-up, so a change is a
-   descriptor edit and a refresh. Editing from the widget would need a
-   write to the Connection Hub bundle props plus a runtime restart hook;
-   open if Elena wants it.
+   selection and the runtime authenticator built from it, server-side
+   login on or off, the upstream, every authority and provider of this
+   app's registry with the pools it trusts (mixed mode) and the descriptor
+   path each lives at, and what apps registered. Editing is a buffer
+   mapped onto the real descriptor: `Edit` on a provider opens its block,
+   `Validate` checks it on the server (`authority_provider_validate`:
+   parsed, secret-bearing keys merged from the file where the buffer says
+   `<unchanged>`, resolvable, rendered as the pane shows a provider),
+   `Apply` writes it through the platform's descriptor editor
+   (`authority_provider_set`: comments and every other key kept, a backup
+   beside the file). The platform switch applies the two assembly lines
+   the same way (`platform_sign_in_set`). "New provider from a construct"
+   opens the editor with a template for each shape the platform can sign
+   in with. Every edit says how it activates: a runtime refresh today, the
+   provider edits live once the change signal and the rebuild land (the
+   handoff in the connection-hub journal); the lane switch on refresh by
+   design.
 6. **Access map** is the least clear surface; operator surface; after the
    user flow and the authenticators.
 
