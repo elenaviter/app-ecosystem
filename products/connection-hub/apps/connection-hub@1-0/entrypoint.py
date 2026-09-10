@@ -1438,6 +1438,49 @@ def _append_query(url: str, params: Mapping[str, str]) -> str:
 
 
 _SECRET_LIKE_KEYS = {"id_token", "cookie", "client_secret", "secret", "secret_ref", "token"}
+# What auth.type must say for a provider type, in the words of the assembly
+# comment: a session-login provider means the server owns the login (bundle);
+# a Cognito provider means the browser runs the OIDC client (cognito).
+_AUTH_TYPE_FOR_PROVIDER_TYPE = {
+    "bundle_session_login": "bundle",
+    "multi_cognito": "cognito",
+    "cognito": "cognito",
+    "cognito_id_token": "cognito",
+}
+
+
+def _auth_type_for(provider_type: str) -> str:
+    return _AUTH_TYPE_FOR_PROVIDER_TYPE.get(str(provider_type or "").strip().lower(), "")
+
+
+def _yaml_text(value: Any) -> str:
+    import yaml
+
+    return yaml.safe_dump(value, sort_keys=False, default_flow_style=False, allow_unicode=True)
+
+
+def _provider_yaml_block(provider_id: str, raw_provider: Mapping[str, Any]) -> str:
+    """The provider's block as the admin would paste it, with every key that
+    carries a secret reference or a cookie name shown as <unchanged>: those
+    keys are kept as they are in the file, never shown, never retyped."""
+    def scrub(value: Any, key: str = "") -> Any:
+        if key.lower() in _SECRET_LIKE_KEYS or key.lower().endswith("_ref"):
+            return "<unchanged>"
+        if isinstance(value, Mapping):
+            return {str(k): scrub(v, str(k)) for k, v in value.items()}
+        if isinstance(value, list):
+            return [scrub(item) for item in value]
+        return value
+    return _yaml_text({str(provider_id): scrub(dict(raw_provider))})
+
+
+def _switch_fragment(provider_id: str, auth_type: str) -> str:
+    return (
+        "auth:\n"
+        f"  type: {auth_type}\n"
+        "  connection_hub:\n"
+        f"    provider_id: {provider_id}\n"
+    )
 
 
 def _pool_row(raw: Mapping[str, Any], *, primary: bool = False) -> Dict[str, Any]:
@@ -1554,6 +1597,8 @@ async def _describe_authorities(entrypoint: Any) -> Dict[str, Any]:
                     if isinstance(item, Mapping)
                 ],
                 "where": f"bundles.yaml: {bundle}.authority_registry.authorities.{authority_id}.providers.{provider_id}",
+                "yaml": _provider_yaml_block(str(provider_id), raw_provider),
+                "auth_type": _auth_type_for(str(raw_provider.get("type") or "")),
             }
             input_cfg = raw_provider.get("input")
             issuer_cfg = raw_provider.get("issuer")
@@ -1577,6 +1622,24 @@ async def _describe_authorities(entrypoint: Any) -> Dict[str, Any]:
             "platform": bool(raw_authority.get("platform")) or str(authority_id) == selected_authority_id,
             "providers": providers_out,
         })
+    # The switch: one two-line change per provider of the platform authority.
+    switch_options: list[Dict[str, Any]] = []
+    for authority in authorities_out:
+        if str(authority.get("authority_id")) != selected_authority_id:
+            continue
+        for row in authority.get("providers") or []:
+            if row.get("enabled") is False or not row.get("auth_type"):
+                continue
+            switch_options.append({
+                "provider_id": row["provider_id"],
+                "type": row.get("type", ""),
+                "label": row.get("label", ""),
+                "auth_type": row["auth_type"],
+                "current": bool(row.get("platform")),
+                "yaml": _switch_fragment(row["provider_id"], row["auth_type"]),
+            })
+    platform_row["switch_options"] = switch_options
+    platform_row["switch_where"] = "assembly.yaml, the two lines auth.type and auth.connection_hub.provider_id; keep bundle_id and authority_id; then refresh the runtime"
     # 3. What apps registered when they loaded.
     discovered: list[Dict[str, Any]] = []
     redis = getattr(entrypoint, "redis", None)

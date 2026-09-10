@@ -529,6 +529,20 @@ export interface AuthorityProviderRow {
     return_origins?: string[];
   };
   where?: string;
+  /** The provider's block as YAML, secret-bearing keys shown as <unchanged>. */
+  yaml?: string;
+  /** What auth.type must say when this provider is the platform's sign-in. */
+  auth_type?: string;
+}
+
+export interface PlatformSwitchOption {
+  provider_id: string;
+  type?: string;
+  label?: string;
+  auth_type: string;
+  current?: boolean;
+  /** The two-line change for assembly.yaml. */
+  yaml: string;
 }
 
 export interface AuthorityRow {
@@ -563,6 +577,8 @@ export interface AuthoritiesDescribeResult {
     upstream?: { type?: string; issuer_url?: string; client_id?: string; hosted_ui_domain?: string };
     pools?: AuthorityPoolRow[];
     where?: string;
+    switch_options?: PlatformSwitchOption[];
+    switch_where?: string;
   };
   authorities?: AuthorityRow[];
   discovered?: DiscoveredAuthorityRow[];

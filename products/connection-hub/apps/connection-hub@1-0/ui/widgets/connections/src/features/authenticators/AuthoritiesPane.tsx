@@ -5,12 +5,27 @@
  * providers apps registered at load. Descriptor-owned rows are read-only
  * here and say where they live; a change is a descriptor edit and a refresh.
  */
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { AuthorityPoolRow, AuthorityProviderRow } from '../../api/types';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { InfoMark } from '../../components/InfoMark';
 import { CopyButton } from '../../components/CopyControls';
 import { loadAuthorities } from './authenticatorsSlice';
+
+/** A piece of YAML the admin pastes, with where it goes and what follows. */
+function Fragment({ yaml, where, then }: { yaml: string; where: string; then: string }) {
+  return (
+    <div className="yaml-fragment">
+      <div className="yaml-fragment__head">
+        <span className="authority-platform__k">edit</span>
+        <span className="yaml-fragment__where">{where}</span>
+        <CopyButton value={yaml} label="Copy the YAML" />
+      </div>
+      <pre className="yaml-fragment__code">{yaml}</pre>
+      <div className="yaml-fragment__then">{then}</div>
+    </div>
+  );
+}
 
 function Pool({ pool }: { pool: AuthorityPoolRow }) {
   return (
@@ -68,6 +83,17 @@ function Provider({ row }: { row: AuthorityProviderRow }) {
           ) : null}
         </div>
       ) : null}
+      {row.yaml ? (
+        <details className="edit-section edit-section--tight">
+          <summary>
+            <span className="edit-section__name">Edit as YAML</span>
+            <InfoMark text="This provider's block as it stands in the descriptor. Keys that carry a secret reference or a cookie name read <unchanged>: keep them as they are in the file. Paste the block over the existing one, then refresh the runtime." />
+          </summary>
+          <div className="edit-section__body">
+            <Fragment yaml={row.yaml} where={row.where || ''} then="Then refresh the runtime. Pools and providers take effect after the refresh." />
+          </div>
+        </details>
+      ) : null}
       {row.trusted_providers?.length ? (
         <div className="authority-provider__pools">
           <div className="authority-provider__pools-head">
@@ -86,6 +112,9 @@ export function AuthoritiesPane() {
   const { authorities, authoritiesError } = useAppSelector((s) => s.authenticators);
   useEffect(() => { void dispatch(loadAuthorities()); }, [dispatch]);
   const platform = authorities?.platform;
+  const options = platform?.switch_options || [];
+  const [target, setTarget] = useState('');
+  const chosen = options.find((option) => option.provider_id === (target || options.find((o) => !o.current)?.provider_id || ''));
   return (
     <section className="card">
       {authoritiesError ? <div className="error" role="alert">{authoritiesError}</div> : null}
@@ -126,7 +155,34 @@ export function AuthoritiesPane() {
                 <span className="authority-platform__v"><code>{platform.where}</code> <CopyButton value={platform.where} label="Copy the descriptor path" /></span>
               </>
             ) : null}
+            {options.length > 1 ? (
+              <>
+                <span className="authority-platform__k">switch to</span>
+                <span className="authority-platform__v">
+                  <select
+                    className="input input-inline"
+                    aria-label="Switch the platform sign-in to"
+                    value={chosen?.provider_id || ''}
+                    onChange={(event) => setTarget(event.target.value)}
+                  >
+                    {options.map((option) => (
+                      <option key={option.provider_id} value={option.provider_id}>
+                        {option.provider_id}{option.current ? ' (current)' : ''}{option.auth_type === 'bundle' ? ' · server-side login on' : option.auth_type === 'cognito' ? ' · server-side login off' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <InfoMark text="Until editing lands here, the switch is these two lines in assembly.yaml. Change both together, keep bundle_id and authority_id, then refresh the runtime. Before turning server-side login on, the identity provider client must carry the origin's two session URLs." />
+                </span>
+              </>
+            ) : null}
           </div>
+          {chosen && !chosen.current ? (
+            <Fragment
+              yaml={chosen.yaml}
+              where={platform.switch_where || 'assembly.yaml'}
+              then="Then refresh the runtime. The lane changes on the refresh, never live."
+            />
+          ) : null}
         </div>
       ) : null}
       {(authorities?.authorities || []).map((authority) => (
