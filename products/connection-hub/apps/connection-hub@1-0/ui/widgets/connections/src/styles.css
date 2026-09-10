@@ -3074,3 +3074,35 @@ code {
 .grant-filter__dates { gap: 6px 10px; }
 .grant-filter__date .input,
 .grant-filter__controls select.input { min-height: 26px; }
+
+/* Accounts and links: providers as groups in columns on a wide pane, one
+   account per row with its actions on one line, so three providers and
+   their accounts fit one screen. */
+.integration-provider-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(440px, 1fr));
+  gap: 10px 16px;
+  margin-top: 8px;
+}
+.integration-provider { padding: 0; border: 0; background: transparent; min-width: 0; }
+.integration-provider-head { margin: 0; padding: 6px 2px 4px; border-bottom: 1px solid var(--line); }
+.integration-provider-head .account-title { font-family: inherit; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--blue); gap: 6px; }
+.integration-provider-head .account-title::before { display: none; }
+.integration-provider-head .account-sub { font-size: 11px; letter-spacing: 0; text-transform: none; font-weight: 600; }
+.integration-provider .accounts { margin-top: 6px; gap: 6px; }
+.integration-provider .account { padding: 8px 10px; }
+.integration-provider .account-actions,
+.identity-edges .account-actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  align-self: center;
+}
+.integration-provider .account-actions .btn { width: auto; min-width: 0; height: 28px; padding: 0 11px; white-space: nowrap; }
+.integration-provider .account-sub { font-size: 12px; }
+.integration-provider .account-detail { font-size: 11.5px; }
+.integration-provider-empty { margin: 6px 0 0; font-size: 12px; }
+@media (max-width: 960px) {
+  .integration-provider-list { grid-template-columns: minmax(0, 1fr); }
+}

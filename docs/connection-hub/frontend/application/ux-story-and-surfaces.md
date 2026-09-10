@@ -42,12 +42,14 @@ the questions, in that order. Operator surfaces sit apart.
  operator                           Access map · Authenticators
 ```
 
-The tabs now read in that order: Identity, Accounts, Provider connections,
-External MCP, Access cards, then the operator tabs. "Accounts" was
-"Delegated to KDCube" and "Access cards" was "Delegated by KDCube": the
-direction words asked the reader to keep a mental arrow that the three
-questions make unnecessary. Two tabs still answer question 2 twice (one by
-claims, one by connector-app tiers); merging them is the open item.
+The tabs now read: Accounts and links, Provider connections, External MCP,
+Access cards, then the operator tabs. "Accounts and links" holds what were
+the Identity and Delegated to KDCube tabs: the accounts as provider groups
+in columns, one account per row, and the linked identities beneath.
+"Access cards" was "Delegated by KDCube". The direction words asked the
+reader to keep a mental arrow that the three questions make unnecessary.
+Provider connections still answers question 2 a second time (by
+connector-app tiers); merging it is the open item.
 
 ## The reading rules
 

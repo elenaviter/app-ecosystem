@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { AccountRow, type AccountStatusTone } from '../../components/AccountRow';
 import { PaneGroup } from '../../components/Pane';
+import { InfoMark } from '../../components/InfoMark';
 import { ConsentPlan, type ConsentPlanAction } from './ConsentPlan';
 import type {
   DelegatedToKdcubeAccount,
@@ -596,14 +597,11 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
 
   const existingPane = (
     <section className="card">
-      <div className="card-head">
-        <p className="muted" style={{ margin: 0 }}>
-          External accounts this user allows KDCube applications or automation
-          to use. Connecting an account is only step one: each agent or app
-          still needs its own grant, per account, for what it may do with it
-          (approved under Access cards).
-        </p>
-        <span className="badge badge-ok">{providerList.length} providers</span>
+      <div className="card-head card-head--ids">
+        <span className="whose-list" title="Connecting an account is step one. Each agent or app still needs its own grant, per account, for what it may do with it, under Access cards.">
+          <span className="whose-list-label">{accounts.length} account{accounts.length === 1 ? '' : 's'} on {providerList.length} provider{providerList.length === 1 ? '' : 's'}</span>
+          <InfoMark text="Connecting an account is step one. Each agent or app still needs its own grant, per account, for what it may do with it, under Access cards." />
+        </span>
       </div>
 
       {planProvider && !planDismissed ? (
@@ -636,15 +634,15 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
           return (
             <div className="integration-provider" key={provider.provider_id}>
               <div className="integration-provider-head">
-                <div>
-                  <div className="account-title">{providerLabel(provider)}</div>
-                  {provider.adapter ? <div className="account-sub">{provider.adapter}</div> : null}
+                <div className="account-title">
+                  {providerLabel(provider)}
+                  {caps.length ? (
+                    <InfoMark text={`Access this provider can delegate: ${caps.map(([claimId, claim]) => claimLabel(claim, claimId)).join(', ')}.`} />
+                  ) : null}
+                  <span className="account-sub">
+                    {providerAccounts.length} account{providerAccounts.length === 1 ? '' : 's'}
+                  </span>
                 </div>
-                {caps.length ? (
-                  <div className="account-sub claim-catalog">
-                    Can delegate: {caps.map(([claimId, claim]) => claimLabel(claim, claimId)).join(' · ')}
-                  </div>
-                ) : null}
               </div>
               {providerAccounts.length ? (
                 <ul className="accounts">
@@ -689,7 +687,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
                   })}
                 </ul>
               ) : (
-                <p className="muted">No accounts delegated to KDCube.</p>
+                <p className="muted integration-provider-empty">No account connected yet.</p>
               )}
             </div>
           );

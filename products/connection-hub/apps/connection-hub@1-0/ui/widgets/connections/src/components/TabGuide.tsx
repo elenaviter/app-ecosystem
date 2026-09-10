@@ -42,8 +42,9 @@ const GUIDES: Record<ConnectionsTab, Guide> = {
   },
   delegatedToKdcube: {
     summary:
-      'Connect your external accounts — Gmail, Slack, iCloud Mail — so KDCube apps can act on them '
-      + 'with exactly the access you approve. Reconnect, add access, or disconnect any account here.',
+      'Your external accounts (Gmail, Slack, iCloud Mail) with the access you approved for KDCube apps, '
+      + 'and the identities linked to you on other channels, such as Telegram. '
+      + 'Connect, reconnect, add access, disconnect, or unlink here.',
     links: [
       {
         label: 'Connect Gmail',
@@ -60,6 +61,18 @@ const GUIDES: Record<ConnectionsTab, Guide> = {
       {
         label: 'How delegated provider accounts work',
         href: `${DOCS}/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md`,
+      },
+      {
+        label: 'Link KDCube from an external channel',
+        href: `${DOCS}/recipes/connections/link-from-external-channel-README.md`,
+      },
+      {
+        label: 'Telegram integration',
+        href: `${DOCS}/recipes/connections/integrations/telegram-README.md`,
+      },
+      {
+        label: 'How identity links are stored (connection edges)',
+        href: `${DOCS}/sdk/solutions/connections/connection-edges/connection-edges-README.md`,
       },
     ],
   },

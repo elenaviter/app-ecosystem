@@ -83,17 +83,10 @@ export function AppShell({
       <nav className="tabs" aria-label="Connection Hub sections" ref={(el) => { tabsRef.current = el; }}>
         <button
           type="button"
-          className={`tab ${activeTab === 'identity' ? 'active' : ''}`}
-          onClick={() => onTabChange('identity')}
-        >
-          Identity
-        </button>
-        <button
-          type="button"
           className={`tab ${activeTab === 'delegatedToKdcube' ? 'active' : ''}`}
           onClick={() => onTabChange('delegatedToKdcube')}
         >
-          Accounts
+          Accounts and links
         </button>
         <button
           type="button"

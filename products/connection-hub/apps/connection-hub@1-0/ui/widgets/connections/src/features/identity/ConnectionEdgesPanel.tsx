@@ -48,12 +48,13 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
 
   const linkedPane = (
     <section className="card">
-      <div className="card-head">
-        <p className="muted" style={{ margin: 0 }}>
-          External identities that may represent this platform user, with
-          explicit delegated grants.
-        </p>
-        {platformUserId ? <span className="badge badge-ok" title={platformUserId}>you</span> : null}
+      <div className="card-head card-head--ids">
+        {platformUserId ? (
+          <span className="whose-list" title="Your platform user id. Every identity here links to it.">
+            <span className="whose-list-label">your user id</span>
+            <code className="whose-list-id">{platformUserId}</code>
+          </span>
+        ) : null}
       </div>
 
       <div className="proof-link">
@@ -127,7 +128,7 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
           })}
         </ul>
       ) : (
-        <p className="muted">No connection edges yet.</p>
+        <p className="muted">No linked identities yet.</p>
       )}
     </section>
   );
@@ -179,7 +180,7 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
       {!addOpen ? (
         <div className="tab-actions">
           <button className="btn" type="button" onClick={() => setAddOpen(true)}>
-            Add connection edge
+            Link an identity
           </button>
         </div>
       ) : null}
@@ -187,7 +188,7 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
         panes={[
           // The summoned add surface leads while it is open.
           ...(addOpen ? [{
-            id: 'edge-add', title: 'Add connection edge', content: addPane, lead: true,
+            id: 'edge-add', title: 'Link an identity', content: addPane, lead: true,
           }] : []),
           { id: 'edges', title: 'Linked identities', content: linkedPane },
         ]}

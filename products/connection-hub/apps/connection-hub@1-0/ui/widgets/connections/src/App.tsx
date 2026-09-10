@@ -40,7 +40,9 @@ type TelegramConnectStatus = 'idle' | 'connecting' | 'connected' | 'failed';
 // scene's `connections.hub.open` surface command.
 function tabFromValue(raw: string): ConnectionsTab | null {
   const value = String(raw || '').trim().toLowerCase();
-  if (value === 'authenticators' || value === 'identity') return value;
+  if (value === 'authenticators') return value;
+  // Linked identities live on the accounts tab now; old links still land.
+  if (value === 'identity' || value === 'links') return 'delegatedToKdcube';
   if (value === 'accessmap' || value === 'access-map' || value === 'access_map') return 'accessMap';
   if (
     value === 'accounts'
@@ -66,7 +68,7 @@ function tabFromValue(raw: string): ConnectionsTab | null {
 function tabFromLocation(): ConnectionsTab {
   const params = new URLSearchParams(window.location.search);
   const value = params.get('tab') || window.location.hash.replace(/^#/, '') || '';
-  return tabFromValue(value) ?? 'identity';
+  return tabFromValue(value) ?? 'delegatedToKdcube';
 }
 
 export default function App() {
@@ -200,7 +202,7 @@ export default function App() {
   // A non-admin can still land on the tab via URL/stale state; send them home.
   useEffect(() => {
     if (!authenticatorsAllowed && (activeTab === 'authenticators' || activeTab === 'accessMap')) {
-      setActiveTab('identity');
+      setActiveTab('delegatedToKdcube');
     }
   }, [authenticatorsAllowed, activeTab]);
 
@@ -332,7 +334,6 @@ export default function App() {
       telegramConnectStatus={telegramConnectStatus}
       showAuthenticators={authenticatorsAllowed}
     >
-      {activeTab === 'identity' ? <ConnectionEdgesPanel telegramConnectStatus={telegramConnectStatus} /> : null}
       {activeTab === 'authenticators' && authenticatorsAllowed ? <AuthenticatorsPanel /> : null}
       {activeTab === 'accessMap' && authenticatorsAllowed ? <AccessMapPanel /> : null}
       {activeTab === 'delegatedAccess' ? (
@@ -341,7 +342,12 @@ export default function App() {
           openParams={delegatedAccessOpenParams ?? undefined}
         />
       ) : null}
-      {activeTab === 'delegatedToKdcube' ? <DelegatedToKdcubePanel key={delegatedSummonNonce} openParams={delegatedToKdcubeOpenParams ?? undefined} /> : null}
+      {activeTab === 'delegatedToKdcube' ? (
+        <>
+          <DelegatedToKdcubePanel key={delegatedSummonNonce} openParams={delegatedToKdcubeOpenParams ?? undefined} />
+          <ConnectionEdgesPanel telegramConnectStatus={telegramConnectStatus} />
+        </>
+      ) : null}
       {activeTab === 'providerConnections' ? <ProviderConnectionsPanel summon={hubSummon ?? undefined} /> : null}
       {activeTab === 'remoteMcp' ? <RemoteMcpPanel /> : null}
     </AppShell>
