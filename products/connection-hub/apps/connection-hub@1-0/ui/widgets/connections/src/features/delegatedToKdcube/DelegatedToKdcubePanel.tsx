@@ -595,13 +595,23 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     );
   }
 
+  const managedAccount = managedAccountId
+    ? accounts.find((account) => account.account_id === managedAccountId)
+    : undefined;
+  // The connect pane also opens for an existing account (the user came here to edit).
+  const connectPaneOpen = connectOpen || Boolean(managedAccount);
   const existingPane = (
     <section className="card">
-      <div className="card-head card-head--ids">
-        <span className="whose-list" title="Connecting an account is step one. Each agent or app still needs its own grant, per account, for what it may do with it, under Access cards.">
+      <div className="card-head card-head--row">
+        <span className="whose-list">
           <span className="whose-list-label">{accounts.length} account{accounts.length === 1 ? '' : 's'} on {providerList.length} provider{providerList.length === 1 ? '' : 's'}</span>
           <InfoMark text="Connecting an account is step one. Each agent or app still needs its own grant, per account, for what it may do with it, under Access cards." />
         </span>
+        {!connectPaneOpen ? (
+          <button className="btn" type="button" onClick={() => setConnectOpen(true)}>
+            Connect a new account
+          </button>
+        ) : null}
       </div>
 
       {planProvider && !planDismissed ? (
@@ -696,9 +706,6 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     </section>
   );
 
-  const managedAccount = managedAccountId
-    ? accounts.find((account) => account.account_id === managedAccountId)
-    : undefined;
 
   const connectPane = (
     <section className="card">
@@ -891,16 +898,8 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
 
   // The connect form is summoned from the tab's action row; managing an
   // existing account opens it directly (the user came here to edit).
-  const connectPaneOpen = connectOpen || Boolean(managedAccount);
   return (
     <>
-      {!connectPaneOpen ? (
-        <div className="tab-actions">
-          <button className="btn" type="button" onClick={() => setConnectOpen(true)}>
-            Connect a new account
-          </button>
-        </div>
-      ) : null}
       <PaneGroup
         panes={[
           // The summoned connect/manage surface leads while it is open.

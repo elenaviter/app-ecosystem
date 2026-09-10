@@ -51,6 +51,14 @@ reader to keep a mental arrow that the three questions make unnecessary.
 Provider connections still answers question 2 a second time (by
 connector-app tiers); merging it is the open item.
 
+## The look: a cloud console
+
+The reference is the modular dashboard of a cloud console: panes with a
+title and a count, dense rows with columns the eye can scan, one height
+per control, the pane's action on the pane's head row, nothing
+decorative (no gradients, no fades, no heavy outlines). Ergonomic and
+concrete: a reader distinguishes at once what is there and how many.
+
 ## The reading rules
 
 Every surface follows the same rules, so a person who learned one card can

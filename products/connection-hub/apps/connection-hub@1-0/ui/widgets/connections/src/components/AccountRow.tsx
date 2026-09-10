@@ -38,19 +38,23 @@ export function AccountRow({
   onDisconnect,
 }: AccountRowProps) {
   return (
-    <li className={`account${highlighted ? ' account-highlight' : ''}`}>
-      <div className="account-info">
-        <div className="account-title">
-          {title} <ConnectedBadge label={statusLabel || 'connected'} tone={statusTone || 'ok'} />
-        </div>
-        {grantedChips && grantedChips.length ? (
-          <div className="claim-list claim-list-granted">
-            <FoldedChipRow entries={grantedChips} chipClass="claim-chip claim-chip-granted" expanded="groups" />
+    <li className={`account account--row${highlighted ? ' account-highlight' : ''}`}>
+      <div className="account-info account-info--row">
+        <div className="account-who">
+          <div className="account-title">
+            {title} <ConnectedBadge label={statusLabel || 'connected'} tone={statusTone || 'ok'} />
           </div>
-        ) : null}
-        {subtitle ? <div className="account-sub">{subtitle}</div> : null}
-        {detail ? <div className="account-detail">{detail}</div> : null}
-        {lastError ? <div className="account-error">{lastError}</div> : null}
+          {subtitle ? <div className="account-sub">{subtitle}</div> : null}
+        </div>
+        <div className="account-what">
+          {grantedChips && grantedChips.length ? (
+            <div className="claim-list claim-list-granted">
+              <FoldedChipRow entries={grantedChips} chipClass="claim-chip claim-chip-granted" expanded="groups" />
+            </div>
+          ) : null}
+          {detail ? <div className="account-detail">{detail}</div> : null}
+          {lastError ? <div className="account-error">{lastError}</div> : null}
+        </div>
       </div>
       <div className="account-actions">
         {actions}

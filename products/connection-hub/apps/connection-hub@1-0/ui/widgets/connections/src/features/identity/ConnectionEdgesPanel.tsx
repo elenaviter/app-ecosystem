@@ -1,6 +1,7 @@
 import { FormEvent, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
+import { InfoMark } from '../../components/InfoMark';
 import {
   clearTelegramLinkChallenge,
   createTelegramLinkChallenge,
@@ -48,6 +49,17 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
 
   const linkedPane = (
     <section className="card">
+      <div className="card-head card-head--row">
+        <span className="whose-list">
+          <span className="whose-list-label">{edges.length} linked identit{edges.length === 1 ? 'y' : 'ies'}</span>
+          <InfoMark text="An identity on another channel, such as a Telegram account, that KDCube recognises as you. Linking proves it is yours; it grants no access by itself." />
+        </span>
+        {!addOpen ? (
+          <button className="btn" type="button" onClick={() => setAddOpen(true)}>
+            Link an identity
+          </button>
+        ) : null}
+      </div>
 
       <div className="proof-link">
         <div>
@@ -169,13 +181,6 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
   // list spans the full width.
   return (
     <>
-      {!addOpen ? (
-        <div className="tab-actions">
-          <button className="btn" type="button" onClick={() => setAddOpen(true)}>
-            Link an identity
-          </button>
-        </div>
-      ) : null}
       <PaneGroup
         panes={[
           // The summoned add surface leads while it is open.

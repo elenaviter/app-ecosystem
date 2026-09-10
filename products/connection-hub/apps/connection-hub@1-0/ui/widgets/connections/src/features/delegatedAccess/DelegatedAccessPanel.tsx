@@ -1217,6 +1217,23 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setConfirmRenew(null);
     await dispatch(renewDelegatedAccess({ accessId, mode })).unwrap().catch(() => undefined);
   };
+  const renderRenewDialog = () => {
+    const pending = confirmRenew;
+    const card = pending ? items.find((item) => item.access_id === pending.accessId) : undefined;
+    const prolong = pending?.mode === 'prolong';
+    return (
+      <ConfirmDialog
+        open={pending !== null}
+        title={prolong ? `Prolong ${card ? cardTitle(card) : 'this credential'}?` : `Reissue the token of ${card ? cardTitle(card) : 'this card'}?`}
+        body={prolong
+          ? 'The credential the client holds gets its previous lifetime again. Nothing on the client changes.'
+          : 'A new token is issued on this card with every grant kept. The current token stops working, and the new one shows once, at the top of this tab.'}
+        confirmLabel={prolong ? 'Prolong' : 'Reissue'}
+        onCancel={() => setConfirmRenew(null)}
+        onConfirm={() => { if (pending) void renew(pending.accessId, pending.mode); }}
+      />
+    );
+  };
   // Editing is about the grants, expiry about the credential: one never
   // blocks the other.
   const editButton = (item: DelegatedAccessRecord, compact = false) => (
@@ -1236,24 +1253,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const canReissue = item.source === 'manual';
     if (!canProlong && !canReissue) return null;
     const accessId = item.access_id;
-    if (confirmRenew?.accessId === accessId) {
-      const prolong = confirmRenew.mode === 'prolong';
-      return (
-        <span className="revoke-confirm renew-confirm">
-          <span className="revoke-confirm__q">
-            {prolong
-              ? 'Extend this credential by its previous lifetime? The client keeps the token it has.'
-              : 'Issue a new token? The current one stops working, and the new one shows once.'}
-          </span>
-          <button className="btn" type="button" disabled={busy} onClick={() => renew(accessId, confirmRenew.mode)}>
-            {prolong ? 'Prolong' : 'Reissue'}
-          </button>
-          <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => setConfirmRenew(null)}>
-            Cancel
-          </button>
-        </span>
-      );
-    }
     return (
       <span className="action-row">
         {canProlong ? (
@@ -3633,6 +3632,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
   const grantedPane = (
     <section className="card">
+      {renderRenewDialog()}
 
       {editingRecord ? renderWorkbench(editingRecord) : null}
       {!editingRecord && compactList ? renderCompactList() : null}
