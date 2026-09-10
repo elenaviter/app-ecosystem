@@ -158,6 +158,17 @@ Still open:
    exact actions as the expandable detail.
 4. **Group by metadata fields** on the rail, the client-reported fields
    the filter already knows.
+5. **Authenticators shows every authority, the platform's one highlighted.**
+   Today the tab lists only the request authenticators the widget stores
+   itself (Telegram bots, from `authenticators_list`). The platform sign-in
+   authority (Cognito or an OIDC issuer, resolved from the descriptor) and
+   the federated authorities of a mixed deployment (the hub's authority
+   registry, `AuthorityRegistry.list_providers`) do not appear. They belong
+   on the same list, read-only where the descriptor owns them, with the
+   platform's row marked as such and a path to change what can be changed
+   from here. Operator surface; after the user flow.
+6. **Access map** is the least clear surface; operator surface; after the
+   user flow and the authenticators.
 
 ## Where the rules live in code
 
