@@ -3,8 +3,8 @@
  * the real descriptor. Validate checks it on the server (parsed, secret
  * keys merged where it says <unchanged>, resolvable) and renders it the way
  * the pane shows a provider; Apply writes it to the staged file through the
- * platform's editor, with a backup beside the file. Activation is a runtime
- * refresh until the live reload lands, and the result says so.
+ * platform's editor, with a backup beside the file. The result says whether
+ * ingress received the live update or a runtime refresh is still required.
  */
 import { useState } from 'react';
 import type { AuthorityProviderRow, AuthorityProviderValidateResult } from '../../api/types';
@@ -94,13 +94,13 @@ export function ProviderEditor({ authorityId, providerId, initialYaml, create, w
           <strong>Written</strong> to <code>{authorityEdit.edit.path}</code>, previous file kept as <code>{authorityEdit.edit.backup}</code>.
           {authorityEdit.activation === 'refresh'
             ? ' Refresh the runtime to activate it.'
-            : authorityEdit.activation === 'live' ? ' Active now.' : ''}
+            : authorityEdit.activation === 'live' ? ' Sent to ingress for live application.' : ''}
         </div>
       ) : null}
       <ConfirmDialog
         open={confirm}
         title={`Write ${providerId} into the staged descriptor?`}
-        body="The block replaces the one in bundles.yaml; every other key and comment stays, and the previous file is kept beside it. It takes effect on the next runtime refresh."
+        body="The block replaces the one in bundles.yaml; every other key and comment stays, and the previous file is kept beside it. Ingress is notified immediately. The result will say if a runtime refresh is still required."
         confirmLabel="Write"
         onCancel={() => setConfirm(false)}
         onConfirm={() => void apply()}

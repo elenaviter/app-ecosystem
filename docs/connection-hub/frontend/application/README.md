@@ -5,7 +5,7 @@ summary: "KDCube-hosted application composition for connection-hub@1-0: connecti
 status: active
 tags: ["app", "connection-hub", "identity", "connections", "named-services", "mcp", "oauth", "delegated-credentials", "email", "design"]
 keywords: ["connection hub app", "delegated access", "connected accounts", "client metadata", "grant mutation csrf", "live grant authority"]
-updated_at: 2026-09-09
+updated_at: 2026-09-11
 see_also:
   - ../../connection-hub-architecture.md
   - ../../package/extraction-architecture.md
@@ -123,6 +123,11 @@ connector alias, or worker identity that the OAuth client did not report.
   dedicated `email_*` ops. Gmail is not handled here; it is a `connections`
   provider.
 - **`connections_settings` widget** — built from `ui/widgets/connections`.
+- **Platform sign-in administration** — the Authenticators tab validates and
+  writes only the enabled staged descriptor sections. Provider edits publish
+  KDCube's value-free platform-settings notification; the response says
+  whether active ingress subscribers received it or a runtime refresh is
+  required. The sign-in lane itself remains refresh-only.
 
 > Current correction: Gmail rides the `connections` framework. The email
 > integration serves iCloud app-password settings only.

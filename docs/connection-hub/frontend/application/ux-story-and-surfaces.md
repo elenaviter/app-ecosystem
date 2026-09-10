@@ -5,7 +5,7 @@ summary: "How a person is meant to read Connection Hub (who am I here, what of m
 status: active
 tags: ["connection-hub", "ux", "widget", "granted-access", "delegated-cards", "design"]
 keywords: ["connection hub tabs", "granted access card", "fold chips", "claim groups", "named-service access", "invocation policy", "user story"]
-updated_at: 2026-09-10
+updated_at: 2026-09-11
 see_also:
   - ./README.md
   - ../../connection-hub-architecture.md
@@ -185,9 +185,9 @@ Still open:
    the same way (`platform_sign_in_set`). "New provider from a construct"
    opens the editor with a template for each shape the platform can sign
    in with. Every edit says how it activates: a runtime refresh today, the
-   provider edits live once the change signal and the rebuild land (the
-   handoff in the connection-hub journal); the lane switch on refresh by
-   design.
+   provider edit is sent immediately to ingress and the result says whether
+   ingress received it; without a listener, the widget asks for a refresh.
+   The lane switch remains refresh-only by design.
 6. **Access map** is the least clear surface; operator surface; after the
    user flow and the authenticators.
 

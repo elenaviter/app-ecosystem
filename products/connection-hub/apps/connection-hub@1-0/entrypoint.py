@@ -199,9 +199,7 @@ AGENT_GRANT_DEFAULT_TTL_SECONDS = 7 * 24 * 3600
 CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "authenticators_remove",
     "authenticators_upsert",
-    "authorities_describe",
     "authority_provider_set",
-    "authority_provider_validate",
     "platform_sign_in_set",
     "connection_edge_challenge_claim",
     "connection_edge_challenge_create",
@@ -233,6 +231,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
 CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
     "agent_capabilities",
     "agent_selection_update",
+    "authority_provider_validate",
     "authority_provider_resolve",
     "connection_edge_challenge_status",
     "delegated_identity_scope_resolve",
@@ -709,6 +708,16 @@ def _delegated_gateway_auth_config(entrypoint: Any) -> Dict[str, Any]:
 
 def _authority_registry_config(entrypoint: Any) -> Dict[str, Any]:
     props = getattr(entrypoint, "bundle_props", None)
+    try:
+        from kdcube_ai_app.apps.chat.sdk.config_scopes import _load_bundles_plain
+
+        current = _load_bundles_plain(
+            f"{_entrypoint_bundle_id(entrypoint)}.authority_registry"
+        )
+        if isinstance(current, Mapping):
+            props = {"authority_registry": current}
+    except Exception:
+        pass
     return authority_registry_config(props if isinstance(props, Mapping) else {})
 
 
@@ -1745,6 +1754,36 @@ def _entrypoint_bundle_id(entrypoint: Any, default: str = BUNDLE_ID) -> str:
         or default
         or ""
     ).strip()
+
+
+async def _publish_platform_settings_edit(
+    entrypoint: Any,
+    *,
+    edit: Any,
+    reason: str,
+) -> Dict[str, Any]:
+    """Wake the services that own the changed settings after a file edit."""
+    if not tuple(getattr(edit, "changed", ()) or ()):
+        return {"ok": True, "event_id": "", "subscribers": 0}
+    from kdcube_ai_app.infra.platform_settings.updates import publish_platform_settings_update
+
+    tenant, project = _runtime_tenant_project(entrypoint)
+    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    event = await publish_platform_settings_update(
+        redis,
+        tenant=tenant,
+        project=project,
+        section="auth",
+        scope=str(getattr(edit, "scope", "") or "").strip(),
+        changed=tuple(getattr(edit, "changed", ()) or ()),
+        reason=reason,
+        actor=_platform_user_id(entrypoint) or _target_user_id(entrypoint),
+    )
+    return {
+        "ok": True,
+        "event_id": event.event_id,
+        "subscribers": int(event.subscriber_count or 0),
+    }
 
 
 def _platform_claim_url(
@@ -5722,11 +5761,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         data: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Apply the buffer: replace one provider block in the staged
-        bundles.yaml through the platform's descriptor editor (comments and
-        every other key kept, a backup beside the file, secret-bearing keys
-        merged from the file). Activation is a runtime refresh until the
-        live reload lands; the answer says so."""
+        """Apply one provider edit and notify live settings consumers."""
         denied = _platform_admin_denied(self)
         if denied:
             return {**denied, "message": "The sign-in authorities are available to platform administrators only."}
@@ -5747,8 +5782,26 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             )
         except DescriptorEditRefused as refused:
             return refused.to_dict()
+        publication: Dict[str, Any]
+        try:
+            publication = await _publish_platform_settings_edit(
+                self,
+                edit=edit,
+                reason="connection-hub.authority-provider-set",
+            )
+        except Exception as exc:
+            LOGGER.exception("[connection-hub.platform-settings] provider update publication failed")
+            publication = {
+                "ok": False,
+                "error": "platform_settings_notification_failed",
+                "message": "The descriptor was saved, but the runtime notification failed. Refresh the runtime to activate it.",
+                "subscribers": 0,
+            }
+        activation = "none" if not edit.changed else (
+            "live" if publication.get("ok") and int(publication.get("subscribers") or 0) > 0 else "refresh"
+        )
         described = await _describe_authorities(self)
-        return {**described, "edit": edit.to_dict(), "activation": edit.activation}
+        return {**described, "edit": edit.to_dict(), "publication": publication, "activation": activation}
 
     @api(
         method="POST",
@@ -5779,8 +5832,22 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             )
         except DescriptorEditRefused as refused:
             return refused.to_dict()
+        try:
+            publication = await _publish_platform_settings_edit(
+                self,
+                edit=edit,
+                reason="connection-hub.platform-sign-in-set",
+            )
+        except Exception as exc:
+            LOGGER.exception("[connection-hub.platform-settings] sign-in update publication failed")
+            publication = {
+                "ok": False,
+                "error": "platform_settings_notification_failed",
+                "message": "The descriptor was saved, but the runtime notification failed. Refresh the runtime to activate it.",
+                "subscribers": 0,
+            }
         described = await _describe_authorities(self)
-        return {**described, "edit": edit.to_dict(), "activation": edit.activation}
+        return {**described, "edit": edit.to_dict(), "publication": publication, "activation": edit.activation}
 
     @api(method="GET", alias="authenticators_list", route="operations", **_api_visibility("authenticators_list"))
     async def authenticators_list(

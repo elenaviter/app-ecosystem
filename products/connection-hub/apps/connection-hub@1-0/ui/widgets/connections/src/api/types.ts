@@ -609,6 +609,13 @@ export interface AuthorityProviderValidateResult {
 export interface AuthorityEditResult extends AuthoritiesDescribeResult {
   edit?: DescriptorEditResult;
   activation?: string;
+  publication?: {
+    ok?: boolean;
+    event_id?: string;
+    subscribers?: number;
+    error?: string;
+    message?: string;
+  };
   reason?: string;
   problems?: string[];
 }
