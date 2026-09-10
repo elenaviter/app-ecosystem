@@ -3106,3 +3106,8 @@ code {
 @media (max-width: 960px) {
   .integration-provider-list { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Detailed list groups share the rail's head. */
+.detailed-group { margin-top: 10px; }
+.detailed-group:first-child { margin-top: 0; }
+.detailed-group > .accounts { margin-top: 8px; }

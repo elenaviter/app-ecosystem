@@ -22,10 +22,13 @@ export interface CardGroup {
 }
 
 const KIND_LABEL: Record<string, string> = {
-  agent: 'Agents',
+  agent: 'Hosted agents',
   oauth: 'Connected apps',
   manual: 'Manual tokens',
 };
+// Kinds have a fixed order: the hosted agents first, then the apps the user
+// connected, then the tokens the user issued.
+const KIND_ORDER = ['agent', 'oauth', 'manual'];
 
 const STATE_LABEL: Record<RecordState, string> = {
   active: 'Active',
@@ -62,5 +65,11 @@ export function groupCards(
       add(door, door, record);
     }
   });
-  return Array.from(groups.values());
+  const result = Array.from(groups.values());
+  if (by === 'kind') {
+    result.sort((a, b) => (
+      (KIND_ORDER.indexOf(a.key) + 1 || 99) - (KIND_ORDER.indexOf(b.key) + 1 || 99)
+    ));
+  }
+  return result;
 }

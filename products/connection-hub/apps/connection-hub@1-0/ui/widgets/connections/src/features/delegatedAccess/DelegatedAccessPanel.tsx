@@ -3033,14 +3033,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     item.source === 'agent'
     || (item.source === 'oauth' && Boolean(item.client_id))
     || item.source === 'manual';
-  const cardTitle = (item: DelegatedAccessRecord, inGroup = false): string => {
+  // One title rule for every view: an agent card is named by its agent and
+  // app, the others by their label. The door is a field, never the name.
+  const cardTitle = (item: DelegatedAccessRecord): string => {
     if (item.source === 'agent' && item.client_id) {
-      if (inGroup) {
-        const doors = Object.keys(item.resource_grants || {});
-        return doors.length
-          ? doors.map((r) => (r === '*' ? 'all resources' : (doorAlias(r) || resourceLabelFor(r) || r))).join(', ')
-          : (item.label || item.access_id);
-      }
       const who = parseAgentClientId(item.client_id);
       return who ? `${who.agent} · ${who.app}` : item.client_id;
     }
@@ -3126,22 +3122,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         } : undefined}
       >
         <div className="rail-row__main">
-          <div className="rail-row__title">{cardTitle(item, opts.inGroup)} {opts.inGroup ? null : cardBadge(item)}</div>
+          <div className="rail-row__title">{cardTitle(item)} {cardBadge(item)}</div>
           <div className="rail-row__meta">{meta}</div>
         </div>
         {opts.actions ? (
           <div className="rail-row__actions" onClick={(event) => event.stopPropagation()}>{opts.actions}</div>
         ) : null}
-      </div>
-    );
-  };
-  const renderAgentGroupHead = (clientId: string) => {
-    const who = parseAgentClientId(clientId);
-    return (
-      <div className="rail-group__head">
-        <strong>{who ? who.agent : clientId}</strong>
-        {who ? <span className="account-sub">agent in {who.app}</span> : null}
-        <span className="badge badge-agent">agent</span>
       </div>
     );
   };
@@ -3172,24 +3158,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       onSelect: opts.selectFor?.(item),
       actions: opts.actionsFor?.(item),
     });
-    if (railGroupBy === 'kind') {
-      return (
-        <>
-          {matchedAgentEntries.map(([clientId, records]) => (
-            <div className="rail-group" key={clientId}>
-              {renderAgentGroupHead(clientId)}
-              {records.map((item) => renderCompactRow(item, rowOpts(item, true)))}
-            </div>
-          ))}
-          {matchedOtherItems.length ? (
-            <div className="rail-group">
-              {matchedAgentEntries.length ? <div className="rail-group__head"><strong>Apps and automations</strong></div> : null}
-              {matchedOtherItems.map((item) => renderCompactRow(item, rowOpts(item, false)))}
-            </div>
-          ) : null}
-        </>
-      );
-    }
     const all = [...matchedAgentEntries.flatMap(([, records]) => records), ...matchedOtherItems];
     const groups = groupCards(all, railGroupBy, { stateOf: cardState, doorLabel: cardDoors });
     return (
@@ -3319,6 +3287,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         return (
                           <li className="account" key={item.access_id}>
                             <div>
+                              <div className="account-title">
+                                {cardTitle(item)}
+                                {cardBadge(item)}
+                              </div>
+                              {item.client_id ? <ClientIdRef value={item.client_id} kind="client" /> : null}
                               {/* Edit mode keeps the per-claim checkboxes; the
                                   read-only view is the same labelled-row card the
                                   connected-app grants use. */}
@@ -3675,20 +3648,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       {!editingRecord && compactList ? renderCompactList() : null}
       {/* The detailed list. While a card is being edited the workbench above
           replaces it, so the inline edit branches below no longer render. */}
-      {!editingRecord && !compactList && railGroupBy !== 'kind' ? (
+      {!editingRecord && !compactList ? (
         <div>
           {groupCards(
             [...agentEntries.flatMap(([, records]) => records), ...otherItems],
             railGroupBy,
             { stateOf: cardState, doorLabel: cardDoors },
           ).map((group) => (
-            <div className="resource-option resource-option-stack" key={group.key}>
-              <span>
-                <strong>
-                  {group.label}
-                  <span className="account-sub">{group.records.length}</span>
-                </strong>
-              </span>
+            <div className="detailed-group" key={group.key}>
+              <div className="rail-group__head">
+                <strong>{group.label}</strong>
+                <span className="account-sub">{group.records.length}</span>
+              </div>
               <ul className="accounts">
                 {group.records.map((item) => (
                   item.source === 'agent'
@@ -3699,34 +3670,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </div>
           ))}
         </div>
-      ) : null}
-      {!editingRecord && !compactList && railGroupBy === 'kind' && agentEntries.length ? (
-        <div>
-          {agentEntries.map(([clientId, records]) => {
-            const who = parseAgentClientId(clientId);
-            return (
-              <div className="resource-option resource-option-stack" key={clientId}>
-                <span>
-                  <strong>
-                    {who ? who.agent : clientId}
-                    {who ? <span className="account-sub">agent in {who.app}</span> : null}
-                    <span className="badge badge-agent">agent</span>
-                  </strong>
-                  <ClientIdRef value={clientId} kind="client" />
-                </span>
-                <ul className="accounts">
-                  {records.map((item) => renderDetailedAgentCard(item))}
-                </ul>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-
-      {!editingRecord && !compactList && railGroupBy === 'kind' && otherItems.length ? (
-        <ul className="accounts">
-          {otherItems.map((item) => renderDetailedOtherCard(item))}
-        </ul>
       ) : null}
 
       {!editingRecord && !compactList && hiddenGrantCount + hiddenAgentCount > 0 ? (

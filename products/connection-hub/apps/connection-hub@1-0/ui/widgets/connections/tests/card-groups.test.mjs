@@ -14,9 +14,9 @@ const doorLabel = (r) => Object.keys(r.resource_grants || {}).map((k) => k.repla
 // The state rule lives in grantFilter; here it is the server flag first, then the clock.
 const stateOf = (r) => (r.expired ? 'expired' : r.expires_at <= now ? 'expired' : r.expires_at - now <= 7 * 86400 ? 'expiring' : 'active')
 
-test('by kind keeps first-seen order and labels the kinds', () => {
-  const groups = groupCards(cards, 'kind', { stateOf, doorLabel })
-  assert.deepEqual(groups.map((g) => [g.label, g.records.length]), [['Agents', 1], ['Connected apps', 1], ['Manual tokens', 2]])
+test('by kind orders agents, apps, tokens and labels the kinds', () => {
+  const groups = groupCards([...cards].reverse(), 'kind', { stateOf, doorLabel })
+  assert.deepEqual(groups.map((g) => [g.label, g.records.length]), [['Hosted agents', 1], ['Connected apps', 1], ['Manual tokens', 2]])
 })
 
 test('by state trusts the server flag over the clock', () => {
