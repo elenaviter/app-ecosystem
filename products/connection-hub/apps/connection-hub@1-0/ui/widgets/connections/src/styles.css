@@ -3200,3 +3200,39 @@ code {
 .authority-pool__id { font-family: var(--mono); font-size: 11.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .authority-pool__meta { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 760px) { .authority-pool { grid-template-columns: minmax(0, 1fr); } }
+
+/* Info marks open on tap and click as a small bubble under the mark. */
+.info-mark-wrap { position: relative; display: inline-flex; align-items: center; }
+.info-mark { appearance: none; padding: 0; }
+.info-mark--open { color: var(--ink); border-color: var(--text-2); }
+.info-mark__bubble {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: min(320px, 80vw);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--text-2);
+  font: 500 12px/1.45 Inter, ui-sans-serif, system-ui, sans-serif;
+  font-family: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+  cursor: default;
+}
+
+/* Narrow screens: nothing wider than the viewport, and the editor alone
+   while a card is being edited (All cards leads back to the list). */
+.page-viewport { max-width: 100%; overflow-x: hidden; }
+.page-head { flex-wrap: wrap; }
+.whose-list-id { max-width: min(260px, 38vw); }
+@media (max-width: 899px) {
+  .card-workbench .card-rail { display: none; }
+  .card-editor { padding: 10px; }
+  .card-editor__head { flex-wrap: wrap; gap: 8px; }
+  .door-line, .id-ref, .id-value { max-width: 100%; overflow-wrap: anywhere; }
+}

@@ -178,3 +178,17 @@ body {
 }
 
 #connections-frame[hidden] { display: none; }
+
+/* Narrow screens: the header wraps instead of widening the page; the
+   identity truncates and the scope line steps aside. Nothing is wider than
+   the viewport. */
+html, body { max-width: 100%; overflow-x: hidden; }
+.hub-header { flex-wrap: wrap; min-height: var(--header-h); height: auto; padding: 6px 12px; row-gap: 4px; }
+.hub-actions { margin-left: auto; min-width: 0; gap: 8px; }
+.identity { max-width: min(320px, 42vw); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runtime-scope { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 640px) {
+  .hub-header { gap: 8px; }
+  .runtime-scope { display: none; }
+  .identity { max-width: 46vw; }
+}
