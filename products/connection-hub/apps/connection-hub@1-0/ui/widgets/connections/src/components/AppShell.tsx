@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { CopyButton } from './CopyControls';
 import { TabGuide } from './TabGuide';
 
 export type ConnectionsTab = 'identity' | 'delegatedToKdcube' | 'providerConnections' | 'remoteMcp' | 'delegatedAccess' | 'accessMap' | 'authenticators';
@@ -8,6 +9,8 @@ export interface AppShellProps {
   onDismissError: () => void;
   onRefresh: () => void;
   refreshing?: boolean;
+  /** The signed-in platform user id: the owner of everything on every tab. */
+  userId?: string;
   activeTab: ConnectionsTab;
   onTabChange: (tab: ConnectionsTab) => void;
   telegramConnectStatus?: 'idle' | 'connecting' | 'connected' | 'failed';
@@ -24,6 +27,7 @@ export function AppShell({
   onDismissError,
   onRefresh,
   refreshing,
+  userId,
   activeTab,
   onTabChange,
   telegramConnectStatus = 'idle',
@@ -71,9 +75,18 @@ export function AppShell({
           <p className="eyebrow">Connection Hub</p>
           <h1>Connections</h1>
         </div>
-        <button className="btn btn-ghost" onClick={onRefresh} disabled={refreshing}>
-          {refreshing ? 'Refreshing…' : '↻ Refresh'}
-        </button>
+        <div className="page-head__right">
+          {userId ? (
+            <span className="whose-list" title="Your platform user id: the owner of everything on every tab, and what a script names as the grantor.">
+              <span className="whose-list-label">your user id</span>
+              <code className="whose-list-id">{userId}</code>
+              <CopyButton value={userId} label="Copy your user id" />
+            </span>
+          ) : null}
+          <button className="btn btn-ghost" onClick={onRefresh} disabled={refreshing}>
+            {refreshing ? 'Refreshing…' : '↻ Refresh'}
+          </button>
+        </div>
       </div>
       <div
         className="tabs-wrap"

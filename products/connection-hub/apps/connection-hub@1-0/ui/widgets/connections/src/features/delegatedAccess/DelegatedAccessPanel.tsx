@@ -812,7 +812,6 @@ function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
 export function DelegatedAccessPanel({ openParams }: { openParams?: Record<string, string> } = {}) {
   const dispatch = useAppDispatch();
   const {
-    platformUserId,
     items,
     grantOptions,
     resources,
@@ -3634,15 +3633,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
   const grantedPane = (
     <section className="card">
-      <div className="card-head card-head--ids">
-        {platformUserId ? (
-          <span className="whose-list" title="Your platform user id: the owner of every card here, and what a script names as the grantor.">
-            <span className="whose-list-label">your user id</span>
-            <code className="whose-list-id">{platformUserId}</code>
-            <CopyButton value={platformUserId} label="Copy your user id" />
-          </span>
-        ) : null}
-      </div>
 
       {editingRecord ? renderWorkbench(editingRecord) : null}
       {!editingRecord && compactList ? renderCompactList() : null}

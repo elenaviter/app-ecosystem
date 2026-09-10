@@ -108,6 +108,7 @@ export default function App() {
   const delegatedToKdcubeError = useAppSelector((s) => s.delegatedToKdcube.error);
   const providerConnectionsError = useAppSelector((s) => s.providerConnections.error);
   const remoteMcpError = useAppSelector((s) => s.remoteMcp.error);
+  const platformUserId = useAppSelector((s) => s.identity.platformUserId || s.delegatedAccess.platformUserId);
 
   useEffect(() => {
     void settings.setupParentListener().then(async () => {
@@ -329,6 +330,7 @@ export default function App() {
       onDismissError={dismissErrors}
       onRefresh={refresh}
       refreshing={refreshing}
+      userId={platformUserId}
       activeTab={activeTab}
       onTabChange={changeTab}
       telegramConnectStatus={telegramConnectStatus}

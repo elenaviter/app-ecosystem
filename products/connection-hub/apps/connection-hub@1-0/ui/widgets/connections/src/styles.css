@@ -3111,3 +3111,21 @@ code {
 .detailed-group { margin-top: 10px; }
 .detailed-group:first-child { margin-top: 0; }
 .detailed-group > .accounts { margin-top: 8px; }
+
+/* The page head carries the owner's id beside Refresh; no pane repeats it. */
+.page-head__right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.card-head--ids:empty { display: none; }
+
+/* A card's actions are one row: Edit, then renewal, then Revoke and the
+   script icon, aligned right on one baseline. */
+.account-actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  align-self: flex-start;
+}
+.account-actions .btn { width: auto; min-width: 0; }
+.account-actions .action-row { width: auto; }
+.account-actions .action-slot { display: none; }

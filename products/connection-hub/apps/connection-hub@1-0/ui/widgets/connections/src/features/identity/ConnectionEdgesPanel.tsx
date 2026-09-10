@@ -17,7 +17,7 @@ interface ConnectionEdgesPanelProps {
 
 export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: ConnectionEdgesPanelProps) {
   const dispatch = useAppDispatch();
-  const { platformUserId, edges, telegramChallenge, busy } = useAppSelector((s) => s.identity);
+  const { edges, telegramChallenge, busy } = useAppSelector((s) => s.identity);
   const [provider, setProvider] = useState(providerOptions[0]);
   const [subject, setSubject] = useState('');
   const [label, setLabel] = useState('');
@@ -48,14 +48,6 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
 
   const linkedPane = (
     <section className="card">
-      <div className="card-head card-head--ids">
-        {platformUserId ? (
-          <span className="whose-list" title="Your platform user id. Every identity here links to it.">
-            <span className="whose-list-label">your user id</span>
-            <code className="whose-list-id">{platformUserId}</code>
-          </span>
-        ) : null}
-      </div>
 
       <div className="proof-link">
         <div>
