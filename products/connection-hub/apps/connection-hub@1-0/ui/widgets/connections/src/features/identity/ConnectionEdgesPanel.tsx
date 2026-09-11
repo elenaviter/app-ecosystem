@@ -38,8 +38,8 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
     void dispatch(loadConnectionEdges());
   };
 
-  const remove = async (providerValue: string, subjectValue: string) => {
-    await dispatch(removeConnectionEdge({ provider: providerValue, providerSubject: subjectValue })).unwrap().catch(() => undefined);
+  const remove = async (authorityId: string, providerValue: string, subjectValue: string) => {
+    await dispatch(removeConnectionEdge({ authorityId, provider: providerValue, providerSubject: subjectValue })).unwrap().catch(() => undefined);
     void dispatch(loadConnectionEdges());
   };
 
@@ -108,6 +108,7 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
         <ul className="accounts">
           {edges.map((edge) => {
             const source = edge.from || {};
+            const authorityId = source.authority_id || '';
             const providerValue = source.provider || '';
             const subjectValue = source.subject || '';
             return (
@@ -123,7 +124,7 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
               <button
                 className="btn btn-danger"
                 disabled={busy}
-                onClick={() => remove(providerValue, subjectValue)}
+                onClick={() => remove(authorityId, providerValue, subjectValue)}
               >
                 Unlink
               </button>

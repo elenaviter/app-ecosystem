@@ -471,6 +471,7 @@ link to continue in **Delegated to KDCube**.
 ```json
 {
   "data": {
+    "authority_id": "https://accounts.example.test",
     "provider": "google",
     "provider_subject": "user@example.com",
     "label": "Google account"

@@ -434,7 +434,14 @@ def resolve_identity_family(
     requested_user_id = _clean(input_user_id or actor_user_id or platform_user_id)
     current_actor = _clean(actor_user_id or requested_user_id)
     current_platform = _clean(platform_user_id)
-    parsed = parse_actor_user_id(requested_user_id)
+    # Platform principals may intentionally be readable values such as
+    # ``cognito:<sub>``. The typed platform field outranks string-shape
+    # heuristics, which are reserved for otherwise-untyped actor ids.
+    parsed = (
+        {}
+        if current_platform and requested_user_id == current_platform
+        else parse_actor_user_id(requested_user_id)
+    )
     requested_edge: dict[str, Any] = {}
 
     family_platform_user_id = current_platform

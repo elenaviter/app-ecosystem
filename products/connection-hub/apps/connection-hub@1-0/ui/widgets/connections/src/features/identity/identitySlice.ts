@@ -66,15 +66,17 @@ export const upsertConnectionEdge = createAsyncThunk<ConnectionEdgeMutationResul
 );
 
 export interface RemoveIdentityArgs {
+  authorityId?: string;
   provider: string;
   providerSubject: string;
 }
 
 export const removeConnectionEdge = createAsyncThunk<ConnectionEdgeMutationResult, RemoveIdentityArgs, { rejectValue: string }>(
   'identity/removeEdge',
-  async ({ provider, providerSubject }, { rejectWithValue }) => {
+  async ({ authorityId, provider, providerSubject }, { rejectWithValue }) => {
     try {
       const res = await postOp<ConnectionEdgeMutationResult>('connection_edge_remove', {
+        authority_id: authorityId,
         provider,
         provider_subject: providerSubject,
       });

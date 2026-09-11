@@ -4,9 +4,10 @@ import logging
 import html
 import json
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, AsyncIterator, Dict, Mapping, Optional
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -53,6 +54,10 @@ from connection_hub.hub.edges import (
     edge_actor,
     edge_target,
     resolve_principal_roles,
+)
+from connection_hub.hub.edge_cache import (
+    ConnectionEdgeRuntimeCache,
+    ConnectionEdgeRuntimeCacheError,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.hub.provider_impl import ConnectionHubProvider
 from connection_hub.hub.resolver import (
@@ -175,7 +180,6 @@ from connection_hub.mcp_metadata import (
     kdcube_website_url,
 )
 from kdcube_ai_app.infra.redis.client import get_async_redis_client
-
 from .surfaces.delegated_admission import (
     AdmissionHostContext,
     handle_delegated_admission,
@@ -658,6 +662,57 @@ def _platform_user_payload(entrypoint: Any, *, user_id: Optional[str] = None) ->
 
 def _edge_store(entrypoint: Any) -> ConnectionEdgeStore:
     return ConnectionEdgeStore(_storage_root_or_error(entrypoint))
+
+
+def _edge_runtime_cache(entrypoint: Any) -> ConnectionEdgeRuntimeCache:
+    redis = getattr(entrypoint, "redis", None)
+    if redis is None:
+        raise ConnectionEdgeRuntimeCacheError(
+            "shared Redis is required for connection-edge coordination"
+        )
+    tenant, project = _runtime_tenant_project(entrypoint)
+    return ConnectionEdgeRuntimeCache(redis, tenant=tenant, project=project)
+
+
+@asynccontextmanager
+async def _edge_mutation(entrypoint: Any) -> AsyncIterator[None]:
+    cache = _edge_runtime_cache(entrypoint)
+    async with cache.mutation_lock():
+        yield
+
+
+def _edge_coordination_unavailable(exc: Exception) -> Dict[str, Any]:
+    LOGGER.error(
+        "[connection-hub.identity] shared edge coordination failed: %s",
+        exc,
+        exc_info=True,
+    )
+    return {
+        "ok": False,
+        "error": "connection_edge_coordination_unavailable",
+        "message": "Connection identity changes are temporarily unavailable.",
+    }
+
+
+async def _project_connection_edge(entrypoint: Any, edge: Mapping[str, Any]) -> None:
+    cache = _edge_runtime_cache(entrypoint)
+    await cache.publish_edge(edge)
+
+
+async def _remove_connection_edge_projection(
+    entrypoint: Any,
+    edges: Any,
+) -> None:
+    cache = _edge_runtime_cache(entrypoint)
+    if not isinstance(edges, list):
+        return
+    for edge in edges:
+        if isinstance(edge, Mapping):
+            source = edge_actor(edge)
+            authority_id = str(source.get("authority_id") or "").strip()
+            subject = str(source.get("subject") or "").strip()
+            if authority_id and subject:
+                await cache.remove(authority_id=authority_id, subject=subject)
 
 
 def _authenticator_store(entrypoint: Any) -> AuthenticatorStore:
@@ -4884,6 +4939,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         self,
         data: Optional[Dict[str, Any]] = None,
         provider: str = "",
+        authority_id: str = "",
         provider_subject: str = "",
         subject: str = "",
         platform_user_id: str = "",
@@ -4896,6 +4952,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         payload = _payload(
             data,
             provider=provider,
+            authority_id=authority_id,
             provider_subject=provider_subject or subject,
             platform_user_id=platform_user_id,
             label=label,
@@ -4911,15 +4968,20 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if requested_user != current_user:
             return {"ok": False, "error": "connection_edge_requires_admin_or_trusted_context"}
         try:
-            row = _edge_store(self).upsert_edge(
-                from_provider=str(payload.get("provider") or ""),
-                from_subject=str(payload.get("provider_subject") or payload.get("subject") or ""),
-                to_user_id=requested_user,
-                label=str(payload.get("label") or ""),
-                created_by=current_user,
-                grants=payload.get("grants") if isinstance(payload.get("grants"), (list, tuple)) else None,
-                metadata=payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else None,
-            )
+            async with _edge_mutation(self):
+                row = _edge_store(self).upsert_edge(
+                    from_authority_id=str(payload.get("authority_id") or ""),
+                    from_provider=str(payload.get("provider") or ""),
+                    from_subject=str(payload.get("provider_subject") or payload.get("subject") or ""),
+                    to_user_id=requested_user,
+                    label=str(payload.get("label") or ""),
+                    created_by=current_user,
+                    grants=payload.get("grants") if isinstance(payload.get("grants"), (list, tuple)) else None,
+                    metadata=payload.get("metadata") if isinstance(payload.get("metadata"), Mapping) else None,
+                )
+                await _project_connection_edge(self, row)
+        except ConnectionEdgeRuntimeCacheError as exc:
+            return _edge_coordination_unavailable(exc)
         except ValueError as exc:
             return {"ok": False, "error": "invalid_connection_edge", "message": str(exc)}
         principal = resolve_principal_roles(
@@ -4939,6 +5001,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         self,
         data: Optional[Dict[str, Any]] = None,
         provider: str = "",
+        authority_id: str = "",
         provider_subject: str = "",
         subject: str = "",
         user_id: Optional[str] = None,
@@ -4948,17 +5011,39 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         payload = _payload(
             data,
             provider=provider,
+            authority_id=authority_id,
             provider_subject=provider_subject or subject,
             **kwargs,
         )
         current_user = _platform_user_id(self, user_id=user_id)
         if not current_user or current_user == "anonymous":
             return {"ok": False, "error": "connection_edge_requires_authenticated_user"}
-        return _edge_store(self).remove_edge(
-            from_provider=str(payload.get("provider") or ""),
-            from_subject=str(payload.get("provider_subject") or payload.get("subject") or ""),
-            target_user_id=current_user,
-        )
+        try:
+            async with _edge_mutation(self):
+                store = _edge_store(self)
+                source_authority = str(payload.get("authority_id") or "")
+                source_provider = str(payload.get("provider") or "")
+                source_subject = str(payload.get("provider_subject") or payload.get("subject") or "")
+                matching_edges = store.list_edges(
+                    target_user_id=current_user,
+                    source_authority_id=source_authority,
+                    source_provider=source_provider,
+                    source_subject=source_subject,
+                )
+                # A cache miss waits on this same lock before consulting the
+                # durable store, so no worker can republish the old edge here.
+                await _remove_connection_edge_projection(self, matching_edges)
+                result = store.remove_edge(
+                    from_authority_id=source_authority,
+                    from_provider=source_provider,
+                    from_subject=source_subject,
+                    target_user_id=current_user,
+                )
+        except ConnectionEdgeRuntimeCacheError as exc:
+            return _edge_coordination_unavailable(exc)
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_connection_edge", "message": str(exc)}
+        return result
 
     @api(
         method="POST",
@@ -4992,13 +5077,16 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         cfg = _telegram_link_flow_config(self)
         ttl_seconds = int(cfg.get("challenge_ttl_seconds") or 600)
         try:
-            challenge = _edge_store(self).create_edge_challenge(
-                provider=provider_value,
-                target_user_id=current_user,
-                created_by=current_user,
-                ttl_seconds=ttl_seconds,
-                metadata={"source": "connection_hub.widget"},
-            )
+            async with _edge_mutation(self):
+                challenge = _edge_store(self).create_edge_challenge(
+                    provider=provider_value,
+                    target_user_id=current_user,
+                    created_by=current_user,
+                    ttl_seconds=ttl_seconds,
+                    metadata={"source": "connection_hub.widget"},
+                )
+        except ConnectionEdgeRuntimeCacheError as exc:
+            return _edge_coordination_unavailable(exc)
         except ValueError as exc:
             return {"ok": False, "error": "invalid_connection_edge_challenge", "message": str(exc)}
         return {
@@ -5064,12 +5152,18 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 "delegation_options": grant_options,
             }
         try:
-            result = _edge_store(self).claim_provider_challenge(
-                challenge_id=str(payload.get("challenge_id") or ""),
-                target_user_id=current_user,
-                claimed_by=current_user,
-                grants=selected_grants,
-            )
+            async with _edge_mutation(self):
+                result = _edge_store(self).claim_provider_challenge(
+                    challenge_id=str(payload.get("challenge_id") or ""),
+                    target_user_id=current_user,
+                    claimed_by=current_user,
+                    grants=selected_grants,
+                )
+                if result.get("ok"):
+                    edge = result.get("edge") if isinstance(result.get("edge"), Mapping) else {}
+                    await _project_connection_edge(self, edge)
+        except ConnectionEdgeRuntimeCacheError as exc:
+            return _edge_coordination_unavailable(exc)
         except ValueError as exc:
             return {"ok": False, "error": "invalid_connection_edge_challenge_claim", "message": str(exc)}
         if not result.get("ok"):
@@ -5135,7 +5229,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         }
         provider_subject = str(challenge.get("provider_subject") or "").strip()
         if provider_subject:
+            challenge_metadata = (
+                challenge.get("metadata")
+                if isinstance(challenge.get("metadata"), Mapping)
+                else {}
+            )
             edge = _edge_store(self).resolve_edge(
+                from_authority_id=str(challenge_metadata.get("authority_id") or ""),
                 from_provider=str(challenge.get("provider") or ""),
                 from_subject=provider_subject,
             )
@@ -5284,6 +5384,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             bool(live_event_session_id),
         )
         existing_edge = _edge_store(self).resolve_edge(
+            from_authority_id=resolved_authority_id,
             from_provider="telegram",
             from_subject=telegram_user_id,
         )
@@ -5329,14 +5430,17 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     "bundle_id": BUNDLE_ID,
                     "event_type": "connection_hub.edge.changed",
                 }
-            challenge = _edge_store(self).create_provider_claim_challenge(
-                provider="telegram",
-                provider_subject=telegram_user_id,
-                label=display_name,
-                created_by=f"telegram:{telegram_user_id}",
-                ttl_seconds=ttl_seconds,
-                metadata=metadata,
-            )
+            async with _edge_mutation(self):
+                challenge = _edge_store(self).create_provider_claim_challenge(
+                    provider="telegram",
+                    provider_subject=telegram_user_id,
+                    label=display_name,
+                    created_by=f"telegram:{telegram_user_id}",
+                    ttl_seconds=ttl_seconds,
+                    metadata=metadata,
+                )
+        except ConnectionEdgeRuntimeCacheError as exc:
+            return _edge_coordination_unavailable(exc)
         except ValueError as exc:
             LOGGER.warning("[connection-hub.telegram] link_start challenge creation failed error=%s", exc)
             return {"ok": False, "error": "invalid_telegram_connection_edge_start", "message": str(exc)}
@@ -5396,6 +5500,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = verified.user
         telegram_user_id = str(user.get("id") or "").strip()
         edge = _edge_store(self).resolve_edge(
+            from_authority_id=resolved_authority_id,
             from_provider="telegram",
             from_subject=telegram_user_id,
         )
@@ -5447,10 +5552,24 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return {"ok": False, "error": code, "message": auth_error}
         user = verified.user
         telegram_user_id = str(user.get("id") or "").strip()
-        result = _edge_store(self).remove_edge(
-            from_provider="telegram",
-            from_subject=telegram_user_id,
-        )
+        try:
+            async with _edge_mutation(self):
+                store = _edge_store(self)
+                matching_edges = store.list_edges(
+                    source_authority_id=resolved_authority_id,
+                    source_provider="telegram",
+                    source_subject=telegram_user_id,
+                )
+                await _remove_connection_edge_projection(self, matching_edges)
+                result = store.remove_edge(
+                    from_authority_id=resolved_authority_id,
+                    from_provider="telegram",
+                    from_subject=telegram_user_id,
+                )
+        except ConnectionEdgeRuntimeCacheError as exc:
+            return _edge_coordination_unavailable(exc)
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_telegram_connection_edge_remove", "message": str(exc)}
         if not result.get("ok"):
             return result
         removed_edge = {}
@@ -5523,25 +5642,34 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             or " ".join(str(user.get(key) or "").strip() for key in ("first_name", "last_name") if str(user.get(key) or "").strip())
             or telegram_user_id
         )
-        result = _edge_store(self).complete_edge_challenge(
-            challenge_id=str(payload.get("challenge_id") or ""),
-            provider="telegram",
-            provider_subject=telegram_user_id,
-            label=display_name,
-            completed_by=f"telegram:{telegram_user_id}",
-            metadata={
-                "telegram": {
-                    "id": telegram_user_id,
-                    "username": username,
-                    "first_name": str(user.get("first_name") or "").strip(),
-                    "last_name": str(user.get("last_name") or "").strip(),
-                },
-                "source": "telegram_miniapp",
-                "selected_authenticator": selected_authenticator,
-                "authority_id": resolved_authority_id,
-                "connection_id": selected_connection_id,
-            },
-        )
+        try:
+            async with _edge_mutation(self):
+                result = _edge_store(self).complete_edge_challenge(
+                    challenge_id=str(payload.get("challenge_id") or ""),
+                    provider="telegram",
+                    provider_subject=telegram_user_id,
+                    label=display_name,
+                    completed_by=f"telegram:{telegram_user_id}",
+                    metadata={
+                        "telegram": {
+                            "id": telegram_user_id,
+                            "username": username,
+                            "first_name": str(user.get("first_name") or "").strip(),
+                            "last_name": str(user.get("last_name") or "").strip(),
+                        },
+                        "source": "telegram_miniapp",
+                        "selected_authenticator": selected_authenticator,
+                        "authority_id": resolved_authority_id,
+                        "connection_id": selected_connection_id,
+                    },
+                )
+                if result.get("ok"):
+                    edge = result.get("edge") if isinstance(result.get("edge"), Mapping) else {}
+                    await _project_connection_edge(self, edge)
+        except ConnectionEdgeRuntimeCacheError as exc:
+            return _edge_coordination_unavailable(exc)
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_telegram_connection_edge_complete", "message": str(exc)}
         if not result.get("ok"):
             LOGGER.warning(
                 "[connection-hub.telegram] link_complete challenge rejected challenge_id=%s error=%s",
@@ -5575,6 +5703,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         self,
         data: Optional[Dict[str, Any]] = None,
         provider: str = "",
+        authority_id: str = "",
         provider_subject: str = "",
         subject: str = "",
         **kwargs: Any,
@@ -5582,6 +5711,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         payload = _payload(
             data,
             provider=provider,
+            authority_id=authority_id,
             provider_subject=provider_subject or subject,
             **kwargs,
         )
@@ -5590,6 +5720,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if not provider_value or not subject_value:
             return {"ok": False, "error": "identity_resolve_requires_provider_and_subject"}
         edge = _edge_store(self).resolve_edge(
+            from_authority_id=str(payload.get("authority_id") or ""),
             from_provider=provider_value,
             from_subject=subject_value,
         )

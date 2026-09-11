@@ -1629,6 +1629,9 @@ components:
       type: object
       required: [provider, provider_subject]
       properties:
+        authority_id:
+          type: string
+          description: Stable authority or issuer realm in which the provider subject is unique.
         provider:
           type: string
           example: telegram

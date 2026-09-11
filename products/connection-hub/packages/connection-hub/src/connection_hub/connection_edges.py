@@ -213,10 +213,17 @@ class ConnectionEdgesClient:
             http_method="GET",
         )
 
-    async def resolve_identity(self, *, provider: str, provider_subject: str) -> dict[str, Any]:
+    async def resolve_identity(
+        self,
+        *,
+        provider: str,
+        provider_subject: str,
+        authority_id: str = "",
+    ) -> dict[str, Any]:
         return await self._operation_call(
             "identity_resolve",
             {
+                "authority_id": _str(authority_id),
                 "provider": _str(provider),
                 "provider_subject": _str(provider_subject),
             },

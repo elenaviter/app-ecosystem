@@ -3,8 +3,9 @@ id: connection-hub/frontend/application/storage
 title: "Connection Hub Storage Map"
 summary: "Physical storage map for connection-hub@1-0: descriptor and secret authority, shared app storage, user-scoped account state, Postgres metadata, and Redis durable-projection and live-protocol roles."
 status: active
-tags: ["connection-hub", "storage", "secrets", "postgres", "identity", "authenticators", "connections"]
-keywords: ["delegated card storage", "capability catalog storage", "connected account secrets", "OAuth grant store", "Redis authority"]
+tags: ["connection-hub", "storage", "secrets", "postgres", "redis", "identity", "authenticators", "connections"]
+keywords: ["connection edge projection", "platform principal cache", "delegated card storage", "capability catalog storage", "connected account secrets", "OAuth grant store", "Redis authority"]
+updated_at: 2026-09-11
 see_also:
   - ../../../connection-hub-architecture.md
   - ../../../package/delegated-cards.md
@@ -202,7 +203,18 @@ platform user id
 ```
 
 The current implementation keeps connection edges and one-time challenges in
-shared app storage through `connection_hub.hub.edges`.
+shared app storage through `connection_hub.hub.edges`. The active
+issuer/subject-to-platform-user lookup is projected into tenant/project-scoped
+Redis through `connection_hub.hub.edge_cache`, so every runtime worker sees
+the same mapping without reading the JSON file on each request. The projection
+key is the verified authority and subject rather than a token, so token rotation
+keeps the same mapping. It is rebuildable and contains no token or user profile.
+Connection-edge and challenge mutations require Redis and hold one
+tenant/project mutation lock while updating the current shared JSON store.
+Authentication cache misses wait on the same lock before reading that store;
+ordinary projection hits are lock-free. Unlink removes the projection before
+changing the durable edge, so another worker cannot serve a stale mapping
+during the mutation.
 Those records do not contain platform roles. Role/economics authority is
 resolved after the link points at a platform principal.
 

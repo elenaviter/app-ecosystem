@@ -25,6 +25,10 @@ EDGE_RELATIONSHIP_DELEGATES_TO = "delegates_to"
 PLATFORM_AUTHORITY_ID = "platform"
 
 
+class ConnectionEdgeStoreError(ValueError):
+    """The durable connection-edge authority cannot be read safely."""
+
+
 def _now() -> int:
     return int(time.time())
 
@@ -133,32 +137,37 @@ class ConnectionEdgeStore:
             return {"version": 1, "schema": EDGE_SCHEMA, "edges": {}}
         try:
             parsed = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
-            return {"version": 1, "schema": EDGE_SCHEMA, "edges": {}}
+        except Exception as exc:
+            raise ConnectionEdgeStoreError("connection edge store is not valid JSON") from exc
         if not isinstance(parsed, dict):
-            return {"version": 1, "schema": EDGE_SCHEMA, "edges": {}}
+            raise ConnectionEdgeStoreError("connection edge store must be an object")
         edges = parsed.get("edges")
         if not isinstance(edges, dict):
-            parsed["edges"] = {}
+            raise ConnectionEdgeStoreError("connection edge store edges must be an object")
         parsed.setdefault("version", 1)
         parsed.setdefault("schema", EDGE_SCHEMA)
         return parsed
 
     def _write(self, data: Mapping[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.path)
+        tmp = self.path.with_name(f".{self.path.name}.{secrets.token_hex(8)}.tmp")
+        try:
+            tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+            tmp.replace(self.path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def list_edges(
         self,
         *,
         target_user_id: str = "",
+        source_authority_id: str = "",
         source_provider: str = "",
         source_subject: str = "",
         relationship: str = EDGE_RELATIONSHIP_DELEGATES_TO,
     ) -> list[dict[str, Any]]:
         target_user = _clean(target_user_id)
+        source_authority = _clean(source_authority_id)
         provider = _clean(source_provider).lower()
         subject = _clean(source_subject)
         relation = _clean(relationship)
@@ -173,6 +182,8 @@ class ConnectionEdgeStore:
                 if relation and _clean(edge.get("relationship")) != relation:
                     continue
                 if target_user and _clean(target.get("user_id")) != target_user:
+                    continue
+                if source_authority and _clean(source.get("authority_id")) != source_authority:
                     continue
                 if provider and _clean(source.get("provider")).lower() != provider:
                     continue
@@ -236,6 +247,24 @@ class ConnectionEdgeStore:
         previous_target_user = _clean(previous_target.get("user_id"))
         if previous_target_user and previous_target_user != target_user:
             raise ValueError("edge already targets another identity")
+        if isinstance(rows, dict):
+            for raw in rows.values():
+                existing = _safe_mapping(raw)
+                existing_source = edge_actor(existing)
+                existing_target = edge_target(existing)
+                if _clean(existing.get("status")) not in {"active", "linked"}:
+                    continue
+                if _clean(existing.get("relationship")) != relation:
+                    continue
+                if _clean(existing_source.get("authority_id")) != source_authority:
+                    continue
+                if _clean(existing_source.get("subject")) != subject:
+                    continue
+                if _clean(existing_target.get("authority_id")) != target_authority:
+                    continue
+                existing_user = _clean(existing_target.get("user_id"))
+                if existing_user and existing_user != target_user:
+                    raise ValueError("source identity already targets another identity")
 
         metadata_map = _safe_mapping(metadata) if metadata is not None else _safe_mapping(previous.get("metadata"))
         source = _endpoint(
@@ -278,10 +307,12 @@ class ConnectionEdgeStore:
         *,
         from_provider: str,
         from_subject: str,
+        from_authority_id: str = "",
         target_user_id: str = "",
     ) -> dict[str, Any]:
         provider = _clean(from_provider).lower()
         subject = _clean(from_subject)
+        source_authority = _clean(from_authority_id)
         target_user = _clean(target_user_id)
         data = self._read()
         rows = data.get("edges") if isinstance(data, dict) else {}
@@ -291,6 +322,8 @@ class ConnectionEdgeStore:
         for edge_id, edge in list(rows.items()):
             source = edge_actor(_safe_mapping(edge))
             target = edge_target(_safe_mapping(edge))
+            if source_authority and _clean(source.get("authority_id")) != source_authority:
+                continue
             if _clean(source.get("provider")).lower() != provider:
                 continue
             if _clean(source.get("subject")) != subject:
@@ -308,35 +341,57 @@ class ConnectionEdgeStore:
         *,
         from_provider: str,
         from_subject: str,
+        from_authority_id: str = "",
         target_authority_id: str = PLATFORM_AUTHORITY_ID,
     ) -> Optional[dict[str, Any]]:
         target_authority = _clean(target_authority_id) or PLATFORM_AUTHORITY_ID
-        for edge in self.list_edges(source_provider=from_provider, source_subject=from_subject):
-            if _clean(edge_target(edge).get("authority_id")) == target_authority:
-                return edge
-        return None
+        matches = [
+            edge
+            for edge in self.list_edges(
+                source_authority_id=from_authority_id,
+                source_provider=from_provider,
+                source_subject=from_subject,
+            )
+            if _clean(edge_target(edge).get("authority_id")) == target_authority
+        ]
+        targets = {_clean(edge_target(edge).get("user_id")) for edge in matches}
+        targets.discard("")
+        if len(targets) > 1:
+            raise ConnectionEdgeStoreError("source identity has multiple active platform targets")
+        return matches[0] if matches else None
 
     def _read_challenges(self) -> dict[str, Any]:
         if not self.challenge_path.exists():
             return {"version": 1, "schema": EDGE_CHALLENGE_SCHEMA, "challenges": {}}
         try:
             parsed = json.loads(self.challenge_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {"version": 1, "schema": EDGE_CHALLENGE_SCHEMA, "challenges": {}}
+        except Exception as exc:
+            raise ConnectionEdgeStoreError(
+                "connection edge challenge store is not valid JSON"
+            ) from exc
         if not isinstance(parsed, dict):
-            return {"version": 1, "schema": EDGE_CHALLENGE_SCHEMA, "challenges": {}}
+            raise ConnectionEdgeStoreError(
+                "connection edge challenge store must be an object"
+            )
         challenges = parsed.get("challenges")
         if not isinstance(challenges, dict):
-            parsed["challenges"] = {}
+            raise ConnectionEdgeStoreError(
+                "connection edge challenge store challenges must be an object"
+            )
         parsed.setdefault("version", 1)
         parsed.setdefault("schema", EDGE_CHALLENGE_SCHEMA)
         return parsed
 
     def _write_challenges(self, data: Mapping[str, Any]) -> None:
         self.challenge_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.challenge_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        tmp.replace(self.challenge_path)
+        tmp = self.challenge_path.with_name(
+            f".{self.challenge_path.name}.{secrets.token_hex(8)}.tmp"
+        )
+        try:
+            tmp.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+            tmp.replace(self.challenge_path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     def create_edge_challenge(
         self,
@@ -429,8 +484,6 @@ class ConnectionEdgeStore:
         out = _safe_mapping(row)
         if out.get("status") in {"pending", "pending_target_claim"} and int(out.get("expires_at") or 0) < _now():
             out["status"] = "expired"
-            challenges[cid] = out
-            self._write_challenges(data)
         return out
 
     def claim_provider_challenge(
@@ -459,6 +512,7 @@ class ConnectionEdgeStore:
             if _clean(challenge.get("target_user_id")) != target_user:
                 return {"ok": False, "error": "connection_edge_challenge_cross_user_access_denied", "challenge": challenge}
             edge = self.resolve_edge(
+                from_authority_id=_clean(_safe_mapping(challenge.get("metadata")).get("authority_id")),
                 from_provider=_clean(challenge.get("provider")),
                 from_subject=_clean(challenge.get("provider_subject")),
             )
@@ -640,6 +694,7 @@ def resolve_principal_roles(
 
 __all__ = [
     "ConnectionEdgeStore",
+    "ConnectionEdgeStoreError",
     "EDGE_CHALLENGE_SCHEMA",
     "EDGE_RELATIONSHIP_DELEGATES_TO",
     "EDGE_SCHEMA",
