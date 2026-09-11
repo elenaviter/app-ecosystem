@@ -235,7 +235,7 @@ export default function App() {
       console.info('[consent-route] hub received', command.tab, JSON.stringify(command.params));
       const params = command.params;
       const tab = tabFromValue(command.tab)
-        ?? ((params.pending_agent_grant || params.agent_client_id || params.manual_access_id)
+        ?? ((params.pending_agent_grant || params.agent_client_id || params.manual_access_id || params.access_id || params.oauth_consent)
           ? 'delegatedAccess'
           : (params.provider_id || params.connector_app_id || params.claims)
             ? 'delegatedToKdcube'
@@ -248,7 +248,7 @@ export default function App() {
         // offer its one-click grant pane; the nonce remounts it to re-read.
         try {
           const url = new URL(window.location.href);
-          (['pending_agent_grant', 'agent_client_id', 'manual_access_id', 'access_id', 'resource', 'claims', 'namespace', 'operation', 'outer_operation', 'invocation_policy', 'invocation_change_id', 'request_bound', 'request_digest', 'request_approval_ticket', 'request_card_revision', 'request_authority_revision', 'approval_application_id', 'account_id', 'account_claim'] as const).forEach((key) => {
+          (['pending_agent_grant', 'agent_client_id', 'manual_access_id', 'access_id', 'oauth_consent', 'resource', 'claims', 'namespace', 'operation', 'outer_operation', 'invocation_policy', 'invocation_change_id', 'request_bound', 'request_digest', 'request_approval_ticket', 'request_card_revision', 'request_authority_revision', 'approval_application_id', 'account_id', 'account_claim'] as const).forEach((key) => {
             const value = (params[key] || '').trim();
             if (value) url.searchParams.set(key, value);
             else url.searchParams.delete(key);

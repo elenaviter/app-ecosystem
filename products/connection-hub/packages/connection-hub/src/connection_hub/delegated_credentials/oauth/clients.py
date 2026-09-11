@@ -136,6 +136,25 @@ def normalize_public_client_metadata(value: Mapping[str, Any] | None) -> dict[st
         raise ValueError("client_metadata_too_large")
     return normalized
 
+
+def client_uses_full_card_catalog(value: Mapping[str, Any] | None) -> bool:
+    """Whether OAuth delivers a general multi-resource credential.
+
+    An ordinary MCP client knows only the endpoint it connected to. A custom
+    client may instead use that endpoint to receive a credential it can present
+    to multiple services. The client's public metadata declares that transport
+    shape; it grants nothing, and every card choice still requires the user's
+    review and passes the normal authority checks.
+    """
+
+    snapshot = dict(value or {})
+    asserted = snapshot.get("client_metadata")
+    metadata = asserted if isinstance(asserted, Mapping) else snapshot
+    return (
+        str(metadata.get("kdcube_credential_use") or "").strip().lower()
+        == "multi_resource"
+    )
+
 # Redirect URIs a dynamically-registered (RFC 7591) client may register. DCR is
 # open (it runs before the user authenticates), so without this an attacker could
 # register a client pointing at their own server. Restricting it to claude.ai's

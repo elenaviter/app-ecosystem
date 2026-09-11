@@ -27,15 +27,16 @@ const FIELD_LABELS: Record<GrantSearchField, string> = {
   name: 'Name',
   app: 'App',
   client: 'Client id',
-  door: 'Door',
+  door: 'Service',
   metadata: 'Metadata',
 };
 
 const KINDS: Array<{ id: GrantKind; label: string }> = [
   { id: 'any', label: 'any' },
-  { id: 'agent', label: 'agent' },
+  { id: 'agent', label: 'hosted agent' },
+  { id: 'client', label: 'connected client' },
   { id: 'oauth', label: 'connected app' },
-  { id: 'manual', label: 'manual token' },
+  { id: 'manual', label: 'issued token' },
 ];
 
 const EXPIRING_DAYS = Math.round(EXPIRING_SOON_SECONDS / 86400);
@@ -359,7 +360,7 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
           </p>
           <dl className="grant-filter__terms">
             <dt>Name</dt>
-            <dd>The label you gave a card, or the name a connected app registered when it connected.</dd>
+            <dd>The label you gave a card, or the name a client registered when it connected.</dd>
             <dt>App</dt>
             <dd>
               For a hosted agent, the agent and the app it runs in, read from its client id
@@ -370,9 +371,9 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
               The id the platform authorizes and logs, such as <code>dcr-…</code> or <code>kdcube-agent:…</code>, and an
               automation's access id, the one a revoke takes.
             </dd>
-            <dt>Door</dt>
+            <dt>Service</dt>
             <dd>
-              The protected resource a card opens. Its short alias counts, so <code>…/mcp/productivity</code> reads as
+              A protected resource on the card. Its short alias counts, so <code>…/mcp/productivity</code> reads as
               <code>productivity</code>, and so do its full address and its catalog label.
             </dd>
             <dt>Metadata</dt>
@@ -387,9 +388,10 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
           <div className="grant-filter__step-title">Step 3: kind and state are exact</div>
           <p>
             <b>Kind</b> is who holds the credential, the same badge the card shows:{' '}
-            <span className="badge badge-agent">agent</span> a hosted agent's grant,{' '}
-            <span className="badge badge-app">connected app</span> an OAuth client such as Claude,{' '}
-            <span className="badge badge-neutral">manual token</span> a token issued here for your own script or job.
+            <span className="badge badge-agent">hosted agent</span> a platform-hosted agent,{' '}
+            <span className="badge badge-client">connected client</span> an external client with a multi-resource card,{' '}
+            <span className="badge badge-app">connected app</span> an OAuth MCP app bound to its entry service,{' '}
+            <span className="badge badge-neutral">issued token</span> a token created here for your own script or job.
           </p>
           <p>
             <b>State</b> reads the card's expiry against now. <b>Active</b>: the expiry is ahead, or none is recorded.{' '}

@@ -84,6 +84,7 @@ async function request<T>(
   operation: string,
   payload: Record<string, unknown> = {},
   route: 'operations' | 'public' = 'operations',
+  query: Record<string, string> = {},
 ): Promise<T> {
   const headers = settings.authHeaders({ Accept: 'application/json' });
   const init: RequestInit = { method, credentials: 'include', headers };
@@ -102,7 +103,9 @@ async function request<T>(
   if (hostCallOperation && route === 'operations') {
     return hostCallOperation<T>(method, operation, payload, { headers: bridgeHeaders });
   }
-  const response = await fetch(apiUrl(route, operation), init);
+  const target = new URL(apiUrl(route, operation), window.location.origin);
+  Object.entries(query).forEach(([key, value]) => target.searchParams.set(key, value));
+  const response = await fetch(target.toString(), init);
   const text = await response.text();
   let parsed: unknown = {};
   try {
@@ -131,6 +134,6 @@ export function postPublicOp<T>(operation: string, payload: Record<string, unkno
   return request<T>('POST', operation, payload, 'public');
 }
 
-export function getPublicOp<T>(operation: string): Promise<T> {
-  return request<T>('GET', operation, {}, 'public');
+export function getPublicOp<T>(operation: string, query: Record<string, string> = {}): Promise<T> {
+  return request<T>('GET', operation, {}, 'public', query);
 }

@@ -52,6 +52,7 @@ from connection_hub.delegated_credentials.oauth.grants import (
     mint_delegated_client_access_token,
 )
 from connection_hub.delegated_credentials.oauth.clients import (
+    client_uses_full_card_catalog,
     normalize_public_client_metadata,
 )
 from connection_hub.delegated_credentials.oauth.store import (
@@ -92,6 +93,7 @@ from connection_hub.delegated_credentials.cards.read_model import (
     compatible_resource_offers,
 )
 from connection_hub.delegated_credentials.secret_resources import (
+    SecretResource,
     SecretResourceError,
     validate_secret_card_resource,
 )
@@ -725,9 +727,9 @@ class AutomationAccessRecord:
     # Non-secret lineage written by the resident-profile migration: the legacy
     # records folded into this card and when. Empty otherwise.
     provenance: Mapping[str, Any] = field(default_factory=dict)
-    # The protected resource an OAuth client connected to (the OAuth
-    # ``resource`` of its consent): the one door that client can reach. Empty
-    # on manual and resident cards; derived for OAuth cards written before it.
+    # The protected resource where an OAuth client began authorization. It is
+    # the card's entry door for display and reconnect identity; the owner may
+    # grant other compatible resources on the same card.
     entry_resource: str = ""
     # Public, client-asserted identification retained for operator review and
     # search. It never participates in an authority decision.
@@ -872,6 +874,20 @@ class AutomationAccessRecord:
         effective = {resource: rows for resource, rows in effective.items() if rows}
         if effective:
             public["effective_named_service_operations"] = effective
+        # These are separate facts. ``source`` says how the credential reached
+        # the caller; reach says whether the caller is bound to one entry
+        # resource or may present the credential to several selected resources.
+        public["credential_delivery"] = {
+            ACCESS_SOURCE_AGENT: "hosted",
+            ACCESS_SOURCE_OAUTH: "oauth",
+            ACCESS_SOURCE_MANUAL: "issued_token",
+        }.get(self.source, self.source or "issued_token")
+        public["credential_reach"] = (
+            "multi_resource"
+            if self.source in {ACCESS_SOURCE_AGENT, ACCESS_SOURCE_MANUAL}
+            or client_uses_full_card_catalog(self.client_metadata)
+            else "single_resource"
+        )
         return public
 
 
@@ -1572,10 +1588,16 @@ class AutomationAccessService:
                 return resource
         return resources[0] if resources else ""
 
-    def _reachable_through_door(self, entry_resource: str, *, config: Any = None) -> set[str]:
-        """The resources a consent at ``entry_resource`` can add to the card:
-        the door's own selection rows (its child resources within the door's
-        grants). A door without ``resource_selection`` reaches nothing else."""
+    def _reachable_through_door(
+        self, entry_resource: str, *, config: Any = None
+    ) -> set[str]:
+        """Resources an MCP endpoint explicitly makes selectable.
+
+        A normal MCP client knows only its entry endpoint. A selection endpoint,
+        such as the remote-MCP proxy, may expose child resources through that
+        endpoint; every other service remains unreachable to that client.
+        """
+
         door = _clean(entry_resource)
         if not door:
             return set()
@@ -1595,7 +1617,27 @@ class AutomationAccessService:
             )
         except Exception:  # noqa: BLE001 - an unreadable catalog offers nothing
             return set()
-        return {_clean(item.get("resource")) for item in rows if _clean(item.get("resource"))}
+        return {
+            _clean(item.get("resource"))
+            for item in rows
+            if _clean(item.get("resource"))
+        }
+
+    def _oauth_allowed_resources(
+        self,
+        *,
+        entry_resource: str,
+        client_metadata: Mapping[str, Any] | None,
+        config: Any,
+    ) -> set[str] | None:
+        """``None`` for multi-resource delivery, else exact MCP reachability."""
+
+        if client_uses_full_card_catalog(client_metadata):
+            return None
+        entry = _clean(entry_resource)
+        allowed = {entry}
+        allowed.update(self._reachable_through_door(entry, config=config))
+        return allowed
 
     def _configured_resource(
         self, resource: str, *, config: Any = None
@@ -1744,10 +1786,9 @@ class AutomationAccessService:
             # Which owner-visible delegable resources may join this card, and
             # why the others may not. The editor renders the picker from this;
             # a resident ceiling (Projection) narrows it further downstream.
-            # An OAuth client reaches ONE door, the resource it connected to;
-            # what it may also hold is what consent offers through that door
-            # (a proxy door's connectors). Everything else is out of its reach
-            # and is not offered to the grantor as if it were.
+            # A multi-resource client receives a general card through OAuth.
+            # An ordinary OAuth MCP client knows only the endpoint it connected
+            # to and any child resources explicitly exposed through that door.
             entry_resource = self._entry_resource_for(record, config=listing_config)
             if entry_resource:
                 item["entry_resource"] = entry_resource
@@ -1758,8 +1799,13 @@ class AutomationAccessService:
                 platform_admin=platform_admin,
                 entry_resource=entry_resource,
                 reachable=(
-                    self._reachable_through_door(entry_resource, config=listing_config)
+                    self._oauth_allowed_resources(
+                        entry_resource=entry_resource,
+                        client_metadata=record.client_metadata,
+                        config=listing_config,
+                    )
                     if record.source == ACCESS_SOURCE_OAUTH
+                    and listing_config is not None
                     else None
                 ),
             )
@@ -2768,6 +2814,34 @@ class AutomationAccessService:
                 "retryable": True,
                 "status": 503,
             }
+        catalog_config = await self._catalog_config(
+            active,
+            owner_subject=grantor_subject,
+        )
+        if existing.source == ACCESS_SOURCE_OAUTH:
+            entry_resource = self._entry_resource_for(
+                existing,
+                config=catalog_config,
+            )
+            allowed_resources = self._oauth_allowed_resources(
+                entry_resource=entry_resource,
+                client_metadata=existing.client_metadata,
+                config=catalog_config,
+            )
+            outside_entry = sorted(
+                _clean(resource)
+                for resource in resource_grants
+                if _clean(resource)
+                and allowed_resources is not None
+                and _clean(resource) not in allowed_resources
+            )
+            if outside_entry:
+                return {
+                    "ok": False,
+                    "error": "oauth_client_resource_unreachable",
+                    "resources": outside_entry,
+                    "entry_resource": entry_resource,
+                }
         conflict = await self._save_precondition_conflict(
             existing=existing,
             active=active,
@@ -2811,8 +2885,6 @@ class AutomationAccessService:
         named_services = resolved.named_services
         selected_operations = resolved.operations
         selected_account_scope = resolved.account_scope
-        catalog_config = await self._catalog_config(active, owner_subject=grantor_subject)
-
         now = int(time.time())
         # Editing is about the grants, expiry about the credential. An expired
         # card is edited like any other; its credential comes back by renewal.
@@ -4002,6 +4074,349 @@ class AutomationAccessService:
         except ValueError:
             return {}
 
+    async def oauth_consent_card_seed(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+        resource: str,
+        client_metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return the non-secret card state used to seed OAuth review.
+
+        A reconnect edits the exact OAuth card identified by grantor, client,
+        and entry resource. A first connection has no stored card and starts
+        from the request's proposed authority in the HTTP adapter.
+        """
+
+        grantor = _clean(grantor_subject)
+        client = _clean(client_id)
+        entry_resource = _clean(resource)
+        if not grantor or not client or not entry_resource:
+            return {"ok": False, "error": "oauth_consent_identity_incomplete"}
+        access_id = oauth_access_id(grantor, client, entry_resource)
+        try:
+            loaded = await self._load_record_any_state(
+                access_id,
+                grantor_subject=grantor,
+            )
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_cards_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        current_record, current_state = loaded or (None, "")
+        record = current_record if current_state == CARD_STATE_ACTIVE else None
+        payload: dict[str, Any] = {
+            "ok": True,
+            "access_id": access_id,
+            "card_revision": int(
+                current_record.card_revision if current_record is not None else 0
+            ),
+        }
+        try:
+            catalog_config = await self._catalog_config(
+                await self._active_catalog(), owner_subject=grantor
+            )
+        except CatalogUnavailable:
+            catalog_config = None
+        full_catalog = client_uses_full_card_catalog(client_metadata)
+        allowed = (
+            self._oauth_allowed_resources(
+                entry_resource=entry_resource,
+                client_metadata=client_metadata,
+                config=catalog_config,
+            )
+            if catalog_config is not None
+            else (None if full_catalog else set())
+        )
+        payload["catalog_scope"] = {
+            "mode": "full" if allowed is None else "entry",
+            "resources": sorted(allowed or ()),
+        }
+        rows: dict[str, str] = {}
+        if catalog_config is not None:
+            selected_resources = [entry_resource]
+            if record is not None:
+                selected_resources.extend(record.resource_grants)
+            for selected_resource in selected_resources:
+                configured = self._configured_resource(
+                    selected_resource, config=catalog_config
+                )
+                if configured is not None:
+                    rows[selected_resource] = _clean(
+                        getattr(configured, "resource", "")
+                    )
+        if rows:
+            payload["catalog_row_by_resource"] = rows
+        if record is None:
+            return payload
+        access = record.to_public_dict()
+        if rows:
+            access["catalog_row_by_resource"] = rows
+        if self._invocation_policies is not None:
+            access["invocation_policies"] = [
+                policy.to_public_dict()
+                for policy in await self._invocation_policies.list_for_card(
+                    owner_subject=grantor,
+                    access_id=access_id,
+                )
+            ]
+        payload["access"] = access
+        return payload
+
+    async def resolve_oauth_consent_authority(
+        self,
+        user: Mapping[str, Any],
+        *,
+        client_id: str,
+        entry_resource: str,
+        requested_grants: Iterable[str],
+        client_metadata: Mapping[str, Any] | None,
+        resource_grants: Mapping[str, Any],
+        resource_operations: Mapping[str, Any],
+        named_service_operations: Mapping[str, Any] | str,
+        account_scope: Mapping[str, Any],
+        expected_card_revision: int,
+        expected_catalog_version: str,
+    ) -> dict[str, Any]:
+        """Validate a full card-editor OAuth selection without persisting it."""
+
+        grantor = _subject_from_user(user)
+        client = _clean(client_id)
+        entry = _clean(entry_resource)
+        if not grantor:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        refusal = _delegate_mutation_refusal(user)
+        if refusal is not None:
+            return refusal
+        if not client or not entry:
+            return {"ok": False, "error": "oauth_consent_identity_incomplete"}
+
+        try:
+            active = await self._active_catalog()
+            catalog_version = self._version_of(active)
+        except CatalogUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_catalog_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        if _clean(expected_catalog_version) != catalog_version:
+            return {
+                "ok": False,
+                "error": "consent_catalog_changed",
+                "status": 409,
+                "expected_catalog_version": _clean(expected_catalog_version),
+                "active_catalog_version": catalog_version,
+            }
+
+        catalog_config = await self._catalog_config(active, owner_subject=grantor)
+        entry_config = self._configured_resource(entry, config=catalog_config)
+        if entry_config is None:
+            return {
+                "ok": False,
+                "error": "delegated_access_unknown_resources",
+                "resources": [entry],
+            }
+
+        access_id = oauth_access_id(grantor, client, entry)
+        try:
+            actual_revision = await self._committed_revision(
+                access_id,
+                grantor_subject=grantor,
+            )
+            existing = await self._load_record(
+                access_id,
+                grantor_subject=grantor,
+            )
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_cards_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        if int(expected_card_revision) != actual_revision:
+            return {
+                "ok": False,
+                "error": "delegated_card_save_conflict",
+                "status": 409,
+                "mismatched": {
+                    "card_revision": {
+                        "expected": int(expected_card_revision),
+                        "actual": actual_revision,
+                    }
+                },
+            }
+
+        selected = self._resource_grants(resource_grants)
+        requested = _as_list(requested_grants)
+        allowed = self._oauth_allowed_resources(
+            entry_resource=entry,
+            client_metadata=client_metadata,
+            config=catalog_config,
+        )
+        outside_entry = sorted(
+            resource for resource in selected if allowed is not None and resource not in allowed
+        )
+        if outside_entry:
+            return {
+                "ok": False,
+                "error": "oauth_client_resource_unreachable",
+                "status": 400,
+                "resources": outside_entry,
+                "entry_resource": entry,
+            }
+
+        baseline = existing or AutomationAccessRecord(
+            access_id=access_id,
+            label=client,
+            client_id=client,
+            grantor_subject=grantor,
+            delegate_subject=integration_subject(grantor, client_id=client),
+            operations=(),
+            resource_grants={entry: tuple(requested)},
+            resource_operations={entry: ()},
+            named_service_operations=NamedServiceSelection.none(),
+            identity_scope=_clean(getattr(entry_config, "identity_scope", "")) or "grantor",
+            catalog_version=catalog_version,
+            card_revision=0,
+            source=ACCESS_SOURCE_OAUTH,
+            entry_resource=entry,
+        )
+        resolved = await self._resolve_card_authority(
+            user=user,
+            existing=baseline,
+            active=active,
+            resource_grants=selected,
+            resource_operations=resource_operations,
+            operations=(),
+            named_service_operations=named_service_operations,
+            account_scope=account_scope,
+        )
+        if resolved.error is not None:
+            return resolved.error
+        if resolved.revoke:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_resource_grants",
+            }
+        return {
+            "ok": True,
+            "access_id": access_id,
+            "catalog_version": catalog_version,
+            "card_revision": actual_revision,
+            "resource_grants": resolved.resource_grants,
+            "resource_operations": resolved.resource_operations,
+            "operations": resolved.operations,
+            "named_service_operations": resolved.named_service_operations.to_stored() or {},
+            "named_services": resolved.named_services,
+            "account_scope": resolved.account_scope,
+            "identity_scope": resolved.identity_scope,
+        }
+
+    async def apply_oauth_invocation_policies(
+        self,
+        *,
+        grantor_subject: str,
+        access_id: str,
+        resource_operations: Mapping[str, Any],
+        invocation_policies: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Apply the card editor's explicit outer-operation use policies."""
+
+        selected_operations = normalize_resource_operations(resource_operations)
+        submitted = {
+            _clean(resource): {
+                _clean(operation): _clean(mode).lower()
+                for operation, mode in dict(operations or {}).items()
+                if _clean(operation)
+            }
+            for resource, operations in dict(invocation_policies or {}).items()
+            if _clean(resource) and isinstance(operations, Mapping)
+        }
+        required_keys = {
+            (resource, operation)
+            for resource, operations in selected_operations.items()
+            for operation in operations
+        }
+        submitted_keys = {
+            (resource, operation)
+            for resource, operations in submitted.items()
+            for operation in operations
+        }
+        if submitted_keys != required_keys:
+            raise ValueError("every selected outer operation requires one invocation policy")
+        if not submitted_keys:
+            return []
+        if self._invocation_policies is None:
+            raise ValueError("invocation policy service is unavailable")
+
+        from connection_hub.invocation_policy import (
+            POLICY_ALWAYS,
+            POLICY_ONCE,
+            SURFACE_OUTER,
+            InvocationAuthority,
+        )
+
+        allowed_modes = {POLICY_ALWAYS, POLICY_ONCE}
+        invalid_modes = sorted({
+            mode
+            for operations in submitted.values()
+            for mode in operations.values()
+            if mode not in allowed_modes
+        })
+        if invalid_modes:
+            raise ValueError("invalid invocation policy mode(s): " + ", ".join(invalid_modes))
+
+        broad_secret_once = sorted(
+            resource
+            for resource, operations in submitted.items()
+            if any(mode == POLICY_ONCE for mode in operations.values())
+            and resource.startswith("urn:kdcube:management:secret:")
+            and SecretResource.parse(resource).broad
+        )
+        if broad_secret_once:
+            raise ValueError(
+                "broad secret selectors cannot use an allow-once policy: "
+                + ", ".join(broad_secret_once)
+            )
+
+        current = await self._invocation_policies.list_for_card(
+            owner_subject=_clean(grantor_subject),
+            access_id=_clean(access_id),
+        )
+        revisions = {
+            (policy.authority.resource, policy.authority.operation): policy.revision
+            for policy in current
+            if policy.authority.surface == SURFACE_OUTER
+            and not policy.authority.provider_id
+            and not policy.authority.account_id
+        }
+        written = []
+        for resource, operations in sorted(submitted.items()):
+            for operation, mode in sorted(operations.items()):
+                policy = await self._invocation_policies.set_policy(
+                    owner_subject=_clean(grantor_subject),
+                    authority=InvocationAuthority(
+                        access_id=_clean(access_id),
+                        resource=resource,
+                        surface=SURFACE_OUTER,
+                        operation=operation,
+                    ),
+                    mode=mode,
+                    expected_revision=revisions.get((resource, operation), 0),
+                )
+                written.append(policy.to_public_dict())
+        return written
+
     async def record_oauth_grant(
         self,
         *,
@@ -4020,6 +4435,8 @@ class AutomationAccessService:
         named_service_operations: Any = None,
         catalog_version: str = "",
         client_metadata: Mapping[str, Any] | None = None,
+        replace_authority: bool = False,
+        expected_card_revision: int | None = None,
     ) -> AutomationAccessRecord | None:
         """Register (or update) an OAuth-flow delegated grant in the registry.
 
@@ -4029,10 +4446,9 @@ class AutomationAccessService:
         grant. One record per (grantor, client, resource): reconsent updates
         it instead of piling up rows.
 
-        ``account_scope`` carries the per-account claim picks from the consent
-        screen (initial consent). The card's EXISTING binding is always
-        preserved and merged — a refresh rotation (no picks) must never wipe
-        the user's per-account ticks, and a re-consent unions with them.
+        ``replace_authority`` distinguishes an authorization-code exchange
+        from a refresh rotation. A reviewed consent replaces every authority
+        dimension exactly; a refresh carries the existing card forward.
 
         Every DCR ``client_id`` is an independent caller. Redirect URIs are
         callback channels, not reconnect identity, so a fresh registration
@@ -4063,6 +4479,15 @@ class AutomationAccessService:
             )
         except CardUnavailable:
             existing_card_revision = 0
+        if (
+            replace_authority
+            and expected_card_revision is not None
+            and int(expected_card_revision) != existing_card_revision
+        ):
+            raise CardConflict(
+                "card_revision_moved",
+                current_revision=existing_card_revision,
+            )
         try:
             existing_card = await self._load_record(access_id, grantor_subject=grantor)
         except CardUnavailable:
@@ -4118,20 +4543,13 @@ class AutomationAccessService:
             selected_resource_grants = {
                 resource_value or "*": _as_list(list(scopes))
             }
-        scope_list = list(dict.fromkeys(
-            grant
-            for grants in selected_resource_grants.values()
-            for grant in grants
-            if _clean(grant)
-        ))
-        # Account binding: consent picks union this exact Card's existing
-        # binding. Another DCR client is a separate caller and cannot donate
-        # authority merely because its callback URI has the same origin.
+        # A reviewed consent replaces account binding. A refresh merges its
+        # carried snapshot with the card so token rotation never drops it.
         merged_account_scope: dict[str, dict[str, list[str]]] = {
             provider: {account_id: list(claims) for account_id, claims in accounts.items()}
             for provider, accounts in normalize_account_scope(account_scope).items()
         }
-        for source_scope in (existing_account_scope,):
+        for source_scope in (() if replace_authority else (existing_account_scope,)):
             for provider, accounts in source_scope.items():
                 target = merged_account_scope.setdefault(provider, {})
                 for account_id, claims in accounts.items():
@@ -4140,13 +4558,20 @@ class AutomationAccessService:
                         if claim not in held:
                             held.append(claim)
         if materialize_boundary:
-            existing_named_services = self._materialized_boundary_for(
-                selection=existing_selection,
-                resource=resource_value,
-                grants=scope_list,
-                account_scope=merged_account_scope,
-                config=consent_config,
-            )
+            existing_named_services = {}
+            for selected_resource, selected_grants in selected_resource_grants.items():
+                boundary = self._materialized_boundary_for(
+                    selection=existing_selection,
+                    resource=selected_resource,
+                    grants=selected_grants,
+                    account_scope=merged_account_scope,
+                    config=consent_config,
+                )
+                if boundary:
+                    existing_named_services = self._merge_named_service_configs(
+                        existing_named_services,
+                        boundary,
+                    )
         if resource_operations is not None:
             selected_resource_operations = normalize_resource_operations(
                 resource_operations
@@ -4159,7 +4584,11 @@ class AutomationAccessService:
             )
         record = AutomationAccessRecord(
             access_id=access_id,
-            label=_clean(client_label) or client,
+            label=(
+                (_clean(client_label) or client)
+                if existing_card is None or replace_authority
+                else existing_card.label
+            ),
             client_id=client,
             grantor_subject=grantor,
             delegate_subject=integration_subject(grantor, client_id=client),

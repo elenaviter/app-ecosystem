@@ -159,6 +159,8 @@ from connection_hub.delegated_credentials.oauth.metadata import (
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.http.routes import (
     authorize as oauth_authorize,
     authorize_consent as oauth_authorize_consent,
+    authorize_consent_decision as oauth_authorize_consent_decision,
+    authorize_consent_draft as oauth_authorize_consent_draft,
     oauth_logout,
     register_client as oauth_register_client,
     revoke as oauth_revoke,
@@ -2987,6 +2989,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             )
         if path == "authorize":
             return await oauth_authorize(request)
+        if path == "authorize/consent/draft":
+            return await oauth_authorize_consent_draft(request)
         if path in {"jwks", ".well-known/jwks.json"}:
             # Empty and permanent: kst1 tokens are opaque, so there is no
             # public key to publish. The document exists because discovery
@@ -3021,6 +3025,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return await oauth_register_client(request)
         if path == "authorize/consent":
             return await oauth_authorize_consent(request)
+        if path == "authorize/consent/decision":
+            return await oauth_authorize_consent_decision(request)
         if path == "logout":
             return await oauth_logout(request)
         if path == "token":

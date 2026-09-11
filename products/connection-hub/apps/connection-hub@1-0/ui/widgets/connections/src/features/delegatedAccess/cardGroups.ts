@@ -11,7 +11,7 @@ export type CardGroupBy = 'kind' | 'door' | 'state';
 
 export const CARD_GROUP_OPTIONS: Array<{ id: CardGroupBy; label: string }> = [
   { id: 'kind', label: 'kind' },
-  { id: 'door', label: 'door' },
+  { id: 'door', label: 'resource' },
   { id: 'state', label: 'state' },
 ];
 
@@ -23,12 +23,19 @@ export interface CardGroup {
 
 const KIND_LABEL: Record<string, string> = {
   agent: 'Hosted agents',
+  client: 'Connected clients',
   oauth: 'Connected apps',
-  manual: 'Manual tokens',
+  manual: 'Issued tokens',
 };
-// Kinds have a fixed order: the hosted agents first, then the apps the user
-// connected, then the tokens the user issued.
-const KIND_ORDER = ['agent', 'oauth', 'manual'];
+const KIND_ORDER = ['agent', 'client', 'oauth', 'manual'];
+
+function cardKind(record: DelegatedAccessRecord): string {
+  if (record.source === 'agent') return 'agent';
+  if (record.source === 'oauth') {
+    return record.credential_reach === 'multi_resource' ? 'client' : 'oauth';
+  }
+  return 'manual';
+}
 
 const STATE_LABEL: Record<RecordState, string> = {
   active: 'Active',
@@ -55,7 +62,7 @@ export function groupCards(
   };
   records.forEach((record) => {
     if (by === 'kind') {
-      const kind = record.source || 'manual';
+      const kind = cardKind(record);
       add(kind, KIND_LABEL[kind] || kind, record);
     } else if (by === 'state') {
       const state = ctx.stateOf(record);

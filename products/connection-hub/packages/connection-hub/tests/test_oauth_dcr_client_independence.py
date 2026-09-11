@@ -31,6 +31,7 @@ from connection_hub.delegated_credentials.oauth.config import (
 
 GRANTOR = "user-1"
 RESOURCE = "https://hub.example.test/mcp"
+SECOND_RESOURCE = "https://hub.example.test/second"
 CONNECTIONS = {
     "delegated_credentials": {
         "oauth": {
@@ -53,7 +54,18 @@ CONNECTIONS = {
                             "grants": ["fixture:use"],
                         }
                     },
-                }
+                },
+                {
+                    "resource": SECOND_RESOURCE,
+                    "label": "Second fixture",
+                    "identity_scope": "grantor",
+                    "tools": {
+                        "search": {
+                            "label": "Search",
+                            "grants": ["fixture:use"],
+                        }
+                    },
+                },
             ],
         }
     }
@@ -272,3 +284,118 @@ async def test_dcr_loopback_clients_keep_independent_cards(loopback_host):
     } == {records[2].access_id}
     assert store.revoked_access == ["access-2", "access-1-rotated"]
     assert store.revoked_refresh == ["refresh-2", "refresh-1-rotated"]
+
+
+@pytest.mark.asyncio
+async def test_reviewed_oauth_replacement_rejects_a_card_revision_that_moved():
+    store = _GrantStore({})
+    persistence = _Persistence()
+    service = _service(store, persistence)
+
+    reviewed = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-worker",
+        client_label="Worker",
+        scopes=["fixture:use"],
+        operations=["search"],
+        resource=RESOURCE,
+        access_token="access-reviewed",
+        refresh_token="refresh-reviewed",
+    )
+    assert reviewed is not None
+    moved = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-worker",
+        scopes=["fixture:use"],
+        resource=RESOURCE,
+        access_token="access-moved",
+        refresh_token="refresh-moved",
+    )
+    assert moved is not None
+    assert moved.card_revision == reviewed.card_revision + 1
+
+    with pytest.raises(CardConflict) as conflict:
+        await service.record_oauth_grant(
+            grantor_subject=GRANTOR,
+            client_id="dcr-worker",
+            client_label="Stale editor",
+            scopes=["fixture:use"],
+            operations=["search"],
+            resource=RESOURCE,
+            access_token="access-stale",
+            refresh_token="refresh-stale",
+            replace_authority=True,
+            expected_card_revision=reviewed.card_revision,
+        )
+
+    assert conflict.value.reason == "card_revision_moved"
+    assert conflict.value.current_revision == moved.card_revision
+    current = await service._load_record(moved.access_id, grantor_subject=GRANTOR)
+    assert current is not None
+    assert current.card_revision == moved.card_revision
+    assert current.access_token == "access-moved"
+
+
+@pytest.mark.asyncio
+async def test_card_update_keeps_ordinary_oauth_client_on_its_entry_resource():
+    store = _GrantStore({})
+    persistence = _Persistence()
+    service = _service(store, persistence)
+    user = {
+        "user_id": GRANTOR,
+        "roles": ["kdcube:role:registered"],
+    }
+
+    ordinary = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-ordinary",
+        scopes=["fixture:use"],
+        operations=["search"],
+        resource=RESOURCE,
+    )
+    assert ordinary is not None
+    refused = await service.update_access(
+        user,
+        access_id=ordinary.access_id,
+        resource_grants={
+            RESOURCE: ["fixture:use"],
+            SECOND_RESOURCE: ["fixture:use"],
+        },
+        resource_operations={
+            RESOURCE: ["search"],
+            SECOND_RESOURCE: ["search"],
+        },
+    )
+    assert refused == {
+        "ok": False,
+        "error": "oauth_client_resource_unreachable",
+        "resources": [SECOND_RESOURCE],
+        "entry_resource": RESOURCE,
+    }
+
+    multi = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-multi",
+        scopes=["fixture:use"],
+        operations=["search"],
+        resource=RESOURCE,
+        client_metadata={"kdcube_credential_use": "multi_resource"},
+    )
+    assert multi is not None
+    accepted = await service.update_access(
+        user,
+        access_id=multi.access_id,
+        resource_grants={
+            RESOURCE: ["fixture:use"],
+            SECOND_RESOURCE: ["fixture:use"],
+        },
+        resource_operations={
+            RESOURCE: ["search"],
+            SECOND_RESOURCE: ["search"],
+        },
+    )
+    assert accepted["ok"] is True
+    assert set(accepted["access"]["resource_grants"]) == {
+        RESOURCE,
+        SECOND_RESOURCE,
+    }

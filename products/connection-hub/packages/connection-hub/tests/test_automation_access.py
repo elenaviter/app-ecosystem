@@ -3,9 +3,89 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from connection_hub.delegated_credentials.automation_access import (
+    ACCESS_SOURCE_AGENT,
+    ACCESS_SOURCE_MANUAL,
+    ACCESS_SOURCE_OAUTH,
+    AutomationAccessRecord,
     AutomationAccessService,
     _account_scope_claims_for_requirements,
 )
+from connection_hub.delegated_credentials.oauth.clients import (
+    client_uses_full_card_catalog,
+)
+
+
+def _public_record(*, source: str, metadata=None) -> dict:
+    return AutomationAccessRecord(
+        access_id="access-1",
+        label="Caller",
+        client_id="client-1",
+        grantor_subject="owner-1",
+        delegate_subject="delegate-1",
+        operations=(),
+        resource_grants={"https://example.test/mcp/service": ("work:read",)},
+        source=source,
+        client_metadata=metadata or {},
+    ).to_public_dict()
+
+
+def test_public_card_separates_credential_delivery_from_resource_reach() -> None:
+    hosted = _public_record(source=ACCESS_SOURCE_AGENT)
+    issued = _public_record(source=ACCESS_SOURCE_MANUAL)
+    app = _public_record(source=ACCESS_SOURCE_OAUTH)
+    connected_client = _public_record(
+        source=ACCESS_SOURCE_OAUTH,
+        metadata={"kdcube_credential_use": "multi_resource"},
+    )
+
+    assert (hosted["credential_delivery"], hosted["credential_reach"]) == (
+        "hosted",
+        "multi_resource",
+    )
+    assert (issued["credential_delivery"], issued["credential_reach"]) == (
+        "issued_token",
+        "multi_resource",
+    )
+    assert (app["credential_delivery"], app["credential_reach"]) == (
+        "oauth",
+        "single_resource",
+    )
+    assert (
+        connected_client["credential_delivery"],
+        connected_client["credential_reach"],
+    ) == ("oauth", "multi_resource")
+
+
+def test_multi_resource_hint_reads_asserted_client_metadata_snapshot() -> None:
+    assert client_uses_full_card_catalog(
+        {"client_metadata": {"kdcube_credential_use": "multi_resource"}}
+    )
+    assert not client_uses_full_card_catalog(
+        {"client_metadata": {"kdcube_credential_use": "single_resource"}}
+    )
+
+
+def test_oauth_catalog_reach_preserves_entry_bound_clients_and_full_clients() -> None:
+    class Probe:
+        def _reachable_through_door(self, entry_resource, *, config):
+            assert config == "catalog"
+            return {f"{entry_resource}/child"}
+
+    service = Probe()
+    entry = "https://example.test/mcp/entry"
+
+    assert AutomationAccessService._oauth_allowed_resources(
+        service,
+        entry_resource=entry,
+        client_metadata={},
+        config="catalog",
+    ) == {entry, f"{entry}/child"}
+    assert AutomationAccessService._oauth_allowed_resources(
+        service,
+        entry_resource=entry,
+        client_metadata={"kdcube_credential_use": "multi_resource"},
+        config="catalog",
+    ) is None
 
 
 def test_explicit_connected_account_claims_are_effective_for_admission() -> None:

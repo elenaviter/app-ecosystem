@@ -13,7 +13,7 @@
 import type { DelegatedAccessRecord } from '../../api/types';
 
 export type GrantSearchField = 'name' | 'app' | 'client' | 'door' | 'metadata';
-export type GrantKind = 'any' | 'agent' | 'oauth' | 'manual';
+export type GrantKind = 'any' | 'agent' | 'client' | 'oauth' | 'manual';
 export type GrantState = 'any' | 'active' | 'expiring' | 'expired';
 export type GrantSort = 'newest' | 'expiring' | 'name';
 
@@ -74,12 +74,23 @@ export interface GrantFilterContext {
 export type RecordKind = Exclude<GrantKind, 'any'>;
 export type RecordState = Exclude<GrantState, 'any'>;
 
-/** Who holds the credential: a hosted agent's grant, an OAuth-connected app,
- *  or a token issued here for the user's own script. Mirrors the badge the
- *  card shows. */
+export type CredentialReach = 'single_resource' | 'multi_resource';
+
+/** Resource reach is independent of credential delivery. Old records did not
+ *  expose the derived field, so infer their established behavior here. */
+export function credentialReach(record: DelegatedAccessRecord): CredentialReach {
+  if (record.credential_reach === 'multi_resource') return 'multi_resource';
+  if (record.credential_reach === 'single_resource') return 'single_resource';
+  return record.source === 'oauth' ? 'single_resource' : 'multi_resource';
+}
+
+/** Who holds the credential. OAuth delivery can produce either a client with
+ *  a multi-resource card or an app bound to one MCP entry resource. */
 export function recordKind(record: DelegatedAccessRecord): RecordKind {
   if (record.source === 'agent') return 'agent';
-  if (record.source === 'oauth') return 'oauth';
+  if (record.source === 'oauth') {
+    return credentialReach(record) === 'multi_resource' ? 'client' : 'oauth';
+  }
   return 'manual';
 }
 
@@ -189,7 +200,7 @@ function fieldsOf(filter: GrantFilter): GrantSearchField[] {
   return filter.fields.length ? filter.fields : ALL_SEARCH_FIELDS;
 }
 
-/** One flat card (connected app or manual token). */
+/** One flat card (connected client, connected app, or issued token). */
 export function recordMatches(record: DelegatedAccessRecord, filter: GrantFilter, ctx: GrantFilterContext): boolean {
   if (!recordPassesSettings(record, filter, ctx)) return false;
   const needle = filter.query.trim().toLowerCase();

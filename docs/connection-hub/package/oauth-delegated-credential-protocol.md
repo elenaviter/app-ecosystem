@@ -160,11 +160,13 @@ Connection Hub OAuth adapter
   |    cookie name comes from the selected platform sign-in entry
   |    user and roles come from platform auth/session resolver
   v
-User consent page
+Connection Hub card editor
   |
-  | 5. User approves platform delegation grants and selected operation set
-  |    CSRF token is single-use and bound to grantor subject
-  |    displayed client metadata is fingerprinted and rechecked on submit
+  | 5. User reviews resources, operations, and connected-account scope
+  |    ordinary MCP clients see their entry resource and its account choices
+  |    declared multi-resource clients see the full card catalog
+  |    requested grants are selected suggestions, not locked authority
+  |    client metadata and the active catalog are rechecked on save
   v
 Authorization code
   |
@@ -206,6 +208,19 @@ Proc bundle MCP bridge
   v
 Allowed MCP tool result
 ```
+
+The card editor is the OAuth decision screen. **Save card and connect** creates
+the authorization code; **Cancel** denies the request. Its opaque draft id is a
+one-use, user-bound Redis record with a 15-minute expiry. It contains protocol
+coordinates and fingerprints, never an access token or provider credential.
+
+The default is the existing entry-bound MCP flow. A custom client can request
+multi-resource credential delivery by reporting
+`kdcube_credential_use=multi_resource` in validated client metadata. That
+application-neutral hint does not identify any product or app and grants nothing by
+itself. It changes the editor from the entry-resource catalog to the full
+delegated-card catalog. Each saved resource is still validated against the
+current descriptor and the approving user's authority.
 
 ## Authorization Model
 

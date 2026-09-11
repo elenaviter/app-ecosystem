@@ -42,6 +42,11 @@ CLIENT_TTL_SECONDS = 210 * 24 * 3600
 # Consent CSRF tokens live only for the duration a human spends on the screen.
 CSRF_TTL_SECONDS = 600
 
+# A Connection Hub card-editor consent is a browser handoff rather than an
+# inline form. Its opaque draft id carries no authority by itself and lives
+# only long enough for the owner to review and save the card.
+CONSENT_DRAFT_TTL_SECONDS = 15 * 60
+
 
 _ATOMIC_GETDEL = """
 local value = redis.call('GET', KEYS[1])
@@ -152,6 +157,9 @@ class GrantStore:
         catalog_version: str = "",
         account_scope: Optional[Dict[str, Any]] = None,
         client_metadata: Optional[Dict[str, Any]] = None,
+        card_label: str = "",
+        invocation_policies: Optional[Mapping[str, Any]] = None,
+        expected_card_revision: Optional[int] = None,
     ) -> str:
         code = secrets.token_urlsafe(32)
         operation_map = (
@@ -192,7 +200,15 @@ class GrantStore:
             # token exchange so the registry card is born with the binding.
             "account_scope": dict(account_scope or {}),
             "client_metadata": dict(client_metadata or {}),
+            "card_label": str(card_label or "").strip(),
+            "invocation_policies": (
+                dict(invocation_policies)
+                if invocation_policies is not None
+                else None
+            ),
         }
+        if expected_card_revision is not None:
+            payload["expected_card_revision"] = int(expected_card_revision)
         await self._redis_call(
             "authorization_code.create",
             "setex",
@@ -379,6 +395,81 @@ class GrantStore:
             return False, "subject_mismatch", {}
         context = payload.get("context")
         return True, "ok", dict(context) if isinstance(context, dict) else {}
+
+    # --------------------------- consent drafts ---------------------------
+
+    @staticmethod
+    def _subject_context(
+        raw: Any,
+        *,
+        sub: str,
+    ) -> tuple[bool, str, Dict[str, Any]]:
+        if raw is None:
+            return False, "not_found", {}
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return False, "malformed_record", {}
+        if not isinstance(payload, dict):
+            return False, "malformed_record", {}
+        if payload.get("sub") != sub:
+            return False, "subject_mismatch", {}
+        context = payload.get("context")
+        if not isinstance(context, dict):
+            return False, "malformed_record", {}
+        return True, "ok", dict(context)
+
+    async def create_consent_draft(
+        self,
+        sub: str,
+        *,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Create an opaque, owner-bound handoff into the card editor."""
+
+        token = secrets.token_urlsafe(32)
+        await self._redis_call(
+            "consent_draft.create",
+            "setex",
+            self._key("consent-draft", token),
+            CONSENT_DRAFT_TTL_SECONDS,
+            json.dumps({"sub": sub, "context": dict(context or {})}),
+        )
+        return token
+
+    async def read_consent_draft_context(
+        self,
+        token: Optional[str],
+        sub: str,
+    ) -> tuple[bool, str, Dict[str, Any]]:
+        """Read a draft for rendering without consuming its one decision."""
+
+        if not token:
+            return False, "missing", {}
+        raw = await self._redis_call(
+            "consent_draft.read",
+            "get",
+            self._key("consent-draft", token),
+        )
+        return self._subject_context(raw, sub=sub)
+
+    async def consume_consent_draft_context(
+        self,
+        token: Optional[str],
+        sub: str,
+    ) -> tuple[bool, str, Dict[str, Any]]:
+        """Consume the single approve-or-deny decision for a draft."""
+
+        if not token:
+            return False, "missing", {}
+        raw = await self._redis_call(
+            "consent_draft.consume",
+            "eval",
+            _ATOMIC_GETDEL,
+            1,
+            self._key("consent-draft", token),
+        )
+        return self._subject_context(raw, sub=sub)
 
     # ------------------------- dynamic client registration -------------------------
 

@@ -45,6 +45,8 @@ import {
   compareAgentGroups,
   compareRecords,
   DEFAULT_GRANT_FILTER,
+  credentialReach,
+  recordKind,
   recordState,
   isUnfiltered,
   metadataValueText,
@@ -83,6 +85,17 @@ import {
   setDelegatedInvocationPolicy,
   updateDelegatedAccess,
 } from './delegatedAccessSlice';
+import {
+  approveOAuthConsent,
+  denyOAuthConsent,
+  loadOAuthConsentDraft,
+  oauthConsentId,
+  type OAuthConsentDraft,
+} from './oauthConsent';
+import {
+  accessCardFocusRequest,
+  matchesAccessCardFocus,
+} from './accessCardFocus';
 
 /** Whether a resource card matches a catalog search: its label/id, its grants
  *  (tokens and their vocabulary labels), its operations, and its named-service
@@ -91,7 +104,7 @@ import {
 // One sentence per section of the editor, behind an info mark.
 const HELP_PERMISSIONS = 'What this caller may reach on this door, per service. Read is read-only, write allows changes. Unticking narrows the card on the caller\'s next call.';
 const HELP_TOOLS = 'The tools of this door the caller may call. A ticked tool runs every time by default; choose Once to allow a single run that you renew by hand. Unticking a tool removes it on the caller\'s next call.';
-const HELP_DOOR = 'The endpoint this caller enters. Everything on this card is reached through it.';
+const HELP_DOOR = 'A protected service or endpoint this card may access.';
 
 function resourceMatchesQuery(
   item: DelegatedAccessResourceOption,
@@ -244,46 +257,6 @@ function pendingAgentGrantRequest(openParams?: Record<string, string>): PendingA
   }
 }
 
-type ManualAccessFocus = {
-  accessId: string;
-  resource?: string;
-  claims: string[];
-  outerOperation?: string;
-  accountId?: string;
-  accountClaim?: string;
-};
-
-function manualAccessFocusFromParams(get: (key: string) => string): ManualAccessFocus | null {
-  const accessId = get('manual_access_id').trim();
-  if (!accessId) return null;
-  const resource = get('resource').trim();
-  const claims = get('claims').split(',').map((item) => item.trim()).filter(Boolean);
-  const accountId = get('account_id').trim();
-  const accountClaim = get('account_claim').trim();
-  const outerOperation = get('outer_operation').trim();
-  return {
-    accessId,
-    resource: resource || undefined,
-    claims,
-    outerOperation: outerOperation || undefined,
-    accountId: accountId || undefined,
-    accountClaim: accountClaim || undefined,
-  };
-}
-
-function manualAccessFocusRequest(openParams?: Record<string, string>): ManualAccessFocus | null {
-  if (openParams) {
-    const fromProps = manualAccessFocusFromParams((key) => String(openParams[key] ?? ''));
-    if (fromProps) return fromProps;
-  }
-  try {
-    const params = new URLSearchParams(window.location.search);
-    return manualAccessFocusFromParams((key) => params.get(key) ?? '');
-  } catch {
-    return null;
-  }
-}
-
 const ttlOptions = [
   { value: 3600, label: '1 hour' },
   { value: 12 * 3600, label: '12 hours' },
@@ -310,15 +283,42 @@ function doorAlias(resource?: string): string {
   return match ? match[1] : '';
 }
 
-/** The one door an OAuth client is connected to: what the consent recorded,
- *  or for a card written before that was recorded, its first resource that is
- *  not a connector served through a proxy. Empty for manual and agent cards,
- *  which hold any set of doors by construction. */
+/** The governing door of a single-resource OAuth app. A multi-resource client
+ *  may have entered authorization through an endpoint too, but that endpoint
+ *  delivers its credential and does not limit the card to one door. */
 function clientDoorFor(item: DelegatedAccessRecord): string {
-  if (item.source !== 'oauth') return '';
+  if (item.source !== 'oauth' || credentialReach(item) !== 'single_resource') return '';
   if (item.entry_resource) return item.entry_resource;
   const resources = Object.keys(item.resource_grants || {}).filter((resource) => resource !== '*');
   return resources.find((resource) => !resource.startsWith('urn:connection-hub:remote-mcp:')) || resources[0] || '';
+}
+
+function callerLabel(item: DelegatedAccessRecord): string {
+  const kind = recordKind(item);
+  if (kind === 'agent') return 'hosted agent';
+  if (kind === 'client') return 'connected client';
+  if (kind === 'oauth') return 'connected app';
+  return 'issued token';
+}
+
+function callerNoun(item: DelegatedAccessRecord): string {
+  const kind = recordKind(item);
+  if (kind === 'agent') return 'this agent';
+  if (kind === 'client') return 'this client';
+  if (kind === 'oauth') return 'this app';
+  return 'this token';
+}
+
+function callerBadgeClass(item: DelegatedAccessRecord): string {
+  const kind = recordKind(item);
+  if (kind === 'agent') return 'badge-agent';
+  if (kind === 'client') return 'badge-client';
+  if (kind === 'oauth') return 'badge-app';
+  return 'badge-neutral';
+}
+
+function reachLabel(item: DelegatedAccessRecord): string {
+  return credentialReach(item) === 'multi_resource' ? 'multi-resource' : 'single-resource';
 }
 
 /** Card resources with the client's door first, the rest in stored order. */
@@ -569,6 +569,83 @@ function CountFold({ entries, noun }: { entries: string[]; noun: string }) {
       </button>
       {open ? <ChipRow entries={entries} /> : null}
     </span>
+  );
+}
+
+function OAuthCardRequest({ draft }: { draft: OAuthConsentDraft }) {
+  const clientName = draft.client.client_name || draft.client.client_id;
+  const registration = draft.trusted ? 'registered client' : 'client-published metadata';
+  const multiResource = draft.catalog_scope.mode === 'full';
+  return (
+    <div className="oauth-card-request">
+      <div className="oauth-card-request__head">
+        <div>
+          <div className="form-title">{clientName}</div>
+          <p className="muted">Compose the Connection Hub card this client will receive.</p>
+        </div>
+        <span className="oauth-card-request__badges">
+          <span className={`badge ${multiResource ? 'badge-client' : 'badge-app'}`}>
+            {multiResource ? 'connected client' : 'connected app'}
+          </span>
+          <span className="badge badge-reach">{multiResource ? 'multi-resource' : 'single-resource'}</span>
+        </span>
+      </div>
+      <dl className="oauth-card-request__facts">
+        <dt>Client</dt>
+        <dd><code>{draft.client.client_id}</code></dd>
+        {draft.client.client_uri ? (
+          <>
+            <dt>Client site</dt>
+            <dd><a href={draft.client.client_uri} target="_blank" rel="noreferrer">{draft.client.client_uri}</a></dd>
+          </>
+        ) : null}
+        <dt>{multiResource ? 'Authorization route' : 'Entry service'}</dt>
+        <dd>
+          <strong>{draft.entry_door.label || 'Service endpoint'}</strong>
+          <DoorRef value={draft.entry_door.resource} />
+        </dd>
+        <dt>Returns to</dt>
+        <dd><code>{draft.oauth.redirect_host || draft.oauth.redirect_uri}</code></dd>
+        <dt>Requested access</dt>
+        <dd>
+          {draft.oauth.requested_scopes.length
+            ? <ChipRow entries={draft.oauth.requested_scopes} />
+            : <span className="muted">No named capabilities</span>}
+        </dd>
+      </dl>
+      <div className="oauth-card-request__registration">{registration}</div>
+      <ClientMetadataDetails metadata={draft.client.client_metadata} />
+      {draft.account_requirements.providers.length ? (
+        <div className="oauth-card-request__requirements">
+          <div className="account-title">Accounts used by the requested access</div>
+          {draft.account_requirements.providers.map((provider) => (
+            <div className="oauth-account-requirement" key={provider.provider_id}>
+              <div>
+                <strong>{provider.provider_label}</strong>
+                <span className={`badge ${provider.status === 'connected' ? 'badge-ok' : 'badge-warn'}`}>
+                  {provider.status === 'connected'
+                    ? 'connected'
+                    : provider.status === 'needs_access'
+                      ? 'needs more access'
+                      : 'not connected'}
+                </span>
+              </div>
+              {provider.needed_claims.length ? <ChipRow entries={provider.needed_claims} /> : null}
+              {provider.accounts.length ? (
+                <div className="account-sub">
+                  {provider.accounts.map((account) => account.label || account.account_id).join(', ')}
+                </div>
+              ) : null}
+              {provider.connect_url && provider.status !== 'connected' ? (
+                <a href={provider.connect_url} target="_blank" rel="noreferrer">
+                  {provider.status === 'needs_access' ? 'Approve account access' : 'Connect account'}
+                </a>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -827,6 +904,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     loading: delegatedAccountsLoading,
   } = useAppSelector((s) => s.delegatedToKdcube);
   const [label, setLabel] = useState('Automation access');
+  const [oauthDraftId] = useState(() => oauthConsentId(openParams));
+  const [oauthDraft, setOAuthDraft] = useState<OAuthConsentDraft | null>(null);
+  const [oauthDraftLoading, setOAuthDraftLoading] = useState(Boolean(oauthDraftId));
+  const [oauthDraftError, setOAuthDraftError] = useState('');
+  const [oauthDecisionBusy, setOAuthDecisionBusy] = useState(false);
   const [resourceGrants, setResourceGrants] = useState<Record<string, string[]>>({});
   const [resourceOperations, setResourceOperations] =
     useState<DelegatedAccessResourceOperations>(() => {
@@ -836,7 +918,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
   const [createInvocationModes, setCreateInvocationModes] =
     useState<Record<string, InvocationMode>>({});
-  const [createSecretCatalogRows, setCreateSecretCatalogRows] =
+  const [createCatalogRows, setCreateCatalogRows] =
     useState<Record<string, string>>({});
   const [namedServiceOperations, setNamedServiceOperations] = useState<DelegatedAccessNamedServiceOperations>(
     // The demand names the operation it was refused; approval grants that one.
@@ -853,7 +935,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // beside that operation and submitted with its grant, never beside a sibling.
   const [pendingInvocationMode, setPendingInvocationMode] =
     useState<InvocationMode | null>(() => pendingPresetMode(pendingAgentGrantRequest(openParams)));
-  const manualFocus = useMemo(() => manualAccessFocusRequest(openParams), [openParams]);
+  const accessCardFocus = useMemo(() => accessCardFocusRequest(openParams), [openParams]);
   useEffect(() => {
     console.info(
       '[consent-route] pending pane state on mount:',
@@ -946,6 +1028,57 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // the list reads as compact rows in the small pane, and only what the user
   // works with takes vertical space.
   const [openResources, setOpenResources] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!oauthDraftId) return;
+    let active = true;
+    setOAuthDraftLoading(true);
+    setOAuthDraftError('');
+    void loadOAuthConsentDraft(oauthDraftId)
+      .then((draft) => {
+        if (!active) return;
+        if (!draft?.ok) {
+          setOAuthDraftError(draft?.error_description || draft?.error || 'Authorization review is unavailable.');
+          return;
+        }
+        setOAuthDraft(draft);
+        setLabel(draft.selection.label || 'Connected client');
+        setResourceGrants(draft.selection.resource_grants || {});
+        setResourceOperations(draft.selection.resource_operations || {});
+        setCreateInvocationModes(Object.fromEntries(
+          Object.entries(draft.selection.invocation_policies || {}).flatMap(([resource, operations]) => (
+            Object.entries(operations || {}).map(([operation, mode]) => [
+              `${resource}:${operation}`,
+              mode,
+            ])
+          )),
+        ));
+        setNamedServiceOperations(
+          typeof draft.selection.named_service_operations === 'string'
+            ? {}
+            : (draft.selection.named_service_operations || {}),
+        );
+        setCreateAccountScope(draft.selection.account_scope || {});
+        setCreateCatalogRows(draft.selection.catalog_row_by_resource || {});
+        setOpenResources((current) => ({
+          ...current,
+          ...Object.fromEntries(
+            Object.keys(draft.selection.resource_grants || {}).map((resource) => [resource, true]),
+          ),
+        }));
+        setCreateOpen(true);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setOAuthDraftError(error instanceof Error ? error.message : String(error));
+      })
+      .finally(() => {
+        if (active) setOAuthDraftLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [oauthDraftId]);
   const grantOptionByName = useMemo(
     () => new Map(grantOptions.map((item) => [item.grant, item])),
     [grantOptions],
@@ -955,16 +1088,47 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     [resources],
   );
   const createResources = useMemo(() => {
-    const generated = Object.entries(createSecretCatalogRows).flatMap(([resource, row]) => {
+    const generated = Object.entries(createCatalogRows).flatMap(([resource, row]) => {
+      if (resources.some((item) => item.resource === resource)) return [];
       const option = resources.find((item) => item.resource === row);
-      return option ? [{ ...option, resource, label: secretResourceLabel(resource) }] : [];
+      if (!option) return [];
+      return [{
+        ...option,
+        resource,
+        label: option.selector_type === 'kdcube_secret'
+          ? secretResourceLabel(resource)
+          : (option.label || resource),
+      }];
     });
-    return [...resources, ...generated];
-  }, [createSecretCatalogRows, resources]);
+    const templateRows = oauthDraft?.catalog_scope.mode === 'full'
+      ? new Set<string>()
+      : new Set(
+        Object.entries(createCatalogRows)
+          .filter(([resource, row]) => resource !== row)
+          .map(([, row]) => row),
+      );
+    const assembled = [
+      ...resources.filter((item) => !templateRows.has(item.resource)),
+      ...generated,
+    ];
+    if (!oauthDraft || oauthDraft.catalog_scope.mode === 'full') return assembled;
+    const allowed = new Set([
+      ...oauthDraft.catalog_scope.resources,
+      ...Object.keys(resourceGrants),
+    ]);
+    return assembled.filter((item) => allowed.has(item.resource));
+  }, [createCatalogRows, oauthDraft, resourceGrants, resources]);
   const selectedResourceEntries = useMemo(
     () => Object.entries(resourceGrants).filter(([, grants]) => grants.length > 0),
     [resourceGrants],
   );
+  const oauthRequestedGrants = useMemo(() => (
+    oauthDraft
+      ? new Set(oauthDraft.entry_door.requested_grants.map(
+        (grant) => `${oauthDraft.entry_door.resource}:${grant}`,
+      ))
+      : new Set<string>()
+  ), [oauthDraft]);
   const createMissingInvocationChoices = useMemo(
     () => {
       const selected = new Set(selectedResourceEntries.map(([resource]) => resource));
@@ -1133,33 +1297,63 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         namedServiceOperations[resource] || {},
       ]),
     );
+    const encodedNamedServiceOperations = encodeNamedServiceSelection(
+      selectedNamedServiceOperations,
+      offeredNamedServiceOperations(
+        createResources,
+        selectedResourceEntries.map(([resource]) => resource),
+      ),
+    );
+    const selectedResourceOperations = Object.fromEntries(
+      selectedResourceEntries.map(([resource]) => [
+        resource,
+        resourceOperations[resource] || [],
+      ]),
+    );
+    const invocationModes = Object.fromEntries(
+      selectedResourceEntries.map(([resource]) => [
+        resource,
+        Object.fromEntries(
+          (resourceOperations[resource] || []).map((operation) => [
+            operation,
+            createInvocationModes[`${resource}:${operation}`],
+          ]),
+        ),
+      ]),
+    );
+    if (oauthDraft) {
+      setOAuthDraftError('');
+      setOAuthDecisionBusy(true);
+      try {
+        const result = await approveOAuthConsent({
+          draftId: oauthDraft.draft_id,
+          label: label.trim() || oauthDraft.selection.label || 'Connected client',
+          resourceGrants,
+          resourceOperations: selectedResourceOperations,
+          invocationPolicies: invocationModes,
+          namedServiceOperations: encodedNamedServiceOperations,
+          accountScope: createAccountScope,
+          expectedCardRevision: oauthDraft.card_revision,
+          expectedCatalogVersion: oauthDraft.catalog_version,
+        });
+        if (!result?.ok || !result.redirect_url) {
+          setOAuthDraftError(result?.error_description || result?.message || result?.error || 'Authorization was not saved.');
+          return;
+        }
+        window.location.assign(result.redirect_url);
+      } catch (error: unknown) {
+        setOAuthDraftError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setOAuthDecisionBusy(false);
+      }
+      return;
+    }
     await dispatch(createDelegatedAccess({
       label: label.trim() || 'Automation access',
       resourceGrants,
-      resourceOperations: Object.fromEntries(
-        selectedResourceEntries.map(([resource]) => [
-          resource,
-          resourceOperations[resource] || [],
-        ]),
-      ),
-      invocationModes: Object.fromEntries(
-        selectedResourceEntries.map(([resource]) => [
-          resource,
-          Object.fromEntries(
-            (resourceOperations[resource] || []).map((operation) => [
-              operation,
-              createInvocationModes[`${resource}:${operation}`],
-            ]),
-          ),
-        ]),
-      ),
-      namedServiceOperations: encodeNamedServiceSelection(
-        selectedNamedServiceOperations,
-        offeredNamedServiceOperations(
-          createResources,
-          selectedResourceEntries.map(([resource]) => resource),
-        ),
-      ),
+      resourceOperations: selectedResourceOperations,
+      invocationModes,
+      namedServiceOperations: encodedNamedServiceOperations,
       accountScope: createAccountScope,
       ttlSeconds,
     })).unwrap().catch(() => undefined);
@@ -1169,8 +1363,26 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setCreateAccountScope({});
     setResourceOperations({});
     setCreateInvocationModes({});
-    setCreateSecretCatalogRows({});
+    setCreateCatalogRows({});
     void dispatch(loadDelegatedAccess());
+  };
+
+  const cancelOAuthConsent = async () => {
+    if (!oauthDraft || oauthDecisionBusy) return;
+    setOAuthDecisionBusy(true);
+    setOAuthDraftError('');
+    try {
+      const result = await denyOAuthConsent(oauthDraft.draft_id);
+      if (!result?.ok || !result.redirect_url) {
+        setOAuthDraftError(result?.error_description || result?.message || result?.error || 'Authorization was not cancelled.');
+        return;
+      }
+      window.location.assign(result.redirect_url);
+    } catch (error: unknown) {
+      setOAuthDraftError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOAuthDecisionBusy(false);
+    }
   };
 
   // Revoke is destructive and easy to misclick, so it is a two-step inline
@@ -1634,33 +1846,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       };
     });
   }, [pendingServiceCapability]);
-  const focusedManualAccessId = useRef<string | null>(null);
+  const focusedAccessId = useRef<string | null>(null);
   useEffect(() => {
-    if (!manualFocus) {
-      focusedManualAccessId.current = null;
+    if (!accessCardFocus) {
+      focusedAccessId.current = null;
       return;
     }
-    const item = items.find(
-      (candidate) => candidate.source === 'manual'
-        && candidate.access_id === manualFocus.accessId,
-    );
+    const item = items.find((candidate) => matchesAccessCardFocus(candidate, accessCardFocus));
     if (!item) return;
-    if (focusedManualAccessId.current !== manualFocus.accessId) {
-      focusedManualAccessId.current = manualFocus.accessId;
+    if (focusedAccessId.current !== accessCardFocus.accessId) {
+      focusedAccessId.current = accessCardFocus.accessId;
       startEdit(item);
-      if (manualFocus.resource && manualFocus.outerOperation) {
+      if (accessCardFocus.resource && accessCardFocus.outerOperation) {
         setEditResourceOperations((current) => ({
           ...current,
-          [manualFocus.resource as string]: Array.from(new Set([
-            ...(current[manualFocus.resource as string] || []),
-            manualFocus.outerOperation as string,
+          [accessCardFocus.resource as string]: Array.from(new Set([
+            ...(current[accessCardFocus.resource as string] || []),
+            accessCardFocus.outerOperation as string,
           ])),
         }));
       }
     }
-    if (manualFocus.accountId) {
+    if (accessCardFocus.accountId) {
       const account = accounts.find(
-        (candidate) => candidate.account_id === manualFocus.accountId,
+        (candidate) => candidate.account_id === accessCardFocus.accountId,
       );
       if (account?.provider_id) {
         setExpandedAccountProviders((current) => ({
@@ -1669,7 +1878,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         }));
       }
     }
-  }, [manualFocus, items, accounts, startEdit]);
+  }, [accessCardFocus, items, accounts, startEdit]);
   // Per-account claim binding chosen while granting a PENDING request (consent card).
   const [pendingAccountScope, setPendingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   const [pendingExistingAccountScope, setPendingExistingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
@@ -2173,7 +2382,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   })();
   const addCreateSecretResources = (selected: string[]) => {
     if (!secretSelectorOption) return;
-    setCreateSecretCatalogRows((current) => ({
+    setCreateCatalogRows((current) => ({
       ...current,
       ...Object.fromEntries(selected.map((resource) => [resource, secretSelectorOption.resource])),
     }));
@@ -2183,7 +2392,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }));
   };
   const dropCreateSecretResource = (resource: string) => {
-    setCreateSecretCatalogRows((current) => {
+    setCreateCatalogRows((current) => {
       const next = { ...current };
       delete next[resource];
       return next;
@@ -2226,7 +2435,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         const scopeBlocked = Boolean(committedIdentityScope) && scope !== committedIdentityScope;
         const isSecretSelectorCatalog = item.selector_type === 'kdcube_secret'
           && item.resource === secretSelectorOption?.resource;
-        const isGeneratedSecretSelector = item.resource in createSecretCatalogRows;
+        const isGeneratedSecretSelector = item.resource in createCatalogRows
+          && item.selector_type === 'kdcube_secret';
         if (isSecretSelectorCatalog) {
           return (
             <div className="resource-option resource-option-stack" key={item.resource}>
@@ -2245,7 +2455,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               {isOpen && item.selector_context ? (
                 <SecretResourceSelector
                   context={item.selector_context}
-                  existing={Object.keys(createSecretCatalogRows)}
+                  existing={Object.keys(createCatalogRows).filter(
+                    (resource) => resource.startsWith('urn:kdcube:management:secret:'),
+                  )}
                   disabled={busy}
                   onAdd={addCreateSecretResources}
                 />
@@ -2298,6 +2510,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 <div className="resource-grants">
                   {grants.map((grant) => {
                     const option = grantOptionByName.get(grant);
+                    const requestedByConnection = oauthRequestedGrants.has(`${item.resource}:${grant}`);
                     return (
                       <label
                         className={`grant-chip${scopeBlocked ? ' grant-chip-blocked' : ''}`}
@@ -2313,6 +2526,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           onChange={(event) => toggleResourceGrant(item.resource, grant, event.target.checked)}
                         />
                         <span>{grant}</span>
+                        {requestedByConnection ? <small>requested by this connection</small> : null}
                       </label>
                     );
                   })}
@@ -2805,7 +3019,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         />
         {resource !== '*' ? (
           <div className="edit-section__head">
-            <span className="edit-section__name">Door</span>
+            <span className="edit-section__name">
+              {credentialReach(item) === 'multi_resource' ? 'Resource' : 'Door'}
+            </span>
             <InfoMark text={HELP_DOOR} />
             <DoorRef value={resource} />
           </div>
@@ -3042,11 +3258,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
   const cardBadge = (item: DelegatedAccessRecord) => (
     <>
-      {item.source === 'agent'
-        ? <span className="badge badge-agent">agent</span>
-        : item.source === 'oauth'
-          ? <span className="badge badge-app">connected app</span>
-          : <span className="badge badge-neutral">manual token</span>}
+      <span className={`badge ${callerBadgeClass(item)}`}>{callerLabel(item)}</span>
+      <span className="badge badge-reach">{reachLabel(item)}</span>
       {expiryBadge(item)}
     </>
   );
@@ -3099,7 +3312,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   ) => {
     const selectable = Boolean(opts.onSelect);
     const meta = [
-      cardDoors(item) || 'no door',
+      cardDoors(item) || (credentialReach(item) === 'multi_resource' ? 'no resources' : 'no door'),
       `${cardAccessCount(item)} access`,
       `expires ${formatDate(item.expires_at) || 'unknown'}`,
     ].join(' · ');
@@ -3190,7 +3403,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // one being edited; the editor on the right is that card alone, with its
   // Save and Cancel pinned at the viewport bottom while it is in view.
   const renderWorkbench = (record: DelegatedAccessRecord) => {
-    const roleLabel = record.source === 'agent' ? 'this agent' : record.source === 'manual' ? 'this automation' : 'this app';
+    const roleLabel = callerNoun(record);
     const problems = editSaveProblems(record);
     return (
       <div className="card-workbench" ref={workbenchRef}>
@@ -3221,18 +3434,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               All cards
             </button>
           </div>
-          {manualFocus?.accessId === record.access_id ? (
+          {accessCardFocus?.accessId === record.access_id
+            && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
             <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
               <strong>Access update required</strong>
-              {manualFocus.accountClaim ? (
+              {accessCardFocus.accountClaim ? (
                 <div>
-                  Allow <code>{manualFocus.accountClaim}</code>
-                  {manualFocus.accountId ? <> on <code>{manualFocus.accountId}</code></> : null},
+                  Allow <code>{accessCardFocus.accountClaim}</code>
+                  {accessCardFocus.accountId ? <> on <code>{accessCardFocus.accountId}</code></> : null},
                   then save and retry the operation.
                 </div>
-              ) : manualFocus.claims.length ? (
+              ) : accessCardFocus.claims.length ? (
                 <div>
-                  Review <code>{manualFocus.claims.join(', ')}</code>, save, and retry the operation.
+                  Review <code>{accessCardFocus.claims.join(', ')}</code>, save, and retry the operation.
                 </div>
               ) : null}
             </div>
@@ -3291,18 +3505,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               </div>
                               {item.client_id ? <ClientIdRef value={item.client_id} kind="client" /> : null}
                               {/* Edit mode keeps the per-claim checkboxes; the
-                                  read-only view is the same labelled-row card the
-                                  connected-app grants use. */}
+                                  read-only view uses the same labelled rows as
+                                  every other credential card. */}
                               {editing ? renderEditResourceSections(item) : (
                                 <div className="card-fields">
-                                  {/* Door and Access are paired per door, so which claims
-                                      belong to which door survives on a multi-door grant.
-                                      Connected apps flatten to one Access row; naming the
-                                      row the same way keeps the two cards readable as the
-                                      same kind of entry. */}
+                                  {/* Resource and Access stay paired, so the claims
+                                      belonging to each resource remain explicit. */}
                                   {Object.entries(item.resource_grants || {}).map(([resource, grants]) => (
                                     <Fragment key={resource}>
-                                      <Field label="Door">
+                                      <Field label="Resource">
                                         <span className="door-line">
                                           <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
                                           {resource !== '*' ? <DoorRef value={resource} /> : null}
@@ -3317,7 +3528,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                     {outerOperationRows(item).length ? (
                                       <CountFold entries={outerOperationRows(item)} noun="operation" />
                                     ) : (
-                                      <small>None selected on these doors.</small>
+                                      <small>None selected on these resources.</small>
                                     )}
                                   </Field>
                                   {invocationPolicyRows(item).length ? (
@@ -3413,26 +3624,20 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           </li>
                         );
   };
-  // One app's or automation's card in the detailed list.
+  // One external client's or issued token's card in the detailed list.
   const renderDetailedOtherCard = (item: DelegatedAccessRecord) => {
-                // Both callers here are editable in place: the card is the authority
+                // Every caller here is editable in place: the card is the authority
                 // the guard resolves live, so ticking/unticking claims narrows or
                 // extends what the caller may do on the credential it already holds —
-                // an OAuth app (Claude Code) on the bearer it connected with, a
-                // manual automation on the token the operator already copied. Neither
-                // re-issues a credential; only the scope (and label) change.
+                // an OAuth-delivered client on its connected bearer, or an issued
+                // token held by a script. Saving changes authority, not credential
+                // material.
                 const editable = (item.source === 'oauth' && Boolean(item.client_id))
                   || item.source === 'manual';
                 const editing = editable && editingAccessId === item.access_id;
-                // An OAuth client is connected to exactly one door; the card's
-                // other resources are served through it. Title and Door rows lead
-                // with that door so the reader sees where the client really is.
+                // Only a single-resource OAuth app has a governing client door.
                 const clientDoor = clientDoorFor(item);
-                const door = clientDoor
-                  ? (doorAlias(clientDoor) || '')
-                  : Array.from(new Set(
-                    Object.keys(item.resource_grants || {}).map(doorAlias).filter(Boolean),
-                  )).join(', ');
+                const door = clientDoor ? (doorAlias(clientDoor) || '') : '';
                 return (
                   <li className="account" key={item.access_id}>
                     <div>
@@ -3441,28 +3646,26 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         {door && !(item.label || '').includes(door)
                           ? <span className="door-suffix">· {door}</span>
                           : null}
-                        {item.source === 'oauth'
-                          ? <span className="badge badge-app">connected app</span>
-                          : <span className="badge badge-neutral">manual token</span>}
-                        {expiryBadge(item)}
+                        {cardBadge(item)}
                       </div>
                       {expiryHint(item)}
                       {item.source === 'manual'
                         ? <ClientIdRef value={item.access_id} kind="access" />
                         : (item.client_id && item.client_id !== item.label
                             ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
-                      {manualFocus?.accessId === item.access_id ? (
+                      {accessCardFocus?.accessId === item.access_id
+                        && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
                         <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
                           <strong>Access update required</strong>
-                          {manualFocus.accountClaim ? (
+                          {accessCardFocus.accountClaim ? (
                             <div>
-                              Allow <code>{manualFocus.accountClaim}</code>
-                              {manualFocus.accountId ? <> on <code>{manualFocus.accountId}</code></> : null},
+                              Allow <code>{accessCardFocus.accountClaim}</code>
+                              {accessCardFocus.accountId ? <> on <code>{accessCardFocus.accountId}</code></> : null},
                               then save and retry the operation.
                             </div>
-                          ) : manualFocus.claims.length ? (
+                          ) : accessCardFocus.claims.length ? (
                             <div>
-                              Review <code>{manualFocus.claims.join(', ')}</code>, save, and retry the operation.
+                              Review <code>{accessCardFocus.claims.join(', ')}</code>, save, and retry the operation.
                             </div>
                           ) : null}
                         </div>
@@ -3489,7 +3692,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         <div className="card-fields">
                           {Object.keys(item.resource_grants || {}).length ? (
                             <>
-                              <Field label="Door">
+                              <Field label={credentialReach(item) === 'multi_resource' ? 'Resources' : 'Door'}>
                                 {orderedDoors(item, clientDoor).map((resource, index) => (
                                   <span
                                     className={`door-line${clientDoor ? (resource === clientDoor ? ' door-line--entry' : ' door-line--through') : ''}`}
@@ -3519,7 +3722,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             {outerOperationRows(item).length ? (
                               <CountFold entries={outerOperationRows(item)} noun="operation" />
                             ) : (
-                              <small>None selected on these doors.</small>
+                              <small>None selected on these resources.</small>
                             )}
                           </Field>
                           {invocationPolicyRows(item).length ? (
@@ -3591,7 +3794,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         ? renderAccountScopePicker(
                             editAccountScope,
                             toggleEditAccount,
-                            item.source === 'manual' ? 'this automation' : 'this app',
+                            callerNoun(item),
                             { existingScope: seedAccountScopeFromRecord(item) },
                           )
                         : null}
@@ -3739,29 +3942,46 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   ) : null;
 
   const createPane = (
-    <section className="card">
+    <section className={`card${oauthDraft ? ' oauth-card-editor' : ''}`}>
       <form className="form form-flush" onSubmit={submit}>
+        {oauthDraft ? <OAuthCardRequest draft={oauthDraft} /> : null}
+        <label className="form-field">
+          <span className="form-label">Card name</span>
         <input
           className="input"
           value={label}
           onChange={(event) => setLabel(event.target.value)}
           placeholder="display label"
         />
+        </label>
         {resources.length ? (
           <div className="resource-scope">
-            <div className="form-title">Resources</div>
+            <div className="form-title">Services and permissions</div>
             <p className="muted">
-              Select the grants inside every surface where this credential can be used.
+              {oauthDraft
+                ? oauthDraft.catalog_scope.mode === 'full'
+                  ? 'The client request is preselected. Change it or add any service this account may delegate.'
+                  : 'The client request is preselected. Change the permissions available through its entry service.'
+                : 'Select the grants inside every surface where this credential can be used.'}
             </p>
             {renderResourceList()}
           </div>
         ) : null}
-        {renderAccountScopePicker(createAccountScope, toggleCreateAccount, 'this credential')}
-        <select className="input" value={ttlSeconds} onChange={(event) => setTtlSeconds(Number(event.target.value))}>
-          {ttlOptions.map((item) => (
-            <option key={item.value} value={item.value}>{item.label}</option>
-          ))}
-        </select>
+        {renderAccountScopePicker(
+          createAccountScope,
+          toggleCreateAccount,
+          oauthDraft ? 'this connection' : 'this credential',
+        )}
+        {!oauthDraft ? (
+          <label className="form-field">
+            <span className="form-label">Credential lifetime</span>
+            <select className="input" value={ttlSeconds} onChange={(event) => setTtlSeconds(Number(event.target.value))}>
+              {ttlOptions.map((item) => (
+                <option key={item.value} value={item.value}>{item.label}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {!resources.length ? (
           <p className="muted">No delegable resources are configured.</p>
         ) : null}
@@ -3772,11 +3992,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               : 'Select at least one resource grant.'}
           </p>
         ) : null}
+        {oauthDraftError ? <p className="note note-error">{oauthDraftError}</p> : null}
         <div className="form-actions">
-          <button className="btn" type="submit" disabled={busy || !canSubmit}>
-            Create automation access
+          <button className="btn" type="submit" disabled={busy || oauthDecisionBusy || !canSubmit}>
+            {oauthDraft ? 'Save card and connect' : 'Create automation access'}
           </button>
-          <button className="btn btn-ghost" type="button" onClick={() => setCreateOpen(false)}>
+          <button
+            className="btn btn-ghost"
+            type="button"
+            disabled={oauthDecisionBusy}
+            onClick={oauthDraft ? cancelOAuthConsent : () => setCreateOpen(false)}
+          >
             Cancel
           </button>
         </div>
@@ -3787,6 +4013,27 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // The creation surface is summoned, not resident: its trigger sits in the
   // tab's action row and the pane exists only while it is open, so the list
   // spans the full width the rest of the time.
+  if (oauthDraftId && oauthDraftLoading) {
+    return <section className="card"><p className="muted">Loading connection card…</p></section>;
+  }
+  if (oauthDraftId && !oauthDraft) {
+    return (
+      <section className="card">
+        <div className="form-title">Connection card unavailable</div>
+        <p className="note note-error">{oauthDraftError || 'Restart authorization from the client.'}</p>
+      </section>
+    );
+  }
+  if (oauthDraft) {
+    return (
+      <PaneGroup panes={[{
+        id: 'oauth-card',
+        title: 'Connection card',
+        content: createPane,
+        lead: true,
+      }]} />
+    );
+  }
   return (
     <>
       {issuedTokenPanel}

@@ -186,7 +186,13 @@ export interface DelegatedAccessRecord {
    *  The card stays listed so its grants can be renewed. */
   expired?: boolean;
   last_four?: string;
-  source?: 'manual' | 'oauth' | string;
+  source?: 'agent' | 'manual' | 'oauth' | string;
+  /** How the caller received the credential. This is independent of how many
+   *  protected resources the credential may reach. */
+  credential_delivery?: 'hosted' | 'oauth' | 'issued_token' | string;
+  /** Whether the credential is bound to one entry resource or can be
+   *  presented to several resources selected on the card. */
+  credential_reach?: 'single_resource' | 'multi_resource' | string;
   /** Monotonic revision; sent back on save so a stale editor is refused. */
   card_revision?: number;
   /** The catalog generation this card was last saved against. */
@@ -214,8 +220,9 @@ export interface DelegatedAccessRecord {
   /** Owner-visible delegable resources that may join this card, and why the
    *  others may not. */
   resource_offers?: DelegatedResourceOffer[];
-  /** OAuth cards only: the protected resource the client connected to, the
-   *  one door it can reach. Its other resources are served through it. */
+  /** OAuth cards only: the protected resource through which authorization
+   *  began. It governs reach for single-resource clients and remains origin
+   *  metadata for multi-resource clients. */
   entry_resource?: string;
 }
 

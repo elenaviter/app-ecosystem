@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Delegated by KDCube cards: what 
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "named_service_operations", "account_scope", "registry_access_id", "card authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-09-04
+updated_at: 2026-09-11
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -74,6 +74,29 @@ rules differ.
 An OAuth client and a hosted agent are both delegated callers. The source
 field records how their credential lifecycle is managed; it does not create a
 different authorization model.
+
+### Credential delivery and resource reach
+
+How a caller receives a credential and how many card resources it can use are
+independent properties:
+
+| Card presentation | Credential delivery | Resource reach |
+| --- | --- | --- |
+| Hosted agent | Kept by the KDCube agent runtime | Multiple resources selected on one card |
+| Connected app | OAuth client receives access and refresh tokens | The MCP or API resource through which it connected |
+| Connected client | OAuth delivers a credential to a custom external client | Multiple resources selected on one card |
+| Issued token | User creates a token and receives its bearer once | Multiple resources selected on one card |
+
+An ordinary MCP client is a connected app. It knows the MCP endpoint it
+connected to, so its card editor stays on that endpoint and the account choices
+used by it. This is the established OAuth/MCP behavior.
+
+A custom client may declare `kdcube_credential_use=multi_resource` in its
+validated public OAuth metadata. The declaration changes only which catalog
+the card editor presents. It grants nothing. The authorization endpoint is the
+delivery route; after the user saves the card, the same credential can be
+presented to any selected resource, where the normal live card, catalog, and
+operation checks still run.
 
 ## Stable Resident Identity
 
