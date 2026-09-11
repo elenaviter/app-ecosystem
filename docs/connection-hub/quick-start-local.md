@@ -259,10 +259,12 @@ commits only non-secret profile metadata.
 Open **Delegated by KDCube**, then **Create automation access**.
 
 1. Give the caller a name, such as `local-coding-agent`.
-2. Select the external MCP connector resource.
-3. Select only the tools this caller needs.
-4. Choose **Always** or **Once** for each selected operation.
-5. Create the access.
+2. Select **My MCP connectors**, the user-facing group backed by the
+   `remote_mcp_proxy` transport route.
+3. Under that route, add the exact external MCP server this caller may reach.
+4. Select only the tools this caller needs on that server.
+5. Choose **Always** or **Once** for each selected operation.
+6. Create the access.
 
 Connection Hub shows two client values:
 

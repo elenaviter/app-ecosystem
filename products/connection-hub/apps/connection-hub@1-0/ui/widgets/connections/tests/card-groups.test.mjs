@@ -34,5 +34,5 @@ test('by state trusts the server flag over the clock', () => {
 
 test('by door groups on the door label and names the doorless', () => {
   const groups = groupCards(cards, 'door', { stateOf, doorLabel })
-  assert.deepEqual(groups.map((g) => [g.key, g.records.length]), [['memories', 1], ['named_services', 2], ['worker_stream', 1], ['no door', 1]])
+  assert.deepEqual(groups.map((g) => [g.key, g.records.length]), [['memories', 1], ['named_services', 2], ['worker_stream', 1], ['no resource', 1]])
 })

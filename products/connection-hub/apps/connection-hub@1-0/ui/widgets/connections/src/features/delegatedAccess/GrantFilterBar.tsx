@@ -82,8 +82,8 @@ export function GrantFilterControls({
         type="search"
         className="input grant-filter__input"
         value={filter.query}
-        placeholder="Filter cards by name, app, client id, door, or metadata"
-        aria-label="Filter cards by name, app, client id, door, or metadata"
+        placeholder="Filter cards by name, app, client id, resource, or metadata"
+        aria-label="Filter cards by name, app, client id, resource, or metadata"
         onChange={(event) => onChange({ query: event.target.value })}
         onKeyDown={(event) => {
           if (event.key === 'Escape' && filter.query) {

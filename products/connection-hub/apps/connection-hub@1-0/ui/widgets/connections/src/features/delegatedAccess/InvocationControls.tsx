@@ -25,20 +25,18 @@ export function InvocationPolicyControl({
   onSet: (mode: InvocationMode, expectedRevision: number) => void;
 }) {
   const mode = policy?.mode || null;
+  const effectiveMode = mode || 'always';
   const onceAvailable = mode === 'once' && policy?.remaining === 1;
   return (
     <span className="operation-policy" data-operation={operation}>
-      <span className="operation-policy__label">
-        <code>{operation}</code> runs
-      </span>
       <span className="invocation-policy-control" role="group" aria-label={`Invocation policy for ${operation}`}>
         <button
           type="button"
-          className={mode === 'always' ? 'active' : ''}
-          aria-pressed={mode === 'always'}
+          className={effectiveMode === 'always' ? 'active' : ''}
+          aria-pressed={effectiveMode === 'always'}
           aria-label={`${operation}: always`}
           title={`Allow every ${operation} call while the card is active`}
-          disabled={busy || mode === 'always'}
+          disabled={busy || effectiveMode === 'always'}
           onClick={() => onSet('always', policy?.revision || 0)}
         >
           Every time
@@ -60,14 +58,6 @@ export function InvocationPolicyControl({
           <small>used</small>
         ) : null}
       </span>
-      {!mode ? (
-        <span
-          className="operation-policy__status"
-          title="No choice recorded: the tool runs every time. Choose Once to limit it to a single run."
-        >
-          every time (default)
-        </span>
-      ) : null}
     </span>
   );
 }
@@ -87,9 +77,6 @@ export function OperationInvocationChoice({
 }) {
   return (
     <span className="operation-policy operation-policy--choice" data-operation={operation}>
-      <span className="operation-policy__label">
-        How may <code>{operation}</code> run?
-      </span>
       <span className="invocation-policy-control" role="group" aria-label={`Invocation policy for ${operation}`}>
         <button
           type="button"
@@ -116,11 +103,11 @@ export function OperationInvocationChoice({
           Every time
         </button>
       </span>
-      <span className="operation-policy__status" aria-live="polite">
-        {mode
-          ? <>{mode === 'always' ? 'every time' : 'once'} ({INVOCATION_MODE_TEXT[mode]})</>
-          : <span className="operation-policy__status--attention">choose one</span>}
-      </span>
+      {!mode ? (
+        <span className="operation-policy__status operation-policy__status--attention" aria-live="polite">
+          choose one
+        </span>
+      ) : null}
     </span>
   );
 }

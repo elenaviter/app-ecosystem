@@ -84,6 +84,33 @@ test('viewport-bound widget and access-map panel own their sizing', () => {
   assert.match(source('src/features/accessMap/AccessMapPanel.tsx'), /className="access-map-body"/)
 })
 
+test('access-card tools are visible and selection doors group their services', () => {
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.match(panel, /resourceSelectionIndex\(createResources\)/)
+  assert.match(panel, />Your configured MCP servers</)
+  assert.match(panel, /title="Add an MCP server"/)
+  assert.match(panel, /className=\{isSelectionFamily \? 'resource-selection-family' : 'resource-family'\}/)
+  assert.match(panel, /resourceLabelFor\(resource\)[\s\S]{0,120}doorAlias\(resource\)/)
+  assert.match(panel, /<details[\s\S]{0,160}'resource-edit-section'/)
+  assert.match(panel, />Service permissions</)
+  assert.match(panel, /className="account-scope-section edit-section"/)
+  assert.match(panel, /const providerOpen = event\.currentTarget\.open;/)
+  assert.match(panel, /data-section="tools"[\s\S]*open=\{editOpenTools\[resource\]/)
+  assert.match(panel, /resourceOption\.operations\.length <= 12/)
+  assert.match(panel, /const open = event\.currentTarget\.open;[\s\S]*\[resource\]: open/)
+  assert.doesNotMatch(panel, /setEditOpenTools\(\(current\) => \(\{[\s\S]{0,120}event\.currentTarget\.open/)
+
+  const css = source('src/styles.css')
+  assert.match(css, /\.resource-selection-children \{/)
+  assert.match(css, /\.resource-selection-family \{[\s\S]*border-left: 3px solid var\(--blue\)/)
+  assert.match(css, /\.resource-edit-section \{[\s\S]*width: min\(100%, 1100px\)/)
+  assert.match(css, /\.resource-edit-section--new \{[\s\S]*width: min\(100%, 1040px\)/)
+  assert.match(css, /\.account-scope-section \{/)
+  assert.match(css, /\.page-viewport \{ max-width: 100%; overflow-x: clip; \}/)
+  assert.match(css, /\.form-actions--sticky \{[\s\S]*position: sticky;[\s\S]*bottom: 0;/)
+  assert.equal((panel.match(/form-actions form-actions--sticky/g) || []).length, 2)
+})
+
 test('agent consent distinguishes resource requests from existing account permissions', () => {
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, /Service operation/)
@@ -167,20 +194,34 @@ test('an ungranted operation offers one atomic once-or-always grant, chosen besi
   assert.match(controls, /aria-label=\{`\$\{operation\}: once`\}/)
   assert.match(controls, /aria-label=\{`\$\{operation\}: always`\}/)
 
-  // An existing grant with no policy runs as always by design, so the control
-  // must not report a policy the user never chose: the operator has to tell
-  // the default ("every time (default)", no button active) from a chosen
-  // "Every time" (button active, no status) to audit which operations carry
-  // a decision.
+  // An existing grant with no stored policy runs every time. The compact
+  // control shows that effective state directly instead of adding a second
+  // explanatory line beneath every tool.
   assert.match(controls, /const mode = policy\?\.mode \|\| null;/)
-  assert.doesNotMatch(controls, /const mode = policy\?\.mode \|\| 'always';/)
-  assert.match(controls, /\{!mode \? \(\n\s*<span\n\s*className="operation-policy__status"/)
-  assert.match(controls, />\s*every time \(default\)\s*</)
+  assert.match(controls, /const effectiveMode = mode \|\| 'always';/)
+  assert.doesNotMatch(controls, /every time \(default\)/)
+  assert.doesNotMatch(panel, /on the default \(every time\)/)
 
   const css = source('src/styles.css')
-  for (const cls of ['.outer-operation-editor--policy', '.operation-policy__label', '.pending-operation-policy']) {
+  for (const cls of ['.outer-operation-editor--policy', '.tool-choice', '.pending-operation-policy']) {
     assert.ok(css.includes(cls), `styles.css lacks ${cls}`)
   }
+  assert.match(css, /\.resource-operations \{[\s\S]*grid-template-columns: repeat\(auto-fit, minmax\(380px, 1fr\)\)/)
+  assert.match(panel, /operation\.description \? \([\s\S]*<InfoMark text=\{`\$\{operation\.description\} Tool: \$\{operation\.name\}\.\`} \/>/)
+
+  const catalog = source('src/features/delegatedAccess/DelegatedResourceCatalog.tsx')
+  assert.match(catalog, /className="resource-boundaries edit-section"/)
+  assert.match(catalog, />Service actions</)
+  assert.match(catalog, /className="namespace-operation__body"/)
+  assert.match(catalog, /className="namespace-operation__title"/)
+  assert.doesNotMatch(catalog, /through this door/)
+
+  const actionLayout = css.slice(
+    css.indexOf('.namespace-operation {'),
+    css.indexOf('}', css.indexOf('.namespace-operation {')),
+  )
+  assert.match(actionLayout, /grid-template-columns: 18px minmax\(0, 1fr\)/)
+  assert.doesNotMatch(actionLayout, /\bauto\b/)
 })
 
 test('provider-console OAuth stays transient and issued MCP access is client-ready', () => {

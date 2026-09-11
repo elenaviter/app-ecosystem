@@ -29,6 +29,70 @@ export interface ResourceOffer {
   client_door?: string;
 }
 
+export interface ResourceSelectionOption {
+  resource: string;
+  selectable_resources?: string[];
+}
+
+export interface ResourceSelectionIndex {
+  childrenByParent: Record<string, string[]>;
+  parentsByChild: Record<string, string[]>;
+}
+
+/** The catalog's transport-door hierarchy. A selection door remains one card
+ * resource; the exact child resources retain their own grants and operations.
+ * This index only arranges those existing rows for the editor. */
+export function resourceSelectionIndex(
+  options: ResourceSelectionOption[],
+): ResourceSelectionIndex {
+  const childrenByParent: Record<string, string[]> = {};
+  const parentsByChild: Record<string, string[]> = {};
+  const known = new Set(options.map((option) => option.resource));
+  options.forEach((option) => {
+    const children = Array.from(new Set(
+      (option.selectable_resources || []).filter(
+        (resource) => resource && resource !== option.resource && known.has(resource),
+      ),
+    ));
+    if (!children.length) return;
+    childrenByParent[option.resource] = children;
+    children.forEach((resource) => {
+      parentsByChild[resource] = Array.from(new Set([
+        ...(parentsByChild[resource] || []),
+        option.resource,
+      ]));
+    });
+  });
+  return { childrenByParent, parentsByChild };
+}
+
+/** Roots first, followed immediately by the resources each selection door
+ * serves. A row reachable through several doors appears once, under the first
+ * door in catalog order. */
+export function orderResourceSelection<T extends ResourceSelectionOption>(
+  options: T[],
+  index: ResourceSelectionIndex = resourceSelectionIndex(options),
+): T[] {
+  const byResource = new Map(options.map((option) => [option.resource, option]));
+  const children = new Set(Object.keys(index.parentsByChild));
+  const emitted = new Set<string>();
+  const out: T[] = [];
+  const emit = (resource: string) => {
+    if (emitted.has(resource)) return;
+    const option = byResource.get(resource);
+    if (!option) return;
+    emitted.add(resource);
+    out.push(option);
+  };
+  options.forEach((option) => {
+    if (children.has(option.resource)) return;
+    emit(option.resource);
+    (index.childrenByParent[option.resource] || []).forEach(emit);
+  });
+  options.forEach((option) => emit(option.resource));
+  return out;
+}
+
 /** The short name of a door: the last path segment of an MCP surface
  *  (".../mcp/remote_mcp_proxy" -> "remote_mcp_proxy"), else the resource. */
 export function doorName(resource: string): string {
@@ -99,7 +163,7 @@ export function offerReasonText(offer: ResourceOffer): string {
     case 'admin_only':
       return 'Only a platform administrator may delegate it.';
     case 'outside_client_door':
-      return `Not reachable from ${doorName(offer.client_door || '')}, the door this client is connected to.`;
+      return `Not reachable through ${doorName(offer.client_door || '')}, the service endpoint this client uses.`;
     default:
       return offer.reason.replace(/_/g, ' ');
   }

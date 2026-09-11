@@ -40,6 +40,36 @@ class _CatalogResolver:
         )
 
 
+class _SelectionCatalogResolver:
+    async def resolve_active(self):
+        return SimpleNamespace(
+            version="delegated_catalog_fixture",
+            connections={
+                "delegated_credentials": {
+                    "oauth": {
+                        "enabled": True,
+                        "capabilities": [
+                            {
+                                "grant": EXTERNAL_MCP_GRANT,
+                                "label": "Use external MCP",
+                                "delegable_roles": ["kdcube:role:registered"],
+                            }
+                        ],
+                        "resources": [
+                            {
+                                "resource": "*/connection-hub@1-0/public/mcp/remote_mcp_proxy*",
+                                "label": "My MCP connectors",
+                                "identity_scope": "grantor",
+                                "grants": [EXTERNAL_MCP_GRANT],
+                                "resource_selection": True,
+                            }
+                        ],
+                    }
+                }
+            },
+        )
+
+
 def _config():
     return oauth_delegated_config(
         SimpleNamespace(
@@ -145,6 +175,48 @@ async def test_user_owned_connector_is_offered_as_an_exact_card_resource():
                 },
             ],
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_selection_door_names_its_owner_visible_connector_children():
+    async def overlay(_owner_subject: str):
+        return remote_mcp_resource_rows([_connector()])
+
+    service = AutomationAccessService(
+        redis=object(),
+        tenant="tenant-a",
+        project="project-a",
+        config=_config(),
+        catalog_resolver=_SelectionCatalogResolver(),
+        resource_overlay_provider=overlay,
+    )
+
+    resources = await service.resource_options(
+        {
+            "user_id": "user-1",
+            "roles": ["kdcube:role:registered"],
+            "permissions": [],
+        }
+    )
+
+    proxy, connector = resources
+    assert proxy["label"] == "My MCP connectors"
+    assert proxy["resource_selection"] is True
+    assert proxy["selectable_resources"] == [connector["resource"]]
+    assert connector["operations"] == [
+        {
+            "name": "records.delete",
+            "label": "records.delete",
+            "description": "Delete one record",
+            "grants": [EXTERNAL_MCP_GRANT],
+        },
+        {
+            "name": "records.search",
+            "label": "records.search",
+            "description": "Search records",
+            "grants": [EXTERNAL_MCP_GRANT],
+        },
     ]
 
 

@@ -1552,6 +1552,22 @@ class AutomationAccessService:
                     "tenant": self._tenant,
                     "project": self._project,
                 }
+            if bool(getattr(resource, "resource_selection", False)):
+                from connection_hub.delegated_credentials.oauth.consent import (
+                    resource_selection_rows,
+                )
+
+                selectable = resource_selection_rows(
+                    tuple(option["grants"]),
+                    config=offer,
+                    resource=resource.resource,
+                )
+                option["resource_selection"] = True
+                option["selectable_resources"] = [
+                    row["resource"]
+                    for row in selectable
+                    if _clean(row.get("resource"))
+                ]
             if isinstance(resource.named_services, Mapping):
                 named_services = _delegable_named_service_options(
                     await self._named_service_options(resource.named_services),

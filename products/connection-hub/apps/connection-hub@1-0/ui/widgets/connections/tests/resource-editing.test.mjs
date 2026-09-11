@@ -6,7 +6,9 @@ import {
   driftNeedsReview,
   editedResourceKeys,
   offerReasonText,
+  orderResourceSelection,
   pickerOffers,
+  resourceSelectionIndex,
   saveProblemText,
   saveProblems,
   toggleAccepted,
@@ -98,7 +100,7 @@ test('the picker hides what an OAuth client cannot reach and names its door once
   assert.equal(shown.clientDoor, PROXY)
   assert.equal(
     offerReasonText(offers[2]),
-    'Not reachable from remote_mcp_proxy, the door this client is connected to.',
+    'Not reachable through remote_mcp_proxy, the service endpoint this client uses.',
   )
   const added = pickerOffers(offers, [WIKI])
   assert.deepEqual(added.compatible, [])
@@ -113,4 +115,22 @@ test('a manual card keeps every offer and names no door', () => {
   assert.deepEqual(shown.compatible.map((offer) => offer.resource), [TASKS])
   assert.deepEqual(shown.blocked.map((offer) => offer.resource), ['*'])
   assert.equal(shown.clientDoor, '')
+})
+
+test('a selection door groups exact child resources without merging them', () => {
+  const proxy = {
+    resource: PROXY,
+    label: 'Connected external MCP tools',
+    selectable_resources: [WIKI, 'missing-resource', WIKI],
+  }
+  const wiki = { resource: WIKI, label: 'External MCP: Deep wiki' }
+  const options = [wiki, { resource: TASKS, label: 'Tasks' }, proxy]
+  const index = resourceSelectionIndex(options)
+
+  assert.deepEqual(index.childrenByParent, { [PROXY]: [WIKI] })
+  assert.deepEqual(index.parentsByChild, { [WIKI]: [PROXY] })
+  assert.deepEqual(
+    orderResourceSelection(options, index).map((option) => option.resource),
+    [TASKS, PROXY, WIKI],
+  )
 })

@@ -68,7 +68,7 @@ export function groupCards(
       const state = ctx.stateOf(record);
       add(state, STATE_LABEL[state], record);
     } else {
-      const door = ctx.doorLabel(record) || 'no door';
+      const door = ctx.doorLabel(record) || 'no resource';
       add(door, door, record);
     }
   });

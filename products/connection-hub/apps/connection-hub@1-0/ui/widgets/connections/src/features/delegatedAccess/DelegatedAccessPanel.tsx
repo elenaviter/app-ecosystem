@@ -21,6 +21,8 @@ import {
 } from './ResourceEditorParts';
 import {
   editedResourceKeys,
+  orderResourceSelection,
+  resourceSelectionIndex,
   saveProblemText,
   saveProblems,
   toggleAccepted,
@@ -102,9 +104,18 @@ import {
  *  namespaces/tools all count — matching keeps the WHOLE card so the row stays
  *  understandable in context. */
 // One sentence per section of the editor, behind an info mark.
-const HELP_PERMISSIONS = 'What this caller may reach on this door, per service. Read is read-only, write allows changes. Unticking narrows the card on the caller\'s next call.';
-const HELP_TOOLS = 'The tools of this door the caller may call. A ticked tool runs every time by default; choose Once to allow a single run that you renew by hand. Unticking a tool removes it on the caller\'s next call.';
-const HELP_DOOR = 'A protected service or endpoint this card may access.';
+const HELP_PERMISSIONS = 'Permission groups published by this service. Each row names an API area; tick only the actions this card may use.';
+const HELP_TOOLS = 'Tools published by this service. Select a tool, then choose whether it remains available or is consumed after one run.';
+const HELP_RESOURCE = 'One service or API on this access card. Expand it to review its permissions, tools, service actions, and connected-account requirements.';
+
+function readableIdentifier(value: string): string {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return text
+    .replace(/[_:.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^\w/, (letter) => letter.toUpperCase());
+}
 
 function resourceMatchesQuery(
   item: DelegatedAccessResourceOption,
@@ -818,6 +829,29 @@ function driftLabel(row: { resource: string; namespace?: string; claim?: string;
   return parts.filter(Boolean).join(' · ');
 }
 
+function DriftCatalogRow({
+  row,
+  removed,
+}: {
+  row: { resource: string; namespace?: string; claim?: string; operation?: string };
+  removed: boolean;
+}) {
+  const kind = row.claim ? 'Permission' : row.namespace ? 'Service action' : row.operation ? 'Tool' : 'Service';
+  const subject = readableIdentifier(row.claim || row.operation || doorAlias(row.resource) || row.resource);
+  const namespace = row.namespace ? readableIdentifier(row.namespace) : '';
+  return (
+    <li className="catalog-drift-row">
+      <span className="badge badge-neutral">{kind}</span>
+      <span>
+        {namespace ? <strong>{namespace}: </strong> : null}
+        {subject || 'Unnamed capability'}
+      </span>
+      <InfoMark text={`Exact catalog identifier: ${driftLabel(row)}`} />
+      <small>{removed ? 'Unavailable now; saving removes it from the card.' : 'Available now; it remains ungranted until selected.'}</small>
+    </li>
+  );
+}
+
 /** Backend-computed drift. The panel renders what the server decided; it never
  *  compares catalogs itself. */
 function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
@@ -854,11 +888,9 @@ function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
         {removed.length ? (
           <div>
             <div className="card-field-label">No longer available</div>
-            <ul>
+            <ul className="catalog-drift-list">
               {removed.map((row) => (
-                <li key={`removed-${driftLabel(row)}`}>
-                  <code>{driftLabel(row)}</code> — already ineffective, removed when you save
-                </li>
+                <DriftCatalogRow key={`removed-${driftLabel(row)}`} row={row} removed />
               ))}
             </ul>
           </div>
@@ -866,11 +898,9 @@ function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
         {added.length ? (
           <div>
             <div className="card-field-label">Newly available</div>
-            <ul>
+            <ul className="catalog-drift-list">
               {added.map((row) => (
-                <li key={`added-${driftLabel(row)}`}>
-                  <code>{driftLabel(row)}</code> — not granted; select it to allow
-                </li>
+                <DriftCatalogRow key={`added-${driftLabel(row)}`} row={row} removed={false} />
               ))}
             </ul>
           </div>
@@ -1005,6 +1035,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [editPicks, setEditPicks] = useState<Record<string, boolean>>({});
   const [editResourceOperations, setEditResourceOperations] =
     useState<DelegatedAccessResourceOperations>({});
+  const [editOpenResources, setEditOpenResources] = useState<Record<string, boolean>>({});
+  const [editOpenPermissions, setEditOpenPermissions] = useState<Record<string, boolean>>({});
+  const [editOpenTools, setEditOpenTools] = useState<Record<string, boolean>>({});
   // Namespace narrowing being edited: {resource: {namespace: [operation]}}.
   const [editNamedServiceOperations, setEditNamedServiceOperations] =
     useState<DelegatedAccessNamedServiceOperations>({});
@@ -1118,6 +1151,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     ]);
     return assembled.filter((item) => allowed.has(item.resource));
   }, [createCatalogRows, oauthDraft, resourceGrants, resources]);
+  const createSelectionIndex = useMemo(
+    () => resourceSelectionIndex(createResources),
+    [createResources],
+  );
+  const orderedCreateResources = useMemo(
+    () => orderResourceSelection(createResources, createSelectionIndex),
+    [createResources, createSelectionIndex],
+  );
+  const editSelectionIndex = useMemo(
+    () => resourceSelectionIndex(resources),
+    [resources],
+  );
   const selectedResourceEntries = useMemo(
     () => Object.entries(resourceGrants).filter(([, grants]) => grants.length > 0),
     [resourceGrants],
@@ -1803,6 +1848,22 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ]),
       ),
     );
+    setEditOpenResources(Object.fromEntries(
+      Object.keys(item.resource_grants || {}).map((resource) => [resource, true]),
+    ));
+    setEditOpenPermissions(Object.fromEntries(
+      Object.keys(item.resource_grants || {}).map((resource) => [resource, false]),
+    ));
+    setEditOpenTools(Object.fromEntries(
+      Object.keys(item.resource_grants || {}).map((resource) => {
+        const option = catalogRowFor(
+          resources,
+          resource,
+          (key) => (item.catalog_row_by_resource || {})[key] || key,
+        );
+        return [resource, Boolean(option?.operations?.length && option.operations.length <= 12)];
+      }),
+    ));
     setEditCatalogRows({ ...(item.catalog_row_by_resource || {}) });
     // Seeded from what the card COVERS, not from what it names: a wildcard
     // names nothing, and an empty picker is indistinguishable from an explicit
@@ -1987,80 +2048,104 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     },
   ) => {
     if (!providersWithAccounts.size) return null;
+    const selectedAccounts = Object.values(scope).reduce(
+      (total, providerScope) => total + Object.values(providerScope).filter((claims) => claims.length > 0).length,
+      0,
+    );
+    const selectedPermissions = Object.values(scope).reduce(
+      (total, providerScope) => total + Object.values(providerScope).reduce(
+        (providerTotal, claims) => providerTotal + claims.length,
+        0,
+      ),
+      0,
+    );
     return (
-      <div style={{ marginTop: 8 }}>
-        <div className="account-title">
-          {options?.title || `Which accounts and permissions may ${who} use?`}
-        </div>
-        {Array.from(providersWithAccounts.entries()).map(([provider, providerAccounts]) => {
-          const providerScope = scope[provider] || {};
-          const boundCount = Object.keys(providerScope).filter((id) => id !== '*').length;
-          const total = providerAccounts.length;
-          const open = Boolean(expandedAccountProviders[provider]);
-          return (
-            <details
-              key={provider}
-              open={open}
-              onToggle={(event) => setExpandedAccountProviders((current) => ({
-                ...current, [provider]: (event.target as HTMLDetailsElement).open,
-              }))}
-            >
-              <summary className="muted" style={{ cursor: 'pointer' }}>
-                {providers[provider]?.label || provider}
-                {' — '}
-                {boundCount ? `${boundCount}/${total} accounts` : 'no accounts yet'}
-                {open ? null : <span className="account-sub"> · + choose</span>}
-              </summary>
-              <div style={{ marginTop: 6 }}>
-                {providerAccounts.map((account) => {
-                  const held = new Set(providerScope[account.account_id] || []);
-                  const alreadyGranted = new Set(
-                    options?.existingScope?.[provider]?.[account.account_id] || [],
-                  );
-                  const requestedClaims = new Set(options?.requestedClaims?.[provider] || []);
-                  const supported = account.claims || [];
-                  return (
-                    <div key={account.account_id} style={{ marginTop: 6 }}>
-                      <div className="account-sub">
-                        {account.email || account.display_name || account.workspace || account.account_id}
-                      </div>
-                      {supported.length ? (
-                        <div className="resource-grants">
-                          {supported.map((claim) => {
-                            const status = pendingSelectionStatus(
-                              alreadyGranted.has(claim),
-                              held.has(claim),
-                              requestedClaims.has(claim),
-                            );
-                            return (
-                              <label className="grant-chip" key={claim} title={grantOptionByName.get(claim)?.label || undefined}>
-                                <input
-                                  type="checkbox"
-                                  checked={held.has(claim)}
-                                  onChange={(event) => onToggle(provider, account.account_id, claim, event.target.checked)}
-                                />
-                                <span>{claim}</span>
-                                <PendingStatus status={status} />
-                              </label>
-                            );
-                          })}
+      <details className="account-scope-section edit-section">
+        <summary>
+          <span className="edit-section__name">
+            {options?.title || `Which accounts and permissions may ${who} use?`}
+          </span>
+          <InfoMark text={`Choose the connected accounts ${who} may use and the provider permissions available on each account.`} />
+          <span className="edit-section__count">
+            {selectedAccounts
+              ? `${selectedAccounts} account${selectedAccounts === 1 ? '' : 's'} · ${selectedPermissions} permissions`
+              : 'none selected'}
+          </span>
+        </summary>
+        <div className="account-scope-section__body">
+          {Array.from(providersWithAccounts.entries()).map(([provider, providerAccounts]) => {
+            const providerScope = scope[provider] || {};
+            const boundCount = Object.keys(providerScope).filter((id) => id !== '*').length;
+            const total = providerAccounts.length;
+            const open = Boolean(expandedAccountProviders[provider]);
+            return (
+              <details
+                key={provider}
+                open={open}
+                onToggle={(event) => {
+                  const providerOpen = event.currentTarget.open;
+                  setExpandedAccountProviders((current) => ({
+                    ...current, [provider]: providerOpen,
+                  }));
+                }}
+              >
+                <summary className="muted account-provider-summary">
+                  {providers[provider]?.label || provider}
+                  {' — '}
+                  {boundCount ? `${boundCount}/${total} accounts` : 'no accounts yet'}
+                  {open ? null : <span className="account-sub"> · + choose</span>}
+                </summary>
+                <div className="account-provider-body">
+                  {providerAccounts.map((account) => {
+                    const held = new Set(providerScope[account.account_id] || []);
+                    const alreadyGranted = new Set(
+                      options?.existingScope?.[provider]?.[account.account_id] || [],
+                    );
+                    const requestedClaims = new Set(options?.requestedClaims?.[provider] || []);
+                    const supported = account.claims || [];
+                    return (
+                      <div className="account-provider-account" key={account.account_id}>
+                        <div className="account-sub">
+                          {account.email || account.display_name || account.workspace || account.account_id}
                         </div>
-                      ) : (
-                        <div className="account-sub">No approved permissions on this account yet.</div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </details>
-          );
-        })}
-        <div className="account-sub" style={{ marginTop: 4 }}>
-          {options?.existingScope
-            ? 'Items marked Already granted are current card permissions. Other checked items are choices this grant will add.'
-            : `Tick the permissions ${who} may use on each account. Nothing is granted until you tick it — a provider with no ticks gives ${who} no account access there.`}
+                        {supported.length ? (
+                          <div className="resource-grants">
+                            {supported.map((claim) => {
+                              const status = pendingSelectionStatus(
+                                alreadyGranted.has(claim),
+                                held.has(claim),
+                                requestedClaims.has(claim),
+                              );
+                              return (
+                                <label className="grant-chip" key={claim} title={grantOptionByName.get(claim)?.label || undefined}>
+                                  <input
+                                    type="checkbox"
+                                    checked={held.has(claim)}
+                                    onChange={(event) => onToggle(provider, account.account_id, claim, event.target.checked)}
+                                  />
+                                  <span>{claim}</span>
+                                  <PendingStatus status={status} />
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="account-sub">No approved permissions on this account yet.</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+            );
+          })}
+          <div className="account-sub account-scope-section__note">
+            {options?.existingScope
+              ? 'Items marked Already granted are current card permissions. Other checked items are choices this grant will add.'
+              : `Tick the permissions ${who} may use on each account. Nothing is granted until you tick it — a provider with no ticks gives ${who} no account access there.`}
+          </div>
         </div>
-      </div>
+      </details>
     );
   };
 
@@ -2199,6 +2284,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditingAccessId(null);
     setEditPicks({});
     setEditResourceOperations({});
+    setEditOpenResources({});
+    setEditOpenPermissions({});
+    setEditOpenTools({});
     setEditInvocationModes({});
     setEditNamedServiceOperations({});
     setEditAccountScope({});
@@ -2268,6 +2356,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditResourceOperations((current) => { const next = { ...current }; delete next[resource]; return next; });
     setEditNamedServiceOperations((current) => { const next = { ...current }; delete next[resource]; return next; });
     setEditAcceptedOperations((current) => { const next = { ...current }; delete next[resource]; return next; });
+    setEditOpenResources((current) => { const next = { ...current }; delete next[resource]; return next; });
+    setEditOpenPermissions((current) => { const next = { ...current }; delete next[resource]; return next; });
+    setEditOpenTools((current) => { const next = { ...current }; delete next[resource]; return next; });
   };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
@@ -2368,8 +2459,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // manual create flow AND in the pending agent card's "add more" section.
   // The search narrows the CARDS; selections live outside the filter, so a
   // grant checked earlier stays selected while the user searches on.
-  const visibleResources = createResources.filter((item) => resourceMatchesQuery(item, resourceQuery, grantOptionByName));
   const searching = Boolean(resourceQuery.trim());
+  const visibleResources = orderedCreateResources.filter((item) => {
+    if (!resourceMatchesQuery(item, resourceQuery, grantOptionByName)) return false;
+    const parent = createSelectionIndex.parentsByChild[item.resource]?.[0];
+    if (!parent || searching) return true;
+    return Boolean(openResources[parent] || (resourceGrants[parent] || []).length);
+  });
   // The identity the card in progress has already committed to, or '' while
   // nothing is selected and every door is still reachable.
   const committedIdentityScope = (() => {
@@ -2427,7 +2523,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       {visibleResources.map((item) => {
         const grants = grantsForResource(item);
         const selectedCount = (resourceGrants[item.resource] || []).length;
-        const isOpen = openResources[item.resource] ?? (searching || selectedCount > 0);
+        const selectionParent = createSelectionIndex.parentsByChild[item.resource]?.[0] || '';
+        const selectionParentOption = createResources.find((option) => option.resource === selectionParent);
+        const isOpen = openResources[item.resource]
+          ?? (searching || selectedCount > 0 || Boolean(selectionParent));
         // One card issues ONE credential, so every door on it must run under
         // the same identity. The server refuses a mixture; offering it is what
         // makes that refusal a surprise.
@@ -2466,7 +2565,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           );
         }
         return (
-          <div className="resource-option resource-option-stack" key={item.resource}>
+          <div
+            className={`resource-option resource-option-stack${selectionParent ? ' resource-option--selection-child' : ''}`}
+            key={item.resource}
+          >
+            {selectionParent ? (
+              <div className="resource-selection-context">
+                Available through {selectionParentOption?.label || selectionParent}
+              </div>
+            ) : null}
             <button
               type="button"
               onClick={() => setOpenResources((current) => ({ ...current, [item.resource]: !isOpen }))}
@@ -2507,34 +2614,56 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     It cannot be added to this card.
                   </p>
                 ) : null}
-                <div className="resource-grants">
-                  {grants.map((grant) => {
-                    const option = grantOptionByName.get(grant);
-                    const requestedByConnection = oauthRequestedGrants.has(`${item.resource}:${grant}`);
-                    return (
-                      <label
-                        className={`grant-chip${scopeBlocked ? ' grant-chip-blocked' : ''}`}
-                        key={`${item.resource}:${grant}`}
-                        title={scopeBlocked
-                          ? `Runs under ${scope}; this card is already committed to ${committedIdentityScope}`
-                          : (option?.label || undefined)}
-                      >
-                        <input
-                          type="checkbox"
-                          disabled={scopeBlocked}
-                          checked={(resourceGrants[item.resource] || []).includes(grant)}
-                          onChange={(event) => toggleResourceGrant(item.resource, grant, event.target.checked)}
-                        />
-                        <span>{grant}</span>
-                        {requestedByConnection ? <small>requested by this connection</small> : null}
-                      </label>
-                    );
-                  })}
-                </div>
+                <details className="edit-section">
+                  <summary>
+                    <span className="edit-section__name">Service permissions</span>
+                    <InfoMark text={HELP_PERMISSIONS} />
+                    <span className="edit-section__count">{selectedCount} of {grants.length} selected</span>
+                  </summary>
+                  <div className="edit-section__body claim-groups claim-groups--edit">
+                    {groupClaimsByService(grants).map((group) => (
+                      <div className="claim-group" key={`${item.resource}:${group.service}`}>
+                        <span className="claim-group__service" title={group.service}>
+                          {readableIdentifier(group.service)}
+                        </span>
+                        <span className="claim-group__verbs">
+                          {group.claims.map(({ token: grant, verb }) => {
+                            const option = grantOptionByName.get(grant);
+                            const requestedByConnection = oauthRequestedGrants.has(`${item.resource}:${grant}`);
+                            return (
+                              <label
+                                className={`grant-chip${scopeBlocked ? ' grant-chip-blocked' : ''}`}
+                                key={`${item.resource}:${grant}`}
+                                title={scopeBlocked
+                                  ? `Runs under ${scope}; this card is already committed to ${committedIdentityScope}`
+                                  : `${grant}${option?.label ? `: ${option.label}` : ''}`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  disabled={scopeBlocked}
+                                  checked={(resourceGrants[item.resource] || []).includes(grant)}
+                                  onChange={(event) => toggleResourceGrant(item.resource, grant, event.target.checked)}
+                                />
+                                <span>{verb || grant}</span>
+                                {requestedByConnection ? <small>requested</small> : null}
+                              </label>
+                            );
+                          })}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
                 {item.operations?.length ? (
-                  <>
-                    <div className="account-title">Operations</div>
-                    <div className="resource-grants">
+                  <details className="edit-section">
+                    <summary>
+                      <span className="edit-section__name">Tools</span>
+                      <InfoMark text={HELP_TOOLS} />
+                      <span className="edit-section__count">
+                        {(resourceOperations[item.resource] || []).length} of {item.operations.length} selected
+                      </span>
+                    </summary>
+                    <div className="edit-section__body resource-grants resource-operations">
                       {item.operations.map((operation) => {
                         const selected = (resourceOperations[item.resource] || []).includes(operation.name);
                         return (
@@ -2542,23 +2671,28 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             className={selected ? 'outer-operation-editor outer-operation-editor--policy' : 'outer-operation-editor'}
                             key={`${item.resource}:operation:${operation.name}`}
                           >
-                            <label
-                              className={`grant-chip${scopeBlocked ? ' grant-chip-blocked' : ''}`}
-                              title={operation.description || operation.label || undefined}
-                            >
-                              <input
-                                type="checkbox"
-                                disabled={scopeBlocked}
-                                checked={selected}
-                                onChange={(event) => toggleResourceOperation(
-                                  item,
-                                  operation.name,
-                                  operation.grants || [],
-                                  event.target.checked,
-                                )}
-                              />
-                              <span>{operation.label || operation.name}</span>
-                            </label>
+                            <span className="tool-choice">
+                              <label
+                                className={`grant-chip${scopeBlocked ? ' grant-chip-blocked' : ''}`}
+                                title={operation.name}
+                              >
+                                <input
+                                  type="checkbox"
+                                  disabled={scopeBlocked}
+                                  checked={selected}
+                                  onChange={(event) => toggleResourceOperation(
+                                    item,
+                                    operation.name,
+                                    operation.grants || [],
+                                    event.target.checked,
+                                  )}
+                                />
+                                <span>{operation.label || operation.name}</span>
+                              </label>
+                              {operation.description ? (
+                                <InfoMark text={`${operation.description} Tool: ${operation.name}.`} />
+                              ) : null}
+                            </span>
                             {selected ? (
                               <OperationInvocationChoice
                                 operation={operation.name}
@@ -2575,7 +2709,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         );
                       })}
                     </div>
-                  </>
+                  </details>
                 ) : null}
                 <DelegatedResourceCatalog
                   resource={item}
@@ -2984,9 +3118,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     resource === '*'
       ? 'all resources'
       : (secretResourceLabel(resource)
-        || doorAlias(resource)
         || resourceLabelFor(resource)
         || resourceOfferLabel(item, resource)
+        || doorAlias(resource)
         || resource)
   );
 
@@ -2994,16 +3128,31 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
    *  their invocation control or choice, named services, and the review of
    *  what changed on THIS resource's descriptor. A resource being added renders
    *  the same section so the grantor grants it with the same care. */
-  const renderEditResourceSection = (item: DelegatedAccessRecord, resource: string, isNew: boolean) => {
+  const renderEditResourceSection = (
+    item: DelegatedAccessRecord,
+    resource: string,
+    isNew: boolean,
+    selectionParent = '',
+  ) => {
     const resourceOption = catalogRowFor(
       resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
     );
     const editedGrants = editKeptClaims(item, resource);
     return (
-      <div
+      <details
         key={resource}
-        className={isNew ? 'resource-edit-section resource-edit-section--new' : 'resource-edit-section'}
+        className={[
+          'resource-edit-section',
+          isNew ? 'resource-edit-section--new' : '',
+          selectionParent ? 'resource-edit-section--selection-child' : '',
+        ].filter(Boolean).join(' ')}
         data-resource={resource}
+        open={editOpenResources[resource] ?? true}
+        onToggle={(event) => {
+          if (event.target !== event.currentTarget) return;
+          const open = event.currentTarget.open;
+          setEditOpenResources((current) => ({ ...current, [resource]: open }));
+        }}
       >
         <ResourceSectionHead
           title={editResourceTitle(item, resource)}
@@ -3017,76 +3166,92 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             }
           }}
         />
-        {resource !== '*' ? (
-          <div className="edit-section__head">
-            <span className="edit-section__name">
-              {credentialReach(item) === 'multi_resource' ? 'Resource' : 'Door'}
-            </span>
-            <InfoMark text={HELP_DOOR} />
-            <DoorRef value={resource} />
-          </div>
-        ) : null}
-        {/* One row per service, its verbs as the checkboxes: "canvas: read,
-            write" is how the grantor thinks about it. The full token stays in
-            the tooltip and in the data-claim attribute. */}
-        <div className="edit-section--open-static" data-section="permissions">
-        <div className="edit-section__head">
-          <span className="edit-section__name">Permissions</span>
-          <InfoMark text={HELP_PERMISSIONS} />
-          <span className="edit-section__count">
-            {editableClaimsFor(item, resource).filter((claim) => editPicks[`${resource}:${claim}`] === true).length}
-            {' of '}
-            {editableClaimsFor(item, resource).length}
-          </span>
-        </div>
-        <div className="claim-groups claim-groups--edit">
-          {groupClaimsByService(editableClaimsFor(item, resource)).map((group) => (
-            <div className="claim-group" key={`${resource}:${group.service}`}>
-              <span className="claim-group__service">{group.service}</span>
-              <span className="claim-group__verbs">
-                {group.claims.map(({ token: claim, verb }) => {
-                  const stale = withdrawnClaims(item, resource).has(claim);
-                  return (
-                    <label
-                      className={stale ? 'grant-chip grant-chip-stale' : 'grant-chip'}
-                      key={`${resource}:${claim}`}
-                      data-claim={claim}
-                      title={
-                        stale
-                          ? 'No longer offered by the service catalog: already ineffective, removed when you save'
-                          : `${claim}${grantOptionByName.get(claim)?.label ? `: ${grantOptionByName.get(claim)?.label}` : ''}`
-                      }
-                    >
-                      <input
-                        type="checkbox"
-                        checked={editPicks[`${resource}:${claim}`] === true}
-                        disabled={stale}
-                        onChange={(event) => toggleEditClaim(resource, claim, event.target.checked)}
-                      />
-                      <span>{verb || claim}</span>
-                      {stale ? <span className="badge badge-warn">withdrawn</span> : null}
-                    </label>
-                  );
-                })}
+        <div className="resource-edit-section__body">
+          {resource !== '*' ? (
+            <div className="edit-section__head resource-address-head">
+              <span className="edit-section__name">
+                {selectionParent
+                  ? 'MCP server'
+                  : (resourceOption?.resource_selection ? 'Connector route' : 'Service')}
               </span>
+              <InfoMark text={HELP_RESOURCE} />
+              <DoorRef value={resource} />
             </div>
-          ))}
-        </div>
-        </div>
+          ) : null}
+          {/* One row per service area, its verbs as the checkboxes. The full
+              token stays in the tooltip and in the data-claim attribute. */}
+          <details
+            className="edit-section"
+            data-section="permissions"
+            open={editOpenPermissions[resource] ?? isNew}
+            onToggle={(event) => {
+              if (event.target !== event.currentTarget) return;
+              const open = event.currentTarget.open;
+              setEditOpenPermissions((current) => ({ ...current, [resource]: open }));
+            }}
+          >
+            <summary>
+              <span className="edit-section__name">Service permissions</span>
+              <InfoMark text={HELP_PERMISSIONS} />
+              <span className="edit-section__count">
+                {editableClaimsFor(item, resource).filter((claim) => editPicks[`${resource}:${claim}`] === true).length}
+                {' of '}
+                {editableClaimsFor(item, resource).length}
+                {' selected'}
+              </span>
+            </summary>
+            <div className="edit-section__body claim-groups claim-groups--edit">
+              {groupClaimsByService(editableClaimsFor(item, resource)).map((group) => (
+                <div className="claim-group" key={`${resource}:${group.service}`}>
+                  <span className="claim-group__service" title={group.service}>
+                    {readableIdentifier(group.service)}
+                  </span>
+                  <span className="claim-group__verbs">
+                    {group.claims.map(({ token: claim, verb }) => {
+                      const stale = withdrawnClaims(item, resource).has(claim);
+                      return (
+                        <label
+                          className={stale ? 'grant-chip grant-chip-stale' : 'grant-chip'}
+                          key={`${resource}:${claim}`}
+                          data-claim={claim}
+                          title={
+                            stale
+                              ? 'No longer offered by the service catalog: already ineffective, removed when you save'
+                              : `${claim}${grantOptionByName.get(claim)?.label ? `: ${grantOptionByName.get(claim)?.label}` : ''}`
+                          }
+                        >
+                          <input
+                            type="checkbox"
+                            checked={editPicks[`${resource}:${claim}`] === true}
+                            disabled={stale}
+                            onChange={(event) => toggleEditClaim(resource, claim, event.target.checked)}
+                          />
+                          <span>{verb || claim}</span>
+                          {stale ? <span className="badge badge-warn">withdrawn</span> : null}
+                        </label>
+                      );
+                    })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </details>
         {resourceOption?.operations?.length ? (
-          <details className="edit-section" data-section="tools">
+          <details
+            className="edit-section"
+            data-section="tools"
+            open={editOpenTools[resource]
+              ?? (isNew || Boolean(selectionParent) || resourceOption.operations.length <= 12)}
+            onToggle={(event) => {
+              const open = event.currentTarget.open;
+              setEditOpenTools((current) => ({ ...current, [resource]: open }));
+            }}
+          >
             <summary>
               <span className="edit-section__name">Tools</span>
               <InfoMark text={HELP_TOOLS} />
               <span className="edit-section__count">
                 {(editResourceOperations[resource] || []).length} of {resourceOption.operations.length} selected
-                {(() => {
-                  const undecided = (editResourceOperations[resource] || []).filter((name) => (
-                    !invocationPolicyFor(item, resource, name)?.mode
-                    && !editInvocationModes[`${resource}:${name}`]
-                  )).length;
-                  return undecided ? ` · ${undecided} on the default (every time)` : '';
-                })()}
               </span>
             </summary>
             <div className="edit-section__body resource-grants resource-operations">
@@ -3096,19 +3261,24 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 const policy = invocationPolicyFor(item, resource, operation.name);
                 return (
                   <div className={selected ? 'outer-operation-editor outer-operation-editor--policy' : 'outer-operation-editor'} key={`${resource}:operation:${operation.name}`}>
-                    <label className="grant-chip">
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={(event) => toggleEditResourceOperation(
-                          resource,
-                          operation.name,
-                          operation.grants || [],
-                          event.target.checked,
-                        )}
-                      />
-                      <span>{operation.label || operation.name}</span>
-                    </label>
+                    <span className="tool-choice">
+                      <label className="grant-chip" title={operation.name}>
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={(event) => toggleEditResourceOperation(
+                            resource,
+                            operation.name,
+                            operation.grants || [],
+                            event.target.checked,
+                          )}
+                        />
+                        <span>{operation.label || operation.name}</span>
+                      </label>
+                      {operation.description ? (
+                        <InfoMark text={`${operation.description} Tool: ${operation.name}.`} />
+                      ) : null}
+                    </span>
                     {selected && alreadyGranted ? (
                       <InvocationPolicyControl
                         operation={operation.name}
@@ -3143,7 +3313,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ) : null}
         {/* Every family: the card type decides how the credential is managed,
             not whether its grantor may change authority. */}
-        {resourceOption ? (
+          {resourceOption ? (
           <DelegatedResourceCatalog
             resource={resourceOption}
             selectedGrants={editedGrants}
@@ -3156,8 +3326,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             providers={providers}
             accounts={accounts}
           />
-        ) : null}
-        {!isNew ? (
+          ) : null}
+          {!isNew ? (
           <ResourceDriftReview
             resource={resource}
             state={item.catalog_drift?.resources?.[resource]}
@@ -3166,8 +3336,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               (current) => toggleAccepted(current, resource, operation, on),
             )}
           />
-        ) : null}
-      </div>
+          ) : null}
+        </div>
+      </details>
     );
   };
 
@@ -3182,20 +3353,86 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const ordinaryOffers = (item.resource_offers || []).filter(
       (offer) => offer.resource !== secretSelectorOption?.resource,
     );
+    const rawResourceKeys = Array.from(new Set([
+      ...Object.keys(item.resource_grants || {}),
+      ...editAddedResources,
+    ]));
+    const activeResourceKeys = rawResourceKeys.filter(
+      (resource) => !editRemovedResources.includes(resource),
+    );
+    const catalogRow = (resource: string) => editRowFor(resource);
+    const activeParentFor = (resource: string): string => {
+      const parentRows = editSelectionIndex.parentsByChild[catalogRow(resource)] || [];
+      return activeResourceKeys.find(
+        (candidate) => parentRows.includes(catalogRow(candidate)),
+      ) || '';
+    };
+    const roots = rawResourceKeys.filter((resource) => !activeParentFor(resource));
+    const childrenFor = (parent: string): string[] => {
+      const childRows = new Set(editSelectionIndex.childrenByParent[catalogRow(parent)] || []);
+      return rawResourceKeys.filter((resource) => childRows.has(catalogRow(resource)));
+    };
+    const offersFor = (parent: string) => {
+      const childRows = new Set(editSelectionIndex.childrenByParent[catalogRow(parent)] || []);
+      return ordinaryOffers.filter((offer) => childRows.has(catalogRow(offer.resource)));
+    };
+    const childOfferResources = new Set(
+      Object.values(editSelectionIndex.childrenByParent).flat(),
+    );
+    const topLevelOffers = ordinaryOffers.filter(
+      (offer) => !childOfferResources.has(catalogRow(offer.resource)),
+    );
+    const renderResourceState = (resource: string, parent = '') => (
+      editRemovedResources.includes(resource) ? (
+        <RemovedResourceStub
+          key={resource}
+          title={editResourceTitle(item, resource)}
+          onUndo={() => setEditRemovedResources((current) => current.filter((entry) => entry !== resource))}
+        />
+      ) : renderEditResourceSection(
+        item,
+        resource,
+        editAddedResources.includes(resource),
+        parent,
+      )
+    );
     return (
       <>
-        {Object.keys(item.resource_grants || {}).map((resource) => (
-          editRemovedResources.includes(resource) ? (
-            <RemovedResourceStub
-              key={resource}
-              title={editResourceTitle(item, resource)}
-              onUndo={() => setEditRemovedResources((current) => current.filter((entry) => entry !== resource))}
-            />
-          ) : renderEditResourceSection(item, resource, false)
-        ))}
-        {editAddedResources.map((resource) => renderEditResourceSection(item, resource, true))}
+        {roots.map((resource) => {
+          const children = childrenFor(resource);
+          const childOffers = offersFor(resource);
+          const isSelectionFamily = Boolean(
+            editSelectionIndex.childrenByParent[catalogRow(resource)]?.length,
+          );
+          return (
+            <section
+              className={isSelectionFamily ? 'resource-selection-family' : 'resource-family'}
+              key={`resource-family:${resource}`}
+            >
+              {renderResourceState(resource)}
+              {!editRemovedResources.includes(resource) && (children.length || childOffers.length) ? (
+                <div className="resource-selection-children">
+                  <div className="resource-selection-children__head">
+                    <strong>Your configured MCP servers</strong>
+                    <InfoMark text={`${editResourceTitle(item, resource)} is the route to these servers. Each chosen server keeps its own exact permissions and tools on this card.`} />
+                  </div>
+                  {children.map((child) => renderResourceState(child, resource))}
+                  <ResourceOfferPicker
+                    offers={childOffers}
+                    added={editAddedResources}
+                    title="Add an MCP server"
+                    help="MCP servers you configured in Connection Hub. Add one to choose its exact tools for this card."
+                    onAdd={(child) => setEditAddedResources((current) => (
+                      current.includes(child) ? current : [...current, child]
+                    ))}
+                  />
+                </div>
+              ) : null}
+            </section>
+          );
+        })}
         <ResourceOfferPicker
-          offers={ordinaryOffers}
+          offers={topLevelOffers}
           added={editAddedResources}
           onAdd={(resource) => setEditAddedResources((current) => (
             current.includes(resource) ? current : [...current, resource]
@@ -3264,7 +3501,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     </>
   );
   const cardDoors = (item: DelegatedAccessRecord): string => Array.from(new Set(
-    Object.keys(item.resource_grants || {}).map((r) => (r === '*' ? 'all resources' : (doorAlias(r) || resourceLabelFor(r) || r))),
+    Object.keys(item.resource_grants || {}).map((r) => (r === '*' ? 'all resources' : (resourceLabelFor(r) || doorAlias(r) || r))),
   )).join(', ');
   const cardAccessCount = (item: DelegatedAccessRecord): number =>
     new Set(Object.values(item.resource_grants || {}).flat()).size;
@@ -3312,7 +3549,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   ) => {
     const selectable = Boolean(opts.onSelect);
     const meta = [
-      cardDoors(item) || (credentialReach(item) === 'multi_resource' ? 'no resources' : 'no door'),
+      cardDoors(item) || (credentialReach(item) === 'multi_resource' ? 'no resources' : 'no service'),
       `${cardAccessCount(item)} access`,
       `expires ${formatDate(item.expires_at) || 'unknown'}`,
     ].join(' · ');
@@ -3515,7 +3752,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                     <Fragment key={resource}>
                                       <Field label="Resource">
                                         <span className="door-line">
-                                          <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
+                                          <b>{resource === '*' ? 'all resources' : (resourceLabelFor(resource) || doorAlias(resource) || resource)}</b>
                                           {resource !== '*' ? <DoorRef value={resource} /> : null}
                                         </span>
                                       </Field>
@@ -3552,8 +3789,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                     // so this may not read as "not narrowed".
                                     <Field label="Services">
                                       <small>
-                                        None selected - this card reaches no named-service
-                                        operation on this door.
+                                        None selected - this card may use no named-service operation
+                                        through this resource.
                                       </small>
                                     </Field>
                                   ) : null}
@@ -3692,18 +3929,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         <div className="card-fields">
                           {Object.keys(item.resource_grants || {}).length ? (
                             <>
-                              <Field label={credentialReach(item) === 'multi_resource' ? 'Resources' : 'Door'}>
+                              <Field label={credentialReach(item) === 'multi_resource' ? 'Resources' : 'Service'}>
                                 {orderedDoors(item, clientDoor).map((resource, index) => (
                                   <span
                                     className={`door-line${clientDoor ? (resource === clientDoor ? ' door-line--entry' : ' door-line--through') : ''}`}
                                     key={resource}
                                   >
                                     {clientDoor && index === 1 ? (
-                                      <span className="door-line__through-label">served through it</span>
+                                      <span className="door-line__through-label">available through it</span>
                                     ) : null}
-                                    <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
+                                    <b>{resource === '*' ? 'all resources' : (resourceLabelFor(resource) || doorAlias(resource) || resource)}</b>
                                     {clientDoor && resource === clientDoor
-                                      ? <span className="badge badge-door" title="The resource this client connected to">client door</span>
+                                      ? <span className="badge badge-door" title="The service endpoint this client connected to">entry service</span>
                                       : null}
                                     {resource !== '*' ? <DoorRef value={resource} /> : null}
                                   </span>
@@ -3739,8 +3976,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             return (
                               <Field label="Services">
                                 <small>
-                                  None selected — this card reaches no named-service
-                                  operation on this door.
+                                  None selected — this card may use no named-service operation
+                                  through this resource.
                                 </small>
                               </Field>
                             );
@@ -3993,7 +4230,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           </p>
         ) : null}
         {oauthDraftError ? <p className="note note-error">{oauthDraftError}</p> : null}
-        <div className="form-actions">
+        <div className="form-actions form-actions--sticky">
           <button className="btn" type="submit" disabled={busy || oauthDecisionBusy || !canSubmit}>
             {oauthDraft ? 'Save card and connect' : 'Create automation access'}
           </button>

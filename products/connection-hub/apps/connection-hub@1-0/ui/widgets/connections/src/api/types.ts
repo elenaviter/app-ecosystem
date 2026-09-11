@@ -108,9 +108,13 @@ export interface DelegatedAccessNamedServiceNamespaceOption {
 export interface DelegatedAccessResourceOption {
   resource: string;
   label?: string;
+  kind?: string;
+  provider_id?: string;
   identity_scope?: string;
   grants?: string[];
   admin_only?: boolean;
+  resource_selection?: boolean;
+  selectable_resources?: string[];
   selector_type?: string;
   selector_context?: {
     tenant: string;

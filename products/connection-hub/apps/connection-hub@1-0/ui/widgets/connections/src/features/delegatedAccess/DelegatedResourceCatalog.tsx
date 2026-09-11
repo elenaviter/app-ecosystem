@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import type {
   DelegatedAccessConnectedAccountRequirement,
   DelegatedAccessNamedServiceNamespaceOption,
@@ -185,6 +186,7 @@ export function DelegatedResourceCatalog({
   accounts,
 }: DelegatedResourceCatalogProps) {
   const namespaces = resource.named_services || [];
+  const [open, setOpen] = useState(false);
   if (!namespaces.length) return null;
 
   /* Every offered row, so "all of them" is a question this component can both
@@ -195,7 +197,6 @@ export function DelegatedResourceCatalog({
   const selectedCount = namespaces.reduce((total, namespace) => (
     total + (selectedOperations[namespace.namespace] || []).length
   ), 0);
-
   const setEveryOperation = (checked: boolean) => {
     offeredRows.forEach(({ namespace, row }) => {
       const held = new Set(selectedOperations[namespace] || []);
@@ -216,53 +217,64 @@ export function DelegatedResourceCatalog({
   };
 
   return (
-    <div className="resource-boundaries">
-      <div className="resource-boundaries-head">
-        <span className="edit-section__name">Actions per service</span>
-        <InfoMark text="Which actions of each service this caller may perform through this door. A service starts closed: open it to pick single actions, or use All and None on its line." />
-        <span className="resource-boundaries-bulk">
-          <button
-            type="button"
-            title="Every action these services offer today. Actions a service adds later are not included until you tick them."
-            onClick={() => setEveryOperation(true)}
-            disabled={selectedCount >= offeredRows.length}
-          >
-            All available
-          </button>
-          <button
-            type="button"
-            onClick={() => setEveryOperation(false)}
-            disabled={!selectedCount}
-          >
-            None
-          </button>
-        </span>
-        <span className="badge badge-neutral">{selectedCount} of {offeredRows.length}</span>
-      </div>
-      {offeredRows.length && !selectedCount ? (
-        <p className="resource-boundaries-empty">
-          No actions selected: this card can perform nothing through this door
-          until you pick some.
-        </p>
-      ) : null}
-      {namespaces.map((namespace) => {
-        const rows = operationRows(namespace);
-        const selected = new Set(selectedOperations[namespace.namespace] || []);
-        const includedRows = rows.filter((row) => selected.has(row.operation));
-        const includedOperations = Array.from(selected);
-        const requirements = (namespace.connected_accounts || [])
-          .map((requirement) => ({
-            requirement,
-            claims: requiredClaims(requirement, includedOperations),
-            branches: claimBranches(requirement, includedOperations),
-          }))
-          .filter((item) => item.claims.length > 0);
+    <details
+      className="resource-boundaries edit-section"
+      open={open}
+      onToggle={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const nextOpen = event.currentTarget.open;
+        setOpen(nextOpen);
+      }}
+    >
+      <summary className="resource-boundaries-head">
+        <span className="edit-section__name">Service actions</span>
+        <InfoMark text="Actions published by each service available through this resource. Open a service to choose individual actions." />
+        <span className="edit-section__count">{selectedCount} of {offeredRows.length} selected</span>
+      </summary>
+      <div className="resource-boundaries__body">
+        <div className="resource-boundaries-controls">
+          <span>Select across all services</span>
+          <span className="resource-boundaries-bulk">
+            <button
+              type="button"
+              title="Every action these services offer today. Actions a service adds later are not included until you tick them."
+              onClick={() => setEveryOperation(true)}
+              disabled={selectedCount >= offeredRows.length}
+            >
+              All available
+            </button>
+            <button
+              type="button"
+              onClick={() => setEveryOperation(false)}
+              disabled={!selectedCount}
+            >
+              None
+            </button>
+          </span>
+        </div>
+        {offeredRows.length && !selectedCount ? (
+          <p className="resource-boundaries-empty">
+            No service actions selected. Open a service below to choose what this card may do.
+          </p>
+        ) : null}
+        {namespaces.map((namespace) => {
+          const rows = operationRows(namespace);
+          const selected = new Set(selectedOperations[namespace.namespace] || []);
+          const includedRows = rows.filter((row) => selected.has(row.operation));
+          const includedOperations = Array.from(selected);
+          const requirements = (namespace.connected_accounts || [])
+            .map((requirement) => ({
+              requirement,
+              claims: requiredClaims(requirement, includedOperations),
+              branches: claimBranches(requirement, includedOperations),
+            }))
+            .filter((item) => item.claims.length > 0);
 
-        return (
-          <details
-            className="namespace-boundary"
-            key={namespace.namespace}
-          >
+          return (
+            <details
+              className="namespace-boundary"
+              key={namespace.namespace}
+            >
             {/* Closed until opened: twelve services with five to twenty-five
                 operations each is a page of checkboxes nobody asked to read.
                 The summary carries the count and All / None, so a whole
@@ -314,7 +326,6 @@ export function DelegatedResourceCatalog({
                   <label
                     className={`namespace-operation${included ? ' namespace-operation-included' : ''}`}
                     key={`${namespace.namespace}:${row.operation}:${row.grants.join(':')}`}
-                    title={row.grants.length ? `door access: ${row.grants.join(', ')}` : undefined}
                   >
                     <input
                       type="checkbox"
@@ -326,22 +337,32 @@ export function DelegatedResourceCatalog({
                         event.target.checked,
                       )}
                     />
-                    <span>
-                      <strong>{row.label}</strong>
+                    <span className="namespace-operation__body">
+                      <span className="namespace-operation__title">
+                        <strong>{row.label}</strong>
+                        <InfoMark
+                          text={[
+                            row.description,
+                            row.grants.length
+                              ? `Required service permissions: ${row.grants.join(', ')}.`
+                              : '',
+                            `Operation: ${row.operation}.`,
+                          ].filter(Boolean).join(' ')}
+                        />
+                      </span>
                       {row.description ? <small>{row.description}</small> : null}
-                    </span>
-                    {/* The door tokens an operation rides on are the tooltip,
-                        not the row: they only matter when one is not ticked
-                        on the door, and then the row says so. */}
-                    <span className="namespace-operation-grants">
-                      {grantsReady ? null : (
-                        <>
-                          <span className="namespace-operation-needs">needs</span>
-                          {row.grants.map((grant) => (
-                            <code key={`${row.operation}:${grant}`}>{grant}</code>
-                          ))}
-                        </>
-                      )}
+                      {/* Required service permissions appear only when the card
+                          does not yet carry them. */}
+                      {!grantsReady ? (
+                        <span className="namespace-operation-grants">
+                          <>
+                            <span className="namespace-operation-needs">needs</span>
+                            {row.grants.map((grant) => (
+                              <code key={`${row.operation}:${grant}`}>{grant}</code>
+                            ))}
+                          </>
+                        </span>
+                      ) : null}
                     </span>
                   </label>
                 );
@@ -415,9 +436,10 @@ export function DelegatedResourceCatalog({
                 })}
               </div>
             ) : null}
-          </details>
-        );
-      })}
-    </div>
+            </details>
+          );
+        })}
+      </div>
+    </details>
   );
 }

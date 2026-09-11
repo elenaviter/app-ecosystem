@@ -212,6 +212,23 @@ urn:connection-hub:remote-mcp:<connector-id>
   operations: exact accepted upstream tool names
 ```
 
+The card editor presents these resources as one reachability hierarchy:
+
+```text
+My MCP connectors (remote_mcp_proxy transport route)
+  grant: external_mcp:use
+  |
+  +-- owner-visible external MCP connector resource
+        grant: external_mcp:use
+        operations: exact selected tools
+```
+
+Both rows remain explicit on the saved card. The transport-route row admits the
+caller to `remote_mcp_proxy`; each connector row determines which accepted
+upstream tools that proxy may advertise and dispatch. The hierarchy is an
+editor and discovery relation, not a union of grants or operations between
+resources.
+
 The upstream credential is stored in the user's server-side secret store. The
 durable connector revision contains only an opaque credential reference and
 non-secret descriptor metadata. A delegated caller receives a Connection Hub

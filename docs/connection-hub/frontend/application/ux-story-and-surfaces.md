@@ -76,10 +76,23 @@ read every card.
   to twenty-five operations each starts closed. Each namespace summary
   carries its count and All / None, so a whole service is granted or
   withdrawn without expanding it.
-- **A token appears only where it decides something.** The door tokens an
-  operation rides on live in the row's tooltip. The row names them only
-  when one is not ticked on the door ("needs canvas:read"), because then
-  the person has to act.
+- **Show a working-size tool list.** A resource with at most twelve tools
+  opens its Tools section when editing starts. Larger lists stay folded behind
+  their count, and either size remains directly collapsible by the user.
+- **A selection route owns its service hierarchy.** The `remote_mcp_proxy`
+  transport route appears as **My MCP connectors**. Selecting it exposes the
+  owner's configured MCP servers directly beneath it, and each server row
+  owns its exact tools and permissions. The hierarchy explains reachability;
+  the saved card keeps the route and every selected server as separate
+  authority rows.
+- **A permission appears only where it decides something.** The service
+  permissions required by an operation live in the row's tooltip. The row
+  names them only when the card does not carry one ("needs canvas:read"),
+  because then the person has to act.
+- **Every dense level is a disclosure.** Each card resource is a bounded,
+  collapsible section. Service permissions, tools, service actions, and
+  connected-account permissions have their own summaries and selected counts,
+  so the grantor opens only the level being decided.
 - **Client-reported data is folded and labelled.** The client's OAuth
   registration document stays behind "Client metadata", marked as reported
   by the client, never as authority.
@@ -149,12 +162,17 @@ These change what the widget says, not only how much of it shows, so they
 wait for a decision.
 
 Done in the second wave: the tabs renamed and ordered as the story, the
-editor head with a one-line summary of what the card holds, section heads
-with an info mark each (Door, Permissions, Tools, Actions per service),
-Tools folded by default with its count, one line per tool, policy in the
-person's words ("Every time · Once", "every time (default)", "choose one"),
-actions in columns on a wide pane, the resource picker in plain words,
-group-by on the rail (kind, door, state), the styled leave dialog.
+editor head with a one-line summary of what the card holds, collapsible
+resource sections, section heads with an info mark each (Service permissions,
+Tools, Service actions, Connected accounts),
+working-size tool lists open with their count, compact tool columns with
+documentation behind an information mark, policy in the person's words
+("Every time · Once", "choose one"), selection routes grouped with their exact
+child services, actions in columns on a wide pane, Save and Cancel pinned to
+the viewport while the form is in view, the resource picker in plain words,
+group-by on the rail (kind, service, state), and the styled leave dialog. The
+selected policy segment carries the effective state; the editor does not
+repeat it on a second line.
 
 Still open:
 

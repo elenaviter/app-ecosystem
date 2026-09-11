@@ -14,8 +14,8 @@ import {
 } from './resourceEditing';
 import { InfoMark } from '../../components/InfoMark';
 
-/** The head of one resource section in edit mode: name, address hint, and
- *  the per-resource remove action. */
+/** The disclosure head of one resource section in edit mode: name, pending
+ *  state, and the per-resource remove action. */
 export function ResourceSectionHead({
   title,
   isNew,
@@ -28,17 +28,25 @@ export function ResourceSectionHead({
   removeLabel?: string;
 }) {
   return (
-    <div className="resource-section-head">
-      <div className="account-title">
-        {title}
+    <summary className="resource-section-head">
+      <span className="resource-section-head__title">
+        <strong>{title}</strong>
         {isNew ? <span className="badge badge-warn">adding</span> : null}
-      </div>
+      </span>
       {onRemove ? (
-        <button type="button" className="btn btn-ghost resource-section-head__remove" onClick={onRemove}>
+        <button
+          type="button"
+          className="btn btn-ghost resource-section-head__remove"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            onRemove();
+          }}
+        >
           {removeLabel || (isNew ? 'Do not add' : 'Remove from card')}
         </button>
       ) : null}
-    </div>
+    </summary>
   );
 }
 
@@ -163,10 +171,14 @@ export function ResourceOfferPicker({
   offers,
   added,
   onAdd,
+  title = 'Add to this card',
+  help,
 }: {
   offers: ResourceOffer[];
   added: string[];
   onAdd: (resource: string) => void;
+  title?: string;
+  help?: string;
 }) {
   const { compatible, blocked, clientDoor } = pickerOffers(offers, added);
   // Nothing to add and nothing to explain: no section at all.
@@ -174,11 +186,11 @@ export function ResourceOfferPicker({
   return (
     <div className="resource-offer-picker">
       <div className="edit-section__head">
-        <span className="edit-section__name">Add to this card</span>
+        <span className="edit-section__name">{title}</span>
         <InfoMark
-          text={clientDoor
-            ? `This client is connected through the ${doorName(clientDoor)} door, so only what that door serves can be added.`
-            : 'Resources this card may take in addition to what it holds.'}
+          text={help || (clientDoor
+            ? `This client connects to ${doorName(clientDoor)}, so only services reachable through that endpoint can be added.`
+            : 'Resources this card may take in addition to what it holds.')}
         />
       </div>
       {compatible.length ? (
