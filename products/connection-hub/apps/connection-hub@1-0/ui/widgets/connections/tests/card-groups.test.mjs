@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { groupCards } from '../src/features/delegatedAccess/cardGroups.ts'
+import { correlatedCardLabel, groupCards } from '../src/features/delegatedAccess/cardGroups.ts'
 
 const now = 1_800_000_000
 const cards = [
@@ -35,4 +35,26 @@ test('by state trusts the server flag over the clock', () => {
 test('by door groups on the door label and names the doorless', () => {
   const groups = groupCards(cards, 'door', { stateOf, doorLabel })
   assert.deepEqual(groups.map((g) => [g.key, g.records.length]), [['memories', 1], ['named_services', 2], ['worker_stream', 1], ['no resource', 1]])
+})
+
+test('worker correlation metadata puts the readable alias beside the stable session', () => {
+  assert.equal(correlatedCardLabel({
+    access_id: 'worker-card',
+    label: 'Connection Hub CLI · worker_stream · codex:019e65e6-3946-7033-bb5e-feae307b48d5',
+    client_metadata: {
+      kdcube_agent_provider: 'codex',
+      kdcube_worker_alias: 'codex-ui',
+      kdcube_agent_session_id: '019e65e6-3946-7033-bb5e-feae307b48d5',
+    },
+  }), 'Connection Hub CLI · worker_stream · codex:codex-ui:019e65e6-3946-7033-bb5e-feae307b48d5')
+  assert.equal(correlatedCardLabel({
+    access_id: 'worker-card',
+    label: 'Primary coding session',
+    client_metadata: {
+      kdcube_agent_provider: 'codex',
+      kdcube_worker_alias: 'codex-ui',
+      kdcube_agent_session_id: '019e',
+    },
+  }), 'Primary coding session · codex:codex-ui:019e')
+  assert.equal(correlatedCardLabel({ access_id: 'ordinary', label: 'Claude' }), 'Claude')
 })

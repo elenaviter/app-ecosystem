@@ -32,6 +32,8 @@ export interface ResourceOffer {
 export interface ResourceSelectionOption {
   resource: string;
   selectable_resources?: string[];
+  grants?: string[];
+  operations?: Array<{ grants?: string[] }>;
 }
 
 export interface ResourceSelectionIndex {
@@ -90,6 +92,39 @@ export function orderResourceSelection<T extends ResourceSelectionOption>(
     (index.childrenByParent[option.resource] || []).forEach(emit);
   });
   options.forEach((option) => emit(option.resource));
+  return out;
+}
+
+/** Selection routes are transport, not an independent user choice. Keep exact
+ * child authority in the editor and materialize each required route grant only
+ * while at least one of that route's children is selected. */
+export function materializeSelectionRouteGrants<T extends ResourceSelectionOption>(
+  options: T[],
+  index: ResourceSelectionIndex,
+  selected: Record<string, string[]>,
+  rowFor: (resource: string) => string = (resource) => resource,
+): Record<string, string[]> {
+  const optionByResource = new Map(options.map((option) => [option.resource, option]));
+  const keys = Object.keys(selected);
+  const out: Record<string, string[]> = {};
+  keys.forEach((resource) => {
+    const grants = selected[resource] || [];
+    if (!grants.length || index.childrenByParent[rowFor(resource)]?.length) return;
+    out[resource] = Array.from(new Set(grants));
+  });
+  keys.forEach((resource) => {
+    if (!out[resource]) return;
+    (index.parentsByChild[rowFor(resource)] || []).forEach((parentRow) => {
+      const parentResource = keys.find((candidate) => rowFor(candidate) === parentRow) || parentRow;
+      const option = optionByResource.get(parentRow);
+      const required = option?.grants?.length
+        ? option.grants
+        : Array.from(new Set(
+          (option?.operations || []).flatMap((operation) => operation.grants || []),
+        ));
+      if (required.length) out[parentResource] = Array.from(new Set(required));
+    });
+  });
   return out;
 }
 

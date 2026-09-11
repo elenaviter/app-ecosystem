@@ -21,6 +21,29 @@ export interface CardGroup {
   records: DelegatedAccessRecord[];
 }
 
+function metadataText(metadata: Record<string, unknown> | undefined, key: string): string {
+  const value = metadata?.[key];
+  return value === null || value === undefined ? '' : String(value).trim();
+}
+
+/** A worker's mutable alias is display metadata. Keep the stable native
+ * session in the title as well, without treating either value as authority. */
+export function correlatedCardLabel(record: DelegatedAccessRecord): string {
+  const fallback = record.label || record.access_id;
+  const provider = metadataText(record.client_metadata, 'kdcube_agent_provider');
+  const alias = metadataText(record.client_metadata, 'kdcube_worker_alias');
+  const session = metadataText(record.client_metadata, 'kdcube_agent_session_id');
+  if (!provider || !alias || !session) return fallback;
+  const identity = `${provider}:${alias}:${session}`;
+  const stableIdentity = `${provider}:${session}`;
+  const parts = fallback.split(' · ');
+  if (parts.at(-1) === identity) return fallback;
+  if (parts.at(-1) === stableIdentity) {
+    return [...parts.slice(0, -1), identity].join(' · ');
+  }
+  return `${fallback} · ${identity}`;
+}
+
 const KIND_LABEL: Record<string, string> = {
   agent: 'Hosted agents',
   client: 'Connected clients',

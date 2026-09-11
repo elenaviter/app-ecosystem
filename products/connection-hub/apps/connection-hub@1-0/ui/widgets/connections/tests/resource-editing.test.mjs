@@ -5,6 +5,7 @@ import {
   doorName,
   driftNeedsReview,
   editedResourceKeys,
+  materializeSelectionRouteGrants,
   offerReasonText,
   orderResourceSelection,
   pickerOffers,
@@ -132,5 +133,38 @@ test('a selection door groups exact child resources without merging them', () =>
   assert.deepEqual(
     orderResourceSelection(options, index).map((option) => option.resource),
     [TASKS, PROXY, WIKI],
+  )
+})
+
+test('a selection door grant exists only as the route to an exact selected child', () => {
+  const proxy = {
+    resource: PROXY,
+    grants: ['external_mcp:use'],
+    selectable_resources: [WIKI],
+  }
+  const wiki = {
+    resource: WIKI,
+    grants: ['external_mcp:use'],
+  }
+  const options = [proxy, wiki, { resource: TASKS, grants: ['tasks:read'] }]
+  const index = resourceSelectionIndex(options)
+
+  assert.deepEqual(
+    materializeSelectionRouteGrants(options, index, {
+      [PROXY]: ['external_mcp:use'],
+      [TASKS]: ['tasks:read'],
+    }),
+    { [TASKS]: ['tasks:read'] },
+  )
+  assert.deepEqual(
+    materializeSelectionRouteGrants(options, index, {
+      [WIKI]: ['external_mcp:use'],
+      [TASKS]: ['tasks:read'],
+    }),
+    {
+      [WIKI]: ['external_mcp:use'],
+      [TASKS]: ['tasks:read'],
+      [PROXY]: ['external_mcp:use'],
+    },
   )
 })

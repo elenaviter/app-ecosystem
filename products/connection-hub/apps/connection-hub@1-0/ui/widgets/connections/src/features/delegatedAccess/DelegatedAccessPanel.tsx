@@ -10,7 +10,7 @@ import { InvocationPolicyControl, OperationInvocationChoice } from './Invocation
 import { FoldedChipRow } from '../../components/ChipFold';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { InfoMark } from '../../components/InfoMark';
-import { CARD_GROUP_OPTIONS, groupCards, type CardGroupBy } from './cardGroups';
+import { CARD_GROUP_OPTIONS, correlatedCardLabel, groupCards, type CardGroupBy } from './cardGroups';
 import { groupClaimsByService } from '../../components/claimGroups';
 import { SecretResourceSelector } from './SecretResourceSelector';
 import {
@@ -21,6 +21,7 @@ import {
 } from './ResourceEditorParts';
 import {
   editedResourceKeys,
+  materializeSelectionRouteGrants,
   orderResourceSelection,
   resourceSelectionIndex,
   saveProblemText,
@@ -1163,9 +1164,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     () => resourceSelectionIndex(resources),
     [resources],
   );
+  const effectiveResourceGrants = useMemo(
+    () => materializeSelectionRouteGrants(
+      createResources,
+      createSelectionIndex,
+      resourceGrants,
+    ),
+    [createResources, createSelectionIndex, resourceGrants],
+  );
   const selectedResourceEntries = useMemo(
-    () => Object.entries(resourceGrants).filter(([, grants]) => grants.length > 0),
-    [resourceGrants],
+    () => Object.entries(effectiveResourceGrants).filter(([, grants]) => grants.length > 0),
+    [effectiveResourceGrants],
   );
   const oauthRequestedGrants = useMemo(() => (
     oauthDraft
@@ -1373,7 +1382,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         const result = await approveOAuthConsent({
           draftId: oauthDraft.draft_id,
           label: label.trim() || oauthDraft.selection.label || 'Connected client',
-          resourceGrants,
+          resourceGrants: effectiveResourceGrants,
           resourceOperations: selectedResourceOperations,
           invocationPolicies: invocationModes,
           namedServiceOperations: encodedNamedServiceOperations,
@@ -1395,7 +1404,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
     await dispatch(createDelegatedAccess({
       label: label.trim() || 'Automation access',
-      resourceGrants,
+      resourceGrants: effectiveResourceGrants,
       resourceOperations: selectedResourceOperations,
       invocationModes,
       namedServiceOperations: encodedNamedServiceOperations,
@@ -1849,20 +1858,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       ),
     );
     setEditOpenResources(Object.fromEntries(
-      Object.keys(item.resource_grants || {}).map((resource) => [resource, true]),
+      Object.keys(item.resource_grants || {}).map((resource) => [resource, false]),
     ));
     setEditOpenPermissions(Object.fromEntries(
       Object.keys(item.resource_grants || {}).map((resource) => [resource, false]),
     ));
     setEditOpenTools(Object.fromEntries(
-      Object.keys(item.resource_grants || {}).map((resource) => {
-        const option = catalogRowFor(
-          resources,
-          resource,
-          (key) => (item.catalog_row_by_resource || {})[key] || key,
-        );
-        return [resource, Boolean(option?.operations?.length && option.operations.length <= 12)];
-      }),
+      Object.keys(item.resource_grants || {}).map((resource) => [resource, false]),
     ));
     setEditCatalogRows({ ...(item.catalog_row_by_resource || {}) });
     // Seeded from what the card COVERS, not from what it names: a wildcard
@@ -2327,8 +2329,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const editGrantedOperations = (item: DelegatedAccessRecord, resource: string): string[] =>
     resource in (item.resource_grants || {}) ? (item.resource_operations?.[resource] || []) : [];
 
-  const editKeptClaims = (item: DelegatedAccessRecord, resource: string): string[] =>
+  const editDirectClaims = (item: DelegatedAccessRecord, resource: string): string[] =>
     editableClaimsFor(item, resource).filter((claim) => editPicks[`${resource}:${claim}`] === true);
+
+  const editKeptClaims = (item: DelegatedAccessRecord, resource: string): string[] => {
+    const row = (item.catalog_row_by_resource || {})[resource] || editRowFor(resource);
+    const childRows = new Set(editSelectionIndex.childrenByParent[row] || []);
+    if (!childRows.size) return editDirectClaims(item, resource);
+    const hasSelectedChild = editResourceKeys(item).some((candidate) => {
+      const candidateRow = (item.catalog_row_by_resource || {})[candidate] || editRowFor(candidate);
+      return childRows.has(candidateRow) && editDirectClaims(item, candidate).length > 0;
+    });
+    if (!hasSelectedChild) return [];
+    const option = resources.find((candidate) => candidate.resource === row);
+    return option ? grantsForResource(option) : [];
+  };
 
   /** Operations the editor added that still have no invocation choice. The
    *  save waits for them: granted through the card update they would run as
@@ -2382,24 +2397,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const prunedKept = Object.fromEntries(
       Object.entries(kept).filter(([, claims]) => claims.length > 0),
     );
+    const routedKept = materializeSelectionRouteGrants(
+      resources,
+      editSelectionIndex,
+      prunedKept,
+      editRowFor,
+    );
     // The edited selection, minus resources fully unchecked above.
     const keptNamedServiceOperations = Object.fromEntries(
       Object.entries(editNamedServiceOperations)
-        .filter(([resource]) => prunedKept[resource]),
+        .filter(([resource]) => routedKept[resource]),
     );
     // Nothing offered anywhere means there is nothing to say about the inner
     // boundary; omitting preserves the card's own policy. Otherwise the save
     // is explicit — `"*"` when every offered box is ticked, the exact map
     // otherwise, {} when the operator cleared them all.
     const offered = offeredNamedServiceOperations(
-      resources, Object.keys(prunedKept), editRowFor,
+      resources, Object.keys(routedKept), editRowFor,
     );
     // Operations the card already grants stay on the card update, their
     // policies untouched. Each ADDED operation goes through the focused grant
     // with the policy chosen beside it, so it is never authorized under a
     // default the user did not pick (see invocationChoice.ts).
     const splits = Object.fromEntries(
-      Object.keys(prunedKept).map((resource) => [
+      Object.keys(routedKept).map((resource) => [
         resource,
         splitEditedOperations(
           editGrantedOperations(item, resource),
@@ -2412,7 +2433,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const updated = await dispatch(updateDelegatedAccess({
       accessId: item.access_id,
       label: editLabel.trim() || item.label || 'Automation access',
-      resourceGrants: prunedKept,
+      resourceGrants: routedKept,
       resourceOperations: Object.fromEntries(
         Object.entries(splits).map(([resource, split]) => [resource, split.kept]),
       ),
@@ -2445,7 +2466,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               changeId: editChangeId(item.access_id, operation, randomNonce()),
             },
             mode,
-            prunedKept[resource] || [],
+            routedKept[resource] || [],
           ))).unwrap().catch(() => undefined);
         }
       }
@@ -2464,7 +2485,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (!resourceMatchesQuery(item, resourceQuery, grantOptionByName)) return false;
     const parent = createSelectionIndex.parentsByChild[item.resource]?.[0];
     if (!parent || searching) return true;
-    return Boolean(openResources[parent] || (resourceGrants[parent] || []).length);
+    return Boolean(
+      openResources[parent]
+      || (resourceGrants[parent] || []).length
+      || (resourceGrants[item.resource] || []).length,
+    );
   });
   // The identity the card in progress has already committed to, or '' while
   // nothing is selected and every door is still reachable.
@@ -2524,9 +2549,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         const grants = grantsForResource(item);
         const selectedCount = (resourceGrants[item.resource] || []).length;
         const selectionParent = createSelectionIndex.parentsByChild[item.resource]?.[0] || '';
-        const selectionParentOption = createResources.find((option) => option.resource === selectionParent);
+        const selectionChildren = createSelectionIndex.childrenByParent[item.resource] || [];
+        const isSelectionRoute = selectionChildren.length > 0;
+        const selectedChildren = selectionChildren.filter(
+          (resource) => (resourceGrants[resource] || []).length > 0,
+        ).length;
         const isOpen = openResources[item.resource]
-          ?? (searching || selectedCount > 0 || Boolean(selectionParent));
+          ?? (searching || selectedCount > 0);
         // One card issues ONE credential, so every door on it must run under
         // the same identity. The server refuses a mixture; offering it is what
         // makes that refusal a surprise.
@@ -2569,11 +2598,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             className={`resource-option resource-option-stack${selectionParent ? ' resource-option--selection-child' : ''}`}
             key={item.resource}
           >
-            {selectionParent ? (
-              <div className="resource-selection-context">
-                Available through {selectionParentOption?.label || selectionParent}
-              </div>
-            ) : null}
             <button
               type="button"
               onClick={() => setOpenResources((current) => ({ ...current, [item.resource]: !isOpen }))}
@@ -2590,13 +2614,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   {item.label || item.resource}
                   {item.admin_only ? <span className="badge badge-admin">admin</span> : null}
                 </strong>
-                {isOpen ? <small style={{ display: 'block' }}>{item.resource}</small> : null}
+                {isOpen && !isSelectionRoute ? <small style={{ display: 'block' }}>{item.resource}</small> : null}
               </span>
-              {selectedCount
-                ? <span className="badge badge-ok">{selectedCount}/{grants.length} selected</span>
-                : <span className="muted"><small>{grants.length} options</small></span>}
+              {isSelectionRoute
+                ? (selectedChildren
+                  ? <span className="badge badge-ok">{selectedChildren}/{selectionChildren.length} connectors</span>
+                  : <span className="muted"><small>{selectionChildren.length} connectors</small></span>)
+                : (selectedCount
+                  ? <span className="badge badge-ok">{selectedCount}/{grants.length} selected</span>
+                  : <span className="muted"><small>{grants.length} options</small></span>)}
             </button>
-            {isOpen ? (
+            {isOpen && !isSelectionRoute ? (
               <>
                 {isGeneratedSecretSelector ? (
                   <button
@@ -3138,6 +3166,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
     );
     const editedGrants = editKeptClaims(item, resource);
+    const editableClaims = editableClaimsFor(item, resource);
+    const isSelectionRoute = Boolean(
+      resourceOption?.resource
+      && editSelectionIndex.childrenByParent[resourceOption.resource]?.length,
+    );
+    const selectedSelectionChild = isSelectionRoute && editResourceKeys(item).some((candidate) => {
+      const candidateRow = (item.catalog_row_by_resource || {})[candidate] || editRowFor(candidate);
+      return editSelectionIndex.childrenByParent[resourceOption?.resource || '']?.includes(candidateRow)
+        && editDirectClaims(item, candidate).length > 0;
+    });
     return (
       <details
         key={resource}
@@ -3147,7 +3185,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           selectionParent ? 'resource-edit-section--selection-child' : '',
         ].filter(Boolean).join(' ')}
         data-resource={resource}
-        open={editOpenResources[resource] ?? true}
+        open={editOpenResources[resource] ?? isNew}
         onToggle={(event) => {
           if (event.target !== event.currentTarget) return;
           const open = event.currentTarget.open;
@@ -3157,7 +3195,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         <ResourceSectionHead
           title={editResourceTitle(item, resource)}
           isNew={isNew}
-          onRemove={() => {
+          onRemove={selectedSelectionChild ? undefined : () => {
             if (isNew) {
               setEditAddedResources((current) => current.filter((entry) => entry !== resource));
               dropEditResourceState(resource);
@@ -3167,7 +3205,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           }}
         />
         <div className="resource-edit-section__body">
-          {resource !== '*' ? (
+          {resource !== '*' && !isSelectionRoute ? (
             <div className="edit-section__head resource-address-head">
               <span className="edit-section__name">
                 {selectionParent
@@ -3180,7 +3218,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           ) : null}
           {/* One row per service area, its verbs as the checkboxes. The full
               token stays in the tooltip and in the data-claim attribute. */}
-          <details
+          {editableClaims.length && !isSelectionRoute ? <details
             className="edit-section"
             data-section="permissions"
             open={editOpenPermissions[resource] ?? isNew}
@@ -3194,14 +3232,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               <span className="edit-section__name">Service permissions</span>
               <InfoMark text={HELP_PERMISSIONS} />
               <span className="edit-section__count">
-                {editableClaimsFor(item, resource).filter((claim) => editPicks[`${resource}:${claim}`] === true).length}
+                {editableClaims.filter((claim) => editPicks[`${resource}:${claim}`] === true).length}
                 {' of '}
-                {editableClaimsFor(item, resource).length}
+                {editableClaims.length}
                 {' selected'}
               </span>
             </summary>
             <div className="edit-section__body claim-groups claim-groups--edit">
-              {groupClaimsByService(editableClaimsFor(item, resource)).map((group) => (
+              {groupClaimsByService(editableClaims).map((group) => (
                 <div className="claim-group" key={`${resource}:${group.service}`}>
                   <span className="claim-group__service" title={group.service}>
                     {readableIdentifier(group.service)}
@@ -3235,13 +3273,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 </div>
               ))}
             </div>
-          </details>
-        {resourceOption?.operations?.length ? (
+          </details> : null}
+        {resourceOption?.operations?.length && !isSelectionRoute ? (
           <details
             className="edit-section"
             data-section="tools"
-            open={editOpenTools[resource]
-              ?? (isNew || Boolean(selectionParent) || resourceOption.operations.length <= 12)}
+            open={editOpenTools[resource] ?? isNew}
             onToggle={(event) => {
               const open = event.currentTarget.open;
               setEditOpenTools((current) => ({ ...current, [resource]: open }));
@@ -3313,7 +3350,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ) : null}
         {/* Every family: the card type decides how the credential is managed,
             not whether its grantor may change authority. */}
-          {resourceOption ? (
+          {resourceOption && !isSelectionRoute ? (
           <DelegatedResourceCatalog
             resource={resourceOption}
             selectedGrants={editedGrants}
@@ -3404,13 +3441,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           const isSelectionFamily = Boolean(
             editSelectionIndex.childrenByParent[catalogRow(resource)]?.length,
           );
+          const familyOpen = editOpenResources[resource]
+            ?? editAddedResources.includes(resource);
           return (
             <section
               className={isSelectionFamily ? 'resource-selection-family' : 'resource-family'}
               key={`resource-family:${resource}`}
             >
               {renderResourceState(resource)}
-              {!editRemovedResources.includes(resource) && (children.length || childOffers.length) ? (
+              {!editRemovedResources.includes(resource)
+                && familyOpen
+                && (children.length || childOffers.length) ? (
                 <div className="resource-selection-children">
                   <div className="resource-selection-children__head">
                     <strong>Your configured MCP servers</strong>
@@ -3491,7 +3532,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       const who = parseAgentClientId(item.client_id);
       return who ? `${who.agent} · ${who.app}` : item.client_id;
     }
-    return item.label || item.access_id;
+    return correlatedCardLabel(item);
   };
   const cardBadge = (item: DelegatedAccessRecord) => (
     <>
@@ -3879,7 +3920,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   <li className="account" key={item.access_id}>
                     <div>
                       <div className="account-title">
-                        {item.label || item.access_id}
+                        {cardTitle(item)}
                         {door && !(item.label || '').includes(door)
                           ? <span className="door-suffix">· {door}</span>
                           : null}
