@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""``BrowserSessionFlow``: the four moves of a server-held browser session,
+"""``BrowserSessionFlow``: the four moves of server-side login,
 as pure methods a host's router calls and translates into HTTP.
 
     begin_login(next)            -> where to redirect, the attempt cookie
@@ -30,7 +30,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
-from connection_hub.browser_session.model import (
+from connection_hub.server_side_login.model import (
     CookieSpec,
     IssuedSession,
     LoginAttempt,
@@ -38,8 +38,8 @@ from connection_hub.browser_session.model import (
     SessionState,
     VerifiedIdentity,
 )
-from connection_hub.browser_session.next_url import safe_next_target
-from connection_hub.browser_session.protocols import (
+from connection_hub.server_side_login.next_url import safe_next_target
+from connection_hub.server_side_login.protocols import (
     CookiePolicy,
     LoginAttemptStore,
     SessionBackend,

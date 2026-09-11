@@ -196,7 +196,7 @@ named_service_operations
 copy of the descriptor's `named_services` policy in `GrantStore`. KDCube
 Services uses that stored policy for its runtime `NamedServiceBoundaryCatalog`,
 so unselected namespaces and operations are denied without a second registry.
-Pointer-backed OAuth and bundle-session credentials resolve this record on
+Pointer-backed OAuth and `kst1` credentials resolve this record on
 every managed call and refresh. Missing, expired, malformed, unavailable, or
 mismatched live authority fails closed; a pointed credential does not recover
 its older embedded grant snapshot.

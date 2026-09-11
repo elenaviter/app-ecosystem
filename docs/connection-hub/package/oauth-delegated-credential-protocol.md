@@ -4,7 +4,7 @@ title: "OAuth Delegated Credential Protocol Adapter"
 summary: "How the OAuth2 protocol adapter resolves and identifies pre-registered, Client ID Metadata Document, and DCR clients, issues least-privilege Connection Hub credentials, and advertises managed or direct protected-resource admission."
 tags: ["sdk", "solutions", "connections", "delegated-credentials", "oauth", "mcp", "descriptor"]
 keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "client metadata", "tool consent", "live grant lookup", "operation csrf protection", "descriptor configuration"]
-updated_at: 2026-09-09
+updated_at: 2026-09-11
 see_also:
   - ../connection-hub-architecture.md
   - ./delegated-authority-and-admission.md
@@ -157,7 +157,7 @@ Human consent
 Connection Hub OAuth adapter
   |
   | 4. Validate existing platform session cookie
-  |    cookie name comes from the selected platform authority provider
+  |    cookie name comes from the selected platform sign-in entry
   |    user and roles come from platform auth/session resolver
   v
 User consent page
@@ -797,7 +797,7 @@ store, normally Redis.
 | Authorization code | Stores client, redirect URI, PKCE challenge, grantor subject, resource, final scopes, selected operations, delegation edges, and grantor authority facts captured at consent. | Short TTL, single use. |
 | Access grant | Binds an access token to selected operations, the `delegated_client` credential envelope, delegation edges, and server-side grantor authority facts. | Same TTL as access token. |
 | Refresh token | Stores client, grantor subject, resource, scopes, selected operations, credential envelope, delegation edges, grantor authority facts, and rotation state. | Long-lived, rotating. |
-| KDCube `kst1` session record | The issued access token is a session for the integration identity, stored through the technically named bundle-session authority. | Access-token TTL. |
+| KDCube `kst1` session record | The issued access token is a session for the integration identity, stored through KDCube's `BundleSessionAuthority`. | Access-token TTL. |
 
 Redis loss is safe but product-visible: missing records fail closed, but
 long-lived connectors can require re-consent if dynamic client or refresh-token
@@ -1045,9 +1045,9 @@ Authorization: Bearer <delegated-client access token>
   -> application operation receives the delegated platform-user context
 ```
 
-This flow is orthogonal to the platform authority provider. The approving user
-may have signed in through Cognito, multi-Cognito, or an application-hosted
-platform authority. The REST guard only consumes the already-issued delegated
+This flow is orthogonal to the platform authenticator. The approving user
+may have signed in through Cognito, multi-Cognito, or a server-side platform
+session. The REST guard only consumes the already-issued delegated
 credential record.
 
 For platform APIs, there is no application operation descriptor. Connection Hub

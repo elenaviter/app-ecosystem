@@ -18,7 +18,7 @@ let configPromise: Promise<FrontendConfig | null> | null = null;
 let sessionPromise: Promise<SessionClient | null> | null = null;
 const FORCE_PROMPT_KEY = 'connection_hub_force_platform_login_prompt';
 
-// The server-held session (platform-hosted sign-in, or an application-hosted
+// The server-held session (platform-hosted sign-in, or a server-side
 // one): the shared helper probes /profile, redirects to the sign-in with a
 // same-origin `next`, and posts the logout. No token reaches this widget.
 function sessionClient(): Promise<SessionClient | null> {

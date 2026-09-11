@@ -11,8 +11,8 @@ import secrets
 import time
 from typing import Any, Callable, Mapping
 
-from connection_hub.browser_session import kst1
-from connection_hub.browser_session.model import (
+from connection_hub.server_side_login import kst1
+from connection_hub.server_side_login.model import (
     IssuedSession,
     LoginAttempt,
     SessionState,

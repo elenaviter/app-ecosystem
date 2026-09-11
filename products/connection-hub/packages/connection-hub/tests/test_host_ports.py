@@ -31,7 +31,7 @@ def _registry():
                 "platform": True,
                 "providers": {
                     "session": {
-                        "type": "bundle_session_login",
+                        "type": "bundle",
                         "entrypoints": {
                             "login": {
                                 "bundle_id": "workspace@1",

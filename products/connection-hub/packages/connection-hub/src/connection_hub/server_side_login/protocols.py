@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Protocol, runtime_checkable
 
-from connection_hub.browser_session.model import (
+from connection_hub.server_side_login.model import (
     CookieSpec,
     IssuedSession,
     LoginAttempt,

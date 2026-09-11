@@ -1,8 +1,8 @@
 /**
  * The deployment's sign-in authorities, read as a console: the platform's
  * own sign-in first and marked, then every provider of every authority in
- * the registry with the pools it trusts (mixed mode), then the authority
- * providers apps registered at load. Descriptor-owned rows are read-only
+ * the registry with the pools it trusts (mixed mode), then the authenticators
+ * apps registered at load. Descriptor-owned rows are read-only
  * here and say where they live; a change is a descriptor edit and a refresh.
  */
 import { useEffect, useState } from 'react';
@@ -15,13 +15,13 @@ import { AUTH_CONSTRUCTS, constructFacts } from './authConstructs';
 import { loadAuthorities, setPlatformSignIn } from './authenticatorsSlice';
 import { ProviderEditor } from './ProviderEditor';
 
-// Two questions hide in one `type`: who identifies the user (an authority:
+// Two questions hide in one `type`: who identifies the user (an authenticator:
 // Cognito pools, an OIDC issuer, the development IDP) and where the sign-in
 // runs (a lane: in the browser with tokens presented, or on the server with
 // one platform session). The pane reads them apart.
-const LANE_TYPES = new Set(['bundle_session_login', 'bundle-session-login', 'bundle_session', 'bundle-session', 'session']);
+const LANE_TYPES = new Set(['bundle']);
 const isLane = (row: AuthorityProviderRow) => LANE_TYPES.has((row.type || '').toLowerCase());
-const laneUpstream = (row: AuthorityProviderRow) => row.session?.authenticator_ref?.provider_id || '';
+const laneAuthenticator = (row: AuthorityProviderRow) => row.lane?.authenticator_ref?.provider_id || '';
 
 interface Editing {
   authorityId: string;
@@ -62,7 +62,7 @@ function Pool({ pool }: { pool: AuthorityPoolRow }) {
 
 function Provider({ row, onEdit }: { row: AuthorityProviderRow; onEdit?: (row: AuthorityProviderRow) => void }) {
   const auth = row.authenticator || {};
-  const isSession = Boolean(row.session);
+  const isServerLogin = Boolean(row.lane);
   return (
     <div className={`authority-provider${row.platform ? ' authority-provider--platform' : ''}`}>
       <div className="authority-provider__head">
@@ -86,7 +86,7 @@ function Provider({ row, onEdit }: { row: AuthorityProviderRow; onEdit?: (row: A
           <CopyButton value={row.where} label="Copy the descriptor path" />
         </div>
       ) : null}
-      {!isSession && (auth.user_pool_id || auth.issuer) ? (
+      {!isServerLogin && (auth.user_pool_id || auth.issuer) ? (
         <div className="authority-provider__facts">
           {auth.issuer ? <span>issuer <code>{auth.issuer}</code></span> : null}
           {auth.user_pool_id ? <span>pool <code>{auth.user_pool_id}</code></span> : null}
@@ -95,15 +95,16 @@ function Provider({ row, onEdit }: { row: AuthorityProviderRow; onEdit?: (row: A
           {auth.hosted_ui_domain ? <span>{auth.hosted_ui_domain.replace(/^https?:\/\//, '')}</span> : null}
         </div>
       ) : null}
-      {isSession ? (
+      {isServerLogin ? (
         <div className="authority-provider__facts">
           <span>
-            authenticator <code>{row.session?.authenticator_ref?.provider_id || '?'}</code>
+            authenticator <code>{row.lane?.authenticator_ref?.provider_id || '?'}</code>
           </span>
-          {row.session?.scopes?.length ? <span>scopes <code>{row.session.scopes.join(' ')}</code></span> : null}
-          {row.session?.groups_claim ? <span>groups <code>{row.session.groups_claim}</code></span> : null}
-          {row.session?.return_origins?.length ? (
-            <span>return origins {row.session.return_origins.length}</span>
+          {row.lane?.authenticator_ref?.bundle_id ? <span>app <code>{row.lane.authenticator_ref.bundle_id}</code></span> : null}
+          {row.lane?.scopes?.length ? <span>scopes <code>{row.lane.scopes.join(' ')}</code></span> : null}
+          {row.lane?.groups_claim ? <span>groups <code>{row.lane.groups_claim}</code></span> : null}
+          {row.lane?.return_origins?.length ? (
+            <span>return origins {row.lane.return_origins.length}</span>
           ) : null}
         </div>
       ) : null}
@@ -142,8 +143,16 @@ export function AuthoritiesPane() {
   const providerRows = platformAuthority?.providers || [];
   const selectedRow = providerRows.find((row) => row.provider_id === platform?.provider_id);
   const selectedLane = selectedRow && isLane(selectedRow) ? selectedRow : null;
-  const selectedAuthorityId = selectedLane ? laneUpstream(selectedLane) : (selectedRow?.provider_id || '');
-  const selectedAuthorityRow = providerRows.find((row) => row.provider_id === selectedAuthorityId);
+  const selectedAuthenticatorRef = selectedLane?.lane?.authenticator_ref;
+  const selectedAuthenticatorAuthorityId = selectedAuthenticatorRef?.authority_id
+    || platformAuthority?.authority_id
+    || platform?.authority_id
+    || '';
+  const selectedAuthenticatorId = selectedAuthenticatorRef?.provider_id || selectedRow?.provider_id || '';
+  const selectedAuthenticatorRow = authorities?.authorities
+    ?.find((row) => row.authority_id === selectedAuthenticatorAuthorityId)
+    ?.providers.find((row) => row.provider_id === selectedAuthenticatorId);
+  const selectedAuthenticatorType = selectedAuthenticatorRow?.type || platform?.login_authenticator?.type || '';
   const options = platform?.switch_options || [];
   const [target, setTarget] = useState('');
   const chosen = options.find((option) => option.provider_id === (target || options.find((o) => !o.current)?.provider_id || ''));
@@ -181,13 +190,13 @@ export function AuthoritiesPane() {
         <div className="authority-platform">
           <div className="rail-group__head">
             <strong>Platform sign-in</strong>
-            <InfoMark text="The authority every browser and API caller of this deployment signs in against. Selected in assembly.yaml; a change there needs a refresh." />
+            <InfoMark text="The sign-in configuration for this deployment. Its authority is the realm, its authenticator proves identity, and its lane says where login runs. The selection lives in assembly.yaml; a change there needs a refresh." />
           </div>
           <div className="authority-platform__grid">
             <span className="authority-platform__k">authenticator</span>
             <span className="authority-platform__v">
-              <strong>{selectedAuthorityId || '?'}</strong>
-              <span className="account-sub">{selectedAuthorityRow?.type || ''}</span>
+              <strong>{selectedAuthenticatorId || '?'}</strong>
+              <span className="account-sub">{selectedAuthenticatorAuthorityId || ''}{selectedAuthenticatorType ? ` · ${selectedAuthenticatorType}` : ''}</span>
               <InfoMark text="The authenticator that proves who the user is: the Cognito pool or pools, an OIDC issuer, a Google client, or the development IDP. Mixed mode is a property of one Cognito authenticator, its trusted pools." />
             </span>
             <span className="authority-platform__k">login lane</span>
@@ -195,21 +204,21 @@ export function AuthoritiesPane() {
               <strong>{selectedLane ? 'server-side' : 'browser-side'}</strong>
               <span className="account-sub">
                 {selectedLane
-                  ? `the platform runs the sign-in through the authenticator ${selectedAuthorityId} and keeps one session; lane ${selectedLane.provider_id}`
-                  : `the browser signs in with the authenticator ${selectedAuthorityId} and presents tokens; the platform verifies each request`}
+                  ? `the platform runs the sign-in through the authenticator ${selectedAuthenticatorId} and keeps one session; lane ${selectedLane.provider_id}`
+                  : `the browser signs in with the authenticator ${selectedAuthenticatorId} and presents tokens; the platform verifies each request`}
               </span>
               <InfoMark text={selectedLane
-                ? 'Server-side: sites and clients hold no tokens; the platform holds the session (auth.type bundle). The lane names the authenticator it signs in through by authenticator_ref.'
-                : 'Browser-side: the site or the client runs the OIDC sign-in and presents the tokens it received; the platform verifies them on every request (auth.type cognito).'} />
+                ? 'Server-side: the platform keeps the identity-provider tokens and gives the browser one platform session. The lane names the authenticator it signs in through by authenticator_ref.'
+                : 'Browser-side: the site or client runs the OIDC sign-in and presents the tokens it received; the platform verifies them on every request. This registry definition still uses auth.type bundle because it lives in the app.'} />
             </span>
             <span className="authority-platform__k">runtime authenticator</span>
             <span className="authority-platform__v"><code>{platform.authenticator || '?'}</code> <span className="account-sub">selected by <code>{platform.selected_by || '?'}</code> as provider <code>{platform.provider_id || '?'}</code></span></span>
-            {platform.upstream?.issuer_url ? (
+            {platform.login_authenticator?.issuer_url ? (
               <>
-                <span className="authority-platform__k">upstream</span>
+                <span className="authority-platform__k">login authenticator</span>
                 <span className="authority-platform__v">
-                  <code>{platform.upstream.type || ''}</code> <code>{platform.upstream.issuer_url}</code>
-                  {platform.upstream.client_id ? <> client <code>{platform.upstream.client_id}</code></> : null}
+                  <code>{platform.login_authenticator.type || ''}</code> <code>{platform.login_authenticator.issuer_url}</code>
+                  {platform.login_authenticator.client_id ? <> client <code>{platform.login_authenticator.client_id}</code></> : null}
                 </span>
               </>
             ) : null}
@@ -233,7 +242,7 @@ export function AuthoritiesPane() {
                       const row = providerRows.find((item) => item.provider_id === option.provider_id);
                       const lane = row && isLane(row);
                       const label = lane
-                        ? `server-side, through the authenticator ${laneUpstream(row) || '?'} (lane ${option.provider_id})`
+                        ? `server-side, through the authenticator ${laneAuthenticator(row) || '?'} (lane ${option.provider_id})`
                         : `browser-side, with the authenticator ${option.provider_id}`;
                       return (
                         <option key={option.provider_id} value={option.provider_id}>
@@ -324,7 +333,11 @@ export function AuthoritiesPane() {
               <span className="account-sub">{who.length}</span>
             </div>
             {who.map((row) => (
-              <Provider key={`${authority.authority_id}:${row.provider_id}`} row={{ ...row, platform: row.provider_id === selectedAuthorityId }} onEdit={openEdit} />
+              <Provider key={`${authority.authority_id}:${row.provider_id}`} row={{
+                ...row,
+                platform: authority.authority_id === selectedAuthenticatorAuthorityId
+                  && row.provider_id === selectedAuthenticatorId,
+              }} onEdit={openEdit} />
             ))}
             {lanes.length ? (
               <>
@@ -334,7 +347,14 @@ export function AuthoritiesPane() {
                   <span className="account-sub">{lanes.length}</span>
                 </div>
                 {lanes.map((row) => (
-                  <Provider key={`${authority.authority_id}:${row.provider_id}`} row={{ ...row, platform: Boolean(selectedLane && row.provider_id === selectedLane.provider_id) }} onEdit={openEdit} />
+                  <Provider key={`${authority.authority_id}:${row.provider_id}`} row={{
+                    ...row,
+                    platform: Boolean(
+                      selectedLane
+                      && authority.authority_id === platformAuthority?.authority_id
+                      && row.provider_id === selectedLane.provider_id
+                    ),
+                  }} onEdit={openEdit} />
                 ))}
               </>
             ) : null}
@@ -345,7 +365,7 @@ export function AuthoritiesPane() {
         <div className="authority">
           <div className="rail-group__head">
             <strong>Registered by apps</strong>
-            <InfoMark text="Authority providers that apps declared in their interface and registered when they loaded." />
+              <InfoMark text="Authority-provider components that apps declared in their interface and registered when they loaded." />
             <span className="account-sub">{authorities.discovered.length}</span>
           </div>
           {authorities.discovered.map((row) => (

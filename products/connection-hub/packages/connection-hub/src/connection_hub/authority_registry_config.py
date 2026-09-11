@@ -8,7 +8,7 @@ This module handles the static descriptor shape:
     authority_registry.authorities.<authority_id>.providers.<provider_id>
 
 `provider_id` is a configured provider instance. `provider.type` is the
-implementation type, for example `bundle_session_login` or `telegram_init_data`.
+authenticator kind, for example `bundle` or `telegram_init_data`.
 """
 
 from __future__ import annotations
@@ -17,6 +17,13 @@ from typing import Any, Mapping
 
 DEFAULT_PLATFORM_AUTHORITY_ID = "kdcube.platform"
 DEFAULT_PLATFORM_PROVIDER_ID = "cognito"
+RETIRED_BUNDLE_LOGIN_TYPES = {
+    "bundle_session_login",
+    "bundle-session-login",
+    "bundle_session",
+    "bundle-session",
+    "session",
+}
 
 
 def _str(value: Any) -> str:
@@ -29,6 +36,10 @@ def _dict(value: Any) -> dict[str, Any]:
 
 def _normalize_provider_type(value: Any) -> str:
     provider_type = _str(value).lower()
+    if provider_type in RETIRED_BUNDLE_LOGIN_TYPES:
+        raise ValueError(
+            f"authority provider type '{provider_type}' was removed; use 'bundle'"
+        )
     cognito_alias = provider_type.replace("_", "-")
     if cognito_alias in {"multi-cognito", "cognito-multi"}:
         return "multi-cognito"
@@ -308,7 +319,7 @@ def cognito_platform_auth_config(provider_result: Mapping[str, Any] | None) -> d
 
 
 def platform_authority_auth_config(provider_result: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Normalize any platform authority provider into runtime auth fields."""
+    """Normalize a selected platform sign-in entry into runtime auth fields."""
 
     result = _dict(provider_result)
     if not result.get("ok", True):
@@ -317,9 +328,9 @@ def platform_authority_auth_config(provider_result: Mapping[str, Any] | None) ->
     provider_type = _normalize_provider_type(provider.get("type") or result.get("provider_type"))
     if provider_type in {"cognito", "multi-cognito"}:
         return cognito_platform_auth_config(result)
-    if provider_type in {"bundle_session_login", "bundle-session-login", "bundle_session", "bundle-session", "session"}:
+    if provider_type == "bundle":
         return {
-            "auth_provider": "session",
+            "auth_provider": "bundle",
             **_token_transport_config(provider),
             "provider": provider,
             "authority": _dict(result.get("authority")),
@@ -343,7 +354,7 @@ def resolve_platform_authority_provider(
     provider_id: str = DEFAULT_PLATFORM_PROVIDER_ID,
     provider_type: str = "",
 ) -> dict[str, Any]:
-    """Resolve the selected platform authority provider from a registry."""
+    """Resolve the selected platform sign-in entry from a registry."""
 
     return resolve_authority_provider_instance(
         registry,

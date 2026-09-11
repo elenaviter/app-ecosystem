@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The browser-session OIDC upstream verifies ID tokens through PyJWT when a
+# The server-side-login OIDC authenticator verifies ID tokens through PyJWT when a
 # host does not inject its own verifier.
 oidc = [
     "PyJWT[crypto]>=2.8,<3",

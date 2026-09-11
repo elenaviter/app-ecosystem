@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 import pytest
 
-from connection_hub.browser_session.next_url import safe_next_path
+from connection_hub.server_side_login.next_url import safe_next_path
 
 
 @pytest.mark.parametrize("raw", ["/", "/platform/chat", "/sites/connections/?tab=cards#top", "/a b/c"])
@@ -26,7 +26,7 @@ def test_surrounding_whitespace_is_trimmed_like_a_browser_does():
 
 
 import pytest as _pytest
-from connection_hub.browser_session.next_url import safe_next_target
+from connection_hub.server_side_login.next_url import safe_next_target
 
 
 @_pytest.mark.parametrize(
@@ -55,10 +55,10 @@ def test_safe_next_target_returns_only_to_listed_origins(raw, allowed, expected)
 
 def test_flow_begin_login_returns_to_a_listed_origin():
     import asyncio
-    from connection_hub.browser_session.cookies import StandardCookiePolicy
-    from connection_hub.browser_session.flow import BrowserSessionFlow
-    from connection_hub.browser_session.memory import MemoryLoginAttemptStore, MemorySessionBackend
-    from connection_hub.browser_session.model import LoginAttempt, SessionPolicy, VerifiedIdentity
+    from connection_hub.server_side_login.cookies import StandardCookiePolicy
+    from connection_hub.server_side_login.flow import BrowserSessionFlow
+    from connection_hub.server_side_login.memory import MemoryLoginAttemptStore, MemorySessionBackend
+    from connection_hub.server_side_login.model import LoginAttempt, SessionPolicy, VerifiedIdentity
 
     class Upstream:
         name = "u"

@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 import pytest
 
-from connection_hub.browser_session.google_identity import GoogleIdentityUpstream
-from connection_hub.browser_session.model import LoginAttempt
-from connection_hub.browser_session.protocols import UpstreamRejected
+from connection_hub.server_side_login.google_identity import GoogleIdentityUpstream
+from connection_hub.server_side_login.model import LoginAttempt
+from connection_hub.server_side_login.protocols import UpstreamRejected
 
 
 class FakeVerifier:

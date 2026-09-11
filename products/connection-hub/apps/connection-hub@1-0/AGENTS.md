@@ -4,7 +4,7 @@ title: "Connection Hub Builder-Agent Onboarding"
 summary: "Builder-agent onboarding guide for the Connection Hub app: connection edges, connected accounts, delegated cards, invocation policy, external MCP proxying, direct admission, and the Connections widget."
 status: "active"
 tags: ["agents", "builder", "onboarding", "connection-hub", "identity", "connections", "oauth", "mcp", "named-services", "delegated-credentials", "react", "redux"]
-updated_at: 2026-09-02
+updated_at: 2026-09-11
 see_also:
   - "./README.md"
   - "../../../../docs/connection-hub/connection-hub-architecture.md"
@@ -13,7 +13,7 @@ see_also:
   - "./interface/README.md"
   - "./interface/connection-hub.openapi.yaml"
   - "./config/bundles.template.yaml"
-  - "https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/service/auth/app-hosted-platform-login-and-session-README.md"
+  - "https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/service/auth/server-side-login-and-platform-session-README.md"
   - "https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/service/auth/app-simple-idp-bridge-README.md"
   - "https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/ecosystem-component/components-ecosystem-README.md"
   - "https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/namespace-services/README.md"
@@ -102,7 +102,7 @@ Start with these app-local files:
 
 When changing auth/session behavior, also read the platform docs:
 
-- [Application-hosted platform login and session](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/service/auth/app-hosted-platform-login-and-session-README.md)
+- [Server-side login and the platform session](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/service/auth/server-side-login-and-platform-session-README.md)
 - [SimpleIDP application bridge](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/service/auth/app-simple-idp-bridge-README.md)
 
 Read the centralized journal before changing behavior. Add a dated journal entry for every

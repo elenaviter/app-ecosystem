@@ -1450,23 +1450,18 @@ def _append_query(url: str, params: Mapping[str, str]) -> str:
 
 
 _SECRET_LIKE_KEYS = {"id_token", "cookie", "client_secret", "secret", "secret_ref", "token"}
-# What auth.type must say for a provider type, in the words of the assembly
-# comment: a session-login provider means the server owns the login (bundle);
-# a Cognito provider means the browser runs the OIDC client (cognito).
+# Every selectable row below is defined in this app, so assembly.yaml keeps
+# ``auth.type: bundle`` for the lookup. The resolved row tells the frontend
+# whether it should use Cognito, simple sign-in, or a server-side login lane.
 _AUTH_TYPE_FOR_PROVIDER_TYPE = {
-    # every spelling the registry resolver accepts for the session-login type
-    "bundle_session_login": "bundle",
-    "bundle-session-login": "bundle",
-    "bundle_session": "bundle",
-    "bundle-session": "bundle",
-    "session": "bundle",
-    "multi_cognito": "cognito",
-    "multi-cognito": "cognito",
-    "cognito": "cognito",
-    "cognito_id_token": "cognito",
-    "simple_idp": "simple",
-    "simple-idp": "simple",
-    "simple": "simple",
+    "bundle": "bundle",
+    "multi_cognito": "bundle",
+    "multi-cognito": "bundle",
+    "cognito": "bundle",
+    "cognito_id_token": "bundle",
+    "simple_idp": "bundle",
+    "simple-idp": "bundle",
+    "simple": "bundle",
 }
 
 
@@ -1542,10 +1537,11 @@ def _render_provider_row(authority_id: str, provider_id: str, raw_provider: Mapp
     issuer_cfg = raw_provider.get("issuer")
     if isinstance(input_cfg, Mapping) and isinstance(input_cfg.get("authenticator_ref"), Mapping):
         ref = input_cfg.get("authenticator_ref") or {}
-        row["session"] = {
+        row["lane"] = {
             "authenticator_ref": {
                 "authority_id": str(ref.get("authority_id") or "").strip(),
                 "provider_id": str(ref.get("provider_id") or ref.get("authenticator_id") or "").strip(),
+                "bundle_id": str(ref.get("bundle_id") or "").strip(),
             },
             "scopes": [str(x) for x in (input_cfg.get("scopes") or []) if str(x).strip()],
             "groups_claim": str(input_cfg.get("groups_claim") or "").strip(),
@@ -1589,7 +1585,7 @@ def _authenticator_facts(raw: Mapping[str, Any]) -> Dict[str, Any]:
 
 async def _describe_authorities(entrypoint: Any) -> Dict[str, Any]:
     from kdcube_ai_app.apps.middleware.platform_auth import platform_authenticator_descriptor
-    from kdcube_ai_app.auth.bundle.browser_session import browser_session_config, upstream_cognito_providers
+    from kdcube_ai_app.auth.bundle.login_lane import accepted_cognito_providers, bundle_login_config
 
     settings = get_settings()
     bundle = _entrypoint_bundle_id(entrypoint)
@@ -1604,15 +1600,15 @@ async def _describe_authorities(entrypoint: Any) -> Dict[str, Any]:
         descriptor = dict(platform_authenticator_descriptor(settings) or {})
     except Exception:
         descriptor = {}
-    session_cfg = None
+    login_cfg = None
     try:
-        session_cfg = browser_session_config(settings)
+        login_cfg = bundle_login_config(settings)
     except Exception:
-        session_cfg = None
+        login_cfg = None
     pools: list[Dict[str, Any]] = []
-    if session_cfg is not None:
+    if login_cfg is not None:
         try:
-            for cfg in upstream_cognito_providers(session_cfg, settings):
+            for cfg in accepted_cognito_providers(login_cfg, settings):
                 pools.append(_pool_row(
                     {
                         "alias": getattr(cfg, "alias", ""),
@@ -1622,7 +1618,7 @@ async def _describe_authorities(entrypoint: Any) -> Dict[str, Any]:
                         "app_client_id": getattr(cfg, "app_client_id", ""),
                         "hosted_ui_domain": getattr(cfg, "hosted_ui_domain", "") or "",
                     },
-                    primary=bool(session_cfg.client_id and getattr(cfg, "app_client_id", "") == session_cfg.client_id),
+                    primary=bool(login_cfg.client_id and getattr(cfg, "app_client_id", "") == login_cfg.client_id),
                 ))
         except Exception:
             pools = []
@@ -1635,19 +1631,19 @@ async def _describe_authorities(entrypoint: Any) -> Dict[str, Any]:
         "authenticator": str(descriptor.get("provider") or "").strip(),
         "authenticator_id": str(descriptor.get("authenticator_id") or "").strip(),
         "selected_by": str(descriptor.get("source") or "").strip(),
-        "hosted_sign_in": session_cfg is not None,
-        "upstream": (
+        "server_side_login": login_cfg is not None,
+        "login_authenticator": (
             {
-                "type": session_cfg.upstream_type,
-                "issuer_url": session_cfg.issuer_url,
-                "client_id": session_cfg.client_id,
-                "hosted_ui_domain": session_cfg.hosted_ui_domain,
+                "type": login_cfg.authenticator_type,
+                "issuer_url": login_cfg.issuer_url,
+                "client_id": login_cfg.client_id,
+                "hosted_ui_domain": login_cfg.hosted_ui_domain,
             }
-            if session_cfg is not None
+            if login_cfg is not None
             else {}
         ),
         "pools": pools,
-        "where": "assembly.yaml: auth.connection_hub.provider_id (auth.type says which lane)",
+        "where": "assembly.yaml: auth.connection_hub.provider_id (auth.type: bundle selects an app-defined entry)",
     }
     # 2. Every authority and provider this app's registry declares.
     registry = authority_registry_config(getattr(entrypoint, "bundle_props", None) or {})
@@ -1686,10 +1682,11 @@ async def _describe_authorities(entrypoint: Any) -> Dict[str, Any]:
             issuer_cfg = raw_provider.get("issuer")
             if isinstance(input_cfg, Mapping) and isinstance(input_cfg.get("authenticator_ref"), Mapping):
                 ref = input_cfg.get("authenticator_ref") or {}
-                row["session"] = {
+                row["lane"] = {
                     "authenticator_ref": {
                         "authority_id": str(ref.get("authority_id") or "").strip(),
                         "provider_id": str(ref.get("provider_id") or ref.get("authenticator_id") or "").strip(),
+                        "bundle_id": str(ref.get("bundle_id") or "").strip(),
                     },
                     "scopes": [str(x) for x in (input_cfg.get("scopes") or []) if str(x).strip()],
                     "groups_claim": str(input_cfg.get("groups_claim") or "").strip(),
@@ -5710,9 +5707,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
     async def authorities_describe(self, **kwargs: Any) -> Dict[str, Any]:
         """The deployment's sign-in authorities, for an administrator: the
         platform's own sign-in as assembly.yaml selects it and as the runtime
-        built it, every provider of every authority in this app's registry
-        with the pools it trusts (mixed mode), and the authority providers
-        apps registered when they loaded. Read-only: these rows are owned by
+        built it, every authenticator and login lane of every authority in this
+        app's registry, including the pools each Cognito authenticator trusts,
+        and the authority-provider components apps registered when they loaded.
+        Read-only: these rows are owned by
         the descriptors, and each says where it lives."""
         del kwargs
         denied = _platform_admin_denied(self)

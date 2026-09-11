@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""The OIDC authorization-code upstream: Cognito or any OIDC issuer.
+"""The OIDC authorization-code authenticator: Cognito or any OIDC issuer.
 
 The browser is sent to the issuer's authorization endpoint with ``state``,
 ``nonce``, and a PKCE S256 challenge, all from the one-time login attempt.
@@ -25,8 +25,8 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlencode
 
-from connection_hub.browser_session.model import LoginAttempt, VerifiedIdentity
-from connection_hub.browser_session.protocols import IdTokenVerifier, UpstreamRejected
+from connection_hub.server_side_login.model import LoginAttempt, VerifiedIdentity
+from connection_hub.server_side_login.protocols import IdTokenVerifier, UpstreamRejected
 
 DISCOVERY_PATH = "/.well-known/openid-configuration"
 DEFAULT_SCOPES = ("openid", "email", "profile")

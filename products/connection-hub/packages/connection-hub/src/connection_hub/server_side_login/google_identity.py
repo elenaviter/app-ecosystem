@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""The Google Identity Services upstream.
+"""The Google Identity Services authenticator.
 
 Google Identity Services signs the person in inside the host's login page and
 posts a signed ID token (the "credential") to the host. There is no redirect
@@ -22,8 +22,8 @@ from __future__ import annotations
 import hmac
 from typing import Any, Mapping
 
-from connection_hub.browser_session.model import LoginAttempt, VerifiedIdentity
-from connection_hub.browser_session.protocols import IdTokenVerifier, UpstreamRejected
+from connection_hub.server_side_login.model import LoginAttempt, VerifiedIdentity
+from connection_hub.server_side_login.protocols import IdTokenVerifier, UpstreamRejected
 
 GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
 GOOGLE_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"

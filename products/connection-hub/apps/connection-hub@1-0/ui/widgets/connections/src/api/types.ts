@@ -521,9 +521,9 @@ export interface AuthorityProviderRow {
   };
   /** Mixed mode: the pools this provider trusts besides its own. */
   trusted_providers?: AuthorityPoolRow[];
-  /** A session provider: what it takes from its upstream and hands back. */
-  session?: {
-    authenticator_ref?: { authority_id?: string; provider_id?: string };
+  /** A server-side login lane and the authenticator it uses. */
+  lane?: {
+    authenticator_ref?: { authority_id?: string; provider_id?: string; bundle_id?: string };
     scopes?: string[];
     groups_claim?: string;
     return_origins?: string[];
@@ -573,8 +573,8 @@ export interface AuthoritiesDescribeResult {
     authenticator_id?: string;
     /** Which descriptor key selected it. */
     selected_by?: string;
-    hosted_sign_in?: boolean;
-    upstream?: { type?: string; issuer_url?: string; client_id?: string; hosted_ui_domain?: string };
+    server_side_login?: boolean;
+    login_authenticator?: { type?: string; issuer_url?: string; client_id?: string; hosted_ui_domain?: string };
     pools?: AuthorityPoolRow[];
     where?: string;
     switch_options?: PlatformSwitchOption[];

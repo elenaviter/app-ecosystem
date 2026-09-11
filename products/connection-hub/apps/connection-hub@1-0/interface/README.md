@@ -11,7 +11,7 @@ keywords:
   - named-service provider
   - external MCP proxy
   - invocation policy
-updated_at: 2026-09-03
+updated_at: 2026-09-11
 see_also:
   - ./connection-hub.openapi.yaml
   - ../../../../../docs/connection-hub/connection-hub-architecture.md
@@ -89,10 +89,10 @@ All are authenticated (`PlatformAuth`) and visibility-gated by
 | `identity_family_resolve` | POST | operations | Resolve the current actor/platform user to the linked identity family: platform authority identity, provider/integration identities, and canonical user ids for aggregation. |
 | `delegated_identity_scope_resolve` | POST | operations | Resolve a verified delegated credential envelope to the grantor user ids allowed by its delegation edge and identity scope. |
 | `authenticators_list` | GET | operations | List Connection Hub authenticator modules/configured rows and secret-reference status. Secret values are never returned. |
-|`authorities_describe`|GET|operations|Administrator: the deployment's sign-in authorities. The platform's selection (assembly.yaml `auth.connection_hub.provider_id`) and the runtime authenticator built from it, hosted sign-in on or off, the upstream issuer and the pools accepted (mixed mode); every authority and provider of this app's `authority_registry` with its trusted pools and its descriptor path; the authority providers apps registered at load. Read-only; no token, cookie name or secret reference is returned.|
+|`authorities_describe`|GET|operations|Administrator: the deployment's sign-in authorities. The platform's app-defined selection (`assembly.yaml` `auth.connection_hub.provider_id`), the runtime authenticator built from it, its login lane, referenced authenticator and accepted pools (mixed mode); every authority and provider of this app's `authority_registry` with its descriptor path; and the authenticators apps registered at load. Read-only; no token, cookie name or secret reference is returned.|
 |`authority_provider_validate`|POST|operations|Administrator: check an editing buffer (one provider block as YAML) before applying it: parsed, secret-bearing keys merged from the file where the buffer says `<unchanged>`, validated as a provider the platform can resolve, and rendered as the pane shows it. Writes nothing.|
 |`authority_provider_set`|POST|operations|Administrator, CSRF: apply the buffer to the staged `bundles.yaml` through the platform's descriptor editor: one provider block replaced under a file lock, comments and every other key kept, a `.bak-<stamp>` beside the file, secret-bearing keys merged from the file; refuses a dropped secret key unless `allow_secret_removal`. Publishes a value-free `auth/providers` platform-settings event. `activation` is `live` when ingress received it, `refresh` when no listener did, and `none` when the file already held the submitted block.|
-|`platform_sign_in_set`|POST|operations|Administrator, CSRF: point the platform at another sign-in provider of its authority by changing `auth.type` and `auth.connection_hub.provider_id` together under a file lock in the staged `assembly.yaml` (backup beside it). It publishes an `auth/lane` platform-settings event for observability, while the lane applies on a runtime refresh by design.|
+|`platform_sign_in_set`|POST|operations|Administrator, CSRF: select another app-defined sign-in provider by changing `auth.connection_hub.provider_id` under a file lock in the staged `assembly.yaml` (backup beside it). It also restores `auth.type: bundle` if needed. The operation publishes an `auth/lane` platform-settings event for observability; the lane applies on a runtime refresh by design.|
 | `authenticators_upsert` | POST | operations | Create/update a Postgres-backed authenticator metadata row. Accepts authenticator selector metadata, `role_providing`, and `secret_ref`; rejects secret values. |
 | `authenticators_remove` | POST | operations | Soft-delete a Postgres-backed authenticator metadata row. Descriptor-defined rows are not removed through this API. |
 | `dcr_allowlist_get` | GET | operations | Admin: read the OAuth dynamic-client-registration redirect allowlist (configured, effective, defaults). |

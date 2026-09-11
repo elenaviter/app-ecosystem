@@ -171,8 +171,8 @@ Still open:
 5. **Authenticators shows every authority, the platform's one highlighted,
    and edits them.** Done. The tab opens with "Sign-in authorities", read
    by the administrator operation `authorities_describe`: the platform's
-   selection and the runtime authenticator built from it, server-side
-   login on or off, the upstream, every authority and provider of this
+   selection and the runtime authenticator built from it, its login lane and
+   referenced authenticator, every authority and provider of this
    app's registry with the pools it trusts (mixed mode) and the descriptor
    path each lives at, and what apps registered. Editing is a buffer
    mapped onto the real descriptor: `Edit` on a provider opens its block,
@@ -181,11 +181,12 @@ Still open:
    `<unchanged>`, resolvable, rendered as the pane shows a provider),
    `Apply` writes it through the platform's descriptor editor
    (`authority_provider_set`: comments and every other key kept, a backup
-   beside the file). The platform switch applies the two assembly lines
-   the same way (`platform_sign_in_set`). "New provider from a construct"
+   beside the file). The platform switch selects another provider in
+   `auth.connection_hub` and keeps `auth.type: bundle` because the definition
+   is in this app (`platform_sign_in_set`). "New provider from a construct"
    opens the editor with a template for each shape the platform can sign
-   in with. Every edit says how it activates: a runtime refresh today, the
-   provider edit is sent immediately to ingress and the result says whether
+   in with. Every edit says how it activates. A provider edit is sent
+   immediately to ingress and the result says whether
    ingress received it; without a listener, the widget asks for a refresh.
    The lane switch remains refresh-only by design.
 6. **Access map** is the least clear surface; operator surface; after the

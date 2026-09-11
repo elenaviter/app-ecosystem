@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Mapping
 
-from connection_hub.browser_session.protocols import UpstreamRejected
+from connection_hub.server_side_login.protocols import UpstreamRejected
 
 DEFAULT_ALGORITHMS = ("RS256", "ES256")
 

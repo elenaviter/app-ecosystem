@@ -9,7 +9,7 @@ delete-on-consume). Refresh tokens are long-lived and rotated on use so a
 feedback-triage routine that runs *daily or seldom* keeps working unattended;
 rotation invalidates the previous token (reuse-detection boundary).
 
-Keys are tenant/project namespaced, matching the bundle-session auth convention.
+Keys are tenant/project namespaced, matching the platform-session convention.
 """
 from __future__ import annotations
 

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from connection_hub.browser_session.model import CookieSpec
+from connection_hub.server_side_login.model import CookieSpec
 
 DEFAULT_SESSION_COOKIE = "__Secure-LATC"
 DEFAULT_ATTEMPT_COOKIE = "__Host-kdcube-login"

@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import pytest
 
-from connection_hub.browser_session.cookies import StandardCookiePolicy
-from connection_hub.browser_session.memory import MemoryLoginAttemptStore, MemorySessionBackend
-from connection_hub.browser_session.model import LoginAttempt, VerifiedIdentity
-from connection_hub.browser_session.protocols import UpstreamRejected
+from connection_hub.server_side_login.cookies import StandardCookiePolicy
+from connection_hub.server_side_login.memory import MemoryLoginAttemptStore, MemorySessionBackend
+from connection_hub.server_side_login.model import LoginAttempt, VerifiedIdentity
+from connection_hub.server_side_login.protocols import UpstreamRejected
 
 
 class Clock:

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from connection_hub.browser_session import kst1
+from connection_hub.server_side_login import kst1
 
 
 def test_round_trip_and_wire_shape():

@@ -1,7 +1,7 @@
 /**
  * The platform-auth constructs the resolver supports, as YAML templates the
  * editor opens with. Each is one provider block for the platform authority;
- * the mixes are the same blocks pointing at each other (a session login on
+ * the mixes are the same blocks pointing at each other (a server-side lane on
  * a Cognito provider that trusts several pools). Values known from the
  * current platform are filled in; the rest are placeholders in angle
  * brackets the administrator replaces. Secret-bearing entries are never
@@ -15,7 +15,7 @@ export interface AuthConstruct {
   /** One sentence on when this is the right shape. */
   summary: string;
   /** What assembly.yaml's auth.type says when this provider is the platform's sign-in. */
-  authType: 'cognito' | 'bundle' | 'simple';
+  authType: 'bundle';
   yaml: (facts: ConstructFacts) => string;
   defaultProviderId: string;
 }
@@ -75,7 +75,7 @@ export const AUTH_CONSTRUCTS: AuthConstruct[] = [
     id: 'cognito',
     title: 'Cognito, one pool',
     summary: 'The browser runs the OIDC client against one Cognito user pool; the platform verifies the tokens it presents.',
-    authType: 'cognito',
+    authType: 'bundle',
     defaultProviderId: 'cognito',
     yaml: (f) => cognitoBlock(f, false),
   },
@@ -83,19 +83,19 @@ export const AUTH_CONSTRUCTS: AuthConstruct[] = [
     id: 'multi-cognito',
     title: 'Cognito, several pools (mixed mode)',
     summary: 'Tokens from every pool listed under trusted_providers are accepted; the sign-in itself uses the primary pool.',
-    authType: 'cognito',
+    authType: 'bundle',
     defaultProviderId: 'cognito',
     yaml: (f) => cognitoBlock(f, true),
   },
   {
-    id: 'session-cognito',
+    id: 'server-login-cognito',
     title: 'Server-side login on Cognito',
-    summary: 'The platform runs the sign-in itself against a Cognito provider of this authority and keeps the session server-side; sites and clients hold no tokens.',
+    summary: 'The platform runs the sign-in against a Cognito authenticator, keeps its tokens server-side, and gives the browser one platform session.',
     authType: 'bundle',
-    defaultProviderId: 'browser_session',
-    yaml: (f) => `type: bundle_session_login
+    defaultProviderId: 'server_login',
+    yaml: (f) => `type: bundle
 enabled: true
-label: Platform browser session (server-held, Cognito upstream)
+label: Platform server-side login through Cognito
 input:
   authenticator_ref:
     authority_id: ${f.authorityId}
@@ -114,12 +114,12 @@ issuer:
 `,
   },
   {
-    id: 'session-oidc',
+    id: 'server-login-oidc',
     title: 'Server-side login on an OIDC issuer',
     summary: 'The same server-held session, signing in through any OIDC issuer declared as a provider of this authority.',
     authType: 'bundle',
-    defaultProviderId: 'browser_session',
-    yaml: (f) => `# Two blocks: the OIDC upstream provider, and the session login that points at it.
+    defaultProviderId: 'server_login',
+    yaml: (f) => `# Two blocks: the OIDC authenticator, and the server-side login lane that points at it.
 # Paste the first as its own provider (for example "oidc"), then this one.
 #
 # oidc:
@@ -130,9 +130,9 @@ issuer:
 #     issuer: https://<issuer url>
 #     client_id: <client id>
 #     client_secret_ref: <bundle secret reference>
-type: bundle_session_login
+type: bundle
 enabled: true
-label: Platform browser session (server-held, OIDC upstream)
+label: Platform server-side login through OIDC
 input:
   authenticator_ref:
     authority_id: ${f.authorityId}
@@ -153,7 +153,7 @@ issuer:
     id: 'simple',
     title: 'Simple IDP (development only)',
     summary: 'The built-in identity store for a laptop runtime; never for a public deployment.',
-    authType: 'simple',
+    authType: 'bundle',
     defaultProviderId: 'simple',
     yaml: () => `type: simple_idp
 enabled: true

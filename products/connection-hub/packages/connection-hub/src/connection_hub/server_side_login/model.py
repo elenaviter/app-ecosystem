@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Data types of the browser session. Plain, frozen, host-neutral."""
+"""Data types for server-side login. Plain, frozen, host-neutral."""
 
 from __future__ import annotations
 

@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 import pytest
 
-from connection_hub.browser_session.flow import (
+from connection_hub.server_side_login.flow import (
     BrowserSessionFlow,
     LoginAttemptRejected,
     LoginRejected,
 )
-from connection_hub.browser_session.model import SessionPolicy
+from connection_hub.server_side_login.model import SessionPolicy
 
 from .conftest import FakeUpstream
 

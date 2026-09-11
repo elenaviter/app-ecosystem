@@ -5,7 +5,7 @@ summary: "Canonical architecture for Connection Hub: identity and delegation sem
 status: active
 tags: ["connection-hub", "architecture", "identity", "delegated-access", "storage", "admission", "mcp", "proxy"]
 keywords: ["connection edge", "connected account", "delegated card", "active capability catalog", "external MCP connector", "invocation policy", "protected service", "direct admission", "storage authority"]
-updated_at: 2026-09-03
+updated_at: 2026-09-11
 see_also:
   - ./package/delegated-authority-and-admission.md
   - ./package/delegated-cards.md
@@ -550,7 +550,7 @@ security properties differ.
 | User properties and user secrets | Connected-account metadata in user properties; provider access/refresh tokens and app-password material in user secrets | Host secret caches | Yes, in user secrets only. |
 | Postgres | Request-authenticator metadata rows and `secret_ref` values | Redis selector cache | No secret values. |
 | Redis | OAuth authorization codes, dynamic client registrations, refresh-token records, opaque access-token grant bindings, live credential handles, consent CSRF state, direct-admission nonces | Card/catalog serving projections, authenticator selector cache, discovery, events, coordination | Contains bounded live credential/protocol records; never treat the whole database as a disposable cache. |
-| External provider | Provider account, consent, and upstream token validity | Provider-specific session state | Provider is the upstream authority. |
+| External provider | Provider account, consent, and token validity | Provider-specific session state | Provider is the external authenticator. |
 
 The detailed key and table map is in
 [`frontend/application/storage/README.md`](frontend/application/storage/README.md).

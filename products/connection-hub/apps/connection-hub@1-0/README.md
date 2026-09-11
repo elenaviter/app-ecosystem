@@ -24,7 +24,7 @@ links:
   design: ../../../../docs/connection-hub/frontend/application/README.md
   architecture: ../../../../docs/connection-hub/connection-hub-architecture.md
   journal: ../../../../journal/README.md
-updated_at: 2026-09-02
+updated_at: 2026-09-11
 ---
 
 # Connection Hub App
@@ -139,12 +139,12 @@ connection edge supplies platform roles.
 
 ### Proof-based Telegram linking
 
-First-time Telegram linking needs two proofs in one flow: a platform-authenticated
-browser session and a Telegram-signed Mini App session.
+First-time Telegram linking needs two proofs in one flow: a platform session
+and a Telegram-signed Mini App session.
 
 ```text
 Platform-first:
-  KDCube browser session
+  KDCube platform session
   -> connections_settings creates short-lived challenge for platform_user_id
   -> user opens the provider proof surface that owns the desired Telegram bot
   -> that Telegram Mini App sends signed initData to Connection Hub

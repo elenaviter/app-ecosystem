@@ -83,6 +83,12 @@ def test_authority_registry_rereads_the_staged_descriptor(entrypoint, monkeypatc
     assert list(registry["authorities"]) == ["current"]
 
 
+def test_app_defined_sign_in_options_keep_the_bundle_lookup(entrypoint):
+    assert entrypoint.module._AUTH_TYPE_FOR_PROVIDER_TYPE["bundle"] == "bundle"
+    assert entrypoint.module._AUTH_TYPE_FOR_PROVIDER_TYPE["cognito"] == "bundle"
+    assert entrypoint.module._AUTH_TYPE_FOR_PROVIDER_TYPE["simple"] == "bundle"
+
+
 @pytest.mark.asyncio
 async def test_provider_edit_refuses_non_admin_before_write_or_publish(entrypoint, monkeypatch):
     monkeypatch.setattr(
@@ -175,7 +181,7 @@ async def test_lane_edit_is_published_but_remains_refresh_only(entrypoint, monke
 
     result = await entrypoint.module.ConnectionHubEntrypoint.platform_sign_in_set(
         entrypoint.instance,
-        data={"provider_id": "browser_session"},
+        data={"provider_id": "server_login"},
     )
 
     assert result["activation"] == "refresh"

@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""One server-held browser session for every surface of a platform.
+"""Server-side login with one platform session for every surface.
 
 The browser holds one HttpOnly cookie with a signed session token. The server
-holds the upstream identity, renews nothing in the browser, and every surface
+holds the verified identity, renews nothing in the browser, and every surface
 (a control plane, a widget, an application-served site) asks one profile
 endpoint whether it is signed in. A session slides: each request extends it
 by the idle limit, never past the maximum since sign-in.
@@ -13,7 +13,7 @@ This subpackage is host-neutral by construction. It imports nothing from the
 rest of Connection Hub and nothing from any platform. Everything a host owns
 is injected through small protocols (``protocols``): where sessions and login
 attempts are stored, how the platform user is registered, what the cookies
-are called, and which upstream proves the identity. The host mounts the
+are called, and which authenticator proves the identity. The host mounts the
 ``BrowserSessionFlow`` under its own HTTP framework; the flow itself is pure
 methods returning what to redirect, set, clear, and answer.
 
@@ -27,14 +27,14 @@ Modules:
 - ``next_url``: the same-origin guard for the post-login destination.
 - ``kst1``: the ``kst1.<body>.<signature>`` token codec, byte-compatible with
   the platform session token it replaces.
-- ``oidc``: the OIDC authorization-code upstream (any issuer: Cognito, a
+- ``oidc``: the OIDC authorization-code authenticator (any issuer: Cognito, a
   generic OIDC provider), with PKCE, state, nonce, and injected ID-token
   verification; ``oidc_jwt`` supplies a verifier when PyJWT is installed.
-- ``google_identity``: the Google Identity Services credential upstream.
+- ``google_identity``: the Google Identity Services credential authenticator.
 - ``memory``: in-memory stores and a registry for tests and simple hosts.
 """
 
-from connection_hub.browser_session.flow import (
+from connection_hub.server_side_login.flow import (
     BrowserSessionFlow,
     LoginRedirect,
     LoginCompleted,
@@ -42,7 +42,7 @@ from connection_hub.browser_session.flow import (
     LoginAttemptRejected,
     LoginRejected,
 )
-from connection_hub.browser_session.model import (
+from connection_hub.server_side_login.model import (
     CookieSpec,
     IssuedSession,
     LoginAttempt,
@@ -50,8 +50,8 @@ from connection_hub.browser_session.model import (
     SessionState,
     VerifiedIdentity,
 )
-from connection_hub.browser_session.next_url import safe_next_path
-from connection_hub.browser_session.protocols import (
+from connection_hub.server_side_login.next_url import safe_next_path
+from connection_hub.server_side_login.protocols import (
     CookiePolicy,
     IdTokenVerifier,
     LoginAttemptStore,

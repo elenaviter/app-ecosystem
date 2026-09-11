@@ -4,9 +4,9 @@ import pathlib
 
 import pytest
 
-from connection_hub.browser_session.cookies import StandardCookiePolicy
+from connection_hub.server_side_login.cookies import StandardCookiePolicy
 
-PACKAGE = pathlib.Path(__file__).resolve().parents[2] / "src" / "connection_hub" / "browser_session"
+PACKAGE = pathlib.Path(__file__).resolve().parents[2] / "src" / "connection_hub" / "server_side_login"
 ALLOWED_THIRD_PARTY = {"httpx", "jwt"}
 
 
@@ -34,7 +34,7 @@ def test_a_domain_or_insecure_setting_drops_the_host_prefix():
         StandardCookiePolicy(session_name="")
 
 
-def test_browser_session_imports_nothing_from_a_platform_or_the_rest_of_the_hub():
+def test_server_side_login_imports_nothing_from_a_platform_or_the_rest_of_the_hub():
     """The subpackage must stay liftable into a foundation package: standard
     library, its own modules, and at most httpx and PyJWT (guarded)."""
     offenders = []
@@ -48,7 +48,7 @@ def test_browser_session_imports_nothing_from_a_platform_or_the_rest_of_the_hub(
                 names = [node.module]
             for name in names:
                 root = name.split(".")[0]
-                if name.startswith("connection_hub.browser_session"):
+                if name.startswith("connection_hub.server_side_login"):
                     continue
                 if root == "connection_hub":
                     offenders.append((path.name, name))
@@ -63,7 +63,7 @@ def _stdlib(root: str) -> bool:
 
 
 def test_return_cookie_carries_the_destination_across_the_upstream_sign_out():
-    from connection_hub.browser_session.cookies import StandardCookiePolicy
+    from connection_hub.server_side_login.cookies import StandardCookiePolicy
 
     policy = StandardCookiePolicy(secure=True)
     spec = policy.return_cookie("/chat?tab=2", max_age=300)

@@ -30,6 +30,20 @@ test('access map is read-only and visible only to platform administrators', () =
   assert.match(app, /activeTab === 'accessMap' && authenticatorsAllowed/)
 })
 
+test('platform sign-in resolves the authenticator in its referenced authority', () => {
+  const pane = source('src/features/authenticators/AuthoritiesPane.tsx')
+  assert.match(pane, /selectedAuthenticatorRef\?\.authority_id/)
+  assert.match(pane, /row\.authority_id === selectedAuthenticatorAuthorityId/)
+  assert.match(pane, /platform\?\.login_authenticator\?\.type/)
+  assert.match(pane, /authority\.authority_id === selectedAuthenticatorAuthorityId/)
+})
+
+test('every authenticator construct remains an app-defined bundle lookup', () => {
+  const constructs = source('src/features/authenticators/authConstructs.ts')
+  assert.doesNotMatch(constructs, /authType:\s*'(?:cognito|simple)'/)
+  assert.match(constructs, /authType:\s*'bundle'/)
+})
+
 test('tab strip remains a single-row overflow carousel', () => {
   const css = source('src/styles.css')
   const tabsWrapBlock = css.slice(

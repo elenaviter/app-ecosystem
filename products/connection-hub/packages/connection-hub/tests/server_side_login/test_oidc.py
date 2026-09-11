@@ -5,9 +5,9 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from connection_hub.browser_session.model import LoginAttempt
-from connection_hub.browser_session.oidc import OidcClientConfig, OidcCodeFlow, OidcEndpoints, pkce_challenge
-from connection_hub.browser_session.protocols import UpstreamRejected
+from connection_hub.server_side_login.model import LoginAttempt
+from connection_hub.server_side_login.oidc import OidcClientConfig, OidcCodeFlow, OidcEndpoints, pkce_challenge
+from connection_hub.server_side_login.protocols import UpstreamRejected
 
 ISSUER = "https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_pool"
 DISCOVERY = {
