@@ -212,3 +212,105 @@ def test_pruning_a_drifted_selection_does_not_widen_the_card() -> None:
     )
 
     assert resolved == {_RESOURCE: []}
+
+
+def _catalog_with_a_declared_door():
+    from connection_hub.delegated_credentials.oauth.config import (
+        oauth_delegated_config_from_connections,
+    )
+
+    return oauth_delegated_config_from_connections(
+        {
+            "delegated_credentials": {
+                "oauth": {
+                    "enabled": True,
+                    "capabilities": [
+                        {"grant": "work:relay", "label": "Relay"},
+                        {"grant": "work:coordinate", "label": "Coordinate"},
+                    ],
+                    "resources": [
+                        {
+                            "resource": "*/api/integrations/bundles/*/*/problem-board@1-0/public/mcp/problem_board*",
+                            "label": "Problem Board",
+                            "grants": ["work:relay"],
+                        },
+                        {"resource": "*", "label": "Everything", "grants": ["work:coordinate"]},
+                    ],
+                }
+            }
+        }
+    )
+
+
+def _resolver():
+    return AutomationAccessService._declared_resource_keys
+
+
+def test_issuance_persists_the_declared_door_not_the_host_that_served_consent() -> None:
+    """An OAuth resource indicator is concrete; the door it names is not.
+
+    A client must ask for a concrete URL, so it asks for the hostname that
+    happens to be serving it today. Writing that URL onto the card pins the card
+    to that hostname, and the same service reached through any other name stops
+    matching. The catalog then grows a second row for a door it already had.
+    """
+
+    config = _catalog_with_a_declared_door()
+    declared = "*/api/integrations/bundles/*/*/problem-board@1-0/public/mcp/problem_board*"
+    requested = (
+        "https://some-tunnel.example.test/api/integrations/bundles"
+        "/demo-tenant/demo-project/problem-board@1-0/public/mcp/problem_board"
+    )
+
+    resolved, rewritten = _resolver()(
+        AutomationAccessService, config, {requested: ["work:relay"]}
+    )
+
+    assert list(resolved) == [declared]
+    assert resolved[declared] == ["work:relay"]
+    assert rewritten == {requested: declared}
+
+
+def test_two_hostnames_for_one_door_are_one_grant() -> None:
+    config = _catalog_with_a_declared_door()
+    declared = "*/api/integrations/bundles/*/*/problem-board@1-0/public/mcp/problem_board*"
+    base = "/api/integrations/bundles/demo-tenant/demo-project/problem-board@1-0/public/mcp/problem_board"
+
+    resolved, _ = _resolver()(
+        AutomationAccessService,
+        config,
+        {
+            f"https://one.example.test{base}": ["work:relay"],
+            f"https://two.example.test{base}": ["work:coordinate"],
+        },
+    )
+
+    assert list(resolved) == [declared]
+    assert resolved[declared] == ["work:relay", "work:coordinate"]
+
+
+def test_a_resource_no_declaration_covers_keeps_its_literal() -> None:
+    """The one case that genuinely has nothing to point at."""
+
+    config = _catalog_with_a_declared_door()
+    stranger = "https://elsewhere.example.test/mcp/something-else"
+
+    resolved, rewritten = _resolver()(
+        AutomationAccessService, config, {stranger: ["work:relay"]}
+    )
+
+    assert list(resolved) == [stranger]
+    assert rewritten == {}
+
+
+def test_the_all_resource_row_never_swallows_a_concrete_request() -> None:
+    """It is a declared admin surface, so collapsing into it would widen the card."""
+
+    config = _catalog_with_a_declared_door()
+    stranger = "https://elsewhere.example.test/mcp/something-else"
+
+    resolved, _ = _resolver()(
+        AutomationAccessService, config, {stranger: ["work:relay"]}
+    )
+
+    assert "*" not in resolved
