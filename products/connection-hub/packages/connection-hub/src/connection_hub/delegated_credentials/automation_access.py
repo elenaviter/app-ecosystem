@@ -1704,6 +1704,49 @@ class AutomationAccessService:
                 out[resource_value] = selected
         return out
 
+    def _declared_resource_keys(
+        self,
+        config: OAuthDelegatedClientConfig,
+        resource_grants: Mapping[str, list[str]],
+    ) -> tuple[dict[str, list[str]], dict[str, str]]:
+        """Persist the declared door a request came through, not the URL it used.
+
+        An OAuth resource indicator has to be concrete, so a client asks for
+        ``https://<host>/api/.../problem_board``. The catalog declares that door
+        host-agnostically, as ``*/api/.../problem_board*``, because a hosted
+        service is reachable at more than one hostname and outlives any of them.
+        Writing the concrete URL onto the card pins it to the host that happened
+        to serve the consent, so the same service reached through another
+        hostname stops matching, and the catalog grows a second row for a door
+        it already had.
+
+        So a submitted resource is resolved to the declared row covering it, and
+        the literal is kept only when no declaration covers it, which is the
+        case that genuinely has nothing to point at. The all-resource row is
+        never that answer: it is a declared admin surface, and collapsing a
+        concrete request into it would widen the card rather than name its door.
+        """
+
+        resolved: dict[str, list[str]] = {}
+        rewritten: dict[str, str] = {}
+        for resource_value, grants in resource_grants.items():
+            row = config.card_selector_config(resource_value)
+            declared = _clean(getattr(row, "resource", "")) if row is not None else ""
+            key = resource_value
+            if declared and declared != "*" and declared != resource_value:
+                key = declared
+                rewritten[resource_value] = declared
+            if key in resolved:
+                # Two concrete URLs for one declared door are one grant.
+                merged = list(resolved[key])
+                for grant in grants:
+                    if grant not in merged:
+                        merged.append(grant)
+                resolved[key] = merged
+            else:
+                resolved[key] = list(grants)
+        return resolved, rewritten
+
     def _named_service_operation_selection(
         self,
         value: Any,
@@ -1980,6 +2023,14 @@ class AutomationAccessService:
         )
 
         selected_resource_grants = self._resource_grants(resource_grants)
+        selected_resource_grants, host_pinned = self._declared_resource_keys(
+            catalog_config, selected_resource_grants
+        )
+        if host_pinned:
+            _LOGGER.info(
+                "delegated access resolved host-pinned resources to declared doors: %s",
+                host_pinned,
+            )
         if _clean(client_id) and merge_existing:
             # An incremental agent demand may add only an exact operation or
             # account binding because the card already holds its door claims.
@@ -1988,8 +2039,14 @@ class AutomationAccessService:
             # prevents creation of a claim-less card.
             for raw_resource in dict(resource_grants or {}):
                 resource_value = _clean(raw_resource)
-                if resource_value:
-                    selected_resource_grants.setdefault(resource_value, [])
+                if not resource_value:
+                    continue
+                # The declared door, for the same reason as above. Re-adding the
+                # submitted URL here would put the host-pinned key straight back
+                # onto the card the resolution above just took it off.
+                selected_resource_grants.setdefault(
+                    host_pinned.get(resource_value, resource_value), []
+                )
         try:
             selected_named_service_operations = self._named_service_operation_selection(
                 named_service_operations
@@ -2516,6 +2573,18 @@ class AutomationAccessService:
         catalog_config = await self._catalog_config(
             active, owner_subject=_subject_from_user(user)
         )
+        # A save carries the same risk issuance does. The editor normally
+        # submits declared doors, so this is a no-op for it, and it is here so
+        # that a caller which submits a concrete URL cannot pin the card to a
+        # hostname through the back entrance.
+        selected_resource_grants, host_pinned = self._declared_resource_keys(
+            catalog_config, selected_resource_grants
+        )
+        if host_pinned:
+            _LOGGER.info(
+                "delegated access save resolved host-pinned resources to declared doors: %s",
+                host_pinned,
+            )
         try:
             selected_named_service_operations = self._named_service_operation_selection(
                 named_service_operations
