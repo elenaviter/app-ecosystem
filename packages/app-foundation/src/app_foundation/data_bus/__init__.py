@@ -2,20 +2,24 @@
 
 from app_foundation.data_bus.client import (
     DataBusClaim,
+    DataBusCredential,
     DataBusClientError,
     DataBusIngressRejected,
     DataBusOutcome,
     DataBusOutcomeUnknown,
     DataBusRemoteError,
+    DelegatedCardCredential,
     FederatedDataBusClient,
 )
 
 __all__ = [
     "DataBusClaim",
+    "DataBusCredential",
     "DataBusClientError",
     "DataBusIngressRejected",
     "DataBusOutcome",
     "DataBusOutcomeUnknown",
     "DataBusRemoteError",
+    "DelegatedCardCredential",
     "FederatedDataBusClient",
 ]

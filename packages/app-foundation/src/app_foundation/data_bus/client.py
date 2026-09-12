@@ -8,6 +8,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
+from .credentials import DataBusCredential, DelegatedCardCredential
+
 
 SocketFactory = Callable[[], Any]
 
@@ -56,6 +58,15 @@ class DataBusClaim:
             federated_token=required["federated_token"],
             partition_ref=str(claim.get("partition_ref") or "").strip(),
         )
+
+    def auth_payload(self) -> dict[str, Any]:
+        return {
+            "tenant": self.tenant,
+            "project": self.project,
+            "bundle_id": self.bundle_id,
+            "federated_token": self.federated_token,
+            "client_role": "service",
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,7 +137,8 @@ class FederatedDataBusClient:
         self,
         *,
         platform_url: str,
-        claim: DataBusClaim,
+        credential: DataBusCredential | None = None,
+        claim: DataBusClaim | None = None,
         socket_factory: SocketFactory | None = None,
         ingress_timeout_seconds: float = 15.0,
         outcome_timeout_seconds: float = 60.0,
@@ -136,7 +148,14 @@ class FederatedDataBusClient:
         self.platform_url = str(platform_url or "").rstrip("/")
         if not self.platform_url:
             raise ValueError("platform_url is required")
-        self.claim = claim
+        if credential is not None and claim is not None:
+            raise ValueError("provide either credential or claim, not both")
+        resolved_credential = credential or claim
+        if resolved_credential is None:
+            raise ValueError("credential is required")
+        self.credential = resolved_credential
+        # Kept for callers written against the original federated-only API.
+        self.claim = resolved_credential
         self.socket = (socket_factory or _default_socket_factory)()
         self.ingress_timeout_seconds = max(0.1, float(ingress_timeout_seconds))
         self.outcome_timeout_seconds = max(0.1, float(outcome_timeout_seconds))
@@ -152,9 +171,24 @@ class FederatedDataBusClient:
         self.socket.on("chat_service", self._on_service_event)
 
     @property
+    def _client_side_expiry(self) -> int:
+        """Zero means this side has no expiry to check.
+
+        A minted token carries its own lifetime, so the client can refuse to
+        use a dead one without a round trip. A delegated card carries none:
+        its current state lives server-side and is resolved on every operation,
+        so the only honest answer here is to let the call go and be told.
+        """
+        return int(getattr(self.credential, "expires_at", 0) or 0)
+
+    def _expired(self) -> bool:
+        expiry = self._client_side_expiry
+        return bool(expiry and expiry <= int(self._clock()))
+
+    @property
     def connected(self) -> bool:
         return bool(
-            self.claim.expires_at > int(self._clock())
+            not self._expired()
             and self._connected.is_set()
             and getattr(self.socket, "connected", True)
         )
@@ -224,23 +258,23 @@ class FederatedDataBusClient:
             raise DataBusClientError(
                 "data_bus_client_closed", "The Data Bus client is already closed."
             )
-        if self.claim.expires_at <= int(self._clock()):
+        if self._expired():
+            if isinstance(self.credential, DataBusClaim):
+                code = "data_bus_claim_expired"
+                message = "The federated Data Bus claim is expired."
+            else:
+                code = "data_bus_credential_expired"
+                message = "The Data Bus credential is expired."
             raise DataBusClientError(
-                "data_bus_claim_expired",
-                "The federated Data Bus claim is expired.",
-                details={"expires_at": self.claim.expires_at},
+                code,
+                message,
+                details={"expires_at": self._client_side_expiry},
             )
         await self.socket.connect(
             self.platform_url,
             socketio_path="socket.io",
             transports=["websocket", "polling"],
-            auth={
-                "tenant": self.claim.tenant,
-                "project": self.claim.project,
-                "bundle_id": self.claim.bundle_id,
-                "federated_token": self.claim.federated_token,
-                "client_role": "service",
-            },
+            auth=self.credential.auth_payload(),
         )
         self._connected.set()
 
@@ -276,7 +310,7 @@ class FederatedDataBusClient:
                     "data_bus.publish",
                     {
                         "schema": "kdcube.data_bus.ingress.v1",
-                        "bundle_id": self.claim.bundle_id,
+                        "bundle_id": self.credential.bundle_id,
                         "messages": [
                             {
                                 "message_id": resolved_message_id,
@@ -341,13 +375,17 @@ class FederatedDataBusClient:
                 future.cancel()
 
     async def wait_for_event(self, timeout_seconds: float) -> dict[str, Any] | None:
-        remaining = float(self.claim.expires_at) - float(self._clock())
-        if remaining <= 0:
-            return None
+        expiry = self._client_side_expiry
+        if expiry:
+            remaining = float(expiry) - float(self._clock())
+            if remaining <= 0:
+                return None
+            wait_for = min(float(timeout_seconds), remaining)
+        else:
+            wait_for = float(timeout_seconds)
         try:
             return await asyncio.wait_for(
-                self._events.get(),
-                timeout=max(0.1, min(float(timeout_seconds), remaining)),
+                self._events.get(), timeout=max(0.1, wait_for)
             )
         except asyncio.TimeoutError:
             return None
@@ -355,10 +393,12 @@ class FederatedDataBusClient:
 
 __all__ = [
     "DataBusClaim",
+    "DataBusCredential",
     "DataBusClientError",
     "DataBusIngressRejected",
     "DataBusOutcome",
     "DataBusOutcomeUnknown",
     "DataBusRemoteError",
+    "DelegatedCardCredential",
     "FederatedDataBusClient",
 ]

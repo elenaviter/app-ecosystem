@@ -704,3 +704,66 @@ async def test_a_malformed_revision_is_a_bad_request_not_a_conflict(entrypoint):
     assert result["ok"] is False
     assert result["error"] == "invalid_delegated_access_request"
     assert entrypoint.service.calls == []
+
+
+# -- surviving a catalog change -------------------------------------------------
+
+
+def test_a_withdrawn_service_never_freezes_a_card():
+    """A card outlives the catalog version it was written against.
+
+    A card records the catalog version it was saved under. When a service is
+    withdrawn after that, the card still names it, and the editor does not show
+    those entries, so a person cannot remove them. Rejecting the save on them
+    made the card permanently unsavable by a change nobody in the editor made.
+
+    On 2026-09-12 renaming one MCP service did exactly this to two live worker
+    cards: every edit answered delegated_access_unknown_named_service_resources
+    and no amount of clicking could clear it.
+
+    Dropping is safe because it can only narrow: an operation filed under a
+    resource the card does not grant confers nothing. And the reconciliation
+    immediately above already states this rule for itself, in its own comment:
+    "values absent from the active catalog are pruned, not rejected".
+    """
+
+    source = inspect.getsource(AutomationAccessService)
+
+    assert "delegated_access_unknown_named_service_resources" not in source, (
+        "A selection naming a withdrawn service must be pruned, not rejected: "
+        "rejecting leaves the card uneditable forever."
+    )
+    assert source.count("pruning named-service operations") >= 1
+
+
+def test_pruned_selections_are_reported_rather_than_silently_removed():
+    """Anything removed from a save is named in the result.
+
+    The grantor is entitled to know their card came back smaller than they sent
+    it. A save that quietly discards part of a card while reporting success is
+    worse than one that fails, because the record of what was granted stops
+    matching what a person believes they granted.
+    """
+
+    source = inspect.getsource(AutomationAccessService)
+    assert "reconciled.pruned_named_service_operations.append" in source
+    assert '"reason": "resource_not_selected"' in source
+
+
+def test_an_ordinary_edit_never_revokes_a_card():
+    """Destroying an authorization is deliberate, never a side effect.
+
+    Saving a card whose remaining selections are all unknown to the catalog used
+    to revoke it. An operator removing one service from a card lost the card,
+    the credential, and the agent's access in a single click, with no
+    confirmation, and recovered only through a full re-consent.
+
+    Refusing leaves the card exactly as it was, which is always recoverable.
+    Revoking is not. Revocation has its own command and that is where it
+    belongs.
+    """
+
+    source = inspect.getsource(AutomationAccessService)
+    assert "revoke rather than keep an empty card" not in source
+    assert "An edit that leaves nothing recognised is REFUSED" in source
+    assert "delegated_access_requires_resource_grants" in source

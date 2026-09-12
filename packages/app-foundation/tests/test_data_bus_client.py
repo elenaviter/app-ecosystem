@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from app_foundation.data_bus import (
+    DelegatedCardCredential,
     DataBusClaim,
     DataBusClientError,
     DataBusIngressRejected,
@@ -66,7 +67,7 @@ async def _client(
 ) -> FederatedDataBusClient:
     client = FederatedDataBusClient(
         platform_url="https://platform.example",
-        claim=_claim(),
+        credential=_claim(),
         socket_factory=lambda: socket,
         outcome_timeout_seconds=outcome_timeout,
     )
@@ -164,7 +165,7 @@ async def test_expired_claim_never_opens_a_socket() -> None:
     socket = _Socket()
     client = FederatedDataBusClient(
         platform_url="https://platform.example",
-        claim=_claim(),
+        credential=_claim(),
         socket_factory=lambda: socket,
         clock=lambda: 2_000_000_001,
     )
@@ -174,6 +175,78 @@ async def test_expired_claim_never_opens_a_socket() -> None:
 
     assert captured.value.code == "data_bus_claim_expired"
     assert socket.connect_args is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_claim_keyword_still_opens_a_federated_session() -> None:
+    socket = _Socket()
+    claim = _claim()
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        claim=claim,
+        socket_factory=lambda: socket,
+    )
+
+    await client.connect()
+
+    assert client.claim is claim
+    assert socket.connect_kwargs["auth"]["federated_token"] == claim.federated_token
+
+
+def test_client_rejects_ambiguous_or_missing_credentials() -> None:
+    claim = _claim()
+    with pytest.raises(ValueError, match="either credential or claim"):
+        FederatedDataBusClient(
+            platform_url="https://platform.example",
+            credential=claim,
+            claim=claim,
+        )
+    with pytest.raises(ValueError, match="credential is required"):
+        FederatedDataBusClient(platform_url="https://platform.example")
+
+
+@pytest.mark.asyncio
+async def test_a_delegated_card_is_presented_directly_and_never_expires_client_side() -> None:
+    """A card is not swapped for a token, and this side does not judge it.
+
+    A minted token carries its own lifetime, so the client can refuse a dead
+    one without a round trip. A card carries none: its current state lives
+    server-side and is resolved on every operation, which is what makes
+    revoking it take effect instead of waiting for a token to lapse.
+
+    So a card client connects no matter what the clock says, and it presents
+    the card under its own key. Not the platform bearer key: a card arriving
+    there is not a card but a malformed platform token, and it would fail
+    somewhere that never names the real cause.
+    """
+
+    socket = _Socket()
+    card = DelegatedCardCredential(
+        tenant="demo-tenant",
+        project="demo-project",
+        bundle_id="problem-board@1-0",
+        resource=(
+            "https://platform.example/api/integrations/bundles/demo-tenant/"
+            "demo-project/problem-board@1-0/public/mcp/problem_board"
+        ),
+        bearer_token="card-bearer-value",
+    )
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=card,
+        socket_factory=lambda: socket,
+        clock=lambda: 2_000_000_001,
+    )
+
+    await client.connect()
+
+    auth = socket.connect_kwargs["auth"]
+    assert auth["delegated_bearer_token"] == "card-bearer-value"
+    assert auth["delegated_resource"] == card.resource
+    assert auth["client_role"] == "service"
+    assert "federated_token" not in auth
+    assert "bearer_token" not in auth
+    assert "authorization" not in auth
 
 
 @pytest.mark.asyncio

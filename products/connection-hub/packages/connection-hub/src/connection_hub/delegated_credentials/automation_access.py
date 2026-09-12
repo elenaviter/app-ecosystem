@@ -2061,15 +2061,24 @@ class AutomationAccessService:
             }
         cfg_by_resource = dict(resource_pairs)
         if selected_named_service_operations is not None and selected_named_service_operations.is_exact:
-            unknown_selection_resources = sorted(
+            # Dropped, not rejected: see the matching note on the update path. A
+            # card pinned to an older catalog version keeps entries for services
+            # withdrawn since, and rejecting on them leaves the card unsavable
+            # forever. Dropping only narrows the card.
+            stale_selection_resources = sorted(
                 set(selected_named_service_operations.operations) - set(selected_resources)
             )
-            if unknown_selection_resources:
-                return {
-                    "ok": False,
-                    "error": "delegated_access_unknown_named_service_resources",
-                    "resources": unknown_selection_resources,
-                }
+            if stale_selection_resources:
+                _LOGGER.info(
+                    "[automation-access] dropping named-service operations for "
+                    "resources this request does not select: %s",
+                    stale_selection_resources,
+                )
+                selected_named_service_operations = NamedServiceSelection.exact({
+                    resource: namespaces
+                    for resource, namespaces in selected_named_service_operations.operations.items()
+                    if resource in set(selected_resources)
+                })
         for resource_value, grants_for_resource in selected_resource_grants.items():
             cfg = cfg_by_resource.get(resource_value)
             if cfg is None:
@@ -2670,14 +2679,56 @@ class AutomationAccessService:
             })
         cfg_by_resource = dict(resource_pairs)
         if selected_named_service_operations is not None and selected_named_service_operations.is_exact:
-            unknown = sorted(
+            # Named-service operations for a resource this save does not select
+            # are dropped, not rejected. A card is pinned to the catalog version
+            # it was written against, so a service withdrawn since then leaves
+            # entries behind; rejecting on them makes the card permanently
+            # unsavable, and a person cannot edit their way out of a change the
+            # catalog made underneath them. Card management has to survive the
+            # catalog moving.
+            #
+            # Dropping is safe in every case: an operation on a resource the
+            # card does not grant confers nothing, so this can only narrow the
+            # card, never widen it. The reconciliation above states the same
+            # rule ("values absent from the active catalog are pruned, not
+            # rejected") and this check used to contradict it.
+            stale = sorted(
                 set(selected_named_service_operations.operations) - set(selected_resources)
             )
-            if unknown:
-                return ResolvedCardAuthority(error={
-                    "ok": False,
-                    "error": "delegated_access_unknown_named_service_resources",
-                    "resources": unknown,
+            if stale:
+                # Recorded, never silently dropped. The reconciliation above
+                # already reports what it pruned, and the update result carries
+                # that document back to the caller; anything removed here has to
+                # appear in the same place or the grantor is told a save
+                # succeeded while part of their card quietly disappeared.
+                keep = set(selected_resources)
+                for resource in stale:
+                    for namespace, operations in (
+                        selected_named_service_operations.operations.get(resource) or {}
+                    ).items():
+                        for operation in operations:
+                            reconciled.pruned_named_service_operations.append(
+                                {
+                                    "resource": resource,
+                                    "namespace": str(namespace),
+                                    "operation": str(operation),
+                                    # Withdrawn from the catalog since this card
+                                    # was written, rather than never valid: the
+                                    # card was pinned to a version that offered
+                                    # it. The two are different facts and a
+                                    # person reading this should see which.
+                                    "reason": "resource_not_selected",
+                                }
+                            )
+                _LOGGER.info(
+                    "[automation-access] pruning named-service operations for "
+                    "resources this save does not select: %s",
+                    stale,
+                )
+                selected_named_service_operations = NamedServiceSelection.exact({
+                    resource: namespaces
+                    for resource, namespaces in selected_named_service_operations.operations.items()
+                    if resource in keep
                 })
         for resource_value, grants_for_resource in selected_resource_grants.items():
             cfg = cfg_by_resource.get(resource_value)
@@ -2881,18 +2932,29 @@ class AutomationAccessService:
             return resolved.error
         reconciled = resolved.reconciled
         if resolved.revoke:
-            # No authority survives: revoke rather than keep an empty card.
-            revoked = await self.revoke_access(user, access_id=access_id)
-            if not revoked.get("ok"):
-                return revoked
+            # An edit that leaves nothing recognised is REFUSED, never revoked.
+            #
+            # This used to revoke the card. On 2026-09-12 an operator removed a
+            # single service from a card whose other selection had been
+            # withdrawn from the catalog by a rename, and lost the card, the
+            # credential, and the agent's access, in one click, with no
+            # confirmation and no warning that removal could do that. Recovery
+            # was a full re-consent.
+            #
+            # Destroying an authorization is a deliberate act with its own
+            # command. It must never be the side effect of an ordinary save,
+            # and least of all when what emptied the card was a catalog change
+            # the person did not make. Refusing leaves the card exactly as it
+            # was, which is always recoverable; revoking is not.
             return {
-                "ok": True,
-                "revoked": True,
-                "access_id": access_id,
+                "ok": False,
+                "error": "delegated_access_requires_resource_grants",
                 "pruned": reconciled.to_public_dict(),
                 "message": (
-                    "Every selection on this card was withdrawn from the delegated-service "
-                    "catalog, so the card was revoked instead of saved."
+                    "This save would leave the card with nothing the service catalog "
+                    "still offers, so it was not applied and the card is unchanged. "
+                    "Select at least one current service, or revoke the card "
+                    "deliberately if that is what you intend."
                 ),
             }
         selected_resource_grants = resolved.resource_grants
