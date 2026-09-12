@@ -9,6 +9,7 @@ import {
   offerReasonText,
   orderResourceSelection,
   pickerOffers,
+  projectClaimsOntoOperations,
   resourceSelectionIndex,
   saveProblemText,
   saveProblems,
@@ -18,6 +19,35 @@ import {
 const MEMORIES = 'https://host/api/mcp/memories*'
 const TASKS = 'https://host/api/mcp/tasks*'
 const MAIL = 'https://host/api/mcp/mail*'
+
+test('permission claims project onto exact tools and honor every required claim', () => {
+  const operations = [
+    { name: 'receive', grants: ['work:relay'] },
+    { name: 'journal', grants: ['work:relay', 'work:journal:view'] },
+    { name: 'health' },
+  ]
+
+  assert.deepEqual(projectClaimsOntoOperations([], operations, ['work:relay']), ['receive'])
+  assert.deepEqual(
+    projectClaimsOntoOperations(['receive'], operations, ['work:relay', 'work:journal:view']),
+    ['receive', 'journal'],
+  )
+  assert.deepEqual(
+    projectClaimsOntoOperations(['receive', 'journal', 'health'], operations, ['work:journal:view']),
+    ['health'],
+  )
+})
+
+test('claim projection preserves explicit claimless and retired-catalog choices', () => {
+  const operations = [
+    { name: 'receive', grants: ['work:relay'] },
+    { name: 'health' },
+  ]
+  assert.deepEqual(
+    projectClaimsOntoOperations(['health', 'retired_operation'], operations, ['work:relay']),
+    ['receive', 'health', 'retired_operation'],
+  )
+})
 
 test('an edit submits the card resources minus removed plus added, once each', () => {
   assert.deepEqual(editedResourceKeys([MEMORIES, TASKS], [MAIL], [TASKS]), [MEMORIES, MAIL])

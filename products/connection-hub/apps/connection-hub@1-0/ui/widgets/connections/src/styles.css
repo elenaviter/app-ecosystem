@@ -2139,6 +2139,12 @@ code {
   background: var(--surface);
   border-top: 1px solid var(--line-soft);
 }
+.form-actions__error {
+  flex: 1 0 100%;
+  margin: 0;
+  padding: 7px 9px;
+  font-size: 12px;
+}
 /* Labeled fields with a help line, tiling by available width. */
 .field-grid {
   display: grid;
@@ -3124,6 +3130,19 @@ code {
 .edit-section[open] > summary::before { content: '▾'; }
 .edit-section__name { font-size: 12.5px; font-weight: 700; color: var(--blue-dark); }
 .edit-section__count { font-size: 11.5px; color: var(--muted); margin-left: auto; }
+.edit-section__quick { display: inline-flex; flex: 0 0 auto; gap: 2px; }
+.edit-section__quick button {
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--teal-dark);
+  padding: 2px 5px;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.edit-section__quick button:hover:not(:disabled) { background: rgba(var(--kind-rgb), 0.08); }
+.edit-section__quick button:disabled { color: var(--muted); cursor: default; }
 .edit-section__body { padding: 4px 6px 6px 14px; }
 .edit-section--open-static { border-top: 1px solid var(--line-soft); margin-top: 10px; padding-top: 6px; }
 .edit-section--open-static .edit-section__head {

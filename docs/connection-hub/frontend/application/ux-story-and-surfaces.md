@@ -78,7 +78,15 @@ read every card.
   withdrawn without expanding it.
 - **Show a working-size tool list.** A resource with at most twelve tools
   opens its Tools section when editing starts. Larger lists stay folded behind
-  their count, and either size remains directly collapsible by the user.
+  their count, and either size remains directly collapsible by the user. All
+  and None act on the exact tool list. Ticking a service permission selects
+  each tool whose complete claim requirement is then satisfied; individual
+  tool choices remain editable.
+- **Refresh before an embedded edit.** A scene may keep Connection Hub mounted
+  while its pane is hidden. Opening a card from that scene reloads the card and
+  service catalog before the editor appears, so descriptor changes and drift
+  review match the standalone page. A refused save stays in the editor and its
+  reason appears beside the pinned actions.
 - **A selection route owns its service hierarchy.** The `remote_mcp_proxy`
   transport route appears as **My MCP connectors**. Selecting it exposes the
   owner's configured MCP servers directly beneath it, and each server row
@@ -169,7 +177,9 @@ working-size tool lists open with their count, compact tool columns with
 documentation behind an information mark, policy in the person's words
 ("Every time · Once", "choose one"), selection routes grouped with their exact
 child services, actions in columns on a wide pane, Save and Cancel pinned to
-the viewport while the form is in view, the resource picker in plain words,
+the viewport while the form is in view, permission-to-tool shortcuts and exact
+All / None controls, fresh embedded card summons with in-place save errors, the
+resource picker in plain words,
 group-by on the rail (kind, service, state), and the styled leave dialog. The
 selected policy segment carries the effective state; the editor does not
 repeat it on a second line.

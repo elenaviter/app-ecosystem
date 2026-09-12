@@ -114,6 +114,45 @@ test('access-card tools are visible and selection doors group their services', (
   assert.equal((panel.match(/form-actions form-actions--sticky/g) || []).length, 2)
 })
 
+test('an embedded access-card summon refreshes authority before opening its editor', () => {
+  const app = source('src/App.tsx')
+  const delegatedBranch = app.slice(
+    app.indexOf("if (tab === 'delegatedAccess')"),
+    app.indexOf("} else if (tab === 'delegatedToKdcube')"),
+  )
+  assert.match(delegatedBranch, /setDelegatedAccessSummonState\('loading'\)/)
+  assert.match(delegatedBranch, /dispatch\(loadDelegatedAccess\(\)\)\.unwrap\(\)/)
+  assert.ok(
+    delegatedBranch.indexOf('dispatch(loadDelegatedAccess()).unwrap()')
+      < delegatedBranch.indexOf('setDelegatedAccessOpenParams({ ...params })'),
+  )
+  assert.match(app, /delegatedAccessSummonState === 'loading'/)
+  assert.match(app, /delegatedAccessSummonState === 'failed'/)
+
+  const slice = source('src/features/delegatedAccess/delegatedAccessSlice.ts')
+  assert.match(slice, /loadRequestId: string/)
+  assert.match(slice, /state\.loadRequestId !== action\.meta\.requestId/)
+
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.match(panel, /if \(!updated \|\| updated\.ok === false\)/)
+  assert.match(panel, /updated\?\.status === 409 && updated\.access/)
+  assert.match(panel, /className="error form-actions__error"/)
+})
+
+test('permission claims are tool shortcuts and tool lists retain exact bulk and individual controls', () => {
+  const rules = source('src/features/delegatedAccess/resourceEditing.ts')
+  assert.match(rules, /export function projectClaimsOntoOperations\(/)
+  assert.match(rules, /required\.every\(\(claim\) => claims\.has\(claim\)\)/)
+
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.equal((panel.match(/projectClaimsOntoOperations\(/g) || []).length, 2)
+  assert.match(panel, /const setEveryResourceOperation = \(/)
+  assert.match(panel, /const setEveryEditResourceOperation = \(/)
+  assert.equal((panel.match(/aria-label="Select tools"/g) || []).length, 2)
+  assert.match(panel, /toggleResourceOperation\(/)
+  assert.match(panel, /toggleEditResourceOperation\(/)
+})
+
 test('agent consent distinguishes resource requests from existing account permissions', () => {
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, /Service operation/)

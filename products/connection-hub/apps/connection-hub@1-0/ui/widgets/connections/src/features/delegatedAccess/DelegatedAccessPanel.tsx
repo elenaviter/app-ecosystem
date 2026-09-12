@@ -23,6 +23,7 @@ import {
   editedResourceKeys,
   materializeSelectionRouteGrants,
   orderResourceSelection,
+  projectClaimsOntoOperations,
   resourceSelectionIndex,
   saveProblemText,
   saveProblems,
@@ -928,6 +929,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     issuedAccess,
     loading: delegatedAccessLoading,
     busy,
+    error: delegatedAccessError,
   } = useAppSelector((s) => s.delegatedAccess);
   const {
     providers,
@@ -1234,16 +1236,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     if (resourceOption) {
       setResourceOperations((current) => {
-        const next = { ...current };
-        const selected = new Set(current[resource] || []);
-        (resourceOption.operations || []).forEach((operation) => {
-          const required = operation.grants || [];
-          const enabled = required.length > 0
-            && required.every((item) => updatedGrants.includes(item));
-          if (!enabled) selected.delete(operation.name);
-        });
-        next[resource] = Array.from(selected);
-        return next;
+        return {
+          ...current,
+          [resource]: projectClaimsOntoOperations(
+            current[resource] || [],
+            resourceOption.operations || [],
+            updatedGrants,
+          ),
+        };
       });
     }
     if (!checked) {
@@ -1305,6 +1305,34 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         return next;
       });
     }
+  };
+
+  const setEveryResourceOperation = (
+    resource: DelegatedAccessResourceOption,
+    checked: boolean,
+  ) => {
+    const operations = resource.operations || [];
+    setResourceOperations((current) => ({
+      ...current,
+      [resource.resource]: checked ? operations.map((operation) => operation.name) : [],
+    }));
+    if (checked) {
+      setResourceGrants((current) => ({
+        ...current,
+        [resource.resource]: Array.from(new Set([
+          ...(current[resource.resource] || []),
+          ...operations.flatMap((operation) => operation.grants || []),
+        ])),
+      }));
+      return;
+    }
+    const operationNames = new Set(operations.map((operation) => operation.name));
+    setCreateInvocationModes((current) => Object.fromEntries(
+      Object.entries(current).filter(([key]) => {
+        const prefix = `${resource.resource}:`;
+        return !key.startsWith(prefix) || !operationNames.has(key.slice(prefix.length));
+      }),
+    ));
   };
 
   const toggleNamedServiceOperation = (
@@ -1835,12 +1863,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     editAcceptedOperations,
   });
   const editSeedRef = useRef<string>('');
+  const [editSeedRevision, setEditSeedRevision] = useState(0);
   const currentSnapshot = editSnapshot();
   useEffect(() => {
     editSeedRef.current = editingAccessId ? currentSnapshot : '';
     // The seed is taken once per card, when the edit opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editingAccessId]);
+  }, [editingAccessId, editSeedRevision]);
   const editDirty = editingAccessId !== null && currentSnapshot !== editSeedRef.current;
   const startEdit = useCallback((item: DelegatedAccessRecord) => {
     const picks: Record<string, boolean> = {};
@@ -1886,6 +1915,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditAddedResources([]);
     setEditRemovedResources([]);
     setEditAcceptedOperations({});
+    setEditSeedRevision((current) => current + 1);
   }, [resources, seedAccountScopeFromRecord]);
   // Human label for one connected account (falls back to the id).
   const accountLabelById = useMemo(() => {
@@ -2164,16 +2194,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       item === claim ? checked : editPicks[`${resource}:${item}`] === true
     ));
     setEditResourceOperations((current) => {
-      const next = { ...current };
-      const selected = new Set(current[resource] || []);
-      (resourceOption.operations || []).forEach((operation) => {
-        const required = operation.grants || [];
-        const enabled = required.length > 0
-          && required.every((item) => updatedGrants.includes(item));
-        if (!enabled) selected.delete(operation.name);
-      });
-      next[resource] = Array.from(selected);
-      return next;
+      return {
+        ...current,
+        [resource]: projectClaimsOntoOperations(
+          current[resource] || [],
+          resourceOption.operations || [],
+          updatedGrants,
+        ),
+      };
     });
     if (checked) return;
     setEditNamedServiceOperations((current) => {
@@ -2230,6 +2258,34 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       next[resource] = Array.from(selected);
       return next;
     });
+  };
+
+  const setEveryEditResourceOperation = (
+    resource: string,
+    resourceOption: DelegatedAccessResourceOption,
+    checked: boolean,
+  ) => {
+    const operations = resourceOption.operations || [];
+    setEditResourceOperations((current) => ({
+      ...current,
+      [resource]: checked ? operations.map((operation) => operation.name) : [],
+    }));
+    if (checked) {
+      setEditPicks((current) => ({
+        ...current,
+        ...Object.fromEntries(operations.flatMap((operation) => (
+          (operation.grants || []).map((grant) => [`${resource}:${grant}`, true])
+        ))),
+      }));
+      return;
+    }
+    const operationNames = new Set(operations.map((operation) => operation.name));
+    setEditInvocationModes((current) => Object.fromEntries(
+      Object.entries(current).filter(([key]) => {
+        const prefix = `${resource}:`;
+        return !key.startsWith(prefix) || !operationNames.has(key.slice(prefix.length));
+      }),
+    ));
   };
 
   const setOperationInvocationPolicy = async (
@@ -2449,26 +2505,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       // every other changed selected operation stays suspended.
       acceptedOperations: editAcceptedOperations,
     })).unwrap().catch(() => undefined);
-    const updateAccepted = Boolean(updated) && updated?.ok !== false;
-    if (updateAccepted) {
-      for (const [resource, split] of Object.entries(splits)) {
-        for (const { operation, mode } of split.focused) {
-          if (!item.client_id) {
-            console.warn('[delegated-access] card without client id cannot take a focused grant', item.access_id, operation);
-            continue;
-          }
-          await dispatch(grantAgentAccess(focusedGrantArgs(
-            {
-              clientId: item.client_id,
-              accessId: item.access_id,
-              resource,
-              operation,
-              changeId: editChangeId(item.access_id, operation, randomNonce()),
-            },
-            mode,
-            routedKept[resource] || [],
-          ))).unwrap().catch(() => undefined);
+    if (!updated || updated.ok === false) {
+      // The slice keeps a 409's current card and exposes every refusal as an
+      // error. Keep the person in this editor too: closing it made a failed
+      // save look successful and moved the error away from the action row.
+      if (updated?.status === 409 && updated.access) startEdit(updated.access);
+      return;
+    }
+    for (const [resource, split] of Object.entries(splits)) {
+      for (const { operation, mode } of split.focused) {
+        if (!item.client_id) {
+          console.warn('[delegated-access] card without client id cannot take a focused grant', item.access_id, operation);
+          continue;
         }
+        await dispatch(grantAgentAccess(focusedGrantArgs(
+          {
+            clientId: item.client_id,
+            accessId: item.access_id,
+            resource,
+            operation,
+            changeId: editChangeId(item.access_id, operation, randomNonce()),
+          },
+          mode,
+          routedKept[resource] || [],
+        ))).unwrap().catch(() => undefined);
       }
     }
     clearEditState();
@@ -2689,6 +2749,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       <InfoMark text={HELP_TOOLS} />
                       <span className="edit-section__count">
                         {(resourceOperations[item.resource] || []).length} of {item.operations.length} selected
+                      </span>
+                      <span className="edit-section__quick" aria-label="Select tools">
+                        <button
+                          type="button"
+                          disabled={scopeBlocked || (resourceOperations[item.resource] || []).length >= item.operations.length}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setEveryResourceOperation(item, true);
+                          }}
+                        >
+                          All
+                        </button>
+                        <button
+                          type="button"
+                          disabled={scopeBlocked || !(resourceOperations[item.resource] || []).length}
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setEveryResourceOperation(item, false);
+                          }}
+                        >
+                          None
+                        </button>
                       </span>
                     </summary>
                     <div className="edit-section__body resource-grants resource-operations">
@@ -3290,6 +3374,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               <span className="edit-section__count">
                 {(editResourceOperations[resource] || []).length} of {resourceOption.operations.length} selected
               </span>
+              <span className="edit-section__quick" aria-label="Select tools">
+                <button
+                  type="button"
+                  disabled={busy || (editResourceOperations[resource] || []).length >= resourceOption.operations.length}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setEveryEditResourceOperation(resource, resourceOption, true);
+                  }}
+                >
+                  All
+                </button>
+                <button
+                  type="button"
+                  disabled={busy || !(editResourceOperations[resource] || []).length}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setEveryEditResourceOperation(resource, resourceOption, false);
+                  }}
+                >
+                  None
+                </button>
+              </span>
             </summary>
             <div className="edit-section__body resource-grants resource-operations">
               {resourceOption.operations.map((operation) => {
@@ -3751,6 +3859,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             { existingScope: seedAccountScopeFromRecord(record) },
           )}
           <div className="form-actions form-actions--sticky">
+            {delegatedAccessError ? (
+              <div className="error form-actions__error" role="alert">
+                {delegatedAccessError}
+              </div>
+            ) : null}
             <button
               className="btn"
               type="button"

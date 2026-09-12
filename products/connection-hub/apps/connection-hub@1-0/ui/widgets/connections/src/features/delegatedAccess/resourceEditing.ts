@@ -41,6 +41,36 @@ export interface ResourceSelectionIndex {
   parentsByChild: Record<string, string[]>;
 }
 
+export interface ClaimBoundOperation {
+  name: string;
+  grants?: string[];
+}
+
+/** Project a permission choice onto the concrete tools it permits. Tools with
+ * every declared claim are selected; tools missing any declared claim are
+ * cleared. A claimless tool and an operation no longer present in the catalog
+ * keep their explicit selection, because permission chips are only a shortcut
+ * for operations whose claim requirements are known. */
+export function projectClaimsOntoOperations(
+  selectedOperations: string[],
+  operations: ClaimBoundOperation[],
+  selectedClaims: string[],
+): string[] {
+  const selected = new Set(selectedOperations);
+  const claims = new Set(selectedClaims);
+  const offered = new Set(operations.map((operation) => operation.name));
+  operations.forEach((operation) => {
+    const required = Array.from(new Set((operation.grants || []).filter(Boolean)));
+    if (!required.length) return;
+    if (required.every((claim) => claims.has(claim))) selected.add(operation.name);
+    else selected.delete(operation.name);
+  });
+  return [
+    ...operations.filter((operation) => selected.has(operation.name)).map((operation) => operation.name),
+    ...selectedOperations.filter((operation) => !offered.has(operation)),
+  ];
+}
+
 /** The catalog's transport-door hierarchy. A selection door remains one card
  * resource; the exact child resources retain their own grants and operations.
  * This index only arranges those existing rows for the editor. */

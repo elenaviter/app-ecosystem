@@ -89,6 +89,9 @@ export default function App() {
   const [delegatedAccessSummonNonce, setDelegatedAccessSummonNonce] = useState(0);
   const [delegatedAccessOpenParams, setDelegatedAccessOpenParams] =
     useState<Record<string, string> | null>(null);
+  const [delegatedAccessSummonState, setDelegatedAccessSummonState] =
+    useState<'ready' | 'loading' | 'failed'>('ready');
+  const delegatedAccessSummonSerial = useRef(0);
   // Same props-carry-the-request pattern for the connect panel — so an embedded
   // host (where URL mutation is unavailable) still delivers the deep-link and the
   // guided consent plan renders on the FIRST summon (no second click).
@@ -146,7 +149,11 @@ export default function App() {
       await Promise.all([
         dispatch(loadConnectionEdges()).unwrap().catch(() => undefined),
         dispatch(loadAuthenticators()).unwrap().catch(() => undefined),
-        dispatch(loadDelegatedAccess()).unwrap().catch(() => undefined),
+        dispatch(loadDelegatedAccess()).unwrap()
+          .then(() => setDelegatedAccessSummonState((current) => (
+            current === 'failed' ? 'ready' : current
+          )))
+          .catch(() => undefined),
         dispatch(loadDelegatedToKdcube()).unwrap().catch(() => undefined),
         dispatch(loadProviderConnections()).unwrap().catch(() => undefined),
         dispatch(loadRemoteMcpConnectors()).unwrap().catch(() => undefined),
@@ -260,8 +267,31 @@ export default function App() {
           // the pane seeds from the open-command params below, never the URL.
           console.warn('[consent-route] hub URL mutation unavailable (props carry the request)', err);
         }
-        setDelegatedAccessOpenParams({ ...params });
-        setDelegatedAccessSummonNonce(Date.now());
+        // This panel stays mounted while a scene host hides it. Refresh the
+        // card and service catalog before remounting the focused editor, so a
+        // descriptor rename cannot leave the embedded picker on its startup
+        // snapshot. While the request is in flight, do not expose that stale
+        // picker as an editable surface.
+        const summonSerial = delegatedAccessSummonSerial.current + 1;
+        delegatedAccessSummonSerial.current = summonSerial;
+        setDelegatedAccessSummonState('loading');
+        changeTab(tab);
+        void dispatch(loadDelegatedAccess()).unwrap()
+          .then(() => {
+            const current = delegatedAccessSummonSerial.current === summonSerial;
+            if (current) {
+              setDelegatedAccessOpenParams({ ...params });
+              setDelegatedAccessSummonNonce(Date.now());
+              setDelegatedAccessSummonState('ready');
+            }
+            ackConnectionsHubOpen(command, current ? 'applied' : 'superseded');
+          })
+          .catch(() => {
+            const current = delegatedAccessSummonSerial.current === summonSerial;
+            if (current) setDelegatedAccessSummonState('failed');
+            ackConnectionsHubOpen(command, current ? 'refresh_failed' : 'superseded');
+          });
+        return;
       } else if (tab === 'delegatedToKdcube') {
         try {
           const url = new URL(window.location.href);
@@ -291,7 +321,7 @@ export default function App() {
     window.addEventListener('message', onSurfaceCommand);
     announceConnectionsHubReady();
     return () => window.removeEventListener('message', onSurfaceCommand);
-  }, [telegramMiniAppMode, claimChallengeId, changeTab]);
+  }, [telegramMiniAppMode, claimChallengeId, changeTab, dispatch]);
 
   if (telegramMiniAppMode) {
     if (!runtimeReady) {
@@ -339,10 +369,18 @@ export default function App() {
       {activeTab === 'authenticators' && authenticatorsAllowed ? <AuthenticatorsPanel /> : null}
       {activeTab === 'accessMap' && authenticatorsAllowed ? <AccessMapPanel /> : null}
       {activeTab === 'delegatedAccess' ? (
-        <DelegatedAccessPanel
-          key={delegatedAccessSummonNonce}
-          openParams={delegatedAccessOpenParams ?? undefined}
-        />
+        delegatedAccessSummonState === 'loading' ? (
+          <div className="notice" role="status">Loading current access cards and service catalog...</div>
+        ) : delegatedAccessSummonState === 'failed' ? (
+          <div className="error" role="alert">
+            Current access cards and service catalog are unavailable. Refresh to try again.
+          </div>
+        ) : (
+          <DelegatedAccessPanel
+            key={delegatedAccessSummonNonce}
+            openParams={delegatedAccessOpenParams ?? undefined}
+          />
+        )
       ) : null}
       {activeTab === 'delegatedToKdcube' ? (
         // Accounts and links side by side on a wide pane, so both are in

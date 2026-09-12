@@ -23,6 +23,7 @@ export interface DelegatedAccessState {
   issuedHeader: string;
   issuedAccess?: DelegatedAccessRecord;
   loading: boolean;
+  loadRequestId: string;
   busy: boolean;
   error: string;
 }
@@ -35,6 +36,7 @@ const initialState: DelegatedAccessState = {
   issuedToken: '',
   issuedHeader: '',
   loading: true,
+  loadRequestId: '',
   busy: false,
   error: '',
 };
@@ -301,7 +303,13 @@ const delegatedAccessSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
-      .addCase(loadDelegatedAccess.fulfilled, (state, action: PayloadAction<DelegatedAccessListResult>) => {
+      .addCase(loadDelegatedAccess.pending, (state, action) => {
+        state.loadRequestId = action.meta.requestId;
+        if (!state.items.length) state.loading = true;
+      })
+      .addCase(loadDelegatedAccess.fulfilled, (state, action) => {
+        if (state.loadRequestId !== action.meta.requestId) return;
+        state.loadRequestId = '';
         state.loading = false;
         state.platformUserId = action.payload.platform_user_id || '';
         state.items = action.payload.items || [];
@@ -309,6 +317,8 @@ const delegatedAccessSlice = createSlice({
         state.resources = action.payload.resources || [];
       })
       .addCase(loadDelegatedAccess.rejected, (state, action) => {
+        if (state.loadRequestId !== action.meta.requestId) return;
+        state.loadRequestId = '';
         state.loading = false;
         state.error = action.payload ?? 'Failed to load delegated access';
       });
