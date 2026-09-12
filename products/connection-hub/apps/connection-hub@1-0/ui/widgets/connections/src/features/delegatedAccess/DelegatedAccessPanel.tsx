@@ -1018,6 +1018,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // count, expiry) with its actions - for scanning many cards at once. The
   // detailed view stays the default.
   const [compactList, setCompactList] = useState(false);
+  // A controlled card opens on what is actually in force. The owner can
+  // switch back to the original authority they granted and edit only that.
+  const [authorityViewByAccessId, setAuthorityViewByAccessId] = useState<
+    Record<string, 'original' | 'effective'>
+  >({});
   // Editing happens on a workbench (rail of cards + one editor column) that
   // replaces the list; entering edit brings it into view.
   const workbenchRef = useRef<HTMLDivElement | null>(null);
@@ -3692,6 +3697,131 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     ].filter(Boolean);
     return parts.join(' · ');
   };
+  const authorityReading = (item: DelegatedAccessRecord): 'original' | 'effective' => (
+    authorityViewByAccessId[item.access_id]
+    || (item.project_control?.state === 'active' ? 'effective' : 'original')
+  );
+  const displayedAuthority = (item: DelegatedAccessRecord): DelegatedAccessRecord => {
+    const control = item.project_control;
+    if (
+      authorityReading(item) !== 'effective'
+      || control?.state !== 'active'
+      || !control.authority
+    ) return item;
+    const effective = control.authority;
+    const selectedOuter = effective.resource_operations || {};
+    const selectedNamed = new Set(
+      Object.values(effective.effective_named_service_operations || {})
+        .flatMap((namespaces) => Object.values(namespaces || {}).flat()),
+    );
+    return {
+      ...item,
+      ...effective,
+      operations: effective.operations || [],
+      resource_operations: selectedOuter,
+      resource_grants: effective.resource_grants || {},
+      named_service_operations: effective.named_service_operations || {},
+      effective_named_service_operations: effective.effective_named_service_operations || {},
+      account_scope: effective.account_scope || {},
+      invocation_policies: (item.invocation_policies || []).filter((policy) => {
+        if (policy.authority.surface === 'outer') {
+          return (selectedOuter[policy.authority.resource] || [])
+            .includes(policy.authority.operation);
+        }
+        if (policy.authority.surface === 'named_service') {
+          return selectedNamed.has(policy.authority.operation);
+        }
+        return true;
+      }),
+    };
+  };
+  const renderProjectControl = (
+    item: DelegatedAccessRecord,
+    { editing = false }: { editing?: boolean } = {},
+  ) => {
+    const control = item.project_control;
+    if (!control || control.state === 'not_controlled') return null;
+    const binding = control.binding;
+    const label = binding?.issuer_label || binding?.issuer_ref || 'the project';
+    const reading = editing ? 'original' : authorityReading(item);
+    const effectiveReady = control.state === 'active' && Boolean(control.authority);
+    return (
+      <div
+        className={`project-control${effectiveReady ? '' : ' project-control--closed'}`}
+        data-state={control.state}
+      >
+        <div className="project-control__head">
+          <span>
+            <strong>{effectiveReady ? 'Project control in force' : 'Project control unavailable'}</strong>
+            <small>{effectiveReady
+              ? ` Authority is narrowed by ${label}.`
+              : ' Calls covered by this control remain closed.'}</small>
+          </span>
+          {binding?.manage_url ? (
+            <a href={binding.manage_url} target="_blank" rel="noreferrer">
+              Open project control
+            </a>
+          ) : null}
+        </div>
+        {editing ? (
+          <small>You are editing the original Card. The project control remains in force.</small>
+        ) : (
+          <div className="authority-reading" role="group" aria-label="Card authority view">
+            <button
+              type="button"
+              aria-pressed={reading === 'original'}
+              className={reading === 'original' ? 'authority-reading__active' : ''}
+              onClick={() => setAuthorityViewByAccessId((current) => ({
+                ...current,
+                [item.access_id]: 'original',
+              }))}
+            >
+              Original
+            </button>
+            <button
+              type="button"
+              aria-pressed={reading === 'effective'}
+              className={reading === 'effective' ? 'authority-reading__active' : ''}
+              disabled={!effectiveReady}
+              onClick={() => setAuthorityViewByAccessId((current) => ({
+                ...current,
+                [item.access_id]: 'effective',
+              }))}
+            >
+              Effective
+            </button>
+            <small>{reading === 'effective'
+              ? 'What this Card grants while the project control applies.'
+              : 'What the owner granted on this Card.'}</small>
+          </div>
+        )}
+        {!effectiveReady && control.reason ? <small>Reason: {readableIdentifier(control.reason)}</small> : null}
+        {effectiveReady && control.resolution ? (
+          <details className="project-control__evidence">
+            <summary>Authority evidence</summary>
+            <dl>
+              <dt>Participant Card</dt>
+              <dd>
+                revision {control.resolution.participant_card_revision || item.card_revision || 0}
+                {' · catalog '}
+                <code>{control.resolution.participant_catalog_version || item.catalog_version || 'not recorded'}</code>
+              </dd>
+              <dt>Project ceiling basis</dt>
+              <dd>
+                Card revision {control.resolution.control_basis_card_revision || 0}
+                {' · catalog '}
+                <code>{control.resolution.control_basis_catalog_version || 'not recorded'}</code>
+              </dd>
+              <dt>Current deployment</dt>
+              <dd>
+                catalog <code>{item.catalog_drift?.current_version || 'unavailable'}</code>
+              </dd>
+            </dl>
+          </details>
+        ) : null}
+      </div>
+    );
+  };
   const renderCompactRow = (
     item: DelegatedAccessRecord,
     opts: { active?: boolean; inGroup?: boolean; onSelect?: () => void; actions?: React.ReactNode } = {},
@@ -3820,6 +3950,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               All cards
             </button>
           </div>
+          {renderProjectControl(record, { editing: true })}
           {accessCardFocus?.accessId === record.access_id
             && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
             <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
@@ -3878,6 +4009,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             <button className="btn btn-ghost" type="button" disabled={busy} onClick={clearEditState}>
               Cancel
             </button>
+            {renderRevokeControl(record)}
           </div>
         </section>
       </div>
@@ -3887,6 +4019,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // One hosted agent's card in the detailed list.
   const renderDetailedAgentCard = (item: DelegatedAccessRecord) => {
                         const editing = editingAccessId === item.access_id;
+                        const authority = displayedAuthority(item);
                         return (
                           <li className="account" key={item.access_id}>
                             <div>
@@ -3895,6 +4028,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                 {cardBadge(item)}
                               </div>
                               {item.client_id ? <ClientIdRef value={item.client_id} kind="client" /> : null}
+                              {renderProjectControl(item, { editing })}
                               {/* Edit mode keeps the per-claim checkboxes; the
                                   read-only view uses the same labelled rows as
                                   every other credential card. */}
@@ -3902,7 +4036,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                 <div className="card-fields">
                                   {/* Resource and Access stay paired, so the claims
                                       belonging to each resource remain explicit. */}
-                                  {Object.entries(item.resource_grants || {}).map(([resource, grants]) => (
+                                  {Object.entries(authority.resource_grants || {}).map(([resource, grants]) => (
                                     <Fragment key={resource}>
                                       <Field label="Resource">
                                         <span className="door-line">
@@ -3916,28 +4050,28 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                     </Fragment>
                                   ))}
                                   <Field label="Operations">
-                                    {outerOperationRows(item).length ? (
-                                      <CountFold entries={outerOperationRows(item)} noun="operation" />
+                                    {outerOperationRows(authority).length ? (
+                                      <CountFold entries={outerOperationRows(authority)} noun="operation" />
                                     ) : (
                                       <small>None selected on these resources.</small>
                                     )}
                                   </Field>
-                                  {invocationPolicyRows(item).length ? (
+                                  {invocationPolicyRows(authority).length ? (
                                     <Field label="Invocation">
-                                      <FoldedChipRow entries={invocationPolicyRows(item)} />
+                                      <FoldedChipRow entries={invocationPolicyRows(authority)} />
                                     </Field>
                                   ) : null}
-                                  {namedServiceRows(item).length ? (
+                                  {namedServiceRows(authority).length ? (
                                     <Field label="Services">
-                                      <CountFold entries={namedServiceRows(item)} noun="service" />
-                                      {isWildcardNamedServices(item.named_service_operations) ? (
+                                      <CountFold entries={namedServiceRows(authority)} noun="service" />
+                                      {isWildcardNamedServices(authority.named_service_operations) ? (
                                         <small>
                                           Every operation these services offered when this card was
                                           last saved. Operations added since are not included.
                                         </small>
                                       ) : null}
                                     </Field>
-                                  ) : cardOffersNamedServices(item, resources) ? (
+                                  ) : cardOffersNamedServices(authority, resources) ? (
                                     // The door offers named services and none were
                                     // selected: an empty selection reaches nothing,
                                     // so this may not read as "not narrowed".
@@ -3948,9 +4082,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                       </small>
                                     </Field>
                                   ) : null}
-                                  {Object.keys(item.account_scope || {}).length ? (
+                                  {Object.keys(authority.account_scope || {}).length ? (
                                     <Field label="Accounts">
-                                      {Object.entries(item.account_scope || {}).map(([provider, accountsMap]) => (
+                                      {Object.entries(authority.account_scope || {}).map(([provider, accountsMap]) => (
                                         <span className="acct-block" key={provider}>
                                           <span className="acct-provider">{providers[provider]?.label || provider}</span>
                                           {Object.entries(accountsMap || {}).map(([accountId, claims]) => (
@@ -4000,6 +4134,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                   <button className="btn" type="button" disabled={busy} onClick={clearEditState}>
                                     Cancel
                                   </button>
+                                  {renderRevokeControl(item)}
                                 </>
                               ) : (
                                 <>
@@ -4026,6 +4161,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 const editable = (item.source === 'oauth' && Boolean(item.client_id))
                   || item.source === 'manual';
                 const editing = editable && editingAccessId === item.access_id;
+                const authority = displayedAuthority(item);
                 // Only a single-resource OAuth app has a governing client door.
                 const clientDoor = clientDoorFor(item);
                 const door = clientDoor ? (doorAlias(clientDoor) || '') : '';
@@ -4044,6 +4180,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         ? <ClientIdRef value={item.access_id} kind="access" />
                         : (item.client_id && item.client_id !== item.label
                             ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
+                      {renderProjectControl(item, { editing })}
                       {accessCardFocus?.accessId === item.access_id
                         && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
                         <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
@@ -4081,10 +4218,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           card shows structure at a glance and folds the long lists. */}
                       {!editing ? (
                         <div className="card-fields">
-                          {Object.keys(item.resource_grants || {}).length ? (
+                          {Object.keys(authority.resource_grants || {}).length ? (
                             <>
-                              <Field label={credentialReach(item) === 'multi_resource' ? 'Resources' : 'Service'}>
-                                {orderedDoors(item, clientDoor).map((resource, index) => (
+                              <Field label={credentialReach(authority) === 'multi_resource' ? 'Resources' : 'Service'}>
+                                {orderedDoors(authority, clientDoor).map((resource, index) => (
                                   <span
                                     className={`door-line${clientDoor ? (resource === clientDoor ? ' door-line--entry' : ' door-line--through') : ''}`}
                                     key={resource}
@@ -4102,7 +4239,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               </Field>
                               <Field label="Access">
                                 <FoldedChipRow
-                                  entries={Array.from(new Set(Object.values(item.resource_grants || {}).flat()))}
+                                  entries={Array.from(new Set(Object.values(authority.resource_grants || {}).flat()))}
                                   expanded="groups"
                                   title={(claim) => grantOptionByName.get(claim)?.label || undefined}
                                 />
@@ -4110,23 +4247,23 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             </>
                           ) : null}
                           <Field label="Operations">
-                            {outerOperationRows(item).length ? (
-                              <CountFold entries={outerOperationRows(item)} noun="operation" />
+                            {outerOperationRows(authority).length ? (
+                              <CountFold entries={outerOperationRows(authority)} noun="operation" />
                             ) : (
                               <small>None selected on these resources.</small>
                             )}
                           </Field>
-                          {invocationPolicyRows(item).length ? (
+                          {invocationPolicyRows(authority).length ? (
                             <Field label="Invocation">
-                              <FoldedChipRow entries={invocationPolicyRows(item)} />
+                              <FoldedChipRow entries={invocationPolicyRows(authority)} />
                             </Field>
                           ) : null}
                           {(() => {
-                            const services = namedServiceRows(item);
+                            const services = namedServiceRows(authority);
                             if (services.length) {
                               return <Field label="Services"><CountFold entries={services} noun="service" /></Field>;
                             }
-                            if (!cardOffersNamedServices(item, resources)) return null;
+                            if (!cardOffersNamedServices(authority, resources)) return null;
                             return (
                               <Field label="Services">
                                 <small>
@@ -4136,9 +4273,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               </Field>
                             );
                           })()}
-                          {Object.keys(item.account_scope || {}).length ? (
+                          {Object.keys(authority.account_scope || {}).length ? (
                             <Field label="Accounts">
-                              {Object.entries(item.account_scope || {}).map(([provider, accountsMap]) => (
+                              {Object.entries(authority.account_scope || {}).map(([provider, accountsMap]) => (
                                 <span className="acct-block" key={provider}>
                                   <span className="acct-provider">{providers[provider]?.label || provider}</span>
                                   {Object.entries(accountsMap || {}).map(([accountId, claims]) => (
@@ -4207,6 +4344,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           <button className="btn" type="button" disabled={busy} onClick={clearEditState}>
                             Cancel
                           </button>
+                          {renderRevokeControl(item)}
                         </>
                       ) : (
                         <>

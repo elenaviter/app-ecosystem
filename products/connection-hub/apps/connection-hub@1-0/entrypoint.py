@@ -215,6 +215,9 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "connections_start_oauth",
     "dcr_allowlist_set",
     "delegated_access_create",
+    "delegated_access_project_control_basis",
+    "delegated_access_project_control_attach",
+    "delegated_access_project_control_detach",
     "delegated_invocation_policy_set",
     "delegated_access_renew",
     "delegated_access_revoke",
@@ -2418,6 +2421,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "delegated_identity_scope_resolve": {"visibility": {"user_types": []}},
                             "delegated_access_list": {"visibility": {"user_types": []}},
                             "delegated_access_create": {"visibility": {"user_types": []}},
+                            "delegated_access_project_control_basis": {"visibility": {"user_types": []}},
+                            "delegated_access_project_control_attach": {"visibility": {"user_types": []}},
+                            "delegated_access_project_control_detach": {"visibility": {"user_types": []}},
                             "delegated_invocation_policy_set": {"visibility": {"user_types": []}},
                             "delegated_access_revoke": {"visibility": {"user_types": []}},
                             "delegated_to_kdcube_catalog": {"visibility": {"user_types": []}},
@@ -3641,6 +3647,91 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         except Exception as exc:
             return _invocation_policy_failure(exc)
         return response
+
+    @api(
+        method="POST",
+        alias="delegated_access_project_control_basis",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_access_project_control_basis"),
+    )
+    async def delegated_access_project_control_basis(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Return the original Card authority used to seed a project ceiling."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await _automation_access_service(self, request).project_control_basis(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+        )
+
+    @api(
+        method="POST",
+        alias="delegated_access_project_control_attach",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_access_project_control_attach"),
+    )
+    async def delegated_access_project_control_attach(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Bind one project-owned, subtractive control Card."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await _automation_access_service(self, request).attach_project_control(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            control_id=str(payload.get("control_id") or "").strip(),
+            expected_card_revision=_expected_card_revision(payload),
+        )
+
+    @api(
+        method="POST",
+        alias="delegated_access_project_control_detach",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_access_project_control_detach"),
+    )
+    async def delegated_access_project_control_detach(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Remove a project control binding and restore the original Card."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await _automation_access_service(self, request).detach_project_control(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            control_id=str(payload.get("control_id") or "").strip(),
+            expected_card_revision=_expected_card_revision(payload),
+        )
 
     @api(
         method="POST",

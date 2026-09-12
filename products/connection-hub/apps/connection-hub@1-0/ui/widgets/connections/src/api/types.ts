@@ -155,6 +155,40 @@ export interface DelegatedInvocationPolicy {
  *  empty map is an explicit "nothing". Agent grants carry the wildcard. */
 export type DelegatedAccessStoredNamedServices = '*' | DelegatedAccessNamedServiceOperations;
 
+export interface DelegatedProjectControlBinding {
+  control_id: string;
+  issuer_ref: string;
+  issuer_kind?: 'project' | string;
+  issuer_label?: string;
+  manage_url?: string;
+  control_revision?: number;
+}
+
+export interface DelegatedProjectControlAuthority {
+  operations?: string[];
+  resource_operations?: DelegatedAccessResourceOperations;
+  resource_grants?: Record<string, string[]>;
+  named_service_operations?: DelegatedAccessStoredNamedServices;
+  effective_named_service_operations?: DelegatedAccessNamedServiceOperations;
+  account_scope?: Record<string, Record<string, string[]>>;
+}
+
+export interface DelegatedProjectControlView {
+  state: 'not_controlled' | 'active' | 'updating' | 'retired' | 'unavailable' | string;
+  fail_closed?: boolean;
+  reason?: string;
+  binding?: DelegatedProjectControlBinding;
+  authority?: DelegatedProjectControlAuthority;
+  resolution?: {
+    participant_card_revision?: number;
+    participant_catalog_version?: string;
+    control_revision?: number;
+    control_basis_access_id?: string;
+    control_basis_card_revision?: number;
+    control_basis_catalog_version?: string;
+  };
+}
+
 export interface DelegatedAccessRecord {
   access_id: string;
   label?: string;
@@ -221,6 +255,9 @@ export interface DelegatedAccessRecord {
   /** False on an agent card still living under the earlier resource-dependent
    *  id; it folds into the profile's stable card on the next grant. */
   stable_identity?: boolean;
+  /** The project-owned ceiling currently intersected with this Card. The
+   *  Card fields above remain the owner's original, editable authority. */
+  project_control?: DelegatedProjectControlView;
   /** Owner-visible delegable resources that may join this card, and why the
    *  others may not. */
   resource_offers?: DelegatedResourceOffer[];
