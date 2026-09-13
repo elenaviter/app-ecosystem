@@ -447,6 +447,97 @@ h2 {
   line-height: 1.5;
 }
 
+.project-control {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--blue);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+
+.project-control--closed {
+  border-left-color: var(--danger-text);
+  background: rgba(var(--danger-rgb), 0.06);
+}
+
+.project-control__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.project-control__head small,
+.project-control > small,
+.authority-reading small {
+  color: var(--muted);
+}
+
+.authority-reading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.authority-reading button {
+  min-width: 74px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.authority-reading button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.authority-reading button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus);
+}
+
+.authority-reading .authority-reading__active {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #fff;
+}
+
+.project-control__evidence {
+  margin-top: 7px;
+  font-size: 12px;
+}
+
+.project-control__evidence summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.project-control__evidence dl {
+  display: grid;
+  grid-template-columns: minmax(110px, max-content) minmax(0, 1fr);
+  gap: 3px 10px;
+  margin: 7px 0 0;
+}
+
+.project-control__evidence dt {
+  color: var(--muted);
+}
+
+.project-control__evidence dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .client-metadata {
   margin-top: 8px;
   border-top: 1px solid var(--line-soft);

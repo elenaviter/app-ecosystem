@@ -1,11 +1,11 @@
 ---
 id: connection-hub/package/delegated-cards
 title: "Delegated Access Cards: Storage, Rendering, And Enforcement"
-summary: "Canonical lifecycle of Connection Hub Delegated by KDCube cards: what each card stores, which live catalogs render its editor, how changes reach runtime enforcement, and how descriptor drift must be reconciled."
+summary: "Canonical lifecycle of Connection Hub Delegated by KDCube cards: stored authority, optional project control, live rendering and enforcement, and descriptor-drift reconciliation."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
-keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "named_service_operations", "account_scope", "registry_access_id", "card authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-09-11
+keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
+updated_at: 2026-09-12
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -30,6 +30,8 @@ the card therefore changes the next call made with an already-issued bearer.
 The deployment descriptor, published as the delegated catalog, is the ceiling
 around that user decision: every governed call intersects the card with the
 active catalog, so a withdrawn capability is denied without editing the card.
+An optional project-owned control card may narrow the same authority while the
+caller attends that project. It has no credential and cannot add authority.
 
 The card is also not a copy of the entire current service catalog. It stores
 the user's selected authority. Connection Hub separately reads the live
@@ -51,12 +53,13 @@ stored card selection                 current deployment catalogs
   resource_operations                   outer MCP/REST operations
   named_service_operations              namespaces and operations
   account_scope                         connected accounts and claims
+  control_card                          optional project-owned ceiling reference
              \                           /
               +---- Connection Hub -----+
                          |
                          +-- read-only card: stored decision, live labels
                          +-- create/edit form: live choices + stored selection
-                         +-- runtime guard: current card authority
+                         +-- runtime guard: card AND project control AND catalog
 ```
 
 ## Card Families
@@ -251,6 +254,8 @@ durable read.
 | `provenance` | Non-secret lineage written by the resident-profile migration: the legacy records folded into this card, when, and any operation dropped because its one-use permit was spent. | yes when present |
 | `caller_profile`, `stable_identity` | List-only: the resident profile behind an agent card and whether the card already lives under the profile's stable id. | yes for agent cards |
 | `resource_offers` | List-only: owner-visible delegable resources that may join this card, each with `compatible` and a `reason` (`already_on_card`, `identity_scope_incompatible`, `admin_only`). | yes |
+| `control_card` | Optional reference to one project-owned, credential-free authority ceiling. The original Card remains stored; live admission resolves and intersects the reference. | yes when present |
+| `project_control` | List/describe-only state and effective authority derived from the live control projection. It carries the project management link, the participant and control-basis Card revisions/catalog versions used for the intersection, and a fail-closed reason when the ceiling cannot be resolved. | yes |
 | `session_id`, `access_token`, `refresh_token` | Internal credential/revocation handles, according to source. | no |
 
 Every authority and lifecycle field above is copied into the immutable durable
@@ -272,16 +277,18 @@ between the four states:
 | exact map | That resource -> namespace -> operation selection. |
 | field absent | A record written before this encoding. Its prior set is derived from the materialized boundary. |
 
-Card authority schema `connection_hub.delegated_card_authority.v3` stores
+Card authority schema `connection_hub.delegated_card_authority.v5` adds the
+optional `control_card` reference. V4 adds bounded client metadata; v3 stores
 outer operations as `resource_operations` and adds `resource_acceptance` and
-`provenance`. The resource qualification matters when two protected resources
+`provenance`. Older revisions remain readable and the next successful write
+uses v5. The resource qualification matters when two protected resources
 expose the same operation name: selecting the operation on one resource grants
 nothing on the other, and an invocation policy is keyed to the resource as
 well. A v1 card with only the flat `operations` field is read with its prior
 semantics by projecting that set onto each resource already selected by the
 card; a v2 card reads without acceptance, and every resource of it reports
-`unknown` per-resource state until the next save stamps it. The next
-successful card write persists v3. A pre-resource OAuth record is projected to
+`unknown` per-resource state until the next save stamps it. A pre-resource
+OAuth record is projected to
 the wildcard resource `"*"`, preserving its former all-matching-resource
 interpretation without making the flat union authoritative for new cards.
 
@@ -821,6 +828,43 @@ A conflict is reported to the caller with the candidate records and a recovery
 action: review those cards in Connection Hub, revoke or edit the ones that
 should not carry over, then grant again.
 
+## Project Control And Effective Authority
+
+A delegated Card may reference at most one project-owned control card. The
+project owns that ceiling and its editor; Connection Hub owns the delegated
+Card and the live intersection:
+
+```text
+original Card       what the user granted to this caller
+project control     what this project permits its participants to use
+active catalog      what the deployment still offers
+
+effective authority = original Card AND project control AND active catalog
+```
+
+The control carries no credential and cannot be presented to a service. It can
+only remove resource grants, resource operations, named-service operations,
+connected accounts, or account claims. Attaching one stores only its bounded
+identity and management link on the delegated Card. Editing, extending,
+renewing, or rotating that Card preserves the binding.
+
+Connection Hub shows **Original** and **Effective** as two readings of the same
+Card. Original remains the authority its owner edits. Effective is what a live
+call can use while the control applies, and links to the project where the
+ceiling is managed. Revocation remains available beside Save and Cancel in the
+editor because removing the credential and editing its original authority are
+separate decisions.
+
+Every live Card resolution reads the current control projection before an
+operation is admitted. A missing, malformed, updating, retired, or mismatched
+control fails closed; it is never interpreted as no ceiling. Leaving the
+project detaches the reference and restores the original Card authority. A
+Card already revoked stays revoked and is never recreated by detachment.
+
+The project lifecycle, durable ownership, recovery rules, and editor contract
+belong to the application that issues the control card. Connection Hub exposes
+only owner-scoped basis, attach, and detach operations for that application.
+
 ## Runtime Enforcement Lifecycle
 
 The cross-surface flow from a card and active catalog through managed REST/MCP,
@@ -841,6 +885,8 @@ request bearer
   -> read registry_access_id
   -> resolve card from delegated-access store
   -> verify expected client, grantor, delegate, expiry, and record shape
+  -> when control_card is present, resolve its current live projection
+  -> intersect original card authority with the project control
   -> copy current card facts into the request-local grant
        resource_grants
        flattened grants/scopes
@@ -1278,6 +1324,8 @@ DelegatedCardView
     accepted_revision, current_revision, accepted_digest, current_digest
     named_service_operations    namespace -> operations
   account_scope
+  control_card                   optional project-owned ceiling reference
+  project_control                live state, effective authority, management link
   provenance
 ```
 
@@ -1336,6 +1384,7 @@ the portable package. Every field is non-secret.
 | Durable revisions and current pointer | `...delegated_credentials.cards.store.DelegatedCardStore` over Connection Hub bundle storage |
 | Persistence port, TTL live projection and read-through | `...delegated_credentials.cards.persistence`, `.cache`, `.handles`, `.resolver` |
 | Stored selection states and card model | `...delegated_credentials.cards.model` |
+| Project-control model, live projection, and Card intersection | `...delegated_credentials.controls.model`, `.cache`, and `.effective` |
 | Stable resident caller identity | `...delegated_credentials.cards.identity` |
 | Per-resource accepted descriptor state | `...delegated_credentials.catalog.descriptors` |
 | Portable card read model and compatible-resource offers | `...delegated_credentials.cards.read_model` |

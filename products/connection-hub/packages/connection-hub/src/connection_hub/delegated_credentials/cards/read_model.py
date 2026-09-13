@@ -37,7 +37,10 @@ from connection_hub.delegated_credentials.cards.identity import (
     ResidentCallerProfile,
     is_resident_client_id,
 )
-from connection_hub.delegated_credentials.cards.model import CardAuthority
+from connection_hub.delegated_credentials.cards.model import (
+    CardAuthority,
+    ControlCardBinding,
+)
 from connection_hub.delegated_credentials.oauth.clients import (
     normalize_public_client_metadata,
 )
@@ -259,6 +262,7 @@ class DelegatedCardView:
     account_scope: Mapping[str, Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
     provenance: Mapping[str, Any] = field(default_factory=dict)
     client_metadata: Mapping[str, Any] = field(default_factory=dict)
+    control_card: ControlCardBinding | None = None
 
     @property
     def is_resident(self) -> bool:
@@ -295,6 +299,9 @@ class DelegatedCardView:
             },
             "provenance": dict(self.provenance),
             "client_metadata": dict(self.client_metadata),
+            "control_card": (
+                self.control_card.to_dict() if self.control_card is not None else None
+            ),
         }
 
     @classmethod
@@ -395,6 +402,11 @@ class DelegatedCardView:
             ),
             client_metadata=normalize_public_client_metadata(
                 _mapping(data.get("client_metadata", {}), field_name="client metadata")
+            ),
+            control_card=(
+                ControlCardBinding.from_mapping(data.get("control_card"))
+                if data.get("control_card") is not None
+                else None
             ),
         )
 
@@ -542,6 +554,7 @@ def build_card_view(
         account_scope=authority.account_scope,
         provenance=authority.provenance,
         client_metadata=authority.client_metadata,
+        control_card=authority.control_card,
     )
 
 

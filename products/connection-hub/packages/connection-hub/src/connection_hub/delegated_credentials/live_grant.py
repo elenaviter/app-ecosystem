@@ -21,6 +21,14 @@ from connection_hub.delegated_credentials.cards.resolver import (
     CardUnavailable,
     DelegatedCardResolver,
 )
+from connection_hub.delegated_credentials.controls.cache import (
+    ControlCardCacheUnusable,
+    ControlCardRuntimeCache,
+)
+from connection_hub.delegated_credentials.controls.effective import (
+    ControlCardMismatch,
+    effective_card_authority,
+)
 from connection_hub.delegated_credentials.credential_view import (
     resource_matches,
 )
@@ -116,6 +124,29 @@ async def resolve_live_grant_card(
         clean_expected = str(expected_value or "").strip()
         if clean_expected and clean_expected != actual_value:
             raise LiveGrantCardError(reason)
+
+    if record.control_card is not None:
+        control_cache = ControlCardRuntimeCache(
+            redis,
+            tenant=tenant,
+            project=project,
+        )
+        try:
+            control_entry = await control_cache.read(record.control_card.control_id)
+        except ControlCardCacheUnusable as exc:
+            raise LiveGrantCardError(exc.reason) from exc
+        except Exception as exc:
+            raise LiveGrantCardError("control_card_lookup_unavailable") from exc
+        if control_entry is None:
+            raise LiveGrantCardError("control_card_projection_missing")
+        if control_entry.is_updating:
+            raise LiveGrantCardError("control_card_updating")
+        if control_entry.is_retired or control_entry.authority is None:
+            raise LiveGrantCardError("control_card_not_active")
+        try:
+            record = effective_card_authority(record, control_entry.authority)
+        except ControlCardMismatch as exc:
+            raise LiveGrantCardError(exc.reason) from exc
     return record
 
 

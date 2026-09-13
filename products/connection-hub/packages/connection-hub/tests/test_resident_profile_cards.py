@@ -11,6 +11,7 @@ import asyncio
 import itertools
 import time
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -30,6 +31,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_REVOKED,
     CardAuthority,
     CardCredentialHandles,
+    ControlCardBinding,
     NamedServiceSelection,
     authority_is_usable,
 )
@@ -366,6 +368,42 @@ async def test_one_stable_card_survives_adding_and_removing_resources(tmp_path):
     )
     assert third["ok"] and third["access"]["access_id"] == access_id
     assert set(third["access"]["resource_grants"]) == {MEMORIES, TASKS}
+
+
+@pytest.mark.asyncio
+async def test_incremental_agent_grant_preserves_attached_project_control(tmp_path):
+    h = _Harness(tmp_path)
+    created = await h.service.create_access(
+        USER,
+        label="lg-react",
+        resource_grants={MEMORIES: ["memories:read"]},
+        resource_operations={MEMORIES: ["search"]},
+        client_id=CLIENT,
+    )
+    access_id = created["access"]["access_id"]
+    authority, handles = h.persistence.cards[access_id]
+    binding = ControlCardBinding(
+        control_id="project-control-one",
+        issuer_ref="work:project:one",
+        issuer_label="Project One",
+        manage_url="/sites/problem-board/?project_ref=work%3Aproject%3Aone",
+        control_revision=4,
+    )
+    h.persistence.cards[access_id] = (
+        replace(authority, control_card=binding),
+        handles,
+    )
+
+    extended = await h.service.create_access(
+        USER,
+        label="",
+        resource_grants={TASKS: ["tasks:use"]},
+        resource_operations={TASKS: ["search"]},
+        client_id=CLIENT,
+    )
+
+    assert extended["ok"], extended
+    assert (await h.card(access_id)).control_card == binding
 
 
 @pytest.mark.asyncio

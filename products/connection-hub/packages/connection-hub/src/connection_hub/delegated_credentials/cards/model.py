@@ -44,11 +44,16 @@ CARD_AUTHORITY_SCHEMA_V2 = "connection_hub.delegated_card_authority.v2"
 CARD_AUTHORITY_SCHEMA_V3 = "connection_hub.delegated_card_authority.v3"
 # v4 adds bounded, non-secret metadata asserted by an OAuth client. It is
 # operator-facing identification only and never participates in admission.
-CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v4"
+CARD_AUTHORITY_SCHEMA_V4 = "connection_hub.delegated_card_authority.v4"
+# v5 adds one optional project-owned control-card binding. The binding is a
+# reference, not authority: live admission resolves and intersects the current
+# control card before permitting an operation.
+CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v5"
 CARD_AUTHORITY_SCHEMAS = (
     CARD_AUTHORITY_SCHEMA_V1,
     CARD_AUTHORITY_SCHEMA_V2,
     CARD_AUTHORITY_SCHEMA_V3,
+    CARD_AUTHORITY_SCHEMA_V4,
     CARD_AUTHORITY_SCHEMA,
 )
 CARD_POINTER_SCHEMA = "connection_hub.delegated_card_current.v1"
@@ -213,6 +218,65 @@ class NamedServiceSelection:
 
 
 @dataclass(frozen=True)
+class ControlCardBinding:
+    """One subtractive authority ceiling attached to a delegated Card.
+
+    The project owns the referenced control card. These fields are bounded,
+    non-secret coordinates for resolving it and sending a person to its editor.
+    A binding grants nothing by itself.
+    """
+
+    control_id: str
+    issuer_ref: str
+    issuer_kind: str = "project"
+    issuer_label: str = ""
+    manage_url: str = ""
+    control_revision: int = 0
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "ControlCardBinding":
+        if not isinstance(value, Mapping):
+            raise CardRecordError("control_card_binding_invalid")
+        control_id = clean_text(value.get("control_id"))
+        issuer_ref = clean_text(value.get("issuer_ref"))
+        issuer_kind = clean_text(value.get("issuer_kind")) or "project"
+        if not control_id:
+            raise CardRecordError("control_card_id_missing")
+        if not issuer_ref:
+            raise CardRecordError("control_card_issuer_ref_missing")
+        if issuer_kind != "project":
+            raise CardRecordError("control_card_issuer_kind_invalid")
+        try:
+            revision = int(value.get("control_revision") or 0)
+        except (TypeError, ValueError) as exc:
+            raise CardRecordError("control_card_revision_invalid") from exc
+        if revision < 0:
+            raise CardRecordError("control_card_revision_invalid")
+        return cls(
+            control_id=control_id,
+            issuer_ref=issuer_ref,
+            issuer_kind=issuer_kind,
+            issuer_label=clean_text(value.get("issuer_label")),
+            manage_url=clean_text(value.get("manage_url")),
+            control_revision=revision,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in {
+                "control_id": self.control_id,
+                "issuer_ref": self.issuer_ref,
+                "issuer_kind": self.issuer_kind,
+                "issuer_label": self.issuer_label,
+                "manage_url": self.manage_url,
+                "control_revision": self.control_revision,
+            }.items()
+            if value not in ("", 0, None)
+        }
+
+
+@dataclass(frozen=True)
 class CardAuthority:
     """One card's complete non-secret authorization decision."""
 
@@ -253,6 +317,10 @@ class CardAuthority:
     # Bounded public metadata asserted by the connecting OAuth client. This is
     # display/search evidence, not authenticated worker or machine authority.
     client_metadata: Mapping[str, Any] = field(default_factory=dict)
+    # At most one project-owned, subtractive control card may narrow this Card.
+    # The original authority remains here for owner editing and is intersected
+    # only by the live authorization resolver.
+    control_card: ControlCardBinding | None = None
 
     @classmethod
     def from_mapping(cls, value: Any) -> "CardAuthority":
@@ -284,7 +352,11 @@ class CardAuthority:
             )
         except ValueError as exc:
             raise CardRecordError("resource_operations_invalid") from exc
-        if schema in {CARD_AUTHORITY_SCHEMA_V3, CARD_AUTHORITY_SCHEMA} and not isinstance(
+        if schema in {
+            CARD_AUTHORITY_SCHEMA_V3,
+            CARD_AUTHORITY_SCHEMA_V4,
+            CARD_AUTHORITY_SCHEMA,
+        } and not isinstance(
             value.get("resource_operations"), Mapping
         ):
             raise CardRecordError("resource_operations_invalid")
@@ -346,6 +418,11 @@ class CardAuthority:
             provenance=copy.deepcopy(dict(provenance)),
             entry_resource=clean_text(value.get("entry_resource")),
             client_metadata=client_metadata,
+            control_card=(
+                ControlCardBinding.from_mapping(value.get("control_card"))
+                if value.get("control_card") is not None
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -389,6 +466,8 @@ class CardAuthority:
         stored_selection = self.named_service_operations.to_stored()
         if stored_selection is not None:
             payload["named_service_operations"] = stored_selection
+        if self.control_card is not None:
+            payload["control_card"] = self.control_card.to_dict()
         return payload
 
     def __post_init__(self) -> None:
@@ -415,6 +494,10 @@ class CardAuthority:
         except ValueError as exc:
             raise CardRecordError("client_metadata_invalid") from exc
         object.__setattr__(self, "client_metadata", metadata)
+        if self.control_card is not None and not isinstance(
+            self.control_card, ControlCardBinding
+        ):
+            raise CardRecordError("control_card_binding_invalid")
 
     def content_hash(self) -> str:
         return card_authority_payload_hash(self.to_dict())
@@ -536,6 +619,7 @@ __all__ = [
     "CARD_AUTHORITY_SCHEMA_V1",
     "CARD_AUTHORITY_SCHEMA_V2",
     "CARD_AUTHORITY_SCHEMA_V3",
+    "CARD_AUTHORITY_SCHEMA_V4",
     "CARD_POINTER_SCHEMA",
     "CARD_STATE_ACTIVE",
     "CARD_STATE_REVOKED",
@@ -548,6 +632,7 @@ __all__ = [
     "CardCredentialHandles",
     "CardCurrentPointer",
     "CardRecordError",
+    "ControlCardBinding",
     "NamedServiceSelection",
     "authority_is_usable",
     "card_authority_payload_hash",
