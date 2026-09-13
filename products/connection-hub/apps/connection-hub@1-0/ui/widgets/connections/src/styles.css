@@ -1668,6 +1668,139 @@ code {
   font-size: 11px;
 }
 
+.application-api-catalog {
+  margin-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.application-api-catalog__head,
+.application-api-app > summary,
+.application-api-app--empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.application-api-catalog__head {
+  min-height: 38px;
+  padding: 7px 8px;
+}
+
+.application-api-catalog__head .edit-section__name {
+  color: var(--blue-dark);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.application-api-catalog__head .edit-section__count {
+  margin-left: auto;
+}
+
+.application-api-catalog__state {
+  margin: 0;
+  padding: 8px;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.application-api-catalog__error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px;
+  color: var(--danger, #b33a3a);
+  font-size: 11.5px;
+}
+
+.application-api-app {
+  border-top: 1px solid var(--line-soft);
+}
+
+.application-api-app > summary,
+.application-api-app--empty {
+  min-height: 44px;
+  padding: 8px;
+}
+
+.application-api-app > summary {
+  cursor: pointer;
+}
+
+.application-api-app > summary > span:first-child,
+.application-api-app--empty > span:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.application-api-app strong,
+.application-api-app small {
+  display: block;
+}
+
+.application-api-app strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.application-api-app small {
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 10.5px;
+}
+
+.application-api-app--empty > span:last-child {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.application-api-app__description {
+  margin: 0;
+  padding: 0 8px 8px;
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+
+.application-api-list {
+  border-top: 1px solid var(--line-soft);
+}
+
+.application-api-row {
+  padding: 8px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.application-api-row:last-child {
+  border-bottom: 0;
+}
+
+.application-api-row dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 8px;
+  margin: 0;
+  font-size: 11px;
+}
+
+.application-api-row dt {
+  color: var(--muted);
+}
+
+.application-api-row dd {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px 5px;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.application-api-alias {
+  color: var(--ink);
+  font-weight: 700;
+}
+
 .namespace-boundary {
   border-top: 1px solid var(--line-soft);
 }

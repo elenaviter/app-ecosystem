@@ -37,6 +37,35 @@ export function publicMcpUrl(alias: string): string {
   return apiUrl('public', `mcp/${encodeURIComponent(alias)}`);
 }
 
+/** The platform's existing role-filtered app catalog. Connection Hub reads it
+ *  to show the APIs behind the wildcard service grant; it does not maintain a
+ *  second surface inventory. */
+export async function getBundlesCatalog(): Promise<unknown> {
+  const target = new URL(`${settings.getBaseUrl()}/api/integrations/bundles`, window.location.origin);
+  target.searchParams.set('tenant', settings.getTenant());
+  target.searchParams.set('project', settings.getProject());
+  const response = await fetch(target.toString(), {
+    method: 'GET',
+    credentials: 'include',
+    cache: 'no-store',
+    headers: settings.authHeaders({ Accept: 'application/json' }),
+  });
+  const body = await response.text();
+  let parsed: unknown = {};
+  try {
+    parsed = body ? JSON.parse(body) : {};
+  } catch {
+    parsed = { raw: body };
+  }
+  if (!response.ok) {
+    const detail = parsed && typeof parsed === 'object' && 'detail' in parsed
+      ? String((parsed as Record<string, unknown>).detail)
+      : body || response.statusText;
+    throw new Error(detail || `Application APIs could not be loaded: ${response.status}`);
+  }
+  return parsed;
+}
+
 function apiUrl(route: 'operations' | 'public', operation: string): string {
   const tenant = encodeURIComponent(settings.getTenant());
   const project = encodeURIComponent(settings.getProject());

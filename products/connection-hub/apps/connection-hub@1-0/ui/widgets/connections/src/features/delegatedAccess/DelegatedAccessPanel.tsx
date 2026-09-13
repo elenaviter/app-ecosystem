@@ -5,6 +5,10 @@ import { CopyButton, DoorRef } from '../../components/CopyControls';
 import { operationUrl, publicMcpUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
+import {
+  ApplicationApiCatalog,
+  useApplicationApiCatalog,
+} from './ApplicationApiCatalog';
 import { GrantFilterControls, GrantFilterInfo, GrantFilterSettings } from './GrantFilterBar';
 import { InvocationPolicyControl, OperationInvocationChoice } from './InvocationControls';
 import { FoldedChipRow } from '../../components/ChipFold';
@@ -936,6 +940,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     accounts,
     loading: delegatedAccountsLoading,
   } = useAppSelector((s) => s.delegatedToKdcube);
+  const applicationApiCatalog = useApplicationApiCatalog(
+    resources.some((resource) => resource.resource === '*'),
+  );
   const [label, setLabel] = useState('Automation access');
   const [oauthDraftId] = useState(() => oauthConsentId(openParams));
   const [oauthDraft, setOAuthDraft] = useState<OAuthConsentDraft | null>(null);
@@ -2747,6 +2754,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     ))}
                   </div>
                 </details>
+                {item.resource === '*' ? <ApplicationApiCatalog model={applicationApiCatalog} /> : null}
                 {item.operations?.length ? (
                   <details className="edit-section">
                     <summary>
@@ -3363,6 +3371,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               ))}
             </div>
           </details> : null}
+          {resource === '*' ? <ApplicationApiCatalog model={applicationApiCatalog} /> : null}
         {resourceOption?.operations?.length && !isSelectionRoute ? (
           <details
             className="edit-section"
