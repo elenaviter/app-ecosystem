@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Delegated by KDCube cards: store
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-09-12
+updated_at: 2026-09-13
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -854,6 +854,12 @@ call can use while the control applies, and links to the project where the
 ceiling is managed. Revocation remains available beside Save and Cancel in the
 editor because removing the credential and editing its original authority are
 separate decisions.
+
+The Card surface describes this relationship without knowing which application
+created the narrower. It names the narrower from the binding's `issuer_label`,
+falls back to `issuer_ref`, and links through `manage_url`. Another application
+can therefore narrow a Card without adding its vocabulary to Connection Hub.
+When no narrower binding exists, the Card shows no narrowing row.
 
 Every live Card resolution reads the current control projection before an
 operation is admitted. A missing, malformed, updating, retired, or mismatched

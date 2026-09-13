@@ -151,17 +151,29 @@ def test_card_editor_keeps_revoke_next_to_save_and_cancel() -> None:
     assert client_editor.index("Cancel") < client_editor.index("renderRevokeControl(item)")
 
 
-def test_controlled_card_can_show_original_and_effective_authority() -> None:
+def test_narrowed_card_uses_its_issuer_copy_and_link() -> None:
     source = (
         Path(__file__).resolve().parents[1]
         / "ui/widgets/connections/src/features/delegatedAccess/DelegatedAccessPanel.tsx"
     ).read_text(encoding="utf-8")
 
-    assert "Project control in force" in source
-    assert "Calls covered by this control remain closed." in source
-    assert "Open project control" in source
+    assert "const label = binding.issuer_label || binding.issuer_ref;" in source
+    assert "if (!binding) return null;" in source
+    assert "`Card narrowed by ${label}`" in source
+    assert "`Narrowing by ${label} unavailable`" in source
+    assert "Calls governed by ${label} remain closed." in source
+    assert "<a href={binding.manage_url}" in source
+    assert "Open {label}" in source
+    assert "Narrowing by {label} remains in force." in source
+    assert "What this Card grants after narrowing by ${label}." in source
     assert "Authority evidence" in source
-    assert "Current deployment" in source
+    assert "<dt>Original Card</dt>" in source
+    assert "<dt>Narrowing basis</dt>" in source
+    assert "<dt>Current catalog</dt>" in source
+    assert "Project control in force" not in source
+    assert "Project control unavailable" not in source
+    assert "Open project control" not in source
+    assert "'the project'" not in source
     assert ">\n              Original\n" in source
     assert ">\n              Effective\n" in source
     assert "const authority = displayedAuthority(item);" in source

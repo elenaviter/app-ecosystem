@@ -3735,14 +3735,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }),
     };
   };
-  const renderProjectControl = (
+  const renderCardNarrowing = (
     item: DelegatedAccessRecord,
     { editing = false }: { editing?: boolean } = {},
   ) => {
     const control = item.project_control;
     if (!control || control.state === 'not_controlled') return null;
     const binding = control.binding;
-    const label = binding?.issuer_label || binding?.issuer_ref || 'the project';
+    if (!binding) return null;
+    const label = binding.issuer_label || binding.issuer_ref;
+    if (!label) return null;
     const reading = editing ? 'original' : authorityReading(item);
     const effectiveReady = control.state === 'active' && Boolean(control.authority);
     return (
@@ -3752,19 +3754,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       >
         <div className="project-control__head">
           <span>
-            <strong>{effectiveReady ? 'Project control in force' : 'Project control unavailable'}</strong>
+            <strong>{effectiveReady ? `Card narrowed by ${label}` : `Narrowing by ${label} unavailable`}</strong>
             <small>{effectiveReady
-              ? ` Authority is narrowed by ${label}.`
-              : ' Calls covered by this control remain closed.'}</small>
+              ? ' Effective authority is shown below.'
+              : ` Calls governed by ${label} remain closed.`}</small>
           </span>
-          {binding?.manage_url ? (
+          {binding.manage_url ? (
             <a href={binding.manage_url} target="_blank" rel="noreferrer">
-              Open project control
+              Open {label}
             </a>
           ) : null}
         </div>
         {editing ? (
-          <small>You are editing the original Card. The project control remains in force.</small>
+          <small>You are editing the original Card. Narrowing by {label} remains in force.</small>
         ) : (
           <div className="authority-reading" role="group" aria-label="Card authority view">
             <button
@@ -3791,7 +3793,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               Effective
             </button>
             <small>{reading === 'effective'
-              ? 'What this Card grants while the project control applies.'
+              ? `What this Card grants after narrowing by ${label}.`
               : 'What the owner granted on this Card.'}</small>
           </div>
         )}
@@ -3800,19 +3802,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <details className="project-control__evidence">
             <summary>Authority evidence</summary>
             <dl>
-              <dt>Participant Card</dt>
+              <dt>Original Card</dt>
               <dd>
                 revision {control.resolution.participant_card_revision || item.card_revision || 0}
                 {' · catalog '}
                 <code>{control.resolution.participant_catalog_version || item.catalog_version || 'not recorded'}</code>
               </dd>
-              <dt>Project ceiling basis</dt>
+              <dt>Narrowing basis</dt>
               <dd>
                 Card revision {control.resolution.control_basis_card_revision || 0}
                 {' · catalog '}
                 <code>{control.resolution.control_basis_catalog_version || 'not recorded'}</code>
               </dd>
-              <dt>Current deployment</dt>
+              <dt>Current catalog</dt>
               <dd>
                 catalog <code>{item.catalog_drift?.current_version || 'unavailable'}</code>
               </dd>
@@ -3950,7 +3952,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               All cards
             </button>
           </div>
-          {renderProjectControl(record, { editing: true })}
+          {renderCardNarrowing(record, { editing: true })}
           {accessCardFocus?.accessId === record.access_id
             && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
             <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
@@ -4028,7 +4030,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                 {cardBadge(item)}
                               </div>
                               {item.client_id ? <ClientIdRef value={item.client_id} kind="client" /> : null}
-                              {renderProjectControl(item, { editing })}
+                              {renderCardNarrowing(item, { editing })}
                               {/* Edit mode keeps the per-claim checkboxes; the
                                   read-only view uses the same labelled rows as
                                   every other credential card. */}
@@ -4180,7 +4182,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         ? <ClientIdRef value={item.access_id} kind="access" />
                         : (item.client_id && item.client_id !== item.label
                             ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
-                      {renderProjectControl(item, { editing })}
+                      {renderCardNarrowing(item, { editing })}
                       {accessCardFocus?.accessId === item.access_id
                         && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
                         <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
