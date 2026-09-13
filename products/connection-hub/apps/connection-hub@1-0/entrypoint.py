@@ -3869,8 +3869,22 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        # DIAGNOSTIC 2026-09-12: a card edit reports success in the browser and
+        # writes no revision. The refusal is returned inside an HTTP 200, so it
+        # is invisible from outside. Log what was asked and what came back.
+        _access_id_for_log = str(payload.get("access_id") or "").strip()
+        LOGGER.info(
+            "[automation-access.update] request access_id=%s resources=%s ops=%s "
+            "expected_card_revision=%s expected_catalog_version=%s accepted_operations=%s",
+            _access_id_for_log,
+            sorted((payload.get("resource_grants") or {}).keys()),
+            len(_safe_list(payload.get("operations")) or []),
+            payload.get("expected_card_revision"),
+            payload.get("expected_catalog_version"),
+            sorted((payload.get("accepted_operations") or {}).keys()),
+        )
         try:
-            return await _automation_access_service(self, request).update_access(
+            _result = await _automation_access_service(self, request).update_access(
                 user,
                 access_id=str(payload.get("access_id") or "").strip(),
                 resource_grants=dict(payload.get("resource_grants") or {}),
@@ -3906,7 +3920,22 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     else None
                 ),
             )
+            LOGGER.info(
+                "[automation-access.update] result access_id=%s ok=%s error=%s status=%s mismatched=%s message=%s",
+                _access_id_for_log,
+                (_result or {}).get("ok"),
+                (_result or {}).get("error"),
+                (_result or {}).get("status"),
+                (_result or {}).get("mismatched"),
+                str((_result or {}).get("message") or "")[:400],
+            )
+            return _result
         except ValueError as exc:
+            LOGGER.warning(
+                "[automation-access.update] rejected access_id=%s reason=%s",
+                _access_id_for_log,
+                exc,
+            )
             return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
 
     @api(

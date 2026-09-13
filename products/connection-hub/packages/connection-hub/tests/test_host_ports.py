@@ -56,11 +56,16 @@ async def test_connection_edges_uses_injected_application_operation_port():
 
     result = await ConnectionEdgesClient(
         _Entrypoint(), operation_caller=caller
-    ).resolve_identity(provider="telegram", provider_subject="tg-1")
+    ).resolve_identity(
+        authority_id="telegram.example",
+        provider="telegram",
+        provider_subject="tg-1",
+    )
 
     assert result == {"ok": True, "subject": "user-1"}
     assert calls[0]["bundle_id"] == "hub@test"
     assert calls[0]["route"] == "operations"
+    assert calls[0]["data"]["authority_id"] == "telegram.example"
 
 
 @pytest.mark.asyncio

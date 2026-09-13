@@ -1,11 +1,11 @@
 ---
 id: connection-hub/package/delegated-authority-and-admission
 title: "Delegated Authority And Admission"
-summary: "Delegated-card and invocation-policy decisions across managed REST/MCP surfaces, proxied external MCP services, direct protected-service admission, connected-account claims, native named-service tools, and relayed provider invocation."
+summary: "Delegated-card and invocation-policy decisions across transport-neutral service operations, managed REST/MCP surfaces, direct Data Bus admission, external services, connected-account claims, and relayed provider invocation."
 status: current
 tags: ["arch", "security", "admission", "connection-hub", "delegated-access", "mcp", "rest", "named-services", "data-bus"]
-keywords: ["delegated authority", "managed surface guard", "delegated access card", "access_id", "active catalog", "resource grants", "resource operations", "MCP tool grants", "connected account claims", "NamedServiceAdmission", "Data Bus relay"]
-updated_at: 2026-09-03
+keywords: ["delegated authority", "managed surface guard", "delegated access card", "access_id", "active catalog", "resource grants", "resource operations", "canonical service operation", "MCP tool grants", "connected account claims", "NamedServiceAdmission", "Data Bus relay"]
+updated_at: 2026-09-12
 see_also:
   - ../connection-hub-architecture.md
   - ./delegated-cards.md
@@ -125,6 +125,60 @@ An operation called `search` on resource A does not authorize an operation
 with the same name on resource B. The flat `operations` list present in public
 and token compatibility shapes is derived from that resource map and is not
 used as an independent grant.
+
+An operation ID belongs to the protected service contract. MCP, REST, and Data
+Bus are adapters that can expose or carry that same ID; they do not create
+separate authorization identities for it. For example, an MCP tool named
+`worker.heartbeat` and a Data Bus payload whose `operation` is
+`worker.heartbeat` can enter one service dispatcher and be checked against the
+same `resource_operations[resource]` entry.
+
+## Direct Card Admission To Data Bus
+
+A client that already holds a delegated Card can present that bearer directly
+when opening a Data Bus socket. The Card is the delegation edge. It is not
+exchanged for a Data Bus token.
+
+```text
+grantor user -> delegated Card -> client profile
+                               |
+                    bearer + selected resource
+                               |
+                               v
+                     Data Bus socket admission
+                               |
+                 server-authored Card actor/binding
+                               |
+        payload.operation -> service dispatcher
+                               |
+          live Card resource + operation + grant check
+                               |
+                               v
+                         domain operation
+```
+
+The client supplies the concrete resource because one Card can cover several
+resources. Ingress validates that resource against the target bundle and
+resolves the current Card before accepting the socket. It uses the bearer only
+for authentication and retains only non-secret Card/resource coordinates in
+session and routing state.
+
+Data Bus payloads are app-owned, so generic ingress does not infer an operation
+from their contents. The target app passes its canonical operation ID to one
+guarded dispatcher. That dispatcher resolves current Card state again and
+checks the exact resource, operation selection, and required claims before the
+effect. A copied `operations` or `grants` list in a message actor is context,
+not authority.
+
+Incoming stream admission and outbound live routing both recheck the Card.
+Revocation or resource removal therefore takes effect on the next use in either
+direction. An authority-store outage fails closed for the attempted use. No
+bearer is written into Data Bus messages, Redis routing state, app actors, or
+logs.
+
+App-issued federated Data Bus session tokens remain a separate contract for a
+caller that proves a different upstream authority. They are not needed when a
+delegated Card already expresses the caller's authority.
 
 ## Complete Managed-Surface Flow
 
