@@ -147,7 +147,10 @@ def _token(
 
 
 class _EndpointDiscovery:
-    async def discover(self, endpoint: str):
+    # default_scope is what a caller's own operations need. The real discovery
+    # yields it to a server challenge and otherwise prefers it over the whole
+    # advertised set, so the stub accepts it to stay call-compatible.
+    async def discover(self, endpoint: str, *, default_scope: str = ""):
         assert endpoint == ENDPOINT
         return _located()
 
@@ -523,3 +526,116 @@ def test_local_oauth_removal_requires_card_and_exact_access_id(tmp_path) -> None
     )
     assert removed.profile.name == "agent"
     assert credentials.values == {}
+
+
+def _scope_fixture(scopes_supported: list[str]):
+    """One discovery fixture whose challenge scope the caller chooses."""
+
+    resource_payload = {
+        "resource": ENDPOINT,
+        "authorization_servers": [ISSUER],
+        "scopes_supported": scopes_supported,
+    }
+    server_url = f"{ISSUER}/.well-known/oauth-authorization-server"
+    return _MetadataTransport(
+        {
+            METADATA_URL: resource_payload,
+            server_url: {
+                "issuer": ISSUER,
+                "authorization_endpoint": f"{ISSUER}/authorize",
+                "token_endpoint": f"{ISSUER}/token",
+                "registration_endpoint": f"{ISSUER}/register",
+                "revocation_endpoint": f"{ISSUER}/revoke",
+                "grant_types_supported": ["authorization_code", "refresh_token"],
+                "response_types_supported": ["code"],
+                "code_challenge_methods_supported": ["S256"],
+                "token_endpoint_auth_methods_supported": ["none"],
+            },
+        }
+    )
+
+
+def _challenge_with(scope: str):
+    async def challenge(request: httpx2.Request) -> httpx2.Response:
+        advertised = f', scope="{scope}"' if scope else ""
+        return httpx2.Response(
+            401,
+            headers={
+                "WWW-Authenticate": (
+                    f'Bearer resource_metadata="{METADATA_URL}"{advertised}'
+                )
+            },
+            request=request,
+        )
+
+    return challenge
+
+
+# A deployment advertises the union of every app installed on it. A caller that
+# knows which claims its own operations need should ask for those, so the
+# operator approving the consent is shown a set they can actually decide on.
+DEPLOYMENT_SCOPES = [
+    "work:observe",
+    "work:coordinate",
+    "linkedin:org:post",
+    "press:delete",
+    "slack:post",
+]
+
+
+@pytest.mark.asyncio
+async def test_default_scope_replaces_the_whole_advertised_set() -> None:
+    discovery = McpOAuthEndpointDiscovery(
+        transport=_scope_fixture(DEPLOYMENT_SCOPES),
+        http_transport=httpx2.MockTransport(_challenge_with("")),
+    )
+
+    result = await discovery.discover(
+        ENDPOINT, default_scope="work:observe work:coordinate"
+    )
+
+    assert result.scope == "work:observe work:coordinate"
+    for foreign in ("linkedin:org:post", "press:delete", "slack:post"):
+        assert foreign not in result.scope
+
+
+@pytest.mark.asyncio
+async def test_a_server_challenge_still_wins_over_the_caller_s_default() -> None:
+    """The server naming what it needs is more specific than our declaration."""
+
+    discovery = McpOAuthEndpointDiscovery(
+        transport=_scope_fixture(DEPLOYMENT_SCOPES),
+        http_transport=httpx2.MockTransport(_challenge_with("work:observe")),
+    )
+
+    result = await discovery.discover(
+        ENDPOINT, default_scope="work:coordinate work:relay"
+    )
+
+    assert result.scope == "work:observe"
+
+
+@pytest.mark.asyncio
+async def test_without_a_default_the_advertised_set_is_still_used() -> None:
+    """Callers that say nothing keep the previous behaviour exactly."""
+
+    discovery = McpOAuthEndpointDiscovery(
+        transport=_scope_fixture(DEPLOYMENT_SCOPES),
+        http_transport=httpx2.MockTransport(_challenge_with("")),
+    )
+
+    result = await discovery.discover(ENDPOINT)
+
+    assert result.scope == " ".join(DEPLOYMENT_SCOPES)
+
+
+@pytest.mark.asyncio
+async def test_a_blank_default_scope_does_not_produce_an_empty_request() -> None:
+    discovery = McpOAuthEndpointDiscovery(
+        transport=_scope_fixture(DEPLOYMENT_SCOPES),
+        http_transport=httpx2.MockTransport(_challenge_with("")),
+    )
+
+    result = await discovery.discover(ENDPOINT, default_scope="   ")
+
+    assert result.scope == " ".join(DEPLOYMENT_SCOPES)

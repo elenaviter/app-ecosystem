@@ -84,6 +84,7 @@ class OAuthProfileSessionService:
         name: str,
         endpoint: str,
         scope: str = "",
+        default_scope: str = "",
         client_name: str = "Connection Hub CLI",
         client_metadata: Mapping[str, Any] | None = None,
         provisioned_client_id: str | None = None,
@@ -96,7 +97,13 @@ class OAuthProfileSessionService:
         target = validate_endpoint(endpoint)
         async with self._authorization_slot(profile_name):
             self.verify_credential_store()
-            located = await self._endpoint_discovery.discover(target)
+            located = await self._endpoint_discovery.discover(
+                target, default_scope=default_scope
+            )
+            # An explicit scope is the caller overriding everything, including
+            # the server's challenge. default_scope is the weaker statement
+            # "these are the claims my operations need", which yields to a
+            # challenge and only displaces the deployment's full advertised set.
             selected_scope = str(scope or located.scope).strip()
             discovered = OAuthDiscoveryResult(
                 protected_resource=located.protected_resource,

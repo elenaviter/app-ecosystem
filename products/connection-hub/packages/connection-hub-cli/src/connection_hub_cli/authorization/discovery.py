@@ -211,7 +211,9 @@ class McpOAuthEndpointDiscovery:
         self._http_transport = http_transport
         self._timeout_seconds = max(1.0, min(float(timeout_seconds), 120.0))
 
-    async def discover(self, endpoint: str) -> McpOAuthDiscoveryResult:
+    async def discover(
+        self, endpoint: str, *, default_scope: str = ""
+    ) -> McpOAuthDiscoveryResult:
         from mcp.client.auth.oauth2 import (
             build_protected_resource_metadata_discovery_urls,
             check_resource_allowed,
@@ -326,7 +328,20 @@ class McpOAuthEndpointDiscovery:
             protected_resource_metadata_url=metadata_url,
             expected_resource=resource.resource,
         )
-        scope = challenge_scope or " ".join(resource.scopes_supported)
+        # Precedence, widest last. The server's own challenge is the most
+        # specific statement of what this request needs, so it still wins. A
+        # caller's declared needs come next: a client that knows which claims
+        # its own operations require should ask for those rather than for
+        # everything on offer. The advertised set remains the last resort,
+        # because a deployment advertises the union of every app installed on
+        # it, and asking for all of it hands the approving operator a consent
+        # screen they cannot read and issues a standing capability far wider
+        # than the caller's work.
+        scope = (
+            challenge_scope
+            or str(default_scope or "").strip()
+            or " ".join(resource.scopes_supported)
+        )
         return McpOAuthDiscoveryResult(
             endpoint=target,
             protected_resource_metadata_url=metadata_url,
