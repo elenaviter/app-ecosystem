@@ -31,6 +31,10 @@ from connection_hub.delegated_credentials.oauth.clients import (
     CLIENT_REGISTRATION_PRE_REGISTERED,
 )
 from connection_hub.delegated_credentials.oauth.flow import AuthorizeRequest
+from connection_hub.delegated_credentials.resource_operations import (
+    resolve_declared_resource,
+    resolve_declared_resource_keys,
+)
 from connection_hub.named_service_boundary import (
     NamedServiceBoundaryCatalog,
 )
@@ -175,7 +179,7 @@ def resource_selection_rows(
         for scope in (scopes or ())
         if str(scope or "").strip()
     }
-    held = {
+    held_by_resource = {
         str(selector or "").strip(): {
             str(operation or "").strip()
             for operation in (operations or ())
@@ -184,13 +188,34 @@ def resource_selection_rows(
         for selector, operations in dict(seeded_operations or {}).items()
         if str(selector or "").strip()
     }
+    canonical_held, _rewritten = resolve_declared_resource_keys(
+        cfg,
+        {
+            selector: tuple(operations)
+            for selector, operations in held_by_resource.items()
+        },
+    )
+    held = {selector: set(operations) for selector, operations in canonical_held.items()}
+
+    requested_selector, _requested_literal = resolve_declared_resource(cfg, resource)
+    seen = {requested_selector} if requested_selector else set()
     rows: list[dict[str, Any]] = []
     for candidate in cfg.resources:
-        if candidate is request_cfg or candidate.resource == "*":
+        if candidate.resource == "*":
             continue
+        selector, literal = resolve_declared_resource(cfg, candidate.resource)
+        if not selector or selector in seen:
+            continue
+        seen.add(selector)
+        governing = cfg.card_selector_config(candidate.resource)
+        presented = (
+            governing
+            if governing is not None and governing.resource == selector
+            else candidate
+        )
         operations: list[dict[str, Any]] = []
-        for tool in candidate.tools:
-            grants = tuple(tool.grants or candidate.grants)
+        for tool in presented.tools:
+            grants = tuple(tool.grants or presented.grants)
             if grants and not set(grants).issubset(allowed):
                 continue
             operations.append(
@@ -199,12 +224,12 @@ def resource_selection_rows(
                     "label": tool.label or tool.name,
                     "description": tool.description,
                     "grants": list(grants),
-                    "held": tool.name in held.get(candidate.resource, set()),
+                    "held": tool.name in held.get(selector, set()),
                 }
             )
         if not operations:
             continue
-        resource_grants = tuple(candidate.grants) or tuple(
+        resource_grants = tuple(presented.grants) or tuple(
             dict.fromkeys(
                 grant
                 for operation in operations
@@ -213,10 +238,12 @@ def resource_selection_rows(
         )
         if resource_grants and not set(resource_grants).issubset(allowed):
             continue
+        label = presented.label or selector
         rows.append(
             {
-                "resource": candidate.resource,
-                "label": candidate.label or candidate.resource,
+                "resource": selector,
+                "label": f"{label} (literal)" if literal else label,
+                "literal": literal,
                 "grants": list(resource_grants),
                 "operations": operations,
             }

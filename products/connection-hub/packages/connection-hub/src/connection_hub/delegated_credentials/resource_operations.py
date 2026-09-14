@@ -48,6 +48,50 @@ def resource_matches(credential_resource: str, request_resource: str) -> bool:
     )
 
 
+def resolve_declared_resource(
+    config: Any,
+    resource: Any,
+) -> tuple[str, bool]:
+    """Return the card selector for a resource and whether it stays literal.
+
+    OAuth resource indicators are concrete URLs. A catalog may declare the
+    same door as a host-independent pattern, which is the selector a card must
+    retain and a consent offer must show. The all-resource selector is never a
+    substitute for a concrete request because doing so would widen authority.
+    """
+
+    requested = _clean(resource)
+    row = config.card_selector_config(requested)
+    declared = _clean(getattr(row, "resource", "")) if row is not None else ""
+    if declared and declared != "*" and declared != requested:
+        return declared, False
+    is_literal = bool(requested) and not any(mark in requested for mark in ("*", "["))
+    return requested, is_literal
+
+
+def resolve_declared_resource_keys(
+    config: Any,
+    resource_values: Mapping[str, Iterable[Any]],
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """Canonicalize resource-keyed values and merge equivalent doors."""
+
+    resolved: dict[str, list[str]] = {}
+    rewritten: dict[str, str] = {}
+    for raw_resource, values in resource_values.items():
+        resource = _clean(raw_resource)
+        if not resource:
+            continue
+        key, _literal = resolve_declared_resource(config, resource)
+        if key != resource:
+            rewritten[resource] = key
+        merged = resolved.setdefault(key, [])
+        for value in values or ():
+            item = _clean(value)
+            if item and item not in merged:
+                merged.append(item)
+    return resolved, rewritten
+
+
 def normalize_resource_operations(value: Any) -> dict[str, tuple[str, ...]]:
     """Normalize ``{resource: [operation]}`` without dropping empty choices."""
     if value is None:
@@ -149,5 +193,7 @@ __all__ = [
     "operation_union",
     "operations_for_resource",
     "project_legacy_operations",
+    "resolve_declared_resource",
+    "resolve_declared_resource_keys",
     "resource_matches",
 ]
