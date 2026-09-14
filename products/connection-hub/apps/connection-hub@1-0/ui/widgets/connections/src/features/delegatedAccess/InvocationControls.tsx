@@ -25,18 +25,17 @@ export function InvocationPolicyControl({
   onSet: (mode: InvocationMode, expectedRevision: number) => void;
 }) {
   const mode = policy?.mode || null;
-  const effectiveMode = mode || 'always';
   const onceAvailable = mode === 'once' && policy?.remaining === 1;
   return (
     <span className="operation-policy" data-operation={operation}>
       <span className="invocation-policy-control" role="group" aria-label={`Invocation policy for ${operation}`}>
         <button
           type="button"
-          className={effectiveMode === 'always' ? 'active' : ''}
-          aria-pressed={effectiveMode === 'always'}
+          className={mode === 'always' ? 'active' : ''}
+          aria-pressed={mode === 'always'}
           aria-label={`${operation}: always`}
           title={`Allow every ${operation} call while the card is active`}
-          disabled={busy || effectiveMode === 'always'}
+          disabled={busy || mode === 'always'}
           onClick={() => onSet('always', policy?.revision || 0)}
         >
           Every time
@@ -58,6 +57,11 @@ export function InvocationPolicyControl({
           <small>used</small>
         ) : null}
       </span>
+      {!mode ? (
+        <span className="operation-policy__status operation-policy__status--attention" aria-live="polite">
+          no policy saved
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -80,6 +84,17 @@ export function OperationInvocationChoice({
       <span className="invocation-policy-control" role="group" aria-label={`Invocation policy for ${operation}`}>
         <button
           type="button"
+          className={mode === 'always' ? 'active' : ''}
+          aria-pressed={mode === 'always'}
+          aria-label={`${operation}: always`}
+          title={`Allow ${operation} for ${INVOCATION_MODE_TEXT.always}`}
+          disabled={busy}
+          onClick={() => onChoose('always')}
+        >
+          Every time
+        </button>
+        <button
+          type="button"
           className={mode === 'once' ? 'active' : ''}
           aria-pressed={mode === 'once'}
           aria-label={`${operation}: once`}
@@ -90,17 +105,6 @@ export function OperationInvocationChoice({
           onClick={() => onChoose('once')}
         >
           Once
-        </button>
-        <button
-          type="button"
-          className={mode === 'always' ? 'active' : ''}
-          aria-pressed={mode === 'always'}
-          aria-label={`${operation}: always`}
-          title={`Allow ${operation} for ${INVOCATION_MODE_TEXT.always}`}
-          disabled={busy}
-          onClick={() => onChoose('always')}
-        >
-          Every time
         </button>
       </span>
       {!mode ? (
