@@ -109,7 +109,25 @@ import {
   accessCardFocusRequest,
   matchesAccessCardFocus,
 } from './accessCardFocus';
-import { composeControlCardAuthority } from './controlCardPreview';
+import {
+  authorityAccountCount,
+  authorityAllowsOuterOperation,
+  authorityNamedOperationCount,
+  authorityOuterOperationCount,
+  authorityResourceKeys,
+  compositionRowState,
+  composeControlCardAuthority,
+  outerOperationsExcludedByControl,
+  type CompositionRowState,
+  type ControlCompositionMode,
+} from './controlCardPreview';
+
+interface EffectiveCompositionView {
+  mode: ControlCompositionMode;
+  control: DelegatedControlCardAuthority;
+  effective: DelegatedControlCardAuthority;
+  controlLabel: string;
+}
 
 /** Whether a resource card matches a catalog search: its label/id, its grants
  *  (tokens and their vocabulary labels), its operations, and its named-service
@@ -758,6 +776,10 @@ function outerOperationRows(item: DelegatedAccessRecord): string[] {
       `${doorAlias(resource) || resource}: ${operation}`
     ))
   ));
+}
+
+function authorityValueSelected(values: string[] | undefined, value: string): boolean {
+  return Boolean(values?.some((selected) => selected === '*' || selected === value));
 }
 
 /** Every named-service operation the ACTIVE catalog offers for these resources.
@@ -2145,6 +2167,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       title?: string;
       existingScope?: Record<string, Record<string, string[]>>;
       requestedClaims?: Record<string, string[]>;
+      composition?: EffectiveCompositionView;
     },
   ) => {
     if (!providersWithAccounts.size) return null;
@@ -2159,6 +2182,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       ),
       0,
     );
+    const effectiveAccountScope = options?.composition?.effective.account_scope || {};
+    const effectiveAccounts = Object.values(effectiveAccountScope).reduce(
+      (total, providerScope) => total + Object.values(providerScope).filter((claims) => claims.length > 0).length,
+      0,
+    );
+    const effectivePermissions = Object.values(effectiveAccountScope).reduce(
+      (total, providerScope) => total + Object.values(providerScope).reduce(
+        (providerTotal, claims) => providerTotal + claims.length,
+        0,
+      ),
+      0,
+    );
     return (
       <details className="account-scope-section edit-section">
         <summary>
@@ -2167,9 +2202,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           </span>
           <InfoMark text={`Choose the connected accounts ${who} may use and the provider permissions available on each account.`} />
           <span className="edit-section__count">
-            {selectedAccounts
-              ? `${selectedAccounts} account${selectedAccounts === 1 ? '' : 's'} · ${selectedPermissions} permissions`
-              : 'none selected'}
+            {options?.composition
+              ? `${effectiveAccounts} effective accounts · ${effectivePermissions} effective permissions · ${selectedAccounts} accounts on Caller Card`
+              : (selectedAccounts
+                  ? `${selectedAccounts} account${selectedAccounts === 1 ? '' : 's'} · ${selectedPermissions} permissions`
+                  : 'none selected')}
           </span>
         </summary>
         <div className="account-scope-section__body">
@@ -2211,20 +2248,48 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         {supported.length ? (
                           <div className="resource-grants">
                             {supported.map((claim) => {
+                              const callerSelected = held.has(claim);
+                              const controlAccounts = options?.composition?.control.account_scope?.[provider]
+                                || options?.composition?.control.account_scope?.['*']
+                                || {};
+                              const controlSelected = authorityValueSelected(
+                                controlAccounts[account.account_id] || controlAccounts['*'], claim,
+                              );
+                              const diffState = options?.composition
+                                ? compositionRowState(
+                                    callerSelected,
+                                    controlSelected,
+                                    options.composition.mode,
+                                  )
+                                : 'absent';
                               const status = pendingSelectionStatus(
                                 alreadyGranted.has(claim),
-                                held.has(claim),
+                                callerSelected,
                                 requestedClaims.has(claim),
                               );
                               return (
-                                <label className="grant-chip" key={claim} title={grantOptionByName.get(claim)?.label || undefined}>
+                                <label
+                                  className={[
+                                    'grant-chip',
+                                    diffState === 'added' ? 'authority-diff-added' : '',
+                                    diffState === 'removed' ? 'authority-diff-removed' : '',
+                                  ].filter(Boolean).join(' ')}
+                                  key={claim}
+                                  title={grantOptionByName.get(claim)?.label || undefined}
+                                >
                                   <input
                                     type="checkbox"
-                                    checked={held.has(claim)}
+                                    checked={callerSelected}
                                     onChange={(event) => onToggle(provider, account.account_id, claim, event.target.checked)}
                                   />
                                   <span>{claim}</span>
                                   <PendingStatus status={status} />
+                                  {diffState === 'added' ? (
+                                    <span className="badge badge-ok">added by {options?.composition?.controlLabel}</span>
+                                  ) : null}
+                                  {diffState === 'removed' ? (
+                                    <span className="badge badge-error">removed by {options?.composition?.controlLabel}</span>
+                                  ) : null}
                                 </label>
                               );
                             })}
@@ -3428,6 +3493,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     resource: string,
     isNew: boolean,
     selectionParent = '',
+    composition?: EffectiveCompositionView,
   ) => {
     const resourceOption = catalogRowFor(
       resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
@@ -3443,6 +3509,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       return editSelectionIndex.childrenByParent[resourceOption?.resource || '']?.includes(candidateRow)
         && editDirectClaims(item, candidate).length > 0;
     });
+    const linkedControl = linkedControlCard(item);
+    const controlLabel = composition?.controlLabel
+      || linkedControl?.binding?.issuer_label
+      || linkedControl?.binding?.issuer_ref
+      || linkedControl?.binding?.control_id
+      || 'Control Card';
+    const controlCapsCaller = item.source !== 'control'
+      && linkedControl?.state === 'active'
+      && linkedControl.composition_mode !== 'or'
+      && Boolean(linkedControl.control_authority);
+    const callerHasResource = !editRemovedResources.includes(resource)
+      && (resource in (item.resource_grants || {}) || editAddedResources.includes(resource));
+    const controlHasResource = composition
+      ? authorityResourceKeys(composition.control).includes(resource)
+      : false;
+    const resourceDiffState = composition
+      ? compositionRowState(callerHasResource, controlHasResource, composition.mode)
+      : 'absent';
+    const ensureCallerResource = () => {
+      if (resource in (item.resource_grants || {}) || editAddedResources.includes(resource)) return;
+      setEditAddedResources((current) => (
+        current.includes(resource) ? current : [...current, resource]
+      ));
+    };
     return (
       <details
         key={resource}
@@ -3450,6 +3540,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           'resource-edit-section',
           isNew ? 'resource-edit-section--new' : '',
           selectionParent ? 'resource-edit-section--selection-child' : '',
+          resourceDiffState === 'added' ? 'authority-diff-added' : '',
+          resourceDiffState === 'removed' ? 'authority-diff-removed' : '',
         ].filter(Boolean).join(' ')}
         data-resource={resource}
         open={editOpenResources[resource] ?? isNew}
@@ -3462,7 +3554,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         <ResourceSectionHead
           title={editResourceTitle(item, resource)}
           isNew={isNew}
-          onRemove={selectedSelectionChild ? undefined : () => {
+          compositionState={resourceDiffState === 'added' || resourceDiffState === 'removed'
+            ? resourceDiffState
+            : undefined}
+          controlLabel={controlLabel}
+          onRemove={selectedSelectionChild || (resourceDiffState === 'added' && !callerHasResource) ? undefined : () => {
             if (isNew) {
               setEditAddedResources((current) => current.filter((entry) => entry !== resource));
               dropEditResourceState(resource);
@@ -3499,10 +3595,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               <span className="edit-section__name">Service permissions</span>
               <InfoMark text={HELP_PERMISSIONS} />
               <span className="edit-section__count">
-                {editableClaims.filter((claim) => editPicks[`${resource}:${claim}`] === true).length}
-                {' of '}
-                {editableClaims.length}
-                {' selected'}
+                {composition ? (
+                  `${(composition.effective.resource_grants?.[resource] || []).length} effective · ${editableClaims.filter((claim) => editPicks[`${resource}:${claim}`] === true).length} on Caller Card · ${editableClaims.length} available`
+                ) : (
+                  `${editableClaims.filter((claim) => editPicks[`${resource}:${claim}`] === true).length} of ${editableClaims.length} selected`
+                )}
               </span>
             </summary>
             <div className="edit-section__body claim-groups claim-groups--edit">
@@ -3514,9 +3611,22 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   <span className="claim-group__verbs">
                     {group.claims.map(({ token: claim, verb }) => {
                       const stale = withdrawnClaims(item, resource).has(claim);
+                      const callerSelected = editPicks[`${resource}:${claim}`] === true;
+                      const diffState = composition
+                        ? compositionRowState(
+                            callerSelected,
+                            authorityValueSelected(composition.control.resource_grants?.[resource], claim),
+                            composition.mode,
+                          )
+                        : 'absent';
                       return (
                         <label
-                          className={stale ? 'grant-chip grant-chip-stale' : 'grant-chip'}
+                          className={[
+                            'grant-chip',
+                            stale ? 'grant-chip-stale' : '',
+                            diffState === 'added' ? 'authority-diff-added' : '',
+                            diffState === 'removed' ? 'authority-diff-removed' : '',
+                          ].filter(Boolean).join(' ')}
                           key={`${resource}:${claim}`}
                           data-claim={claim}
                           title={
@@ -3527,12 +3637,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         >
                           <input
                             type="checkbox"
-                            checked={editPicks[`${resource}:${claim}`] === true}
+                            checked={callerSelected}
                             disabled={stale}
-                            onChange={(event) => toggleEditClaim(resource, claim, event.target.checked)}
+                            onChange={(event) => {
+                              if (event.target.checked) ensureCallerResource();
+                              toggleEditClaim(resource, claim, event.target.checked);
+                            }}
                           />
                           <span>{verb || claim}</span>
                           {stale ? <span className="badge badge-warn">withdrawn</span> : null}
+                          {diffState === 'added' ? <span className="badge badge-ok">added by {controlLabel}</span> : null}
+                          {diffState === 'removed' ? <span className="badge badge-error">removed by {controlLabel}</span> : null}
                         </label>
                       );
                     })}
@@ -3556,7 +3671,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               <span className="edit-section__name">Tools</span>
               <InfoMark text={HELP_TOOLS} />
               <span className="edit-section__count">
-                {(editResourceOperations[resource] || []).length} of {resourceOption.operations.length} selected
+                {composition ? (
+                  `${(composition.effective.resource_operations?.[resource] || []).length} effective · ${(editResourceOperations[resource] || []).length} on Caller Card · ${resourceOption.operations.length} available`
+                ) : (
+                  `${(editResourceOperations[resource] || []).length} of ${resourceOption.operations.length} selected`
+                )}
               </span>
               <span className="edit-section__quick" aria-label="Select tools">
                 <button
@@ -3565,6 +3684,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   onClick={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
+                    ensureCallerResource();
                     setEveryEditResourceOperation(resource, resourceOption, true);
                   }}
                 >
@@ -3588,25 +3708,55 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 const selected = (editResourceOperations[resource] || []).includes(operation.name);
                 const alreadyGranted = editGrantedOperations(item, resource).includes(operation.name);
                 const policy = invocationPolicyFor(item, resource, operation.name);
+                const controlSelected = composition
+                  ? authorityAllowsOuterOperation(composition.control, resource, operation.name)
+                  : false;
+                const diffState: CompositionRowState = composition
+                  ? compositionRowState(selected, controlSelected, composition.mode)
+                  : 'absent';
+                const excludedByControl = controlCapsCaller
+                  && !authorityAllowsOuterOperation(
+                    linkedControl?.control_authority || {}, resource, operation.name,
+                  );
                 return (
-                  <div className={selected ? 'outer-operation-editor outer-operation-editor--policy' : 'outer-operation-editor'} key={`${resource}:operation:${operation.name}`}>
+                  <div
+                    className={[
+                      'outer-operation-editor',
+                      selected ? 'outer-operation-editor--policy' : '',
+                      excludedByControl ? 'outer-operation-editor--control-capped' : '',
+                      diffState === 'added' ? 'authority-diff-added' : '',
+                      diffState === 'removed' ? 'authority-diff-removed' : '',
+                    ].filter(Boolean).join(' ')}
+                    key={`${resource}:operation:${operation.name}`}
+                  >
                     <span className="tool-choice">
-                      <label className="grant-chip" title={operation.name}>
+                      <label
+                        className="grant-chip"
+                        title={excludedByControl
+                          ? `${operation.name} is outside ${controlLabel}`
+                          : operation.name}
+                      >
                         <input
                           type="checkbox"
                           checked={selected}
-                          onChange={(event) => toggleEditResourceOperation(
-                            resource,
-                            operation.name,
-                            operation.grants || [],
-                            event.target.checked,
-                          )}
+                          onChange={(event) => {
+                            if (event.target.checked) ensureCallerResource();
+                            toggleEditResourceOperation(
+                              resource,
+                              operation.name,
+                              operation.grants || [],
+                              event.target.checked,
+                            );
+                          }}
                         />
                         <span className="operation-name">
                           <span>{operation.label || operation.name}</span>
                           {operation.label && operation.label !== operation.name ? (
                             <code className="operation-id">{operation.name}</code>
                           ) : null}
+                          {diffState === 'added' ? <span className="badge badge-ok">added by {controlLabel}</span> : null}
+                          {diffState === 'removed' ? <span className="badge badge-error">removed by {controlLabel}</span> : null}
+                          {!composition && excludedByControl ? <span className="badge badge-warn">inactive</span> : null}
                         </span>
                       </label>
                       <InfoMark text={operationHelpText({
@@ -3642,6 +3792,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         }))}
                       />
                     ) : null}
+                    {diffState === 'added' ? (
+                      <small className="control-cap-note authority-diff-note">
+                        Effective through {controlLabel}. This checkbox edits the Caller Card; remove the tool from {controlLabel} to remove effective access.
+                      </small>
+                    ) : diffState === 'removed' || excludedByControl ? (
+                      <small className="control-cap-note">
+                        {selected
+                          ? `Saved on the Caller Card, but inactive until ${controlLabel} also allows it.`
+                          : `${controlLabel} must also allow this tool before it can become active.`}
+                      </small>
+                    ) : null}
                   </div>
                 );
               })}
@@ -3655,13 +3816,25 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             resource={resourceOption}
             selectedGrants={editedGrants}
             selectedOperations={editNamedServiceOperations[resource] || {}}
-            onOperationChange={(namespace, operation, operationGrants, checked) => (
+            onOperationChange={(namespace, operation, operationGrants, checked) => {
+              if (checked) ensureCallerResource();
               toggleEditNamedServiceOperation(
                 resource, namespace, operation, operationGrants, checked,
-              )
-            )}
+              );
+            }}
             providers={providers}
             accounts={accounts}
+            composition={composition ? {
+              mode: composition.mode,
+              controlLabel,
+              controlOperations: (
+                composition.control.effective_named_service_operations?.[resource]
+                || (composition.control.named_service_operations !== '*'
+                  ? composition.control.named_service_operations?.[resource]
+                  : undefined)
+                || {}
+              ),
+            } : undefined}
           />
           ) : null}
           {!isNew ? (
@@ -3697,7 +3870,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   /** Every resource section of a card in edit mode, the stubs of the ones
    *  being removed, the sections of the ones being added, the picker of what
    *  else may join, and the reasons Save is not yet possible. */
-  const renderEditResourceSections = (item: DelegatedAccessRecord) => {
+  const renderEditResourceSections = (
+    item: DelegatedAccessRecord,
+    composition?: EffectiveCompositionView,
+  ) => {
     const problems = editSaveProblems(item);
     const secretOffer = (item.resource_offers || []).find(
       (offer) => offer.resource === secretSelectorOption?.resource,
@@ -3708,6 +3884,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const rawResourceKeys = Array.from(new Set([
       ...Object.keys(item.resource_grants || {}),
       ...editAddedResources,
+      ...(composition?.mode === 'or' ? authorityResourceKeys(composition.control) : []),
     ]));
     const activeResourceKeys = rawResourceKeys.filter(
       (resource) => !editRemovedResources.includes(resource),
@@ -3739,6 +3916,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         <RemovedResourceStub
           key={resource}
           title={editResourceTitle(item, resource)}
+          remainingEffect={composition?.mode === 'or'
+            && authorityResourceKeys(composition.control).includes(resource)
+            ? `${composition.controlLabel} still contributes this resource to effective access.`
+            : undefined}
           onUndo={() => setEditRemovedResources((current) => current.filter((entry) => entry !== resource))}
         />
       ) : renderEditResourceSection(
@@ -3746,6 +3927,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         resource,
         editAddedResources.includes(resource),
         parent,
+        composition,
       )
     );
     return (
@@ -3775,7 +3957,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   {children.map((child) => renderResourceState(child, resource))}
                   <ResourceOfferPicker
                     offers={childOffers}
-                    added={editAddedResources}
+                    added={Array.from(new Set([
+                      ...editAddedResources,
+                      ...(composition?.mode === 'or' ? authorityResourceKeys(composition.control) : []),
+                    ]))}
                     title="Add an MCP server"
                     help="MCP servers you configured in Connection Hub. Add one to choose its exact tools for this card."
                     onAdd={(child) => setEditAddedResources((current) => (
@@ -3789,7 +3974,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         })}
         <ResourceOfferPicker
           offers={topLevelOffers}
-          added={editAddedResources}
+          added={Array.from(new Set([
+            ...editAddedResources,
+            ...(composition?.mode === 'or' ? authorityResourceKeys(composition.control) : []),
+          ]))}
           onAdd={(resource) => setEditAddedResources((current) => (
             current.includes(resource) ? current : [...current, resource]
           ))}
@@ -3957,57 +4145,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }),
     };
   };
-  const renderAuthorityPreview = (authority: DelegatedAccessRecord) => (
-    <section className="effective-authority-preview" aria-label="Pending effective authority">
-      <div className="account-title">Pending effective access</div>
-      {Object.keys(authority.resource_grants || {}).length ? (
-        <div className="card-fields">
-          {Object.entries(authority.resource_grants || {}).map(([resource, grants]) => (
-            <Fragment key={`preview:${resource}`}>
-              <Field label="Resource">
-                <span className="door-line">
-                  <b>{resource === '*' ? 'all resources' : (resourceLabelFor(resource) || doorAlias(resource) || resource)}</b>
-                  {resource !== '*' ? <DoorRef value={resource} /> : null}
-                </span>
-              </Field>
-              <Field label="Access">
-                <FoldedChipRow entries={grants} expanded="groups" title={(claim) => grantOptionByName.get(claim)?.label || undefined} />
-              </Field>
-            </Fragment>
-          ))}
-          <Field label="Operations">
-            {outerOperationRows(authority).length ? (
-              <CountFold entries={outerOperationRows(authority)} noun="operation" />
-            ) : <small>None selected on these resources.</small>}
-          </Field>
-          {namedServiceRows(authority).length ? (
-            <Field label="Service actions">
-              <CountFold entries={namedServiceRows(authority)} noun="service" />
-            </Field>
-          ) : null}
-          {Object.keys(authority.account_scope || {}).length ? (
-            <Field label="Accounts" wide>
-              {Object.entries(authority.account_scope || {}).map(([provider, accountsMap]) => (
-                <span className="acct-block" key={`preview:${provider}`}>
-                  <span className="acct-provider">{providers[provider]?.label || provider}</span>
-                  {Object.entries(accountsMap || {}).map(([accountId, claims]) => (
-                    <span className="acct-line" key={`preview:${provider}:${accountId}`}>
-                      <span className="acct-name" title={accountId}>
-                        {accountId === '*' ? 'any account' : (accountLabelById.get(accountId) || accountId)}
-                      </span>
-                      <FoldedChipRow entries={(claims || []).includes('*') ? ['all'] : claims} expanded="groups" />
-                    </span>
-                  ))}
-                </span>
-              ))}
-            </Field>
-          ) : null}
-        </div>
-      ) : (
-        <div className="notice">The pending combination grants no service or operation.</div>
-      )}
-    </section>
-  );
   const renderCardComposition = (
     item: DelegatedAccessRecord,
     { editing = false }: { editing?: boolean } = {},
@@ -4216,6 +4353,38 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const problemText = problems
       .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(record, resource)))
       .join(' ');
+    const linkedControl = linkedControlCard(record);
+    const controlLabel = linkedControl?.binding?.issuer_label
+      || linkedControl?.binding?.issuer_ref
+      || linkedControl?.binding?.control_id
+      || 'Control Card';
+    const controlCappedTools = linkedControl?.state === 'active'
+      && linkedControl.composition_mode !== 'or'
+      && linkedControl.control_authority
+      ? outerOperationsExcludedByControl(
+          pendingCallerAuthority(record), linkedControl.control_authority,
+        )
+      : [];
+    const compositionMode: ControlCompositionMode = linkedControl?.composition_mode === 'or'
+      ? 'or'
+      : 'and';
+    const callerDraft = pendingCallerAuthority(record);
+    const effectiveComposition: EffectiveCompositionView | undefined = showingEffective
+      && linkedControl?.control_authority
+      ? {
+          mode: compositionMode,
+          control: linkedControl.control_authority,
+          effective: composeControlCardAuthority(
+            callerDraft, linkedControl.control_authority, compositionMode,
+          ),
+          controlLabel,
+        }
+      : undefined;
+    const effectiveSummary = effectiveComposition ? [
+      `${authorityOuterOperationCount(effectiveComposition.effective)} effective tools`,
+      `${authorityNamedOperationCount(effectiveComposition.effective)} effective service actions`,
+      `${authorityAccountCount(effectiveComposition.effective)} effective accounts`,
+    ].join(' · ') : '';
     return (
       <div className="card-workbench" ref={workbenchRef}>
         <aside className="card-rail" aria-label="Access cards">
@@ -4315,19 +4484,50 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               />
             </label>
           ) : null}
-          {showingEffective
-            ? renderAuthorityPreview(displayedAuthority(record))
-            : (record.source === 'agent'
-                || record.source === 'control'
-                || Object.keys(record.resource_grants || {}).length
-                ? renderEditResourceSections(record)
-                : null)}
-          {!showingEffective ? renderAccountScopePicker(
+          {!showingEffective && controlCappedTools.length ? (
+            <div className="notice warning control-cap-warning" role="status">
+              <strong>
+                {controlCappedTools.length} selected Caller Card tool{controlCappedTools.length === 1 ? ' is' : 's are'} inactive
+              </strong>
+              <span>
+                {' '}Save keeps {controlCappedTools.length === 1 ? 'this selection' : 'these selections'} on the Caller Card.
+                {' '}{controlLabel} must also allow {controlCappedTools.length === 1 ? 'it' : 'them'} before {controlCappedTools.length === 1 ? 'it becomes' : 'they become'} effective.
+              </span>
+              <CountFold
+                entries={controlCappedTools.map(({ resource, operation }) => (
+                  `${doorAlias(resource) || resource}: ${operation}`
+                ))}
+                noun="inactive tool"
+              />
+            </div>
+          ) : null}
+          {effectiveComposition ? (
+            <div className="effective-composition-guide" role="status">
+              <strong>{effectiveSummary}</strong>
+              <span className="effective-composition-guide__legend">
+                <span className="badge badge-error">removed by {controlLabel}</span>
+                {compositionMode === 'or' ? <span className="badge badge-ok">added by {controlLabel}</span> : null}
+              </span>
+              <small>
+                This is the Caller Card editor with {controlLabel} applied as a row diff.
+                {' '}The controls edit the Caller Card; control-owned access changes on {controlLabel}.
+              </small>
+            </div>
+          ) : null}
+          {record.source === 'agent'
+            || record.source === 'control'
+            || Object.keys(record.resource_grants || {}).length
+            ? renderEditResourceSections(record, effectiveComposition)
+            : null}
+          {renderAccountScopePicker(
             editAccountScope,
             toggleEditAccount,
             roleLabel,
-            { existingScope: seedAccountScopeFromRecord(record) },
-          ) : null}
+            {
+              existingScope: seedAccountScopeFromRecord(record),
+              composition: effectiveComposition,
+            },
+          )}
           <div className="form-actions form-actions--sticky">
             {editActionError || delegatedAccessError || problemText ? (
               <div className="error form-actions__error" role="alert">

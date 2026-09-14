@@ -596,6 +596,13 @@ test('linked Card editing keeps both authority views and dialogs use one governe
   assert.match(panel, /Preview of access shared by this pending caller edit/)
   assert.doesNotMatch(panel, /editing \? 'caller' : authorityReading/)
   assert.match(preview, /requires the raw credentialless Control Card authority/)
+  assert.match(panel, /selected Caller Card tool/)
+  assert.match(panel, /must also allow/)
+  assert.match(panel, /renderEditResourceSections\(record, effectiveComposition\)/)
+  assert.match(panel, /Caller Card editor with \{controlLabel\} applied as a row diff/)
+  assert.doesNotMatch(panel, /renderAuthorityPreview/)
+  assert.match(preview, /export function compositionRowState/)
+  assert.match(preview, /export function outerOperationsExcludedByControl/)
 
   assert.match(modal, /createPortal\(children, document\.body\)/)
   assert.match(confirm, /<ModalLayer>/)

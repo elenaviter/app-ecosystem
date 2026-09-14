@@ -9,6 +9,10 @@ import type {
 import { consentPlanState, type ConsentPlanAction } from '../delegatedToKdcube/ConsentPlan';
 import { doorGrantsForOperation } from './pendingGrantProjection';
 import { operationHelpText } from './resourceEditing';
+import {
+  compositionRowState,
+  type ControlCompositionMode,
+} from './controlCardPreview';
 import { InfoMark } from '../../components/InfoMark';
 
 interface NamedServiceOperationRow {
@@ -30,6 +34,11 @@ interface DelegatedResourceCatalogProps {
   ) => void;
   providers: Record<string, DelegatedToKdcubeProvider>;
   accounts: DelegatedToKdcubeAccount[];
+  composition?: {
+    mode: ControlCompositionMode;
+    controlLabel: string;
+    controlOperations: Record<string, string[]>;
+  };
 }
 
 const CONSENT_ACTION_LABEL: Record<Exclude<ConsentPlanAction, 'done'>, string> = {
@@ -185,6 +194,7 @@ export function DelegatedResourceCatalog({
   onOperationChange,
   providers,
   accounts,
+  composition,
 }: DelegatedResourceCatalogProps) {
   const namespaces = resource.named_services || [];
   const [open, setOpen] = useState(false);
@@ -198,6 +208,14 @@ export function DelegatedResourceCatalog({
   const selectedCount = namespaces.reduce((total, namespace) => (
     total + (selectedOperations[namespace.namespace] || []).length
   ), 0);
+  const effectiveCount = composition ? offeredRows.filter(({ namespace, row }) => {
+    const callerSelected = (selectedOperations[namespace] || []).includes(row.operation);
+    const controlSelected = (composition.controlOperations[namespace] || [])
+      .some((operation) => operation === '*' || operation === row.operation);
+    return ['normal', 'added'].includes(
+      compositionRowState(callerSelected, controlSelected, composition.mode),
+    );
+  }).length : selectedCount;
   const setEveryOperation = (checked: boolean) => {
     offeredRows.forEach(({ namespace, row }) => {
       const held = new Set(selectedOperations[namespace] || []);
@@ -230,7 +248,11 @@ export function DelegatedResourceCatalog({
       <summary className="resource-boundaries-head">
         <span className="edit-section__name">Service actions</span>
         <InfoMark text="Actions published by each service available through this resource. Open a service to choose individual actions." />
-        <span className="edit-section__count">{selectedCount} of {offeredRows.length} selected</span>
+        <span className="edit-section__count">
+          {composition
+            ? `${effectiveCount} effective · ${selectedCount} on Caller Card · ${offeredRows.length} available`
+            : `${selectedCount} of ${offeredRows.length} selected`}
+        </span>
       </summary>
       <div className="resource-boundaries__body">
         <div className="resource-boundaries-controls">
@@ -262,6 +284,14 @@ export function DelegatedResourceCatalog({
           const rows = operationRows(namespace);
           const selected = new Set(selectedOperations[namespace.namespace] || []);
           const includedRows = rows.filter((row) => selected.has(row.operation));
+          const effectiveRows = composition ? rows.filter((row) => {
+            const callerSelected = selected.has(row.operation);
+            const controlSelected = (composition.controlOperations[namespace.namespace] || [])
+              .some((operation) => operation === '*' || operation === row.operation);
+            return ['normal', 'added'].includes(
+              compositionRowState(callerSelected, controlSelected, composition.mode),
+            );
+          }) : includedRows;
           const includedOperations = Array.from(selected);
           const requirements = (namespace.connected_accounts || [])
             .map((requirement) => ({
@@ -309,14 +339,21 @@ export function DelegatedResourceCatalog({
                   None
                 </button>
               </span>
-              <span className={`badge${includedRows.length ? ' badge-ok' : ''}`}>
-                {includedRows.length}/{rows.length}
+              <span className={`badge${effectiveRows.length ? ' badge-ok' : ''}`}>
+                {composition
+                  ? `${effectiveRows.length} effective · ${includedRows.length} caller`
+                  : `${includedRows.length}/${rows.length}`}
               </span>
             </summary>
 
             <div className="namespace-operation-list">
               {rows.map((row) => {
                 const included = includedRows.includes(row);
+                const controlSelected = (composition?.controlOperations[namespace.namespace] || [])
+                  .some((operation) => operation === '*' || operation === row.operation);
+                const diffState = composition
+                  ? compositionRowState(included, controlSelected, composition.mode)
+                  : 'absent';
                 const requiredGrants = doorGrantsForOperation(
                   resource,
                   namespace,
@@ -328,7 +365,12 @@ export function DelegatedResourceCatalog({
                 );
                 return (
                   <label
-                    className={`namespace-operation${included ? ' namespace-operation-included' : ''}`}
+                    className={[
+                      'namespace-operation',
+                      included ? 'namespace-operation-included' : '',
+                      diffState === 'added' ? 'authority-diff-added' : '',
+                      diffState === 'removed' ? 'authority-diff-removed' : '',
+                    ].filter(Boolean).join(' ')}
                     key={`${namespace.namespace}:${row.operation}:${row.grants.join(':')}`}
                   >
                     <input
@@ -344,6 +386,12 @@ export function DelegatedResourceCatalog({
                     <span className="namespace-operation__body">
                       <span className="namespace-operation__title">
                         <strong>{row.label}</strong>
+                        {diffState === 'added' ? (
+                          <span className="badge badge-ok">added by {composition?.controlLabel}</span>
+                        ) : null}
+                        {diffState === 'removed' ? (
+                          <span className="badge badge-error">removed by {composition?.controlLabel}</span>
+                        ) : null}
                         {row.label !== row.operation ? (
                           <code className="operation-id">{row.operation}</code>
                         ) : null}
@@ -357,6 +405,16 @@ export function DelegatedResourceCatalog({
                         />
                       </span>
                       {row.description ? <small>{row.description}</small> : null}
+                      {diffState === 'added' ? (
+                        <small className="authority-diff-note">
+                          Effective through {composition?.controlLabel}. This checkbox edits the Caller Card.
+                        </small>
+                      ) : null}
+                      {diffState === 'removed' ? (
+                        <small className="authority-diff-note">
+                          Selected on the Caller Card and inactive until {composition?.controlLabel} also allows it.
+                        </small>
+                      ) : null}
                       {/* Required service permissions appear only when the card
                           does not yet carry them. */}
                       {missingGrants.length ? (

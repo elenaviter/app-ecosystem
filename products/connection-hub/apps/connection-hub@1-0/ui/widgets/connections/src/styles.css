@@ -3282,7 +3282,50 @@ code {
   border-top: 1px solid var(--line-soft);
   border-bottom: 1px solid var(--line-soft);
 }
-.effective-authority-preview > .account-title { margin-bottom: 8px; }
+.effective-authority-preview__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 8px;
+}
+.effective-authority-preview__head > strong { color: var(--ok-text); font-size: 12px; }
+.control-cap-warning { margin: 10px 0; }
+.control-cap-warning .count-fold { margin-top: 5px; }
+.effective-composition-guide {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px 12px;
+  margin: 10px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--blue);
+  background: var(--surface-2);
+}
+.effective-composition-guide__legend { display: flex; flex-wrap: wrap; gap: 4px; }
+.effective-composition-guide > small { grid-column: 1 / -1; color: var(--muted); }
+
+/* The Effective Card is the Caller Card hierarchy with composition visible on
+   each affected row. Text badges carry the meaning; colour makes the diff
+   scannable without becoming its only signal. */
+.authority-diff-added {
+  background: rgba(var(--ok-rgb), 0.07) !important;
+  border-color: rgba(var(--ok-rgb), 0.45) !important;
+}
+.authority-diff-removed {
+  background: rgba(var(--danger-rgb), 0.06) !important;
+  border-color: rgba(var(--danger-rgb), 0.42) !important;
+}
+.authority-diff-note { color: var(--text-2); }
+.resource-edit-section.authority-diff-added,
+.resource-edit-section.authority-diff-removed {
+  border-left-width: 3px;
+}
+@media (max-width: 620px) {
+  .effective-composition-guide { grid-template-columns: minmax(0, 1fr); }
+}
 
 
 /* ---------------------------------------------------------------------------
@@ -3344,6 +3387,14 @@ code {
   background: transparent;
 }
 .resource-operations .outer-operation-editor--policy { padding: 2px 4px; }
+.resource-operations .outer-operation-editor--control-capped {
+  background: rgba(var(--warn-rgb), 0.05);
+}
+.resource-operations .control-cap-note {
+  grid-column: 1 / -1;
+  padding: 0 0 4px 20px;
+  color: var(--warn-text);
+}
 .tool-choice {
   display: flex;
   align-items: center;

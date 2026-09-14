@@ -29,17 +29,27 @@ export function ResourceSectionHead({
   isNew,
   onRemove,
   removeLabel,
+  compositionState,
+  controlLabel,
 }: {
   title: string;
   isNew?: boolean;
   onRemove?: () => void;
   removeLabel?: string;
+  compositionState?: 'added' | 'removed';
+  controlLabel?: string;
 }) {
   return (
     <summary className="resource-section-head">
       <span className="resource-section-head__title">
         <strong>{title}</strong>
         {isNew ? <span className="badge badge-warn">adding</span> : null}
+        {compositionState === 'added' ? (
+          <span className="badge badge-ok">added by {controlLabel || 'Control Card'}</span>
+        ) : null}
+        {compositionState === 'removed' ? (
+          <span className="badge badge-error">removed by {controlLabel || 'Control Card'}</span>
+        ) : null}
       </span>
       {onRemove ? (
         <button
@@ -60,11 +70,20 @@ export function ResourceSectionHead({
 
 /** A resource marked for removal: the section collapses to one line so the
  *  other resources keep their room, and the decision can be undone until Save. */
-export function RemovedResourceStub({ title, onUndo }: { title: string; onUndo: () => void }) {
+export function RemovedResourceStub({
+  title,
+  onUndo,
+  remainingEffect,
+}: {
+  title: string;
+  onUndo: () => void;
+  remainingEffect?: string;
+}) {
   return (
     <div className="resource-removed-stub">
       <span>
-        Removed when you save: <b>{title}</b>. The card's other resources and its credential stay as they are.
+        Removed from the Caller Card when you save: <b>{title}</b>.{' '}
+        {remainingEffect || "The card's other resources and its credential stay as they are."}
       </span>
       <button type="button" className="inline-more" onClick={onUndo}>Undo</button>
     </div>
