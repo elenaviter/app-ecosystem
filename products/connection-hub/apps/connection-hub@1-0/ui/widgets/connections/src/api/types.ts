@@ -155,16 +155,16 @@ export interface DelegatedInvocationPolicy {
  *  empty map is an explicit "nothing". Agent grants carry the wildcard. */
 export type DelegatedAccessStoredNamedServices = '*' | DelegatedAccessNamedServiceOperations;
 
-export interface DelegatedProjectControlBinding {
+export interface DelegatedControlCardBinding {
   control_id: string;
   issuer_ref: string;
-  issuer_kind?: 'project' | string;
+  issuer_kind?: string;
   issuer_label?: string;
   manage_url?: string;
   control_revision?: number;
 }
 
-export interface DelegatedProjectControlAuthority {
+export interface DelegatedControlCardAuthority {
   operations?: string[];
   resource_operations?: DelegatedAccessResourceOperations;
   resource_grants?: Record<string, string[]>;
@@ -173,24 +173,30 @@ export interface DelegatedProjectControlAuthority {
   account_scope?: Record<string, Record<string, string[]>>;
 }
 
-export interface DelegatedProjectControlView {
-  state: 'not_controlled' | 'active' | 'updating' | 'retired' | 'unavailable' | string;
+export interface DelegatedControlCardView {
+  state: 'not_controlled' | 'active' | 'unavailable' | string;
   fail_closed?: boolean;
   reason?: string;
-  binding?: DelegatedProjectControlBinding;
-  authority?: DelegatedProjectControlAuthority;
+  binding?: DelegatedControlCardBinding;
+  /** Raw credentialless Control Card authority. The saved effective authority
+   *  cannot preview a pending caller edit because its intersection is lossy. */
+  control_authority?: DelegatedControlCardAuthority;
+  authority?: DelegatedControlCardAuthority;
+  composition_mode?: 'and' | 'or' | string;
+  properties?: Record<string, unknown>;
   resolution?: {
     participant_card_revision?: number;
     participant_catalog_version?: string;
-    control_revision?: number;
-    control_basis_access_id?: string;
-    control_basis_card_revision?: number;
-    control_basis_catalog_version?: string;
+    control_card_revision?: number;
+    control_catalog_version?: string;
   };
 }
 
 export interface DelegatedAccessRecord {
   access_id: string;
+  /** Current durable Card state. Exact-card reads include revoked Cards so a
+   *  linking application can explain why its gate is closed. */
+  state?: 'active' | 'revoked' | string;
   label?: string;
   client_id?: string;
   delegate_subject?: string;
@@ -255,9 +261,11 @@ export interface DelegatedAccessRecord {
   /** False on an agent card still living under the earlier resource-dependent
    *  id; it folds into the profile's stable card on the next grant. */
   stable_identity?: boolean;
-  /** The project-owned ceiling currently intersected with this Card. The
-   *  Card fields above remain the owner's original, editable authority. */
-  project_control?: DelegatedProjectControlView;
+  /** The credentialless Card linked to this caller Card and the effective
+   *  authority produced by their configured AND/OR composition. */
+  control_card?: DelegatedControlCardView;
+  /** Compatibility alias for widgets staged before the generic field name. */
+  project_control?: DelegatedControlCardView;
   /** Owner-visible delegable resources that may join this card, and why the
    *  others may not. */
   resource_offers?: DelegatedResourceOffer[];
@@ -265,6 +273,14 @@ export interface DelegatedAccessRecord {
    *  began. It governs reach for single-resource clients and remains origin
    *  metadata for multi-resource clients. */
   entry_resource?: string;
+  /** A credentialless Card receives its control role only when another Card
+   *  links it. These are ordinary Card fields, not a second authority model. */
+  issuer_ref?: string;
+  issuer_kind?: string;
+  issuer_label?: string;
+  manage_url?: string;
+  composition_mode?: 'and' | 'or' | string;
+  properties?: Record<string, unknown>;
 }
 
 export interface DelegatedResourceAcceptance {
@@ -400,6 +416,16 @@ export interface DelegatedAccessCreateResult {
     card_revision?: { expected: number; actual: number };
     catalog_version?: { expected: string; actual: string };
   };
+}
+
+export interface ControlCardGetResult {
+  ok?: boolean;
+  access?: DelegatedAccessRecord;
+  control_card?: DelegatedAccessRecord;
+  authority?: Record<string, unknown>;
+  error?: string;
+  message?: string;
+  status?: number;
 }
 
 /** Renewal answers like creation: the renewed card and its new token, once. */

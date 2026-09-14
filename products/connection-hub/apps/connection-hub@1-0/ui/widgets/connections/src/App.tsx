@@ -235,14 +235,14 @@ export default function App() {
   // panel — its consentDeepLinkFromLocation idiom then seeds the numbered
   // consent plan exactly as a direct link would.
   useEffect(() => {
-    if (telegramMiniAppMode || claimChallengeId) return;
+    if (telegramMiniAppMode || claimChallengeId || !runtimeReady) return;
     const onSurfaceCommand = (event: MessageEvent) => {
       const command = parseConnectionsHubOpen(event.data);
       if (!command) return;
       console.info('[consent-route] hub received', command.tab, JSON.stringify(command.params));
       const params = command.params;
       const tab = tabFromValue(command.tab)
-        ?? ((params.pending_agent_grant || params.agent_client_id || params.manual_access_id || params.access_id || params.oauth_consent)
+        ?? ((params.pending_agent_grant || params.agent_client_id || params.manual_access_id || params.control_card_id || params.access_id || params.oauth_consent)
           ? 'delegatedAccess'
           : (params.provider_id || params.connector_app_id || params.claims)
             ? 'delegatedToKdcube'
@@ -255,7 +255,7 @@ export default function App() {
         // offer its one-click grant pane; the nonce remounts it to re-read.
         try {
           const url = new URL(window.location.href);
-          (['pending_agent_grant', 'agent_client_id', 'manual_access_id', 'access_id', 'oauth_consent', 'resource', 'claims', 'namespace', 'operation', 'outer_operation', 'invocation_policy', 'invocation_change_id', 'request_bound', 'request_digest', 'request_approval_ticket', 'request_card_revision', 'request_authority_revision', 'approval_application_id', 'account_id', 'account_claim'] as const).forEach((key) => {
+          (['pending_agent_grant', 'agent_client_id', 'manual_access_id', 'control_card_id', 'access_id', 'oauth_consent', 'resource', 'claims', 'namespace', 'operation', 'outer_operation', 'invocation_policy', 'invocation_change_id', 'request_bound', 'request_digest', 'request_approval_ticket', 'request_card_revision', 'request_authority_revision', 'approval_application_id', 'account_id', 'account_claim'] as const).forEach((key) => {
             const value = (params[key] || '').trim();
             if (value) url.searchParams.set(key, value);
             else url.searchParams.delete(key);
@@ -321,27 +321,21 @@ export default function App() {
     window.addEventListener('message', onSurfaceCommand);
     announceConnectionsHubReady();
     return () => window.removeEventListener('message', onSurfaceCommand);
-  }, [telegramMiniAppMode, claimChallengeId, changeTab, dispatch]);
+  }, [telegramMiniAppMode, claimChallengeId, runtimeReady, changeTab, dispatch]);
+
+  if (!runtimeReady) {
+    return (
+      <div className="page">
+        <p className="muted">Loading Connection Hub…</p>
+      </div>
+    );
+  }
 
   if (telegramMiniAppMode) {
-    if (!runtimeReady) {
-      return (
-        <div className="page">
-          <p className="muted">Loading…</p>
-        </div>
-      );
-    }
     return <TelegramMiniAppLinkPanel />;
   }
 
   if (claimChallengeId) {
-    if (!runtimeReady) {
-      return (
-        <div className="page">
-          <p className="muted">Loading…</p>
-        </div>
-      );
-    }
     return <TelegramClaimPage challengeId={claimChallengeId} />;
   }
 

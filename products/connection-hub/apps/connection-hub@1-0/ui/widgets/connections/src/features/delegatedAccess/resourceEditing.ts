@@ -4,8 +4,10 @@
  * A card holds several resources under one stable identity. Editing may add
  * an owner-visible, identity-compatible resource, remove one resource while
  * the others stay untouched, and accept a changed descriptor for exactly the
- * selected operations the grantor reviewed. The save is refused, with the
- * reason, when it would leave the card empty (that is a revoke, decided
+ * selected operations the grantor reviewed. A resource carries authority when
+ * it has a permission, an outer operation, or a named-service action; operations
+ * may legitimately require no service permission. The save is refused, with
+ * the reason, when it would leave the card empty (that is a revoke, decided
  * explicitly), grant an added resource nothing, or grant a new operation
  * without an invocation choice.
  */
@@ -43,7 +45,77 @@ export interface ResourceSelectionIndex {
 
 export interface ClaimBoundOperation {
   name: string;
+  label?: string;
+  description?: string;
   grants?: string[];
+}
+
+/** Human text for an operation while preserving its canonical id separately.
+ * Catalog authors own the label; older rows without one still get readable UI. */
+export function operationDisplayLabel(
+  operation: string,
+  options: ClaimBoundOperation[] = [],
+): string {
+  const catalogLabel = options.find((option) => option.name === operation)?.label?.trim();
+  if (catalogLabel && catalogLabel.toLocaleLowerCase() !== operation.trim().toLocaleLowerCase()) {
+    return catalogLabel;
+  }
+  const readable = String(operation || '')
+    .trim()
+    .replace(/[_:.]+/g, ' ')
+    .replace(/\s+/g, ' ');
+  return readable ? readable.replace(/^\w/, (letter) => letter.toUpperCase()) : 'Unnamed operation';
+}
+
+/** A card resource is meaningful through any of its independent authority
+ * families. Empty service claims do not imply empty authority: an explicitly
+ * selected operation may be claimless or governed only by account scope. */
+export function resourceSelectionHasAuthority(
+  claims: string[] | undefined,
+  operations: string[] | undefined,
+  namedOperations: Record<string, string[]> | undefined,
+): boolean {
+  return Boolean(
+    (claims || []).some(Boolean)
+    || (operations || []).some(Boolean)
+    || Object.values(namedOperations || {}).some((items) => (items || []).some(Boolean)),
+  );
+}
+
+/** One operation's compact help text. The operation contract is the source of
+ * truth for required service permissions; the current selection says whether
+ * the person has already satisfied that half of the choice. */
+export function operationHelpText({
+  operation,
+  description = '',
+  requiredGrants = [],
+  selectedGrants = [],
+}: {
+  operation: string;
+  description?: string;
+  requiredGrants?: string[];
+  selectedGrants?: string[];
+}): string {
+  const sentence = (value: string) => {
+    const text = value.trim();
+    return text && !/[.!?]$/.test(text) ? `${text}.` : text;
+  };
+  const required = Array.from(new Set(requiredGrants.filter(Boolean)));
+  const selected = new Set(selectedGrants.filter(Boolean));
+  const permissions = required.length
+    ? `Required service permission${required.length === 1 ? '' : 's'}: ${required.join(', ')}.`
+    : 'No additional service permission is required.';
+  const selection = required.length
+    ? required.every((grant) => selected.has(grant))
+      ? 'Already selected for this card.'
+      : `Selecting this operation also selects ${required.length === 1 ? 'it' : 'them'}.`
+    : '';
+  return [
+    sentence(description),
+    `Operation: ${operation}.`,
+    permissions,
+    selection,
+  ].filter(Boolean).join(' ');
 }
 
 /** Project a permission choice onto the concrete tools it permits. Tools with
@@ -133,13 +205,17 @@ export function materializeSelectionRouteGrants<T extends ResourceSelectionOptio
   index: ResourceSelectionIndex,
   selected: Record<string, string[]>,
   rowFor: (resource: string) => string = (resource) => resource,
+  selectedResources: Iterable<string> = Object.entries(selected)
+    .filter(([, grants]) => (grants || []).length > 0)
+    .map(([resource]) => resource),
 ): Record<string, string[]> {
   const optionByResource = new Map(options.map((option) => [option.resource, option]));
   const keys = Object.keys(selected);
+  const active = new Set(selectedResources);
   const out: Record<string, string[]> = {};
   keys.forEach((resource) => {
     const grants = selected[resource] || [];
-    if (!grants.length || index.childrenByParent[rowFor(resource)]?.length) return;
+    if (!active.has(resource) || index.childrenByParent[rowFor(resource)]?.length) return;
     out[resource] = Array.from(new Set(grants));
   });
   keys.forEach((resource) => {
@@ -235,7 +311,7 @@ export function offerReasonText(offer: ResourceOffer): string {
 }
 
 export interface SaveProblem {
-  code: 'no_resources_left' | 'added_resource_without_claims' | 'operation_without_choice';
+  code: 'no_resources_left' | 'added_resource_without_authority' | 'operation_without_choice';
   resource?: string;
   operations?: string[];
 }
@@ -245,16 +321,22 @@ export function saveProblems(input: {
   resourceKeys: string[];
   addedResources: string[];
   claimsFor: (resource: string) => string[];
+  operationsFor?: (resource: string) => string[];
+  namedOperationsFor?: (resource: string) => Record<string, string[]>;
   missingChoices: Array<{ resource: string; operation: string }>;
 }): SaveProblem[] {
   const problems: SaveProblem[] = [];
-  const withClaims = input.resourceKeys.filter((resource) => input.claimsFor(resource).length > 0);
-  if (!withClaims.length) {
+  const hasAuthority = (resource: string) => resourceSelectionHasAuthority(
+    input.claimsFor(resource),
+    input.operationsFor?.(resource),
+    input.namedOperationsFor?.(resource),
+  );
+  if (!input.resourceKeys.some(hasAuthority)) {
     problems.push({ code: 'no_resources_left' });
   }
   input.addedResources
-    .filter((resource) => input.resourceKeys.includes(resource) && !input.claimsFor(resource).length)
-    .forEach((resource) => problems.push({ code: 'added_resource_without_claims', resource }));
+    .filter((resource) => input.resourceKeys.includes(resource) && !hasAuthority(resource))
+    .forEach((resource) => problems.push({ code: 'added_resource_without_authority', resource }));
   const byResource = new Map<string, string[]>();
   input.missingChoices.forEach(({ resource, operation }) => {
     byResource.set(resource, [...(byResource.get(resource) || []), operation]);
@@ -269,8 +351,8 @@ export function saveProblemText(problem: SaveProblem, labelFor: (resource: strin
   switch (problem.code) {
     case 'no_resources_left':
       return 'Removing every resource revokes the card. Use Revoke instead.';
-    case 'added_resource_without_claims':
-      return `Select at least one access claim on ${labelFor(problem.resource || '')} or remove it again.`;
+    case 'added_resource_without_authority':
+      return `Select a permission, tool, or service action on ${labelFor(problem.resource || '')}, or remove it again.`;
     case 'operation_without_choice':
       return `Choose once or always for ${(problem.operations || []).join(', ')} on ${labelFor(problem.resource || '')}.`;
     default:

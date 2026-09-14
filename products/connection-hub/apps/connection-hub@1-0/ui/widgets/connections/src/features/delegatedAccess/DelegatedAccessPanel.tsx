@@ -14,6 +14,7 @@ import { InvocationPolicyControl, OperationInvocationChoice } from './Invocation
 import { FoldedChipRow } from '../../components/ChipFold';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { InfoMark } from '../../components/InfoMark';
+import { ModalLayer } from '../../components/ModalLayer';
 import { CARD_GROUP_OPTIONS, correlatedCardLabel, groupCards, type CardGroupBy } from './cardGroups';
 import { groupClaimsByService } from '../../components/claimGroups';
 import { SecretResourceSelector } from './SecretResourceSelector';
@@ -26,8 +27,10 @@ import {
 import {
   editedResourceKeys,
   materializeSelectionRouteGrants,
+  operationHelpText,
   orderResourceSelection,
   projectClaimsOntoOperations,
+  resourceSelectionHasAuthority,
   resourceSelectionIndex,
   saveProblemText,
   saveProblems,
@@ -80,6 +83,7 @@ import type {
   DelegatedAccessResourceOperations,
   DelegatedAccessStoredNamedServices,
   DelegatedCatalogDrift,
+  DelegatedControlCardAuthority,
   DelegatedInvocationPolicy,
   DelegatedToKdcubeAccount,
 } from '../../api/types';
@@ -87,6 +91,7 @@ import {
   clearIssuedDelegatedAccess,
   createDelegatedAccess,
   grantAgentAccess,
+  loadControlCard,
   loadDelegatedAccess,
   renewDelegatedAccess,
   revokeDelegatedAccess,
@@ -104,6 +109,7 @@ import {
   accessCardFocusRequest,
   matchesAccessCardFocus,
 } from './accessCardFocus';
+import { composeControlCardAuthority } from './controlCardPreview';
 
 /** Whether a resource card matches a catalog search: its label/id, its grants
  *  (tokens and their vocabulary labels), its operations, and its named-service
@@ -311,6 +317,7 @@ function clientDoorFor(item: DelegatedAccessRecord): string {
 }
 
 function callerLabel(item: DelegatedAccessRecord): string {
+  if (item.source === 'control') return 'control card';
   const kind = recordKind(item);
   if (kind === 'agent') return 'hosted agent';
   if (kind === 'client') return 'connected client';
@@ -319,6 +326,7 @@ function callerLabel(item: DelegatedAccessRecord): string {
 }
 
 function callerNoun(item: DelegatedAccessRecord): string {
+  if (item.source === 'control') return 'this control card';
   const kind = recordKind(item);
   if (kind === 'agent') return 'this agent';
   if (kind === 'client') return 'this client';
@@ -327,6 +335,7 @@ function callerNoun(item: DelegatedAccessRecord): string {
 }
 
 function callerBadgeClass(item: DelegatedAccessRecord): string {
+  if (item.source === 'control') return 'badge-neutral';
   const kind = recordKind(item);
   if (kind === 'agent') return 'badge-agent';
   if (kind === 'client') return 'badge-client';
@@ -349,11 +358,20 @@ function orderedDoors(item: DelegatedAccessRecord, clientDoor: string): string[]
 const GRANT_PAGE_SIZE = 5;
 
 /** One labelled row of a grant card: small-caps key on the left, value right. */
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+  wide = false,
+}: {
+  label: string;
+  children: React.ReactNode;
+  wide?: boolean;
+}) {
+  const wideClass = wide ? ' card-field--wide' : '';
   return (
     <>
-      <span className="card-field-label">{label}</span>
-      <span className="card-field-value">{children}</span>
+      <span className={`card-field-label${wideClass}`}>{label}</span>
+      <span className={`card-field-value${wideClass}`}>{children}</span>
     </>
   );
 }
@@ -497,14 +515,15 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
         // A dialog, not inline content: the commands are wide and the card's
         // action column is narrow — rendering them in place stretched the whole
         // card. Fixed positioning keeps the layout untouched.
-        <div
-          className="script-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Manage this caller from a script"
-          onClick={() => setOpen(false)}
-        >
-          <div className="script-dialog" onClick={(event) => event.stopPropagation()}>
+        <ModalLayer>
+          <div
+            className="script-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Manage this caller from a script"
+            onClick={() => setOpen(false)}
+          >
+            <div className="script-dialog" onClick={(event) => event.stopPropagation()}>
             <div className="script-dialog-head">
               <div>
                 <div className="script-dialog-title">Manage this caller from a script</div>
@@ -549,8 +568,9 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
               script={script}
               note="$TOKEN is a credential allowed to call this deployment's operations."
             />
+            </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
     </>
   );
@@ -926,6 +946,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const dispatch = useAppDispatch();
   const {
     items,
+    focusedCard,
     grantOptions,
     resources,
     issuedToken,
@@ -1025,10 +1046,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // count, expiry) with its actions - for scanning many cards at once. The
   // detailed view stays the default.
   const [compactList, setCompactList] = useState(false);
-  // A controlled card opens on what is actually in force. The owner can
-  // switch back to the original authority they granted and edit only that.
+  // A Card with a linked Control Card opens on the authority in force. The
+  // owner can also inspect and edit the caller Card's direct authority.
   const [authorityViewByAccessId, setAuthorityViewByAccessId] = useState<
-    Record<string, 'original' | 'effective'>
+    Record<string, 'caller' | 'effective'>
   >({});
   // Editing happens on a workbench (rail of cards + one editor column) that
   // replaces the list; entering edit brings it into view.
@@ -1043,6 +1064,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
   // Rename of the card being edited (a DCR client always registers "Claude").
   const [editLabel, setEditLabel] = useState('');
+  const [editCompositionMode, setEditCompositionMode] = useState<'and' | 'or'>('and');
+  const [editActionError, setEditActionError] = useState('');
   // The automation-creation form is folded behind its call to action.
   const [createOpen, setCreateOpen] = useState(false);
   // Claims kept on the edited card, keyed `${resource}:${claim}`. The form
@@ -1178,16 +1201,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     () => resourceSelectionIndex(resources),
     [resources],
   );
+  const createAuthorityResources = useMemo(() => {
+    const candidates = new Set([
+      ...Object.keys(resourceGrants),
+      ...Object.keys(resourceOperations),
+      ...Object.keys(namedServiceOperations),
+    ]);
+    return Array.from(candidates).filter((resource) => resourceSelectionHasAuthority(
+      resourceGrants[resource],
+      resourceOperations[resource],
+      namedServiceOperations[resource],
+    ));
+  }, [namedServiceOperations, resourceGrants, resourceOperations]);
   const effectiveResourceGrants = useMemo(
     () => materializeSelectionRouteGrants(
       createResources,
       createSelectionIndex,
       resourceGrants,
+      (resource) => resource,
+      createAuthorityResources,
     ),
-    [createResources, createSelectionIndex, resourceGrants],
+    [createAuthorityResources, createResources, createSelectionIndex, resourceGrants],
   );
   const selectedResourceEntries = useMemo(
-    () => Object.entries(effectiveResourceGrants).filter(([, grants]) => grants.length > 0),
+    () => Object.entries(effectiveResourceGrants),
     [effectiveResourceGrants],
   );
   const oauthRequestedGrants = useMemo(() => (
@@ -1442,15 +1479,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }
       return;
     }
-    await dispatch(createDelegatedAccess({
-      label: label.trim() || 'Automation access',
-      resourceGrants: effectiveResourceGrants,
-      resourceOperations: selectedResourceOperations,
-      invocationModes,
-      namedServiceOperations: encodedNamedServiceOperations,
-      accountScope: createAccountScope,
-      ttlSeconds,
-    })).unwrap().catch(() => undefined);
+    try {
+      await dispatch(createDelegatedAccess({
+        label: label.trim() || 'Automation access',
+        resourceGrants: effectiveResourceGrants,
+        resourceOperations: selectedResourceOperations,
+        invocationModes,
+        namedServiceOperations: encodedNamedServiceOperations,
+        accountScope: createAccountScope,
+        ttlSeconds,
+      })).unwrap();
+    } catch {
+      // The reducer exposes the server reason. Keep this complete draft open so
+      // the operator can correct or retry it without rebuilding the Card.
+      return;
+    }
     // Fold the form back once the credential exists — the issued token renders
     // above it, which is what the user needs to see next.
     setCreateOpen(false);
@@ -1607,7 +1650,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         <button className="btn btn-danger" type="button" disabled={busy} onClick={() => setConfirmRevokeId(accessId)}>
           Revoke
         </button>
-        <RevokeScript item={item} />
+        {item.source !== 'control' ? <RevokeScript item={item} /> : null}
       </span>
     );
   };
@@ -1869,6 +1912,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     editNamedServiceOperations,
     editAccountScope,
     editLabel,
+    editCompositionMode,
     editAddedResources,
     editRemovedResources,
     editInvocationModes,
@@ -1889,6 +1933,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       grants.forEach((claim) => { picks[`${resource}:${claim}`] = true; });
     });
     setEditingAccessId(item.access_id);
+    setEditActionError('');
+    setAuthorityViewByAccessId((current) => ({
+      ...current,
+      [item.access_id]: 'caller',
+    }));
     setEditPicks(picks);
     setEditResourceOperations(
       Object.fromEntries(
@@ -1924,6 +1973,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
     setEditAccountScope(seedAccountScopeFromRecord(item));
     setEditLabel(item.label || '');
+    setEditCompositionMode(item.composition_mode === 'or' ? 'or' : 'and');
     setEditAddedResources([]);
     setEditRemovedResources([]);
     setEditAcceptedOperations({});
@@ -1953,11 +2003,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   }, [pendingServiceCapability]);
   const focusedAccessId = useRef<string | null>(null);
   useEffect(() => {
+    if (!accessCardFocus?.controlOnly) return;
+    if (focusedCard?.access_id === accessCardFocus.accessId) return;
+    void dispatch(loadControlCard({ controlId: accessCardFocus.accessId }));
+  }, [accessCardFocus, dispatch, focusedCard?.access_id]);
+  useEffect(() => {
     if (!accessCardFocus) {
       focusedAccessId.current = null;
       return;
     }
-    const item = items.find((candidate) => matchesAccessCardFocus(candidate, accessCardFocus));
+    const item = [...items, ...(focusedCard ? [focusedCard] : [])]
+      .find((candidate) => matchesAccessCardFocus(candidate, accessCardFocus));
     if (!item) return;
     if (focusedAccessId.current !== accessCardFocus.accessId) {
       focusedAccessId.current = accessCardFocus.accessId;
@@ -1983,7 +2039,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         }));
       }
     }
-  }, [accessCardFocus, items, accounts, startEdit]);
+  }, [accessCardFocus, items, focusedCard, accounts, startEdit]);
   // Per-account claim binding chosen while granting a PENDING request (consent card).
   const [pendingAccountScope, setPendingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   const [pendingExistingAccountScope, setPendingExistingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
@@ -2200,7 +2256,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const resourceOption = catalogRowFor(resources, resource, editRowFor);
     if (!resourceOption) return;
     const updatedGrants = editableClaimsFor(
-      items.find((item) => item.access_id === editingAccessId) || { access_id: '' },
+      items.find((item) => item.access_id === editingAccessId)
+        || (focusedCard?.access_id === editingAccessId ? focusedCard : undefined)
+        || { access_id: '' },
       resource,
     ).filter((item) => (
       item === claim ? checked : editPicks[`${resource}:${item}`] === true
@@ -2361,6 +2419,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditNamedServiceOperations({});
     setEditAccountScope({});
     setEditLabel('');
+    setEditCompositionMode('and');
+    setEditActionError('');
     setEditAddedResources([]);
     setEditRemovedResources([]);
     setEditAcceptedOperations({});
@@ -2400,34 +2460,84 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const editDirectClaims = (item: DelegatedAccessRecord, resource: string): string[] =>
     editableClaimsFor(item, resource).filter((claim) => editPicks[`${resource}:${claim}`] === true);
 
+  const editDirectResourceHasAuthority = (item: DelegatedAccessRecord, resource: string): boolean =>
+    resourceSelectionHasAuthority(
+      editDirectClaims(item, resource),
+      editResourceOperations[resource],
+      editNamedServiceOperations[resource],
+    );
+
   const editKeptClaims = (item: DelegatedAccessRecord, resource: string): string[] => {
     const row = (item.catalog_row_by_resource || {})[resource] || editRowFor(resource);
     const childRows = new Set(editSelectionIndex.childrenByParent[row] || []);
     if (!childRows.size) return editDirectClaims(item, resource);
     const hasSelectedChild = editResourceKeys(item).some((candidate) => {
       const candidateRow = (item.catalog_row_by_resource || {})[candidate] || editRowFor(candidate);
-      return childRows.has(candidateRow) && editDirectClaims(item, candidate).length > 0;
+      return childRows.has(candidateRow) && editDirectResourceHasAuthority(item, candidate);
     });
     if (!hasSelectedChild) return [];
     const option = resources.find((candidate) => candidate.resource === row);
     return option ? grantsForResource(option) : [];
   };
 
+  /** The caller authority represented by the unsaved controls. It is also the
+   *  exact left-hand side of the linked Control Card preview. */
+  const pendingCallerAuthority = (item: DelegatedAccessRecord): DelegatedControlCardAuthority => {
+    const kept = Object.fromEntries(
+      editResourceKeys(item)
+        .filter((resource) => editResourceHasAuthority(item, resource))
+        .map((resource) => [resource, editKeptClaims(item, resource)]),
+    );
+    const routed = materializeSelectionRouteGrants(
+      resources,
+      editSelectionIndex,
+      kept,
+      editRowFor,
+      Object.keys(kept),
+    );
+    const named = Object.fromEntries(
+      Object.entries(editNamedServiceOperations)
+        .filter(([resource]) => resource in routed)
+        .map(([resource, namespaces]) => [resource, namespaces]),
+    );
+    return {
+      operations: [],
+      resource_grants: routed,
+      resource_operations: Object.fromEntries(
+        Object.keys(routed).map((resource) => [resource, editResourceOperations[resource] || []]),
+      ),
+      named_service_operations: named,
+      effective_named_service_operations: named,
+      account_scope: editAccountScope,
+    };
+  };
+
   /** Operations the editor added that still have no invocation choice. The
    *  save waits for them: granted through the card update they would run as
    *  "always" until a later policy call, which is not what the user picked. */
   const editMissingChoices = (item: DelegatedAccessRecord): Array<{ resource: string; operation: string }> =>
-    editResourceKeys(item).flatMap((resource) => splitEditedOperations(
-      editGrantedOperations(item, resource),
-      editResourceOperations[resource] || [],
-      (operation) => editInvocationModes[`${resource}:${operation}`],
-    ).missingChoice.map((operation) => ({ resource, operation })));
+    item.source === 'control'
+      ? []
+      : editResourceKeys(item).flatMap((resource) => splitEditedOperations(
+        editGrantedOperations(item, resource),
+        editResourceOperations[resource] || [],
+        (operation) => editInvocationModes[`${resource}:${operation}`],
+      ).missingChoice.map((operation) => ({ resource, operation })));
+
+  const editResourceHasAuthority = (item: DelegatedAccessRecord, resource: string): boolean =>
+    resourceSelectionHasAuthority(
+      editKeptClaims(item, resource),
+      editResourceOperations[resource],
+      editNamedServiceOperations[resource],
+    );
 
   /** Everything that blocks Save, with the reason for the button title. */
   const editSaveProblems = (item: DelegatedAccessRecord) => saveProblems({
     resourceKeys: editResourceKeys(item),
     addedResources: editAddedResources,
     claimsFor: (resource) => editKeptClaims(item, resource),
+    operationsFor: (resource) => editResourceOperations[resource] || [],
+    namedOperationsFor: (resource) => editNamedServiceOperations[resource] || {},
     missingChoices: editMissingChoices(item),
   });
 
@@ -2445,31 +2555,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
-    if (editSaveProblems(item).length) return;
-    const kept: Record<string, string[]> = {};
-    editResourceKeys(item).forEach((resource) => {
-      kept[resource] = editKeptClaims(item, resource);
-    });
-    const anyKept = Object.values(kept).some((claims) => claims.length > 0);
-    if (!anyKept) {
-      // Removing everything is a revoke, not an edit.
-      await dispatch(revokeDelegatedAccess({ accessId: item.access_id })).unwrap().catch(() => undefined);
-      clearEditState();
-      void dispatch(loadDelegatedAccess());
+    const initialProblems = editSaveProblems(item);
+    if (initialProblems.length) {
+      setEditActionError(initialProblems
+        .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
+        .join(' '));
       return;
     }
+    setEditActionError('');
+    const kept: Record<string, string[]> = {};
+    editResourceKeys(item)
+      .filter((resource) => editResourceHasAuthority(item, resource))
+      .forEach((resource) => {
+        kept[resource] = editKeptClaims(item, resource);
+      });
     // One save for every family: the card is the authority, keyed by access_id,
     // and the edit replaces the authority the operator reviewed. The credential
     // is untouched — a copied manual token, an agent's reusable bearer and an
     // OAuth client's handles all keep working, on their very next call.
-    const prunedKept = Object.fromEntries(
-      Object.entries(kept).filter(([, claims]) => claims.length > 0),
-    );
     const routedKept = materializeSelectionRouteGrants(
       resources,
       editSelectionIndex,
-      prunedKept,
+      kept,
       editRowFor,
+      Object.keys(kept),
     );
     // The edited selection, minus resources fully unchecked above.
     const keptNamedServiceOperations = Object.fromEntries(
@@ -2490,49 +2599,72 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const splits = Object.fromEntries(
       Object.keys(routedKept).map((resource) => [
         resource,
-        splitEditedOperations(
-          editGrantedOperations(item, resource),
-          editResourceOperations[resource] || [],
-          (operation) => editInvocationModes[`${resource}:${operation}`],
-        ),
+        item.source === 'control'
+          ? {
+              kept: editResourceOperations[resource] || [],
+              focused: [],
+              missingChoice: [],
+            }
+          : splitEditedOperations(
+              editGrantedOperations(item, resource),
+              editResourceOperations[resource] || [],
+              (operation) => editInvocationModes[`${resource}:${operation}`],
+            ),
       ]),
     );
     if (Object.values(splits).some((split) => split.missingChoice.length)) return;
-    const updated = await dispatch(updateDelegatedAccess({
-      accessId: item.access_id,
-      label: editLabel.trim() || item.label || 'Automation access',
-      resourceGrants: routedKept,
-      resourceOperations: Object.fromEntries(
-        Object.entries(splits).map(([resource, split]) => [resource, split.kept]),
-      ),
-      namedServiceOperations: Object.keys(offered).length
-        ? encodeNamedServiceSelection(keptNamedServiceOperations, offered)
-        : undefined,
-      accountScope: editAccountScope,
-      // What this editor was opened on. The server refuses the save when
-      // either moved.
-      expectedCardRevision: item.card_revision,
-      expectedCatalogVersion: item.catalog_drift?.current_version || item.catalog_version,
-      // Changed descriptors the grantor reviewed and accepts with this save;
-      // every other changed selected operation stays suspended.
-      acceptedOperations: editAcceptedOperations,
-    })).unwrap().catch(() => undefined);
-    if (!updated || updated.ok === false) {
-      // The slice keeps a 409's current card and exposes every refusal as an
-      // error. Keep the person in this editor too: closing it made a failed
-      // save look successful and moved the error away from the action row.
-      if (updated?.status === 409 && updated.access) startEdit(updated.access);
+    const focusedAdditions = Object.entries(splits).flatMap(([resource, split]) => (
+      split.focused.map(({ operation, mode }) => ({ resource, operation, mode }))
+    ));
+    if (focusedAdditions.length && !item.client_id) {
+      setEditActionError(
+        `Could not add ${focusedAdditions[0].operation}: this card has no client identity for a focused grant. Your draft is still here.`,
+      );
       return;
     }
-    for (const [resource, split] of Object.entries(splits)) {
-      for (const { operation, mode } of split.focused) {
-        if (!item.client_id) {
-          console.warn('[delegated-access] card without client id cannot take a focused grant', item.access_id, operation);
-          continue;
-        }
+    let updated;
+    try {
+      updated = await dispatch(updateDelegatedAccess({
+        accessId: item.access_id,
+        label: editLabel.trim() || item.label || 'Automation access',
+        resourceGrants: routedKept,
+        resourceOperations: Object.fromEntries(
+          Object.entries(splits).map(([resource, split]) => [resource, split.kept]),
+        ),
+        namedServiceOperations: Object.keys(offered).length
+          ? encodeNamedServiceSelection(keptNamedServiceOperations, offered)
+          : undefined,
+        accountScope: editAccountScope,
+        // What this editor was opened on. The server refuses the save when
+        // either moved.
+        expectedCardRevision: item.card_revision,
+        expectedCatalogVersion: item.catalog_drift?.current_version || item.catalog_version,
+        // Changed descriptors the grantor reviewed and accepts with this save;
+        // every other changed selected operation stays suspended.
+        acceptedOperations: editAcceptedOperations,
+        compositionMode: item.source === 'control' ? editCompositionMode : undefined,
+      })).unwrap();
+    } catch (error) {
+      setEditActionError(`Save was not applied: ${String(error || 'request refused')}`);
+      return;
+    }
+    if (!updated || updated.ok === false) {
+      // Keep every draft choice in place. A conflict may refresh the record in
+      // Redux, but the operator decides how to reconcile it with this draft.
+      setEditActionError(
+        updated?.message
+        || (updated?.status === 409
+          ? 'This card or its service catalog changed while you were editing. Your draft is still here; review it against the refreshed card and save again.'
+          : `Save was not applied: ${updated?.error || 'request refused'}`),
+      );
+      return;
+    }
+    const completedOperations: string[] = [];
+    for (const { resource, operation, mode } of focusedAdditions) {
+      try {
         await dispatch(grantAgentAccess(focusedGrantArgs(
           {
-            clientId: item.client_id,
+            clientId: item.client_id as string,
             accessId: item.access_id,
             resource,
             operation,
@@ -2540,7 +2672,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           },
           mode,
           routedKept[resource] || [],
-        ))).unwrap().catch(() => undefined);
+        ))).unwrap();
+        completedOperations.push(operation);
+      } catch (error) {
+        const completed = completedOperations.length
+          ? ` Added before this refusal: ${completedOperations.join(', ')}.`
+          : '';
+        setEditActionError(
+          `The card changes were saved, but ${operation} was not added: ${String(error || 'request refused')}.${completed} Your draft is still here; retry Save to complete it.`,
+        );
+        // The base save (and any earlier focused grants) advanced the Card.
+        // Refresh that saved authority without reseeding this editor, so the
+        // retained draft retries only the operations that are still missing
+        // against the current revision.
+        void dispatch(loadDelegatedAccess());
+        return;
       }
     }
     clearEditState();
@@ -2559,8 +2705,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (!parent || searching) return true;
     return Boolean(
       openResources[parent]
-      || (resourceGrants[parent] || []).length
-      || (resourceGrants[item.resource] || []).length,
+      || createAuthorityResources.includes(parent)
+      || createAuthorityResources.includes(item.resource),
     );
   });
   // The identity the card in progress has already committed to, or '' while
@@ -2568,7 +2714,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const committedIdentityScope = (() => {
     const scopes = new Set(
       createResources
-        .filter((item) => (resourceGrants[item.resource] || []).length)
+        .filter((item) => createAuthorityResources.includes(item.resource))
         .map((item) => item.identity_scope || 'grantor'),
     );
     return scopes.size === 1 ? Array.from(scopes)[0] : '';
@@ -2619,12 +2765,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       ) : null}
       {visibleResources.map((item) => {
         const grants = grantsForResource(item);
-        const selectedCount = (resourceGrants[item.resource] || []).length;
+        const selectedPermissionCount = (resourceGrants[item.resource] || []).length;
+        const selectedOuterCount = (resourceOperations[item.resource] || []).length;
+        const selectedActionCount = Object.values(namedServiceOperations[item.resource] || {})
+          .reduce((total, operations) => total + operations.length, 0);
+        const availableActionCount = (item.named_services || [])
+          .reduce((total, namespace) => total + operationRows(namespace).length, 0);
+        const selectedCount = selectedPermissionCount + selectedOuterCount + selectedActionCount;
+        const availableCount = grants.length + (item.operations || []).length + availableActionCount;
         const selectionParent = createSelectionIndex.parentsByChild[item.resource]?.[0] || '';
         const selectionChildren = createSelectionIndex.childrenByParent[item.resource] || [];
         const isSelectionRoute = selectionChildren.length > 0;
         const selectedChildren = selectionChildren.filter(
-          (resource) => (resourceGrants[resource] || []).length > 0,
+          (resource) => createAuthorityResources.includes(resource),
         ).length;
         const isOpen = openResources[item.resource]
           ?? (searching || selectedCount > 0);
@@ -2693,8 +2846,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   ? <span className="badge badge-ok">{selectedChildren}/{selectionChildren.length} connectors</span>
                   : <span className="muted"><small>{selectionChildren.length} connectors</small></span>)
                 : (selectedCount
-                  ? <span className="badge badge-ok">{selectedCount}/{grants.length} selected</span>
-                  : <span className="muted"><small>{grants.length} options</small></span>)}
+                  ? <span className="badge badge-ok">{selectedCount}/{availableCount} selected</span>
+                  : <span className="muted"><small>{availableCount} options</small></span>)}
             </button>
             {isOpen && !isSelectionRoute ? (
               <>
@@ -2718,7 +2871,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   <summary>
                     <span className="edit-section__name">Service permissions</span>
                     <InfoMark text={HELP_PERMISSIONS} />
-                    <span className="edit-section__count">{selectedCount} of {grants.length} selected</span>
+                    <span className="edit-section__count">{selectedPermissionCount} of {grants.length} selected</span>
                   </summary>
                   <div className="edit-section__body claim-groups claim-groups--edit">
                     {groupClaimsByService(grants).map((group) => (
@@ -2812,11 +2965,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                     event.target.checked,
                                   )}
                                 />
-                                <span>{operation.label || operation.name}</span>
+                                <span className="operation-name">
+                                  <span>{operation.label || operation.name}</span>
+                                  {operation.label && operation.label !== operation.name ? (
+                                    <code className="operation-id">{operation.name}</code>
+                                  ) : null}
+                                </span>
                               </label>
-                              {operation.description ? (
-                                <InfoMark text={`${operation.description} Tool: ${operation.name}.`} />
-                              ) : null}
+                              <InfoMark text={operationHelpText({
+                                operation: operation.name,
+                                description: operation.description,
+                                requiredGrants: operation.grants,
+                                selectedGrants: resourceGrants[item.resource] || [],
+                              })} />
                             </span>
                             {selected ? (
                               <OperationInvocationChoice
@@ -2975,11 +3136,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   onChange={(event) => setPendingOperationSelected(event.target.checked)}
                 />
                 <span>
-                  <strong>{pendingOuterCapability.operation.label || pendingOuterCapability.operation.name}</strong>
+                  <span className="operation-name">
+                    <strong>{pendingOuterCapability.operation.label || pendingOuterCapability.operation.name}</strong>
+                    {pendingOuterCapability.operation.label !== pendingOuterCapability.operation.name ? (
+                      <code className="operation-id">{pendingOuterCapability.operation.name}</code>
+                    ) : null}
+                  </span>
                   {pendingOuterCapability.operation.description ? (
                     <small>{pendingOuterCapability.operation.description}</small>
                   ) : null}
-                  <small><code>{pendingOuterCapability.operation.name}</code></small>
                   <small>
                     <PendingStatus status={pendingSelectionStatus(
                       pendingOperationAlreadyGranted,
@@ -3018,7 +3183,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 onChange={(event) => setPendingOperationSelected(event.target.checked)}
               />
               <span>
-                <strong>{pendingServiceCapability.operation.label}</strong>
+                <span className="operation-name">
+                  <strong>{pendingServiceCapability.operation.label}</strong>
+                  {pendingServiceCapability.operation.label !== pendingGrant.operation ? (
+                    <code className="operation-id">{pendingGrant.operation}</code>
+                  ) : null}
+                </span>
                 {pendingServiceCapability.operation.description ? (
                   <small>{pendingServiceCapability.operation.description}</small>
                 ) : null}
@@ -3432,13 +3602,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             event.target.checked,
                           )}
                         />
-                        <span>{operation.label || operation.name}</span>
+                        <span className="operation-name">
+                          <span>{operation.label || operation.name}</span>
+                          {operation.label && operation.label !== operation.name ? (
+                            <code className="operation-id">{operation.name}</code>
+                          ) : null}
+                        </span>
                       </label>
-                      {operation.description ? (
-                        <InfoMark text={`${operation.description} Tool: ${operation.name}.`} />
-                      ) : null}
+                      <InfoMark text={operationHelpText({
+                        operation: operation.name,
+                        description: operation.description,
+                        requiredGrants: operation.grants,
+                        selectedGrants: editedGrants,
+                      })} />
                     </span>
-                    {selected && alreadyGranted ? (
+                    {item.source === 'control' ? null : selected && alreadyGranted ? (
                       <InvocationPolicyControl
                         operation={operation.name}
                         policy={policy}
@@ -3491,9 +3669,24 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             resource={resource}
             state={item.catalog_drift?.resources?.[resource]}
             accepted={editAcceptedOperations[resource] || []}
+            operationOptions={resourceOption?.operations || []}
+            grantOptions={grantOptions}
+            selectedOperations={editResourceOperations[resource] || []}
+            selectedClaims={editedGrants}
+            invocationModeFor={(operation) => editInvocationModes[`${resource}:${operation}`] || null}
+            busy={busy}
+            onceDisabled={isBroadSecretResource(resource)}
             onToggleAccept={(operation, on) => setEditAcceptedOperations(
               (current) => toggleAccepted(current, resource, operation, on),
             )}
+            onToggleOperation={(operation, grants, on) => toggleEditResourceOperation(
+              resource, operation, grants, on,
+            )}
+            onToggleClaim={(claim, on) => toggleEditClaim(resource, claim, on)}
+            onChooseInvocation={(operation, mode) => setEditInvocationModes((current) => ({
+              ...current,
+              [`${resource}:${operation}`]: mode,
+            }))}
           />
           ) : null}
         </div>
@@ -3641,25 +3834,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
 
   // ── The workbench and the compact rows ─────────────────────────────────
   const editingRecord = editingAccessId
-    ? items.find((it) => it.access_id === editingAccessId) || null
+    ? items.find((it) => it.access_id === editingAccessId)
+      || (focusedCard?.access_id === editingAccessId ? focusedCard : null)
     : null;
   const isEditableRecord = (item: DelegatedAccessRecord): boolean =>
     item.source === 'agent'
     || (item.source === 'oauth' && Boolean(item.client_id))
-    || item.source === 'manual';
+    || item.source === 'manual'
+    || item.source === 'control';
   // One title rule for every view: an agent card is named by its agent and
   // app, the others by their label. The door is a field, never the name.
   const cardTitle = (item: DelegatedAccessRecord): string => {
     if (item.source === 'agent' && item.client_id) {
       const who = parseAgentClientId(item.client_id);
-      return who ? `${who.agent} · ${who.app}` : item.client_id;
+      const agentLabel = who ? `${who.agent} · ${who.app}` : item.client_id;
+      return correlatedCardLabel({ ...item, label: agentLabel });
     }
     return correlatedCardLabel(item);
   };
   const cardBadge = (item: DelegatedAccessRecord) => (
     <>
       <span className={`badge ${callerBadgeClass(item)}`}>{callerLabel(item)}</span>
-      <span className="badge badge-reach">{reachLabel(item)}</span>
+      <span className="badge badge-reach">
+        {item.source === 'control' ? 'credentialless' : reachLabel(item)}
+      </span>
       {expiryBadge(item)}
     </>
   );
@@ -3706,18 +3904,33 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     ].filter(Boolean);
     return parts.join(' · ');
   };
-  const authorityReading = (item: DelegatedAccessRecord): 'original' | 'effective' => (
+  const linkedControlCard = (item: DelegatedAccessRecord) => (
+    item.control_card || item.project_control
+  );
+  const authorityReading = (item: DelegatedAccessRecord): 'caller' | 'effective' => (
     authorityViewByAccessId[item.access_id]
-    || (item.project_control?.state === 'active' ? 'effective' : 'original')
+    || (linkedControlCard(item)?.state === 'active' ? 'effective' : 'caller')
   );
   const displayedAuthority = (item: DelegatedAccessRecord): DelegatedAccessRecord => {
-    const control = item.project_control;
+    const control = linkedControlCard(item);
+    const editing = editingAccessId === item.access_id;
+    const caller: DelegatedControlCardAuthority = editing
+      ? pendingCallerAuthority(item)
+      : item;
     if (
       authorityReading(item) !== 'effective'
       || control?.state !== 'active'
-      || !control.authority
-    ) return item;
-    const effective = control.authority;
+    ) return { ...item, ...caller };
+    const effective = editing
+      ? (control.control_authority
+          ? composeControlCardAuthority(
+              caller,
+              control.control_authority,
+              control.composition_mode === 'or' ? 'or' : 'and',
+            )
+          : null)
+      : control.authority;
+    if (!effective) return { ...item, ...caller };
     const selectedOuter = effective.resource_operations || {};
     const selectedNamed = new Set(
       Object.values(effective.effective_named_service_operations || {})
@@ -3744,29 +3957,82 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }),
     };
   };
-  const renderCardNarrowing = (
+  const renderAuthorityPreview = (authority: DelegatedAccessRecord) => (
+    <section className="effective-authority-preview" aria-label="Pending effective authority">
+      <div className="account-title">Pending effective access</div>
+      {Object.keys(authority.resource_grants || {}).length ? (
+        <div className="card-fields">
+          {Object.entries(authority.resource_grants || {}).map(([resource, grants]) => (
+            <Fragment key={`preview:${resource}`}>
+              <Field label="Resource">
+                <span className="door-line">
+                  <b>{resource === '*' ? 'all resources' : (resourceLabelFor(resource) || doorAlias(resource) || resource)}</b>
+                  {resource !== '*' ? <DoorRef value={resource} /> : null}
+                </span>
+              </Field>
+              <Field label="Access">
+                <FoldedChipRow entries={grants} expanded="groups" title={(claim) => grantOptionByName.get(claim)?.label || undefined} />
+              </Field>
+            </Fragment>
+          ))}
+          <Field label="Operations">
+            {outerOperationRows(authority).length ? (
+              <CountFold entries={outerOperationRows(authority)} noun="operation" />
+            ) : <small>None selected on these resources.</small>}
+          </Field>
+          {namedServiceRows(authority).length ? (
+            <Field label="Service actions">
+              <CountFold entries={namedServiceRows(authority)} noun="service" />
+            </Field>
+          ) : null}
+          {Object.keys(authority.account_scope || {}).length ? (
+            <Field label="Accounts" wide>
+              {Object.entries(authority.account_scope || {}).map(([provider, accountsMap]) => (
+                <span className="acct-block" key={`preview:${provider}`}>
+                  <span className="acct-provider">{providers[provider]?.label || provider}</span>
+                  {Object.entries(accountsMap || {}).map(([accountId, claims]) => (
+                    <span className="acct-line" key={`preview:${provider}:${accountId}`}>
+                      <span className="acct-name" title={accountId}>
+                        {accountId === '*' ? 'any account' : (accountLabelById.get(accountId) || accountId)}
+                      </span>
+                      <FoldedChipRow entries={(claims || []).includes('*') ? ['all'] : claims} expanded="groups" />
+                    </span>
+                  ))}
+                </span>
+              ))}
+            </Field>
+          ) : null}
+        </div>
+      ) : (
+        <div className="notice">The pending combination grants no service or operation.</div>
+      )}
+    </section>
+  );
+  const renderCardComposition = (
     item: DelegatedAccessRecord,
     { editing = false }: { editing?: boolean } = {},
   ) => {
-    const control = item.project_control;
+    const control = linkedControlCard(item);
     if (!control || control.state === 'not_controlled') return null;
     const binding = control.binding;
     if (!binding) return null;
-    const label = binding.issuer_label || binding.issuer_ref;
-    if (!label) return null;
-    const reading = editing ? 'original' : authorityReading(item);
-    const effectiveReady = control.state === 'active' && Boolean(control.authority);
+    const label = binding.issuer_label || binding.issuer_ref || binding.control_id || 'Control Card';
+    const reading = authorityReading(item);
+    const controlActive = control.state === 'active' && Boolean(control.authority);
+    const effectiveReady = controlActive && (!editing || Boolean(control.control_authority));
+    const showingEffective = reading === 'effective' && effectiveReady;
+    const mode = control.composition_mode === 'or' ? 'OR' : 'AND';
     return (
       <div
-        className={`project-control${effectiveReady ? '' : ' project-control--closed'}`}
+        className={`control-card-composition${controlActive ? '' : ' control-card-composition--closed'}`}
         data-state={control.state}
       >
-        <div className="project-control__head">
+        <div className="control-card-composition__head">
           <span>
-            <strong>{effectiveReady ? `Card narrowed by ${label}` : `Narrowing by ${label} unavailable`}</strong>
-            <small>{effectiveReady
-              ? ' Effective authority is shown below.'
-              : ` Calls governed by ${label} remain closed.`}</small>
+            <strong>{controlActive ? `Card composed with ${label} (${mode})` : `${label} Control Card unavailable`}</strong>
+            <small>{controlActive
+              ? ' The linked card applies at every guarded operation.'
+              : ' Operations governed by this link are closed.'}</small>
           </span>
           {binding.manage_url ? (
             <a href={binding.manage_url} target="_blank" rel="noreferrer">
@@ -3774,54 +4040,60 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </a>
           ) : null}
         </div>
-        {editing ? (
-          <small>You are editing the original Card. Narrowing by {label} remains in force.</small>
-        ) : (
-          <div className="authority-reading" role="group" aria-label="Card authority view">
-            <button
-              type="button"
-              aria-pressed={reading === 'original'}
-              className={reading === 'original' ? 'authority-reading__active' : ''}
-              onClick={() => setAuthorityViewByAccessId((current) => ({
-                ...current,
-                [item.access_id]: 'original',
-              }))}
-            >
-              Original
-            </button>
-            <button
-              type="button"
-              aria-pressed={reading === 'effective'}
-              className={reading === 'effective' ? 'authority-reading__active' : ''}
-              disabled={!effectiveReady}
-              onClick={() => setAuthorityViewByAccessId((current) => ({
-                ...current,
-                [item.access_id]: 'effective',
-              }))}
-            >
-              Effective
-            </button>
-            <small>{reading === 'effective'
-              ? `What this Card grants after narrowing by ${label}.`
-              : 'What the owner granted on this Card.'}</small>
-          </div>
-        )}
-        {!effectiveReady && control.reason ? <small>Reason: {readableIdentifier(control.reason)}</small> : null}
-        {effectiveReady && control.resolution ? (
-          <details className="project-control__evidence">
+        <div className="authority-reading" role="group" aria-label="Card authority view">
+          <button
+            type="button"
+            aria-pressed={!showingEffective}
+            className={!showingEffective ? 'authority-reading__active' : ''}
+            onClick={() => setAuthorityViewByAccessId((current) => ({
+              ...current,
+              [item.access_id]: 'caller',
+            }))}
+          >
+            Caller Card
+          </button>
+          <button
+            type="button"
+            aria-pressed={showingEffective}
+            className={showingEffective ? 'authority-reading__active' : ''}
+            disabled={!effectiveReady}
+            onClick={() => setAuthorityViewByAccessId((current) => ({
+              ...current,
+              [item.access_id]: 'effective',
+            }))}
+          >
+            Effective Card
+          </button>
+          <small>{showingEffective
+            ? (editing
+                ? (mode === 'OR'
+                    ? `Preview of this pending caller edit combined with ${label}.`
+                    : `Preview of access shared by this pending caller edit and ${label}.`)
+                : (mode === 'OR'
+                    ? `Authority combined from the caller Card and ${label}.`
+                    : `Authority shared by the caller Card and ${label}.`))
+            : (editing && controlActive && !effectiveReady
+                ? `Pending changes to the caller Card. Refresh this card to load ${label} and preview the composed Effective Card.`
+                : (editing
+                    ? `Pending changes to the caller Card. ${label} remains linked.`
+                    : 'Authority granted directly to this caller Card.'))}</small>
+        </div>
+        {!controlActive && control.reason ? <small>Reason: {readableIdentifier(control.reason)}</small> : null}
+        {controlActive && control.resolution ? (
+          <details className="control-card-composition__evidence">
             <summary>Authority evidence</summary>
             <dl>
-              <dt>Original Card</dt>
+              <dt>Caller Card</dt>
               <dd>
                 revision {control.resolution.participant_card_revision || item.card_revision || 0}
                 {' · catalog '}
                 <code>{control.resolution.participant_catalog_version || item.catalog_version || 'not recorded'}</code>
               </dd>
-              <dt>Narrowing basis</dt>
+              <dt>Control Card</dt>
               <dd>
-                Card revision {control.resolution.control_basis_card_revision || 0}
+                revision {control.resolution.control_card_revision || 0}
                 {' · catalog '}
-                <code>{control.resolution.control_basis_catalog_version || 'not recorded'}</code>
+                <code>{control.resolution.control_catalog_version || 'not recorded'}</code>
               </dd>
               <dt>Current catalog</dt>
               <dd>
@@ -3838,11 +4110,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     opts: { active?: boolean; inGroup?: boolean; onSelect?: () => void; actions?: React.ReactNode } = {},
   ) => {
     const selectable = Boolean(opts.onSelect);
-    const meta = [
-      cardDoors(item) || (credentialReach(item) === 'multi_resource' ? 'no resources' : 'no service'),
-      `${cardAccessCount(item)} access`,
-      `expires ${formatDate(item.expires_at) || 'unknown'}`,
-    ].join(' · ');
+    const meta = (item.source === 'control'
+      ? [
+          cardDoors(item) || 'no resources',
+          `${cardAccessCount(item)} access`,
+          'no credential',
+        ]
+      : [
+          cardDoors(item) || (credentialReach(item) === 'multi_resource' ? 'no resources' : 'no service'),
+          `${cardAccessCount(item)} access`,
+          `expires ${formatDate(item.expires_at) || 'unknown'}`,
+        ]).join(' · ');
     return (
       <div
         key={item.access_id}
@@ -3932,15 +4210,23 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const renderWorkbench = (record: DelegatedAccessRecord) => {
     const roleLabel = callerNoun(record);
     const problems = editSaveProblems(record);
+    const showingEffective = authorityReading(record) === 'effective'
+      && linkedControlCard(record)?.state === 'active'
+      && Boolean(linkedControlCard(record)?.control_authority);
+    const problemText = problems
+      .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(record, resource)))
+      .join(' ');
     return (
       <div className="card-workbench" ref={workbenchRef}>
         <aside className="card-rail" aria-label="Access cards">
-          {renderRailGroups({
-            activeId: record.access_id,
-            selectFor: (item) => (
-              item.source === 'agent' || isEditableRecord(item) ? () => switchEdit(item) : undefined
-            ),
-          })}
+          {record.source === 'control'
+            ? renderCompactRow(record, { active: true })
+            : renderRailGroups({
+                activeId: record.access_id,
+                selectFor: (item) => (
+                  item.source === 'agent' || isEditableRecord(item) ? () => switchEdit(item) : undefined
+                ),
+              })}
           {renderLeaveDialog()}
         </aside>
         <section className="card-editor" aria-label={`Editing ${cardTitle(record)}`}>
@@ -3948,7 +4234,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             <div>
               <div className="account-title">{cardTitle(record)} {cardBadge(record)}</div>
               <div className="card-editor__summary">{cardSummary(record)}</div>
-              {record.source === 'manual'
+              {record.source === 'manual' || record.source === 'control'
                 ? <ClientIdRef value={record.access_id} kind="access" />
                 : (record.client_id ? <ClientIdRef value={record.client_id} kind="client" /> : null)}
             </div>
@@ -3961,7 +4247,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               All cards
             </button>
           </div>
-          {renderCardNarrowing(record, { editing: true })}
+          {renderCardComposition(record, { editing: true })}
           {accessCardFocus?.accessId === record.access_id
             && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
             <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
@@ -3980,6 +4266,44 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </div>
           ) : null}
           <CatalogDriftNotice drift={record.catalog_drift} />
+          {record.source === 'control' ? (
+            <div className="card-fields control-card-fields">
+              <Field label="Issued by">
+                <span className="control-card-issuer">
+                  <b>{record.issuer_label || record.issuer_ref || 'Connected application'}</b>
+                  {record.issuer_ref ? (
+                    <span className="control-card-issuer__ref">
+                      <code className="claim-chip" title={record.issuer_ref}>{record.issuer_ref}</code>
+                      <CopyButton value={record.issuer_ref} label="Copy project URI" />
+                    </span>
+                  ) : null}
+                </span>
+              </Field>
+              <Field label="Combines with linked cards" wide>
+                <div className="authority-reading" role="group" aria-label="Control Card composition">
+                  <button
+                    type="button"
+                    aria-pressed={editCompositionMode === 'and'}
+                    className={editCompositionMode === 'and' ? 'authority-reading__active' : ''}
+                    onClick={() => setEditCompositionMode('and')}
+                  >
+                    AND
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={editCompositionMode === 'or'}
+                    className={editCompositionMode === 'or' ? 'authority-reading__active' : ''}
+                    onClick={() => setEditCompositionMode('or')}
+                  >
+                    OR
+                  </button>
+                  <small>{editCompositionMode === 'and'
+                    ? 'A linked caller may use only access selected on both cards.'
+                    : 'A linked caller may use access selected on either card.'}</small>
+                </div>
+              </Field>
+            </div>
+          ) : null}
           {record.source !== 'agent' ? (
             <label className="rename-row">
               <span className="card-field-label">Name</span>
@@ -3991,28 +4315,30 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               />
             </label>
           ) : null}
-          {record.source === 'agent' || Object.keys(record.resource_grants || {}).length
-            ? renderEditResourceSections(record)
-            : null}
-          {renderAccountScopePicker(
+          {showingEffective
+            ? renderAuthorityPreview(displayedAuthority(record))
+            : (record.source === 'agent'
+                || record.source === 'control'
+                || Object.keys(record.resource_grants || {}).length
+                ? renderEditResourceSections(record)
+                : null)}
+          {!showingEffective ? renderAccountScopePicker(
             editAccountScope,
             toggleEditAccount,
             roleLabel,
             { existingScope: seedAccountScopeFromRecord(record) },
-          )}
+          ) : null}
           <div className="form-actions form-actions--sticky">
-            {delegatedAccessError ? (
+            {editActionError || delegatedAccessError || problemText ? (
               <div className="error form-actions__error" role="alert">
-                {delegatedAccessError}
+                {editActionError || delegatedAccessError || problemText}
               </div>
             ) : null}
             <button
               className="btn"
               type="button"
               disabled={busy || problems.length > 0}
-              title={problems
-                .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(record, resource)))
-                .join(' ') || undefined}
+              title={problemText || undefined}
               onClick={() => saveEdit(record)}
             >
               Save
@@ -4039,7 +4365,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                 {cardBadge(item)}
                               </div>
                               {item.client_id ? <ClientIdRef value={item.client_id} kind="client" /> : null}
-                              {renderCardNarrowing(item, { editing })}
+                              {renderCardComposition(item, { editing })}
                               {/* Edit mode keeps the per-claim checkboxes; the
                                   read-only view uses the same labelled rows as
                                   every other credential card. */}
@@ -4191,7 +4517,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         ? <ClientIdRef value={item.access_id} kind="access" />
                         : (item.client_id && item.client_id !== item.label
                             ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
-                      {renderCardNarrowing(item, { editing })}
+                      {renderCardComposition(item, { editing })}
                       {accessCardFocus?.accessId === item.access_id
                         && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
                         <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>

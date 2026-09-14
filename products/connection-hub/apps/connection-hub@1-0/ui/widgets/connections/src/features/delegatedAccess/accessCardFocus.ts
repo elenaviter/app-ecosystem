@@ -1,6 +1,7 @@
 export interface AccessCardFocus {
   accessId: string;
   manualOnly: boolean;
+  controlOnly: boolean;
   resource?: string;
   claims: string[];
   outerOperation?: string;
@@ -10,7 +11,8 @@ export interface AccessCardFocus {
 
 export function accessCardFocusFromParams(get: (key: string) => string): AccessCardFocus | null {
   const manualAccessId = get('manual_access_id').trim();
-  const accessId = manualAccessId || get('access_id').trim();
+  const controlCardId = get('control_card_id').trim();
+  const accessId = manualAccessId || controlCardId || get('access_id').trim();
   if (!accessId) return null;
   const resource = get('resource').trim();
   const claims = get('claims').split(',').map((item) => item.trim()).filter(Boolean);
@@ -20,6 +22,7 @@ export function accessCardFocusFromParams(get: (key: string) => string): AccessC
   return {
     accessId,
     manualOnly: Boolean(manualAccessId),
+    controlOnly: Boolean(controlCardId),
     resource: resource || undefined,
     claims,
     outerOperation: outerOperation || undefined,
@@ -46,5 +49,6 @@ export function matchesAccessCardFocus(
   focus: AccessCardFocus,
 ): boolean {
   return candidate.access_id === focus.accessId
-    && (!focus.manualOnly || candidate.source === 'manual');
+    && (!focus.manualOnly || candidate.source === 'manual')
+    && (!focus.controlOnly || candidate.source === 'control');
 }

@@ -12,11 +12,16 @@ import type {
   DelegatedAccessRevokeResult,
   DelegatedAccessStoredNamedServices,
   DelegatedInvocationPolicyResult,
+  ControlCardGetResult,
 } from '../../api/types';
 
 export interface DelegatedAccessState {
   platformUserId: string;
   items: DelegatedAccessRecord[];
+  /** One credentialless Card opened by an exact deep link. It is deliberately
+   *  separate from `items`, because that normal caller-card list does not
+   *  centrally enumerate Control Cards yet. */
+  focusedCard?: DelegatedAccessRecord;
   grantOptions: DelegatedAccessGrantOption[];
   resources: DelegatedAccessResourceOption[];
   issuedToken: string;
@@ -31,6 +36,7 @@ export interface DelegatedAccessState {
 const initialState: DelegatedAccessState = {
   platformUserId: '',
   items: [],
+  focusedCard: undefined,
   grantOptions: [],
   resources: [],
   issuedToken: '',
@@ -56,6 +62,29 @@ export const loadDelegatedAccess = createAsyncThunk<DelegatedAccessListResult, v
       const res = await getOp<DelegatedAccessListResult>('delegated_access_list');
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to load delegated access'));
       return res || {};
+    } catch (e) {
+      return rejectWithValue(message(e));
+    }
+  },
+);
+
+export const loadControlCard = createAsyncThunk<
+  ControlCardGetResult,
+  { controlId: string },
+  { rejectValue: string }
+>(
+  'delegatedAccess/loadControlCard',
+  async ({ controlId }, { rejectWithValue }) => {
+    try {
+      const res = await postOp<ControlCardGetResult>('control_card_get', {
+        control_id: controlId,
+      });
+      if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to load the Control Card'));
+      if (!res?.access) return rejectWithValue('Connection Hub returned no editable Card');
+      if (res.access.state && res.access.state !== 'active') {
+        return rejectWithValue('This Control Card is revoked. Linked callers remain closed until the application links an active Card.');
+      }
+      return res;
     } catch (e) {
       return rejectWithValue(message(e));
     }
@@ -150,6 +179,10 @@ export interface UpdateDelegatedAccessArgs {
   /** Per resource, the selected operations whose CHANGED descriptor the
    *  grantor reviewed and accepts with this save. Others stay suspended. */
   acceptedOperations?: Record<string, string[]>;
+  /** Credentialless Cards use these ordinary Card fields. They are omitted
+   *  for credential-bearing Cards, preserving their current values. */
+  compositionMode?: 'and' | 'or';
+  properties?: Record<string, unknown>;
 }
 
 /** Edit a manual automation IN PLACE — the card keeps its access_id/client_id,
@@ -174,6 +207,8 @@ export const updateDelegatedAccess = createAsyncThunk<
       expectedCardRevision,
       expectedCatalogVersion,
       acceptedOperations,
+      compositionMode,
+      properties,
     },
     { rejectWithValue },
   ) => {
@@ -199,6 +234,8 @@ export const updateDelegatedAccess = createAsyncThunk<
         ...(acceptedOperations && Object.keys(acceptedOperations).length
           ? { accepted_operations: acceptedOperations }
           : {}),
+        ...(compositionMode ? { composition_mode: compositionMode } : {}),
+        ...(properties !== undefined ? { properties } : {}),
       });
       // A precondition failure is not an error to show and forget: it carries
       // the refreshed card the editor must reload.
@@ -321,6 +358,19 @@ const delegatedAccessSlice = createSlice({
         state.loadRequestId = '';
         state.loading = false;
         state.error = action.payload ?? 'Failed to load delegated access';
+      })
+      .addCase(loadControlCard.pending, (state) => {
+        state.busy = true;
+        state.error = '';
+      })
+      .addCase(loadControlCard.fulfilled, (state, action) => {
+        state.busy = false;
+        state.focusedCard = action.payload.access;
+      })
+      .addCase(loadControlCard.rejected, (state, action) => {
+        state.busy = false;
+        state.focusedCard = undefined;
+        state.error = action.payload ?? 'Failed to load the Control Card';
       });
 
     builder
@@ -386,6 +436,9 @@ const delegatedAccessSlice = createSlice({
         if (action.payload.access) {
           const updated = action.payload.access;
           state.items = state.items.map((item) => (item.access_id === updated.access_id ? updated : item));
+          if (state.focusedCard?.access_id === updated.access_id) {
+            state.focusedCard = updated;
+          }
           if (state.issuedAccess?.access_id === updated.access_id) {
             state.issuedAccess = updated;
           }
@@ -424,6 +477,7 @@ const delegatedAccessSlice = createSlice({
         state.busy = false;
         const id = action.meta.arg.accessId;
         state.items = state.items.filter((item) => item.access_id !== id);
+        if (state.focusedCard?.access_id === id) state.focusedCard = undefined;
         if (state.issuedAccess?.access_id === id) {
           state.issuedToken = '';
           state.issuedHeader = '';

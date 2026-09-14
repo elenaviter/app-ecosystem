@@ -8,6 +8,7 @@ import type {
 } from '../../api/types';
 import { consentPlanState, type ConsentPlanAction } from '../delegatedToKdcube/ConsentPlan';
 import { doorGrantsForOperation } from './pendingGrantProjection';
+import { operationHelpText } from './resourceEditing';
 import { InfoMark } from '../../components/InfoMark';
 
 interface NamedServiceOperationRow {
@@ -316,12 +317,15 @@ export function DelegatedResourceCatalog({
             <div className="namespace-operation-list">
               {rows.map((row) => {
                 const included = includedRows.includes(row);
-                const grantsReady = doorGrantsForOperation(
+                const requiredGrants = doorGrantsForOperation(
                   resource,
                   namespace,
                   row.operation,
                   row.grants,
-                ).every((grant) => selectedGrants.includes(grant));
+                );
+                const missingGrants = requiredGrants.filter(
+                  (grant) => !selectedGrants.includes(grant),
+                );
                 return (
                   <label
                     className={`namespace-operation${included ? ' namespace-operation-included' : ''}`}
@@ -340,24 +344,26 @@ export function DelegatedResourceCatalog({
                     <span className="namespace-operation__body">
                       <span className="namespace-operation__title">
                         <strong>{row.label}</strong>
+                        {row.label !== row.operation ? (
+                          <code className="operation-id">{row.operation}</code>
+                        ) : null}
                         <InfoMark
-                          text={[
-                            row.description,
-                            row.grants.length
-                              ? `Required service permissions: ${row.grants.join(', ')}.`
-                              : '',
-                            `Operation: ${row.operation}.`,
-                          ].filter(Boolean).join(' ')}
+                          text={operationHelpText({
+                            operation: row.operation,
+                            description: row.description,
+                            requiredGrants,
+                            selectedGrants,
+                          })}
                         />
                       </span>
                       {row.description ? <small>{row.description}</small> : null}
                       {/* Required service permissions appear only when the card
                           does not yet carry them. */}
-                      {!grantsReady ? (
+                      {missingGrants.length ? (
                         <span className="namespace-operation-grants">
                           <>
                             <span className="namespace-operation-needs">needs</span>
-                            {row.grants.map((grant) => (
+                            {missingGrants.map((grant) => (
                               <code key={`${row.operation}:${grant}`}>{grant}</code>
                             ))}
                           </>

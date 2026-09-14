@@ -11,6 +11,7 @@
  */
 import { useEffect } from 'react';
 import { InfoMark } from '../../components/InfoMark';
+import { ModalLayer } from '../../components/ModalLayer';
 import {
   ALL_SEARCH_FIELDS,
   activeSettingCount,
@@ -323,14 +324,15 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
   return (
-    <div
-      className="script-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-label="How card filtering works"
-      onClick={onClose}
-    >
-      <div className="script-dialog grant-filter__dialog" onClick={(event) => event.stopPropagation()}>
+    <ModalLayer>
+      <div
+        className="script-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="How card filtering works"
+        onClick={onClose}
+      >
+        <div className="script-dialog grant-filter__dialog" onClick={(event) => event.stopPropagation()}>
         <div className="script-dialog-head">
           <div>
             <div className="script-dialog-title">How card filtering works</div>
@@ -431,7 +433,8 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
           Why hide instead of rank: a list you filter shows exactly what matches, so a card that should be revoked
           cannot sit unnoticed at rank twelve.
         </p>
+        </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

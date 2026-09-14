@@ -3,7 +3,8 @@
  * with the pane, keyboard-closable, and worded per use. Rendered only while
  * a question is open, so it costs nothing otherwise.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useId, useRef } from 'react';
+import { ModalLayer } from './ModalLayer';
 
 export interface ConfirmDialogProps {
   open: boolean;
@@ -27,6 +28,7 @@ export function ConfirmDialog({
   onCancel,
 }: ConfirmDialogProps) {
   const confirmRef = useRef<HTMLButtonElement | null>(null);
+  const titleId = useId();
   useEffect(() => {
     if (!open) return;
     confirmRef.current?.focus();
@@ -38,28 +40,30 @@ export function ConfirmDialog({
   }, [open, onCancel]);
   if (!open) return null;
   return (
-    <div className="confirm-backdrop" role="presentation" onClick={onCancel}>
-      <div
-        className="confirm-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="confirm-dialog-title"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="confirm-dialog__title" id="confirm-dialog-title">{title}</div>
-        {body ? <div className="confirm-dialog__body">{body}</div> : null}
-        <div className="confirm-dialog__actions">
-          <button className="btn btn-ghost" type="button" onClick={onCancel}>{cancelLabel}</button>
-          <button
-            className={tone === 'danger' ? 'btn btn-danger' : 'btn'}
-            type="button"
-            ref={confirmRef}
-            onClick={onConfirm}
-          >
-            {confirmLabel}
-          </button>
+    <ModalLayer>
+      <div className="confirm-backdrop" role="presentation" onClick={onCancel}>
+        <div
+          className="confirm-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="confirm-dialog__title" id={titleId}>{title}</div>
+          {body ? <div className="confirm-dialog__body">{body}</div> : null}
+          <div className="confirm-dialog__actions">
+            <button className="btn btn-ghost" type="button" onClick={onCancel}>{cancelLabel}</button>
+            <button
+              className={tone === 'danger' ? 'btn btn-danger' : 'btn'}
+              type="button"
+              ref={confirmRef}
+              onClick={onConfirm}
+            >
+              {confirmLabel}
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

@@ -58,6 +58,15 @@
   --r-md: 8px;
   --r-lg: 12px;
 
+  /* Governed widget stack. Dialogs are portalled under body, outside pane and
+     sticky ancestors; these names are the only cross-component layer order. */
+  --layer-surface: 1;
+  --layer-sticky-action: 10;
+  --layer-sticky-navigation: 20;
+  --layer-sticky-tabs: 30;
+  --layer-popover: 40;
+  --layer-modal: 50;
+
   /* Per-tab kind color (architecture-explorer kind mapping):
      identity -> infra blue, delegated to KDCube -> platform teal,
      delegated by KDCube -> app purple, authenticators -> governance gold. */
@@ -126,7 +135,7 @@ body {
 .tabs-wrap {
   position: sticky;
   top: 0;
-  z-index: 5;
+  z-index: var(--layer-sticky-tabs);
   margin: 0 0 14px;
   flex: 0 0 auto;
   background: var(--bg);
@@ -152,7 +161,7 @@ body {
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.15s ease;
-  z-index: 1;
+  z-index: var(--layer-surface);
 }
 .tabs-wrap::before {
   left: 0;
@@ -446,8 +455,43 @@ h2 {
   min-width: 0;
   line-height: 1.5;
 }
+.control-card-issuer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.control-card-issuer > b {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.control-card-issuer__ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+}
+.control-card-issuer__ref .claim-chip {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.control-card-issuer__ref .icon-btn {
+  width: 22px;
+  height: 22px;
+}
+.card-field--wide {
+  grid-column: 1 / -1;
+}
+.card-field-value.card-field--wide .authority-reading {
+  margin-top: 0;
+}
 
-.project-control {
+.control-card-composition {
   margin-top: 10px;
   padding: 8px 10px;
   border-left: 3px solid var(--blue);
@@ -455,12 +499,12 @@ h2 {
   color: var(--text-2);
 }
 
-.project-control--closed {
+.control-card-composition--closed {
   border-left-color: var(--danger-text);
   background: rgba(var(--danger-rgb), 0.06);
 }
 
-.project-control__head {
+.control-card-composition__head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -468,19 +512,19 @@ h2 {
   gap: 6px 12px;
 }
 
-.project-control__head > span {
+.control-card-composition__head > span {
   flex: 1 1 240px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.project-control__head > a {
+.control-card-composition__head > a {
   max-width: 100%;
   overflow-wrap: anywhere;
 }
 
-.project-control__head small,
-.project-control > small,
+.control-card-composition__head small,
+.control-card-composition > small,
 .authority-reading small {
   color: var(--muted);
 }
@@ -489,20 +533,26 @@ h2 {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
   margin-top: 7px;
 }
 
 .authority-reading button {
-  min-width: 74px;
-  min-height: 28px;
-  padding: 4px 9px;
+  min-width: 48px;
+  min-height: 26px;
+  padding: 3px 7px;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: var(--surface);
   color: var(--text-2);
   font: inherit;
+  font-size: 11.5px;
   cursor: pointer;
+}
+
+.authority-reading small {
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
 .authority-reading button:disabled {
@@ -521,29 +571,29 @@ h2 {
   color: #fff;
 }
 
-.project-control__evidence {
+.control-card-composition__evidence {
   margin-top: 7px;
   font-size: 12px;
 }
 
-.project-control__evidence summary {
+.control-card-composition__evidence summary {
   width: fit-content;
   color: var(--muted);
   cursor: pointer;
 }
 
-.project-control__evidence dl {
+.control-card-composition__evidence dl {
   display: grid;
   grid-template-columns: minmax(110px, max-content) minmax(0, 1fr);
   gap: 3px 10px;
   margin: 7px 0 0;
 }
 
-.project-control__evidence dt {
+.control-card-composition__evidence dt {
   color: var(--muted);
 }
 
-.project-control__evidence dd {
+.control-card-composition__evidence dd {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
@@ -2217,7 +2267,7 @@ code {
 .pending-actions {
   position: sticky;
   bottom: 0;
-  z-index: 2;
+  z-index: var(--layer-sticky-action);
   margin: 8px -12px -12px;
   padding: 10px 12px;
   background: var(--surface);
@@ -2227,7 +2277,7 @@ code {
 .request-review-nav {
   position: sticky;
   top: -12px;
-  z-index: 3;
+  z-index: var(--layer-sticky-navigation);
   margin: 0 -12px 14px;
   padding: 10px 12px;
   border-top: 1px solid var(--line-soft);
@@ -2368,7 +2418,7 @@ code {
 .form-actions--sticky {
   position: sticky;
   bottom: 0;
-  z-index: 2;
+  z-index: var(--layer-sticky-action);
   margin: 8px -12px -12px;
   padding: 10px 12px;
   background: var(--surface);
@@ -2426,7 +2476,7 @@ code {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
-  z-index: 6;
+  z-index: var(--layer-popover);
 }
 .info:hover::after, .info:focus-visible::after { opacity: 1; }
 
@@ -2441,16 +2491,17 @@ code {
   margin: 0 0 10px;
 }
 
-/* Copyable client identifier (dcr-…, kdcube-agent:…) under a card title. */
-.id-ref { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 2px; }
+/* Copyable client identifier (dcr-…, kdcube-agent:…) under a card title.
+   Identity is evidence, so it wraps in full instead of disappearing behind an
+   ellipsis when two worker sessions share the same visible prefix. */
+.id-ref { display: flex; align-items: flex-start; gap: 6px; min-width: 0; margin-top: 2px; }
 .id-value {
   min-width: 0;
   font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
   color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .id-ref .icon-btn { width: 20px; height: 20px; }
 .id-kind {
@@ -2474,7 +2525,7 @@ code {
 .script-modal {
   position: fixed;
   inset: 0;
-  z-index: 99999980;
+  z-index: var(--layer-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2965,6 +3016,7 @@ code {
 }
 .resource-removed-stub b { color: var(--ink); }
 .resource-drift-review {
+  container: resource-drift / inline-size;
   margin: 8px 0 0;
   padding: 8px 10px;
   border: 1px solid rgba(var(--warn-rgb), 0.5);
@@ -2976,10 +3028,78 @@ code {
 .resource-drift-review__head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .resource-drift-review__head strong { color: var(--ink); }
 .resource-drift-review__head code,
-.resource-drift-review__list code { font-family: var(--mono); font-size: 11.5px; }
+.resource-drift-table code { font-family: var(--mono); font-size: 11.5px; }
 .resource-drift-review__group { margin-top: 6px; }
-.resource-drift-review__list { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.resource-drift-review__list li { display: flex; flex-direction: column; gap: 2px; }
+.resource-drift-table {
+  margin-top: 4px;
+  border-top: 1px solid var(--line-soft);
+}
+.resource-drift-table__head,
+.resource-drift-table__row {
+  display: grid;
+  grid-template-columns: minmax(190px, 1.2fr) minmax(150px, 0.8fr) minmax(190px, auto);
+  align-items: center;
+  gap: 6px 14px;
+  min-width: 0;
+}
+.resource-drift-table__head {
+  padding: 4px 6px;
+  background: rgba(var(--warn-rgb), 0.04);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.resource-drift-table__row {
+  padding: 7px 6px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.resource-drift-table__item,
+.resource-drift-table__effect,
+.resource-drift-table__decision { min-width: 0; }
+.resource-drift-identity {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+.resource-drift-identity > small {
+  padding: 1px 4px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.resource-drift-identity__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 1px 7px;
+  min-width: 0;
+}
+.resource-drift-identity__name strong { color: var(--ink); }
+.resource-drift-identity__name code { min-width: 0; overflow-wrap: anywhere; color: var(--muted); }
+.resource-drift-table__effect,
+.resource-drift-table__decision {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: center;
+  gap: 4px 7px;
+}
+.resource-drift-table__effect small { color: var(--muted); }
+.resource-drift-table__decision { justify-content: flex-end; }
+.resource-drift-table__decision > .operation-policy { max-width: 100%; }
+@container resource-drift (max-width: 640px) {
+  .resource-drift-table__head { display: none; }
+  .resource-drift-table__row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 5px;
+  }
+  .resource-drift-table__decision { justify-content: flex-start; }
+}
 .catalog-drift-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -3024,6 +3144,20 @@ code {
 .resource-offer--blocked b { color: var(--text-2); font-weight: 600; }
 .edit-save-problems { margin: 8px 0 0; font-size: 12px; color: var(--warn-text); line-height: 1.45; }
 .edit-save-problems li { margin-left: 16px; }
+
+.operation-name,
+.namespace-operation__title {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 7px;
+  min-width: 0;
+}
+.operation-id {
+  color: var(--muted);
+  font: 500 10.5px/1.35 var(--mono);
+  overflow-wrap: anywhere;
+}
 
 .secret-selector {
   display: grid;
@@ -3118,9 +3252,8 @@ code {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
 }
 .rail-row__meta { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-row__actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
@@ -3143,6 +3276,13 @@ code {
   margin-bottom: 10px;
   border-bottom: 1px solid var(--line-soft);
 }
+.effective-authority-preview {
+  margin: 10px 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+.effective-authority-preview > .account-title { margin-bottom: 8px; }
 
 
 /* ---------------------------------------------------------------------------
@@ -3306,7 +3446,7 @@ code {
 .confirm-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--layer-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3685,7 +3825,7 @@ code {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
-  z-index: 40;
+  z-index: var(--layer-popover);
   width: min(320px, 80vw);
   padding: 8px 10px;
   border: 1px solid var(--line);
@@ -3711,6 +3851,14 @@ code {
   .card-editor { padding: 10px; }
   .card-editor__head { flex-wrap: wrap; gap: 8px; }
   .door-line, .id-ref, .id-value { max-width: 100%; overflow-wrap: anywhere; }
+}
+@media (max-width: 680px) {
+  .control-card-issuer {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .control-card-issuer__ref { width: 100%; }
 }
 
 /* Authorities, second pass: the descriptor path on its own line, pool cells

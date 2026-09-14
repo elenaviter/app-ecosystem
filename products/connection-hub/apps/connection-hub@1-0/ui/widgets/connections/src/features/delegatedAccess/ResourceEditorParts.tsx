@@ -4,15 +4,23 @@
  * the rules live in resourceEditing.ts and every save decision is the
  * server's.
  */
+import type { ReactNode } from 'react';
 import {
   doorName,
   driftNeedsReview,
   offerReasonText,
+  operationDisplayLabel,
   pickerOffers,
   type ResourceDriftState,
   type ResourceOffer,
 } from './resourceEditing';
 import { InfoMark } from '../../components/InfoMark';
+import { OperationInvocationChoice } from './InvocationControls';
+import type {
+  DelegatedAccessGrantOption,
+  DelegatedAccessOperationOption,
+} from '../../api/types';
+import type { InvocationMode } from './invocationChoice';
 
 /** The disclosure head of one resource section in edit mode: name, pending
  *  state, and the per-resource remove action. */
@@ -63,6 +71,42 @@ export function RemovedResourceStub({ title, onUndo }: { title: string; onUndo: 
   );
 }
 
+function DriftTable({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="resource-drift-table" role="table" aria-label={label}>
+      <div className="resource-drift-table__head" role="row">
+        <span role="columnheader">Item</span>
+        <span role="columnheader">Current effect</span>
+        <span role="columnheader">Decision</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function DriftIdentity({
+  identifier,
+  label,
+  description,
+  kind,
+}: {
+  identifier: string;
+  label?: string;
+  description?: string;
+  kind: 'Tool' | 'Permission';
+}) {
+  return (
+    <span className="resource-drift-identity">
+      <small>{kind}</small>
+      <span className="resource-drift-identity__name">
+        <strong>{operationDisplayLabel(identifier, [{ name: identifier, label }])}</strong>
+        <code>{identifier}</code>
+      </span>
+      {description ? <InfoMark text={description} /> : null}
+    </span>
+  );
+}
+
 /** Per-resource descriptor review: what changed on THIS resource's own
  *  authority since the card accepted it, and the checkbox that accepts a
  *  changed selected operation. Unticked changed operations stay suspended. */
@@ -70,12 +114,32 @@ export function ResourceDriftReview({
   resource,
   state,
   accepted,
+  operationOptions,
+  grantOptions,
+  selectedOperations,
+  selectedClaims,
+  invocationModeFor,
+  busy,
+  onceDisabled,
   onToggleAccept,
+  onToggleOperation,
+  onToggleClaim,
+  onChooseInvocation,
 }: {
   resource: string;
   state?: ResourceDriftState;
   accepted: string[];
+  operationOptions: DelegatedAccessOperationOption[];
+  grantOptions: DelegatedAccessGrantOption[];
+  selectedOperations: string[];
+  selectedClaims: string[];
+  invocationModeFor: (operation: string) => InvocationMode | null;
+  busy: boolean;
+  onceDisabled?: boolean;
   onToggleAccept: (operation: string, on: boolean) => void;
+  onToggleOperation: (operation: string, grants: string[], on: boolean) => void;
+  onToggleClaim: (claim: string, on: boolean) => void;
+  onChooseInvocation: (operation: string, mode: InvocationMode) => void;
 }) {
   if (!state || !driftNeedsReview(state)) return null;
   const changed = state.changed_operations || [];
@@ -84,6 +148,12 @@ export function ResourceDriftReview({
   const removedClaims = state.removed_claims || [];
   const addedClaims = state.added_claims || [];
   const kindLabel = state.kind === 'remote_mcp' ? 'connector descriptor' : 'catalog row';
+  const operationOption = (operation: string) => (
+    operationOptions.find((candidate) => candidate.name === operation)
+  );
+  const grantOption = (claim: string) => (
+    grantOptions.find((candidate) => candidate.grant === claim)
+  );
   return (
     <div className="resource-drift-review" data-resource={resource}>
       <div className="resource-drift-review__head">
@@ -103,62 +173,176 @@ export function ResourceDriftReview({
       {changed.length ? (
         <div className="resource-drift-review__group">
           <div className="card-field-label">Changed, suspended until you accept</div>
-          <ul className="resource-drift-review__list">
+          <DriftTable label="Changed tools">
             {changed.map((operation) => {
               const on = accepted.includes(operation);
+              const option = operationOption(operation);
               return (
-                <li key={`changed-${operation}`}>
-                  <label className="descriptor-accept">
-                    <input
-                      type="checkbox"
-                      checked={on}
-                      onChange={(event) => onToggleAccept(operation, event.target.checked)}
+                <div className="resource-drift-table__row" role="row" key={`changed-${operation}`}>
+                  <span className="resource-drift-table__item" role="cell">
+                    <DriftIdentity
+                      identifier={operation}
+                      label={option?.label}
+                      description={option?.description}
+                      kind="Tool"
                     />
-                    <span>
-                      Accept the new descriptor of <code>{operation}</code>
-                    </span>
-                  </label>
-                  <small className="muted">
-                    Until accepted, this operation stays granted on the card but is not run.
-                  </small>
-                </li>
+                  </span>
+                  <span className="resource-drift-table__effect" role="cell">
+                    <span className="badge badge-warn">Suspended</span>
+                    <small>Not run until its updated descriptor is accepted.</small>
+                  </span>
+                  <span className="resource-drift-table__decision" role="cell">
+                    <label className="descriptor-accept">
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        disabled={busy}
+                        onChange={(event) => onToggleAccept(operation, event.target.checked)}
+                      />
+                      <span>{on ? 'Update accepted' : 'Accept update'}</span>
+                    </label>
+                  </span>
+                </div>
               );
             })}
-          </ul>
+          </DriftTable>
         </div>
       ) : null}
       {removed.length || removedClaims.length ? (
         <div className="resource-drift-review__group">
           <div className="card-field-label">No longer offered</div>
-          <ul className="resource-drift-review__list">
-            {removed.map((operation) => (
-              <li key={`removed-${operation}`}>
-                <code>{operation}</code> — already ineffective, removed when you save
-              </li>
-            ))}
-            {removedClaims.map((claim) => (
-              <li key={`removed-claim-${claim}`}>
-                <code>{claim}</code> — already ineffective, removed when you save
-              </li>
-            ))}
-          </ul>
+          <DriftTable label="Items no longer offered">
+            {removed.map((operation) => {
+              const option = operationOption(operation);
+              return (
+                <div className="resource-drift-table__row" role="row" key={`removed-${operation}`}>
+                  <span className="resource-drift-table__item" role="cell">
+                    <DriftIdentity
+                      identifier={operation}
+                      label={option?.label}
+                      description={option?.description}
+                      kind="Tool"
+                    />
+                  </span>
+                  <span className="resource-drift-table__effect" role="cell">
+                    <span className="badge badge-neutral">Unavailable</span>
+                    <small>Already ineffective.</small>
+                  </span>
+                  <small className="resource-drift-table__decision muted" role="cell">
+                    No choice: the service no longer offers it. Save removes it from the card.
+                  </small>
+                </div>
+              );
+            })}
+            {removedClaims.map((claim) => {
+              const option = grantOption(claim);
+              return (
+                <div className="resource-drift-table__row" role="row" key={`removed-claim-${claim}`}>
+                  <span className="resource-drift-table__item" role="cell">
+                    <DriftIdentity
+                      identifier={claim}
+                      label={option?.label}
+                      description={option?.description}
+                      kind="Permission"
+                    />
+                  </span>
+                  <span className="resource-drift-table__effect" role="cell">
+                    <span className="badge badge-neutral">Unavailable</span>
+                    <small>Already ineffective.</small>
+                  </span>
+                  <small className="resource-drift-table__decision muted" role="cell">
+                    No choice: the service no longer offers it. Save removes it from the card.
+                  </small>
+                </div>
+              );
+            })}
+          </DriftTable>
         </div>
       ) : null}
       {added.length || addedClaims.length ? (
         <div className="resource-drift-review__group">
           <div className="card-field-label">Newly advertised, not granted</div>
-          <ul className="resource-drift-review__list">
-            {added.map((operation) => (
-              <li key={`added-${operation}`}>
-                <code>{operation}</code> — select it above to grant it
-              </li>
-            ))}
-            {addedClaims.map((claim) => (
-              <li key={`added-claim-${claim}`}>
-                <code>{claim}</code> — select it above to grant it
-              </li>
-            ))}
-          </ul>
+          <DriftTable label="Newly advertised tools and permissions">
+            {added.map((operation) => {
+              const option = operationOption(operation);
+              const selected = selectedOperations.includes(operation);
+              return (
+                <div className="resource-drift-table__row" role="row" key={`added-${operation}`}>
+                  <span className="resource-drift-table__item" role="cell">
+                    <DriftIdentity
+                      identifier={operation}
+                      label={option?.label}
+                      description={option?.description}
+                      kind="Tool"
+                    />
+                  </span>
+                  <span className="resource-drift-table__effect" role="cell">
+                    <span className={selected ? 'badge badge-ok' : 'badge badge-neutral'}>
+                      {selected ? 'Selected' : 'Not granted'}
+                    </span>
+                    <small>{selected ? 'Added when you save.' : 'The card cannot run it.'}</small>
+                  </span>
+                  <span className="resource-drift-table__decision" role="cell">
+                    <label className="descriptor-accept" title={option?.description || operation}>
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        disabled={busy}
+                        onChange={(event) => onToggleOperation(
+                          operation,
+                          option?.grants || [],
+                          event.target.checked,
+                        )}
+                      />
+                      <span>{selected ? 'Selected' : 'Add to card'}</span>
+                    </label>
+                    {selected ? (
+                      <OperationInvocationChoice
+                        operation={operation}
+                        mode={invocationModeFor(operation)}
+                        busy={busy}
+                        onceDisabled={onceDisabled}
+                        onChoose={(mode) => onChooseInvocation(operation, mode)}
+                      />
+                    ) : null}
+                  </span>
+                </div>
+              );
+            })}
+            {addedClaims.map((claim) => {
+              const option = grantOption(claim);
+              const selected = selectedClaims.includes(claim);
+              return (
+                <div className="resource-drift-table__row" role="row" key={`added-claim-${claim}`}>
+                  <span className="resource-drift-table__item" role="cell">
+                    <DriftIdentity
+                      identifier={claim}
+                      label={option?.label}
+                      description={option?.description}
+                      kind="Permission"
+                    />
+                  </span>
+                  <span className="resource-drift-table__effect" role="cell">
+                    <span className={selected ? 'badge badge-ok' : 'badge badge-neutral'}>
+                      {selected ? 'Selected' : 'Not granted'}
+                    </span>
+                    <small>{selected ? 'Added when you save.' : 'The card does not hold it.'}</small>
+                  </span>
+                  <span className="resource-drift-table__decision" role="cell">
+                    <label className="descriptor-accept" title={option?.description || claim}>
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        disabled={busy}
+                        onChange={(event) => onToggleClaim(claim, event.target.checked)}
+                      />
+                      <span>{selected ? 'Selected' : 'Add to card'}</span>
+                    </label>
+                  </span>
+                </div>
+              );
+            })}
+          </DriftTable>
         </div>
       ) : null}
     </div>

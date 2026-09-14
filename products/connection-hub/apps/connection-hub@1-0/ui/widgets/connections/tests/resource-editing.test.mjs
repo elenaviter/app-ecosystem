@@ -7,9 +7,12 @@ import {
   editedResourceKeys,
   materializeSelectionRouteGrants,
   offerReasonText,
+  operationDisplayLabel,
+  operationHelpText,
   orderResourceSelection,
   pickerOffers,
   projectClaimsOntoOperations,
+  resourceSelectionHasAuthority,
   resourceSelectionIndex,
   saveProblemText,
   saveProblems,
@@ -19,6 +22,41 @@ import {
 const MEMORIES = 'https://host/api/mcp/memories*'
 const TASKS = 'https://host/api/mcp/tasks*'
 const MAIL = 'https://host/api/mcp/mail*'
+
+test('operation help names required permissions and whether they are already selected', () => {
+  assert.equal(
+    operationHelpText({
+      operation: 'project.plan.index',
+      description: 'Read a bounded page of the complete project plan',
+      requiredGrants: ['work:observe'],
+      selectedGrants: ['work:observe', 'work:relay'],
+    }),
+    'Read a bounded page of the complete project plan. Operation: project.plan.index. Required service permission: work:observe. Already selected for this card.',
+  )
+  assert.equal(
+    operationHelpText({
+      operation: 'plan.index.publish',
+      requiredGrants: ['named_services:use', 'work:relay', 'work:relay'],
+      selectedGrants: ['named_services:use'],
+    }),
+    'Operation: plan.index.publish. Required service permissions: named_services:use, work:relay. Selecting this operation also selects them.',
+  )
+  assert.equal(
+    operationHelpText({ operation: 'status' }),
+    'Operation: status. No additional service permission is required.',
+  )
+})
+
+test('operation drift has a human label while retaining its canonical id', () => {
+  const options = [{ name: 'project.plan.index', label: 'Read project plan' }]
+  assert.equal(operationDisplayLabel('project.plan.index', options), 'Read project plan')
+  assert.equal(operationDisplayLabel('message_send', options), 'Message send')
+  assert.equal(
+    operationDisplayLabel('project.plan.index', [{ name: 'project.plan.index', label: 'project.plan.index' }]),
+    'Project plan index',
+  )
+  assert.equal(operationDisplayLabel('', options), 'Unnamed operation')
+})
 
 test('permission claims project onto exact tools and honor every required claim', () => {
   const operations = [
@@ -49,6 +87,13 @@ test('claim projection preserves explicit claimless and retired-catalog choices'
   )
 })
 
+test('resource authority may be a permission, a claimless tool, or a service action', () => {
+  assert.equal(resourceSelectionHasAuthority(['tasks:read'], [], {}), true)
+  assert.equal(resourceSelectionHasAuthority([], ['health'], {}), true)
+  assert.equal(resourceSelectionHasAuthority([], [], { tasks: ['object.schema'] }), true)
+  assert.equal(resourceSelectionHasAuthority([], [], { tasks: [] }), false)
+})
+
 test('an edit submits the card resources minus removed plus added, once each', () => {
   assert.deepEqual(editedResourceKeys([MEMORIES, TASKS], [MAIL], [TASKS]), [MEMORIES, MAIL])
   assert.deepEqual(editedResourceKeys([MEMORIES], [MEMORIES], []), [MEMORIES])
@@ -65,7 +110,7 @@ test('every unavailable offer says why in the grantor\'s words', () => {
   assert.equal(offerReasonText({ resource: MEMORIES, label: 'Memories', identity_scope: 'grantor', compatible: false, reason: 'already_on_card' }), 'Already on this card.')
 })
 
-test('save is blocked when the card would be empty, an added resource has no claims, or a new operation has no choice', () => {
+test('save is blocked when the card would be empty, an added resource has no authority, or a new operation has no choice', () => {
   const labelFor = (resource) => (resource === MAIL ? 'Mail' : 'Tasks')
   const empty = saveProblems({ resourceKeys: [], addedResources: [], claimsFor: () => [], missingChoices: [] })
   assert.deepEqual(empty, [{ code: 'no_resources_left' }])
@@ -78,14 +123,23 @@ test('save is blocked when the card would be empty, an added resource has no cla
     missingChoices: [{ resource: TASKS, operation: 'delete' }],
   })
   assert.deepEqual(added, [
-    { code: 'added_resource_without_claims', resource: MAIL },
+    { code: 'added_resource_without_authority', resource: MAIL },
     { code: 'operation_without_choice', resource: TASKS, operations: ['delete'] },
   ])
-  assert.equal(saveProblemText(added[0], labelFor), 'Select at least one access claim on Mail or remove it again.')
+  assert.equal(saveProblemText(added[0], labelFor), 'Select a permission, tool, or service action on Mail, or remove it again.')
   assert.equal(saveProblemText(added[1], labelFor), 'Choose once or always for delete on Tasks.')
 
   const fine = saveProblems({ resourceKeys: [TASKS], addedResources: [], claimsFor: () => ['tasks:use'], missingChoices: [] })
   assert.deepEqual(fine, [])
+
+  const claimless = saveProblems({
+    resourceKeys: [MAIL],
+    addedResources: [MAIL],
+    claimsFor: () => [],
+    operationsFor: () => ['health'],
+    missingChoices: [],
+  })
+  assert.deepEqual(claimless, [])
 })
 
 test('accepting a changed descriptor is per resource and per operation', () => {
@@ -194,6 +248,19 @@ test('a selection door grant exists only as the route to an exact selected child
     {
       [WIKI]: ['external_mcp:use'],
       [TASKS]: ['tasks:read'],
+      [PROXY]: ['external_mcp:use'],
+    },
+  )
+  assert.deepEqual(
+    materializeSelectionRouteGrants(
+      options,
+      index,
+      { [WIKI]: [] },
+      (resource) => resource,
+      [WIKI],
+    ),
+    {
+      [WIKI]: [],
       [PROXY]: ['external_mcp:use'],
     },
   )

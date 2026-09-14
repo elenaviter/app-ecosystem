@@ -135,8 +135,36 @@ test('an embedded access-card summon refreshes authority before opening its edit
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, /if \(!updated \|\| updated\.ok === false\)/)
-  assert.match(panel, /updated\?\.status === 409 && updated\.access/)
+  assert.match(panel, /Your draft is still here/)
+  assert.doesNotMatch(panel, /updated\?\.status === 409 && updated\.access\) startEdit/)
   assert.match(panel, /className="error form-actions__error"/)
+})
+
+test('an exact Control Card reuses the Card editor without joining the agent-card list', () => {
+  const slice = source('src/features/delegatedAccess/delegatedAccessSlice.ts')
+  assert.match(slice, /focusedCard\?: DelegatedAccessRecord/)
+  assert.match(slice, /postOp<ControlCardGetResult>\('control_card_get'/)
+  assert.match(slice, /state\.focusedCard = action\.payload\.access/)
+  assert.doesNotMatch(slice, /state\.items\.push\(action\.payload\.access\)/)
+
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.match(panel, /dispatch\(loadControlCard\(\{ controlId: accessCardFocus\.accessId \}\)\)/)
+  assert.match(panel, /if \(item\.source === 'control'\) return 'control card'/)
+  assert.match(panel, /item\.source === 'control' \? 'credentialless'/)
+  assert.match(panel, /aria-label="Control Card composition"/)
+  assert.match(panel, /<Field label="Combines with linked cards" wide>/)
+  assert.match(panel, /<CopyButton value=\{record\.issuer_ref\} label="Copy project URI" \/>/)
+  assert.match(panel, /Revoke/)
+  assert.match(panel, /compositionMode: item\.source === 'control'/)
+
+  const styles = source('src/styles.css')
+  assert.match(styles, /\.card-field--wide\s*\{[^}]*grid-column:\s*1 \/ -1;/s)
+  assert.match(styles, /\.control-card-issuer__ref \.claim-chip\s*\{[^}]*text-overflow:\s*ellipsis;/s)
+  assert.match(styles, /@media \(max-width: 680px\)[\s\S]*?\.control-card-issuer\s*\{[^}]*flex-direction:\s*column;/)
+
+  const app = source('src/App.tsx')
+  assert.match(app, /params\.control_card_id/)
+  assert.match(app, /'control_card_id'/)
 })
 
 test('permission claims are tool shortcuts and tool lists retain exact bulk and individual controls', () => {
@@ -237,25 +265,27 @@ test('an ungranted operation offers one atomic once-or-always grant, chosen besi
   assert.match(controls, /aria-label=\{`\$\{operation\}: always`\}/)
 
   // An existing grant with no stored policy runs every time. The compact
-  // control shows that effective state directly instead of adding a second
-  // explanatory line beneath every tool.
+  // live-policy control shows that effective state directly.
   assert.match(controls, /const mode = policy\?\.mode \|\| null;/)
   assert.match(controls, /const effectiveMode = mode \|\| 'always';/)
-  assert.doesNotMatch(controls, /every time \(default\)/)
-  assert.doesNotMatch(panel, /on the default \(every time\)/)
 
   const css = source('src/styles.css')
   for (const cls of ['.outer-operation-editor--policy', '.tool-choice', '.pending-operation-policy']) {
     assert.ok(css.includes(cls), `styles.css lacks ${cls}`)
   }
   assert.match(css, /\.resource-operations \{[\s\S]*grid-template-columns: repeat\(auto-fit, minmax\(380px, 1fr\)\)/)
-  assert.match(panel, /operation\.description \? \([\s\S]*<InfoMark text=\{`\$\{operation\.description\} Tool: \$\{operation\.name\}\.\`} \/>/)
+  assert.equal((panel.match(/operationHelpText\(\{/g) || []).length, 2)
+  assert.match(panel, /requiredGrants: operation\.grants,[\s\S]*selectedGrants: resourceGrants\[item\.resource\] \|\| \[\]/)
+  assert.match(panel, /requiredGrants: operation\.grants,[\s\S]*selectedGrants: editedGrants/)
 
   const catalog = source('src/features/delegatedAccess/DelegatedResourceCatalog.tsx')
   assert.match(catalog, /className="resource-boundaries edit-section"/)
   assert.match(catalog, />Service actions</)
   assert.match(catalog, /className="namespace-operation__body"/)
   assert.match(catalog, /className="namespace-operation__title"/)
+  assert.match(catalog, /const requiredGrants = doorGrantsForOperation\(/)
+  assert.match(catalog, /operationHelpText\(\{[\s\S]*requiredGrants,[\s\S]*selectedGrants,/)
+  assert.match(catalog, /missingGrants\.map\(\(grant\)/)
   assert.doesNotMatch(catalog, /through this door/)
 
   const actionLayout = css.slice(
@@ -298,13 +328,19 @@ test('provider-console OAuth stays transient and issued MCP access is client-rea
   assert.doesNotMatch(delegatedPanel, /last used|last sign-?in/i)
 })
 
-test('connections widget announces readiness only after installing its command listener', () => {
+test('connections widget announces readiness only after runtime setup and command listener installation', () => {
   const app = source('src/App.tsx')
   const listener = app.indexOf("window.addEventListener('message', onSurfaceCommand)")
   const ready = app.indexOf('announceConnectionsHubReady()', listener)
+  const effectStart = app.lastIndexOf('useEffect(() => {', listener)
+  const effectEnd = app.indexOf('\n  }, [', listener)
+  const effect = app.slice(effectStart, effectEnd + 120)
 
   assert.ok(listener >= 0)
   assert.ok(ready > listener)
+  assert.match(effect, /if \(telegramMiniAppMode \|\| claimChallengeId \|\| !runtimeReady\) return;/)
+  assert.match(effect, /\[telegramMiniAppMode, claimChallengeId, runtimeReady, changeTab, dispatch\]/)
+  assert.match(app, /Loading Connection Hub…/)
 
   const command = source('src/api/surfaceCommand.ts')
   assert.match(command, /SURFACE_READY_MESSAGE_TYPE = 'kdcube\.surface\.ready'/)
@@ -467,6 +503,17 @@ test('a card edits several resources under one stable identity: sections, add, r
   // and a newly advertised one is not granted.
   assert.match(parts, /Changed, suspended until you accept/)
   assert.match(parts, /Newly advertised, not granted/)
+  assert.match(parts, /function DriftTable\(/)
+  assert.match(parts, /role="table"/)
+  assert.match(parts, /<DriftIdentity/)
+  assert.match(parts, /kind="Tool"/)
+  assert.match(parts, /kind="Permission"/)
+  assert.match(parts, /Accept update/)
+  assert.match(parts, /No choice: the service no longer offers it/)
+  assert.match(parts, /checked=\{selected\}/)
+  assert.match(parts, /onToggleOperation\(/)
+  assert.match(parts, /onToggleClaim\(claim, event\.target\.checked\)/)
+  assert.match(parts, /<OperationInvocationChoice/)
   assert.match(parts, /offerReasonText\(offer\)/)
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
@@ -479,15 +526,46 @@ test('a card edits several resources under one stable identity: sections, add, r
   // An added resource grants no operation yet, whatever equal names other
   // resources carry; the save submits exactly the edited resource set.
   assert.match(panel, /resource in \(item\.resource_grants \|\| \{\}\) \? \(item\.resource_operations\?\.\[resource\] \|\| \[\]\) : \[\]/)
-  assert.match(panel, /editResourceKeys\(item\)\.forEach\(\(resource\) => \{\n\s*kept\[resource\] = editKeptClaims\(item, resource\);/)
+  assert.match(panel, /editResourceKeys\(item\)\n\s*\.filter\(\(resource\) => editResourceHasAuthority\(item, resource\)\)\n\s*\.forEach\(\(resource\) => \{\n\s*kept\[resource\] = editKeptClaims\(item, resource\);/)
   assert.match(panel, /acceptedOperations: editAcceptedOperations,/)
-  assert.match(panel, /if \(editSaveProblems\(item\)\.length\) return;/)
+  assert.match(panel, /const initialProblems = editSaveProblems\(item\);/)
+  assert.match(panel, /setEditActionError\(initialProblems/)
+  assert.match(panel, /\$\{operation\} was not added/)
+  assert.match(panel, /editActionError \|\| delegatedAccessError \|\| problemText/)
+  assert.match(panel, /const createAuthorityResources = useMemo/)
+  assert.match(panel, /resourceSelectionHasAuthority\(/)
+  assert.doesNotMatch(panel, /Object\.entries\(effectiveResourceGrants\)\.filter\(\(\[, grants\]\) => grants\.length > 0\)/)
+  assert.match(panel, /Keep this complete draft open so/)
+
+  // Identity validation precedes the ordinary card update. Otherwise a Card
+  // can be partially changed before the UI discovers that its focused grants
+  // cannot be addressed.
+  const saveBody = panel.slice(panel.indexOf('const saveEdit = async'), panel.indexOf('// The full delegable catalog'))
+  assert.ok(saveBody.indexOf('focusedAdditions.length && !item.client_id') < saveBody.indexOf('updateDelegatedAccess({'))
+  assert.match(saveBody, /The card changes were saved, but \$\{operation\} was not added/)
+  const partialFailure = saveBody.slice(
+    saveBody.indexOf('The card changes were saved, but'),
+    saveBody.indexOf('clearEditState()'),
+  )
+  assert.match(partialFailure, /dispatch\(loadDelegatedAccess\(\)\)/)
+  assert.doesNotMatch(partialFailure, /clearEditState\(\)/)
   // The drift review is per resource and never rendered for a resource being added.
   assert.match(panel, /state=\{item\.catalog_drift\?\.resources\?\.\[resource\]\}/)
   assert.match(panel, /\{!isNew \? \(\n\s*<ResourceDriftReview/)
+  // The main Tools list and the in-place drift row share the exact draft maps
+  // and mutation functions, including the unsaved invocation choice.
+  assert.match(panel, /selectedOperations=\{editResourceOperations\[resource\] \|\| \[\]\}/)
+  assert.match(panel, /selectedClaims=\{editedGrants\}/)
+  assert.match(panel, /invocationModeFor=\{\(operation\) => editInvocationModes\[`\$\{resource\}:\$\{operation\}`\] \|\| null\}/)
+  assert.match(panel, /onToggleOperation=\{\(operation, grants, on\) => toggleEditResourceOperation\(/)
+  assert.match(panel, /onToggleClaim=\{\(claim, on\) => toggleEditClaim\(resource, claim, on\)\}/)
+  assert.match(panel, /onChooseInvocation=\{\(operation, mode\) => setEditInvocationModes/)
 
   const slice = source('src/features/delegatedAccess/delegatedAccessSlice.ts')
   assert.match(slice, /accepted_operations: acceptedOperations/)
+
+  const editing = source('src/features/delegatedAccess/resourceEditing.ts')
+  assert.match(editing, /export function resourceSelectionHasAuthority/)
 
   const types = source('src/api/types.ts')
   for (const name of ['resource_acceptance?', 'caller_profile?', 'stable_identity?', 'resource_offers?', 'DelegatedResourceDriftState', 'DelegatedDriftChange']) {
@@ -498,4 +576,39 @@ test('a card edits several resources under one stable identity: sections, add, r
   for (const cls of ['.resource-section-head', '.resource-removed-stub', '.resource-drift-review', '.resource-offer-picker', '.edit-save-problems']) {
     assert.ok(css.includes(cls), `styles.css lacks ${cls}`)
   }
+  assert.match(css, /\.resource-drift-review \{[\s\S]*?container: resource-drift \/ inline-size;/)
+  assert.match(css, /\.resource-drift-table__row \{[\s\S]*?grid-template-columns:/)
+  assert.match(css, /@container resource-drift \(max-width: 640px\)/)
+})
+
+test('linked Card editing keeps both authority views and dialogs use one governed body layer', () => {
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  const types = source('src/api/types.ts')
+  const preview = source('src/features/delegatedAccess/controlCardPreview.ts')
+  const modal = source('src/components/ModalLayer.tsx')
+  const confirm = source('src/components/ConfirmDialog.tsx')
+  const filters = source('src/features/delegatedAccess/GrantFilterBar.tsx')
+  const catalog = source('src/features/delegatedAccess/DelegatedResourceCatalog.tsx')
+  const css = source('src/styles.css')
+
+  assert.match(types, /control_authority\?: DelegatedControlCardAuthority/)
+  assert.match(panel, /composeControlCardAuthority\(/)
+  assert.match(panel, /Preview of access shared by this pending caller edit/)
+  assert.doesNotMatch(panel, /editing \? 'caller' : authorityReading/)
+  assert.match(preview, /requires the raw credentialless Control Card authority/)
+
+  assert.match(modal, /createPortal\(children, document\.body\)/)
+  assert.match(confirm, /<ModalLayer>/)
+  assert.match(filters, /<ModalLayer>/)
+  assert.match(panel, /<ModalLayer>/)
+  assert.match(css, /--layer-modal: 50/)
+  assert.match(css, /\.script-modal \{[\s\S]*z-index: var\(--layer-modal\)/)
+  assert.match(css, /\.confirm-backdrop \{[\s\S]*z-index: var\(--layer-modal\)/)
+  assert.doesNotMatch(css, /z-index:\s*99999980/)
+
+  assert.match(panel, /className="operation-id">\{operation\.name\}/)
+  assert.match(catalog, /className="operation-id">\{row\.operation\}/)
+  assert.match(panel, /correlatedCardLabel\(\{ \.\.\.item, label: agentLabel \}\)/)
+  assert.match(css, /\.id-value \{[\s\S]*overflow-wrap: anywhere;[\s\S]*white-space: normal;/)
+  assert.match(css, /\.rail-row__title \{[\s\S]*flex-wrap: wrap;[\s\S]*overflow-wrap: anywhere;/)
 })
