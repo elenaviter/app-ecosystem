@@ -27,6 +27,9 @@ from connection_hub.delegated_credentials.catalog.authorization import (
     authorize_current_capability,
     card_boundary_denial,
 )
+from connection_hub.delegated_credentials.controls.attribution import (
+    ResolvedCardComposition,
+)
 from connection_hub.delegated_credentials.credential_view import (
     DelegatedCredentialView,
     resource_matches,
@@ -567,6 +570,7 @@ def _operation_not_consented_denial(
     available_grants: Iterable[str] = (),
     rpc_id: Any = None,
     structured_payload: bool = False,
+    card_composition: ResolvedCardComposition | None = None,
 ) -> SurfacePolicyDenial:
     required = {str(item).strip() for item in required_grants if str(item).strip()}
     available = {
@@ -583,6 +587,7 @@ def _operation_not_consented_denial(
                 surface=surface,
                 outer_operation=operation,
             ),
+            card_composition=card_composition,
         )
         ret = dict(structured.get("ret") or {})
         ret.update(
@@ -594,9 +599,14 @@ def _operation_not_consented_denial(
         )
         structured["ret"] = ret
         payload = structured
+    description = f"operation not consented for this connection: {operation}"
+    if isinstance(payload, Mapping):
+        error = payload.get("error")
+        error = error if isinstance(error, Mapping) else {}
+        description = str(error.get("message") or description).strip()
     return SurfacePolicyDenial(
         reason="operation_not_consented",
-        description=f"operation not consented for this connection: {operation}",
+        description=description,
         payload=payload,
         rpc_id=rpc_id,
         required_grants=frozenset(required),
@@ -615,6 +625,7 @@ def authorize_mcp_capabilities(
     user_roles: Iterable[str],
     user_permissions: Iterable[str],
     tool_calls: Iterable[tuple[Any, str]],
+    card_composition: ResolvedCardComposition | None = None,
 ) -> SurfacePolicyDecision:
     if not boundary.allowed:
         return boundary
@@ -753,6 +764,7 @@ def authorize_mcp_capabilities(
                     available_grants=available_grants,
                     rpc_id=rpc_id,
                     structured_payload=True,
+                    card_composition=card_composition,
                 ),
             )
 
@@ -768,6 +780,7 @@ def authorize_mcp_capabilities(
                         surface="mcp",
                         claim=missing[0],
                     ),
+                    card_composition=card_composition,
                 )
                 return _decision_with_state(
                     boundary,
@@ -796,6 +809,7 @@ def authorize_rest_capabilities(
     user_roles: Iterable[str],
     user_permissions: Iterable[str],
     operation_policies: Mapping[str, ManagedRestOperationPolicy] | None = None,
+    card_composition: ResolvedCardComposition | None = None,
 ) -> SurfacePolicyDecision:
     if not boundary.allowed:
         return boundary
@@ -928,6 +942,8 @@ def authorize_rest_capabilities(
                 operation=operation_name,
                 required_grants=required_grants,
                 available_grants=available_grants,
+                structured_payload=True,
+                card_composition=card_composition,
             ),
         )
 

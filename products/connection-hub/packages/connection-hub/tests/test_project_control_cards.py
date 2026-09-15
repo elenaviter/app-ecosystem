@@ -25,10 +25,13 @@ from connection_hub.delegated_credentials.cards.model import (
     CARD_AUTHORITY_SCHEMA,
     CARD_AUTHORITY_SCHEMA_V4,
     CARD_STATE_ACTIVE,
+    CONTROL_COMPOSITION_AND,
+    CONTROL_COMPOSITION_OR,
     CardAuthority,
     CardCredentialHandles,
     ControlCardBinding,
     NamedServiceSelection,
+    authority_is_credentialless,
 )
 from connection_hub.delegated_credentials.cards.service import (
     CardConflict,
@@ -41,15 +44,17 @@ from connection_hub.delegated_credentials.controls.cache import (
     ControlCardRuntimeCache,
 )
 from connection_hub.delegated_credentials.controls.effective import (
+    ControlCardMismatch,
     effective_card_authority,
 )
 from connection_hub.delegated_credentials.controls.model import (
     ProjectControlCardAuthority,
-    control_card_is_subset,
+    new_credentialless_card,
 )
 from connection_hub.delegated_credentials.live_grant import (
     LiveGrantCardError,
     resolve_live_grant_card,
+    resolve_live_grant_composition,
 )
 
 
@@ -81,7 +86,10 @@ class _Persistence:
             access_id != self.authority.access_id
             or not self._owned(subject_hash)
             or self.authority.state != CARD_STATE_ACTIVE
-            or self.authority.expires_at <= int(time.time())
+            or (
+                not authority_is_credentialless(self.authority)
+                and self.authority.expires_at <= int(time.time())
+            )
         ):
             return None
         return self.authority, self.handles
@@ -221,6 +229,41 @@ def _put_card(redis: _Redis, card: CardAuthority) -> None:
     )
 
 
+def _regular_control(
+    *,
+    operations: tuple[str, ...] = ("object.action.post_message",),
+    composition_mode: str = CONTROL_COMPOSITION_AND,
+    revision: int = 2,
+) -> CardAuthority:
+    control = new_credentialless_card(
+        initial_selection=_card(),
+        grantor_subject=OWNER,
+        catalog_version="catalog-v1",
+        control_id="control-regular",
+        issuer_ref=PROJECT_REF,
+        issuer_kind="application",
+        issuer_label="Demo project",
+        manage_url="/problem-board/projects/demo/control",
+        composition_mode=composition_mode,
+        now=int(time.time()),
+    )
+    claims = (
+        ("slack:post",)
+        if operations == ("object.action.post_message",)
+        else ("slack:files:write",)
+    )
+    return dataclasses.replace(
+        control,
+        card_revision=revision,
+        resource_grants={RESOURCE: ("named_services:use",)},
+        resource_operations={RESOURCE: operations},
+        named_service_operations=NamedServiceSelection.exact(
+            {RESOURCE: {"slack": operations}}
+        ),
+        account_scope={"slack": {"workspace-1": claims}},
+    )
+
+
 def _put_control(redis: _Redis, control: ProjectControlCardAuthority) -> None:
     key = ControlCardRuntimeCache(
         redis,
@@ -236,7 +279,7 @@ def _put_control(redis: _Redis, control: ProjectControlCardAuthority) -> None:
     )
 
 
-def test_v4_card_remains_readable_and_v5_round_trips_one_control_binding() -> None:
+def test_v4_card_remains_readable_and_current_card_round_trips_one_control_binding() -> None:
     legacy = _card().to_dict()
     legacy["schema"] = CARD_AUTHORITY_SCHEMA_V4
     legacy.pop("control_card", None)
@@ -249,6 +292,50 @@ def test_v4_card_remains_readable_and_v5_round_trips_one_control_binding() -> No
     assert stored["schema"] == CARD_AUTHORITY_SCHEMA
     assert restored.control_card is not None
     assert restored.control_card.control_id == CONTROL_ID
+
+
+def test_regular_control_card_round_trips_as_credentialless_and_defaults_to_and() -> None:
+    control = new_credentialless_card(
+        initial_selection=_card(),
+        grantor_subject=OWNER,
+        catalog_version="catalog-v1",
+        control_id="control-regular",
+        issuer_ref=PROJECT_REF,
+        issuer_kind="application",
+        properties={"coordination": {"version_control": {"model": "shared-main"}}},
+        now=int(time.time()),
+    )
+
+    restored = CardAuthority.from_mapping(control.to_dict())
+
+    assert authority_is_credentialless(restored)
+    assert restored.delegate_subject == ""
+    assert restored.expires_at == 0
+    assert restored.identity_scope == "grantor"
+    assert restored.composition_mode == CONTROL_COMPOSITION_AND
+    assert restored.properties == control.properties
+
+
+def test_effective_authority_refuses_a_different_identity_scope() -> None:
+    control = dataclasses.replace(
+        _regular_control(composition_mode=CONTROL_COMPOSITION_OR),
+        identity_scope="service-account",
+    )
+    caller = dataclasses.replace(
+        _card(),
+        identity_scope="grantor",
+        control_card=ControlCardBinding(
+            control_id=control.access_id,
+            issuer_ref=control.issuer_ref,
+            issuer_kind=control.issuer_kind,
+            control_revision=control.card_revision,
+        ),
+    )
+
+    with pytest.raises(ControlCardMismatch) as mismatch:
+        effective_card_authority(caller, control)
+
+    assert mismatch.value.reason == "control_card_identity_scope_mismatch"
 
 
 def test_effective_authority_intersects_tools_and_account_claims_independently() -> None:
@@ -313,28 +400,6 @@ def test_effective_authority_keeps_an_explicitly_claimless_operation() -> None:
     }
 
 
-def test_project_control_cannot_add_authority_missing_from_its_basis() -> None:
-    maximum = _control()
-    payload = maximum.to_dict()
-    payload["account_scope"]["slack"]["workspace-1"].append("slack:admin")
-    candidate = ProjectControlCardAuthority.from_mapping(payload)
-
-    assert not control_card_is_subset(candidate, maximum)
-
-
-def test_project_control_records_the_exact_card_and_catalog_basis() -> None:
-    control = ProjectControlCardAuthority.from_card(
-        _card(),
-        control_id=CONTROL_ID,
-        issuer_ref=PROJECT_REF,
-        now=int(time.time()),
-    )
-
-    assert control.basis_access_id == "agent-card-1"
-    assert control.basis_card_revision == 3
-    assert control.basis_catalog_version == "catalog-v1"
-
-
 @pytest.mark.asyncio
 async def test_effective_view_reports_both_card_and_control_catalog_evidence() -> None:
     redis = _Redis()
@@ -356,11 +421,14 @@ async def test_effective_view_reports_both_card_and_control_catalog_evidence() -
     assert view["resolution"] == {
         "participant_card_revision": 3,
         "participant_catalog_version": "catalog-v1",
-        "control_revision": 2,
-        "control_basis_access_id": "agent-card-1",
-        "control_basis_card_revision": 3,
-        "control_basis_catalog_version": "catalog-v1",
+        "control_card_revision": 2,
+        "control_catalog_version": "catalog-v1",
     }
+    assert view["control_authority"]["resource_operations"] == {
+        RESOURCE: ["object.action.post_message"]
+    }
+    assert "access_token" not in view["control_authority"]
+    assert "refresh_token" not in view["control_authority"]
 
 
 @pytest.mark.asyncio
@@ -377,7 +445,7 @@ async def test_live_resolution_fails_closed_when_control_projection_is_missing_o
             project="project",
             access_id=card.access_id,
         )
-    assert missing.value.reason == "control_card_projection_missing"
+    assert missing.value.reason == "control_card_unresolvable"
 
     control_key = ControlCardRuntimeCache(
         redis,
@@ -411,6 +479,63 @@ async def test_live_resolution_fails_closed_when_control_projection_is_missing_o
     assert effective.resource_operations[RESOURCE] == (
         "object.action.post_message",
     )
+
+
+@pytest.mark.asyncio
+async def test_live_resolution_fails_closed_when_regular_control_projection_is_missing() -> None:
+    redis = _Redis()
+    control = _regular_control()
+    card = dataclasses.replace(
+        _card(),
+        control_card=ControlCardBinding(
+            control_id=control.access_id,
+            issuer_ref=control.issuer_ref,
+            issuer_kind=control.issuer_kind,
+            control_revision=control.card_revision,
+        ),
+    )
+    _put_card(redis, card)
+
+    with pytest.raises(LiveGrantCardError) as missing:
+        await resolve_live_grant_card(
+            redis,
+            tenant="tenant",
+            project="project",
+            access_id=card.access_id,
+        )
+
+    assert missing.value.reason == "control_card_unresolvable"
+
+
+@pytest.mark.asyncio
+async def test_live_resolution_fails_closed_when_control_identity_scope_changes() -> None:
+    redis = _Redis()
+    control = dataclasses.replace(
+        _regular_control(composition_mode=CONTROL_COMPOSITION_OR),
+        identity_scope="service-account",
+    )
+    card = dataclasses.replace(
+        _card(),
+        identity_scope="grantor",
+        control_card=ControlCardBinding(
+            control_id=control.access_id,
+            issuer_ref=control.issuer_ref,
+            issuer_kind=control.issuer_kind,
+            control_revision=control.card_revision,
+        ),
+    )
+    _put_card(redis, card)
+    _put_card(redis, control)
+
+    with pytest.raises(LiveGrantCardError) as mismatch:
+        await resolve_live_grant_card(
+            redis,
+            tenant="tenant",
+            project="project",
+            access_id=card.access_id,
+        )
+
+    assert mismatch.value.reason == "control_card_identity_scope_mismatch"
 
 
 @pytest.mark.asyncio
@@ -449,7 +574,7 @@ async def test_only_one_project_control_can_attach_and_detach_restores_original_
         access_id=persistence.authority.access_id,
         control_id=other.control_id,
     )
-    assert refused["error"] == "project_control_already_attached"
+    assert refused["error"] == "control_card_already_attached"
 
     detached = await service.detach_project_control(
         {"user_id": OWNER},
@@ -459,6 +584,95 @@ async def test_only_one_project_control_can_attach_and_detach_restores_original_
     assert detached["ok"] is True
     assert persistence.authority.control_card is None
     assert persistence.authority.resource_operations == _card().resource_operations
+
+
+@pytest.mark.asyncio
+async def test_unbound_card_passes_through_and_control_mode_changes_apply_next_call() -> None:
+    redis = _Redis()
+    caller = dataclasses.replace(
+        _card(),
+        resource_operations={RESOURCE: ("object.action.post_message",)},
+        named_service_operations=NamedServiceSelection.exact(
+            {RESOURCE: {"slack": ("object.action.post_message",)}}
+        ),
+        account_scope={"slack": {"workspace-1": ("slack:post",)}},
+    )
+    _put_card(redis, caller)
+
+    unchanged = await resolve_live_grant_card(
+        redis,
+        tenant="tenant",
+        project="project",
+        access_id=caller.access_id,
+    )
+    assert unchanged == caller
+
+    control_and = _regular_control(
+        operations=("object.action.upload_file",),
+        composition_mode=CONTROL_COMPOSITION_AND,
+    )
+    bound = dataclasses.replace(
+        caller,
+        control_card=ControlCardBinding(
+            control_id=control_and.access_id,
+            issuer_ref=control_and.issuer_ref,
+            issuer_kind=control_and.issuer_kind,
+            control_revision=control_and.card_revision,
+        ),
+    )
+    _put_card(redis, bound)
+    _put_card(redis, control_and)
+
+    narrowed_composition = await resolve_live_grant_composition(
+        redis,
+        tenant="tenant",
+        project="project",
+        access_id=caller.access_id,
+    )
+    assert narrowed_composition is not None
+    assert narrowed_composition.caller_card == bound
+    assert narrowed_composition.control_card == control_and
+    narrowed = narrowed_composition.effective_card
+    assert narrowed is not None
+    assert narrowed.resource_operations[RESOURCE] == ()
+
+    control_or = dataclasses.replace(
+        control_and,
+        card_revision=control_and.card_revision + 1,
+        composition_mode=CONTROL_COMPOSITION_OR,
+    )
+    _put_card(redis, control_or)
+    expanded = await resolve_live_grant_card(
+        redis,
+        tenant="tenant",
+        project="project",
+        access_id=caller.access_id,
+    )
+    assert expanded is not None
+    assert expanded.resource_operations[RESOURCE] == (
+        "object.action.post_message",
+        "object.action.upload_file",
+    )
+    assert expanded.account_scope["slack"]["workspace-1"] == (
+        "slack:files:write",
+        "slack:post",
+    )
+
+    control_and_again = dataclasses.replace(
+        control_or,
+        card_revision=control_or.card_revision + 1,
+        composition_mode=CONTROL_COMPOSITION_AND,
+    )
+    _put_card(redis, control_and_again)
+    narrowed_again = await resolve_live_grant_card(
+        redis,
+        tenant="tenant",
+        project="project",
+        access_id=caller.access_id,
+    )
+    assert narrowed_again is not None
+    assert narrowed_again.resource_operations[RESOURCE] == ()
+    assert "object.action.upload_file" not in str(narrowed_again.named_services)
 
 
 @pytest.mark.asyncio

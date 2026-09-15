@@ -31,6 +31,7 @@ from connection_hub.delegated_credentials.cards.cache import (
 from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     authority_is_usable,
+    authority_projection_ttl,
 )
 from connection_hub.delegated_credentials.cards.store import (
     BundleStorageDelegatedCardStore,
@@ -112,7 +113,7 @@ class DelegatedCardResolver:
 
         try:
             await self._cache.restore_projection(
-                authority, ttl_seconds=max(0, authority.expires_at - moment)
+                authority, ttl_seconds=authority_projection_ttl(authority, moment)
             )
         except Exception:
             _LOGGER.warning(
@@ -172,10 +173,14 @@ class DelegatedCardResolver:
     async def _readmit(self, *, subject_hash: str, authority: CardAuthority) -> None:
         """Return a resolved card the index lost. Never blocks the listing."""
         try:
+            moment = int(time.time())
+            ttl_seconds = authority_projection_ttl(authority, moment)
             await self._cache.index_add(
                 subject_hash=subject_hash,
                 access_id=authority.access_id,
-                expires_at=authority.expires_at,
+                expires_at=(
+                    None if ttl_seconds is None else moment + ttl_seconds
+                ),
             )
         except Exception:
             _LOGGER.warning(

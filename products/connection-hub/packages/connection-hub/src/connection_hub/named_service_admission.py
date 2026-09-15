@@ -22,6 +22,9 @@ from connection_hub.delegated_credentials.catalog.authorization import (
     card_boundary_denial,
     catalog_unavailable_denial,
 )
+from connection_hub.delegated_credentials.controls.attribution import (
+    ResolvedCardComposition,
+)
 from connection_hub.delegated_credentials.named_service_policy import (
     boundary_permits_operation,
     configured_named_service_operations,
@@ -56,6 +59,7 @@ class ManagedNamedServiceAdmissionSnapshot:
     named_services: Mapping[str, Any]
     named_services_present: bool
     account_scope: Mapping[str, Any]
+    card_composition: ResolvedCardComposition | None = None
 
     def selector(self) -> dict[str, Any]:
         return {
@@ -122,6 +126,7 @@ def snapshot_from_grant(
     resource: str,
     request_resource: str,
     outer_operation: str = "",
+    card_composition: ResolvedCardComposition | None = None,
 ) -> ManagedNamedServiceAdmissionSnapshot:
     attrs = getattr(credential, "attrs", None)
     attrs = dict(attrs) if isinstance(attrs, Mapping) else {}
@@ -153,6 +158,7 @@ def snapshot_from_grant(
         account_scope=copy.deepcopy(
             dict(grant_record.get("account_scope") or {})
         ),
+        card_composition=card_composition,
     )
 
 
@@ -208,7 +214,11 @@ def evaluate_managed_named_service(
         operation=operation,
     ):
         return NamedServiceAdmissionEvaluation.deny(
-            card_boundary_denial(provenance=provenance, request=capability)
+            card_boundary_denial(
+                provenance=provenance,
+                request=capability,
+                card_composition=snapshot.card_composition,
+            )
         )
     return NamedServiceAdmissionEvaluation.allow(
         account_scope=snapshot.account_scope,

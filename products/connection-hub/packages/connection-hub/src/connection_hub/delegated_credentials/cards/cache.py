@@ -9,9 +9,11 @@ One key per card holds exactly one of three states:
     updating   a short fail-closed marker owned by one in-flight mutation
     revoked    a short negative cache after a committed revocation
 
-The projection's TTL is the card's remaining authorization lifetime, so the
-live entry expires with the authority it describes. Markers carry their own
-short residency and never act as authority.
+Credential-backed projections expire with their authorization lifetime.
+Credentialless Control Card projections remain until a later revision or
+revocation replaces them, so guards that do not own Connection Hub storage can
+still enforce them. Markers carry their own short residency and never act as
+authority.
 
 Every install is a compare-and-transition: a delayed read-through may not
 displace a newer revision, an updating marker, or a revoked tombstone, and a
@@ -93,6 +95,8 @@ if existing then
 end
 if ARGV[1] == '' then
   redis.call('DEL', KEYS[1])
+elseif ARGV[3] == '' then
+  redis.call('SET', KEYS[1], ARGV[1])
 else
   redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
 end
@@ -114,7 +118,11 @@ if existing then
     end
   end
 end
-redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+if ARGV[3] == '' then
+  redis.call('SET', KEYS[1], ARGV[1])
+else
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+end
 return 1
 """
 
@@ -231,11 +239,11 @@ class DelegatedCardRuntimeCache:
         authority: CardAuthority,
         *,
         mutation_id: str,
-        ttl_seconds: int,
+        ttl_seconds: int | None,
     ) -> bool:
         """Install the committed live projection over this mutation's marker, or
         over the revision it supersedes if a read-through refilled the key."""
-        if ttl_seconds <= 0:
+        if ttl_seconds is not None and ttl_seconds <= 0:
             return await self.finalize_removal(
                 authority.access_id, mutation_id=mutation_id
             )
@@ -249,7 +257,7 @@ class DelegatedCardRuntimeCache:
             authority.access_id,
             encode_cache_value(payload),
             str(mutation_id),
-            str(max(1, int(ttl_seconds))),
+            "" if ttl_seconds is None else str(max(1, int(ttl_seconds))),
             str(int(authority.card_revision)),
         )
 
@@ -287,11 +295,11 @@ class DelegatedCardRuntimeCache:
         )
 
     async def restore_projection(
-        self, authority: CardAuthority, *, ttl_seconds: int
+        self, authority: CardAuthority, *, ttl_seconds: int | None
     ) -> bool:
         """Repopulate after a miss. Never displaces a marker, tombstone, or
         newer revision, so a delayed restoration cannot revive old authority."""
-        if ttl_seconds <= 0:
+        if ttl_seconds is not None and ttl_seconds <= 0:
             return False
         payload = {
             "kind": CARD_CACHE_KIND_CARD,
@@ -303,15 +311,16 @@ class DelegatedCardRuntimeCache:
             authority.access_id,
             encode_cache_value(payload),
             str(int(authority.card_revision)),
-            str(max(1, int(ttl_seconds))),
+            "" if ttl_seconds is None else str(max(1, int(ttl_seconds))),
         )
 
     # -- per-grantor discovery index ------------------------------------------
     #
-    # A sorted set scored by each card's own expires_at. There is no whole-key
-    # TTL, so one card's lifetime cannot shorten another card's discoverability.
-    # The index is never authority: every listed member is still resolved
-    # through the card cache/store.
+    # A sorted set scored by each credential-backed card's expires_at. A
+    # credentialless Card uses +inf. There is no whole-key TTL, so one card's
+    # lifetime cannot shorten another card's discoverability. The index is
+    # never authority: every listed member is still resolved through the card
+    # cache/store.
 
     def grantor_index_key(self, subject_hash: str) -> str:
         return (
@@ -319,10 +328,16 @@ class DelegatedCardRuntimeCache:
             f"cards-by-grantor:{validated_subject_hash(subject_hash)}"
         )
 
-    async def index_add(self, *, subject_hash: str, access_id: str, expires_at: int) -> None:
+    async def index_add(
+        self, *, subject_hash: str, access_id: str, expires_at: int | None
+    ) -> None:
         await self._redis.zadd(
             self.grantor_index_key(subject_hash),
-            {validated_access_id(access_id): float(int(expires_at))},
+            {
+                validated_access_id(access_id): (
+                    float("inf") if expires_at is None else float(int(expires_at))
+                )
+            },
         )
 
     async def index_remove(self, *, subject_hash: str, access_id: str) -> None:

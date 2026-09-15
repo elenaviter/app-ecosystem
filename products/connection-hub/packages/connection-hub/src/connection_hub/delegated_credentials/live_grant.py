@@ -16,18 +16,25 @@ from connection_hub.delegated_credentials.cards.cache import (
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
     CardAuthority,
+    authority_is_credentialless,
 )
 from connection_hub.delegated_credentials.cards.resolver import (
     CardUnavailable,
     DelegatedCardResolver,
 )
+from connection_hub.delegated_credentials.controls.effective import (
+    ControlCardMismatch,
+    effective_card_authority,
+)
 from connection_hub.delegated_credentials.controls.cache import (
     ControlCardCacheUnusable,
     ControlCardRuntimeCache,
 )
-from connection_hub.delegated_credentials.controls.effective import (
-    ControlCardMismatch,
-    effective_card_authority,
+from connection_hub.delegated_credentials.controls.model import (
+    control_card_from_legacy,
+)
+from connection_hub.delegated_credentials.controls.attribution import (
+    ResolvedCardComposition,
 )
 from connection_hub.delegated_credentials.credential_view import (
     resource_matches,
@@ -51,7 +58,7 @@ def _required_text(value: Any, reason: str) -> str:
     return text
 
 
-async def resolve_live_grant_card(
+async def resolve_live_grant_composition(
     redis: Any,
     *,
     tenant: str,
@@ -61,8 +68,8 @@ async def resolve_live_grant_card(
     expected_grantor_subject: str = "",
     expected_delegate_subject: str = "",
     card_store: Any = None,
-) -> CardAuthority | None:
-    """Return the current valid card, None when revoked/expired, or raise.
+) -> ResolvedCardComposition | None:
+    """Return current Caller, Control, and Effective authority, or raise.
 
     A pointer-bearing token has no snapshot fallback. Store failures, malformed
     records, and binding mismatches are authorization failures. A card whose
@@ -101,6 +108,8 @@ async def resolve_live_grant_card(
     if record is None:
         return None
 
+    if authority_is_credentialless(record):
+        raise LiveGrantCardError("caller_card_has_no_credential")
     _required_text(record.client_id, "client_id_missing")
     _required_text(record.grantor_subject, "grantor_subject_missing")
     _required_text(record.delegate_subject, "delegate_subject_missing")
@@ -125,29 +134,93 @@ async def resolve_live_grant_card(
         if clean_expected and clean_expected != actual_value:
             raise LiveGrantCardError(reason)
 
-    if record.control_card is not None:
-        control_cache = ControlCardRuntimeCache(
-            redis,
-            tenant=tenant,
-            project=project,
-        )
+    caller = record
+    control = None
+    effective = caller
+    if caller.control_card is not None:
+        control_id = caller.control_card.control_id
+        if card_store is not None and subject_hash:
+            try:
+                control = await resolver.resolve(
+                    subject_hash=subject_hash,
+                    access_id=control_id,
+                )
+            except CardUnavailable as exc:
+                raise LiveGrantCardError(exc.reason) from exc
+        else:
+            try:
+                control_entry = await cache.read(control_id)
+            except CardCacheUnusable as exc:
+                raise LiveGrantCardError(exc.reason) from exc
+            except Exception as exc:
+                raise LiveGrantCardError("control_card_lookup_unavailable") from exc
+            if control_entry is None:
+                control = None
+            elif control_entry.is_updating:
+                raise LiveGrantCardError("control_card_updating")
+            elif control_entry.is_revoked:
+                control = None
+            else:
+                control = control_entry.authority
+        if control is None and control_id.startswith("project-control-"):
+            legacy_cache = ControlCardRuntimeCache(
+                redis,
+                tenant=tenant,
+                project=project,
+            )
+            try:
+                legacy_entry = await legacy_cache.read(control_id)
+            except ControlCardCacheUnusable as exc:
+                raise LiveGrantCardError(exc.reason) from exc
+            except Exception as exc:
+                raise LiveGrantCardError("control_card_lookup_unavailable") from exc
+            if legacy_entry is not None and legacy_entry.is_updating:
+                raise LiveGrantCardError("control_card_updating")
+            if (
+                legacy_entry is not None
+                and legacy_entry.is_card
+                and legacy_entry.authority is not None
+            ):
+                control = control_card_from_legacy(legacy_entry.authority)
+        if control is None:
+            raise LiveGrantCardError("control_card_unresolvable")
+        if not authority_is_credentialless(control):
+            raise LiveGrantCardError("control_card_has_credential")
         try:
-            control_entry = await control_cache.read(record.control_card.control_id)
-        except ControlCardCacheUnusable as exc:
-            raise LiveGrantCardError(exc.reason) from exc
-        except Exception as exc:
-            raise LiveGrantCardError("control_card_lookup_unavailable") from exc
-        if control_entry is None:
-            raise LiveGrantCardError("control_card_projection_missing")
-        if control_entry.is_updating:
-            raise LiveGrantCardError("control_card_updating")
-        if control_entry.is_retired or control_entry.authority is None:
-            raise LiveGrantCardError("control_card_not_active")
-        try:
-            record = effective_card_authority(record, control_entry.authority)
+            effective = effective_card_authority(caller, control)
         except ControlCardMismatch as exc:
             raise LiveGrantCardError(exc.reason) from exc
-    return record
+    return ResolvedCardComposition(
+        caller_card=caller,
+        control_card=control,
+        effective_card=effective,
+    )
+
+
+async def resolve_live_grant_card(
+    redis: Any,
+    *,
+    tenant: str,
+    project: str,
+    access_id: str,
+    expected_client_id: str = "",
+    expected_grantor_subject: str = "",
+    expected_delegate_subject: str = "",
+    card_store: Any = None,
+) -> CardAuthority | None:
+    """Compatibility view returning only the current Effective Card."""
+
+    composition = await resolve_live_grant_composition(
+        redis,
+        tenant=tenant,
+        project=project,
+        access_id=access_id,
+        expected_client_id=expected_client_id,
+        expected_grantor_subject=expected_grantor_subject,
+        expected_delegate_subject=expected_delegate_subject,
+        card_store=card_store,
+    )
+    return composition.effective_card if composition is not None else None
 
 
 def live_grants_for_resource(
@@ -173,4 +246,5 @@ __all__ = [
     "LiveGrantCardError",
     "live_grants_for_resource",
     "resolve_live_grant_card",
+    "resolve_live_grant_composition",
 ]

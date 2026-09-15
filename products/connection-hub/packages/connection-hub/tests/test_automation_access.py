@@ -13,6 +13,9 @@ from connection_hub.delegated_credentials.automation_access import (
 from connection_hub.delegated_credentials.oauth.clients import (
     client_uses_full_card_catalog,
 )
+from connection_hub.delegated_credentials.resource_operations import (
+    resolve_declared_resource_keys,
+)
 
 
 def _public_record(*, source: str, metadata=None) -> dict:
@@ -243,7 +246,7 @@ def _catalog_with_a_declared_door():
 
 
 def _resolver():
-    return AutomationAccessService._declared_resource_keys
+    return resolve_declared_resource_keys
 
 
 def test_issuance_persists_the_declared_door_not_the_host_that_served_consent() -> None:
@@ -262,9 +265,7 @@ def test_issuance_persists_the_declared_door_not_the_host_that_served_consent() 
         "/demo-tenant/demo-project/problem-board@1-0/public/mcp/problem_board"
     )
 
-    resolved, rewritten = _resolver()(
-        AutomationAccessService, config, {requested: ["work:relay"]}
-    )
+    resolved, rewritten = _resolver()(config, {requested: ["work:relay"]})
 
     assert list(resolved) == [declared]
     assert resolved[declared] == ["work:relay"]
@@ -277,7 +278,6 @@ def test_two_hostnames_for_one_door_are_one_grant() -> None:
     base = "/api/integrations/bundles/demo-tenant/demo-project/problem-board@1-0/public/mcp/problem_board"
 
     resolved, _ = _resolver()(
-        AutomationAccessService,
         config,
         {
             f"https://one.example.test{base}": ["work:relay"],
@@ -295,9 +295,7 @@ def test_a_resource_no_declaration_covers_keeps_its_literal() -> None:
     config = _catalog_with_a_declared_door()
     stranger = "https://elsewhere.example.test/mcp/something-else"
 
-    resolved, rewritten = _resolver()(
-        AutomationAccessService, config, {stranger: ["work:relay"]}
-    )
+    resolved, rewritten = _resolver()(config, {stranger: ["work:relay"]})
 
     assert list(resolved) == [stranger]
     assert rewritten == {}
@@ -309,8 +307,6 @@ def test_the_all_resource_row_never_swallows_a_concrete_request() -> None:
     config = _catalog_with_a_declared_door()
     stranger = "https://elsewhere.example.test/mcp/something-else"
 
-    resolved, _ = _resolver()(
-        AutomationAccessService, config, {stranger: ["work:relay"]}
-    )
+    resolved, _ = _resolver()(config, {stranger: ["work:relay"]})
 
     assert "*" not in resolved

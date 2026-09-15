@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Redis projection for project control cards.
+"""Legacy Redis projection for project control cards during migration.
 
 The project is the durable owner. Redis is the live authorization projection.
 An updating marker makes every bound Card fail closed while the project changes

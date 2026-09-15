@@ -16,14 +16,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from connection_hub.delegated_credentials.cards.model import CardAuthority
 from connection_hub.delegated_credentials.catalog.models import (
     CatalogDocument,
 )
+from connection_hub.delegated_credentials.controls.attribution import (
+    CARD_ROLE_CALLER,
+    CARD_ROLE_CONTROL,
+    CardBoundaryAttribution,
+    ResolvedCardComposition,
+    attribute_card_boundary,
+)
 from connection_hub.delegated_credentials.named_service_policy import (
+    boundary_permits_operation,
     configured_named_service_operations,
 )
 from connection_hub.delegated_credentials.oauth.config import (
     oauth_delegated_config_from_connections,
+)
+from connection_hub.delegated_credentials.resource_operations import (
+    operations_for_resource,
+    resource_matches,
 )
 
 CAPABILITY_RESOURCE = "resource"
@@ -68,6 +81,22 @@ _NOT_GRANTED_MESSAGES = {
     CAPABILITY_OUTER_OPERATION: "The delegated access card does not cover the requested operation. Its grantor can add it in Connection Hub.",
     CAPABILITY_NAMED_SERVICE_NAMESPACE: "The delegated access card does not cover the requested named-service namespace. Its grantor can add it in Connection Hub.",
     CAPABILITY_NAMED_SERVICE_OPERATION: "The delegated access card does not cover the requested named-service operation. Its grantor can add it in Connection Hub, under this card's named-service operations.",
+}
+
+_CONTROL_NOT_GRANTED_MESSAGES = {
+    CAPABILITY_RESOURCE: "The linked Control Card excludes the requested resource.",
+    CAPABILITY_RESOURCE_CLAIM: "The linked Control Card excludes the requested resource claim.",
+    CAPABILITY_OUTER_OPERATION: "The linked Control Card excludes the requested operation.",
+    CAPABILITY_NAMED_SERVICE_NAMESPACE: "The linked Control Card excludes the requested named-service namespace.",
+    CAPABILITY_NAMED_SERVICE_OPERATION: "The linked Control Card excludes the requested named-service operation.",
+}
+
+_COMPOSED_NOT_GRANTED_MESSAGES = {
+    CAPABILITY_RESOURCE: "The Caller Card and linked Control Card both exclude the requested resource.",
+    CAPABILITY_RESOURCE_CLAIM: "The Caller Card and linked Control Card both exclude the requested resource claim.",
+    CAPABILITY_OUTER_OPERATION: "The Caller Card and linked Control Card both exclude the requested operation.",
+    CAPABILITY_NAMED_SERVICE_NAMESPACE: "The Caller Card and linked Control Card both exclude the requested named-service namespace.",
+    CAPABILITY_NAMED_SERVICE_OPERATION: "The Caller Card and linked Control Card both exclude the requested named-service operation.",
 }
 
 # Fields each kind must carry, so a denial is actionable on its own.
@@ -134,6 +163,60 @@ class CapabilityRequest:
             *_OPTIONAL_PATH.get(self.kind, ()),
         }
         return {key: value for key, value in fields.items() if value and key in carried}
+
+
+def _card_permits_capability(
+    card: CardAuthority,
+    request: CapabilityRequest,
+) -> bool:
+    """Read one raw Card using the same dimensions as effective admission."""
+
+    request_resource = _clean(request.request_resource or request.resource)
+    if request.kind == CAPABILITY_RESOURCE:
+        return any(
+            resource_matches(resource, request_resource)
+            for resource in card.resource_grants
+        )
+    if request.kind == CAPABILITY_RESOURCE_CLAIM:
+        held = {
+            _clean(claim)
+            for resource, claims in card.resource_grants.items()
+            if resource_matches(resource, request_resource)
+            for claim in claims
+            if _clean(claim)
+        }
+        return _clean(request.claim) in held
+    if request.kind == CAPABILITY_OUTER_OPERATION:
+        selected = operations_for_resource(
+            card.resource_operations,
+            request_resource,
+            matched_resource=_clean(request.resource),
+        )
+        return _clean(request.outer_operation) in set(selected)
+
+    named_services = configured_named_service_operations(card.named_services)
+    namespace = _clean(request.namespace).lower().rstrip(":")
+    if request.kind == CAPABILITY_NAMED_SERVICE_NAMESPACE:
+        return namespace in named_services
+    if request.kind == CAPABILITY_NAMED_SERVICE_OPERATION:
+        return boundary_permits_operation(
+            card.named_services,
+            namespace=namespace,
+            operation=_clean(request.operation),
+        )
+    return False
+
+
+def _card_boundary_attribution(
+    composition: ResolvedCardComposition | None,
+    request: CapabilityRequest,
+) -> CardBoundaryAttribution | None:
+    if composition is None:
+        return None
+    return attribute_card_boundary(
+        composition,
+        permits=lambda card: _card_permits_capability(card, request),
+    )
 
 
 class ActiveCatalogCapabilities:
@@ -246,6 +329,7 @@ def card_boundary_denial(
     provenance: CardProvenance,
     request: CapabilityRequest,
     delegable: bool = True,
+    card_composition: ResolvedCardComposition | None = None,
 ) -> dict[str, Any]:
     """The structured 403 body for a capability the CARD does not cover.
 
@@ -254,32 +338,82 @@ def card_boundary_denial(
     deployment does not allow this capability to be asked for here, which
     changes the answer from "ask for it" to "nobody here can grant it".
     """
+    message = _NOT_GRANTED_MESSAGES.get(
+        request.kind, _NOT_GRANTED_MESSAGES[CAPABILITY_RESOURCE]
+    )
+    recovery: dict[str, Any] = {
+        "action": (
+            "grant_capability_in_delegated_access"
+            if delegable
+            else "capability_not_delegable_here"
+        ),
+        "retry_same_request": False,
+        "request_user_consent": bool(delegable),
+    }
+    attribution = _card_boundary_attribution(card_composition, request)
+    public_attribution: dict[str, object] | None = None
+    if attribution is not None and attribution.reliable and attribution.blocking_cards:
+        public_attribution = attribution.to_public_dict()
+        roles = {card.role for card in attribution.blocking_cards}
+        if roles == {CARD_ROLE_CONTROL}:
+            message = _CONTROL_NOT_GRANTED_MESSAGES.get(
+                request.kind,
+                _CONTROL_NOT_GRANTED_MESSAGES[CAPABILITY_RESOURCE],
+            )
+            recovery = {
+                "action": "review_blocking_control_card",
+                "retry_same_request": False,
+                "request_user_consent": False,
+                "edit_route_available": False,
+            }
+            blocker = attribution.single_blocker
+            if blocker is not None:
+                recovery["target_card_role"] = CARD_ROLE_CONTROL
+                recovery["target_access_id"] = blocker.access_id
+        elif roles != {CARD_ROLE_CALLER}:
+            message = _COMPOSED_NOT_GRANTED_MESSAGES.get(
+                request.kind,
+                _COMPOSED_NOT_GRANTED_MESSAGES[CAPABILITY_RESOURCE],
+            )
+            recovery = {
+                "action": "review_blocking_cards",
+                "retry_same_request": False,
+                "request_user_consent": False,
+                "edit_route_available": False,
+            }
+    elif card_composition is not None:
+        # A disagreement between the raw participants and the effective result
+        # is not a basis for sending a person to either editor.
+        recovery = {
+            "action": "review_composed_delegated_access",
+            "retry_same_request": False,
+            "request_user_consent": False,
+            "edit_route_available": False,
+        }
+
+    ret: dict[str, Any] = {
+        "reason": NOT_GRANTED_REASON,
+        "access_id": _clean(provenance.access_id),
+        "card_revision": int(provenance.card_revision or 0),
+        "requested_capability": request.path(),
+        "card_catalog_version": _clean(provenance.catalog_version),
+        "recovery": recovery,
+    }
+    if public_attribution is not None:
+        ret["authority_composition"] = public_attribution
+        blocker = attribution.single_blocker if attribution is not None else None
+        if blocker is not None:
+            ret["blocking_card"] = blocker.to_public_dict()
+
     return {
         "ok": False,
         "error": {
             "code": NOT_GRANTED_CODE,
-            "message": _NOT_GRANTED_MESSAGES.get(
-                request.kind, _NOT_GRANTED_MESSAGES[CAPABILITY_RESOURCE]
-            ),
+            "message": message,
             "where": NOT_GRANTED_WHERE,
             "retryable": False,
         },
-        "ret": {
-            "reason": NOT_GRANTED_REASON,
-            "access_id": _clean(provenance.access_id),
-            "card_revision": int(provenance.card_revision or 0),
-            "requested_capability": request.path(),
-            "card_catalog_version": _clean(provenance.catalog_version),
-            "recovery": {
-                "action": (
-                    "grant_capability_in_delegated_access"
-                    if delegable
-                    else "capability_not_delegable_here"
-                ),
-                "retry_same_request": False,
-                "request_user_consent": bool(delegable),
-            },
-        },
+        "ret": ret,
     }
 
 

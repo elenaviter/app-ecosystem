@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Portable authority shape for one project-owned, subtractive control card."""
+"""Control Card linking helpers plus the legacy project-card decoder."""
 
 from __future__ import annotations
 
@@ -13,6 +13,9 @@ from connection_hub.agent_account_scope import (
     normalize_account_scope,
 )
 from connection_hub.delegated_credentials.cards.model import (
+    CARD_STATE_ACTIVE,
+    CREDENTIALLESS_CARD_SOURCE,
+    CONTROL_COMPOSITION_AND,
     CardAuthority,
     NamedServiceSelection,
 )
@@ -33,19 +36,174 @@ CONTROL_CARD_STATE_RETIRED = "retired"
 
 
 class ProjectControlCardError(ValueError):
-    """A project control card cannot be trusted as an authority ceiling."""
+    """A Control Card record or relationship is invalid."""
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
 
 
+ControlCardError = ProjectControlCardError
+
+
+def control_card_id_for_issuer(
+    issuer_kind: str,
+    issuer_ref: str,
+    *,
+    grantor_subject: str,
+) -> str:
+    """Stable idempotent Card id for one issuer-owned control definition."""
+    kind = clean_text(issuer_kind)
+    reference = clean_text(issuer_ref)
+    grantor = clean_text(grantor_subject)
+    if not kind:
+        raise ControlCardError("control_card_issuer_kind_missing")
+    if not reference:
+        raise ControlCardError("control_card_issuer_ref_missing")
+    if not grantor:
+        raise ControlCardError("control_card_grantor_missing")
+    digest = hashlib.sha256(
+        f"{grantor}\0{kind}\0{reference}".encode("utf-8")
+    ).hexdigest()[:24]
+    return f"control-{digest}"
+
+
 def control_card_id_for_project(project_ref: str) -> str:
+    """Legacy deterministic id retained only while old PB rows migrate."""
     value = clean_text(project_ref)
     if not value:
         raise ProjectControlCardError("project_ref_missing")
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
     return f"project-control-{digest}"
+
+
+def new_credentialless_card(
+    *,
+    grantor_subject: str,
+    catalog_version: str,
+    initial_selection: CardAuthority | None = None,
+    control_id: str,
+    issuer_ref: str,
+    issuer_kind: str,
+    issuer_label: str = "",
+    manage_url: str = "",
+    properties: Mapping[str, Any] | None = None,
+    composition_mode: str = CONTROL_COMPOSITION_AND,
+    revision: int = 1,
+    now: int = 0,
+) -> CardAuthority:
+    """Create a regular Card without credential handles or expiry.
+
+    ``initial_selection`` supplies only the initially checked values. The
+    Control Card's editor and every later save use the catalog, so this Card is
+    never bounded by the source Card.
+    """
+
+    seed = initial_selection
+    selected = selected_named_service_operations(seed) if seed is not None else {}
+    provenance: dict[str, Any] = {}
+    if seed is not None:
+        provenance["control_card_initial_selection"] = {
+            "access_id": seed.access_id,
+            "card_revision": seed.card_revision,
+            "catalog_version": seed.catalog_version,
+        }
+    result = CardAuthority(
+        access_id=clean_text(control_id),
+        client_id=f"control-card:{clean_text(issuer_kind)}",
+        grantor_subject=clean_text(grantor_subject),
+        delegate_subject="",
+        source=CREDENTIALLESS_CARD_SOURCE,
+        label=clean_text(issuer_label) or clean_text(issuer_ref),
+        card_revision=max(1, int(revision)),
+        catalog_version=clean_text(catalog_version),
+        state=CARD_STATE_ACTIVE,
+        resource_grants={
+            resource: tuple(grants)
+            for resource, grants in (seed.resource_grants.items() if seed else ())
+        },
+        resource_operations={
+            resource: tuple(operations)
+            for resource, operations in (seed.resource_operations.items() if seed else ())
+        },
+        named_service_operations=NamedServiceSelection.exact(
+            {
+                resource: {
+                    namespace: sorted(operations)
+                    for namespace, operations in namespaces.items()
+                }
+                for resource, namespaces in selected.items()
+            }
+        ),
+        named_services=dict(seed.named_services or {}) if seed is not None else {},
+        account_scope=(
+            normalize_account_scope(seed.account_scope) if seed is not None else {}
+        ),
+        identity_scope=(
+            clean_text(seed.identity_scope) if seed is not None else ""
+        )
+        or "grantor",
+        created_at=max(0, int(now)),
+        expires_at=0,
+        resource_acceptance={},
+        provenance=provenance,
+        issuer_ref=clean_text(issuer_ref),
+        issuer_kind=clean_text(issuer_kind),
+        issuer_label=clean_text(issuer_label),
+        manage_url=clean_text(manage_url),
+        composition_mode=clean_text(composition_mode).lower() or CONTROL_COMPOSITION_AND,
+        properties=dict(properties or {}),
+    )
+    if not result.access_id:
+        raise ControlCardError("control_card_id_missing")
+    if not result.grantor_subject:
+        raise ControlCardError("control_card_grantor_missing")
+    if not result.catalog_version:
+        raise ControlCardError("control_card_catalog_version_missing")
+    return result
+
+
+def control_card_from_legacy(
+    authority: "ProjectControlCardAuthority",
+    *,
+    properties: Mapping[str, Any] | None = None,
+) -> CardAuthority:
+    """Adapt an old PB-owned projection during the bounded migration window."""
+
+    return CardAuthority(
+        access_id=authority.control_id,
+        client_id=f"control-card:{authority.issuer_kind}",
+        grantor_subject=authority.grantor_subject,
+        delegate_subject="",
+        source="control",
+        label=authority.issuer_label or authority.issuer_ref,
+        card_revision=authority.revision,
+        catalog_version=authority.basis_catalog_version,
+        state=(
+            CARD_STATE_ACTIVE
+            if authority.state == CONTROL_CARD_STATE_ACTIVE
+            else "revoked"
+        ),
+        resource_grants=authority.resource_grants,
+        resource_operations=authority.resource_operations,
+        named_service_operations=authority.named_service_operations,
+        account_scope=authority.account_scope,
+        created_at=authority.created_at,
+        expires_at=0,
+        provenance={
+            "legacy_project_control": {
+                "basis_access_id": authority.basis_access_id,
+                "basis_card_revision": authority.basis_card_revision,
+                "basis_catalog_version": authority.basis_catalog_version,
+            }
+        },
+        issuer_ref=authority.issuer_ref,
+        issuer_kind=authority.issuer_kind,
+        issuer_label=authority.issuer_label,
+        manage_url=authority.manage_url,
+        composition_mode=CONTROL_COMPOSITION_AND,
+        properties=dict(properties or {}),
+    )
 
 
 def _resource_grants(value: Any) -> dict[str, tuple[str, ...]]:
@@ -310,7 +468,7 @@ def control_card_is_subset(
     candidate: ProjectControlCardAuthority,
     maximum: ProjectControlCardAuthority,
 ) -> bool:
-    """Whether every proposed permission is inside the project's original basis."""
+    """Compare two legacy project-control records during staged migration."""
 
     try:
         candidate.validate()
@@ -344,8 +502,12 @@ __all__ = [
     "CONTROL_CARD_SCHEMA",
     "CONTROL_CARD_STATE_ACTIVE",
     "CONTROL_CARD_STATE_RETIRED",
+    "ControlCardError",
     "ProjectControlCardAuthority",
     "ProjectControlCardError",
+    "control_card_from_legacy",
+    "control_card_id_for_issuer",
     "control_card_id_for_project",
     "control_card_is_subset",
+    "new_credentialless_card",
 ]

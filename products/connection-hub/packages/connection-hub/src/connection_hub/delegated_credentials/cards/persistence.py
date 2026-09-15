@@ -35,6 +35,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
     CardAuthority,
     CardCredentialHandles,
+    authority_is_credentialless,
 )
 from connection_hub.delegated_credentials.cards.resolver import (
     CardUnavailable,
@@ -136,9 +137,12 @@ class DurableCardPersistence:
             now=now,
         )
         try:
-            await self._handles.write(
-                handles, ttl_seconds=max(0, authority.expires_at - now)
-            )
+            if authority_is_credentialless(authority):
+                await self._handles.remove(authority.access_id)
+            else:
+                await self._handles.write(
+                    handles, ttl_seconds=max(0, authority.expires_at - now)
+                )
         except Exception as exc:
             # The revision is committed; the handles it references are not.
             raise CardServingUnavailable(

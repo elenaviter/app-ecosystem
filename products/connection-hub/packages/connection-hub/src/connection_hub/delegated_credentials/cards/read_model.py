@@ -38,6 +38,8 @@ from connection_hub.delegated_credentials.cards.identity import (
     is_resident_client_id,
 )
 from connection_hub.delegated_credentials.cards.model import (
+    CREDENTIALLESS_CARD_SOURCE,
+    CONTROL_COMPOSITIONS,
     CardAuthority,
     ControlCardBinding,
 )
@@ -56,6 +58,7 @@ from connection_hub.delegated_credentials.catalog.drift import (
 CALLER_KIND_RESIDENT = "resident"
 CALLER_KIND_OAUTH = "oauth"
 CALLER_KIND_MANUAL = "manual"
+CALLER_KIND_CONTROL = "control"
 
 OPERATION_STATE_CURRENT = "current"
 OPERATION_STATE_CHANGED = "changed"
@@ -96,6 +99,8 @@ def _integer(value: Any, *, field_name: str) -> int:
 
 
 def caller_kind_for(client_id: str, source: str) -> str:
+    if _clean(source) == CALLER_KIND_CONTROL:
+        return CALLER_KIND_CONTROL
     if is_resident_client_id(client_id):
         return CALLER_KIND_RESIDENT
     if _clean(source) == CALLER_KIND_OAUTH:
@@ -263,6 +268,12 @@ class DelegatedCardView:
     provenance: Mapping[str, Any] = field(default_factory=dict)
     client_metadata: Mapping[str, Any] = field(default_factory=dict)
     control_card: ControlCardBinding | None = None
+    issuer_ref: str = ""
+    issuer_kind: str = ""
+    issuer_label: str = ""
+    manage_url: str = ""
+    composition_mode: str = ""
+    properties: Mapping[str, Any] = field(default_factory=dict)
 
     @property
     def is_resident(self) -> bool:
@@ -302,6 +313,12 @@ class DelegatedCardView:
             "control_card": (
                 self.control_card.to_dict() if self.control_card is not None else None
             ),
+            "issuer_ref": self.issuer_ref,
+            "issuer_kind": self.issuer_kind,
+            "issuer_label": self.issuer_label,
+            "manage_url": self.manage_url,
+            "composition_mode": self.composition_mode,
+            "properties": dict(self.properties),
         }
 
     @classmethod
@@ -325,7 +342,12 @@ class DelegatedCardView:
             or not client_id
             or not grantor_subject
             or caller_kind
-            not in {CALLER_KIND_RESIDENT, CALLER_KIND_OAUTH, CALLER_KIND_MANUAL}
+            not in {
+                CALLER_KIND_RESIDENT,
+                CALLER_KIND_OAUTH,
+                CALLER_KIND_MANUAL,
+                CALLER_KIND_CONTROL,
+            }
             or state not in {"active", "revoked"}
         ):
             raise ValueError("delegated card view identity is invalid")
@@ -379,6 +401,19 @@ class DelegatedCardView:
         )
         if card_revision < 0 or created_at < 0 or expires_at < 0 or last_issued_at < 0:
             raise ValueError("delegated card timestamps or revision are invalid")
+        source = _clean(data.get("source"))
+        composition_mode = _clean(data.get("composition_mode")).lower()
+        if source == CREDENTIALLESS_CARD_SOURCE:
+            if (
+                not _clean(data.get("issuer_ref"))
+                or not _clean(data.get("issuer_kind"))
+                or _clean(data.get("delegate_subject"))
+                or expires_at != 0
+                or composition_mode not in CONTROL_COMPOSITIONS
+            ):
+                raise ValueError("credentialless card metadata is invalid")
+        elif composition_mode and composition_mode not in CONTROL_COMPOSITIONS:
+            raise ValueError("card composition mode is invalid")
         return cls(
             access_id=access_id,
             client_id=client_id,
@@ -386,7 +421,7 @@ class DelegatedCardView:
             profile=profile,
             grantor_subject=grantor_subject,
             delegate_subject=_clean(data.get("delegate_subject")),
-            source=_clean(data.get("source")),
+            source=source,
             label=_clean(data.get("label")),
             card_revision=card_revision,
             catalog_version=_clean(data.get("catalog_version")),
@@ -408,6 +443,12 @@ class DelegatedCardView:
                 if data.get("control_card") is not None
                 else None
             ),
+            issuer_ref=_clean(data.get("issuer_ref")),
+            issuer_kind=_clean(data.get("issuer_kind")),
+            issuer_label=_clean(data.get("issuer_label")),
+            manage_url=_clean(data.get("manage_url")),
+            composition_mode=composition_mode,
+            properties=dict(_mapping(data.get("properties", {}), field_name="properties")),
         )
 
 
@@ -555,6 +596,12 @@ def build_card_view(
         provenance=authority.provenance,
         client_metadata=authority.client_metadata,
         control_card=authority.control_card,
+        issuer_ref=authority.issuer_ref,
+        issuer_kind=authority.issuer_kind,
+        issuer_label=authority.issuer_label,
+        manage_url=authority.manage_url,
+        composition_mode=authority.composition_mode,
+        properties=authority.properties,
     )
 
 

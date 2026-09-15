@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from connection_hub.authority_registry import CredentialEnvelope
+from connection_hub.delegated_credentials.cards.model import (
+    CardAuthority,
+    ControlCardBinding,
+    NamedServiceSelection,
+)
 from connection_hub.delegated_credentials.catalog.authorization import (
     ActiveCatalogCapabilities,
 )
 from connection_hub.delegated_credentials.catalog.models import CatalogDocument
+from connection_hub.delegated_credentials.controls.attribution import (
+    ResolvedCardComposition,
+)
+from connection_hub.delegated_credentials.controls.effective import (
+    effective_card_authority,
+)
 from connection_hub.named_service_admission import (
     DELEGATED_CARD_BINDING_SCHEMA,
     NamedServiceAdmissionResolutionError,
@@ -88,6 +101,64 @@ def _snapshot(catalog: ActiveCatalogCapabilities):
     )
 
 
+def _control_composition() -> ResolvedCardComposition:
+    named_services = {
+        "namespaces": {
+            "records": {
+                "tools": {
+                    "objects": {
+                        "operations": {
+                            "object.search": {"grants": ["records:read"]}
+                        }
+                    }
+                }
+            }
+        }
+    }
+    control = CardAuthority(
+        access_id="control-card-1",
+        client_id="",
+        grantor_subject="user-1",
+        delegate_subject="",
+        source="control",
+        card_revision=3,
+        resource_grants={RESOURCE: ("records:read",)},
+        resource_operations={RESOURCE: ("named_services",)},
+        named_service_operations=NamedServiceSelection.none(),
+        named_services={},
+        identity_scope="grantor",
+        issuer_ref="work:project:demo",
+        issuer_kind="application",
+        composition_mode="and",
+    )
+    caller = CardAuthority(
+        access_id="access-1",
+        client_id="agent-1",
+        grantor_subject="user-1",
+        delegate_subject="integration:agent:user-1",
+        source="agent",
+        card_revision=2,
+        resource_grants={RESOURCE: ("records:read",)},
+        resource_operations={RESOURCE: ("named_services",)},
+        named_service_operations=NamedServiceSelection.exact(
+            {RESOURCE: {"records": ("object.search",)}}
+        ),
+        named_services=named_services,
+        identity_scope="grantor",
+        expires_at=4_000_000_000,
+        control_card=ControlCardBinding(
+            control_id=control.access_id,
+            issuer_ref=control.issuer_ref,
+            control_revision=control.card_revision,
+        ),
+    )
+    return ResolvedCardComposition(
+        caller_card=caller,
+        control_card=control,
+        effective_card=effective_card_authority(caller, control),
+    )
+
+
 def test_named_service_is_bounded_by_both_card_and_active_catalog() -> None:
     snapshot = _snapshot(_catalog())
     allowed = evaluate_managed_named_service(
@@ -109,6 +180,26 @@ def test_named_service_is_bounded_by_both_card_and_active_catalog() -> None:
     assert removed.denial["error"]["code"] == (
         "delegated_capability_no_longer_available"
     )
+
+
+def test_named_service_denial_names_the_control_card_that_removed_it() -> None:
+    composition = _control_composition()
+    snapshot = dataclasses.replace(
+        _snapshot(_catalog()),
+        named_services={},
+        card_composition=composition,
+    )
+
+    denied = evaluate_managed_named_service(
+        snapshot,
+        namespace="records",
+        operation="object.search",
+    )
+
+    assert not denied.allowed
+    assert denied.denial["ret"]["blocking_card"]["role"] == "control"
+    assert denied.denial["ret"]["blocking_card"]["access_id"] == "control-card-1"
+    assert denied.denial["ret"]["recovery"]["edit_route_available"] is False
 
 
 def test_bearer_relay_must_match_the_authenticated_card_binding() -> None:

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Intersect a delegated Card with its project-owned control card."""
+"""Apply one optional, credentialless Control Card to a caller Card."""
 
 from __future__ import annotations
 
@@ -13,21 +13,25 @@ from connection_hub.agent_account_scope import (
     normalize_account_scope,
 )
 from connection_hub.delegated_credentials.cards.model import (
+    CARD_STATE_ACTIVE,
+    CONTROL_COMPOSITION_AND,
+    CONTROL_COMPOSITION_OR,
     CardAuthority,
     ControlCardBinding,
     NamedServiceSelection,
+    authority_is_credentialless,
 )
 from connection_hub.delegated_credentials.catalog.drift import (
     selected_named_service_operations,
-)
-from connection_hub.delegated_credentials.controls.model import (
-    CONTROL_CARD_STATE_ACTIVE,
-    ProjectControlCardAuthority,
 )
 from connection_hub.delegated_credentials.named_service_policy import (
     merge_named_service_configs,
     narrow_named_service_config,
     operation_grants,
+)
+from connection_hub.delegated_credentials.controls.model import (
+    ProjectControlCardAuthority,
+    control_card_from_legacy,
 )
 
 
@@ -45,6 +49,13 @@ def _intersect_values(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[st
     if "*" in right_values:
         return tuple(sorted(left_values))
     return tuple(sorted(left_values & right_values))
+
+
+def _union_values(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
+    values = set(left) | set(right)
+    if "*" in values:
+        return ("*",)
+    return tuple(sorted(values))
 
 
 def _selection_map(value: Any) -> dict[str, dict[str, set[str]]]:
@@ -66,7 +77,7 @@ def _selection_map(value: Any) -> dict[str, dict[str, set[str]]]:
 
 def _intersect_named_services(
     card: CardAuthority,
-    control: ProjectControlCardAuthority,
+    control: Any,
     resources: Mapping[str, tuple[str, ...]],
 ) -> tuple[NamedServiceSelection, dict[str, Any]]:
     card_map = _selection_map(card)
@@ -98,6 +109,41 @@ def _intersect_named_services(
             resource=resource,
         )
         materialized = merge_named_service_configs(materialized, narrowed)
+    return NamedServiceSelection.exact(selected), materialized
+
+
+def _union_named_services(
+    card: CardAuthority,
+    control: CardAuthority,
+    resources: Mapping[str, tuple[str, ...]],
+) -> tuple[NamedServiceSelection, dict[str, Any]]:
+    card_map = _selection_map(card)
+    control_map = _selection_map(control)
+    selected: dict[str, dict[str, list[str]]] = {}
+    for resource in resources:
+        for source in (card_map, control_map):
+            for namespace, operations in source.get(resource, {}).items():
+                target = selected.setdefault(resource, {}).setdefault(namespace, [])
+                for operation in sorted(operations):
+                    if operation not in target:
+                        target.append(operation)
+
+    materialized: dict[str, Any] = {}
+    for authority, selection in ((card, card_map), (control, control_map)):
+        claims = _materialized_claims(authority.named_services)
+        for resource, namespaces in selection.items():
+            if resource not in resources:
+                continue
+            narrowed = narrow_named_service_config(
+                config=authority.named_services,
+                selected={
+                    namespace: sorted(operations)
+                    for namespace, operations in namespaces.items()
+                },
+                grants=set(resources.get(resource, ())) | claims,
+                resource=resource,
+            )
+            materialized = merge_named_service_configs(materialized, narrowed)
     return NamedServiceSelection.exact(selected), materialized
 
 
@@ -155,53 +201,97 @@ def _intersect_accounts(
     return result
 
 
+def _union_accounts(
+    card_scope: Mapping[str, Any],
+    control_scope: Mapping[str, Any],
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    result = normalize_account_scope(card_scope)
+    for provider, accounts in normalize_account_scope(control_scope).items():
+        target = result.setdefault(provider, {})
+        for account_id, claims in accounts.items():
+            target[account_id] = _union_values(
+                tuple(target.get(account_id, ())),
+                tuple(claims),
+            )
+    return result
+
+
 def effective_card_authority(
     card: CardAuthority,
-    control: ProjectControlCardAuthority,
+    control: CardAuthority | ProjectControlCardAuthority,
 ) -> CardAuthority:
-    """Return live authority as ``card AND control``.
+    """Compose the caller Card with its current Control Card revision.
 
-    The result preserves Card identity and lifetime. It can only remove
-    resources, operations, claims, named-service operations, and account scope.
+    ``and`` is the default and narrows authority. ``or`` contributes authority.
+    The result always preserves the caller Card identity and credential life.
     """
 
+    if isinstance(control, ProjectControlCardAuthority):
+        control = control_card_from_legacy(control)
     binding = card.control_card
-    if binding is None or binding.control_id != control.control_id:
+    if not authority_is_credentialless(control):
+        raise ControlCardMismatch("control_card_has_credential")
+    if binding is None or binding.control_id != control.access_id:
         raise ControlCardMismatch("control_card_binding_mismatch")
     if binding.issuer_ref != control.issuer_ref:
         raise ControlCardMismatch("control_card_issuer_mismatch")
     if card.grantor_subject != control.grantor_subject:
         raise ControlCardMismatch("control_card_grantor_mismatch")
-    if control.state != CONTROL_CARD_STATE_ACTIVE:
+    card_identity_scope = str(card.identity_scope or "grantor").strip() or "grantor"
+    control_identity_scope = (
+        str(control.identity_scope or "grantor").strip() or "grantor"
+    )
+    if card_identity_scope != control_identity_scope:
+        raise ControlCardMismatch("control_card_identity_scope_mismatch")
+    if control.state != CARD_STATE_ACTIVE:
         raise ControlCardMismatch("control_card_not_active")
 
-    resource_grants: dict[str, tuple[str, ...]] = {}
-    for resource, card_grants in card.resource_grants.items():
-        ceiling_grants = control.resource_grants.get(resource)
-        if ceiling_grants is None:
-            continue
-        grants = _intersect_values(tuple(card_grants), tuple(ceiling_grants))
-        # Presence of the resource is distinct from its claims. An operation
-        # can be explicitly claimless, so retaining the shared resource key is
-        # what lets the later operation check decide it accurately.
-        resource_grants[resource] = grants
-
-    resource_operations = {
-        resource: tuple(
-            sorted(
-                set(card.resource_operations.get(resource, ()))
-                & set(control.resource_operations.get(resource, ()))
+    mode = control.composition_mode or CONTROL_COMPOSITION_AND
+    if mode == CONTROL_COMPOSITION_OR:
+        resource_grants = {
+            resource: _union_values(
+                tuple(card.resource_grants.get(resource, ())),
+                tuple(control.resource_grants.get(resource, ())),
             )
-        )
-        for resource in resource_grants
-    }
+            for resource in set(card.resource_grants) | set(control.resource_grants)
+        }
+        resource_operations = {
+            resource: _union_values(
+                tuple(card.resource_operations.get(resource, ())),
+                tuple(control.resource_operations.get(resource, ())),
+            )
+            for resource in resource_grants
+        }
+    else:
+        resource_grants = {}
+        for resource, card_grants in card.resource_grants.items():
+            ceiling_grants = control.resource_grants.get(resource)
+            if ceiling_grants is None:
+                continue
+            # Presence of the resource is distinct from its claims. An
+            # operation can be explicitly claimless, so retaining the shared
+            # resource key lets the operation check decide it accurately.
+            resource_grants[resource] = _intersect_values(
+                tuple(card_grants), tuple(ceiling_grants)
+            )
+        resource_operations = {
+            resource: _intersect_values(
+                tuple(card.resource_operations.get(resource, ())),
+                tuple(control.resource_operations.get(resource, ())),
+            )
+            for resource in resource_grants
+        }
     try:
-        named_selection, named_services = _intersect_named_services(
-            card,
-            control,
-            resource_grants,
-        )
-        account_scope = _intersect_accounts(card.account_scope, control.account_scope)
+        if mode == CONTROL_COMPOSITION_OR:
+            named_selection, named_services = _union_named_services(
+                card, control, resource_grants
+            )
+            account_scope = _union_accounts(card.account_scope, control.account_scope)
+        else:
+            named_selection, named_services = _intersect_named_services(
+                card, control, resource_grants
+            )
+            account_scope = _intersect_accounts(card.account_scope, control.account_scope)
     except ControlCardMismatch:
         raise
     except Exception as exc:
@@ -212,7 +302,7 @@ def effective_card_authority(
         issuer_kind=binding.issuer_kind,
         issuer_label=control.issuer_label or binding.issuer_label,
         manage_url=control.manage_url or binding.manage_url,
-        control_revision=control.revision,
+        control_revision=control.card_revision,
     )
     return dataclasses.replace(
         card,
@@ -222,7 +312,15 @@ def effective_card_authority(
         named_service_operations=named_selection,
         named_services=copy.deepcopy(named_services),
         account_scope=account_scope,
+        resource_acceptance=(
+            {**dict(card.resource_acceptance), **dict(control.resource_acceptance)}
+            if mode == CONTROL_COMPOSITION_OR
+            else card.resource_acceptance
+        ),
         control_card=effective_binding,
+        properties=copy.deepcopy(
+            {**dict(card.properties or {}), **dict(control.properties or {})}
+        ),
     )
 
 

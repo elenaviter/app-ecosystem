@@ -72,23 +72,34 @@ from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_operations,
     operation_union,
     project_legacy_operations,
+    resolve_declared_resource_keys,
 )
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
+    CREDENTIALLESS_CARD_SOURCE,
+    CONTROL_COMPOSITION_AND,
+    CONTROL_COMPOSITIONS,
     NAMED_SERVICE_OPERATIONS_ALL,
     CardAuthority,
     CardCredentialHandles,
     CardRecordError,
     ControlCardBinding,
     NamedServiceSelection,
+    authority_is_credentialless,
+)
+from connection_hub.delegated_credentials.controls.effective import (
+    ControlCardMismatch,
+    effective_card_authority,
 )
 from connection_hub.delegated_credentials.controls.cache import (
     ControlCardCacheUnusable,
     ControlCardRuntimeCache,
 )
-from connection_hub.delegated_credentials.controls.effective import (
-    ControlCardMismatch,
-    effective_card_authority,
+from connection_hub.delegated_credentials.controls.model import (
+    ControlCardError,
+    control_card_from_legacy,
+    control_card_id_for_issuer,
+    new_credentialless_card,
 )
 from connection_hub.delegated_credentials.cards.identity import (
     ResidentCallerProfile,
@@ -471,6 +482,16 @@ ACCESS_SOURCE_OAUTH = "oauth"
 # a resource. Unlike a MANUAL automation (which mints its own random client), the
 # client_id is caller-supplied and stable, so re-consent updates one record.
 ACCESS_SOURCE_AGENT = "agent"
+ACCESS_SOURCE_CONTROL = CREDENTIALLESS_CARD_SOURCE
+
+
+def _record_is_credentialless(record: "AutomationAccessRecord") -> bool:
+    """The one material difference between a linked Card and a caller Card."""
+    return (
+        record.source == ACCESS_SOURCE_CONTROL
+        and not record.delegate_subject
+        and record.expires_at == 0
+    )
 
 
 def agent_grant_access_id(grantor_subject: str, client_id: str, resources: Iterable[str]) -> str:
@@ -743,9 +764,15 @@ class AutomationAccessRecord:
     # Public, client-asserted identification retained for operator review and
     # search. It never participates in an authority decision.
     client_metadata: Mapping[str, Any] = field(default_factory=dict)
-    # One project-owned ceiling may narrow this Card while its worker attends
-    # that project. It is resolved only by the live authorization path.
+    # One optional Control Card may adjust this Card. It is resolved only by
+    # the live authorization path.
     control_card: ControlCardBinding | None = None
+    issuer_ref: str = ""
+    issuer_kind: str = ""
+    issuer_label: str = ""
+    manage_url: str = ""
+    composition_mode: str = ""
+    properties: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         normalized = normalize_resource_operations(self.resource_operations)
@@ -818,6 +845,16 @@ class AutomationAccessRecord:
                 if value.get("control_card") is not None
                 else None
             ),
+            issuer_ref=_clean(value.get("issuer_ref")),
+            issuer_kind=_clean(value.get("issuer_kind")),
+            issuer_label=_clean(value.get("issuer_label")),
+            manage_url=_clean(value.get("manage_url")),
+            composition_mode=_clean(value.get("composition_mode")).lower(),
+            properties=(
+                copy.deepcopy(dict(value.get("properties")))
+                if isinstance(value.get("properties"), Mapping)
+                else {}
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -856,6 +893,12 @@ class AutomationAccessRecord:
             "provenance": dict(self.provenance or {}),
             "entry_resource": self.entry_resource,
             "client_metadata": copy.deepcopy(dict(self.client_metadata or {})),
+            "issuer_ref": self.issuer_ref,
+            "issuer_kind": self.issuer_kind,
+            "issuer_label": self.issuer_label,
+            "manage_url": self.manage_url,
+            "composition_mode": self.composition_mode,
+            "properties": copy.deepcopy(dict(self.properties or {})),
         }
         stored_selection = self.named_service_operations.to_stored()
         if stored_selection is not None:
@@ -900,10 +943,12 @@ class AutomationAccessRecord:
             ACCESS_SOURCE_AGENT: "hosted",
             ACCESS_SOURCE_OAUTH: "oauth",
             ACCESS_SOURCE_MANUAL: "issued_token",
+            ACCESS_SOURCE_CONTROL: "credentialless",
         }.get(self.source, self.source or "issued_token")
         public["credential_reach"] = (
             "multi_resource"
-            if self.source in {ACCESS_SOURCE_AGENT, ACCESS_SOURCE_MANUAL}
+            if self.source
+            in {ACCESS_SOURCE_AGENT, ACCESS_SOURCE_MANUAL, ACCESS_SOURCE_CONTROL}
             or client_uses_full_card_catalog(self.client_metadata)
             else "single_resource"
         )
@@ -943,6 +988,12 @@ def card_authority_from_record(record: AutomationAccessRecord) -> CardAuthority:
         entry_resource=record.entry_resource,
         client_metadata=copy.deepcopy(dict(record.client_metadata or {})),
         control_card=record.control_card,
+        issuer_ref=record.issuer_ref,
+        issuer_kind=record.issuer_kind,
+        issuer_label=record.issuer_label,
+        manage_url=record.manage_url,
+        composition_mode=record.composition_mode,
+        properties=copy.deepcopy(dict(record.properties or {})),
     )
 
 
@@ -995,6 +1046,12 @@ def record_from_card(
         entry_resource=authority.entry_resource,
         client_metadata=copy.deepcopy(dict(authority.client_metadata or {})),
         control_card=authority.control_card,
+        issuer_ref=authority.issuer_ref,
+        issuer_kind=authority.issuer_kind,
+        issuer_label=authority.issuer_label,
+        manage_url=authority.manage_url,
+        composition_mode=authority.composition_mode,
+        properties=copy.deepcopy(dict(authority.properties or {})),
     )
 
 
@@ -1152,14 +1209,42 @@ class AutomationAccessService:
             raise CardUnavailable("card_persistence_not_configured")
         return self._persistence
 
-    def _control_cards(self) -> ControlCardRuntimeCache:
-        if self._redis is None:
-            raise CardUnavailable("control_card_projection_unavailable")
-        return ControlCardRuntimeCache(
-            self._redis,
-            tenant=self._tenant,
-            project=self._project,
+    async def _resolve_control_record(
+        self,
+        control_id: str,
+        *,
+        grantor_subject: str,
+    ) -> AutomationAccessRecord | None:
+        """Resolve a regular Control Card, with read-only legacy migration aid."""
+
+        record = await self._load_record(
+            control_id,
+            grantor_subject=grantor_subject,
         )
+        if record is not None:
+            return record
+        if not control_id.startswith("project-control-") or self._redis is None:
+            return None
+        try:
+            entry = await ControlCardRuntimeCache(
+                self._redis,
+                tenant=self._tenant,
+                project=self._project,
+            ).read(control_id)
+        except ControlCardCacheUnusable as exc:
+            raise CardUnavailable(exc.reason) from exc
+        except Exception as exc:
+            raise CardUnavailable("control_card_lookup_unavailable") from exc
+        if entry is None:
+            return None
+        if entry.is_updating:
+            raise CardUnavailable("control_card_updating")
+        if entry.is_retired or entry.authority is None:
+            return None
+        authority = control_card_from_legacy(entry.authority)
+        if authority.grantor_subject != grantor_subject:
+            return None
+        return record_from_card(authority)
 
     async def _effective_control_view(
         self,
@@ -1171,8 +1256,11 @@ class AutomationAccessService:
         if binding is None:
             return {"state": "not_controlled"}
         try:
-            entry = await self._control_cards().read(binding.control_id)
-        except ControlCardCacheUnusable as exc:
+            control = await self._resolve_control_record(
+                binding.control_id,
+                grantor_subject=record.grantor_subject,
+            )
+        except CardUnavailable as exc:
             return {
                 "state": "unavailable",
                 "reason": exc.reason,
@@ -1186,29 +1274,24 @@ class AutomationAccessService:
                 "fail_closed": True,
                 "binding": binding.to_dict(),
             }
-        if entry is None:
+        if control is None:
             return {
                 "state": "unavailable",
-                "reason": "control_card_projection_missing",
+                "reason": "control_card_unresolvable",
                 "fail_closed": True,
                 "binding": binding.to_dict(),
             }
-        if entry.is_updating:
+        if not _record_is_credentialless(control):
             return {
-                "state": "updating",
-                "fail_closed": True,
-                "binding": binding.to_dict(),
-            }
-        if entry.is_retired or entry.authority is None:
-            return {
-                "state": "retired",
+                "state": "unavailable",
+                "reason": "control_card_has_credential",
                 "fail_closed": True,
                 "binding": binding.to_dict(),
             }
         try:
             effective = effective_card_authority(
                 card_authority_from_record(record),
-                entry.authority,
+                card_authority_from_record(control),
             )
         except ControlCardMismatch as exc:
             return {
@@ -1223,15 +1306,20 @@ class AutomationAccessService:
             "binding": effective.control_card.to_dict()
             if effective.control_card is not None
             else binding.to_dict(),
+            # Owner-visible and credentialless. The saved effective authority
+            # below is intentionally insufficient for previewing an unsaved
+            # caller edit: an intersection cannot reveal Control Card access
+            # that the saved caller did not select.
+            "control_authority": control.to_public_dict(),
             "authority": record_from_card(effective).to_public_dict(),
             "resolution": {
                 "participant_card_revision": record.card_revision,
                 "participant_catalog_version": record.catalog_version,
-                "control_revision": entry.authority.revision,
-                "control_basis_access_id": entry.authority.basis_access_id,
-                "control_basis_card_revision": entry.authority.basis_card_revision,
-                "control_basis_catalog_version": entry.authority.basis_catalog_version,
+                "control_card_revision": control.card_revision,
+                "control_catalog_version": control.catalog_version,
             },
+            "composition_mode": control.composition_mode,
+            "properties": copy.deepcopy(dict(control.properties or {})),
         }
 
     async def _load_record(
@@ -1265,7 +1353,11 @@ class AutomationAccessService:
         authorities = await self._cards().list_current(
             subject_hash=_subject_key(grantor_subject)
         )
-        return [record_from_card(authority) for authority in authorities]
+        return [
+            record_from_card(authority)
+            for authority in authorities
+            if not authority_is_credentialless(authority)
+        ]
 
     async def _committed_revision(self, access_id: str, *, grantor_subject: str) -> int:
         """The write precondition for this id. A revoked or expired card is not
@@ -1297,7 +1389,11 @@ class AutomationAccessService:
         authorities = await self._cards().list_active(
             subject_hash=_subject_key(grantor_subject), now=now
         )
-        return [record_from_card(authority) for authority in authorities]
+        return [
+            record_from_card(authority)
+            for authority in authorities
+            if not authority_is_credentialless(authority)
+        ]
 
     async def _save_precondition_conflict(
         self,
@@ -1812,43 +1908,7 @@ class AutomationAccessService:
         config: OAuthDelegatedClientConfig,
         resource_grants: Mapping[str, list[str]],
     ) -> tuple[dict[str, list[str]], dict[str, str]]:
-        """Persist the declared door a request came through, not the URL it used.
-
-        An OAuth resource indicator has to be concrete, so a client asks for
-        ``https://<host>/api/.../problem_board``. The catalog declares that door
-        host-agnostically, as ``*/api/.../problem_board*``, because a hosted
-        service is reachable at more than one hostname and outlives any of them.
-        Writing the concrete URL onto the card pins it to the host that happened
-        to serve the consent, so the same service reached through another
-        hostname stops matching, and the catalog grows a second row for a door
-        it already had.
-
-        So a submitted resource is resolved to the declared row covering it, and
-        the literal is kept only when no declaration covers it, which is the
-        case that genuinely has nothing to point at. The all-resource row is
-        never that answer: it is a declared admin surface, and collapsing a
-        concrete request into it would widen the card rather than name its door.
-        """
-
-        resolved: dict[str, list[str]] = {}
-        rewritten: dict[str, str] = {}
-        for resource_value, grants in resource_grants.items():
-            row = config.card_selector_config(resource_value)
-            declared = _clean(getattr(row, "resource", "")) if row is not None else ""
-            key = resource_value
-            if declared and declared != "*" and declared != resource_value:
-                key = declared
-                rewritten[resource_value] = declared
-            if key in resolved:
-                # Two concrete URLs for one declared door are one grant.
-                merged = list(resolved[key])
-                for grant in grants:
-                    if grant not in merged:
-                        merged.append(grant)
-                resolved[key] = merged
-            else:
-                resolved[key] = list(grants)
-        return resolved, rewritten
+        return resolve_declared_resource_keys(config, resource_grants)
 
     def _named_service_operation_selection(
         self,
@@ -1931,7 +1991,9 @@ class AutomationAccessService:
         records = []
         for record in records_found:
             item = record.to_public_dict()
-            item["project_control"] = await self._effective_control_view(record)
+            effective_control = await self._effective_control_view(record)
+            item["control_card"] = effective_control
+            item["project_control"] = effective_control
             # Expired cards stay listed so their grants can be renewed; the
             # flag is the server's word on it, read against its own clock.
             item["expired"] = bool(record.expires_at and record.expires_at <= now)
@@ -2998,6 +3060,8 @@ class AutomationAccessService:
         expected_card_revision: int | None = None,
         expected_catalog_version: str | None = None,
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
+        properties: Mapping[str, Any] | None = None,
+        composition_mode: str | None = None,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -3035,6 +3099,24 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_not_found"}
         if existing.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_owned"}
+        selected_composition_mode = (
+            _clean(composition_mode).lower()
+            if composition_mode is not None
+            else existing.composition_mode
+        )
+        if _record_is_credentialless(existing):
+            selected_composition_mode = (
+                selected_composition_mode or CONTROL_COMPOSITION_AND
+            )
+        if (
+            selected_composition_mode
+            and selected_composition_mode not in CONTROL_COMPOSITIONS
+        ):
+            return {
+                "ok": False,
+                "error": "control_card_composition_mode_invalid",
+                "status": 400,
+            }
         # Every family edits here. The source records how the credential is
         # managed; it does not decide whether the grantor may change authority.
 
@@ -3187,6 +3269,14 @@ class AutomationAccessService:
             provenance=copy.deepcopy(dict(existing.provenance or {})),
             client_metadata=copy.deepcopy(dict(existing.client_metadata or {})),
             control_card=existing.control_card,
+            issuer_ref=existing.issuer_ref,
+            issuer_kind=existing.issuer_kind,
+            issuer_label=existing.issuer_label,
+            manage_url=existing.manage_url,
+            composition_mode=selected_composition_mode,
+            properties=copy.deepcopy(
+                dict(existing.properties if properties is None else properties)
+            ),
         )
         del remaining
         try:
@@ -3762,6 +3852,7 @@ class AutomationAccessService:
         self,
         record: AutomationAccessRecord,
         *,
+        state: str = CARD_STATE_ACTIVE,
         active: Any = None,
         catalog_config: Any = None,
         policies: Iterable[Any] | None = None,
@@ -3794,8 +3885,11 @@ class AutomationAccessService:
                         record.access_id,
                         exc_info=True,
                     )
+        authority = card_authority_from_record(record)
+        if state != authority.state:
+            authority = dataclasses.replace(authority, state=state)
         return build_card_view(
-            card_authority_from_record(record),
+            authority,
             resource_states=states,
             row_for=(
                 (lambda resource: self._configured_resource(resource, config=catalog_config))
@@ -3823,19 +3917,412 @@ class AutomationAccessService:
         if record is None or record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_found", "status": 404}
         view = await self._card_view(record)
+        effective_control = await self._effective_control_view(record)
         return {
             "ok": True,
             "card": view.to_dict(),
-            "project_control": await self._effective_control_view(record),
+            "control_card": effective_control,
+            # Compatibility for widgets deployed before the generic rename.
+            "project_control": effective_control,
         }
 
-    async def project_control_basis(
+    async def _control_card_public_view(
+        self,
+        user: Mapping[str, Any],
+        record: AutomationAccessRecord,
+        *,
+        state: str = CARD_STATE_ACTIVE,
+    ) -> dict[str, Any]:
+        view = (await self._card_view(record, state=state)).to_dict()
+        try:
+            drift = await self._catalog_drift(
+                [record], owner_subject=record.grantor_subject
+            )
+            view["catalog_drift"] = drift.get(record.access_id, {})
+            options = await self.resource_options(user)
+            view["resource_offers"] = compatible_resource_offers(
+                card_resources=record.resource_grants,
+                card_identity_scope=record.identity_scope,
+                options=options,
+                platform_admin=_is_platform_admin(user),
+                entry_resource="",
+                reachable=None,
+            )
+        except (CardUnavailable, CatalogUnavailable):
+            view["catalog_drift"] = drift_unavailable("catalog_unavailable")
+            view["resource_offers"] = []
+        view["credential_delivery"] = "credentialless"
+        view["credential_reach"] = "multi_resource"
+        return view
+
+    async def control_card_get(
+        self,
+        user: Mapping[str, Any],
+        *,
+        control_id: str,
+    ) -> dict[str, Any]:
+        """Read one credentialless Control Card owned by this user."""
+
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        try:
+            loaded = await self._load_record_any_state(
+                _clean(control_id),
+                grantor_subject=grantor_subject,
+            )
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "control_card_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        record = loaded[0] if loaded is not None else None
+        if record is None or not _record_is_credentialless(record):
+            return {"ok": False, "error": "control_card_not_found", "status": 404}
+        state = loaded[1]
+        card = await self._control_card_public_view(user, record, state=state)
+        authority = dataclasses.replace(card_authority_from_record(record), state=state)
+        access = record.to_public_dict()
+        access["state"] = state
+        access["catalog_drift"] = dict(card.get("catalog_drift") or {})
+        access["resource_offers"] = list(card.get("resource_offers") or [])
+        access["invocation_policies"] = []
+        try:
+            active = await self._active_catalog()
+            catalog_config = await self._catalog_config(
+                active,
+                owner_subject=grantor_subject,
+            )
+            rows: dict[str, str] = {}
+            for resource in record.resource_grants:
+                configured = self._configured_resource(
+                    resource,
+                    config=catalog_config,
+                )
+                if configured is not None:
+                    rows[resource] = _clean(getattr(configured, "resource", ""))
+            if rows:
+                access["catalog_row_by_resource"] = rows
+        except CatalogUnavailable:
+            pass
+        return {
+            "ok": True,
+            "control_card": card,
+            "card": card,
+            "access": access,
+            "authority": authority.to_dict(),
+        }
+
+    async def control_card_create(
+        self,
+        user: Mapping[str, Any],
+        *,
+        issuer_ref: str,
+        issuer_kind: str,
+        issuer_label: str = "",
+        manage_url: str = "",
+        properties: Mapping[str, Any] | None = None,
+        composition_mode: str = CONTROL_COMPOSITION_AND,
+        initial_selection_access_id: str = "",
+        basis_access_id: str = "",
+    ) -> dict[str, Any]:
+        """Create or return one catalog-driven credentialless Control Card.
+
+        An optional delegated Card supplies the initially checked values only.
+        The Control Card's complete option set and every later save are
+        resolved against the catalog.
+
+        ``basis_access_id`` is accepted only for callers staged before the
+        field was named accurately.
+        """
+
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        refusal = _delegate_mutation_refusal(user)
+        if refusal is not None:
+            return refusal
+        try:
+            control_id = control_card_id_for_issuer(
+                issuer_kind,
+                issuer_ref,
+                grantor_subject=grantor_subject,
+            )
+        except ControlCardError as exc:
+            return {"ok": False, "error": exc.reason, "status": 400}
+        try:
+            existing = await self._load_record_any_state(
+                control_id,
+                grantor_subject=grantor_subject,
+            )
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "control_card_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        if existing is not None:
+            record, state = existing
+            if (
+                not _record_is_credentialless(record)
+                or record.issuer_ref != _clean(issuer_ref)
+                or record.issuer_kind != _clean(issuer_kind)
+            ):
+                return {"ok": False, "error": "control_card_identity_conflict", "status": 409}
+            if state != CARD_STATE_ACTIVE:
+                return {"ok": False, "error": "control_card_not_active", "status": 409}
+            return {
+                "ok": True,
+                "created": False,
+                "control_card": await self._control_card_public_view(
+                    user,
+                    record,
+                    state=state,
+                ),
+                "authority": card_authority_from_record(record).to_dict(),
+            }
+
+        try:
+            active = await self._active_catalog()
+            catalog_version = self._version_of(active)
+            catalog_config = await self._catalog_config(
+                active,
+                owner_subject=grantor_subject,
+            )
+        except CatalogUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_catalog_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+
+        initial_selection_id = _clean(initial_selection_access_id) or _clean(
+            basis_access_id
+        )
+        initial_selection: AutomationAccessRecord | None = None
+        if initial_selection_id:
+            try:
+                initial_selection = await self._load_record(
+                    initial_selection_id,
+                    grantor_subject=grantor_subject,
+                )
+            except CardUnavailable as exc:
+                return {
+                    "ok": False,
+                    "error": "delegated_cards_unavailable",
+                    "reason": exc.reason,
+                    "retryable": True,
+                    "status": 503,
+                }
+            if (
+                initial_selection is None
+                or _record_is_credentialless(initial_selection)
+            ):
+                return {
+                    "ok": False,
+                    "error": "control_card_initial_selection_not_found",
+                    "status": 404,
+                }
+        try:
+            authority = new_credentialless_card(
+                control_id=control_id,
+                grantor_subject=grantor_subject,
+                catalog_version=catalog_version,
+                initial_selection=(
+                    card_authority_from_record(initial_selection)
+                    if initial_selection is not None
+                    else None
+                ),
+                issuer_ref=issuer_ref,
+                issuer_kind=issuer_kind,
+                issuer_label=issuer_label,
+                manage_url=manage_url,
+                properties=properties,
+                composition_mode=composition_mode,
+                now=int(time.time()),
+            )
+            record = record_from_card(authority)
+            pruned: dict[str, Any] = {
+                "resources": [],
+                "claims": [],
+                "named_service_operations": [],
+            }
+            if initial_selection is not None:
+                resolved = await self._resolve_card_authority(
+                    user=user,
+                    existing=record,
+                    active=active,
+                    resource_grants=initial_selection.resource_grants,
+                    resource_operations=initial_selection.resource_operations,
+                    operations=(),
+                    named_service_operations=(
+                        initial_selection.named_service_operations.to_stored()
+                    ),
+                    account_scope=initial_selection.account_scope,
+                )
+                if resolved.error is not None:
+                    return resolved.error
+                if resolved.revoke:
+                    return {
+                        "ok": False,
+                        "error": "control_card_initial_selection_empty",
+                        "status": 409,
+                        "pruned": resolved.reconciled.to_public_dict(),
+                        "message": (
+                            "The starting Card no longer selects anything the current "
+                            "catalog offers. Review the catalog and create the Control "
+                            "Card without an initial selection."
+                        ),
+                    }
+                pruned = resolved.reconciled.to_public_dict()
+                record = dataclasses.replace(
+                    record,
+                    operations=tuple(resolved.operations),
+                    resource_grants={
+                        key: tuple(value)
+                        for key, value in resolved.resource_grants.items()
+                    },
+                    resource_operations={
+                        key: tuple(value)
+                        for key, value in resolved.resource_operations.items()
+                    },
+                    named_service_operations=resolved.named_service_operations,
+                    named_services=copy.deepcopy(resolved.named_services),
+                    account_scope={
+                        provider: {
+                            account_id: tuple(claims)
+                            for account_id, claims in accounts.items()
+                        }
+                        for provider, accounts in resolved.account_scope.items()
+                    },
+                    identity_scope=resolved.identity_scope,
+                    resource_acceptance=next_resource_acceptance(
+                        resources=resolved.resource_grants,
+                        row_for=lambda resource: self._configured_resource(
+                            resource,
+                            config=catalog_config,
+                        ),
+                        catalog_version=catalog_version,
+                        selected_operations=resolved.resource_operations,
+                    ),
+                )
+            await self._persist_record(record, expected_revision=0)
+        except (CardRecordError, ControlCardError) as exc:
+            return {"ok": False, "error": exc.reason, "status": 400}
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            return {
+                "ok": False,
+                "error": "control_card_not_committed",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 503,
+            }
+        await self.notify_change(
+            grantor_subject,
+            action="control_card_created",
+            access=record.to_public_dict(),
+        )
+        return {
+            "ok": True,
+            "created": True,
+            "control_card": await self._control_card_public_view(user, record),
+            "authority": card_authority_from_record(record).to_dict(),
+            "pruned": pruned,
+        }
+
+    async def control_card_update(
+        self,
+        user: Mapping[str, Any],
+        *,
+        control_id: str,
+        resource_grants: Mapping[str, Any] | None = None,
+        resource_operations: Mapping[str, Any] | None = None,
+        named_service_operations: Mapping[str, Any] | str | None = None,
+        account_scope: Mapping[str, Any] | None = None,
+        properties: Mapping[str, Any] | None = None,
+        composition_mode: str | None = None,
+        label: str | None = None,
+        expected_card_revision: int | None = None,
+        expected_catalog_version: str | None = None,
+        accepted_operations: Mapping[str, Iterable[str]] | None = None,
+    ) -> dict[str, Any]:
+        """Edit a Control Card through the ordinary catalog-aware Card path."""
+
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        try:
+            existing = await self._load_record(
+                _clean(control_id),
+                grantor_subject=grantor_subject,
+            )
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "control_card_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        if existing is None or not _record_is_credentialless(existing):
+            return {"ok": False, "error": "control_card_not_found", "status": 404}
+        updated = await self.update_access(
+            user,
+            access_id=existing.access_id,
+            resource_grants=(
+                resource_grants
+                if resource_grants is not None
+                else existing.resource_grants
+            ),
+            resource_operations=(
+                resource_operations
+                if resource_operations is not None
+                else existing.resource_operations
+            ),
+            named_service_operations=(
+                named_service_operations
+                if named_service_operations is not None
+                else existing.named_service_operations.to_stored()
+            ),
+            account_scope=(
+                account_scope if account_scope is not None else existing.account_scope
+            ),
+            properties=(
+                properties if properties is not None else existing.properties
+            ),
+            composition_mode=(
+                composition_mode
+                if composition_mode is not None
+                else existing.composition_mode
+            ),
+            label=label,
+            expected_card_revision=expected_card_revision,
+            expected_catalog_version=expected_catalog_version,
+            accepted_operations=accepted_operations,
+        )
+        if updated.get("ok") is not True:
+            return updated
+        result = await self.control_card_get(user, control_id=existing.access_id)
+        if updated.get("pruned") is not None:
+            result["pruned"] = updated["pruned"]
+        return result
+
+    async def control_card_basis(
         self,
         user: Mapping[str, Any],
         *,
         access_id: str,
     ) -> dict[str, Any]:
-        """Return the owner's original Card as a project ceiling basis."""
+        """Compatibility read used by callers staged before direct attach."""
 
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
@@ -3855,17 +4342,29 @@ class AutomationAccessService:
             }
         if record is None or record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_found", "status": 404}
+        if _record_is_credentialless(record):
+            return {
+                "ok": False,
+                "error": "control_card_attachment_target_invalid",
+                "status": 409,
+            }
         return {"ok": True, "card": card_authority_from_record(record).to_dict()}
 
-    async def attach_project_control(
+    async def attach_control_card(
         self,
         user: Mapping[str, Any],
         *,
         access_id: str,
         control_id: str,
         expected_card_revision: int | None = None,
+        replace_control_id: str = "",
     ) -> dict[str, Any]:
-        """Attach one current project ceiling to the owner's Card."""
+        """Attach or compare-and-replace one current Control Card.
+
+        Replacement is one caller-Card revision. It is used when an issuer
+        moves an existing binding to a new Control Card without an interval in
+        which no rule applies.
+        """
 
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
@@ -3875,18 +4374,22 @@ class AutomationAccessService:
             return refusal
         selected_access_id = _clean(access_id)
         selected_control_id = _clean(control_id)
+        expected_previous_control_id = _clean(replace_control_id)
         if not selected_access_id or not selected_control_id:
-            return {"ok": False, "error": "project_control_binding_invalid", "status": 400}
+            return {"ok": False, "error": "control_card_binding_invalid", "status": 400}
         try:
             record = await self._load_record(
                 selected_access_id,
                 grantor_subject=grantor_subject,
             )
-            entry = await self._control_cards().read(selected_control_id)
-        except (CardUnavailable, ControlCardCacheUnusable) as exc:
+            control = await self._resolve_control_record(
+                selected_control_id,
+                grantor_subject=grantor_subject,
+            )
+        except CardUnavailable as exc:
             return {
                 "ok": False,
-                "error": "project_control_unavailable",
+                "error": "control_card_unavailable",
                 "reason": getattr(exc, "reason", ""),
                 "retryable": True,
                 "status": 503,
@@ -3894,13 +4397,15 @@ class AutomationAccessService:
         except Exception:
             return {
                 "ok": False,
-                "error": "project_control_unavailable",
+                "error": "control_card_unavailable",
                 "reason": "control_card_lookup_unavailable",
                 "retryable": True,
                 "status": 503,
             }
         if record is None or record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_found", "status": 404}
+        if _record_is_credentialless(record):
+            return {"ok": False, "error": "control_card_target_invalid", "status": 409}
         if expected_card_revision is not None and int(expected_card_revision) != int(
             record.card_revision
         ):
@@ -3921,38 +4426,32 @@ class AutomationAccessService:
                     "ok": True,
                     "attached": False,
                     "access": record.to_public_dict(),
-                    "project_control": await self._effective_control_view(record),
+                    "control_card": await self._effective_control_view(record),
                 }
+            if record.control_card.control_id != expected_previous_control_id:
+                return {
+                    "ok": False,
+                    "error": "control_card_already_attached",
+                    "status": 409,
+                    "control_card": record.control_card.to_dict(),
+                }
+        if control is None or not _record_is_credentialless(control):
             return {
                 "ok": False,
-                "error": "project_control_already_attached",
-                "status": 409,
-                "project_control": record.control_card.to_dict(),
-            }
-        if entry is None or entry.is_updating or entry.is_retired or entry.authority is None:
-            return {
-                "ok": False,
-                "error": "project_control_unavailable",
-                "reason": (
-                    "control_card_projection_missing"
-                    if entry is None
-                    else "control_card_updating"
-                    if entry.is_updating
-                    else "control_card_not_active"
-                ),
+                "error": "control_card_unavailable",
+                "reason": "control_card_unresolvable",
                 "retryable": True,
                 "status": 503,
             }
-        control = entry.authority
         if control.grantor_subject != grantor_subject:
-            return {"ok": False, "error": "project_control_grantor_mismatch", "status": 403}
+            return {"ok": False, "error": "control_card_grantor_mismatch", "status": 403}
         binding = ControlCardBinding(
-            control_id=control.control_id,
+            control_id=control.access_id,
             issuer_ref=control.issuer_ref,
             issuer_kind=control.issuer_kind,
             issuer_label=control.issuer_label,
             manage_url=control.manage_url,
-            control_revision=control.revision,
+            control_revision=control.card_revision,
         )
         try:
             effective_card_authority(
@@ -3960,12 +4459,12 @@ class AutomationAccessService:
                     card_authority_from_record(record),
                     control_card=binding,
                 ),
-                control,
+                card_authority_from_record(control),
             )
         except ControlCardMismatch as exc:
             return {
                 "ok": False,
-                "error": "project_control_invalid",
+                "error": "control_card_invalid",
                 "reason": exc.reason,
                 "status": 409,
             }
@@ -3988,17 +4487,51 @@ class AutomationAccessService:
             }
         await self.notify_change(
             grantor_subject,
-            action="project_control_attached",
+            action="control_card_attached",
             access=updated.to_public_dict(),
         )
         return {
             "ok": True,
             "attached": True,
+            "replaced": bool(expected_previous_control_id),
+            "previous_control_id": expected_previous_control_id,
             "access": updated.to_public_dict(),
-            "project_control": await self._effective_control_view(updated),
+            "control_card": await self._effective_control_view(updated),
         }
 
-    async def detach_project_control(
+    async def control_card_revoke(
+        self,
+        user: Mapping[str, Any],
+        *,
+        control_id: str,
+    ) -> dict[str, Any]:
+        """Revoke one Control Card through the regular Card lifecycle."""
+
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        try:
+            loaded = await self._load_record_any_state(
+                _clean(control_id),
+                grantor_subject=grantor_subject,
+            )
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "control_card_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        record = loaded[0] if loaded is not None else None
+        if record is None or not _record_is_credentialless(record):
+            return {"ok": False, "error": "control_card_not_found", "status": 404}
+        result = await self.revoke_access(user, access_id=record.access_id)
+        if result.get("ok") is True:
+            result["control_id"] = record.access_id
+        return result
+
+    async def detach_control_card(
         self,
         user: Mapping[str, Any],
         *,
@@ -4006,7 +4539,7 @@ class AutomationAccessService:
         control_id: str,
         expected_card_revision: int | None = None,
     ) -> dict[str, Any]:
-        """Remove the named project ceiling and restore the original Card."""
+        """Unlink the named Control Card so the caller Card applies alone."""
 
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
@@ -4017,7 +4550,7 @@ class AutomationAccessService:
         selected_access_id = _clean(access_id)
         selected_control_id = _clean(control_id)
         if not selected_access_id or not selected_control_id:
-            return {"ok": False, "error": "project_control_binding_invalid", "status": 400}
+            return {"ok": False, "error": "control_card_binding_invalid", "status": 400}
         try:
             loaded = await self._load_record_any_state(
                 selected_access_id,
@@ -4053,9 +4586,9 @@ class AutomationAccessService:
         if record.control_card.control_id != selected_control_id:
             return {
                 "ok": False,
-                "error": "project_control_binding_mismatch",
+                "error": "control_card_binding_mismatch",
                 "status": 409,
-                "project_control": record.control_card.to_dict(),
+                "control_card": record.control_card.to_dict(),
             }
         updated = dataclasses.replace(
             record,
@@ -4076,7 +4609,7 @@ class AutomationAccessService:
             }
         await self.notify_change(
             grantor_subject,
-            action="project_control_detached",
+            action="control_card_detached",
             access=updated.to_public_dict(),
         )
         return {
@@ -4084,6 +4617,46 @@ class AutomationAccessService:
             "detached": True,
             "access": updated.to_public_dict(),
         }
+
+    # Compatibility for already-staged Problem Board bundles. New callers use
+    # the generic Control Card operations above.
+    async def project_control_basis(
+        self, user: Mapping[str, Any], *, access_id: str
+    ) -> dict[str, Any]:
+        return await self.control_card_basis(user, access_id=access_id)
+
+    async def attach_project_control(
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        control_id: str,
+        expected_card_revision: int | None = None,
+    ) -> dict[str, Any]:
+        result = await self.attach_control_card(
+            user,
+            access_id=access_id,
+            control_id=control_id,
+            expected_card_revision=expected_card_revision,
+        )
+        if "control_card" in result:
+            result["project_control"] = result["control_card"]
+        return result
+
+    async def detach_project_control(
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        control_id: str,
+        expected_card_revision: int | None = None,
+    ) -> dict[str, Any]:
+        return await self.detach_control_card(
+            user,
+            access_id=access_id,
+            control_id=control_id,
+            expected_card_revision=expected_card_revision,
+        )
 
     async def card_for_access_id(
         self,

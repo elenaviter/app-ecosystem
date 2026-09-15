@@ -3,10 +3,21 @@ from __future__ import annotations
 import json
 
 from connection_hub.authority_registry import CredentialEnvelope
+from connection_hub.delegated_credentials.cards.model import (
+    CardAuthority,
+    ControlCardBinding,
+    NamedServiceSelection,
+)
 from connection_hub.delegated_credentials.catalog.authorization import (
     ActiveCatalogCapabilities,
 )
 from connection_hub.delegated_credentials.catalog.models import CatalogDocument
+from connection_hub.delegated_credentials.controls.attribution import (
+    ResolvedCardComposition,
+)
+from connection_hub.delegated_credentials.controls.effective import (
+    effective_card_authority,
+)
 from connection_hub.delegated_credentials.oauth.surface_policy import (
     authorize_credential_boundary,
     authorize_mcp_capabilities,
@@ -80,6 +91,50 @@ def _boundary(*, grants: tuple[str, ...] = ("records:read",), operations=None):
             request_resource=RESOURCE,
         ),
         record,
+    )
+
+
+def _control_composition() -> ResolvedCardComposition:
+    control = CardAuthority(
+        access_id="control-card-1",
+        client_id="",
+        grantor_subject="user-1",
+        delegate_subject="",
+        source="control",
+        card_revision=6,
+        resource_grants={RESOURCE: ("records:read",)},
+        resource_operations={RESOURCE: ()},
+        named_service_operations=NamedServiceSelection.none(),
+        identity_scope="grantor",
+        issuer_ref="work:project:demo",
+        issuer_kind="application",
+        issuer_label="Demo project",
+        composition_mode="and",
+    )
+    caller = CardAuthority(
+        access_id="caller-card-1",
+        client_id="kdcube-agent:workspace:main",
+        grantor_subject="user-1",
+        delegate_subject="integration:agent:user-1",
+        source="agent",
+        card_revision=4,
+        resource_grants={RESOURCE: ("records:read",)},
+        resource_operations={RESOURCE: ("records.read",)},
+        named_service_operations=NamedServiceSelection.none(),
+        identity_scope="grantor",
+        expires_at=4_000_000_000,
+        control_card=ControlCardBinding(
+            control_id=control.access_id,
+            issuer_ref=control.issuer_ref,
+            issuer_kind=control.issuer_kind,
+            issuer_label=control.issuer_label,
+            control_revision=control.card_revision,
+        ),
+    )
+    return ResolvedCardComposition(
+        caller_card=caller,
+        control_card=control,
+        effective_card=effective_card_authority(caller, control),
     )
 
 
@@ -169,6 +224,40 @@ def test_rest_requires_the_operation_selected_on_the_card() -> None:
     assert not decision.allowed
     assert decision.denial is not None
     assert decision.denial.reason == "operation_not_consented"
+
+
+def test_rest_names_control_when_claim_is_present_but_control_excludes_operation() -> None:
+    boundary, record = _boundary(operations=[])
+    policy = managed_rest_auth_policy(
+        {
+            "mode": "managed",
+            "selected_operation_grants": True,
+            "operations": {"records.read": {"grants": ["records:read"]}},
+        }
+    )
+    assert policy is not None
+
+    decision = authorize_rest_capabilities(
+        boundary=boundary,
+        policy=policy,
+        catalog=_catalog(),
+        grant_record=record,
+        request_resource=RESOURCE,
+        operation="records.read",
+        user_roles=("user",),
+        user_permissions=("records:read",),
+        card_composition=_control_composition(),
+    )
+
+    assert not decision.allowed
+    assert decision.denial is not None
+    assert decision.denial.reason == "operation_not_consented"
+    assert decision.denial.required_grants == frozenset({"records:read"})
+    assert decision.denial.missing_grants == frozenset()
+    assert decision.denial.payload is not None
+    assert decision.denial.payload["ret"]["blocking_card"]["role"] == "control"
+    assert decision.denial.payload["ret"]["recovery"]["request_user_consent"] is False
+    assert decision.denial.payload["ret"]["recovery"]["edit_route_available"] is False
 
 
 def test_rest_missing_operation_recovers_operation_and_its_claim_together() -> None:

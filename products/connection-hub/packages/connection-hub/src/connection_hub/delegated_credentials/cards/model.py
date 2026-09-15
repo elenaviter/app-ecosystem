@@ -45,21 +45,32 @@ CARD_AUTHORITY_SCHEMA_V3 = "connection_hub.delegated_card_authority.v3"
 # v4 adds bounded, non-secret metadata asserted by an OAuth client. It is
 # operator-facing identification only and never participates in admission.
 CARD_AUTHORITY_SCHEMA_V4 = "connection_hub.delegated_card_authority.v4"
-# v5 adds one optional project-owned control-card binding. The binding is a
-# reference, not authority: live admission resolves and intersects the current
-# control card before permitting an operation.
-CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v5"
+# v5 adds one optional control-card binding. The binding is a reference, not
+# authority: live admission resolves the current control card before permitting
+# an operation.
+CARD_AUTHORITY_SCHEMA_V5 = "connection_hub.delegated_card_authority.v5"
+# v6 lets an issuer create a credentialless Card. Issuer coordinates,
+# composition, and typed properties travel through the same durable revision
+# and read model as every credential-bearing Card.
+CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v6"
 CARD_AUTHORITY_SCHEMAS = (
     CARD_AUTHORITY_SCHEMA_V1,
     CARD_AUTHORITY_SCHEMA_V2,
     CARD_AUTHORITY_SCHEMA_V3,
     CARD_AUTHORITY_SCHEMA_V4,
+    CARD_AUTHORITY_SCHEMA_V5,
     CARD_AUTHORITY_SCHEMA,
 )
 CARD_POINTER_SCHEMA = "connection_hub.delegated_card_current.v1"
 
 CARD_STATE_ACTIVE = "active"
 CARD_STATE_REVOKED = "revoked"
+
+CREDENTIALLESS_CARD_SOURCE = "control"
+
+CONTROL_COMPOSITION_AND = "and"
+CONTROL_COMPOSITION_OR = "or"
+CONTROL_COMPOSITIONS = (CONTROL_COMPOSITION_AND, CONTROL_COMPOSITION_OR)
 
 NAMED_SERVICE_OPERATIONS_ALL = "*"
 
@@ -219,16 +230,16 @@ class NamedServiceSelection:
 
 @dataclass(frozen=True)
 class ControlCardBinding:
-    """One subtractive authority ceiling attached to a delegated Card.
+    """One authority adjustment attached to a Card.
 
-    The project owns the referenced control card. These fields are bounded,
-    non-secret coordinates for resolving it and sending a person to its editor.
-    A binding grants nothing by itself.
+    These fields are bounded, non-secret coordinates for resolving the current
+    Control Card and sending a person to its editor. A binding grants nothing
+    by itself.
     """
 
     control_id: str
     issuer_ref: str
-    issuer_kind: str = "project"
+    issuer_kind: str = "application"
     issuer_label: str = ""
     manage_url: str = ""
     control_revision: int = 0
@@ -239,12 +250,12 @@ class ControlCardBinding:
             raise CardRecordError("control_card_binding_invalid")
         control_id = clean_text(value.get("control_id"))
         issuer_ref = clean_text(value.get("issuer_ref"))
-        issuer_kind = clean_text(value.get("issuer_kind")) or "project"
+        issuer_kind = clean_text(value.get("issuer_kind")) or "application"
         if not control_id:
             raise CardRecordError("control_card_id_missing")
         if not issuer_ref:
             raise CardRecordError("control_card_issuer_ref_missing")
-        if issuer_kind != "project":
+        if not issuer_kind:
             raise CardRecordError("control_card_issuer_kind_invalid")
         try:
             revision = int(value.get("control_revision") or 0)
@@ -317,10 +328,21 @@ class CardAuthority:
     # Bounded public metadata asserted by the connecting OAuth client. This is
     # display/search evidence, not authenticated worker or machine authority.
     client_metadata: Mapping[str, Any] = field(default_factory=dict)
-    # At most one project-owned, subtractive control card may narrow this Card.
-    # The original authority remains here for owner editing and is intersected
-    # only by the live authorization resolver.
+    # At most one Control Card may adjust this Card. The original authority
+    # remains here for owner editing; live authorization composes both Cards
+    # according to the current Control Card revision.
     control_card: ControlCardBinding | None = None
+    # Bounded coordinates naming the system that created/manages this Card.
+    # They describe ownership UX; authorization still belongs to CH.
+    issuer_ref: str = ""
+    issuer_kind: str = ""
+    issuer_label: str = ""
+    manage_url: str = ""
+    # When this Card is linked as a control, ``and`` narrows authority and
+    # ``or`` contributes authority. The link gives this field its meaning.
+    composition_mode: str = ""
+    # Non-secret, operator-reviewed policy applied with this Card revision.
+    properties: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, value: Any) -> "CardAuthority":
@@ -355,6 +377,7 @@ class CardAuthority:
         if schema in {
             CARD_AUTHORITY_SCHEMA_V3,
             CARD_AUTHORITY_SCHEMA_V4,
+            CARD_AUTHORITY_SCHEMA_V5,
             CARD_AUTHORITY_SCHEMA,
         } and not isinstance(
             value.get("resource_operations"), Mapping
@@ -374,12 +397,16 @@ class CardAuthority:
         state = clean_text(value.get("state")) or CARD_STATE_ACTIVE
         if state not in (CARD_STATE_ACTIVE, CARD_STATE_REVOKED):
             raise CardRecordError("state_invalid")
+        properties = value.get("properties", {})
+        if not isinstance(properties, Mapping):
+            raise CardRecordError("properties_invalid")
+        source = clean_text(value.get("source"))
         return cls(
             access_id=clean_text(value.get("access_id")),
             client_id=clean_text(value.get("client_id")),
             grantor_subject=clean_text(value.get("grantor_subject")),
             delegate_subject=clean_text(value.get("delegate_subject")),
-            source=clean_text(value.get("source")),
+            source=source,
             label=clean_text(value.get("label")),
             card_revision=int(value.get("card_revision") or 0),
             catalog_version=clean_text(value.get("catalog_version")),
@@ -423,6 +450,19 @@ class CardAuthority:
                 if value.get("control_card") is not None
                 else None
             ),
+            issuer_ref=clean_text(value.get("issuer_ref")),
+            issuer_kind=clean_text(value.get("issuer_kind")),
+            issuer_label=clean_text(value.get("issuer_label")),
+            manage_url=clean_text(value.get("manage_url")),
+            composition_mode=(
+                clean_text(value.get("composition_mode")).lower()
+                or (
+                    CONTROL_COMPOSITION_AND
+                    if source == CREDENTIALLESS_CARD_SOURCE
+                    else ""
+                )
+            ),
+            properties=copy.deepcopy(dict(properties)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -462,6 +502,12 @@ class CardAuthority:
             "provenance": copy.deepcopy(dict(self.provenance or {})),
             "entry_resource": self.entry_resource,
             "client_metadata": copy.deepcopy(dict(self.client_metadata or {})),
+            "issuer_ref": self.issuer_ref,
+            "issuer_kind": self.issuer_kind,
+            "issuer_label": self.issuer_label,
+            "manage_url": self.manage_url,
+            "composition_mode": self.composition_mode,
+            "properties": copy.deepcopy(dict(self.properties or {})),
         }
         stored_selection = self.named_service_operations.to_stored()
         if stored_selection is not None:
@@ -498,6 +544,37 @@ class CardAuthority:
             self.control_card, ControlCardBinding
         ):
             raise CardRecordError("control_card_binding_invalid")
+        if not isinstance(self.properties, Mapping):
+            raise CardRecordError("properties_invalid")
+        try:
+            encoded_properties = json.dumps(
+                dict(self.properties),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as exc:
+            raise CardRecordError("properties_invalid") from exc
+        if len(encoded_properties.encode("utf-8")) > 65536:
+            raise CardRecordError("properties_too_large")
+        object.__setattr__(self, "properties", copy.deepcopy(dict(self.properties)))
+        mode = clean_text(self.composition_mode).lower()
+        if mode and mode not in CONTROL_COMPOSITIONS:
+            raise CardRecordError("control_card_composition_mode_invalid")
+        if self.source == CREDENTIALLESS_CARD_SOURCE:
+            if not self.issuer_ref:
+                raise CardRecordError("credentialless_card_issuer_ref_missing")
+            if not self.issuer_kind:
+                raise CardRecordError("credentialless_card_issuer_kind_missing")
+            if self.delegate_subject:
+                raise CardRecordError("credentialless_card_has_delegate")
+            if self.expires_at:
+                raise CardRecordError("credentialless_card_has_expiry")
+            if self.control_card is not None:
+                raise CardRecordError("control_card_chain_not_supported")
+            mode = mode or CONTROL_COMPOSITION_AND
+        object.__setattr__(self, "composition_mode", mode)
 
     def content_hash(self) -> str:
         return card_authority_payload_hash(self.to_dict())
@@ -538,7 +615,27 @@ def authority_is_usable(authority: "CardAuthority", moment: int) -> bool:
     """Whether this authority may still be served at ``moment``."""
     if authority.state != CARD_STATE_ACTIVE:
         return False
+    if authority_is_credentialless(authority):
+        return True
     return authority.expires_at > moment
+
+
+def authority_is_credentialless(authority: "CardAuthority") -> bool:
+    """Whether this regular Card intentionally carries no credential."""
+    return (
+        authority.source == CREDENTIALLESS_CARD_SOURCE
+        and not authority.delegate_subject
+        and authority.expires_at == 0
+    )
+
+
+def authority_projection_ttl(
+    authority: "CardAuthority", moment: int
+) -> int | None:
+    """Serving residency; ``None`` is a credentialless persistent projection."""
+    if authority_is_credentialless(authority):
+        return None
+    return max(0, authority.expires_at - int(moment))
 
 
 def card_revision_name(*, card_revision: int, content_hash: str, updated_at: datetime) -> str:
@@ -620,6 +717,11 @@ __all__ = [
     "CARD_AUTHORITY_SCHEMA_V2",
     "CARD_AUTHORITY_SCHEMA_V3",
     "CARD_AUTHORITY_SCHEMA_V4",
+    "CARD_AUTHORITY_SCHEMA_V5",
+    "CREDENTIALLESS_CARD_SOURCE",
+    "CONTROL_COMPOSITION_AND",
+    "CONTROL_COMPOSITION_OR",
+    "CONTROL_COMPOSITIONS",
     "CARD_POINTER_SCHEMA",
     "CARD_STATE_ACTIVE",
     "CARD_STATE_REVOKED",
@@ -635,6 +737,8 @@ __all__ = [
     "ControlCardBinding",
     "NamedServiceSelection",
     "authority_is_usable",
+    "authority_is_credentialless",
+    "authority_projection_ttl",
     "card_authority_payload_hash",
     "card_revision_name",
 ]

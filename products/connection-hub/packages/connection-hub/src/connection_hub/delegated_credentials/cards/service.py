@@ -37,6 +37,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_REVOKED,
     CardAuthority,
     CardCurrentPointer,
+    authority_projection_ttl,
 )
 from connection_hub.delegated_credentials.cards.store import (
     BundleStorageDelegatedCardStore,
@@ -158,7 +159,7 @@ class DelegatedCardService:
                     installed = await self._cache.commit_projection(
                         authority,
                         mutation_id=mutation_id,
-                        ttl_seconds=max(0, authority.expires_at - moment),
+                        ttl_seconds=authority_projection_ttl(authority, moment),
                     )
                     if not installed:
                         self._report_uninstalled(
@@ -330,7 +331,10 @@ class DelegatedCardService:
     async def _index(
         self, *, authority: CardAuthority, subject_hash: str, moment: int
     ) -> None:
-        if authority.state != CARD_STATE_ACTIVE or authority.expires_at <= moment:
+        ttl_seconds = authority_projection_ttl(authority, moment)
+        if authority.state != CARD_STATE_ACTIVE or (
+            ttl_seconds is not None and ttl_seconds <= 0
+        ):
             await self._cache.index_remove(
                 subject_hash=subject_hash, access_id=authority.access_id
             )
@@ -338,7 +342,7 @@ class DelegatedCardService:
         await self._cache.index_add(
             subject_hash=subject_hash,
             access_id=authority.access_id,
-            expires_at=authority.expires_at,
+            expires_at=(None if ttl_seconds is None else moment + ttl_seconds),
         )
 
 
@@ -369,6 +373,13 @@ def replace_state(authority: CardAuthority, state: str) -> CardAuthority:
         provenance=authority.provenance,
         entry_resource=authority.entry_resource,
         client_metadata=authority.client_metadata,
+        control_card=authority.control_card,
+        issuer_ref=authority.issuer_ref,
+        issuer_kind=authority.issuer_kind,
+        issuer_label=authority.issuer_label,
+        manage_url=authority.manage_url,
+        composition_mode=authority.composition_mode,
+        properties=authority.properties,
     )
 
 
