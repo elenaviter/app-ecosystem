@@ -1,7 +1,8 @@
-"""Connection Hub exposes the project-control Card boundary to peer apps."""
+"""Connection Hub exposes generic Control Cards and staged compatibility APIs."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -151,29 +152,35 @@ def test_card_editor_keeps_revoke_next_to_save_and_cancel() -> None:
     assert client_editor.index("Cancel") < client_editor.index("renderRevokeControl(item)")
 
 
-def test_narrowed_card_uses_its_issuer_copy_and_link() -> None:
+def test_linked_control_card_explains_composed_authority() -> None:
     source = (
         Path(__file__).resolve().parents[1]
         / "ui/widgets/connections/src/features/delegatedAccess/DelegatedAccessPanel.tsx"
     ).read_text(encoding="utf-8")
 
-    assert "const label = binding.issuer_label || binding.issuer_ref;" in source
+    assert (
+        "const label = binding.issuer_label || binding.issuer_ref "
+        "|| binding.control_id || 'Control Card';"
+    ) in source
     assert "if (!binding) return null;" in source
-    assert "`Card narrowed by ${label}`" in source
-    assert "`Narrowing by ${label} unavailable`" in source
-    assert "Calls governed by ${label} remain closed." in source
-    assert "<a href={binding.manage_url}" in source
+    assert "`Card composed with ${label} (${mode})`" in source
+    assert "`${label} Control Card unavailable`" in source
+    assert "Operations governed by this link are closed." in source
+    assert "dispatch(loadControlCard({ controlId: cleanControlId })).unwrap()" in source
+    assert "if (result.access) switchEdit(result.access);" in source
+    assert "<a href={binding.manage_url}" not in source
     assert "Open {label}" in source
-    assert "Narrowing by {label} remains in force." in source
-    assert "What this Card grants after narrowing by ${label}." in source
+    assert "The linked card applies at every guarded operation." in source
+    assert "Authority combined from the caller Card and ${label}." in source
+    assert "Authority shared by the caller Card and ${label}." in source
     assert "Authority evidence" in source
-    assert "<dt>Original Card</dt>" in source
-    assert "<dt>Narrowing basis</dt>" in source
+    assert "<dt>Caller Card</dt>" in source
+    assert "<dt>Control Card</dt>" in source
     assert "<dt>Current catalog</dt>" in source
     assert "Project control in force" not in source
     assert "Project control unavailable" not in source
     assert "Open project control" not in source
     assert "'the project'" not in source
-    assert ">\n              Original\n" in source
-    assert ">\n              Effective\n" in source
+    assert re.search(r">\s+Caller Card\s+</button>", source)
+    assert re.search(r">\s+Effective Card\s+</button>", source)
     assert "const authority = displayedAuthority(item);" in source

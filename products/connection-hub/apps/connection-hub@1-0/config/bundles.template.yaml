@@ -1908,6 +1908,8 @@ bundles:
           site:
             enabled: false
             alias: "connections"
+            auth:
+              mode: "platform_session"
             default: false
             hosts: []
             title: "Connection Hub"

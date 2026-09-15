@@ -23,6 +23,12 @@ from connection_hub.delegated_credentials.admission import (
     verify_admission_request,
 )
 from connection_hub.delegated_credentials.credential_view import DelegatedCredentialView
+from connection_hub.delegated_credentials.controls.attribution import (
+    CARD_ROLE_CALLER,
+    CARD_ROLE_CONTROL,
+    CardBoundaryAttribution,
+    attribute_card_boundary,
+)
 from connection_hub.delegated_credentials.request_approval import (
     RequestApprovalTicket,
     issue_request_approval_ticket,
@@ -142,6 +148,39 @@ def _policy_missing_grants(policy_denial: Any) -> list[str]:
     if not isinstance(raw, (list, tuple, set)):
         return []
     return sorted({str(item).strip() for item in raw if str(item).strip()})
+
+
+def _guard_card_attribution(payload: Mapping[str, Any]) -> dict[str, Any]:
+    ret = payload.get("ret")
+    ret = ret if isinstance(ret, Mapping) else {}
+    authority = ret.get("authority_composition")
+    return dict(authority) if isinstance(authority, Mapping) else {}
+
+
+def _blocking_card_roles(authority: Mapping[str, Any]) -> set[str]:
+    cards = authority.get("blocking_cards")
+    if not isinstance(cards, list):
+        return set()
+    return {
+        str(card.get("role") or "").strip()
+        for card in cards
+        if isinstance(card, Mapping) and str(card.get("role") or "").strip()
+    }
+
+
+def _account_card_attribution(result: Any, account: Any) -> CardBoundaryAttribution | None:
+    composition = getattr(result, "card_composition", None)
+    if composition is None:
+        return None
+
+    def _permits(card: Any) -> bool:
+        view = DelegatedCredentialView(
+            account_scope=card.account_scope,
+            present=True,
+        )
+        return authorize_account_scope(view, account).allowed
+
+    return attribute_card_boundary(composition, permits=_permits)
 
 
 def _denial_response(
@@ -431,6 +470,18 @@ async def handle_delegated_admission(
             "resource": admission_request.resource,
             "operation": admission_request.operation,
         }
+        guard_ret = guard_payload.get("ret")
+        guard_ret = guard_ret if isinstance(guard_ret, Mapping) else {}
+        authority_attribution = _guard_card_attribution(guard_payload)
+        blocking_roles = _blocking_card_roles(authority_attribution)
+        if authority_attribution:
+            details["authority_composition"] = authority_attribution
+        blocking_card = guard_ret.get("blocking_card")
+        if isinstance(blocking_card, Mapping):
+            details["blocking_card"] = dict(blocking_card)
+        guard_recovery = guard_ret.get("recovery")
+        if isinstance(guard_recovery, Mapping):
+            details["recovery"] = dict(guard_recovery)
         consent: dict[str, Any] = {}
         requested = (
             guard_payload.get("ret", {}).get("requested_capability", {})
@@ -442,7 +493,10 @@ async def handle_delegated_admission(
             and isinstance(requested, Mapping)
             and str(requested.get("kind") or "") == "outer_operation"
         )
-        if recoverable_outer_operation:
+        caller_card_recovery = not blocking_roles or blocking_roles == {
+            CARD_ROLE_CALLER
+        }
+        if recoverable_outer_operation and caller_card_recovery:
             view = DelegatedCredentialView.from_envelope(
                 result.envelope,
                 result.grant_record,
@@ -570,6 +624,42 @@ async def handle_delegated_admission(
     )
     account_decision = authorize_account_scope(view, admission_request.account)
     if not account_decision.allowed:
+        attribution = _account_card_attribution(result, admission_request.account)
+        details: dict[str, Any] = {}
+        message = (
+            "The delegated card does not cover the requested connected "
+            "account scope."
+        )
+        if attribution is not None and attribution.reliable:
+            public = attribution.to_public_dict()
+            if attribution.blocking_cards:
+                details["authority_composition"] = public
+            blocker = attribution.single_blocker
+            if blocker is not None:
+                details["blocking_card"] = blocker.to_public_dict()
+            if attribution.control_is_single_blocker:
+                message = (
+                    "The linked Control Card excludes the requested connected "
+                    "account scope."
+                )
+                details["recovery"] = {
+                    "action": "review_blocking_control_card",
+                    "request_user_consent": False,
+                    "edit_route_available": False,
+                }
+            elif {card.role for card in attribution.blocking_cards} == {
+                CARD_ROLE_CALLER,
+                CARD_ROLE_CONTROL,
+            }:
+                message = (
+                    "The Caller Card and linked Control Card both exclude the "
+                    "requested connected account scope."
+                )
+                details["recovery"] = {
+                    "action": "review_blocking_cards",
+                    "request_user_consent": False,
+                    "edit_route_available": False,
+                }
         LOGGER.info(
             "denied decision_id=%s reason=%s service_id=%s resource=%s operation=%s",
             decision_id,
@@ -581,11 +671,9 @@ async def handle_delegated_admission(
         return _denial_response(
             status_code=403,
             code=account_decision.reason,
-            message=(
-                "The delegated card does not cover the requested connected "
-                "account scope."
-            ),
+            message=message,
             decision_id=decision_id,
+            details=details,
         )
 
     try:

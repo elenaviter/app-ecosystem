@@ -19,6 +19,10 @@ from connection_hub.delegated_credentials.admission import (
     AdmissionRequest,
     sign_admission_request,
 )
+from connection_hub.delegated_credentials.cards.model import CardAuthority
+from connection_hub.delegated_credentials.controls.attribution import (
+    ResolvedCardComposition,
+)
 from connection_hub.delegated_credentials.oauth.surface_policy import (
     SurfacePolicyDecision,
     SurfacePolicyDenial,
@@ -349,6 +353,108 @@ async def test_direct_ungranted_operation_returns_exact_once_or_always_recovery(
 
 
 @pytest.mark.asyncio
+async def test_control_card_operation_denial_never_routes_to_caller_card(monkeypatch):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+    denied = _allowed_result()
+    payload = {
+        "ok": False,
+        "error": {
+            "code": "delegated_capability_not_granted",
+            "message": "The linked Control Card excludes the requested operation.",
+        },
+        "ret": {
+            "reason": "card_does_not_cover_requested_capability",
+            "requested_capability": {
+                "kind": "outer_operation",
+                "request_resource": RESOURCE,
+                "outer_operation": "customers.delete",
+            },
+            "blocking_card": {
+                "role": "control",
+                "access_id": "control-card-1",
+                "card_revision": 7,
+                "issuer_ref": "work:project:demo",
+            },
+            "authority_composition": {
+                "composition_mode": "and",
+                "caller_permits": True,
+                "control_permits": False,
+                "effective_permits": False,
+                "blocking_cards": [
+                    {
+                        "role": "control",
+                        "access_id": "control-card-1",
+                        "card_revision": 7,
+                        "issuer_ref": "work:project:demo",
+                    }
+                ],
+            },
+            "recovery": {
+                "action": "review_blocking_control_card",
+                "request_user_consent": False,
+                "edit_route_available": False,
+            },
+            "required_grants": ["crm:read"],
+            "missing_grants": [],
+            "available_grants": ["crm:read"],
+        },
+    }
+    denied.denial = JSONResponse(status_code=403, content=payload)
+    denied.runtime = None
+    denied.decision = SurfacePolicyDecision.deny(
+        SurfacePolicyDenial(
+            reason="operation_not_consented",
+            description="The linked Control Card excludes the requested operation.",
+            payload=payload,
+        ),
+        matched_resource=RESOURCE,
+    )
+
+    async def _evaluate(**_kwargs):
+        return denied
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    recovery_calls = []
+
+    def recovery(*args):
+        recovery_calls.append(args)
+        return "https://hub.example/wrong-caller-card"
+
+    request_payload = {
+        "resource": RESOURCE,
+        "operation": "customers.delete",
+        "invocation_id": "invoke-delete-control",
+        "request_digest": canonical_request_digest({"customer_id": "customer-17"}),
+    }
+    response = await module.handle_delegated_admission(
+        context=module.AdmissionHostContext(
+            connections=_connections(),
+            redis=_Redis(),
+            tenant="tenant-a",
+            project="project-a",
+            resolve_secret=_secret,
+            bind_delegated_request=lambda request: None,
+            operation_grant_url_builder=recovery,
+        ),
+        payload=request_payload,
+        request=_request(request_payload),
+    )
+    body = json.loads(response.body)
+
+    assert response.status_code == 403
+    assert body["error"]["message"] == (
+        "The linked Control Card excludes the requested operation."
+    )
+    assert body["ret"]["details"]["blocking_card"]["access_id"] == (
+        "control-card-1"
+    )
+    assert body["ret"]["details"]["recovery"]["edit_route_available"] is False
+    assert "consent" not in body
+    assert recovery_calls == []
+
+
+@pytest.mark.asyncio
 async def test_request_bound_ungranted_operation_returns_signed_exact_recovery(
     monkeypatch,
 ):
@@ -613,6 +719,86 @@ async def test_direct_admission_narrows_a_requested_connected_account(monkeypatc
         "provider_id": "salesforce",
         "account_id": "account-17",
         "claims": ["contacts:read"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_control_card_account_denial_names_control_without_edit_route(monkeypatch):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+    caller = CardAuthority(
+        access_id="caller-card-1",
+        client_id="external-client",
+        grantor_subject="user-1",
+        delegate_subject="integration:client:user-1",
+        source="oauth",
+        account_scope={"salesforce": {"account-17": ("contacts:read",)}},
+    )
+    control = CardAuthority(
+        access_id="control-card-1",
+        client_id="",
+        grantor_subject="user-1",
+        delegate_subject="",
+        source="control",
+        label="Project policy",
+        issuer_ref="work:project:demo",
+        issuer_kind="application",
+        composition_mode="and",
+    )
+    effective = CardAuthority(
+        access_id=caller.access_id,
+        client_id=caller.client_id,
+        grantor_subject=caller.grantor_subject,
+        delegate_subject=caller.delegate_subject,
+        source=caller.source,
+        account_scope={},
+    )
+    result = _allowed_result(account_scope={})
+    result.card_composition = ResolvedCardComposition(
+        caller_card=caller,
+        control_card=control,
+        effective_card=effective,
+    )
+
+    async def _evaluate(**kwargs):
+        del kwargs
+        return result
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    payload = {
+        "resource": RESOURCE,
+        "operation": "customers.search",
+        "account": {
+            "provider_id": "salesforce",
+            "account_id": "account-17",
+            "claims": ["contacts:read"],
+        },
+    }
+    response = await module.handle_delegated_admission(
+        context=module.AdmissionHostContext(
+            connections=_connections(),
+            redis=_Redis(),
+            tenant="tenant-a",
+            project="project-a",
+            resolve_secret=_secret,
+            bind_delegated_request=lambda request: None,
+        ),
+        payload=payload,
+        request=_request(payload),
+    )
+    body = json.loads(response.body)
+
+    assert response.status_code == 403
+    assert body["error"]["message"] == (
+        "The linked Control Card excludes the requested connected account scope."
+    )
+    assert body["ret"]["details"]["blocking_card"]["access_id"] == (
+        "control-card-1"
+    )
+    assert body["ret"]["details"]["recovery"] == {
+        "action": "review_blocking_control_card",
+        "request_user_consent": False,
+        "edit_route_available": False,
     }
 
 

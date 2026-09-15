@@ -215,6 +215,12 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "connections_start_oauth",
     "dcr_allowlist_set",
     "delegated_access_create",
+    "control_card_get",
+    "control_card_create",
+    "control_card_update",
+    "control_card_attach",
+    "control_card_detach",
+    "control_card_revoke",
     "delegated_access_project_control_basis",
     "delegated_access_project_control_attach",
     "delegated_access_project_control_detach",
@@ -2421,6 +2427,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "delegated_identity_scope_resolve": {"visibility": {"user_types": []}},
                             "delegated_access_list": {"visibility": {"user_types": []}},
                             "delegated_access_create": {"visibility": {"user_types": []}},
+                            "control_card_get": {"visibility": {"user_types": []}},
+                            "control_card_create": {"visibility": {"user_types": []}},
+                            "control_card_update": {"visibility": {"user_types": []}},
+                            "control_card_attach": {"visibility": {"user_types": []}},
+                            "control_card_detach": {"visibility": {"user_types": []}},
+                            "control_card_revoke": {"visibility": {"user_types": []}},
                             "delegated_access_project_control_basis": {"visibility": {"user_types": []}},
                             "delegated_access_project_control_attach": {"visibility": {"user_types": []}},
                             "delegated_access_project_control_detach": {"visibility": {"user_types": []}},
@@ -3650,6 +3662,219 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
 
     @api(
         method="POST",
+        alias="control_card_get",
+        route="operations",
+        csrf=True,
+        **_api_visibility("control_card_get"),
+    )
+    async def control_card_get(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await _automation_access_service(self, request).control_card_get(
+            user,
+            control_id=str(payload.get("control_id") or "").strip(),
+        )
+
+    @api(
+        method="POST",
+        alias="control_card_create",
+        route="operations",
+        csrf=True,
+        **_api_visibility("control_card_create"),
+    )
+    async def control_card_create(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await _automation_access_service(self, request).control_card_create(
+            user,
+            initial_selection_access_id=str(
+                payload.get("initial_selection_access_id")
+                or payload.get("basis_access_id")
+                or ""
+            ).strip(),
+            issuer_ref=str(payload.get("issuer_ref") or "").strip(),
+            issuer_kind=str(payload.get("issuer_kind") or "").strip(),
+            issuer_label=str(payload.get("issuer_label") or "").strip(),
+            manage_url=str(payload.get("manage_url") or "").strip(),
+            properties=(
+                dict(payload.get("properties") or {})
+                if isinstance(payload.get("properties"), Mapping)
+                else None
+            ),
+            composition_mode=str(payload.get("composition_mode") or "and").strip(),
+        )
+
+    @api(
+        method="POST",
+        alias="control_card_update",
+        route="operations",
+        csrf=True,
+        **_api_visibility("control_card_update"),
+    )
+    async def control_card_update(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await _automation_access_service(self, request).control_card_update(
+            user,
+            control_id=str(payload.get("control_id") or "").strip(),
+            resource_grants=(
+                dict(payload.get("resource_grants") or {})
+                if "resource_grants" in payload
+                else None
+            ),
+            resource_operations=(
+                dict(payload.get("resource_operations") or {})
+                if "resource_operations" in payload
+                else None
+            ),
+            named_service_operations=(
+                payload.get("named_service_operations")
+                if "named_service_operations" in payload
+                else None
+            ),
+            account_scope=(
+                dict(payload.get("account_scope") or {})
+                if "account_scope" in payload
+                else None
+            ),
+            properties=(
+                dict(payload.get("properties") or {})
+                if "properties" in payload
+                and isinstance(payload.get("properties"), Mapping)
+                else None
+            ),
+            composition_mode=(
+                str(payload.get("composition_mode") or "").strip()
+                if "composition_mode" in payload
+                else None
+            ),
+            label=str(payload.get("label") or "").strip() or None,
+            expected_card_revision=_expected_card_revision(payload),
+            expected_catalog_version=str(
+                payload.get("expected_catalog_version") or ""
+            ).strip()
+            or None,
+            accepted_operations=(
+                dict(payload.get("accepted_operations") or {})
+                if "accepted_operations" in payload
+                else None
+            ),
+        )
+
+    @api(
+        method="POST",
+        alias="control_card_attach",
+        route="operations",
+        csrf=True,
+        **_api_visibility("control_card_attach"),
+    )
+    async def control_card_attach(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await _automation_access_service(self, request).attach_control_card(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            control_id=str(payload.get("control_id") or "").strip(),
+            expected_card_revision=_expected_card_revision(payload),
+            replace_control_id=str(payload.get("replace_control_id") or "").strip(),
+        )
+
+    @api(
+        method="POST",
+        alias="control_card_detach",
+        route="operations",
+        csrf=True,
+        **_api_visibility("control_card_detach"),
+    )
+    async def control_card_detach(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await _automation_access_service(self, request).detach_control_card(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            control_id=str(payload.get("control_id") or "").strip(),
+            expected_card_revision=_expected_card_revision(payload),
+        )
+
+    @api(
+        method="POST",
+        alias="control_card_revoke",
+        route="operations",
+        csrf=True,
+        **_api_visibility("control_card_revoke"),
+    )
+    async def control_card_revoke(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await _automation_access_service(self, request).control_card_revoke(
+            user,
+            control_id=str(payload.get("control_id") or "").strip(),
+        )
+
+    # Compatibility operations for Problem Board bundles staged before the
+    # generic Control Card API shipped.
+    @api(
+        method="POST",
         alias="delegated_access_project_control_basis",
         route="operations",
         csrf=True,
@@ -3663,7 +3888,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         fingerprint: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Return the original Card authority used to seed a project ceiling."""
+        """Return caller Card values used to seed a Control Card editor."""
 
         del fingerprint
         payload = _payload(data, **kwargs)
@@ -3690,7 +3915,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         fingerprint: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Bind one project-owned, subtractive control Card."""
+        """Link one credentialless Control Card to a caller Card."""
 
         del fingerprint
         payload = _payload(data, **kwargs)
@@ -3719,7 +3944,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         fingerprint: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Remove a project control binding and restore the original Card."""
+        """Unlink one Control Card so the caller Card applies on its own."""
 
         del fingerprint
         payload = _payload(data, **kwargs)
@@ -4008,6 +4233,17 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 accepted_operations=(
                     dict(payload.get("accepted_operations") or {})
                     if "accepted_operations" in payload
+                    else None
+                ),
+                properties=(
+                    dict(payload.get("properties") or {})
+                    if "properties" in payload
+                    and isinstance(payload.get("properties"), Mapping)
+                    else None
+                ),
+                composition_mode=(
+                    str(payload.get("composition_mode") or "").strip()
+                    if "composition_mode" in payload
                     else None
                 ),
             )
