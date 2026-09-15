@@ -1,7 +1,7 @@
 ---
 id: connection-hub/package/delegated-cards
 title: "Delegated Access Cards: Storage, Rendering, And Enforcement"
-summary: "Canonical lifecycle of Connection Hub Delegated by KDCube cards: stored authority, optional project control, live rendering and enforcement, and descriptor-drift reconciliation."
+summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers, credentialless Control Cards, live composition and enforcement, and descriptor-drift reconciliation."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
@@ -14,8 +14,8 @@ see_also:
 ---
 # Delegated Access Cards
 
-A card under Connection Hub **Delegated by KDCube** is the user-visible form of
-one server-side delegated-access record. It answers:
+A Connection Hub Card is the user-visible form of one server-side
+authorization record. A credential-backed caller Card answers:
 
 - which user granted access;
 - which agent, connected app, or manual automation received it;
@@ -30,16 +30,19 @@ the card therefore changes the next call made with an already-issued bearer.
 The deployment descriptor, published as the delegated catalog, is the ceiling
 around that user decision: every governed call intersects the card with the
 active catalog, so a withdrawn capability is denied without editing the card.
-An optional project-owned control card may narrow the same authority while the
-caller attends that project. It has no credential and cannot add authority.
+Any credential-backed caller Card may link one credentialless Card. The link
+gives that Card its **control** role. The two Cards compose with `and` by
+default or with `or` when the grantor selects it; the active catalog still
+bounds the result.
 
 The card is also not a copy of the entire current service catalog. It stores
 the user's selected authority. Connection Hub separately reads the live
 descriptor and provider catalogs to render choices around that stored
 selection.
 
-This page covers every card in **Delegated by KDCube**: manual automations,
-hosted agents, and external OAuth/MCP clients. Cards in **Delegated to
+This page covers every Card owned by Connection Hub: manual automations,
+hosted agents, external OAuth/MCP clients, and credentialless Control Cards.
+Cards in **Delegated to
 KDCube** represent connected provider accounts and use a different storage
 lifecycle; see [Delegated Accounts](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md)
 and [Connection Hub Token Storage](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/connection-hub-token-storage-README.md).
@@ -53,30 +56,40 @@ stored card selection                 current deployment catalogs
   resource_operations                   outer MCP/REST operations
   named_service_operations              namespaces and operations
   account_scope                         connected accounts and claims
-  control_card                          optional project-owned ceiling reference
+  control_card                          optional link to another Card
              \                           /
               +---- Connection Hub -----+
                          |
                          +-- read-only card: stored decision, live labels
                          +-- create/edit form: live choices + stored selection
-                         +-- runtime guard: card AND project control AND catalog
+                         +-- runtime guard: composed Cards AND active catalog
 ```
 
 ## Card Families
 
-All three families use `AutomationAccessRecord`, the same per-user index, and
-the same **Delegated by KDCube** list. Their issuance and credential-retention
-rules differ.
+All four families use `AutomationAccessRecord`, the same immutable revision
+format, and the same lifecycle implementation. Their purpose and credential
+retention differ. The three caller families appear in the central **Delegated
+by KDCube** list. A Control Card is currently opened by exact id from the
+application that gave it its control role; a future central listing is a view
+over the same records, not another store or migration.
 
 | `source` | Represents | How it is created | Credential material retained in the card record |
 | --- | --- | --- | --- |
 | `manual` | A script, service, or external automation whose operator copies a bearer. | `delegated_access_create`. | The raw bearer is returned once and is not retained. The record keeps `session_id` and `last_four` for revocation and identification. |
 | `agent` | A hosted agent with deterministic identity `kdcube-agent:<app>:<agent>`. | Demand-driven consent or `delegated_agent_grant_create`, backed by `create_access(client_id=...)`. | The reusable access token is retained server-side so each turn can resolve the same consented bearer. It is never returned by list. |
 | `oauth` | An external OAuth/MCP client. | Automatically on initial token issuance and every refresh rotation. | Current access- and refresh-token handles are retained server-side so revoke can invalidate both. They are never returned by list. |
+| `control` | A reusable authorization rule linked to one or more caller Cards. | An owner-scoped `control_card_create`, normally initiated by the application that will link it. | None. It has no delegate, bearer, refresh token, session, or expiry. |
 
 An OAuth client and a hosted agent are both delegated callers. The source
 field records how their credential lifecycle is managed; it does not create a
 different authorization model.
+
+A Control Card is the same Card aggregate without credential handles. It uses
+the same catalog choices, revisions, current pointer, drift calculation,
+editor, update path, and revoke lifecycle. Connection Hub owns it physically
+and durably. The issuing application stores only its Card reference and any
+observed revision, state, catalog, composition, or synchronization facts.
 
 ### Credential delivery and resource reach
 
@@ -158,7 +171,8 @@ Redis delegated-access:card:<access_id>
   latest committed live projection, or a short-lived updating/revoked marker
 
 Redis delegated-access:cards-by-grantor:<subject_hash>
-  sorted set of access_id -> expires_at for the active-card list
+  sorted set of access_id -> expiry score for discovery
+  credentialless Cards use +inf
 ```
 
 The older `delegated-access:automation:<access_id>` and
@@ -202,18 +216,21 @@ refills the key when the marker's residency lapses before the commit completes.
 It never displaces another mutation's marker, a revoked tombstone, or an equal
 or newer revision.
 
-Expiration deletes only the Redis projection. The durable revision remains and
-`expires_at` prevents cache restoration or use. Revocation commits a new
-durable `revoked` revision before live credential cleanup; it does not delete
-history. Open is Redis-first: it reads the live-card projection by `access_id`
-and computes drift against Redis-cached `active.json`. List decides membership
-from durable storage on every call, because a partially lost index cannot be
-detected without reading it; the grantor index accelerates discovery and carries
-the expiry scores. It has no fixed seven-day expiry; expired members are pruned
-by score. Every candidate is resolved through the card cache/store: one that no
-longer resolves is pruned, and a durable member the index lost is re-admitted.
-A missing projection is rebuilt from durable `current.json` and the referenced
-timestamped revision, repopulating only active, unexpired cards. Retention of
+Expiration deletes a credential-backed Card's Redis projection. The durable
+revision remains and `expires_at` prevents cache restoration or use. A
+credentialless Card has no expiry, so its projection remains until an update or
+revocation replaces it. Revocation commits a new durable `revoked` revision
+before live credential cleanup; it does not delete history. Open is Redis-first:
+it reads the live-card projection by `access_id` and computes drift against
+Redis-cached `active.json`. List decides membership from durable storage on
+every call, because a partially lost index cannot be detected without reading
+it; the grantor index accelerates discovery and carries expiry scores, using
+`+inf` for credentialless Cards. It has no fixed seven-day expiry; expired
+members are pruned by score. Every candidate is resolved through the card
+cache/store: one that no longer resolves is pruned, and a durable member the
+index lost is re-admitted. A missing projection is rebuilt from durable
+`current.json` and the referenced timestamped revision, repopulating active,
+unexpired credential-backed Cards and active credentialless Cards. Retention of
 card history is an explicit administrative policy separate from authorization
 TTL.
 
@@ -221,8 +238,8 @@ The relevant cache lifetimes have different meanings:
 
 | Projection | Lifetime | Cache hit | Expiry or eviction |
 | --- | --- | --- | --- |
-| Live card | Remaining authorization lifetime, `expires_at - now`. | Does not extend authorization. | Read durable current revision; re-cache only when active and unexpired. |
-| Grantor card index | No fixed whole-key TTL; each sorted-set member is scored by `expires_at`. | Prune expired members. | Rebuild active members from durable current revisions. |
+| Live card | Credential-backed: remaining authorization lifetime, `expires_at - now`. Credentialless: no TTL. | Does not extend authorization. | Read the durable current revision; re-cache an active Card when its lifecycle permits use. |
+| Grantor card index | No fixed whole-key TTL; credential-backed members are scored by `expires_at`, credentialless members by `+inf`. | Prune expired members. | Rebuild active members from durable current revisions. |
 | Updating/revoked marker | Short descriptor-owned safety or negative-cache TTL. | Deny or return temporary unavailability as appropriate. | Resolve durable current state; never infer authority from marker expiry. |
 
 Redis outage is not a reason to bypass this serving and coordination layer with
@@ -250,12 +267,15 @@ durable read.
 | `identity_scope` | Which identity boundary the delegated resource uses. | yes |
 | `created_at`, `expires_at`, `last_issued_at` | Lifecycle timestamps. | yes when present |
 | `last_four`, `source` | Token fingerprint and card family. | yes |
+| `issuer_ref`, `issuer_kind`, `issuer_label`, `manage_url` | Bounded coordinates for the application that created or presents a credentialless Card. They drive ownership UX, not authority. | yes when present |
+| `composition_mode` | How this Card contributes when linked as a control: `and` (intersection, the default) or `or` (union). The field has no control effect until a caller Card links it. | yes when present |
+| `properties` | Bounded, non-secret, operator-reviewed application policy stored with this Card revision. | yes when present |
 | `resource_acceptance` | Per resource: the descriptor authority (`kind` `catalog` or `remote_mcp`, `provider`), the `revision` and `digest` accepted at the last save, the claims seen, and one digest per offered operation. Drift is judged against it, resource by resource. | yes when present |
 | `provenance` | Non-secret lineage written by the resident-profile migration: the legacy records folded into this card, when, and any operation dropped because its one-use permit was spent. | yes when present |
 | `caller_profile`, `stable_identity` | List-only: the resident profile behind an agent card and whether the card already lives under the profile's stable id. | yes for agent cards |
 | `resource_offers` | List-only: owner-visible delegable resources that may join this card, each with `compatible` and a `reason` (`already_on_card`, `identity_scope_incompatible`, `admin_only`). | yes |
-| `control_card` | Optional reference to one project-owned, credential-free authority ceiling. The original Card remains stored; live admission resolves and intersects the reference. | yes when present |
-| `project_control` | List/describe-only state and effective authority derived from the live control projection. It carries the project management link, the participant and control-basis Card revisions/catalog versions used for the intersection, and a fail-closed reason when the ceiling cannot be resolved. | yes |
+| `control_card` | Optional reference from a credential-backed caller Card to one credentialless Card. The caller Card remains unchanged; live admission resolves the current linked revision and composes both Cards. | yes when present |
+| `project_control` | Compatibility name in older list/describe responses for the resolved linked-Control-Card view. New code treats it as a generic Control Card relationship. | yes when a link is present |
 | `session_id`, `access_token`, `refresh_token` | Internal credential/revocation handles, according to source. | no |
 
 Every authority and lifecycle field above is copied into the immutable durable
@@ -277,11 +297,12 @@ between the four states:
 | exact map | That resource -> namespace -> operation selection. |
 | field absent | A record written before this encoding. Its prior set is derived from the materialized boundary. |
 
-Card authority schema `connection_hub.delegated_card_authority.v5` adds the
+Card authority schema `connection_hub.delegated_card_authority.v6` adds
+credentialless Card coordinates, composition, and properties. V5 adds the
 optional `control_card` reference. V4 adds bounded client metadata; v3 stores
 outer operations as `resource_operations` and adds `resource_acceptance` and
 `provenance`. Older revisions remain readable and the next successful write
-uses v5. The resource qualification matters when two protected resources
+uses v6. The resource qualification matters when two protected resources
 expose the same operation name: selecting the operation on one resource grants
 nothing on the other, and an invocation policy is keyed to the resource as
 well. A v1 card with only the flat `operations` field is read with its prior
@@ -828,48 +849,69 @@ A conflict is reported to the caller with the candidate records and a recovery
 action: review those cards in Connection Hub, revoke or edit the ones that
 should not carry over, then grant again.
 
-## Project Control And Effective Authority
+## Control Cards And Effective Authority
 
-A delegated Card may reference at most one project-owned control card. The
-project owns that ceiling and its editor; Connection Hub owns the delegated
-Card and the live intersection:
+A credential-backed caller Card may link at most one credentialless Card. Both
+are ordinary Connection Hub Cards. The link, not a separate Card type, gives
+the credentialless Card its control role:
 
 ```text
-original Card       what the user granted to this caller
-project control     what this project permits its participants to use
-active catalog      what the deployment still offers
-
-effective authority = original Card AND project control AND active catalog
+presented credential
+        |
+        v
+caller Card -- optional control_card link --> current linked Card
+        |                                      |
+        +---------- configured AND or OR ------+
+                           |
+                           v
+                     active catalog
+                           |
+                           v
+                  effective caller Card
+                           |
+                           v
+                  requested operation
 ```
 
-The control carries no credential and cannot be presented to a service. It can
-only remove resource grants, resource operations, named-service operations,
-connected accounts, or account claims. Attaching one stores only its bounded
-identity and management link on the delegated Card. Editing, extending,
-renewing, or rotating that Card preserves the binding.
+No link means the caller Card is used unchanged. A present link is an explicit
+authorization dependency: a missing, unreadable, updating, revoked, or
+mismatched linked Card fails closed and is never treated as no link.
 
-Connection Hub shows **Original** and **Effective** as two readings of the same
-Card. Original remains the authority its owner edits. Effective is what a live
-call can use while the control applies, and links to the project where the
-ceiling is managed. Revocation remains available beside Save and Cancel in the
-editor because removing the credential and editing its original authority are
-separate decisions.
+`and` intersects resource grants, outer operations, named-service operations,
+connected accounts, and account claims. `or` unions the two Card selections.
+The active catalog is applied after either composition, so an option removed
+by the deployment cannot be restored by either Card. The default is `and`.
+Both Cards must use the same `identity_scope`, preserving the ordinary Card
+invariant that all effective resources act through one identity boundary. A
+mismatch is refused when the link is created and fails closed if a later Card
+revision introduces it.
 
-The Card surface describes this relationship without knowing which application
-created the narrower. It names the narrower from the binding's `issuer_label`,
-falls back to `issuer_ref`, and links through `manage_url`. Another application
-can therefore narrow a Card without adding its vocabulary to Connection Hub.
-When no narrower binding exists, the Card shows no narrowing row.
+The linked Card has no credential and cannot be presented to a service. It has
+no expiry. It stops contributing only when the owner revokes it or removes the
+link. Unlinking restores the unchanged caller Card; it never resurrects a
+caller Card that was already revoked.
 
-Every live Card resolution reads the current control projection before an
-operation is admitted. A missing, malformed, updating, retired, or mismatched
-control fails closed; it is never interpreted as no ceiling. Leaving the
-project detaches the reference and restores the original Card authority. A
-Card already revoked stays revoked and is never recreated by detachment.
+Control Card choices come from the current catalog. A caller Card may supply
+the initially checked values at creation, but it is not retained as a maximum
+or basis. Later saves may select any option the current catalog and grantor
+allow. Services or operations added after the Card's saved catalog version
+appear as drift and remain unselected until the user reviews and saves them.
 
-The project lifecycle, durable ownership, recovery rules, and editor contract
-belong to the application that issues the control card. Connection Hub exposes
-only owner-scoped basis, attach, and detach operations for that application.
+Connection Hub owns creation, immutable revisions, the current pointer,
+catalog drift, editing, update, revoke, linking, and live composition. The
+application that requested the Card supplies issuer coordinates and may store
+only its Card reference plus observed status facts. Application-specific
+policy belongs in the Card's bounded `properties`; for example, Problem Board
+uses `properties.coordination.version_control.{model,reason}`.
+
+The exact Card editor uses the ordinary resource, operation, named-service,
+and per-account controls. It also exposes `and`/`or`, and places **Revoke**
+beside **Save** and **Cancel**. The Card need not be copied into an
+application-specific editor. The owner-scoped operations are
+`control_card_create`, `control_card_get`, `control_card_attach`,
+`control_card_detach`, and `control_card_revoke`; edits use the ordinary
+`delegated_access_update` path. The older project-control operation aliases
+remain compatibility adapters for already-staged callers.
 
 ## Runtime Enforcement Lifecycle
 
@@ -892,7 +934,8 @@ request bearer
   -> resolve card from delegated-access store
   -> verify expected client, grantor, delegate, expiry, and record shape
   -> when control_card is present, resolve its current live projection
-  -> intersect original card authority with the project control
+  -> compose caller and linked Card with the linked Card's and/or mode
+  -> intersect the composed authority with the active catalog
   -> copy current card facts into the request-local grant
        resource_grants
        flattened grants/scopes
@@ -1318,7 +1361,7 @@ rules.
 
 ```text
 DelegatedCardView
-  caller_kind                   resident | oauth | manual
+  caller_kind                   resident | oauth | manual | credentialless
   profile                       ResidentCallerProfile for a resident card
   access_id, card_revision, catalog_version, state, source, label
   created_at, expires_at, identity_scope
@@ -1330,8 +1373,8 @@ DelegatedCardView
     accepted_revision, current_revision, accepted_digest, current_digest
     named_service_operations    namespace -> operations
   account_scope
-  control_card                   optional project-owned ceiling reference
-  project_control                live state, effective authority, management link
+  control_card                   optional link to one credentialless Card
+  project_control                compatibility name for its resolved live view
   provenance
 ```
 
@@ -1339,10 +1382,8 @@ DelegatedCardView
 a card its grantor owns; `resident_profile_card(grantor_subject, client_id)`
 returns the view of one resident profile's card (the stable card first, else a
 single not-yet-folded legacy record, else nothing).
-`compatible_resource_offers` is the owner-scoped seam that lists which
-delegable resources may join a card and why the others may not; a resident
-ceiling narrows it further in Projection, so no KDCube runtime rule lives in
-the portable package. Every field is non-secret.
+`compatible_resource_offers` lists which owner-visible catalog resources may
+join a Card and why the others may not. Every field is non-secret.
 
 ## Revocation And Expiry
 
@@ -1390,7 +1431,7 @@ the portable package. Every field is non-secret.
 | Durable revisions and current pointer | `...delegated_credentials.cards.store.DelegatedCardStore` over Connection Hub bundle storage |
 | Persistence port, TTL live projection and read-through | `...delegated_credentials.cards.persistence`, `.cache`, `.handles`, `.resolver` |
 | Stored selection states and card model | `...delegated_credentials.cards.model` |
-| Project-control model, live projection, and Card intersection | `...delegated_credentials.controls.model`, `.cache`, and `.effective` |
+| Credentialless Card creation, legacy control migration, and Card composition | `...delegated_credentials.controls.model` and `.effective`; current serving uses the ordinary Card persistence/cache |
 | Stable resident caller identity | `...delegated_credentials.cards.identity` |
 | Per-resource accepted descriptor state | `...delegated_credentials.catalog.descriptors` |
 | Portable card read model and compatible-resource offers | `...delegated_credentials.cards.read_model` |
