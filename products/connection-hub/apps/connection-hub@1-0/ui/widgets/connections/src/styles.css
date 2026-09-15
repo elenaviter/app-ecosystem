@@ -518,7 +518,7 @@ h2 {
   overflow-wrap: anywhere;
 }
 
-.control-card-composition__head > a {
+.control-card-composition__open {
   max-width: 100%;
   overflow-wrap: anywhere;
 }
@@ -3304,7 +3304,6 @@ code {
   border-left: 3px solid var(--blue);
   background: var(--surface-2);
 }
-.effective-composition-guide__legend { display: flex; flex-wrap: wrap; gap: 4px; }
 .effective-composition-guide > small { grid-column: 1 / -1; color: var(--muted); }
 
 /* The Effective Card is the Caller Card hierarchy with composition visible on

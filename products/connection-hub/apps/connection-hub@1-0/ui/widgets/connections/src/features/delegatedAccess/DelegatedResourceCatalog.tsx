@@ -208,14 +208,17 @@ export function DelegatedResourceCatalog({
   const selectedCount = namespaces.reduce((total, namespace) => (
     total + (selectedOperations[namespace.namespace] || []).length
   ), 0);
-  const effectiveCount = composition ? offeredRows.filter(({ namespace, row }) => {
+  const compositionStates = composition ? offeredRows.map(({ namespace, row }) => {
     const callerSelected = (selectedOperations[namespace] || []).includes(row.operation);
     const controlSelected = (composition.controlOperations[namespace] || [])
       .some((operation) => operation === '*' || operation === row.operation);
-    return ['normal', 'added'].includes(
-      compositionRowState(callerSelected, controlSelected, composition.mode),
-    );
-  }).length : selectedCount;
+    return compositionRowState(callerSelected, controlSelected, composition.mode);
+  }) : [];
+  const effectiveCount = composition
+    ? compositionStates.filter((state) => state === 'normal' || state === 'added').length
+    : selectedCount;
+  const removedCount = compositionStates.filter((state) => state === 'removed').length;
+  const addedCount = compositionStates.filter((state) => state === 'added').length;
   const setEveryOperation = (checked: boolean) => {
     offeredRows.forEach(({ namespace, row }) => {
       const held = new Set(selectedOperations[namespace] || []);
@@ -253,6 +256,12 @@ export function DelegatedResourceCatalog({
             ? `${effectiveCount} effective · ${selectedCount} on Caller Card · ${offeredRows.length} available`
             : `${selectedCount} of ${offeredRows.length} selected`}
         </span>
+        {removedCount ? (
+          <span className="badge badge-error">{removedCount} removed by {composition?.controlLabel}</span>
+        ) : null}
+        {addedCount ? (
+          <span className="badge badge-ok">{addedCount} added by {composition?.controlLabel}</span>
+        ) : null}
       </summary>
       <div className="resource-boundaries__body">
         <div className="resource-boundaries-controls">

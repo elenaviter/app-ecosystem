@@ -4060,6 +4060,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (!editDirty) { startEdit(item); return; }
     setPendingLeave({ kind: 'switch', item });
   };
+  const openLinkedControlCard = async (controlId: string) => {
+    const cleanControlId = controlId.trim();
+    if (!cleanControlId) return;
+    setEditActionError('');
+    try {
+      const result = await dispatch(loadControlCard({ controlId: cleanControlId })).unwrap();
+      if (result.access) switchEdit(result.access);
+    } catch (error) {
+      setEditActionError(
+        error instanceof Error ? error.message : String(error || 'Failed to load the Control Card'),
+      );
+    }
+  };
   const renderLeaveDialog = () => (
     <ConfirmDialog
       open={pendingLeave !== null}
@@ -4171,10 +4184,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               ? ' The linked card applies at every guarded operation.'
               : ' Operations governed by this link are closed.'}</small>
           </span>
-          {binding.manage_url ? (
-            <a href={binding.manage_url} target="_blank" rel="noreferrer">
+          {binding.control_id ? (
+            <button
+              type="button"
+              className="btn btn-ghost control-card-composition__open"
+              disabled={busy}
+              onClick={() => void openLinkedControlCard(binding.control_id)}
+            >
               Open {label}
-            </a>
+            </button>
           ) : null}
         </div>
         <div className="authority-reading" role="group" aria-label="Card authority view">
@@ -4504,10 +4522,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           {effectiveComposition ? (
             <div className="effective-composition-guide" role="status">
               <strong>{effectiveSummary}</strong>
-              <span className="effective-composition-guide__legend">
-                <span className="badge badge-error">removed by {controlLabel}</span>
-                {compositionMode === 'or' ? <span className="badge badge-ok">added by {controlLabel}</span> : null}
-              </span>
               <small>
                 This is the Caller Card editor with {controlLabel} applied as a row diff.
                 {' '}The controls edit the Caller Card; control-owned access changes on {controlLabel}.
