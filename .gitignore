@@ -9,3 +9,7 @@ __pycache__/
 node_modules/
 build/
 dist/
+
+# Local build and integration caches
+.cache/
+.DS_Store
