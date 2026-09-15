@@ -72,6 +72,7 @@ from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_operations,
     operation_union,
     project_legacy_operations,
+    resolve_declared_resource,
     resolve_declared_resource_keys,
 )
 from connection_hub.delegated_credentials.cards.model import (
@@ -1850,7 +1851,10 @@ class AutomationAccessService:
         if client_uses_full_card_catalog(client_metadata):
             return None
         entry = _clean(entry_resource)
-        allowed = {entry}
+        entry_key = entry
+        if callable(getattr(config, "card_selector_config", None)):
+            entry_key, _literal = resolve_declared_resource(config, entry)
+        allowed = {entry_key}
         allowed.update(self._reachable_through_door(entry, config=config))
         return allowed
 
@@ -1872,6 +1876,28 @@ class AutomationAccessService:
         except SecretResourceError:
             return None
         return (config or self._config).card_selector_config(text)
+
+    def _card_resource_keys(
+        self, resources: Iterable[str], *, config: Any = None
+    ) -> tuple[str, ...]:
+        """Card resources expressed as the catalog keys that govern them.
+
+        OAuth Cards now store declared selectors. Cards written before that
+        rule may still hold the concrete URL they connected to. Comparing that
+        URL with its catalog pattern as plain strings made the editor offer a
+        service the Card already held. Match legacy keys through the catalog;
+        keep a resource whose row has left the catalog literal so the guard can
+        report that drift.
+        """
+
+        keys: list[str] = []
+        for resource in resources or ():
+            text = _clean(resource)
+            if not text:
+                continue
+            row = self._configured_resource(text, config=config)
+            keys.append(_clean(getattr(row, "resource", "")) or text)
+        return tuple(keys)
 
     def _configured_resource_pairs(
         self, resources: Iterable[str], *, config: Any = None
@@ -1909,6 +1935,69 @@ class AutomationAccessService:
         resource_grants: Mapping[str, list[str]],
     ) -> tuple[dict[str, list[str]], dict[str, str]]:
         return resolve_declared_resource_keys(config, resource_grants)
+
+    def _declared_named_service_selection(
+        self,
+        config: OAuthDelegatedClientConfig,
+        selection: NamedServiceSelection,
+    ) -> NamedServiceSelection:
+        """Express an exact named-service choice under declared resource keys."""
+
+        if not selection.is_exact:
+            return selection
+        resolved: dict[str, dict[str, list[str]]] = {}
+        for resource, namespaces in selection.operations.items():
+            key, _literal = resolve_declared_resource(config, resource)
+            target = resolved.setdefault(key, {})
+            for namespace, operations in namespaces.items():
+                held = target.setdefault(namespace, [])
+                for operation in operations:
+                    if operation not in held:
+                        held.append(operation)
+        return NamedServiceSelection.exact(resolved)
+
+    def _canonical_oauth_record(
+        self,
+        record: "AutomationAccessRecord",
+        *,
+        config: OAuthDelegatedClientConfig,
+    ) -> "AutomationAccessRecord":
+        """Project legacy host-pinned authority onto its declared selectors.
+
+        The concrete OAuth resource remains ``entry_resource`` and therefore
+        remains part of the Card's stable identity. Only authority maps are
+        canonicalized. Unknown resources stay literal; ``*`` is never selected
+        as a substitute for one concrete resource.
+        """
+
+        grants, _rewritten_grants = resolve_declared_resource_keys(
+            config,
+            record.resource_grants,
+        )
+        operations, _rewritten_operations = resolve_declared_resource_keys(
+            config,
+            record.resource_operations,
+        )
+        acceptance: dict[str, ResourceAcceptance] = {}
+        for resource, accepted in record.resource_acceptance.items():
+            key, _literal = resolve_declared_resource(config, resource)
+            # Prefer evidence already stored under the canonical key when a
+            # legacy concrete key and its declared selector both exist.
+            if key not in acceptance or resource == key:
+                acceptance[key] = accepted
+        return replace_fields(
+            record,
+            resource_grants={key: tuple(values) for key, values in grants.items()},
+            resource_operations={
+                key: tuple(values) for key, values in operations.items()
+            },
+            operations=operation_union(operations),
+            named_service_operations=self._declared_named_service_selection(
+                config,
+                record.named_service_operations,
+            ),
+            resource_acceptance=acceptance,
+        )
 
     def _named_service_operation_selection(
         self,
@@ -2018,7 +2107,9 @@ class AutomationAccessService:
             if entry_resource:
                 item["entry_resource"] = entry_resource
             item["resource_offers"] = compatible_resource_offers(
-                card_resources=record.resource_grants,
+                card_resources=self._card_resource_keys(
+                    record.resource_grants, config=listing_config
+                ),
                 card_identity_scope=record.identity_scope,
                 options=resource_option_rows,
                 platform_admin=platform_admin,
@@ -2764,6 +2855,11 @@ class AutomationAccessService:
                 "error": "invalid_named_service_operation_selection",
                 "message": str(exc),
             })
+        if selected_named_service_operations is not None:
+            selected_named_service_operations = self._declared_named_service_selection(
+                catalog_config,
+                selected_named_service_operations,
+            )
         if selected_named_service_operations is None:
             ambiguity = pre_migration_ambiguity(
                 existing,
@@ -2802,6 +2898,10 @@ class AutomationAccessService:
             selected_named_service_operations = _inherited_selection(
                 existing, selected_resource_grants
             )
+        selected_named_service_operations = self._declared_named_service_selection(
+            catalog_config,
+            selected_named_service_operations,
+        )
 
         # Submitting nothing is a client error; pruning to nothing is a revoke.
         if not any(selected_resource_grants.values()):
@@ -2814,6 +2914,12 @@ class AutomationAccessService:
             try:
                 selected_resource_operations = normalize_resource_operations(
                     resource_operations
+                )
+                selected_resource_operations, _rewritten_operations = (
+                    resolve_declared_resource_keys(
+                        catalog_config,
+                        selected_resource_operations,
+                    )
                 )
             except ValueError as exc:
                 return ResolvedCardAuthority(error={
@@ -2839,8 +2945,14 @@ class AutomationAccessService:
             # An edit that omits this dimension preserves it. In particular, a
             # label or account edit must not select new operations from a newer
             # catalog generation.
+            existing_resource_operations, _rewritten_operations = (
+                resolve_declared_resource_keys(
+                    catalog_config,
+                    existing.resource_operations,
+                )
+            )
             selected_resource_operations = {
-                resource: list(existing.resource_operations.get(resource, ()))
+                resource: list(existing_resource_operations.get(resource, ()))
                 for resource in selected_resource_grants
             }
 
@@ -3941,7 +4053,7 @@ class AutomationAccessService:
             view["catalog_drift"] = drift.get(record.access_id, {})
             options = await self.resource_options(user)
             view["resource_offers"] = compatible_resource_offers(
-                card_resources=record.resource_grants,
+                card_resources=self._card_resource_keys(record.resource_grants),
                 card_identity_scope=record.identity_scope,
                 options=options,
                 platform_admin=_is_platform_admin(user),
@@ -5212,6 +5324,11 @@ class AutomationAccessService:
             )
         except CatalogUnavailable:
             catalog_config = None
+        view_record = (
+            self._canonical_oauth_record(record, config=catalog_config)
+            if record is not None and catalog_config is not None
+            else record
+        )
         full_catalog = client_uses_full_card_catalog(client_metadata)
         allowed = (
             self._oauth_allowed_resources(
@@ -5228,9 +5345,13 @@ class AutomationAccessService:
         }
         rows: dict[str, str] = {}
         if catalog_config is not None:
-            selected_resources = [entry_resource]
-            if record is not None:
-                selected_resources.extend(record.resource_grants)
+            entry_key, _literal = resolve_declared_resource(
+                catalog_config,
+                entry_resource,
+            )
+            selected_resources = [entry_key]
+            if view_record is not None:
+                selected_resources.extend(view_record.resource_grants)
             for selected_resource in selected_resources:
                 configured = self._configured_resource(
                     selected_resource, config=catalog_config
@@ -5241,18 +5362,43 @@ class AutomationAccessService:
                     )
         if rows:
             payload["catalog_row_by_resource"] = rows
-        if record is None:
+        if view_record is None:
             return payload
-        access = record.to_public_dict()
+        access = view_record.to_public_dict()
         if rows:
             access["catalog_row_by_resource"] = rows
         if self._invocation_policies is not None:
-            access["invocation_policies"] = [
-                policy.to_public_dict()
-                for policy in await self._invocation_policies.list_for_card(
-                    owner_subject=grantor,
-                    access_id=access_id,
+            policies: dict[tuple[str, str, str, str], tuple[bool, int, dict[str, Any]]] = {}
+            for policy in await self._invocation_policies.list_for_card(
+                owner_subject=grantor,
+                access_id=access_id,
+            ):
+                view = policy.to_public_dict()
+                authority = dict(view.get("authority") or {})
+                raw_resource = _clean(authority.get("resource"))
+                resource_key = raw_resource
+                if catalog_config is not None:
+                    resource_key, _literal = resolve_declared_resource(
+                        catalog_config,
+                        raw_resource,
+                    )
+                authority["resource"] = resource_key
+                view["authority"] = authority
+                key = (
+                    resource_key,
+                    _clean(authority.get("operation")),
+                    _clean(authority.get("provider_id")),
+                    _clean(authority.get("account_id")),
                 )
+                candidate = (
+                    raw_resource == resource_key,
+                    int(view.get("revision") or 0),
+                    view,
+                )
+                if key not in policies or candidate[:2] > policies[key][:2]:
+                    policies[key] = candidate
+            access["invocation_policies"] = [
+                candidate[2] for _key, candidate in sorted(policies.items())
             ]
         payload["access"] = access
         return payload
@@ -5346,6 +5492,10 @@ class AutomationAccessService:
             }
 
         selected = self._resource_grants(resource_grants)
+        selected, _rewritten = resolve_declared_resource_keys(
+            catalog_config,
+            selected,
+        )
         requested = _as_list(requested_grants)
         allowed = self._oauth_allowed_resources(
             entry_resource=entry,
@@ -5364,6 +5514,7 @@ class AutomationAccessService:
                 "entry_resource": entry,
             }
 
+        entry_key, _literal = resolve_declared_resource(catalog_config, entry)
         baseline = existing or AutomationAccessRecord(
             access_id=access_id,
             label=client,
@@ -5371,8 +5522,8 @@ class AutomationAccessService:
             grantor_subject=grantor,
             delegate_subject=integration_subject(grantor, client_id=client),
             operations=(),
-            resource_grants={entry: tuple(requested)},
-            resource_operations={entry: ()},
+            resource_grants={entry_key: tuple(requested)},
+            resource_operations={entry_key: ()},
             named_service_operations=NamedServiceSelection.none(),
             identity_scope=_clean(getattr(entry_config, "identity_scope", "")) or "grantor",
             catalog_version=catalog_version,
@@ -5610,16 +5761,17 @@ class AutomationAccessService:
         except ValueError:
             submitted_selection = None
         materialize_boundary = submitted_selection is not None or is_initial_consent
-        consent_config = None
         if materialize_boundary:
             existing_selection = submitted_selection or NamedServiceSelection.none()
             existing_catalog_version = _clean(catalog_version)
-            try:
-                consent_config = await self._catalog_config(
-                    await self._active_catalog(), owner_subject=grantor
-                )
-            except CatalogUnavailable:
-                consent_config = None
+        authority_config = None
+        try:
+            authority_config = await self._catalog_config(
+                await self._active_catalog(), owner_subject=grantor
+            )
+        except CatalogUnavailable:
+            authority_config = None
+        consent_config = authority_config if materialize_boundary else None
         ttl = max(60, int(getattr(self._store, "refresh_ttl", None) or 86400))
         if resource_grants is not None:
             selected_resource_grants = self._resource_grants(resource_grants)
@@ -5632,6 +5784,17 @@ class AutomationAccessService:
             selected_resource_grants = {
                 resource_value or "*": _as_list(list(scopes))
             }
+        if authority_config is not None:
+            selected_resource_grants, _rewritten_grants = (
+                resolve_declared_resource_keys(
+                    authority_config,
+                    selected_resource_grants,
+                )
+            )
+            existing_selection = self._declared_named_service_selection(
+                authority_config,
+                existing_selection,
+            )
         # A reviewed consent replaces account binding. A refresh merges its
         # carried snapshot with the card so token rotation never drops it.
         merged_account_scope: dict[str, dict[str, list[str]]] = {
@@ -5670,6 +5833,13 @@ class AutomationAccessService:
         else:
             selected_resource_operations = project_legacy_operations(
                 selected_resource_grants, operations or ()
+            )
+        if authority_config is not None:
+            selected_resource_operations, _rewritten_operations = (
+                resolve_declared_resource_keys(
+                    authority_config,
+                    selected_resource_operations,
+                )
             )
         record = AutomationAccessRecord(
             access_id=access_id,
@@ -5737,6 +5907,11 @@ class AutomationAccessService:
             ),
             client_metadata=selected_client_metadata,
         )
+        if authority_config is not None:
+            record = self._canonical_oauth_record(
+                record,
+                config=authority_config,
+            )
         await self._persist_record(record, expected_revision=existing_card_revision)
         _LOGGER.info(
             "[automation-access] oauth grant recorded card=%s client=%s initial=%s "

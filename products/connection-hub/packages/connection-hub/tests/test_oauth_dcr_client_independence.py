@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import itertools
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -14,11 +15,13 @@ import pytest
 from connection_hub.delegated_credentials.automation_access import (
     ACCESS_SOURCE_OAUTH,
     AutomationAccessService,
+    oauth_access_id,
 )
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_REVOKED,
     CardAuthority,
     CardCredentialHandles,
+    NamedServiceSelection,
     authority_is_usable,
 )
 from connection_hub.delegated_credentials.cards.service import CardConflict, replace_state
@@ -32,6 +35,14 @@ from connection_hub.delegated_credentials.oauth.config import (
 GRANTOR = "user-1"
 RESOURCE = "https://hub.example.test/mcp"
 SECOND_RESOURCE = "https://hub.example.test/second"
+DECLARED_RESOURCE = (
+    "*/api/integrations/bundles/*/*/problem-board@1-0/public/mcp/problem_board*"
+)
+CONCRETE_RESOURCE = (
+    "https://tunnel.example.test/api/integrations/bundles/demo-tenant/demo-project/"
+    "problem-board@1-0/public/mcp/problem_board"
+)
+UNDECLARED_RESOURCE = "https://tunnel.example.test/public/mcp/unlisted"
 CONNECTIONS = {
     "delegated_credentials": {
         "oauth": {
@@ -70,12 +81,40 @@ CONNECTIONS = {
         }
     }
 }
+PATTERN_CONNECTIONS = {
+    "delegated_credentials": {
+        "oauth": {
+            "enabled": True,
+            "capabilities": CONNECTIONS["delegated_credentials"]["oauth"]["capabilities"],
+            "resources": [
+                {
+                    "resource": DECLARED_RESOURCE,
+                    "label": "Problem Board",
+                    "identity_scope": "grantor",
+                    "grants": ["fixture:use"],
+                    "tools": {
+                        "search": {
+                            "label": "Search",
+                            "grants": ["fixture:use"],
+                        }
+                    },
+                },
+                {
+                    "resource": "*",
+                    "label": "Other resources",
+                    "identity_scope": "grantor",
+                    "grants": ["fixture:use"],
+                },
+            ],
+        }
+    }
+}
 
 
 class _Catalog:
-    def __init__(self) -> None:
+    def __init__(self, connections=CONNECTIONS) -> None:
         self.document = CatalogDocument.build(
-            CONNECTIONS,
+            connections,
             created_at=datetime.fromtimestamp(1_780_000_000, tz=timezone.utc),
         )
 
@@ -171,16 +210,152 @@ class _Redis:
         return []
 
 
-def _service(store: _GrantStore, persistence: _Persistence) -> AutomationAccessService:
+def _service(
+    store: _GrantStore,
+    persistence: _Persistence,
+    *,
+    connections=CONNECTIONS,
+) -> AutomationAccessService:
     return AutomationAccessService(
         redis=_Redis(),
         tenant="tenant-a",
         project="project-a",
-        config=oauth_delegated_config_from_connections(CONNECTIONS),
+        config=oauth_delegated_config_from_connections(connections),
         grant_store=store,
-        catalog_resolver=_Catalog(),
+        catalog_resolver=_Catalog(connections),
         card_persistence=persistence,
     )
+
+
+def test_oauth_reachability_uses_declared_selectors_without_wildcard_fallback():
+    service = _service(
+        _GrantStore({}),
+        _Persistence(),
+        connections=PATTERN_CONNECTIONS,
+    )
+
+    assert service._oauth_allowed_resources(
+        entry_resource=CONCRETE_RESOURCE,
+        client_metadata={},
+        config=service._config,
+    ) == {DECLARED_RESOURCE}
+    assert service._oauth_allowed_resources(
+        entry_resource=UNDECLARED_RESOURCE,
+        client_metadata={},
+        config=service._config,
+    ) == {UNDECLARED_RESOURCE}
+    assert service._oauth_allowed_resources(
+        entry_resource=CONCRETE_RESOURCE,
+        client_metadata={"kdcube_credential_use": "multi_resource"},
+        config=service._config,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_oauth_card_keeps_concrete_identity_and_declared_authority():
+    store = _GrantStore({})
+    persistence = _Persistence()
+    service = _service(store, persistence, connections=PATTERN_CONNECTIONS)
+
+    record = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-worker",
+        client_label="Worker",
+        resource=CONCRETE_RESOURCE,
+        resource_grants={CONCRETE_RESOURCE: ["fixture:use"]},
+        resource_operations={CONCRETE_RESOURCE: ["search"]},
+        named_service_operations={
+            CONCRETE_RESOURCE: {"fixture": ["object.search"]},
+        },
+        replace_authority=True,
+        expected_card_revision=0,
+    )
+
+    assert record is not None
+    assert record.access_id == oauth_access_id(
+        GRANTOR,
+        "dcr-worker",
+        CONCRETE_RESOURCE,
+    )
+    assert record.entry_resource == CONCRETE_RESOURCE
+    assert record.resource_grants == {DECLARED_RESOURCE: ("fixture:use",)}
+    assert record.resource_operations == {DECLARED_RESOURCE: ("search",)}
+    assert record.named_service_operations == NamedServiceSelection.exact({
+        DECLARED_RESOURCE: {"fixture": ["object.search"]},
+    })
+
+
+@pytest.mark.asyncio
+async def test_refresh_reconciles_a_legacy_host_pinned_duplicate_without_consent():
+    store = _GrantStore({})
+    persistence = _Persistence()
+    service = _service(store, persistence, connections=PATTERN_CONNECTIONS)
+    current = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-worker",
+        resource=CONCRETE_RESOURCE,
+        resource_grants={DECLARED_RESOURCE: ["fixture:use"]},
+        resource_operations={DECLARED_RESOURCE: ["search"]},
+        named_service_operations={},
+        replace_authority=True,
+        expected_card_revision=0,
+    )
+    assert current is not None
+
+    authority, handles = persistence.cards[current.access_id]
+    persistence.cards[current.access_id] = (
+        replace(
+            authority,
+            resource_grants={
+                CONCRETE_RESOURCE: ("fixture:use",),
+                DECLARED_RESOURCE: ("fixture:use",),
+            },
+            resource_operations={
+                CONCRETE_RESOURCE: ("search",),
+                DECLARED_RESOURCE: ("search",),
+            },
+            operations=("search",),
+            named_service_operations=NamedServiceSelection.exact({
+                CONCRETE_RESOURCE: {"fixture": ["object.search"]},
+                DECLARED_RESOURCE: {"fixture": ["object.search"]},
+            }),
+        ),
+        handles,
+    )
+
+    seed = await service.oauth_consent_card_seed(
+        grantor_subject=GRANTOR,
+        client_id="dcr-worker",
+        resource=CONCRETE_RESOURCE,
+    )
+    assert seed["catalog_scope"] == {
+        "mode": "entry",
+        "resources": [DECLARED_RESOURCE],
+    }
+    assert seed["catalog_row_by_resource"] == {
+        DECLARED_RESOURCE: DECLARED_RESOURCE,
+    }
+    assert seed["access"]["entry_resource"] == CONCRETE_RESOURCE
+    assert seed["access"]["resource_grants"] == {
+        DECLARED_RESOURCE: ["fixture:use"],
+    }
+    assert seed["access"]["resource_operations"] == {
+        DECLARED_RESOURCE: ["search"],
+    }
+
+    refreshed = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-worker",
+        resource=CONCRETE_RESOURCE,
+        access_token="rotated-access",
+        refresh_token="rotated-refresh",
+    )
+    assert refreshed is not None
+    assert refreshed.resource_grants == {DECLARED_RESOURCE: ("fixture:use",)}
+    assert refreshed.resource_operations == {DECLARED_RESOURCE: ("search",)}
+    assert refreshed.named_service_operations == NamedServiceSelection.exact({
+        DECLARED_RESOURCE: {"fixture": ["object.search"]},
+    })
 
 
 @pytest.mark.parametrize("loopback_host", ["127.0.0.1", "localhost", "[::1]"])

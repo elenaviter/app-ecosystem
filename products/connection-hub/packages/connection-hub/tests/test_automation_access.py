@@ -310,3 +310,37 @@ def test_the_all_resource_row_never_swallows_a_concrete_request() -> None:
     resolved, _ = _resolver()(config, {stranger: ["work:relay"]})
 
     assert "*" not in resolved
+
+
+def test_a_concrete_card_grant_is_offered_as_the_pattern_row_that_governs_it() -> None:
+    """One service, one row, whether the card holds the pattern or a URL.
+
+    A legacy OAuth Card may hold the concrete resource it connected to while
+    the catalog declares a matching pattern. Offers resolve that legacy key to
+    the pattern, so the editor does not list the same service twice.
+    """
+
+    pattern = "*/api/integrations/bundles/*/*/problem-board@1-0/public/mcp/problem_board*"
+    concrete = (
+        "https://host.example/api/integrations/bundles/demo-tenant/demo-project"
+        "/problem-board@1-0/public/mcp/problem_board"
+    )
+    service = AutomationAccessService.__new__(AutomationAccessService)
+    service._tenant = "demo-tenant"
+    service._project = "demo-project"
+    service._config = SimpleNamespace(
+        card_selector_config=lambda selector, **_: (
+            SimpleNamespace(resource=pattern)
+            if str(selector or "").endswith("/problem_board")
+            or str(selector or "") == pattern
+            else None
+        )
+    )
+
+    assert service._card_resource_keys([concrete]) == (pattern,)
+    assert service._card_resource_keys([pattern]) == (pattern,)
+    # A row that has left the catalog keeps its own text: that absence is drift
+    # for the guard to report, not something to normalise away.
+    assert service._card_resource_keys(["https://host.example/gone"]) == (
+        "https://host.example/gone",
+    )
