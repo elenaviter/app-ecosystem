@@ -41,6 +41,7 @@ import {
   focusedGrantArgs,
   pendingChoiceRequested,
   pendingFocusedIdentity,
+  pendingGrantAccessId,
   pendingPresetMode,
   randomNonce,
   splitEditedOperations,
@@ -1853,6 +1854,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           })
           : {
             clientId: pendingGrant.clientId,
+            accessId: pendingGrantAccessId(pendingGrant, resource),
             resource,
             claims,
             resourceOperations: resourceOperations[resource],

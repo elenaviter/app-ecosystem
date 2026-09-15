@@ -304,3 +304,95 @@ async def test_file_delivery_port_replaces_only_the_model_visible_result() -> No
     visible = json.loads(result["content"][0]["text"])
     assert visible["delivery"] == "The file was delivered to the user."
     assert "signed" not in result["content"][0]["text"]
+
+
+def _served_agent_grant_denial() -> dict:
+    # The level-1 denial as a KDCube door returns it to a hosted agent: the flat
+    # `error` names the branch, and the public `connections.consent_needed` code
+    # rides beside it for external clients (see two_level_client).
+    resource = "https://hub.example/api/integrations/bundles/t/p/kdcube-services@1-0/public/mcp/named_services"
+    client_id = "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react"
+    return {
+        "ok": False,
+        "error": "delegated_consent_required",
+        "code": "connections.consent_needed",
+        "message": "'search' on 'conv' requires additional delegated consent.",
+        "namespace": "conv",
+        "tool": "search",
+        "operation": "object.search",
+        "required_grants": ["conversations:read"],
+        "missing_grants": ["conversations:read"],
+        "available_grants": ["named_services:use"],
+        "consent": {
+            "kind": "delegated_agent_grant",
+            "reason": "delegated_consent_required",
+            "agent_client_id": client_id,
+            "resource": resource,
+            "claims": ["conversations:read"],
+            "tool_name": "conv",
+            "namespace": "conv",
+            "operation": "object.search",
+            "grant": {
+                "client_id": client_id,
+                "resource": resource,
+                "claims": ["conversations:read"],
+                "named_service_operations": {"conv": ["object.search"]},
+            },
+        },
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["dict", "json_text"])
+async def test_served_agent_grant_denial_with_its_public_code_becomes_a_banner(shape: str) -> None:
+    denial = _served_agent_grant_denial()
+    announced: list[object] = []
+
+    async def announce(consent: object) -> None:
+        announced.append(consent)
+
+    raw = denial if shape == "dict" else (json.dumps(denial), None)
+    tool = tool_for(raw)
+    bind_chat_result_handling([tool], agent_consent_announcer=announce)
+    await tool.coroutine()
+
+    assert len(announced) == 1
+
+
+@pytest.mark.asyncio
+async def test_card_denial_for_an_operation_only_becomes_a_banner() -> None:
+    # Every claim is already granted; the card does not cover the operation.
+    resource = "https://hub.example/api/integrations/bundles/t/p/kdcube-services@1-0/public/mcp/named_services"
+    client_id = "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react"
+    denial = {
+        "ok": False,
+        "status": 403,
+        "error": {
+            "code": "delegated_capability_not_granted",
+            "message": "The delegated access card does not cover the requested named-service operation.",
+            "details": {"where": "delegated_card.authorization", "retryable": False, "status": 403},
+        },
+        "consent": {
+            "kind": "delegated_agent_grant",
+            "reason": "delegated_capability_not_granted",
+            "agent_client_id": client_id,
+            "resource": resource,
+            "claims": [],
+            "tool_name": "conv",
+            "namespace": "conv",
+            "operation": "object.search",
+        },
+    }
+    announced: list[object] = []
+
+    async def announce(consent: object) -> None:
+        announced.append(consent)
+
+    tool = tool_for(denial)
+    bind_chat_result_handling([tool], agent_consent_announcer=announce)
+    await tool.coroutine()
+
+    assert len(announced) == 1
+    grant = announced[0].consent["grant"]["payload"]
+    assert grant["claims"] == []
+    assert grant["named_service_operations"] == {"conv": ["object.search"]}

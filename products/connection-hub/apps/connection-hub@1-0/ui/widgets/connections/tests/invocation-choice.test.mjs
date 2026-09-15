@@ -7,9 +7,40 @@ import {
   focusedGrantArgs,
   pendingChoiceRequested,
   pendingFocusedIdentity,
+  pendingGrantAccessId,
   pendingPresetMode,
   splitEditedOperations,
 } from '../src/features/delegatedAccess/invocationChoice.ts'
+
+test('a plain pending grant names the denied card for its own resource only', () => {
+  // Regression: an OAuth card issued at a concrete URL is keyed by that URL, so a
+  // grant that names only the declared resource could not find it
+  // ("This client has no existing grant to extend").
+  const pending = {
+    clientId: 'https://claude.ai/oauth/claude-code-client-metadata',
+    accessId: 'oauth-fc766127dbc54c2e',
+    resource: '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*',
+    outerOperation: 'named_services_search',
+  }
+  assert.equal(pendingGrantAccessId(pending, pending.resource), 'oauth-fc766127dbc54c2e')
+  assert.equal(pendingGrantAccessId(pending, '*/api/other/door*'), undefined)
+  assert.equal(pendingGrantAccessId({ ...pending, accessId: undefined }, pending.resource), undefined)
+
+  const payload = agentGrantWirePayload({
+    clientId: pending.clientId,
+    accessId: pendingGrantAccessId(pending, pending.resource),
+    resource: pending.resource,
+    claims: ['named_services:use'],
+  })
+  assert.equal(payload.access_id, 'oauth-fc766127dbc54c2e')
+  const other = agentGrantWirePayload({
+    clientId: pending.clientId,
+    accessId: pendingGrantAccessId(pending, '*/api/other/door*'),
+    resource: '*/api/other/door*',
+    claims: ['x:read'],
+  })
+  assert.equal('access_id' in other, false)
+})
 
 // Regression fixture: card oauth-6017dba3246fb090 (revision 2) grants `search`
 // on the named-services door with policy search: always. A cached Claude call

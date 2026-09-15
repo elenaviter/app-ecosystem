@@ -54,6 +54,27 @@ async def test_an_expired_card_stays_listed_and_says_so(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_an_expired_card_is_revoked_by_its_owner(tmp_path):
+    harness = _Harness(tmp_path)
+    created = await _manual_card(harness)
+    access_id = created["access"]["access_id"]
+    _expire(harness, access_id)
+
+    foreign = await harness.service.revoke_access(OTHER_USER, access_id=access_id)
+    assert foreign.get("removed") is not True
+    assert harness.persistence.cards[access_id][0].state != CARD_STATE_REVOKED
+
+    revoked = await harness.service.revoke_access(USER, access_id=access_id)
+    assert revoked["ok"] is True and revoked["removed"] is True, revoked
+    assert harness.persistence.cards[access_id][0].state == CARD_STATE_REVOKED
+    listed = await harness.service.list_access(USER)
+    assert access_id not in {item["access_id"] for item in listed["items"]}
+
+    again = await harness.service.revoke_access(USER, access_id=access_id)
+    assert again == {"ok": True, "removed": False}
+
+
+@pytest.mark.asyncio
 async def test_renewal_keeps_the_card_and_mints_a_new_bearer(tmp_path):
     harness = _Harness(tmp_path)
     created = await _manual_card(harness, ttl=3600)

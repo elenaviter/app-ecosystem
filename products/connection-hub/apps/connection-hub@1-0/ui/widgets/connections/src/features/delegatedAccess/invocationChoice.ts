@@ -68,6 +68,18 @@ export function pendingPresetMode(pending: PendingLikeRequest | null | undefined
   return value === 'once' || value === 'always' ? value : null;
 }
 
+/** The card a pending request was denied on, for the grant of that request's
+ *  own resource only. An OAuth card id is derived from the concrete URL the
+ *  client consented at, so the server cannot re-derive it from the declared
+ *  resource the link names; other resources picked on the pane carry no id. */
+export function pendingGrantAccessId(
+  pending: PendingLikeRequest | null | undefined,
+  resource: string,
+): string | undefined {
+  if (!pending?.accessId || resource !== pending.resource) return undefined;
+  return pending.accessId;
+}
+
 /** The focused-grant identity of a pending outer-operation request, or null
  *  when the link lacks a part the server requires (then no policy can be
  *  committed and the buttons stay disabled rather than submitting a grant

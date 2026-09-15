@@ -55,6 +55,13 @@ _REMOTE_MCP_GRANT_CODES = (
     REMOTE_MCP_CONNECTOR_NOT_CONSENTED,
     REMOTE_MCP_OPERATION_NOT_CONSENTED,
 )
+_ANNOUNCEABLE_CODES = (
+    DELEGATED_CONSENT_REQUIRED,
+    DELEGATED_CAPABILITY_NOT_GRANTED,
+    NEEDS_CONNECTED_ACCOUNT_CONSENT,
+    *_INVOCATION_POLICY_CODES,
+    *_REMOTE_MCP_GRANT_CODES,
+)
 _MARKERS = (
     '"download"',
     f'"{DELEGATED_CONSENT_REQUIRED}"',
@@ -76,7 +83,15 @@ def _error_code(parsed: Mapping[str, Any]) -> str:
     err = parsed.get("error")
     if isinstance(err, Mapping):
         return str(err.get("code") or "").strip()
-    return str(parsed.get("code") or err or "").strip()
+    code = str(parsed.get("code") or "").strip()
+    flat = str(err or "").strip()
+    # Either field may hold the branch code: a remote-MCP proxy denial pairs a
+    # generic `error` with a specific `code`, while the level-1 agent-grant
+    # denial pairs a specific `error` with the public `connections.consent_needed`.
+    for candidate in (code, flat):
+        if candidate in _ANNOUNCEABLE_CODES:
+            return candidate
+    return code or flat
 
 
 def _consent_block(parsed: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -105,13 +120,7 @@ async def announce_result_consent(
     or None when there is no consent to raise. Never raises."""
     try:
         code = _error_code(parsed)
-        if code not in (
-            DELEGATED_CONSENT_REQUIRED,
-            DELEGATED_CAPABILITY_NOT_GRANTED,
-            NEEDS_CONNECTED_ACCOUNT_CONSENT,
-            *_INVOCATION_POLICY_CODES,
-            *_REMOTE_MCP_GRANT_CODES,
-        ):
+        if code not in _ANNOUNCEABLE_CODES:
             return None
         block = _consent_block(parsed)
         namespace = str(block.get("namespace") or parsed.get("namespace") or "").strip()
@@ -220,7 +229,10 @@ async def announce_result_consent(
         claims = [str(c) for c in (block.get("claims") or parsed.get("missing_grants") or []) if str(c or "").strip()]
         client_id = str(block.get("agent_client_id") or "").strip()
         resource = str(block.get("resource") or "").strip()
-        if not (claims or outer_operation) or not client_id or not resource:
+        # A card that already holds every claim can still miss the named-service
+        # operation; that demand carries no claims, only namespace + operation.
+        demands_something = claims or outer_operation or (namespace and operation)
+        if not demands_something or not client_id or not resource:
             logger.warning(
                 "[mcp-result] agent-grant consent not announceable from block: "
                 "client=%r resource=%r claims=%s namespace=%s — the surface must self-describe it",
