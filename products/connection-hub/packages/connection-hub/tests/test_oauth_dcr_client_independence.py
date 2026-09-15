@@ -102,6 +102,12 @@ class _Persistence:
             return None
         return entry
 
+    async def load_current(self, access_id, *, subject_hash):
+        entry = self.cards.get(access_id)
+        if entry is None or not self._owned(entry[0], subject_hash):
+            return None
+        return entry
+
     async def current_revision(self, access_id, *, subject_hash):
         entry = self.cards.get(access_id)
         if entry is None or not self._owned(entry[0], subject_hash):

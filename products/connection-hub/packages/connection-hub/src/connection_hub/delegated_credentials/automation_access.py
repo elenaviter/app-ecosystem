@@ -6442,7 +6442,9 @@ class AutomationAccessService:
         if not access_id_value:
             return {"ok": False, "error": "delegated_access_id_required"}
         try:
-            record = await self._load_record(
+            # An expired card is still listed for its owner, so it must stay
+            # revocable; only an already revoked card has nothing left to end.
+            loaded = await self._load_record_any_state(
                 access_id_value, grantor_subject=grantor_subject
             )
         except CardUnavailable as exc:
@@ -6453,8 +6455,9 @@ class AutomationAccessService:
                 "retryable": True,
                 "status": 503,
             }
-        if record is None:
+        if loaded is None or loaded[1] != CARD_STATE_ACTIVE:
             return {"ok": True, "removed": False}
+        record = loaded[0]
         if record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
         # The revoked revision commits before any credential cleanup, so a

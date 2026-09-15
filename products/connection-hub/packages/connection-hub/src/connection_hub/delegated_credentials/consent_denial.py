@@ -296,6 +296,9 @@ def agent_grant_consent_denial(
         claims=missing_list,
         namespace=namespace,
         operation=operation,
+        # The card this caller was denied on: an OAuth card id is derived from
+        # the concrete URL the client consented at, which ``resource`` is not.
+        access_id=view.registry_access_id,
     )
     if not client_id and not external_client_id:
         LOGGER.info(
@@ -361,6 +364,53 @@ def agent_grant_consent_denial(
             client_id or external_client_id, namespace,
         )
     return denial
+
+
+def card_capability_consent_denial(
+    request: Any,
+    payload: Mapping[str, Any],
+    *,
+    namespace: str,
+    tool: str,
+    operation: str,
+    tenant: str = "",
+    project: str = "",
+) -> Mapping[str, Any]:
+    """Make a card-authorization `delegated_capability_not_granted` denial
+    self-describing with the same consent block as the agent-grant denial.
+
+    Any other payload, or a caller without a delegated client identity, is
+    returned unchanged."""
+    from connection_hub.delegated_credentials.catalog.authorization import (
+        NOT_GRANTED_CODE,
+        denial_is_capability_not_granted,
+    )
+
+    if not denial_is_capability_not_granted(payload):
+        return payload
+    error = payload.get("error") if isinstance(payload.get("error"), Mapping) else {}
+    details = error.get("details") if isinstance(error.get("details"), Mapping) else {}
+    missing = details.get("missing_claims") or details.get("claims") or []
+    grant_denial = agent_grant_consent_denial(
+        request,
+        namespace=namespace,
+        tool=tool,
+        operation=operation,
+        required=missing,
+        missing=missing,
+        available=[],
+        tenant=tenant,
+        project=project,
+    )
+    consent = grant_denial.get("consent")
+    if not isinstance(consent, Mapping):
+        return payload
+    enriched = dict(payload)
+    enriched["consent"] = {**consent, "reason": NOT_GRANTED_CODE}
+    for key in ("namespace", "tool", "operation", "connection_hub_url", "next_step", "instructions"):
+        if grant_denial.get(key) and key not in enriched:
+            enriched[key] = grant_denial[key]
+    return enriched
 
 
 async def connect_first_denial(
@@ -625,6 +675,7 @@ async def connect_first_denial_for_identity(
 __all__ = [
     "agent_client_id_from_request",
     "agent_grant_consent_denial",
+    "card_capability_consent_denial",
     "connection_hub_invocation_policy_url",
     "connect_first_denial",
     "granted_resource_from_request",
