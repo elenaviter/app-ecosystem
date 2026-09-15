@@ -273,6 +273,29 @@ export interface ResourceDriftState {
   added_claims?: string[];
 }
 
+/** The catalog rows that a concrete resource already stands for.
+ *
+ *  A card granted through OAuth holds the concrete address it connected to
+ *  while the catalog declares the pattern that governs it. The server resolves
+ *  the two and ships the answer as `catalog_row_by_resource`; this turns that
+ *  mapping into the set of rows a form must not draw again beside the concrete
+ *  resource they govern.
+ *
+ *  It applies in every catalog mode. A full catalog widens what a client may
+ *  reach; it does not make a resource stop being the same service. Skipping
+ *  this for full mode is what listed one service twice on a worker's consent
+ *  screen, once as its wildcard row with nothing selected and once as the
+ *  concrete address with everything selected. */
+export function catalogTemplateRows(
+  catalogRowByResource: Record<string, string>,
+): Set<string> {
+  return new Set(
+    Object.entries(catalogRowByResource || {})
+      .filter(([resource, row]) => Boolean(row) && resource !== row)
+      .map(([, row]) => row),
+  );
+}
+
 /** The resources an edit will submit: the card's own minus the ones marked for
  *  removal, plus the ones being added, in that order. */
 export function editedResourceKeys(

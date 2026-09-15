@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  catalogTemplateRows,
   doorName,
   driftNeedsReview,
   editedResourceKeys,
@@ -264,4 +265,24 @@ test('a selection door grant exists only as the route to an exact selected child
       [PROXY]: ['external_mcp:use'],
     },
   )
+})
+
+test('a catalog template row is not drawn beside the concrete resource it governs', () => {
+  const pattern = '*/api/integrations/bundles/*/*/problem-board@1-0/public/mcp/problem_board*'
+  const concrete = 'https://host.example/api/integrations/bundles/demo-tenant/demo-project'
+    + '/problem-board@1-0/public/mcp/problem_board'
+
+  // A worker's consent is full-catalog and holds the concrete address it
+  // connected to. The wildcard row that governs it must not be offered again:
+  // that listed Problem Board twice, once with nothing selected and once with
+  // everything selected, on the screen where a new agent joins.
+  assert.deepEqual([...catalogTemplateRows({ [concrete]: pattern })], [pattern])
+
+  // A card holding the pattern itself contributes no template row.
+  assert.deepEqual([...catalogTemplateRows({ [pattern]: pattern })], [])
+
+  // A resource whose row has left the catalog suppresses nothing; that absence
+  // is drift for the guard to report.
+  assert.deepEqual([...catalogTemplateRows({ [concrete]: '' })], [])
+  assert.deepEqual([...catalogTemplateRows({})], [])
 })

@@ -25,6 +25,7 @@ import {
   ResourceSectionHead,
 } from './ResourceEditorParts';
 import {
+  catalogTemplateRows,
   editedResourceKeys,
   materializeSelectionRouteGrants,
   operationHelpText,
@@ -1194,13 +1195,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           : (option.label || resource),
       }];
     });
-    const templateRows = oauthDraft?.catalog_scope.mode === 'full'
-      ? new Set<string>()
-      : new Set(
-        Object.entries(createCatalogRows)
-          .filter(([resource, row]) => resource !== row)
-          .map(([, row]) => row),
-      );
+    const templateRows = catalogTemplateRows(createCatalogRows);
     const assembled = [
       ...resources.filter((item) => !templateRows.has(item.resource)),
       ...generated,
