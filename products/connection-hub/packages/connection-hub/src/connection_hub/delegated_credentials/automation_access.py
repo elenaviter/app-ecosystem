@@ -68,6 +68,15 @@ from connection_hub.delegated_credentials.named_service_policy import (
     narrow_named_service_config,
     operation_grants as _named_service_operation_grants,
 )
+from connection_hub.delegated_credentials.application_operation_policy import (
+    APPLICATION_API_RESOURCE,
+    APPLICATION_OPERATIONS_PROPERTY,
+    APPLICATION_OPERATIONS_SCHEMA_V2,
+    ApplicationOperationPolicyError,
+    ApplicationOperationRolePolicy,
+    application_operation_role_policy,
+    validate_application_operation_role_policy,
+)
 from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_operations,
     operation_union,
@@ -103,7 +112,6 @@ from connection_hub.delegated_credentials.controls.model import (
     new_credentialless_card,
 )
 from connection_hub.delegated_credentials.controls.snapshot import (
-    APPLICATION_OPERATIONS_PROPERTY,
     CONTROL_SNAPSHOT_PROPERTY,
     control_snapshot_is_exact,
     control_snapshot_wildcards,
@@ -485,6 +493,55 @@ def _grantor_authority(
     return out
 
 
+def _application_role_policy(
+    *,
+    properties: Mapping[str, Any],
+    resource_grants: Mapping[str, Any],
+    resource_operations: Mapping[str, Any],
+    delegable_roles: Iterable[str],
+    allowed_roles: Iterable[str],
+) -> ApplicationOperationRolePolicy | None:
+    if APPLICATION_API_RESOURCE not in resource_grants:
+        return None
+    policy = application_operation_role_policy(
+        properties,
+        resource_grants=resource_grants,
+    )
+    if policy is None:
+        return None
+    if policy.schema == APPLICATION_OPERATIONS_SCHEMA_V2:
+        stored_defaults = {
+            _clean(value)
+            for value in _as_list(resource_grants.get(APPLICATION_API_RESOURCE))
+            if _clean(value)
+        }
+        if stored_defaults != {policy.default_role}:
+            raise ApplicationOperationPolicyError(
+                "application_default_role_mismatch"
+            )
+    validate_application_operation_role_policy(
+        policy,
+        selected_operations=resource_operations.get(APPLICATION_API_RESOURCE, ()),
+        delegable_roles=delegable_roles,
+        allowed_roles=allowed_roles,
+    )
+    return policy
+
+
+def _application_policy_refusal(
+    exc: ApplicationOperationPolicyError,
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": exc.reason,
+        "status": 400,
+        "message": (
+            "The application API role policy is not a valid subset of the "
+            "selected operations and delegable platform roles."
+        ),
+    }
+
+
 ACCESS_SOURCE_MANUAL = "manual"
 ACCESS_SOURCE_OAUTH = "oauth"
 # A per-agent delegated grant: the consenting user grants a hosted agent
@@ -629,6 +686,7 @@ class ResolvedCardAuthority:
     named_services: dict[str, Any] = field(default_factory=dict)
     account_scope: dict[str, dict[str, list[str]]] = field(default_factory=dict)
     identity_scope: str = "grantor"
+    properties: dict[str, Any] = field(default_factory=dict)
     reconciled: Any = None
     revoke: bool = False
     error: dict[str, Any] | None = None
@@ -2813,6 +2871,40 @@ class AutomationAccessService:
         )
         if properties is not None:
             selected_properties.update(copy.deepcopy(dict(properties)))
+        try:
+            submitted_application_policy = (
+                application_operation_role_policy(
+                    selected_properties,
+                    resource_grants=selected_resource_grants,
+                )
+                if APPLICATION_API_RESOURCE in selected_resource_grants
+                else None
+            )
+            authority_grants = list(selected_grants)
+            if submitted_application_policy is not None:
+                authority_grants.extend(
+                    [
+                        submitted_application_policy.default_role,
+                        *submitted_application_policy.operation_roles.values(),
+                    ]
+                )
+            authority_grants = _as_list(authority_grants)
+            inventory = await self._available_inventory(
+                user,
+                requested_grants=authority_grants,
+                config=catalog_config,
+            )
+            _application_role_policy(
+                properties=selected_properties,
+                resource_grants=selected_resource_grants,
+                resource_operations=selected_resource_operations,
+                delegable_roles=inventory.grant_names(),
+                allowed_roles=catalog_config.supported_scopes(
+                    APPLICATION_API_RESOURCE
+                ),
+            )
+        except ApplicationOperationPolicyError as exc:
+            return _application_policy_refusal(exc)
 
         ttl = _bounded_ttl(ttl_seconds)
         now = int(time.time())
@@ -2854,7 +2946,11 @@ class AutomationAccessService:
         expires_at = now + expires_in
         session_id = _clean(minted.get("session_id"))
 
-        grantor_authority = _grantor_authority(user, grants=selected_grants, inventory=inventory)
+        grantor_authority = _grantor_authority(
+            user,
+            grants=authority_grants,
+            inventory=inventory,
+        )
         delegation_edges = list(grantor_authority.get("delegation_edges") or [])
         await self._store.bind_access_grant(
             access_token,
@@ -2956,6 +3052,7 @@ class AutomationAccessService:
         operations: Iterable[str],
         named_service_operations: Mapping[str, Any] | str | None,
         account_scope: Mapping[str, Any] | None,
+        properties: Mapping[str, Any] | None,
     ) -> "ResolvedCardAuthority":
         """The authority a save writes, resolved once for every entrance.
 
@@ -2965,6 +3062,9 @@ class AutomationAccessService:
         credential fields their family carries.
         """
         selected_resource_grants = self._resource_grants(resource_grants)
+        selected_properties = copy.deepcopy(
+            dict(existing.properties if properties is None else properties)
+        )
         # Every decision below reads the registered catalog. Effective props are
         # an input to publication, not to a card write.
         catalog_config = await self._catalog_config(
@@ -3140,8 +3240,28 @@ class AutomationAccessService:
                 ),
             })
         resource_configs = tuple(cfg for _, cfg in resource_pairs)
+        try:
+            submitted_application_policy = (
+                application_operation_role_policy(
+                    selected_properties,
+                    resource_grants=selected_resource_grants,
+                )
+                if APPLICATION_API_RESOURCE in selected_resource_grants
+                else None
+            )
+        except ApplicationOperationPolicyError as exc:
+            return ResolvedCardAuthority(error=_application_policy_refusal(exc))
+        authority_grants = list(selected_grants)
+        if submitted_application_policy is not None:
+            authority_grants.extend(
+                [
+                    submitted_application_policy.default_role,
+                    *submitted_application_policy.operation_roles.values(),
+                ]
+            )
+        authority_grants = _as_list(authority_grants)
         inventory = await self._available_inventory(
-            user, requested_grants=selected_grants, config=catalog_config
+            user, requested_grants=authority_grants, config=catalog_config
         )
         denied = [grant for grant in selected_grants if grant not in set(inventory.grant_names())]
         if denied:
@@ -3157,6 +3277,18 @@ class AutomationAccessService:
                     "`delegable_roles` and `delegable_permissions`."
                 ),
             })
+        try:
+            _application_role_policy(
+                properties=selected_properties,
+                resource_grants=selected_resource_grants,
+                resource_operations=selected_resource_operations,
+                delegable_roles=inventory.grant_names(),
+                allowed_roles=catalog_config.supported_scopes(
+                    APPLICATION_API_RESOURCE
+                ),
+            )
+        except ApplicationOperationPolicyError as exc:
+            return ResolvedCardAuthority(error=_application_policy_refusal(exc))
         admin_required = [cfg.resource for cfg in resource_configs if cfg.admin_only]
         if admin_required and not _is_platform_admin(user):
             return ResolvedCardAuthority(error={
@@ -3292,6 +3424,7 @@ class AutomationAccessService:
             named_services=named_services,
             account_scope=selected_account_scope,
             identity_scope=next(iter(identity_scopes), existing.identity_scope or "grantor"),
+            properties=selected_properties,
             reconciled=reconciled,
         )
 
@@ -3445,6 +3578,7 @@ class AutomationAccessService:
             operations=operations,
             named_service_operations=named_service_operations,
             account_scope=account_scope,
+            properties=properties,
         )
         if resolved.error is not None:
             return resolved.error
@@ -3481,9 +3615,7 @@ class AutomationAccessService:
         named_services = resolved.named_services
         selected_operations = resolved.operations
         selected_account_scope = resolved.account_scope
-        selected_properties = copy.deepcopy(
-            dict(existing.properties if properties is None else properties)
-        )
+        selected_properties = resolved.properties
         if _record_is_credentialless(existing):
             candidate = dataclasses.replace(
                 card_authority_from_record(existing),
@@ -4488,6 +4620,7 @@ class AutomationAccessService:
                         initial_selection.named_service_operations.to_stored()
                     ),
                     account_scope=initial_selection.account_scope,
+                    properties=record.properties,
                 )
                 if resolved.error is not None:
                     return resolved.error
@@ -4525,6 +4658,7 @@ class AutomationAccessService:
                         for provider, accounts in resolved.account_scope.items()
                     },
                     identity_scope=resolved.identity_scope,
+                    properties=resolved.properties,
                     resource_acceptance=next_resource_acceptance(
                         resources=resolved.resource_grants,
                         row_for=lambda resource: self._configured_resource(
@@ -5634,6 +5768,7 @@ class AutomationAccessService:
         account_scope: Mapping[str, Any],
         expected_card_revision: int,
         expected_catalog_version: str,
+        properties: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Validate a full card-editor OAuth selection without persisting it."""
 
@@ -5757,6 +5892,7 @@ class AutomationAccessService:
             operations=(),
             named_service_operations=named_service_operations,
             account_scope=account_scope,
+            properties=properties,
         )
         if resolved.error is not None:
             return resolved.error
@@ -5777,6 +5913,7 @@ class AutomationAccessService:
             "named_services": resolved.named_services,
             "account_scope": resolved.account_scope,
             "identity_scope": resolved.identity_scope,
+            "properties": resolved.properties,
         }
 
     async def apply_oauth_invocation_policies(
@@ -6513,6 +6650,7 @@ class AutomationAccessService:
                 provider: {account_id: list(cl) for account_id, cl in accounts.items()}
                 for provider, accounts in account_scope_out.items()
             },
+            properties=record.properties,
         )
         if resolved.error is not None:
             return resolved.error
@@ -6556,6 +6694,7 @@ class AutomationAccessService:
             named_service_operations=resolved.named_service_operations,
             named_services=copy.deepcopy(resolved.named_services),
             operations=tuple(resolved.operations),
+            properties=resolved.properties,
             catalog_version=_clean(getattr(active, "version", "")),
             label=new_label or record.label,
             card_revision=record.card_revision + 1,

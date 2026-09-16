@@ -22,6 +22,9 @@ from connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
     agent_grant_access_id,
 )
+from connection_hub.delegated_credentials.application_operation_policy import (
+    APPLICATION_OPERATIONS_PROPERTY,
+)
 from connection_hub.delegated_credentials.cards.identity import (
     ResidentCallerProfile,
     stable_resident_access_id,
@@ -59,6 +62,13 @@ TASKS = "https://host/api/mcp/tasks*"
 MAIL = "https://host/api/mcp/mail*"
 USER = {"user_id": GRANTOR, "roles": ["kdcube:role:registered"], "permissions": []}
 OTHER_USER = {"user_id": OTHER, "roles": ["kdcube:role:registered"], "permissions": []}
+SUPER_ADMIN_USER = {
+    "user_id": GRANTOR,
+    "roles": ["kdcube:role:super-admin"],
+    "permissions": [],
+}
+APP_READ = "urn:kdcube:application-operation:example%401-0:read"
+APP_ADMIN = "urn:kdcube:application-operation:example%401-0:admin"
 
 
 def _connections(*, tasks_delete_description="Delete a task"):
@@ -100,6 +110,36 @@ def _connections(*, tasks_delete_description="Delete a task"):
             }
         }
     }
+
+
+def _connections_with_application_apis():
+    connections = _connections()
+    oauth = connections["delegated_credentials"]["oauth"]
+    oauth["capabilities"].extend(
+        [
+            {
+                "grant": role,
+                "label": role,
+                "delegable_roles": ["kdcube:role:super-admin"],
+            }
+            for role in (
+                "kdcube:role:registered",
+                "kdcube:role:super-admin",
+            )
+        ]
+    )
+    oauth["resources"].append(
+        {
+            "resource": "*",
+            "label": "Application APIs",
+            "grants": [
+                "kdcube:role:registered",
+                "kdcube:role:super-admin",
+            ],
+            "tools": {},
+        }
+    )
+    return connections
 
 
 class _Catalog:
@@ -890,3 +930,130 @@ async def test_a_spent_one_use_permit_does_not_revive_when_the_operation_is_re_a
     )
     assert decision.allowed is False
     assert decision.reason == "delegated_invocation_limit_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_application_role_overrides_are_validated_and_stored_outside_default_grants(
+    tmp_path,
+):
+    h = _Harness(tmp_path)
+    h.catalog.publish(_connections_with_application_apis())
+    properties = {
+        APPLICATION_OPERATIONS_PROPERTY: {
+            "schema": "kdcube.application_operations.v2",
+            "mode": "selected",
+            "default_role": "kdcube:role:registered",
+            "operation_roles": {
+                APP_ADMIN: "kdcube:role:super-admin",
+            },
+        }
+    }
+
+    created = await h.service.create_access(
+        SUPER_ADMIN_USER,
+        label="application client",
+        resource_grants={"*": ["kdcube:role:registered"]},
+        resource_operations={"*": [APP_READ, APP_ADMIN]},
+        properties=properties,
+        client_id=CLIENT,
+    )
+
+    assert created["ok"], created
+    access_id = created["access"]["access_id"]
+    card = await h.card(access_id)
+    assert card.resource_grants["*"] == ("kdcube:role:registered",)
+    assert card.properties == properties
+    binding = h.grant_store.bindings[created["access_token"]]
+    assert binding["credential"]["attrs"]["resource_grants"]["*"] == [
+        "kdcube:role:registered"
+    ]
+    assert binding["delegation_edges"][0]["grants"] == [
+        "kdcube:role:registered",
+        "kdcube:role:super-admin",
+    ]
+
+    refused = await h.service.update_access(
+        SUPER_ADMIN_USER,
+        access_id=access_id,
+        resource_grants={"*": ["kdcube:role:registered"]},
+        resource_operations={"*": [APP_READ]},
+    )
+    assert refused["ok"] is False
+    assert refused["error"] == "application_operation_override_not_selected"
+
+    accepted = await h.service.update_access(
+        SUPER_ADMIN_USER,
+        access_id=access_id,
+        resource_grants={"*": ["kdcube:role:registered"]},
+        resource_operations={"*": [APP_READ]},
+        properties={
+            APPLICATION_OPERATIONS_PROPERTY: {
+                "schema": "kdcube.application_operations.v2",
+                "mode": "selected",
+                "default_role": "kdcube:role:registered",
+                "operation_roles": {},
+            }
+        },
+    )
+    assert accepted["ok"], accepted
+    assert accepted["access"]["resource_operations"] == {"*": [APP_READ]}
+
+
+@pytest.mark.asyncio
+async def test_application_role_policy_rejects_default_grant_mismatch(tmp_path):
+    h = _Harness(tmp_path)
+    h.catalog.publish(_connections_with_application_apis())
+
+    refused = await h.service.create_access(
+        SUPER_ADMIN_USER,
+        label="application client",
+        resource_grants={"*": ["kdcube:role:super-admin"]},
+        resource_operations={"*": [APP_READ]},
+        properties={
+            APPLICATION_OPERATIONS_PROPERTY: {
+                "schema": "kdcube.application_operations.v2",
+                "mode": "selected",
+                "default_role": "kdcube:role:registered",
+                "operation_roles": {},
+            }
+        },
+        client_id=CLIENT,
+    )
+
+    assert refused["ok"] is False
+    assert refused["error"] == "application_default_role_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_oauth_consent_validates_and_returns_application_role_policy(tmp_path):
+    h = _Harness(tmp_path)
+    h.catalog.publish(_connections_with_application_apis())
+    properties = {
+        APPLICATION_OPERATIONS_PROPERTY: {
+            "schema": "kdcube.application_operations.v2",
+            "mode": "selected",
+            "default_role": "kdcube:role:registered",
+            "operation_roles": {
+                APP_ADMIN: "kdcube:role:super-admin",
+            },
+        }
+    }
+
+    resolved = await h.service.resolve_oauth_consent_authority(
+        SUPER_ADMIN_USER,
+        client_id="oauth-client-1",
+        entry_resource=MEMORIES,
+        requested_grants=["memories:read"],
+        client_metadata={"kdcube_credential_use": "multi_resource"},
+        resource_grants={"*": ["kdcube:role:registered"]},
+        resource_operations={"*": [APP_READ, APP_ADMIN]},
+        named_service_operations={},
+        account_scope={},
+        expected_card_revision=0,
+        expected_catalog_version=h.catalog.active.version,
+        properties=properties,
+    )
+
+    assert resolved["ok"], resolved
+    assert resolved["resource_grants"] == {"*": ["kdcube:role:registered"]}
+    assert resolved["properties"] == properties
