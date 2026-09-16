@@ -277,3 +277,47 @@ def test_pre_policy_caller_is_narrowed_by_v2_control_in_and_mode(
     assert policy.default_role == REGISTERED
     assert effective.resource_grants["*"] == (REGISTERED,)
     assert effective.resource_operations["*"] == control_operations
+
+
+def test_inert_policy_key_without_application_resource_is_not_a_gate() -> None:
+    caller = _card(
+        access_id="pre-policy-caller",
+        default_role=REGISTERED,
+        operations=(OP_READ,),
+        policy=False,
+    )
+    control_seed = dataclasses.replace(
+        _card(
+            access_id="control-seed",
+            default_role=SUPER_ADMIN,
+            operations=(),
+            policy=False,
+        ),
+        resource_grants={},
+        resource_operations={},
+        properties={APPLICATION_OPERATIONS_PROPERTY: {"written_by": "system"}},
+    )
+    control = new_credentialless_card(
+        initial_selection=control_seed,
+        grantor_subject="user-1",
+        catalog_version="catalog-v2",
+        control_id="control-with-inert-marker",
+        issuer_ref="work:project:example",
+        issuer_kind="application",
+        composition_mode=CONTROL_COMPOSITION_OR,
+    )
+    bound = dataclasses.replace(
+        caller,
+        control_card=ControlCardBinding(
+            control_id=control.access_id,
+            issuer_ref=control.issuer_ref,
+            issuer_kind=control.issuer_kind,
+            control_revision=control.card_revision,
+        ),
+    )
+
+    effective = effective_card_authority(bound, control)
+
+    assert effective.resource_grants["*"] == (REGISTERED,)
+    assert effective.resource_operations["*"] == (OP_READ,)
+    assert APPLICATION_OPERATIONS_PROPERTY not in effective.properties

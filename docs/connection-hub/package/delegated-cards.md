@@ -442,6 +442,16 @@ manual Card creation, resident-card updates, Card edits, refresh rotation, and
 Control Card creation all preserve it. This explicit migration boundary avoids
 turning an old empty row into an accidental deny-all policy during upgrade.
 
+When a pre-marker caller is linked to an exact Control Card with `and`, the
+caller's historical platform role remains a ceiling and the Control Card's
+reviewed operation list supplies the finite operation set. An empty reviewed
+Control Card list therefore grants no application operations. With `or`, two
+Cards that both contribute the application resource carry explicit policies so
+their operation-to-role mappings can be combined without introducing
+unbounded historical authority. An application-policy property on a Card that
+does not carry the application resource is metadata only and is omitted from
+the effective Card.
+
 ### Live-services source fusion
 
 The card editor does not obtain one preassembled "live services" object from

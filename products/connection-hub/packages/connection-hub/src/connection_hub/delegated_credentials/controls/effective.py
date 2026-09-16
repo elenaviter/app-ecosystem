@@ -26,7 +26,7 @@ from connection_hub.delegated_credentials.application_operation_policy import (
     APPLICATION_OPERATIONS_PROPERTY,
     ApplicationOperationPolicyError,
     ApplicationOperationRolePolicy,
-    application_operation_policy_declared,
+    application_operation_policy_enabled,
     application_operation_role_policy,
     compose_application_operation_role_policy,
     strongest_platform_role,
@@ -333,9 +333,12 @@ def effective_card_authority(
         control_has_resource = APPLICATION_API_RESOURCE in control.resource_grants
         card_policy = _application_policy(card) if card_has_resource else None
         control_policy = _application_policy(control) if control_has_resource else None
-        declared = (
-            application_operation_policy_declared(card.properties)
-            or application_operation_policy_declared(control.properties)
+        policy_enabled = (
+            card_has_resource
+            and application_operation_policy_enabled(card.properties)
+        ) or (
+            control_has_resource
+            and application_operation_policy_enabled(control.properties)
         )
         effective_policy = None
         effective_operations: tuple[str, ...] = ()
@@ -384,7 +387,7 @@ def effective_card_authority(
             effective_operations = tuple(
                 control.resource_operations.get(APPLICATION_API_RESOURCE, ())
             )
-        elif declared:
+        elif policy_enabled:
             raise ControlCardMismatch("application_operation_policy_required")
 
         if effective_policy is not None:
@@ -397,6 +400,11 @@ def effective_card_authority(
             properties[APPLICATION_OPERATIONS_PROPERTY] = (
                 effective_policy.to_property()
             )
+        else:
+            # A property on a Card that contributes no application resource is
+            # inert metadata, not application authority. Do not let it become
+            # an effective policy merely because the two property maps merge.
+            properties.pop(APPLICATION_OPERATIONS_PROPERTY, None)
     else:
         properties.pop(APPLICATION_OPERATIONS_PROPERTY, None)
     try:
