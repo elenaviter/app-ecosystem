@@ -118,12 +118,11 @@ export function operationHelpText({
   ].filter(Boolean).join(' ');
 }
 
-/** Project a permission choice onto the concrete tools it permits. Tools with
- * every declared claim are selected; tools missing any declared claim are
- * cleared. A claimless tool and an operation no longer present in the catalog
- * keep their explicit selection, because permission chips are only a shortcut
- * for operations whose claim requirements are known. */
-export function projectClaimsOntoOperations(
+/** Retain explicitly selected operations whose permission prerequisites remain
+ * selected. Adding a permission never selects an operation. A claimless tool
+ * and an operation no longer present in the catalog keep their explicit
+ * selection because neither can be invalidated by the current claim catalog. */
+export function retainOperationsWithSelectedClaims(
   selectedOperations: string[],
   operations: ClaimBoundOperation[],
   selectedClaims: string[],
@@ -134,8 +133,7 @@ export function projectClaimsOntoOperations(
   operations.forEach((operation) => {
     const required = Array.from(new Set((operation.grants || []).filter(Boolean)));
     if (!required.length) return;
-    if (required.every((claim) => claims.has(claim))) selected.add(operation.name);
-    else selected.delete(operation.name);
+    if (!required.every((claim) => claims.has(claim))) selected.delete(operation.name);
   });
   return [
     ...operations.filter((operation) => selected.has(operation.name)).map((operation) => operation.name),

@@ -12,7 +12,7 @@ import {
   operationHelpText,
   orderResourceSelection,
   pickerOffers,
-  projectClaimsOntoOperations,
+  retainOperationsWithSelectedClaims,
   resourceSelectionHasAuthority,
   resourceSelectionIndex,
   saveProblemText,
@@ -59,32 +59,47 @@ test('operation drift has a human label while retaining its canonical id', () =>
   assert.equal(operationDisplayLabel('', options), 'Unnamed operation')
 })
 
-test('permission claims project onto exact tools and honor every required claim', () => {
+test('permission claims retain exact operation choices and honor every prerequisite', () => {
   const operations = [
     { name: 'receive', grants: ['work:relay'] },
     { name: 'journal', grants: ['work:relay', 'work:journal:view'] },
     { name: 'health' },
   ]
 
-  assert.deepEqual(projectClaimsOntoOperations([], operations, ['work:relay']), ['receive'])
+  assert.deepEqual(retainOperationsWithSelectedClaims([], operations, ['work:relay']), [])
   assert.deepEqual(
-    projectClaimsOntoOperations(['receive'], operations, ['work:relay', 'work:journal:view']),
-    ['receive', 'journal'],
+    retainOperationsWithSelectedClaims(['receive'], operations, ['work:relay', 'work:journal:view']),
+    ['receive'],
   )
   assert.deepEqual(
-    projectClaimsOntoOperations(['receive', 'journal', 'health'], operations, ['work:journal:view']),
+    retainOperationsWithSelectedClaims(['receive', 'journal', 'health'], operations, ['work:journal:view']),
     ['health'],
   )
 })
 
-test('claim projection preserves explicit claimless and retired-catalog choices', () => {
+test('one shared permission never selects sibling operations', () => {
+  const operations = [
+    { name: 'review.accept', grants: ['work:review'] },
+    { name: 'review.cancel', grants: ['work:review'] },
+    { name: 'review.return', grants: ['work:review'] },
+  ]
+
+  assert.deepEqual(
+    retainOperationsWithSelectedClaims(['review.accept'], operations, ['work:review']),
+    ['review.accept'],
+  )
+  assert.deepEqual(retainOperationsWithSelectedClaims([], operations, ['work:review']), [])
+  assert.deepEqual(retainOperationsWithSelectedClaims(['review.accept'], operations, []), [])
+})
+
+test('claim pruning preserves explicit claimless and retired-catalog choices', () => {
   const operations = [
     { name: 'receive', grants: ['work:relay'] },
     { name: 'health' },
   ]
   assert.deepEqual(
-    projectClaimsOntoOperations(['health', 'retired_operation'], operations, ['work:relay']),
-    ['receive', 'health', 'retired_operation'],
+    retainOperationsWithSelectedClaims(['health', 'retired_operation'], operations, ['work:relay']),
+    ['health', 'retired_operation'],
   )
 })
 

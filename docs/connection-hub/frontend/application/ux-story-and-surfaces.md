@@ -177,8 +177,9 @@ working-size tool lists open with their count, compact tool columns with
 documentation behind an information mark, policy in the person's words
 ("Every time · Once", "choose one"), selection routes grouped with their exact
 child services, actions in columns on a wide pane, Save and Cancel pinned to
-the viewport while the form is in view, permission-to-tool shortcuts and exact
-All / None controls, fresh embedded card summons with in-place save errors, the
+the viewport while the form is in view, permission prerequisites kept separate
+from exact tool choices, exact All / None controls, fresh embedded card summons
+with in-place save errors, the
 resource picker in plain words,
 group-by on the rail (kind, service, state), and the styled leave dialog. The
 selected policy segment carries the effective state; the editor does not

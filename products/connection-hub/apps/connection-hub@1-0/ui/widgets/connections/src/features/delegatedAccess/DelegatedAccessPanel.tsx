@@ -34,7 +34,7 @@ import {
   materializeSelectionRouteGrants,
   operationHelpText,
   orderResourceSelection,
-  projectClaimsOntoOperations,
+  retainOperationsWithSelectedClaims,
   resourceSelectionHasAuthority,
   resourceSelectionIndex,
   saveProblemText,
@@ -1322,7 +1322,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       setResourceOperations((current) => {
         return {
           ...current,
-          [resource]: projectClaimsOntoOperations(
+          [resource]: retainOperationsWithSelectedClaims(
             current[resource] || [],
             resourceOption.operations || [],
             updatedGrants,
@@ -2354,8 +2354,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
   };
 
-  // Same cascade as the create form: ticking an operation adds the claims it
-  // declares, dropping a claim drops the operations that required it.
+  // Same prerequisite handling as the create form: ticking an operation adds
+  // its claims, and dropping a claim drops dependent operations. Adding a
+  // claim never selects an operation.
   const toggleEditClaim = (resource: string, claim: string, checked: boolean) => {
     setEditPicks((current) => ({ ...current, [`${resource}:${claim}`]: checked }));
     const resourceOption = catalogRowFor(resources, resource, editRowFor);
@@ -2372,7 +2373,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       setEditResourceOperations((current) => {
         return {
           ...current,
-          [resource]: projectClaimsOntoOperations(
+          [resource]: retainOperationsWithSelectedClaims(
             current[resource] || [],
             resourceOption.operations || [],
             updatedGrants,

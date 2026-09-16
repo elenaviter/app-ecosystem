@@ -170,13 +170,14 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
   assert.match(app, /'control_card_id'/)
 })
 
-test('permission claims are tool shortcuts and tool lists retain exact bulk and individual controls', () => {
+test('permission claims are operation prerequisites and tool lists retain exact bulk and individual controls', () => {
   const rules = source('src/features/delegatedAccess/resourceEditing.ts')
-  assert.match(rules, /export function projectClaimsOntoOperations\(/)
+  assert.match(rules, /export function retainOperationsWithSelectedClaims\(/)
   assert.match(rules, /required\.every\(\(claim\) => claims\.has\(claim\)\)/)
+  assert.doesNotMatch(rules, /selected\.add\(operation\.name\)/)
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
-  assert.equal((panel.match(/projectClaimsOntoOperations\(/g) || []).length, 2)
+  assert.equal((panel.match(/retainOperationsWithSelectedClaims\(/g) || []).length, 2)
   assert.match(panel, /const setEveryResourceOperation = \(/)
   assert.match(panel, /const setEveryEditResourceOperation = \(/)
   assert.equal((panel.match(/aria-label="Select tools"/g) || []).length, 2)
