@@ -371,6 +371,52 @@ async def test_one_stable_card_survives_adding_and_removing_resources(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_incremental_agent_grants_preserve_and_merge_card_properties(tmp_path):
+    h = _Harness(tmp_path)
+    first = await h.service.create_access(
+        USER,
+        label="lg-react",
+        resource_grants={MEMORIES: ["memories:read"]},
+        resource_operations={MEMORIES: ["search"]},
+        client_id=CLIENT,
+        properties={"coordination": {"model": "shared-main"}},
+    )
+    assert first["ok"], first
+
+    second = await h.service.create_access(
+        USER,
+        label="",
+        resource_grants={TASKS: ["tasks:use"]},
+        resource_operations={TASKS: ["delete"]},
+        client_id=CLIENT,
+        properties={
+            "kdcube.application_operations": {
+                "schema": "kdcube.application_operations.v1",
+                "mode": "selected",
+            }
+        },
+    )
+    assert second["ok"], second
+    assert second["access"]["properties"] == {
+        "coordination": {"model": "shared-main"},
+        "kdcube.application_operations": {
+            "schema": "kdcube.application_operations.v1",
+            "mode": "selected",
+        },
+    }
+
+    third = await h.service.create_access(
+        USER,
+        label="",
+        resource_grants={MEMORIES: ["memories:read"]},
+        resource_operations={MEMORIES: ["search"]},
+        client_id=CLIENT,
+    )
+    assert third["ok"], third
+    assert third["access"]["properties"] == second["access"]["properties"]
+
+
+@pytest.mark.asyncio
 async def test_incremental_agent_grant_preserves_attached_project_control(tmp_path):
     h = _Harness(tmp_path)
     created = await h.service.create_access(

@@ -2,7 +2,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { applicationApiInventory } from '../src/features/delegatedAccess/applicationApiInventory.ts'
+import {
+  APPLICATION_OPERATION_POLICY_PROPERTY,
+  applicationApiInventory,
+  applicationOperationPolicyEnabled,
+  withApplicationOperationPolicy,
+} from '../src/features/delegatedAccess/applicationApiInventory.ts'
 
 const source = (relativePath) =>
   readFileSync(new URL(`../${relativePath}`, import.meta.url), 'utf8')
@@ -101,4 +106,35 @@ test('all-services API inventory uses the existing platform endpoint and leaves 
   assert.match(panel, /selectedOperations=\{resourceOperations\[APPLICATION_API_RESOURCE\]/)
   assert.match(panel, /selectedOperations=\{editResourceOperations\[APPLICATION_API_RESOURCE\]/)
   assert.match(panel, /createApplicationRoleMissing/)
+})
+
+test('a reviewed application selection has an explicit marker and preserves other Card properties', () => {
+  const properties = withApplicationOperationPolicy({
+    coordination: { version_control: { model: 'shared-main' } },
+  })
+
+  assert.equal(applicationOperationPolicyEnabled(properties), true)
+  assert.deepEqual(properties, {
+    coordination: { version_control: { model: 'shared-main' } },
+    [APPLICATION_OPERATION_POLICY_PROPERTY]: {
+      schema: 'kdcube.application_operations.v1',
+      mode: 'selected',
+    },
+  })
+  assert.equal(applicationOperationPolicyEnabled({}), false)
+  assert.equal(applicationOperationPolicyEnabled({
+    [APPLICATION_OPERATION_POLICY_PROPERTY]: {
+      schema: 'kdcube.application_operations.v1',
+      mode: 'unexpected',
+    },
+  }), false)
+})
+
+test('create, OAuth consent, and edit persist the reviewed application-operation policy', () => {
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+
+  assert.match(panel, /properties: applicationOperationProperties/)
+  assert.match(panel, /applicationOperationPolicyEnabled\(item\.properties\)/)
+  assert.match(panel, /setEditApplicationOperationPolicyEnabled\(true\)/)
+  assert.match(panel, /withApplicationOperationPolicy\(item\.properties\)/)
 })

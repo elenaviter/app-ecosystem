@@ -68,6 +68,12 @@ def test_service_still_accepts_account_scope():
     assert "account_scope" in inspect.signature(AutomationAccessService.create_access).parameters
 
 
+def test_service_accepts_card_properties_on_create():
+    assert "properties" in inspect.signature(
+        AutomationAccessService.create_access
+    ).parameters
+
+
 def test_service_accepts_resource_qualified_operations_on_every_grant_path():
     assert "resource_operations" in inspect.signature(
         AutomationAccessService.create_access
@@ -253,6 +259,26 @@ async def test_absent_account_scope_stays_none(entrypoint):
         data={"label": "x", "resource_grants": {"res": ["named_services:use"]}},
     )
     assert entrypoint.service.calls[-1]["account_scope"] is None
+
+
+@pytest.mark.asyncio
+async def test_card_properties_are_forwarded_to_create(entrypoint):
+    properties = {
+        "kdcube.application_operations": {
+            "schema": "kdcube.application_operations.v1",
+            "mode": "selected",
+        }
+    }
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_create(
+        entrypoint.instance,
+        data={
+            "label": "x",
+            "resource_grants": {"*": ["kdcube:role:registered"]},
+            "resource_operations": {"*": []},
+            "properties": properties,
+        },
+    )
+    assert entrypoint.service.calls[-1]["properties"] == properties
 
 
 @pytest.mark.asyncio

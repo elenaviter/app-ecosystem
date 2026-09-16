@@ -4,8 +4,8 @@ title: "Delegated Access Cards: Storage, Rendering, And Enforcement"
 summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers, credentialless Control Cards, live composition and enforcement, and descriptor-drift reconciliation."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
-keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-09-13
+keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
+updated_at: 2026-09-16
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -53,7 +53,7 @@ own stores; they are not delegated-access records.
 stored card selection                 current deployment catalogs
   what this user granted                what can be granted now
   resource_grants                       resources and grants
-  resource_operations                   outer MCP/REST operations
+  resource_operations                   protected and application operations
   named_service_operations              namespaces and operations
   account_scope                         connected accounts and claims
   control_card                          optional link to another Card
@@ -366,6 +366,64 @@ The word `capabilities` can also occur as a named-service tool key, for
 example `tools.capabilities.operation: provider.capabilities`. That is merely
 an inner callable operation. It is unrelated to the top-level
 `oauth.capabilities[]` grant vocabulary.
+
+### Application operations and delegated role
+
+The Card editor also projects the current KDCube bundle catalog as
+**Application APIs**. These rows are authority, not descriptive inventory.
+The Card stores two independent choices on the wildcard application resource:
+
+```text
+resource_grants["*"]       selected delegated platform role
+                            for example kdcube:role:registered
+
+resource_operations["*"]   selected canonical application operations
+                            for example
+                            urn:kdcube:application-operation:reports%401-0:report.read
+```
+
+The canonical reference is
+`urn:kdcube:application-operation:<application-id>:<operation-id>`, with both
+components percent-encoded. Application scope prevents the same alias in two
+apps from colliding. KDCube derives a distinct default operation id from an
+API's route, HTTP method, and alias. An app may instead declare one explicit
+`operation_id` on several transport exposures when they perform the same
+governed action. Connection Hub stores the resulting app-scoped reference;
+REST, Data Bus, or another adapter does not add its own permission identity.
+
+At runtime, the application declaration and Card both narrow the call:
+
+```text
+selected app-scoped operation
+  AND selected delegated platform role
+  AND current application visibility and auth policy
+  = effective application call
+```
+
+The selected role is the delegate's execution role. A super-admin may choose
+`kdcube:role:registered`; the resulting call is registered and does not inherit
+the grantor's unselected admin role. An admin-only API therefore remains
+unavailable even when the grantor is an administrator.
+
+An explicit selection is marked in Card `properties` so a reviewed empty list
+continues to mean no application operations:
+
+```json
+{
+  "kdcube.application_operations": {
+    "schema": "kdcube.application_operations.v1",
+    "mode": "selected"
+  }
+}
+```
+
+Cards created before this marker may already contain an empty wildcard
+operation row for another purpose. They keep their previous behavior until
+the owner changes an Application API choice. New Cards that include the
+wildcard application resource carry the marker from creation. OAuth consent,
+manual Card creation, resident-card updates, Card edits, refresh rotation, and
+Control Card creation all preserve it. This explicit migration boundary avoids
+turning an old empty row into an accidental deny-all policy during upgrade.
 
 ### Live-services source fusion
 
@@ -892,10 +950,13 @@ link. Unlinking restores the unchanged caller Card; it never resurrects a
 caller Card that was already revoked.
 
 Control Card choices come from the current catalog. A caller Card may supply
-the initially checked values at creation, but it is not retained as a maximum
-or basis. Later saves may select any option the current catalog and grantor
-allow. Services or operations added after the Card's saved catalog version
-appear as drift and remain unselected until the user reviews and saves them.
+the initially checked values at creation, including authority-defining bounded
+properties such as the application-operation policy marker. Explicit values
+supplied by the issuing application override equal seed-property keys. The
+seed is not retained as a maximum or basis. Later saves may select any option
+the current catalog and grantor allow. Services or operations added after the
+Card's saved catalog version appear as drift and remain unselected until the
+user reviews and saves them.
 
 Connection Hub owns creation, immutable revisions, the current pointer,
 catalog drift, editing, update, revoke, linking, and live composition. The

@@ -316,6 +316,38 @@ def test_regular_control_card_round_trips_as_credentialless_and_defaults_to_and(
     assert restored.properties == control.properties
 
 
+def test_control_card_initial_selection_preserves_authority_properties() -> None:
+    seed = dataclasses.replace(
+        _card(),
+        properties={
+            "kdcube.application_operations": {
+                "schema": "kdcube.application_operations.v1",
+                "mode": "selected",
+            },
+            "source-only": True,
+        },
+    )
+    control = new_credentialless_card(
+        initial_selection=seed,
+        grantor_subject=OWNER,
+        catalog_version="catalog-v1",
+        control_id="control-regular",
+        issuer_ref=PROJECT_REF,
+        issuer_kind="application",
+        properties={"source-only": False, "coordination": {"project": "demo"}},
+        now=int(time.time()),
+    )
+
+    assert control.properties == {
+        "kdcube.application_operations": {
+            "schema": "kdcube.application_operations.v1",
+            "mode": "selected",
+        },
+        "source-only": False,
+        "coordination": {"project": "demo"},
+    }
+
+
 def test_effective_authority_refuses_a_different_identity_scope() -> None:
     control = dataclasses.replace(
         _regular_control(composition_mode=CONTROL_COMPOSITION_OR),

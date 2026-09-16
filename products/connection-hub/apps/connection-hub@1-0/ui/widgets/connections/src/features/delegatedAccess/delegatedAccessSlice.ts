@@ -103,6 +103,7 @@ export interface CreateDelegatedAccessArgs {
   /** Per-account binding {provider:{account_id:[claims]}}. Undefined preserves
    *  an existing binding; {} explicitly restricts the caller to no accounts. */
   accountScope?: Record<string, Record<string, string[]>>;
+  properties?: Record<string, unknown>;
   ttlSeconds?: number;
 }
 
@@ -112,7 +113,7 @@ export const createDelegatedAccess = createAsyncThunk<
   { rejectValue: string }
 >(
   'delegatedAccess/create',
-  async ({ label, resourceGrants, resourceOperations, invocationModes, operations, namedServiceOperations, accountScope, ttlSeconds }, { rejectWithValue }) => {
+  async ({ label, resourceGrants, resourceOperations, invocationModes, operations, namedServiceOperations, accountScope, properties, ttlSeconds }, { rejectWithValue }) => {
     try {
       const res = await postOp<DelegatedAccessCreateResult>('delegated_access_create', {
         label,
@@ -124,6 +125,7 @@ export const createDelegatedAccess = createAsyncThunk<
         ...(accountScope !== undefined
           ? { account_scope: accountScope }
           : {}),
+        ...(properties !== undefined ? { properties } : {}),
         ttl_seconds: ttlSeconds || undefined,
       });
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to create delegated access'));

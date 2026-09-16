@@ -2255,6 +2255,7 @@ class AutomationAccessService:
         resource_operations: Mapping[str, Any] | None = None,
         named_service_operations: Mapping[str, Any] | str | None = None,
         account_scope: Mapping[str, Any] | None = None,
+        properties: Mapping[str, Any] | None = None,
         ttl_seconds: Any = None,
         client_id: str | None = None,
         merge_existing: bool = True,
@@ -2693,6 +2694,13 @@ class AutomationAccessService:
             config=catalog_config,
         )
         selected_operations = list(operation_union(selected_resource_operations))
+        selected_properties = (
+            copy.deepcopy(dict(existing.properties or {}))
+            if existing is not None
+            else {}
+        )
+        if properties is not None:
+            selected_properties.update(copy.deepcopy(dict(properties)))
 
         ttl = _bounded_ttl(ttl_seconds)
         now = int(time.time())
@@ -2802,6 +2810,7 @@ class AutomationAccessService:
             control_card=(
                 existing.control_card if existing is not None else None
             ),
+            properties=selected_properties,
         )
         try:
             await self._persist_record(record, expected_revision=committed_revision)
@@ -5691,6 +5700,7 @@ class AutomationAccessService:
         named_service_operations: Any = None,
         catalog_version: str = "",
         client_metadata: Mapping[str, Any] | None = None,
+        properties: Mapping[str, Any] | None = None,
         replace_authority: bool = False,
         expected_card_revision: int | None = None,
     ) -> AutomationAccessRecord | None:
@@ -5729,6 +5739,7 @@ class AutomationAccessService:
         # generation it was last saved against and only advances its revision.
         existing_catalog_version = ""
         existing_client_metadata: dict[str, Any] = {}
+        existing_properties: dict[str, Any] = {}
         try:
             existing_card_revision = await self._committed_revision(
                 access_id, grantor_subject=grantor
@@ -5762,6 +5773,13 @@ class AutomationAccessService:
             existing_client_metadata = copy.deepcopy(
                 dict(existing_card.client_metadata or {})
             )
+            existing_properties = copy.deepcopy(dict(existing_card.properties or {}))
+        selected_properties = existing_properties
+        if properties is not None:
+            selected_properties = {
+                **selected_properties,
+                **copy.deepcopy(dict(properties)),
+            }
         submitted_client_metadata = normalize_public_client_metadata(client_metadata)
         selected_client_metadata = submitted_client_metadata or existing_client_metadata
         is_initial_consent = existing_card is None
@@ -5922,6 +5940,7 @@ class AutomationAccessService:
                 or (existing_card.entry_resource if existing_card is not None else "")
             ),
             client_metadata=selected_client_metadata,
+            properties=selected_properties,
         )
         if authority_config is not None:
             record = self._canonical_oauth_record(

@@ -157,6 +157,7 @@ class GrantStore:
         catalog_version: str = "",
         account_scope: Optional[Dict[str, Any]] = None,
         client_metadata: Optional[Dict[str, Any]] = None,
+        properties: Optional[Mapping[str, Any]] = None,
         card_label: str = "",
         invocation_policies: Optional[Mapping[str, Any]] = None,
         expected_card_revision: Optional[int] = None,
@@ -200,6 +201,7 @@ class GrantStore:
             # token exchange so the registry card is born with the binding.
             "account_scope": dict(account_scope or {}),
             "client_metadata": dict(client_metadata or {}),
+            "properties": dict(properties or {}),
             "card_label": str(card_label or "").strip(),
             "invocation_policies": (
                 dict(invocation_policies)

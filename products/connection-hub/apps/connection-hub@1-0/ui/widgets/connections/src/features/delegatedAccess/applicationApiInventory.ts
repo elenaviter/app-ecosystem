@@ -16,6 +16,10 @@ export interface ApplicationApiInventoryEntry {
   apis: ApplicationApiSurface[];
 }
 
+export const APPLICATION_OPERATION_POLICY_PROPERTY = 'kdcube.application_operations';
+export const APPLICATION_OPERATION_POLICY_SCHEMA = 'kdcube.application_operations.v1';
+export const APPLICATION_OPERATION_POLICY_MODE = 'selected';
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -29,6 +33,30 @@ function text(value: unknown): string {
 function strings(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return Array.from(new Set(value.map(text).filter(Boolean)));
+}
+
+/** Whether this Card explicitly treats its application-operation row as a
+ *  reviewed, default-closed selection. Older wildcard Cards can contain an
+ *  empty row for unrelated reasons, so row presence alone is not authority. */
+export function applicationOperationPolicyEnabled(properties: unknown): boolean {
+  const policy = record(properties)[APPLICATION_OPERATION_POLICY_PROPERTY];
+  const value = record(policy);
+  return value.schema === APPLICATION_OPERATION_POLICY_SCHEMA
+    && value.mode === APPLICATION_OPERATION_POLICY_MODE;
+}
+
+/** Preserve every other Card property while opting into selected application
+ *  operations. The marker remains meaningful when the selection is empty. */
+export function withApplicationOperationPolicy(
+  properties: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...properties,
+    [APPLICATION_OPERATION_POLICY_PROPERTY]: {
+      schema: APPLICATION_OPERATION_POLICY_SCHEMA,
+      mode: APPLICATION_OPERATION_POLICY_MODE,
+    },
+  };
 }
 
 /** Turn the existing platform bundle catalog into the rows shown beside the

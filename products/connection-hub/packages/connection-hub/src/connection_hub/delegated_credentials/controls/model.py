@@ -108,6 +108,8 @@ def new_credentialless_card(
             "card_revision": seed.card_revision,
             "catalog_version": seed.catalog_version,
         }
+    selected_properties = dict(seed.properties or {}) if seed is not None else {}
+    selected_properties.update(dict(properties or {}))
     result = CardAuthority(
         access_id=clean_text(control_id),
         client_id=f"control-card:{clean_text(issuer_kind)}",
@@ -152,7 +154,7 @@ def new_credentialless_card(
         issuer_label=clean_text(issuer_label),
         manage_url=clean_text(manage_url),
         composition_mode=clean_text(composition_mode).lower() or CONTROL_COMPOSITION_AND,
-        properties=dict(properties or {}),
+        properties=selected_properties,
     )
     if not result.access_id:
         raise ControlCardError("control_card_id_missing")

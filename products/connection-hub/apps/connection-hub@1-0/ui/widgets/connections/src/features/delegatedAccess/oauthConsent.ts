@@ -110,6 +110,7 @@ export interface ApproveOAuthConsentArgs {
   invocationPolicies: Record<string, Record<string, 'always' | 'once'>>;
   namedServiceOperations: DelegatedAccessStoredNamedServices;
   accountScope: NonNullable<DelegatedAccessRecord['account_scope']>;
+  properties?: Record<string, unknown>;
   expectedCardRevision: number;
   expectedCatalogVersion: string;
 }
@@ -124,6 +125,7 @@ export function approveOAuthConsent(args: ApproveOAuthConsentArgs): Promise<OAut
     invocation_policies: args.invocationPolicies,
     named_service_operations: args.namedServiceOperations,
     account_scope: args.accountScope,
+    ...(args.properties !== undefined ? { properties: args.properties } : {}),
     expected_card_revision: args.expectedCardRevision,
     expected_catalog_version: args.expectedCatalogVersion,
   });

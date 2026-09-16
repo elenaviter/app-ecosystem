@@ -4150,6 +4150,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     if "account_scope" in payload
                     else None
                 ),
+                properties=(
+                    dict(payload.get("properties") or {})
+                    if "properties" in payload
+                    and isinstance(payload.get("properties"), Mapping)
+                    else None
+                ),
                 ttl_seconds=payload.get("ttl_seconds"),
             )
             if result.get("ok") is not True or not invocation_modes:

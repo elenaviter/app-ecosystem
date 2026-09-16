@@ -4,8 +4,8 @@ title: "Delegated Authority And Admission"
 summary: "Delegated-card and invocation-policy decisions across transport-neutral service operations, managed REST/MCP surfaces, direct Data Bus admission, external services, connected-account claims, and relayed provider invocation."
 status: current
 tags: ["arch", "security", "admission", "connection-hub", "delegated-access", "mcp", "rest", "named-services", "data-bus"]
-keywords: ["delegated authority", "managed surface guard", "delegated access card", "access_id", "active catalog", "resource grants", "resource operations", "canonical service operation", "MCP tool grants", "connected account claims", "NamedServiceAdmission", "Data Bus relay"]
-updated_at: 2026-09-12
+keywords: ["delegated authority", "managed surface guard", "delegated access card", "access_id", "active catalog", "resource grants", "resource operations", "application operations", "delegated role", "canonical service operation", "MCP tool grants", "connected account claims", "NamedServiceAdmission", "Data Bus relay"]
+updated_at: 2026-09-16
 see_also:
   - ../connection-hub-architecture.md
   - ./delegated-cards.md
@@ -113,6 +113,14 @@ connected-account authority
 named-service inner authority, when used
     = current card named-service selection
       INTERSECT current active namespace/operation catalog
+
+application operation authority
+    = current effective Card resource_operations["*"]
+      INTERSECT current app-scoped operation reference
+      INTERSECT application declaration and visibility
+
+application execution role
+    = selected kdcube:role:* grant in the current effective Card
 ```
 
 The card records the user's explicit selection. The active catalog is the
@@ -132,6 +140,24 @@ separate authorization identities for it. For example, an MCP tool named
 `worker.heartbeat` and a Data Bus payload whose `operation` is
 `worker.heartbeat` can enter one service dispatcher and be checked against the
 same `resource_operations[resource]` entry.
+
+KDCube application operations use the same rule with an app-scoped reference:
+`urn:kdcube:application-operation:<application-id>:<operation-id>`. A selected
+Card marks this policy in `properties["kdcube.application_operations"]`, stores
+the references in `resource_operations["*"]`, and stores the delegated platform
+role in `resource_grants["*"]`. The role is a projection chosen for the
+delegate, not a copy of every role held by the grantor. The runtime evaluates
+the live effective Card before application code, then applies the app's own
+`user_types`, roles, enabled state, and auth policy. REST and Data Bus reach the
+same decision when their declarations intentionally share an explicit
+`operation_id`.
+
+The explicit Card property distinguishes reviewed default-closed application
+authority from legacy wildcard Cards whose empty operation row had another
+meaning. It is preserved through OAuth code exchange and refresh, resident
+Card reuse, ordinary edits, and Control Card seeding. Without the marker, the
+application-operation gate retains the pre-policy behavior; after the user
+reviews the Application APIs section, even an empty selection is authoritative.
 
 ## Direct Card Admission To Data Bus
 

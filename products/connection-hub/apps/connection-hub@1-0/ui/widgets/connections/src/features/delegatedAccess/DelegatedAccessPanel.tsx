@@ -9,6 +9,10 @@ import {
   ApplicationApiCatalog,
   useApplicationApiCatalog,
 } from './ApplicationApiCatalog';
+import {
+  applicationOperationPolicyEnabled,
+  withApplicationOperationPolicy,
+} from './applicationApiInventory';
 import { GrantFilterControls, GrantFilterInfo, GrantFilterSettings } from './GrantFilterBar';
 import { InvocationPolicyControl, OperationInvocationChoice } from './InvocationControls';
 import { FoldedChipRow } from '../../components/ChipFold';
@@ -1103,6 +1107,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [editPicks, setEditPicks] = useState<Record<string, boolean>>({});
   const [editResourceOperations, setEditResourceOperations] =
     useState<DelegatedAccessResourceOperations>({});
+  const [editApplicationOperationPolicyEnabled, setEditApplicationOperationPolicyEnabled] =
+    useState(false);
   const [editOpenResources, setEditOpenResources] = useState<Record<string, boolean>>({});
   const [editOpenPermissions, setEditOpenPermissions] = useState<Record<string, boolean>>({});
   const [editOpenTools, setEditOpenTools] = useState<Record<string, boolean>>({});
@@ -1483,6 +1489,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         resourceOperations[resource] || [],
       ]),
     );
+    const applicationOperationProperties = selectedResourceEntries.some(
+      ([resource]) => resource === APPLICATION_API_RESOURCE,
+    )
+      ? withApplicationOperationPolicy()
+      : undefined;
     const invocationModes = Object.fromEntries(
       selectedResourceEntries.map(([resource]) => [
         resource,
@@ -1508,6 +1519,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           invocationPolicies: invocationModes,
           namedServiceOperations: encodedNamedServiceOperations,
           accountScope: createAccountScope,
+          properties: applicationOperationProperties,
           expectedCardRevision: oauthDraft.card_revision,
           expectedCatalogVersion: oauthDraft.catalog_version,
         });
@@ -1531,6 +1543,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         invocationModes,
         namedServiceOperations: encodedNamedServiceOperations,
         accountScope: createAccountScope,
+        properties: applicationOperationProperties,
         ttlSeconds,
       })).unwrap();
     } catch {
@@ -1954,6 +1967,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const editSnapshot = () => JSON.stringify({
     editPicks,
     editResourceOperations,
+    editApplicationOperationPolicyEnabled,
     editNamedServiceOperations,
     editAccountScope,
     editLabel,
@@ -1991,6 +2005,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           item.resource_operations?.[resource] || item.operations || [],
         ]),
       ),
+    );
+    setEditApplicationOperationPolicyEnabled(
+      applicationOperationPolicyEnabled(item.properties),
     );
     setEditOpenResources(Object.fromEntries(
       Object.keys(item.resource_grants || {}).map((resource) => [resource, false]),
@@ -2393,6 +2410,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     checked: boolean,
   ) => {
     if (!operationRef) return;
+    setEditApplicationOperationPolicyEnabled(true);
     setEditResourceOperations((current) => {
       const selected = new Set(current[APPLICATION_API_RESOURCE] || []);
       if (checked) selected.add(operationRef);
@@ -2518,6 +2536,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditingAccessId(null);
     setEditPicks({});
     setEditResourceOperations({});
+    setEditApplicationOperationPolicyEnabled(false);
     setEditOpenResources({});
     setEditOpenPermissions({});
     setEditOpenTools({});
@@ -2757,6 +2776,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         // every other changed selected operation stays suspended.
         acceptedOperations: editAcceptedOperations,
         compositionMode: item.source === 'control' ? editCompositionMode : undefined,
+        properties: editApplicationOperationPolicyEnabled
+          ? withApplicationOperationPolicy(item.properties)
+          : undefined,
       })).unwrap();
     } catch (error) {
       setEditActionError(`Save was not applied: ${String(error || 'request refused')}`);

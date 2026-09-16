@@ -286,6 +286,58 @@ async def test_oauth_card_keeps_concrete_identity_and_declared_authority():
 
 
 @pytest.mark.asyncio
+async def test_oauth_consent_properties_survive_refresh_and_merge_on_reconsent():
+    store = _GrantStore({})
+    persistence = _Persistence()
+    service = _service(store, persistence, connections=PATTERN_CONNECTIONS)
+    policy = {
+        "schema": "kdcube.application_operations.v1",
+        "mode": "selected",
+    }
+
+    consented = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-worker",
+        resource=CONCRETE_RESOURCE,
+        resource_grants={CONCRETE_RESOURCE: ["fixture:use"]},
+        resource_operations={CONCRETE_RESOURCE: ["search"]},
+        properties={
+            "coordination": {"model": "shared-main"},
+            "kdcube.application_operations": policy,
+        },
+        replace_authority=True,
+        expected_card_revision=0,
+    )
+    assert consented is not None
+
+    refreshed = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-worker",
+        resource=CONCRETE_RESOURCE,
+        access_token="rotated-access",
+        refresh_token="rotated-refresh",
+    )
+    assert refreshed is not None
+    assert refreshed.properties == consented.properties
+
+    reviewed = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-worker",
+        resource=CONCRETE_RESOURCE,
+        resource_grants={CONCRETE_RESOURCE: ["fixture:use"]},
+        resource_operations={CONCRETE_RESOURCE: []},
+        properties={"kdcube.application_operations": policy},
+        replace_authority=True,
+        expected_card_revision=refreshed.card_revision,
+    )
+    assert reviewed is not None
+    assert reviewed.properties == {
+        "coordination": {"model": "shared-main"},
+        "kdcube.application_operations": policy,
+    }
+
+
+@pytest.mark.asyncio
 async def test_refresh_reconciles_a_legacy_host_pinned_duplicate_without_consent():
     store = _GrantStore({})
     persistence = _Persistence()
