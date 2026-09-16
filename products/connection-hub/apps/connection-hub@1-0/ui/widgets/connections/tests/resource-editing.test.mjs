@@ -141,6 +141,22 @@ test('save is blocked when the card would be empty, an added resource has no aut
     missingChoices: [],
   })
   assert.deepEqual(claimless, [])
+
+  const applicationWithoutRole = saveProblems({
+    resourceKeys: ['*'],
+    addedResources: [],
+    claimsFor: () => [],
+    operationsFor: () => ['urn:kdcube:application-operation:reports%401-0:read'],
+    missingChoices: [],
+    applicationRoleRequired: { resource: '*', rolePrefix: 'kdcube:role:' },
+  })
+  assert.deepEqual(applicationWithoutRole, [
+    { code: 'application_operation_without_role', resource: '*' },
+  ])
+  assert.equal(
+    saveProblemText(applicationWithoutRole[0], labelFor),
+    'Choose the role this Card uses for selected application APIs.',
+  )
 })
 
 test('accepting a changed descriptor is per resource and per operation', () => {

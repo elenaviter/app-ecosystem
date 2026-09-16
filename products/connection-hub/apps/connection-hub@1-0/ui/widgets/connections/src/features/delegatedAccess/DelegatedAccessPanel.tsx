@@ -139,6 +139,12 @@ interface EffectiveCompositionView {
 const HELP_PERMISSIONS = 'Permission groups published by this service. Each row names an API area; tick only the actions this card may use.';
 const HELP_TOOLS = 'Tools published by this service. Select a tool, then choose whether it remains available or is consumed after one run.';
 const HELP_RESOURCE = 'One service or API on this access card. Expand it to review its permissions, tools, service actions, and connected-account requirements.';
+const APPLICATION_API_RESOURCE = '*';
+const PLATFORM_ROLE_PREFIX = 'kdcube:role:';
+
+function selectedPlatformRoles(grants: string[] | undefined): string[] {
+  return (grants || []).filter((grant) => grant.startsWith(PLATFORM_ROLE_PREFIX));
+}
 
 function readableIdentifier(value: string): string {
   const text = String(value || '').trim();
@@ -1256,7 +1262,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     () => {
       const selected = new Set(selectedResourceEntries.map(([resource]) => resource));
       return Object.entries(resourceOperations).flatMap(([resource, operations]) => (
-        selected.has(resource)
+        resource !== APPLICATION_API_RESOURCE && selected.has(resource)
           ? (operations || [])
             .filter((operation) => !createInvocationModes[`${resource}:${operation}`])
             .map((operation) => ({ resource, operation }))
@@ -1265,8 +1271,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     },
     [createInvocationModes, resourceOperations, selectedResourceEntries],
   );
+  const createApplicationRoleMissing = Boolean(
+    resourceOperations[APPLICATION_API_RESOURCE]?.length
+    && !selectedPlatformRoles(resourceGrants[APPLICATION_API_RESOURCE]).length
+  );
   const canSubmit = selectedResourceEntries.length > 0
-    && createMissingInvocationChoices.length === 0;
+    && createMissingInvocationChoices.length === 0
+    && !createApplicationRoleMissing;
 
   // Live delivery: a grant can land out-of-band (an OAuth consent completing
   // in another tab/app) or be revoked elsewhere — refetch when the registry
@@ -1301,7 +1312,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       else delete next[resource];
       return next;
     });
-    if (resourceOption) {
+    if (resourceOption && resource !== APPLICATION_API_RESOURCE) {
       setResourceOperations((current) => {
         return {
           ...current,
@@ -1340,6 +1351,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         return next;
       });
     }
+  };
+
+  const toggleApplicationApiOperation = (operationRef: string, checked: boolean) => {
+    if (!operationRef) return;
+    setResourceOperations((current) => {
+      const selected = new Set(current[APPLICATION_API_RESOURCE] || []);
+      if (checked) selected.add(operationRef);
+      else selected.delete(operationRef);
+      return {
+        ...current,
+        [APPLICATION_API_RESOURCE]: Array.from(selected),
+      };
+    });
   };
 
   const toggleResourceOperation = (
@@ -1462,12 +1486,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const invocationModes = Object.fromEntries(
       selectedResourceEntries.map(([resource]) => [
         resource,
-        Object.fromEntries(
-          (resourceOperations[resource] || []).map((operation) => [
-            operation,
-            createInvocationModes[`${resource}:${operation}`],
-          ]),
-        ),
+        resource === APPLICATION_API_RESOURCE
+          ? {}
+          : Object.fromEntries(
+            (resourceOperations[resource] || []).map((operation) => [
+              operation,
+              createInvocationModes[`${resource}:${operation}`],
+            ]),
+          ),
       ]),
     );
     if (oauthDraft) {
@@ -2325,16 +2351,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     ).filter((item) => (
       item === claim ? checked : editPicks[`${resource}:${item}`] === true
     ));
-    setEditResourceOperations((current) => {
-      return {
-        ...current,
-        [resource]: projectClaimsOntoOperations(
-          current[resource] || [],
-          resourceOption.operations || [],
-          updatedGrants,
-        ),
-      };
-    });
+    if (resource !== APPLICATION_API_RESOURCE) {
+      setEditResourceOperations((current) => {
+        return {
+          ...current,
+          [resource]: projectClaimsOntoOperations(
+            current[resource] || [],
+            resourceOption.operations || [],
+            updatedGrants,
+          ),
+        };
+      });
+    }
     if (checked) return;
     setEditNamedServiceOperations((current) => {
       const existingNamespaces = current[resource];
@@ -2357,6 +2385,22 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         if (remaining.length) nextNamespaces[namespace.namespace] = remaining;
       });
       return { ...current, [resource]: nextNamespaces };
+    });
+  };
+
+  const toggleEditApplicationApiOperation = (
+    operationRef: string,
+    checked: boolean,
+  ) => {
+    if (!operationRef) return;
+    setEditResourceOperations((current) => {
+      const selected = new Set(current[APPLICATION_API_RESOURCE] || []);
+      if (checked) selected.add(operationRef);
+      else selected.delete(operationRef);
+      return {
+        ...current,
+        [APPLICATION_API_RESOURCE]: Array.from(selected),
+      };
     });
   };
 
@@ -2580,11 +2624,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const editMissingChoices = (item: DelegatedAccessRecord): Array<{ resource: string; operation: string }> =>
     item.source === 'control'
       ? []
-      : editResourceKeys(item).flatMap((resource) => splitEditedOperations(
-        editGrantedOperations(item, resource),
-        editResourceOperations[resource] || [],
-        (operation) => editInvocationModes[`${resource}:${operation}`],
-      ).missingChoice.map((operation) => ({ resource, operation })));
+      : editResourceKeys(item).flatMap((resource) => (
+        resource === APPLICATION_API_RESOURCE
+          ? []
+          : splitEditedOperations(
+            editGrantedOperations(item, resource),
+            editResourceOperations[resource] || [],
+            (operation) => editInvocationModes[`${resource}:${operation}`],
+          ).missingChoice.map((operation) => ({ resource, operation }))
+      ));
 
   const editResourceHasAuthority = (item: DelegatedAccessRecord, resource: string): boolean =>
     resourceSelectionHasAuthority(
@@ -2601,6 +2649,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     operationsFor: (resource) => editResourceOperations[resource] || [],
     namedOperationsFor: (resource) => editNamedServiceOperations[resource] || {},
     missingChoices: editMissingChoices(item),
+    applicationRoleRequired: {
+      resource: APPLICATION_API_RESOURCE,
+      rolePrefix: PLATFORM_ROLE_PREFIX,
+    },
   });
 
   /** Forget every editor choice made for one resource (an addition undone). */
@@ -2661,7 +2713,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const splits = Object.fromEntries(
       Object.keys(routedKept).map((resource) => [
         resource,
-        item.source === 'control'
+        item.source === 'control' || resource === APPLICATION_API_RESOURCE
           ? {
               kept: editResourceOperations[resource] || [],
               focused: [],
@@ -2969,7 +3021,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     ))}
                   </div>
                 </details>
-                {item.resource === '*' ? <ApplicationApiCatalog model={applicationApiCatalog} /> : null}
+                {item.resource === APPLICATION_API_RESOURCE ? (
+                  <ApplicationApiCatalog
+                    model={applicationApiCatalog}
+                    selectedOperations={resourceOperations[APPLICATION_API_RESOURCE] || []}
+                    selectedRoles={selectedPlatformRoles(
+                      resourceGrants[APPLICATION_API_RESOURCE],
+                    )}
+                    disabled={scopeBlocked}
+                    onOperationChange={toggleApplicationApiOperation}
+                  />
+                ) : null}
                 {item.operations?.length ? (
                   <details className="edit-section">
                     <summary>
@@ -3653,7 +3715,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               ))}
             </div>
           </details> : null}
-          {resource === '*' ? <ApplicationApiCatalog model={applicationApiCatalog} /> : null}
+          {resource === APPLICATION_API_RESOURCE ? (
+            <ApplicationApiCatalog
+              model={applicationApiCatalog}
+              selectedOperations={editResourceOperations[APPLICATION_API_RESOURCE] || []}
+              selectedRoles={selectedPlatformRoles(editKeptClaims(item, resource))}
+              disabled={busy}
+              onOperationChange={(operationRef, checked) => {
+                if (checked) ensureCallerResource();
+                toggleEditApplicationApiOperation(operationRef, checked);
+              }}
+            />
+          ) : null}
         {resourceOption?.operations?.length && !isSelectionRoute ? (
           <details
             className="edit-section"
@@ -5064,7 +5137,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ) : null}
         {resources.length && !canSubmit ? (
           <p className="muted">
-            {selectedResourceEntries.length
+            {createApplicationRoleMissing
+              ? 'Choose the role this Card uses for selected application APIs.'
+              : selectedResourceEntries.length
               ? `Choose Once or Always for ${createMissingInvocationChoices.map((item) => item.operation).join(', ')}.`
               : 'Select at least one resource grant.'}
           </p>

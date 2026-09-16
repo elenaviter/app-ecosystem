@@ -3,6 +3,10 @@ export interface ApplicationApiSurface {
   method: string;
   route: string;
   userTypes: string[];
+  roles: string[];
+  operationId: string;
+  operationRef: string;
+  operationIdExplicit: boolean;
 }
 
 export interface ApplicationApiInventoryEntry {
@@ -46,6 +50,10 @@ export function applicationApiInventory(payload: unknown): ApplicationApiInvento
             method: text(api.http_method).toUpperCase(),
             route: text(api.route),
             userTypes: strings(api.user_types),
+            roles: strings(api.roles),
+            operationId: text(api.operation_id),
+            operationRef: text(api.operation_ref),
+            operationIdExplicit: api.operation_id_explicit === true,
           };
         })
         .filter((api): api is ApplicationApiSurface => api !== null)

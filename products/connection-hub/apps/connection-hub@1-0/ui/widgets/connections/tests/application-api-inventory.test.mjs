@@ -19,6 +19,10 @@ test('bundle catalog becomes a sorted per-app API inventory without dropping emp
             http_method: 'post',
             route: 'operations',
             user_types: ['registered', 'paid', 'registered'],
+            roles: ['kdcube:role:member'],
+            operation_id: 'agent.capabilities',
+            operation_ref: 'urn:kdcube:application-operation:task-and-memo-app%401-0:agent.capabilities',
+            operation_id_explicit: true,
           },
           {
             alias: 'account_status',
@@ -52,12 +56,20 @@ test('bundle catalog becomes a sorted per-app API inventory without dropping emp
           method: 'GET',
           route: 'public',
           userTypes: [],
+          roles: [],
+          operationId: '',
+          operationRef: '',
+          operationIdExplicit: false,
         },
         {
           alias: 'agent_capabilities',
           method: 'POST',
           route: 'operations',
           userTypes: ['registered', 'paid'],
+          roles: ['kdcube:role:member'],
+          operationId: 'agent.capabilities',
+          operationRef: 'urn:kdcube:application-operation:task-and-memo-app%401-0:agent.capabilities',
+          operationIdExplicit: true,
         },
       ],
     },
@@ -76,11 +88,17 @@ test('all-services API inventory uses the existing platform endpoint and leaves 
   assert.match(catalog, /<dt>Method<\/dt>/)
   assert.match(catalog, /<dt>Route<\/dt>/)
   assert.match(catalog, /<dt>User types<\/dt>/)
+  assert.match(catalog, /<dt>Roles<\/dt>/)
+  assert.match(catalog, /selectedOperations/)
+  assert.match(catalog, /onOperationChange/)
+  assert.match(catalog, /No longer in the active catalog/)
+  assert.match(catalog, /api\.operationRef/)
   assert.match(catalog, /api\.alias/)
   assert.match(catalog, /api\.method/)
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, />Service permissions</)
-  assert.equal((panel.match(/\{resource === '\*' \? <ApplicationApiCatalog/g) || []).length, 1)
-  assert.equal((panel.match(/\{item\.resource === '\*' \? <ApplicationApiCatalog/g) || []).length, 1)
+  assert.match(panel, /selectedOperations=\{resourceOperations\[APPLICATION_API_RESOURCE\]/)
+  assert.match(panel, /selectedOperations=\{editResourceOperations\[APPLICATION_API_RESOURCE\]/)
+  assert.match(panel, /createApplicationRoleMissing/)
 })

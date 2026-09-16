@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getBundlesCatalog } from '../../api/client';
 import { InfoMark } from '../../components/InfoMark';
 import {
@@ -54,7 +54,64 @@ export function useApplicationApiCatalog(enabled: boolean): ApplicationApiCatalo
   return { ...state, retry };
 }
 
-export function ApplicationApiCatalog({ model }: { model: ApplicationApiCatalogModel }) {
+export interface ApplicationApiCatalogProps {
+  model: ApplicationApiCatalogModel;
+  selectedOperations: string[];
+  selectedRoles: string[];
+  disabled?: boolean;
+  onOperationChange: (operationRef: string, checked: boolean) => void;
+}
+
+const USER_TYPE_RANK: Record<string, number> = {
+  anonymous: 0,
+  registered: 1,
+  paid: 2,
+  privileged: 3,
+};
+
+function selectedUserType(roles: string[]): string {
+  if (roles.some((role) => (
+    role === 'kdcube:role:super-admin'
+    || role === 'kdcube:role:admin'
+    || role === 'kdcube:role:privileged'
+  ))) return 'privileged';
+  if (roles.includes('kdcube:role:paid')) return 'paid';
+  return roles.length ? 'registered' : '';
+}
+
+function visibilityWarning(
+  userTypes: string[],
+  requiredRoles: string[],
+  selectedRoles: string[],
+): string {
+  if (!selectedRoles.length) return 'Choose the role this Card uses.';
+  if (requiredRoles.length && !requiredRoles.some((role) => selectedRoles.includes(role))) {
+    return `Requires ${requiredRoles.join(' or ')}.`;
+  }
+  if (!userTypes.length) return '';
+  const current = selectedUserType(selectedRoles);
+  const currentRank = USER_TYPE_RANK[current];
+  const requiredRank = Math.min(...userTypes
+    .map((userType) => USER_TYPE_RANK[userType])
+    .filter((rank) => rank !== undefined));
+  if (Number.isFinite(requiredRank) && currentRank < requiredRank) {
+    return `Requires ${userTypes.join(' or ')} user access.`;
+  }
+  return '';
+}
+
+export function ApplicationApiCatalog({
+  model,
+  selectedOperations,
+  selectedRoles,
+  disabled = false,
+  onOperationChange,
+}: ApplicationApiCatalogProps) {
+  const selected = useMemo(() => new Set(selectedOperations), [selectedOperations]);
+  const knownOperations = useMemo(() => new Set(
+    model.applications.flatMap((app) => app.apis.map((api) => api.operationRef).filter(Boolean)),
+  ), [model.applications]);
+  const staleOperations = selectedOperations.filter((operation) => !knownOperations.has(operation));
   if (model.status === 'idle') return null;
   const apiCount = model.applications.reduce((total, app) => total + app.apis.length, 0);
 
@@ -66,7 +123,7 @@ export function ApplicationApiCatalog({ model }: { model: ApplicationApiCatalogM
         {model.status === 'ready' ? (
           <span className="edit-section__count">
             {model.applications.length} app{model.applications.length === 1 ? '' : 's'} · {' '}
-            {apiCount} API{apiCount === 1 ? '' : 's'}
+            {selectedOperations.length} of {apiCount} selected
           </span>
         ) : null}
       </div>
@@ -85,6 +142,23 @@ export function ApplicationApiCatalog({ model }: { model: ApplicationApiCatalogM
       ) : null}
       {model.status === 'ready' ? (
         <div className="application-api-catalog__apps">
+          {staleOperations.length ? (
+            <div className="application-api-stale" role="status">
+              <strong>No longer in the active catalog</strong>
+              {staleOperations.map((operation) => (
+                <label className="application-api-stale__row" key={operation}>
+                  <input
+                    type="checkbox"
+                    checked
+                    disabled={disabled}
+                    onChange={() => onOperationChange(operation, false)}
+                  />
+                  <code>{operation}</code>
+                  <span className="badge badge-warn">stale</span>
+                </label>
+              ))}
+            </div>
+          ) : null}
           {model.applications.map((app) => (
             app.apis.length ? (
               <details className="application-api-app" key={app.id}>
@@ -100,10 +174,36 @@ export function ApplicationApiCatalog({ model }: { model: ApplicationApiCatalogM
                 {app.description ? <p className="application-api-app__description">{app.description}</p> : null}
                 <div className="application-api-list">
                   {app.apis.map((api) => (
-                    <div className="application-api-row" key={`${app.id}:${api.alias}:${api.method}:${api.route}`}>
+                    <div
+                      className={`application-api-row${selected.has(api.operationRef) ? ' application-api-row--selected' : ''}`}
+                      key={`${app.id}:${api.operationRef || `${api.alias}:${api.method}:${api.route}`}`}
+                    >
+                      <label className="application-api-choice">
+                        <input
+                          type="checkbox"
+                          checked={Boolean(api.operationRef) && selected.has(api.operationRef)}
+                          disabled={disabled || !api.operationRef}
+                          onChange={(event) => onOperationChange(api.operationRef, event.target.checked)}
+                        />
+                        <span>
+                          <strong>{api.alias}</strong>
+                          {!api.operationRef ? (
+                            <small className="application-api-warning">Operation identity unavailable</small>
+                          ) : null}
+                          {api.operationRef && selected.has(api.operationRef) ? (() => {
+                            const warning = visibilityWarning(api.userTypes, api.roles, selectedRoles);
+                            return warning ? <small className="application-api-warning">{warning}</small> : null;
+                          })() : null}
+                        </span>
+                      </label>
                       <dl>
                         <dt>Alias</dt>
                         <dd><code className="application-api-alias">{api.alias}</code></dd>
+                        <dt>Operation</dt>
+                        <dd>
+                          {api.operationId ? <code>{api.operationId}</code> : <span>Not declared</span>}
+                          {api.operationIdExplicit ? <span className="badge badge-neutral">shared</span> : null}
+                        </dd>
                         <dt>Method</dt>
                         <dd>{api.method ? <code>{api.method}</code> : <span>Not declared</span>}</dd>
                         <dt>Route</dt>
@@ -112,6 +212,12 @@ export function ApplicationApiCatalog({ model }: { model: ApplicationApiCatalogM
                         <dd>
                           {api.userTypes.length
                             ? api.userTypes.map((userType) => <code key={userType}>{userType}</code>)
+                            : <span>Any</span>}
+                        </dd>
+                        <dt>Roles</dt>
+                        <dd>
+                          {api.roles.length
+                            ? api.roles.map((role) => <code key={role}>{role}</code>)
                             : <span>Any</span>}
                         </dd>
                       </dl>

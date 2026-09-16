@@ -1821,8 +1821,64 @@ code {
   border-bottom: 1px solid var(--line-soft);
 }
 
+.application-api-row--selected {
+  background: var(--surface-2);
+}
+
 .application-api-row:last-child {
   border-bottom: 0;
+}
+
+.application-api-choice,
+.application-api-stale__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.application-api-choice {
+  margin-bottom: 7px;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.application-api-choice > span,
+.application-api-stale__row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.application-api-choice strong,
+.application-api-choice small {
+  display: block;
+}
+
+.application-api-warning {
+  margin-top: 2px;
+  color: var(--danger, #b33a3a);
+  font-size: 10.5px;
+}
+
+.application-api-stale {
+  padding: 8px;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--warning-soft, #fff8e6);
+  font-size: 11px;
+}
+
+.application-api-stale > strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.application-api-stale__row + .application-api-stale__row {
+  margin-top: 5px;
+}
+
+.application-api-stale__row code {
+  flex: 1;
 }
 
 .application-api-row dl {

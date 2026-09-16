@@ -334,7 +334,7 @@ export function offerReasonText(offer: ResourceOffer): string {
 }
 
 export interface SaveProblem {
-  code: 'no_resources_left' | 'added_resource_without_authority' | 'operation_without_choice';
+  code: 'no_resources_left' | 'added_resource_without_authority' | 'operation_without_choice' | 'application_operation_without_role';
   resource?: string;
   operations?: string[];
 }
@@ -347,6 +347,7 @@ export function saveProblems(input: {
   operationsFor?: (resource: string) => string[];
   namedOperationsFor?: (resource: string) => Record<string, string[]>;
   missingChoices: Array<{ resource: string; operation: string }>;
+  applicationRoleRequired?: { resource: string; rolePrefix: string };
 }): SaveProblem[] {
   const problems: SaveProblem[] = [];
   const hasAuthority = (resource: string) => resourceSelectionHasAuthority(
@@ -367,6 +368,19 @@ export function saveProblems(input: {
   byResource.forEach((operations, resource) => {
     problems.push({ code: 'operation_without_choice', resource, operations });
   });
+  const roleRequirement = input.applicationRoleRequired;
+  if (
+    roleRequirement
+    && (input.operationsFor?.(roleRequirement.resource) || []).length
+    && !input.claimsFor(roleRequirement.resource).some(
+      (claim) => claim.startsWith(roleRequirement.rolePrefix),
+    )
+  ) {
+    problems.push({
+      code: 'application_operation_without_role',
+      resource: roleRequirement.resource,
+    });
+  }
   return problems;
 }
 
@@ -378,6 +392,8 @@ export function saveProblemText(problem: SaveProblem, labelFor: (resource: strin
       return `Select a permission, tool, or service action on ${labelFor(problem.resource || '')}, or remove it again.`;
     case 'operation_without_choice':
       return `Choose once or always for ${(problem.operations || []).join(', ')} on ${labelFor(problem.resource || '')}.`;
+    case 'application_operation_without_role':
+      return 'Choose the role this Card uses for selected application APIs.';
     default:
       return '';
   }
