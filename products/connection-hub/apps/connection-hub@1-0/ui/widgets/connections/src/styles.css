@@ -1746,6 +1746,28 @@ code {
   margin-left: auto;
 }
 
+.application-api-catalog__search {
+  padding: 0 8px 8px;
+}
+
+.application-api-catalog__search input {
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.application-api-catalog__search input:focus-visible {
+  border-color: var(--blue);
+  outline: 2px solid rgba(67, 114, 195, 0.22);
+  outline-offset: 1px;
+}
+
 .application-api-catalog__state {
   margin: 0;
   padding: 8px;

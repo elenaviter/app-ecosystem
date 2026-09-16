@@ -102,3 +102,36 @@ export function applicationApiInventory(payload: unknown): ApplicationApiInvento
       || left.id.localeCompare(right.id)
     ));
 }
+
+/** Keep matching applications whole and otherwise retain only matching APIs.
+ *  This makes a query such as "telegram" useful across a large catalog while
+ *  preserving app-level bulk selection for the rows currently on screen. */
+export function filterApplicationApiInventory(
+  applications: ApplicationApiInventoryEntry[],
+  query: string,
+): ApplicationApiInventoryEntry[] {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) return applications;
+
+  return applications.flatMap((app) => {
+    const appText = [app.id, app.label, app.description]
+      .join(' ')
+      .toLocaleLowerCase();
+    if (appText.includes(needle)) return [app];
+
+    const apis = app.apis.filter((api) => (
+      [
+        api.alias,
+        api.operationId,
+        api.method,
+        api.route,
+        ...api.userTypes,
+        ...api.roles,
+      ]
+        .join(' ')
+        .toLocaleLowerCase()
+        .includes(needle)
+    ));
+    return apis.length ? [{ ...app, apis }] : [];
+  });
+}

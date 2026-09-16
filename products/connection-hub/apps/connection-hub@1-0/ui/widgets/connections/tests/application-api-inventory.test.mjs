@@ -6,6 +6,7 @@ import {
   APPLICATION_OPERATION_POLICY_PROPERTY,
   applicationApiInventory,
   applicationOperationPolicyEnabled,
+  filterApplicationApiInventory,
   withApplicationOperationPolicy,
 } from '../src/features/delegatedAccess/applicationApiInventory.ts'
 
@@ -96,6 +97,11 @@ test('all-services API inventory uses the existing platform endpoint and leaves 
   assert.match(catalog, /<dt>Roles<\/dt>/)
   assert.match(catalog, /selectedOperations/)
   assert.match(catalog, /onOperationChange/)
+  assert.match(catalog, /Search applications and APIs/)
+  assert.match(catalog, /Select displayed APIs for/)
+  assert.match(catalog, /filtered \? 'All shown' : 'All'/)
+  assert.match(catalog, /filtered \? 'None shown' : 'None'/)
+  assert.match(catalog, /selectedCount.*operationRefs\.length/s)
   assert.match(catalog, /No longer in the active catalog/)
   assert.match(catalog, /api\.operationRef/)
   assert.match(catalog, /api\.alias/)
@@ -106,6 +112,62 @@ test('all-services API inventory uses the existing platform endpoint and leaves 
   assert.match(panel, /selectedOperations=\{resourceOperations\[APPLICATION_API_RESOURCE\]/)
   assert.match(panel, /selectedOperations=\{editResourceOperations\[APPLICATION_API_RESOURCE\]/)
   assert.match(panel, /createApplicationRoleMissing/)
+})
+
+test('API search keeps matching apps whole and narrows other apps to matching operations', () => {
+  const applications = [
+    {
+      id: 'problem-board@1-0',
+      label: 'Problem Board',
+      description: 'Coordinate project work.',
+      apis: [
+        {
+          alias: 'problem_board',
+          method: 'POST',
+          route: 'operations',
+          userTypes: ['registered'],
+          roles: [],
+          operationId: 'api.operations.post.problem_board',
+          operationRef: 'urn:problem-board',
+          operationIdExplicit: false,
+        },
+      ],
+    },
+    {
+      id: 'kdcube-services@1-0',
+      label: 'KDCube services',
+      description: 'Shared user services.',
+      apis: [
+        {
+          alias: 'telegram_send',
+          method: 'POST',
+          route: 'operations',
+          userTypes: ['registered'],
+          roles: [],
+          operationId: 'api.operations.post.telegram_send',
+          operationRef: 'urn:telegram-send',
+          operationIdExplicit: false,
+        },
+        {
+          alias: 'unrelated',
+          method: 'GET',
+          route: 'operations',
+          userTypes: ['registered'],
+          roles: [],
+          operationId: 'api.operations.get.unrelated',
+          operationRef: 'urn:unrelated',
+          operationIdExplicit: false,
+        },
+      ],
+    },
+  ]
+
+  assert.equal(filterApplicationApiInventory(applications, 'problem board')[0].apis.length, 1)
+  assert.deepEqual(
+    filterApplicationApiInventory(applications, 'telegram')[0].apis.map((api) => api.alias),
+    ['telegram_send'],
+  )
+  assert.equal(filterApplicationApiInventory(applications, 'missing').length, 0)
 })
 
 test('a reviewed application selection has an explicit marker and preserves other Card properties', () => {

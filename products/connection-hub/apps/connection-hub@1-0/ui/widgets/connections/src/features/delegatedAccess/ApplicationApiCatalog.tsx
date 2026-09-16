@@ -3,6 +3,7 @@ import { getBundlesCatalog } from '../../api/client';
 import { InfoMark } from '../../components/InfoMark';
 import {
   applicationApiInventory,
+  filterApplicationApiInventory,
   type ApplicationApiInventoryEntry,
 } from './applicationApiInventory';
 
@@ -107,7 +108,13 @@ export function ApplicationApiCatalog({
   disabled = false,
   onOperationChange,
 }: ApplicationApiCatalogProps) {
+  const [query, setQuery] = useState('');
   const selected = useMemo(() => new Set(selectedOperations), [selectedOperations]);
+  const visibleApplications = useMemo(
+    () => filterApplicationApiInventory(model.applications, query),
+    [model.applications, query],
+  );
+  const filtered = Boolean(query.trim());
   const knownOperations = useMemo(() => new Set(
     model.applications.flatMap((app) => app.apis.map((api) => api.operationRef).filter(Boolean)),
   ), [model.applications]);
@@ -128,6 +135,18 @@ export function ApplicationApiCatalog({
         ) : null}
       </div>
 
+      {model.status === 'ready' && model.applications.length ? (
+        <div className="application-api-catalog__search">
+          <input
+            type="search"
+            value={query}
+            aria-label="Search applications and APIs"
+            placeholder="Search applications and APIs"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+      ) : null}
+
       {model.status === 'loading' ? (
         <p className="application-api-catalog__state">Loading application APIs...</p>
       ) : null}
@@ -139,6 +158,9 @@ export function ApplicationApiCatalog({
       ) : null}
       {model.status === 'ready' && !model.applications.length ? (
         <p className="application-api-catalog__state">No applications are available.</p>
+      ) : null}
+      {model.status === 'ready' && model.applications.length && !visibleApplications.length ? (
+        <p className="application-api-catalog__state">No applications or APIs match this search.</p>
       ) : null}
       {model.status === 'ready' ? (
         <div className="application-api-catalog__apps">
@@ -159,8 +181,16 @@ export function ApplicationApiCatalog({
               ))}
             </div>
           ) : null}
-          {model.applications.map((app) => (
-            app.apis.length ? (
+          {visibleApplications.map((app) => {
+            const operationRefs = app.apis
+              .map((api) => api.operationRef)
+              .filter(Boolean);
+            const selectedCount = operationRefs
+              .filter((operationRef) => selected.has(operationRef)).length;
+            const everyOperationSelected = Boolean(operationRefs.length)
+              && selectedCount === operationRefs.length;
+
+            return app.apis.length ? (
               <details className="application-api-app" key={app.id}>
                 <summary>
                   <span>
@@ -168,7 +198,35 @@ export function ApplicationApiCatalog({
                     {app.label !== app.id ? <small><code>{app.id}</code></small> : null}
                   </span>
                   <span className="badge badge-neutral">
-                    {app.apis.length} API{app.apis.length === 1 ? '' : 's'}
+                    {selectedCount} of {operationRefs.length} selected
+                  </span>
+                  <span className="edit-section__quick" aria-label={`Select displayed APIs for ${app.label}`}>
+                    <button
+                      type="button"
+                      disabled={disabled || everyOperationSelected || !operationRefs.length}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        operationRefs.forEach((operationRef) => {
+                          if (!selected.has(operationRef)) onOperationChange(operationRef, true);
+                        });
+                      }}
+                    >
+                      {filtered ? 'All shown' : 'All'}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={disabled || selectedCount === 0}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        operationRefs.forEach((operationRef) => {
+                          if (selected.has(operationRef)) onOperationChange(operationRef, false);
+                        });
+                      }}
+                    >
+                      {filtered ? 'None shown' : 'None'}
+                    </button>
                   </span>
                 </summary>
                 {app.description ? <p className="application-api-app__description">{app.description}</p> : null}
@@ -233,8 +291,8 @@ export function ApplicationApiCatalog({
                 </span>
                 <span>No APIs declared</span>
               </div>
-            )
-          ))}
+            );
+          })}
         </div>
       ) : null}
     </section>
