@@ -54,38 +54,141 @@ def control_snapshot_metadata(properties: Any) -> Mapping[str, Any]:
 def control_snapshot_wildcards(authority: CardAuthority) -> tuple[str, ...]:
     """Authority dimensions that still mean an open-ended future selection."""
 
-    found: set[str] = set()
+    return tuple(
+        sorted({str(item["path"]) for item in control_snapshot_violations(authority)})
+    )
+
+
+def control_snapshot_violations(
+    authority: CardAuthority,
+) -> tuple[dict[str, str], ...]:
+    """Open-ended selections with enough context for an operator to fix them."""
+
+    found: dict[str, dict[str, str]] = {}
+
+    def add(
+        path: str,
+        *,
+        dimension: str,
+        resource: str,
+        value: str,
+        namespace: str = "",
+        provider: str = "",
+        account: str = "",
+    ) -> None:
+        found[path] = {
+            "path": path,
+            "dimension": dimension,
+            "resource": resource,
+            "value": value,
+            **({"namespace": namespace} if namespace else {}),
+            **({"provider": provider} if provider else {}),
+            **({"account": account} if account else {}),
+        }
+
     for resource, grants in authority.resource_grants.items():
         if "*" in grants:
-            found.add(f"resource_grants:{resource}")
+            add(
+                f"resource_grants:{resource}",
+                dimension="resource_grants",
+                resource=resource,
+                value="*",
+            )
     for resource, operations in authority.resource_operations.items():
         if "*" in operations:
-            found.add(f"resource_operations:{resource}")
+            add(
+                f"resource_operations:{resource}",
+                dimension="resource_operations",
+                resource=resource,
+                value="*",
+            )
 
     selection = authority.named_service_operations
     if selection.is_all:
-        found.add("named_service_operations")
+        add(
+            "named_service_operations",
+            dimension="named_service_operations",
+            resource="*",
+            value="*",
+        )
     elif selection.is_unknown:
-        found.add("named_service_operations:unknown")
+        add(
+            "named_service_operations:unknown",
+            dimension="named_service_operations",
+            resource="*",
+            value="unknown",
+        )
     elif selection.is_exact:
         for resource, namespaces in selection.operations.items():
             for namespace, operations in namespaces.items():
                 if "*" in operations:
-                    found.add(f"named_service_operations:{resource}:{namespace}")
+                    add(
+                        f"named_service_operations:{resource}:{namespace}",
+                        dimension="named_service_operations",
+                        resource=resource,
+                        namespace=namespace,
+                        value="*",
+                    )
 
     for provider, accounts in normalize_account_scope(authority.account_scope).items():
         if provider == "*":
-            found.add("account_scope:*")
+            add(
+                "account_scope:*",
+                dimension="account_scope",
+                resource="*",
+                provider=provider,
+                value="*",
+            )
         for account_id, claims in accounts.items():
             if account_id == "*" or not claims or "*" in claims:
-                found.add(f"account_scope:{provider}:{account_id}")
+                value = "*" if account_id == "*" or "*" in claims else "[]"
+                add(
+                    f"account_scope:{provider}:{account_id}",
+                    dimension="account_scope",
+                    resource=f"{provider}:{account_id}",
+                    provider=provider,
+                    account=account_id,
+                    value=value,
+                )
 
     if (
         APPLICATION_API_RESOURCE in authority.resource_grants
         and not application_operations_are_explicit(authority.properties)
     ):
-        found.add("application_operations")
-    return tuple(sorted(found))
+        add(
+            "application_operations",
+            dimension="application_operations",
+            resource=APPLICATION_API_RESOURCE,
+            value="implicit",
+        )
+    return tuple(found[path] for path in sorted(found))
+
+
+def control_snapshot_refusal(authority: CardAuthority) -> dict[str, Any] | None:
+    """Operator-facing refusal for an authority that is not an exact snapshot."""
+
+    violations = control_snapshot_violations(authority)
+    if not violations:
+        return None
+    descriptions = [
+        (
+            f"dimension={item['dimension']} "
+            f"resource={item['resource']} value={item['value']}"
+        )
+        for item in violations
+    ]
+    return {
+        "ok": False,
+        "error": "control_card_exact_snapshot_required",
+        "dimensions": sorted({item["path"] for item in violations}),
+        "mismatched": {"exact_snapshot": list(violations)},
+        "status": 400,
+        "message": (
+            "A Control Card stores an exact catalog snapshot. Refused "
+            + "; ".join(descriptions)
+            + ". Replace each open-ended value with named selections."
+        ),
+    }
 
 
 def control_snapshot_is_exact(authority: CardAuthority) -> bool:
@@ -333,6 +436,8 @@ __all__ = [
     "application_operations_are_explicit",
     "control_snapshot_is_exact",
     "control_snapshot_metadata",
+    "control_snapshot_refusal",
+    "control_snapshot_violations",
     "control_snapshot_wildcards",
     "fail_closed_control_snapshot",
     "materialize_control_snapshot",

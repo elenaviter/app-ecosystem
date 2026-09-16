@@ -4294,7 +4294,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 (_result or {}).get("ok"),
                 (_result or {}).get("error"),
                 (_result or {}).get("status"),
-                (_result or {}).get("mismatched"),
+                (_result or {}).get("mismatched")
+                or (_result or {}).get("dimensions"),
                 str((_result or {}).get("message") or "")[:400],
             )
             return _result

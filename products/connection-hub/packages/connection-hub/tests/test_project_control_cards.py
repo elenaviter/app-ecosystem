@@ -45,6 +45,8 @@ from connection_hub.delegated_credentials.controls.snapshot import (
     CONTROL_SNAPSHOT_STATE_REVIEW_REQUIRED,
     control_snapshot_is_exact,
     control_snapshot_metadata,
+    control_snapshot_refusal,
+    control_snapshot_violations,
 )
 from connection_hub.delegated_credentials.controls.cache import (
     CONTROL_CACHE_KIND_CARD,
@@ -554,6 +556,47 @@ def test_runtime_refuses_an_unmarked_or_wildcard_control_snapshot() -> None:
         with pytest.raises(ControlCardMismatch) as invalid_metadata:
             effective_card_authority(caller, incomplete)
         assert invalid_metadata.value.reason == "control_card_exact_snapshot_required"
+
+
+def test_exact_snapshot_violations_name_dimension_resource_and_value() -> None:
+    authority = dataclasses.replace(
+        _regular_control(),
+        resource_grants={RESOURCE: ("*",)},
+        resource_operations={RESOURCE: ("*",)},
+        named_service_operations=NamedServiceSelection.exact(
+            {RESOURCE: {"slack": ("*",)}}
+        ),
+        account_scope={"slack": {"*": ("*",)}},
+    )
+
+    violations = control_snapshot_violations(authority)
+
+    assert {item["dimension"] for item in violations} == {
+        "resource_grants",
+        "resource_operations",
+        "named_service_operations",
+        "account_scope",
+    }
+    assert all(item["resource"] for item in violations)
+    assert all(item["value"] for item in violations)
+    assert {
+        (item["dimension"], item["resource"], item["value"])
+        for item in violations
+    } >= {
+        ("resource_grants", RESOURCE, "*"),
+        ("resource_operations", RESOURCE, "*"),
+        ("named_service_operations", RESOURCE, "*"),
+        ("account_scope", "slack:*", "*"),
+    }
+
+    refusal = control_snapshot_refusal(authority)
+    assert refusal is not None
+    assert refusal["error"] == "control_card_exact_snapshot_required"
+    assert refusal["status"] == 400
+    assert refusal["mismatched"]["exact_snapshot"] == list(violations)
+    assert f"dimension=resource_operations resource={RESOURCE} value=*" in (
+        refusal["message"]
+    )
 
 
 def test_effective_authority_refuses_a_different_identity_scope() -> None:

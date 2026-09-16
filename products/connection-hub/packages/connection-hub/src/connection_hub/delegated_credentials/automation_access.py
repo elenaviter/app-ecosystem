@@ -115,7 +115,7 @@ from connection_hub.delegated_credentials.controls.model import (
 from connection_hub.delegated_credentials.controls.snapshot import (
     CONTROL_SNAPSHOT_PROPERTY,
     control_snapshot_is_exact,
-    control_snapshot_wildcards,
+    control_snapshot_refusal,
     fail_closed_control_snapshot,
     materialize_control_snapshot,
     reviewed_control_snapshot_properties,
@@ -3657,18 +3657,9 @@ class AutomationAccessService:
                 },
                 properties=selected_properties,
             )
-            wildcards = control_snapshot_wildcards(candidate)
-            if wildcards:
-                return {
-                    "ok": False,
-                    "error": "control_card_exact_snapshot_required",
-                    "dimensions": list(wildcards),
-                    "status": 400,
-                    "message": (
-                        "A Control Card stores an exact catalog snapshot. "
-                        "Review the named selections and save them without wildcards."
-                    ),
-                }
+            refusal = control_snapshot_refusal(candidate)
+            if refusal is not None:
+                return refusal
             selected_properties = reviewed_control_snapshot_properties(
                 selected_properties,
                 basis_catalog_version=catalog_version,
