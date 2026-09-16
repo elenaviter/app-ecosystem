@@ -58,6 +58,7 @@ def _card(
     operations: tuple[str, ...],
     operation_roles: dict[str, str] | None = None,
     binding: ControlCardBinding | None = None,
+    policy: bool = True,
 ) -> CardAuthority:
     return CardAuthority(
         access_id=access_id,
@@ -70,7 +71,7 @@ def _card(
         resource_grants={"*": (default_role,)},
         resource_operations={"*": operations},
         control_card=binding,
-        properties=_property(default_role, operation_roles),
+        properties=_property(default_role, operation_roles) if policy else {},
     )
 
 
@@ -230,3 +231,49 @@ def test_effective_card_encodes_the_same_composed_mapping_it_enforces(
     assert policy.default_role == expected_default
     assert policy.role_for(OP_ADMIN) == expected_admin
     assert effective.resource_operations["*"] == (OP_ADMIN, OP_READ)
+
+
+@pytest.mark.parametrize("control_operations", [(), (OP_READ,)])
+def test_pre_policy_caller_is_narrowed_by_v2_control_in_and_mode(
+    control_operations: tuple[str, ...],
+) -> None:
+    caller = _card(
+        access_id="pre-policy-caller",
+        default_role=SUPER_ADMIN,
+        operations=(),
+        policy=False,
+    )
+    control_seed = _card(
+        access_id="control-seed",
+        default_role=REGISTERED,
+        operations=control_operations,
+    )
+    control = new_credentialless_card(
+        initial_selection=control_seed,
+        grantor_subject="user-1",
+        catalog_version="catalog-v2",
+        control_id="control-v2",
+        issuer_ref="work:project:example",
+        issuer_kind="application",
+        composition_mode=CONTROL_COMPOSITION_AND,
+    )
+    bound = dataclasses.replace(
+        caller,
+        control_card=ControlCardBinding(
+            control_id=control.access_id,
+            issuer_ref=control.issuer_ref,
+            issuer_kind=control.issuer_kind,
+            control_revision=control.card_revision,
+        ),
+    )
+
+    effective = effective_card_authority(bound, control)
+    policy = application_operation_role_policy(
+        effective.properties,
+        resource_grants=effective.resource_grants,
+    )
+
+    assert policy is not None
+    assert policy.default_role == REGISTERED
+    assert effective.resource_grants["*"] == (REGISTERED,)
+    assert effective.resource_operations["*"] == control_operations

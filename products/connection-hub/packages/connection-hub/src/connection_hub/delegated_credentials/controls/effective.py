@@ -25,9 +25,11 @@ from connection_hub.delegated_credentials.application_operation_policy import (
     APPLICATION_API_RESOURCE,
     APPLICATION_OPERATIONS_PROPERTY,
     ApplicationOperationPolicyError,
+    ApplicationOperationRolePolicy,
     application_operation_policy_declared,
     application_operation_role_policy,
     compose_application_operation_role_policy,
+    strongest_platform_role,
 )
 from connection_hub.delegated_credentials.catalog.drift import (
     selected_named_service_operations,
@@ -237,6 +239,25 @@ def _application_policy(authority: CardAuthority):
         raise ControlCardMismatch(exc.reason) from exc
 
 
+def _legacy_application_policy(authority: CardAuthority) -> ApplicationOperationRolePolicy:
+    """Represent one pre-policy application row without narrowing its operations.
+
+    Before the explicit marker existed, the ``"*"`` resource row carried a
+    role but its operation list was display data rather than an exact allow
+    list. The strongest historical role is the same default used by the v1
+    policy migration. Callers use this adapter only while composing against an
+    exact policy on the other Card; they never persist it back to the legacy
+    Card.
+    """
+
+    default_role = strongest_platform_role(
+        authority.resource_grants.get(APPLICATION_API_RESOURCE, ())
+    )
+    if not default_role:
+        raise ControlCardMismatch("application_default_role_missing")
+    return ApplicationOperationRolePolicy(default_role=default_role)
+
+
 def effective_card_authority(
     card: CardAuthority,
     control: CardAuthority | ProjectControlCardAuthority,
@@ -329,6 +350,27 @@ def effective_card_authority(
                     control_operations=control.resource_operations.get(
                         APPLICATION_API_RESOURCE, ()
                     ),
+                    composition_mode=mode,
+                )
+            )
+        elif (
+            mode == CONTROL_COMPOSITION_AND
+            and card_has_resource
+            and card_policy is None
+            and control_policy is not None
+        ):
+            # A pre-policy caller did not make an exact operation selection.
+            # AND therefore lets the exact Control Card supply the finite set,
+            # while the historical caller role still narrows each projection.
+            control_operations = tuple(
+                control.resource_operations.get(APPLICATION_API_RESOURCE, ())
+            )
+            effective_policy, effective_operations = (
+                compose_application_operation_role_policy(
+                    _legacy_application_policy(card),
+                    control_policy,
+                    card_operations=control_operations,
+                    control_operations=control_operations,
                     composition_mode=mode,
                 )
             )
