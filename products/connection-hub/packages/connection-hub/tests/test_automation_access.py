@@ -217,6 +217,26 @@ def test_pruning_a_drifted_selection_does_not_widen_the_card() -> None:
     assert resolved == {_RESOURCE: []}
 
 
+def test_all_application_row_preserves_catalog_selected_operation_refs() -> None:
+    """Application operations come from the live bundle catalog, not tools
+    enumerated on Connection Hub's all-resource descriptor row."""
+
+    config = _catalog_with_a_declared_door()
+    operation_ref = (
+        "urn:kdcube:application-operation:problem-board%401-0:"
+        "api.operations.post.agent_capabilities"
+    )
+
+    resolved = AutomationAccessService._resolve_resource_operations(
+        None,
+        resource_grants={"*": ["kdcube:role:registered"]},
+        resource_operations={"*": [operation_ref]},
+        config=config,
+    )
+
+    assert resolved == {"*": [operation_ref]}
+
+
 def _catalog_with_a_declared_door():
     from connection_hub.delegated_credentials.oauth.config import (
         oauth_delegated_config_from_connections,

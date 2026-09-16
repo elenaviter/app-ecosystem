@@ -2539,6 +2539,36 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                         },
                         "capabilities": [
                             {
+                                "grant": "kdcube:role:registered",
+                                "label": "Use APIs as a registered user",
+                                "description": "Run selected platform and application operations with registered-user authority.",
+                                "delegable_roles": [
+                                    "kdcube:role:registered",
+                                    "kdcube:role:paid",
+                                    "kdcube:role:privileged",
+                                    "kdcube:role:super-admin",
+                                ],
+                            },
+                            {
+                                "grant": "kdcube:role:paid",
+                                "label": "Use APIs as a paid user",
+                                "description": "Run selected platform and application operations with paid-user authority.",
+                                "delegable_roles": [
+                                    "kdcube:role:paid",
+                                    "kdcube:role:privileged",
+                                    "kdcube:role:super-admin",
+                                ],
+                            },
+                            {
+                                "grant": "kdcube:role:privileged",
+                                "label": "Use APIs as a privileged user",
+                                "description": "Run selected platform and application operations with privileged-user authority.",
+                                "delegable_roles": [
+                                    "kdcube:role:privileged",
+                                    "kdcube:role:super-admin",
+                                ],
+                            },
+                            {
                                 "grant": "kdcube:role:super-admin",
                                 "label": "Use all platform and application APIs",
                                 "description": "Admin-only delegated automation access to platform and application APIs.",
@@ -2646,7 +2676,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                                 "resource": "*",
                                 "label": "All platform and application APIs",
                                 "admin_only": True,
-                                "grants": ["kdcube:role:super-admin"],
+                                "grants": [
+                                    "kdcube:role:registered",
+                                    "kdcube:role:paid",
+                                    "kdcube:role:privileged",
+                                    "kdcube:role:super-admin",
+                                ],
                             },
                             {
                                 "resource": "urn:kdcube:management:deployment:*:*",

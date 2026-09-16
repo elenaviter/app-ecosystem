@@ -2180,7 +2180,13 @@ class AutomationAccessService:
     ) -> dict[str, list[str]]:
         source = config or self._config
         available: dict[str, set[str]] = {}
+        accepts_endpoint_operations: dict[str, bool] = {}
         for resource, grants in resource_grants.items():
+            selector = getattr(source, "card_selector_config", None)
+            configured = selector(resource) if callable(selector) else None
+            accepts_endpoint_operations[resource] = (
+                _clean(getattr(configured, "resource", "")).rstrip("/") == "*"
+            )
             available[resource] = {
                 _clean(getattr(operation, "name", ""))
                 for operation in source.tools_for_scopes(
@@ -2200,6 +2206,16 @@ class AutomationAccessService:
             resolved: dict[str, list[str]] = {}
             for resource in resource_grants:
                 requested = set(selected.get(resource, ()))
+                if accepts_endpoint_operations.get(resource):
+                    # The all-application row is an authority container for
+                    # operation identities published by application catalogs.
+                    # Its operations are not statically enumerated in the
+                    # Connection Hub descriptor, so preserve the exact refs
+                    # selected from that catalog. Active-catalog and runtime
+                    # boundaries still fail closed when an operation is stale
+                    # or absent from the live application.
+                    resolved[resource] = sorted(requested)
+                    continue
                 unknown = sorted(requested - available.get(resource, set()))
                 if unknown and not prune_unknown:
                     raise ValueError(
