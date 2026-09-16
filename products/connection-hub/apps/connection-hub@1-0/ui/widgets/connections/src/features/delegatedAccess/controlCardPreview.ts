@@ -2,14 +2,20 @@ import type {
   DelegatedAccessNamedServiceOperations,
   DelegatedControlCardAuthority,
 } from '../../api/types';
+import {
+  APPLICATION_API_RESOURCE,
+  applicationOperationPolicyDeclared,
+  applicationOperationPolicyEnabled,
+  applicationOperationRolePolicy,
+  composeApplicationOperationRolePolicies,
+  withApplicationOperationPolicy,
+} from './applicationOperationRoles.ts';
 
 export type ControlCompositionMode = 'and' | 'or';
 export type CompositionRowState = 'normal' | 'added' | 'removed' | 'absent';
 
 const CONTROL_SNAPSHOT_PROPERTY = 'connection_hub.control_snapshot';
 const CONTROL_SNAPSHOT_SCHEMA = 'connection_hub.control_snapshot.v1';
-const APPLICATION_OPERATIONS_PROPERTY = 'kdcube.application_operations';
-const APPLICATION_OPERATIONS_SCHEMA = 'kdcube.application_operations.v1';
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -42,9 +48,8 @@ export function controlSnapshotIsExact(
       accountId === '*' || !claims.length || claims.includes('*')
     ))
   ))) return false;
-  if ('*' in (authority.resource_grants || {})) {
-    const policy = object(object(authority.properties)[APPLICATION_OPERATIONS_PROPERTY]);
-    if (policy.schema !== APPLICATION_OPERATIONS_SCHEMA || policy.mode !== 'selected') return false;
+  if (APPLICATION_API_RESOURCE in (authority.resource_grants || {})) {
+    if (!applicationOperationPolicyEnabled(authority.properties)) return false;
   }
   return true;
 }
@@ -275,6 +280,54 @@ export function composeControlCardAuthority(
       ? unionValues(callerOperations[resource], controlOperations[resource])
       : intersectValues(callerOperations[resource], controlOperations[resource]),
   ]));
+  let properties: Record<string, unknown> | undefined;
+  if (resources.includes(APPLICATION_API_RESOURCE)) {
+    const callerHasResource = APPLICATION_API_RESOURCE in callerGrants;
+    const controlHasResource = APPLICATION_API_RESOURCE in controlGrants;
+    const callerPolicy = callerHasResource
+      ? applicationOperationRolePolicy(caller.properties, caller.resource_grants)
+      : null;
+    const controlPolicy = controlHasResource
+      ? applicationOperationRolePolicy(control.properties, control.resource_grants)
+      : null;
+    let composed = callerPolicy && controlPolicy
+      ? composeApplicationOperationRolePolicies(
+          callerPolicy,
+          controlPolicy,
+          callerOperations[APPLICATION_API_RESOURCE] || [],
+          controlOperations[APPLICATION_API_RESOURCE] || [],
+          mode,
+        )
+      : null;
+    if (mode === 'or' && callerPolicy && !controlHasResource) {
+      composed = {
+        operations: values(callerOperations[APPLICATION_API_RESOURCE]),
+        policy: callerPolicy,
+      };
+    } else if (mode === 'or' && controlPolicy && !callerHasResource) {
+      composed = {
+        operations: values(controlOperations[APPLICATION_API_RESOURCE]),
+        policy: controlPolicy,
+      };
+    }
+    const declared = applicationOperationPolicyDeclared(caller.properties)
+      || applicationOperationPolicyDeclared(control.properties);
+    if (!composed && declared) {
+      return {
+        operations: [],
+        resource_grants: {},
+        resource_operations: {},
+        named_service_operations: {},
+        effective_named_service_operations: {},
+        account_scope: {},
+      };
+    }
+    if (composed) {
+      resourceGrants[APPLICATION_API_RESOURCE] = [composed.policy.defaultRole];
+      resourceOperations[APPLICATION_API_RESOURCE] = composed.operations;
+      properties = withApplicationOperationPolicy({}, composed.policy, composed.operations);
+    }
+  }
   const named = composeNamedServices(caller, control, resources, mode);
 
   return {
@@ -288,5 +341,6 @@ export function composeControlCardAuthority(
       control.account_scope || {},
       mode,
     ),
+    ...(properties ? { properties } : {}),
   };
 }

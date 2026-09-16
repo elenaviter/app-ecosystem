@@ -332,9 +332,19 @@ export function offerReasonText(offer: ResourceOffer): string {
 }
 
 export interface SaveProblem {
-  code: 'no_resources_left' | 'added_resource_without_authority' | 'operation_without_choice' | 'application_operation_without_role';
+  code:
+    | 'no_resources_left'
+    | 'added_resource_without_authority'
+    | 'operation_without_choice'
+    | 'application_operation_without_role'
+    | 'application_role_unavailable'
+    | 'application_operation_role_unavailable'
+    | 'application_operation_override_not_selected'
+    | 'application_operation_catalog_unavailable'
+    | 'application_operation_unavailable';
   resource?: string;
   operations?: string[];
+  roles?: string[];
 }
 
 /** Everything that blocks Save, so the button can say why. */
@@ -345,7 +355,17 @@ export function saveProblems(input: {
   operationsFor?: (resource: string) => string[];
   namedOperationsFor?: (resource: string) => Record<string, string[]>;
   missingChoices: Array<{ resource: string; operation: string }>;
-  applicationRoleRequired?: { resource: string; rolePrefix: string };
+  applicationRoleRequired?: {
+    resource: string;
+    rolePrefix: string;
+    allowedRoles?: string[];
+    operationRoles?: Record<string, string>;
+  };
+  applicationOperationCatalog?: {
+    resource: string;
+    status: 'idle' | 'loading' | 'ready' | 'error';
+    knownOperations: string[];
+  };
 }): SaveProblem[] {
   const problems: SaveProblem[] = [];
   const hasAuthority = (resource: string) => resourceSelectionHasAuthority(
@@ -369,7 +389,7 @@ export function saveProblems(input: {
   const roleRequirement = input.applicationRoleRequired;
   if (
     roleRequirement
-    && (input.operationsFor?.(roleRequirement.resource) || []).length
+    && input.resourceKeys.includes(roleRequirement.resource)
     && !input.claimsFor(roleRequirement.resource).some(
       (claim) => claim.startsWith(roleRequirement.rolePrefix),
     )
@@ -378,6 +398,72 @@ export function saveProblems(input: {
       code: 'application_operation_without_role',
       resource: roleRequirement.resource,
     });
+  }
+  if (roleRequirement && input.resourceKeys.includes(roleRequirement.resource)) {
+    const selectedOperations = new Set(
+      input.operationsFor?.(roleRequirement.resource) || [],
+    );
+    const unselectedOverrides = Object.keys(roleRequirement.operationRoles || {})
+      .filter((operation) => !selectedOperations.has(operation))
+      .sort();
+    if (unselectedOverrides.length) {
+      problems.push({
+        code: 'application_operation_override_not_selected',
+        resource: roleRequirement.resource,
+        operations: unselectedOverrides,
+      });
+    }
+  }
+  if (
+    roleRequirement?.allowedRoles
+    && input.resourceKeys.includes(roleRequirement.resource)
+  ) {
+    const allowed = new Set(roleRequirement.allowedRoles);
+    const defaultRole = input.claimsFor(roleRequirement.resource).find(
+      (claim) => claim.startsWith(roleRequirement.rolePrefix),
+    );
+    if (defaultRole && !allowed.has(defaultRole)) {
+      problems.push({
+        code: 'application_role_unavailable',
+        resource: roleRequirement.resource,
+        roles: [defaultRole],
+      });
+    }
+    const selectedOperations = new Set(
+      input.operationsFor?.(roleRequirement.resource) || [],
+    );
+    const unavailableOverrides = Array.from(new Set(
+      Object.entries(roleRequirement.operationRoles || {})
+        .filter(([operation, role]) => selectedOperations.has(operation) && !allowed.has(role))
+        .map(([, role]) => role),
+    ));
+    if (unavailableOverrides.length) {
+      problems.push({
+        code: 'application_operation_role_unavailable',
+        resource: roleRequirement.resource,
+        roles: unavailableOverrides,
+      });
+    }
+  }
+  const applicationCatalog = input.applicationOperationCatalog;
+  if (applicationCatalog && input.resourceKeys.includes(applicationCatalog.resource)) {
+    const selectedOperations = input.operationsFor?.(applicationCatalog.resource) || [];
+    if (selectedOperations.length && applicationCatalog.status !== 'ready') {
+      problems.push({
+        code: 'application_operation_catalog_unavailable',
+        resource: applicationCatalog.resource,
+      });
+    } else if (selectedOperations.length) {
+      const known = new Set(applicationCatalog.knownOperations);
+      const unavailable = selectedOperations.filter((operation) => !known.has(operation));
+      if (unavailable.length) {
+        problems.push({
+          code: 'application_operation_unavailable',
+          resource: applicationCatalog.resource,
+          operations: unavailable,
+        });
+      }
+    }
   }
   return problems;
 }
@@ -392,6 +478,16 @@ export function saveProblemText(problem: SaveProblem, labelFor: (resource: strin
       return `Choose once or always for ${(problem.operations || []).join(', ')} on ${labelFor(problem.resource || '')}.`;
     case 'application_operation_without_role':
       return 'Choose the role this Card uses for selected application APIs.';
+    case 'application_role_unavailable':
+      return `The application default role ${(problem.roles || []).join(', ')} is no longer available. Choose a current role before saving.`;
+    case 'application_operation_role_unavailable':
+      return `The application role override ${(problem.roles || []).join(', ')} is no longer available. Change the affected operation before saving.`;
+    case 'application_operation_override_not_selected':
+      return `Remove the role override for unselected application operation ${(problem.operations || []).join(', ')} before saving.`;
+    case 'application_operation_catalog_unavailable':
+      return 'Application APIs cannot be verified against the current catalog. Wait for the catalog before saving.';
+    case 'application_operation_unavailable':
+      return `Remove application operation ${(problem.operations || []).join(', ')} because it is no longer in the current catalog.`;
     default:
       return '';
   }

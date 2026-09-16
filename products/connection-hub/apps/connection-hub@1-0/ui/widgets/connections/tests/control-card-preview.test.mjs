@@ -91,6 +91,64 @@ test('OR preview unions each authority family and preserves wildcard claims', ()
   assert.deepEqual(effective.account_scope, { github: { account_a: ['*'] } })
 })
 
+test('application operation roles compose per operation and remain visible in preview', () => {
+  const caller = {
+    resource_grants: { '*': ['kdcube:role:registered'] },
+    resource_operations: { '*': ['urn:a', 'urn:b'] },
+    properties: {
+      'kdcube.application_operations': {
+        schema: 'kdcube.application_operations.v2',
+        mode: 'selected',
+        default_role: 'kdcube:role:registered',
+        operation_roles: { 'urn:a': 'kdcube:role:super-admin' },
+      },
+    },
+  }
+  const control = exactControl({
+    resource_grants: { '*': ['kdcube:role:paid'] },
+    resource_operations: { '*': ['urn:a', 'urn:c'] },
+    properties: {
+      'connection_hub.control_snapshot': SNAPSHOT,
+      'kdcube.application_operations': {
+        schema: 'kdcube.application_operations.v2',
+        mode: 'selected',
+        default_role: 'kdcube:role:paid',
+        operation_roles: {
+          'urn:a': 'kdcube:role:privileged',
+          'urn:c': 'kdcube:role:super-admin',
+        },
+      },
+    },
+  })
+
+  assert.equal(controlSnapshotIsExact(control), true)
+  const andResult = composeControlCardAuthority(caller, control, 'and')
+  assert.deepEqual(andResult.resource_grants, { '*': ['kdcube:role:registered'] })
+  assert.deepEqual(andResult.resource_operations, { '*': ['urn:a'] })
+  assert.deepEqual(andResult.properties, {
+    'kdcube.application_operations': {
+      schema: 'kdcube.application_operations.v2',
+      mode: 'selected',
+      default_role: 'kdcube:role:registered',
+      operation_roles: { 'urn:a': 'kdcube:role:privileged' },
+    },
+  })
+
+  const orResult = composeControlCardAuthority(caller, control, 'or')
+  assert.deepEqual(orResult.resource_grants, { '*': ['kdcube:role:paid'] })
+  assert.deepEqual(orResult.resource_operations, { '*': ['urn:a', 'urn:b', 'urn:c'] })
+  assert.deepEqual(orResult.properties['kdcube.application_operations'], {
+    schema: 'kdcube.application_operations.v2',
+    mode: 'selected',
+    default_role: 'kdcube:role:paid',
+    operation_roles: {
+      'urn:a': 'kdcube:role:super-admin',
+      'urn:b': 'kdcube:role:registered',
+      'urn:c': 'kdcube:role:super-admin',
+    },
+  })
+})
+
 test('claimless effective tools remain visible authority', () => {
   const authority = {
     operations: [],

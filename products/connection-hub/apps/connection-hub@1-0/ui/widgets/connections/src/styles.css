@@ -1746,6 +1746,59 @@ code {
   margin-left: auto;
 }
 
+.application-role-default,
+.application-role-effective {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0 8px 8px;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.application-role-default label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.application-role-default select,
+.application-operation-role select {
+  min-width: 0;
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.application-role-default select {
+  flex: 1;
+}
+
+.application-role-default > small,
+.application-role-effective > small {
+  grid-column: 1 / -1;
+  color: var(--text-2);
+  font-size: 10.5px;
+}
+
+.application-role-effective {
+  grid-template-columns: max-content max-content minmax(0, 1fr);
+}
+
+.application-role-effective > small {
+  grid-column: auto;
+}
+
 .application-api-catalog__search {
   padding: 0 8px 8px;
 }
@@ -1847,6 +1900,43 @@ code {
   background: var(--surface-2);
 }
 
+.application-operation-role {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0 0 8px 24px;
+  padding: 7px 8px;
+  border-left: 2px solid var(--line);
+  background: var(--surface);
+}
+
+.application-operation-role label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: min(100%, 260px);
+  flex: 1;
+  color: var(--text-2);
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.application-operation-role select {
+  flex: 1;
+}
+
+.application-operation-role .application-api-warning {
+  flex-basis: 100%;
+}
+
+.application-operation-effective {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 0 0 8px 24px;
+}
+
 .application-api-row:last-child {
   border-bottom: 0;
 }
@@ -1901,6 +1991,37 @@ code {
 
 .application-api-stale__row code {
   flex: 1;
+}
+
+.application-api-stale__row {
+  flex-wrap: wrap;
+}
+
+.application-api-stale__row .application-operation-role {
+  flex-basis: 100%;
+  margin: 2px 0 0 22px;
+}
+
+@media (max-width: 620px) {
+  .application-role-default,
+  .application-role-effective {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .application-role-effective > small {
+    grid-column: 1;
+  }
+
+  .application-role-default label,
+  .application-operation-role label {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .application-operation-role,
+  .application-operation-effective {
+    margin-left: 0;
+  }
 }
 
 .application-api-row dl {

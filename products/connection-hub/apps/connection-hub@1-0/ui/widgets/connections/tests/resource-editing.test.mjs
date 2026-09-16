@@ -172,6 +172,99 @@ test('save is blocked when the card would be empty, an added resource has no aut
     saveProblemText(applicationWithoutRole[0], labelFor),
     'Choose the role this Card uses for selected application APIs.',
   )
+  assert.deepEqual(saveProblems({
+    resourceKeys: ['*'],
+    addedResources: [],
+    claimsFor: () => [],
+    operationsFor: () => [],
+    missingChoices: [],
+    applicationRoleRequired: {
+      resource: '*',
+      rolePrefix: 'kdcube:role:',
+    },
+  }), [
+    { code: 'no_resources_left' },
+    { code: 'application_operation_without_role', resource: '*' },
+  ])
+
+  const unavailableApplicationRoles = saveProblems({
+    resourceKeys: ['*'],
+    addedResources: [],
+    claimsFor: () => ['kdcube:role:registered'],
+    operationsFor: () => ['urn:ordinary', 'urn:admin'],
+    missingChoices: [],
+    applicationRoleRequired: {
+      resource: '*',
+      rolePrefix: 'kdcube:role:',
+      allowedRoles: ['kdcube:role:paid'],
+      operationRoles: { 'urn:admin': 'kdcube:role:super-admin' },
+    },
+  })
+  assert.deepEqual(unavailableApplicationRoles, [
+    {
+      code: 'application_role_unavailable',
+      resource: '*',
+      roles: ['kdcube:role:registered'],
+    },
+    {
+      code: 'application_operation_role_unavailable',
+      resource: '*',
+      roles: ['kdcube:role:super-admin'],
+    },
+  ])
+
+  assert.deepEqual(saveProblems({
+    resourceKeys: ['*'],
+    addedResources: [],
+    claimsFor: () => ['kdcube:role:paid'],
+    operationsFor: () => ['urn:ordinary'],
+    missingChoices: [],
+    applicationRoleRequired: {
+      resource: '*',
+      rolePrefix: 'kdcube:role:',
+      allowedRoles: ['kdcube:role:paid'],
+      operationRoles: { 'urn:no-longer-selected': 'kdcube:role:super-admin' },
+    },
+  }), [{
+    code: 'application_operation_override_not_selected',
+    resource: '*',
+    operations: ['urn:no-longer-selected'],
+  }])
+
+  const driftProblems = saveProblems({
+    resourceKeys: ['*'],
+    addedResources: [],
+    claimsFor: () => ['kdcube:role:registered'],
+    operationsFor: () => ['urn:removed'],
+    missingChoices: [],
+    applicationRoleRequired: {
+      resource: '*',
+      rolePrefix: 'kdcube:role:',
+      allowedRoles: ['kdcube:role:registered'],
+      operationRoles: { 'urn:not-selected': 'kdcube:role:registered' },
+    },
+    applicationOperationCatalog: {
+      resource: '*',
+      status: 'ready',
+      knownOperations: ['urn:current'],
+    },
+  })
+  assert.deepEqual(driftProblems, [
+    {
+      code: 'application_operation_override_not_selected',
+      resource: '*',
+      operations: ['urn:not-selected'],
+    },
+    {
+      code: 'application_operation_unavailable',
+      resource: '*',
+      operations: ['urn:removed'],
+    },
+  ])
+  assert.equal(
+    saveProblemText(driftProblems[1], labelFor),
+    'Remove application operation urn:removed because it is no longer in the current catalog.',
+  )
 })
 
 test('accepting a changed descriptor is per resource and per operation', () => {

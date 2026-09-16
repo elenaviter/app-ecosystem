@@ -82,6 +82,7 @@ export interface OAuthConsentDraft {
     named_service_operations: DelegatedAccessStoredNamedServices;
     account_scope: NonNullable<DelegatedAccessRecord['account_scope']>;
     catalog_row_by_resource: Record<string, string>;
+    properties?: Record<string, unknown>;
   };
   error?: string;
   error_description?: string;

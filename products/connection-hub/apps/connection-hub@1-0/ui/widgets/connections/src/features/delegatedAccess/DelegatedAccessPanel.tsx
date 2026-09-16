@@ -10,9 +10,19 @@ import {
   useApplicationApiCatalog,
 } from './ApplicationApiCatalog';
 import {
-  applicationOperationPolicyEnabled,
-  withApplicationOperationPolicy,
-} from './applicationApiInventory';
+  APPLICATION_API_RESOURCE,
+  PLATFORM_ROLE_PREFIX,
+  applicationOperationPropertiesForSelection,
+  applicationOperationRolePolicy,
+  changeApplicationDefaultRole,
+  changeApplicationOperationRole,
+  delegableApplicationRoles,
+  removeApplicationOperationRole,
+  seedApplicationOperationRolePolicy,
+  unavailableApplicationPolicyRoles,
+  unselectedApplicationOperationOverrides,
+  type ApplicationOperationRolePolicy,
+} from './applicationOperationRoles';
 import { GrantFilterControls, GrantFilterInfo, GrantFilterSettings } from './GrantFilterBar';
 import { InvocationPolicyControl, OperationInvocationChoice } from './InvocationControls';
 import { FoldedChipRow } from '../../components/ChipFold';
@@ -144,13 +154,6 @@ interface EffectiveCompositionView {
 const HELP_PERMISSIONS = 'Permission groups published by this service. Each row names an API area; tick only the actions this card may use.';
 const HELP_TOOLS = 'Tools published by this service. Select a tool, then choose whether it remains available or is consumed after one run.';
 const HELP_RESOURCE = 'One service or API on this access card. Expand it to review its permissions, tools, service actions, and connected-account requirements.';
-const APPLICATION_API_RESOURCE = '*';
-const PLATFORM_ROLE_PREFIX = 'kdcube:role:';
-
-function selectedPlatformRoles(grants: string[] | undefined): string[] {
-  return (grants || []).filter((grant) => grant.startsWith(PLATFORM_ROLE_PREFIX));
-}
-
 function readableIdentifier(value: string): string {
   const text = String(value || '').trim();
   if (!text) return '';
@@ -1000,6 +1003,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const applicationApiCatalog = useApplicationApiCatalog(
     resources.some((resource) => resource.resource === '*'),
   );
+  const knownApplicationOperations = useMemo(
+    () => applicationApiCatalog.applications
+      .flatMap((app) => app.apis.map((api) => api.operationRef))
+      .filter(Boolean),
+    [applicationApiCatalog.applications],
+  );
   const [label, setLabel] = useState('Automation access');
   const [oauthDraftId] = useState(() => oauthConsentId(openParams));
   const [oauthDraft, setOAuthDraft] = useState<OAuthConsentDraft | null>(null);
@@ -1013,6 +1022,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       if (!asked?.resource || !asked.outerOperation) return {};
       return { [asked.resource]: [asked.outerOperation] };
     });
+  const [applicationRolePolicy, setApplicationRolePolicy] =
+    useState<ApplicationOperationRolePolicy>({ defaultRole: '', operationRoles: {} });
   const [createInvocationModes, setCreateInvocationModes] =
     useState<Record<string, InvocationMode>>({});
   const [createCatalogRows, setCreateCatalogRows] =
@@ -1109,8 +1120,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [editPicks, setEditPicks] = useState<Record<string, boolean>>({});
   const [editResourceOperations, setEditResourceOperations] =
     useState<DelegatedAccessResourceOperations>({});
-  const [editApplicationOperationPolicyEnabled, setEditApplicationOperationPolicyEnabled] =
-    useState(false);
+  const [editApplicationRolePolicy, setEditApplicationRolePolicy] =
+    useState<ApplicationOperationRolePolicy>({ defaultRole: '', operationRoles: {} });
   const [editOpenResources, setEditOpenResources] = useState<Record<string, boolean>>({});
   const [editOpenPermissions, setEditOpenPermissions] = useState<Record<string, boolean>>({});
   const [editOpenTools, setEditOpenTools] = useState<Record<string, boolean>>({});
@@ -1154,6 +1165,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         setLabel(draft.selection.label || 'Connected client');
         setResourceGrants(draft.selection.resource_grants || {});
         setResourceOperations(draft.selection.resource_operations || {});
+        setApplicationRolePolicy(seedApplicationOperationRolePolicy(
+          draft.selection.properties,
+          draft.selection.resource_grants,
+        ));
         setCreateInvocationModes(Object.fromEntries(
           Object.entries(draft.selection.invocation_policies || {}).flatMap(([resource, operations]) => (
             Object.entries(operations || {}).map(([operation, mode]) => [
@@ -1279,13 +1294,56 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     },
     [createInvocationModes, resourceOperations, selectedResourceEntries],
   );
+  const createApplicationRoles = useMemo(
+    () => delegableApplicationRoles(
+      grantOptions.map((option) => option.grant),
+      createResources.find((resource) => resource.resource === APPLICATION_API_RESOURCE)?.grants,
+    ),
+    [createResources, grantOptions],
+  );
   const createApplicationRoleMissing = Boolean(
     resourceOperations[APPLICATION_API_RESOURCE]?.length
-    && !selectedPlatformRoles(resourceGrants[APPLICATION_API_RESOURCE]).length
+    && !applicationRolePolicy.defaultRole
   );
+  const createHasApplicationSelection = Boolean(
+    selectedResourceEntries.some(([resource]) => resource === APPLICATION_API_RESOURCE)
+    || resourceOperations[APPLICATION_API_RESOURCE]?.length
+  );
+  const createApplicationUnavailableRoles = useMemo(
+    () => unavailableApplicationPolicyRoles(
+      applicationRolePolicy,
+      resourceOperations[APPLICATION_API_RESOURCE] || [],
+      createApplicationRoles,
+    ),
+    [applicationRolePolicy, createApplicationRoles, resourceOperations],
+  );
+  const createApplicationRoleUnavailable = createHasApplicationSelection
+    && createApplicationUnavailableRoles.length > 0;
+  const createApplicationStaleOverrides = useMemo(() => (
+    createHasApplicationSelection
+      ? unselectedApplicationOperationOverrides(
+          applicationRolePolicy,
+          resourceOperations[APPLICATION_API_RESOURCE] || [],
+        )
+      : []
+  ), [applicationRolePolicy, createHasApplicationSelection, resourceOperations]);
+  const createSelectedApplicationOperations = resourceOperations[APPLICATION_API_RESOURCE] || [];
+  const createApplicationCatalogUnavailable = Boolean(
+    createSelectedApplicationOperations.length
+    && applicationApiCatalog.status !== 'ready'
+  );
+  const createUnavailableApplicationOperations = applicationApiCatalog.status === 'ready'
+    ? createSelectedApplicationOperations.filter(
+        (operation) => !knownApplicationOperations.includes(operation),
+      )
+    : [];
   const canSubmit = selectedResourceEntries.length > 0
     && createMissingInvocationChoices.length === 0
-    && !createApplicationRoleMissing;
+    && !createApplicationRoleMissing
+    && !createApplicationRoleUnavailable
+    && createApplicationStaleOverrides.length === 0
+    && !createApplicationCatalogUnavailable
+    && createUnavailableApplicationOperations.length === 0;
 
   // Live delivery: a grant can land out-of-band (an OAuth consent completing
   // in another tab/app) or be revoked elsewhere — refetch when the registry
@@ -1363,6 +1421,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
 
   const toggleApplicationApiOperation = (operationRef: string, checked: boolean) => {
     if (!operationRef) return;
+    if (!checked) {
+      setApplicationRolePolicy((current) => (
+        removeApplicationOperationRole(current, operationRef)
+      ));
+    }
     setResourceOperations((current) => {
       const selected = new Set(current[APPLICATION_API_RESOURCE] || []);
       if (checked) selected.add(operationRef);
@@ -1371,6 +1434,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ...current,
         [APPLICATION_API_RESOURCE]: Array.from(selected),
       };
+    });
+  };
+
+  const changeApplicationDefault = (role: string) => {
+    setApplicationRolePolicy((current) => changeApplicationDefaultRole(current, role));
+    setResourceGrants((current) => {
+      const next = { ...current };
+      if (role) next[APPLICATION_API_RESOURCE] = [role];
+      else delete next[APPLICATION_API_RESOURCE];
+      return next;
     });
   };
 
@@ -1491,10 +1564,20 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         resourceOperations[resource] || [],
       ]),
     );
-    const applicationOperationProperties = selectedResourceEntries.some(
+    const includesApplicationResource = selectedResourceEntries.some(
       ([resource]) => resource === APPLICATION_API_RESOURCE,
-    )
-      ? withApplicationOperationPolicy()
+    );
+    const applicationOperationProperties = includesApplicationResource || oauthDraft
+      ? applicationOperationPropertiesForSelection({
+          properties: oauthDraft?.selection.properties || {},
+          policy: applicationRolePolicy,
+          selectedOperations: selectedResourceOperations[APPLICATION_API_RESOURCE] || [],
+          resourceSelected: includesApplicationResource,
+          resourcePreviouslySelected: Boolean(
+            oauthDraft
+            && APPLICATION_API_RESOURCE in oauthDraft.selection.resource_grants
+          ),
+        })
       : undefined;
     const invocationModes = Object.fromEntries(
       selectedResourceEntries.map(([resource]) => [
@@ -1558,6 +1641,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setCreateOpen(false);
     setCreateAccountScope({});
     setResourceOperations({});
+    setApplicationRolePolicy({ defaultRole: '', operationRoles: {} });
     setCreateInvocationModes({});
     setCreateCatalogRows({});
     void dispatch(loadDelegatedAccess());
@@ -1969,7 +2053,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const editSnapshot = () => JSON.stringify({
     editPicks,
     editResourceOperations,
-    editApplicationOperationPolicyEnabled,
+    editApplicationRolePolicy,
     editNamedServiceOperations,
     editAccountScope,
     editLabel,
@@ -2008,9 +2092,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ]),
       ),
     );
-    setEditApplicationOperationPolicyEnabled(
-      applicationOperationPolicyEnabled(item.properties),
-    );
+    setEditApplicationRolePolicy(seedApplicationOperationRolePolicy(
+      item.properties,
+      item.resource_grants,
+    ));
     setEditOpenResources(Object.fromEntries(
       Object.keys(item.resource_grants || {}).map((resource) => [resource, false]),
     ));
@@ -2413,7 +2498,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     checked: boolean,
   ) => {
     if (!operationRef) return;
-    setEditApplicationOperationPolicyEnabled(true);
+    if (!checked) {
+      setEditApplicationRolePolicy((current) => (
+        removeApplicationOperationRole(current, operationRef)
+      ));
+    }
     setEditResourceOperations((current) => {
       const selected = new Set(current[APPLICATION_API_RESOURCE] || []);
       if (checked) selected.add(operationRef);
@@ -2423,6 +2512,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         [APPLICATION_API_RESOURCE]: Array.from(selected),
       };
     });
+  };
+
+  const changeEditApplicationDefault = (role: string) => {
+    setEditApplicationRolePolicy((current) => changeApplicationDefaultRole(current, role));
   };
 
   const toggleEditResourceOperation = (
@@ -2539,7 +2632,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditingAccessId(null);
     setEditPicks({});
     setEditResourceOperations({});
-    setEditApplicationOperationPolicyEnabled(false);
+    setEditApplicationRolePolicy({ defaultRole: '', operationRoles: {} });
     setEditOpenResources({});
     setEditOpenPermissions({});
     setEditOpenTools({});
@@ -2596,6 +2689,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
 
   const editKeptClaims = (item: DelegatedAccessRecord, resource: string): string[] => {
+    if (resource === APPLICATION_API_RESOURCE) {
+      return editApplicationRolePolicy.defaultRole
+        ? [editApplicationRolePolicy.defaultRole]
+        : [];
+    }
     const row = (item.catalog_row_by_resource || {})[resource] || editRowFor(resource);
     const childRows = new Set(editSelectionIndex.childrenByParent[row] || []);
     if (!childRows.size) return editDirectClaims(item, resource);
@@ -2628,6 +2726,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         .filter(([resource]) => resource in routed)
         .map(([resource, namespaces]) => [resource, namespaces]),
     );
+    const applicationOperations = editResourceOperations[APPLICATION_API_RESOURCE] || [];
+    const properties = applicationOperationPropertiesForSelection({
+      properties: item.properties || {},
+      policy: editApplicationRolePolicy,
+      selectedOperations: applicationOperations,
+      resourceSelected: APPLICATION_API_RESOURCE in routed,
+      resourcePreviouslySelected: APPLICATION_API_RESOURCE in (item.resource_grants || {}),
+    });
     return {
       operations: [],
       resource_grants: routed,
@@ -2637,6 +2743,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       named_service_operations: named,
       effective_named_service_operations: named,
       account_scope: editAccountScope,
+      properties,
     };
   };
 
@@ -2674,6 +2781,20 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     applicationRoleRequired: {
       resource: APPLICATION_API_RESOURCE,
       rolePrefix: PLATFORM_ROLE_PREFIX,
+      allowedRoles: delegableApplicationRoles(
+        grantOptions.map((option) => option.grant),
+        catalogRowFor(
+          resources,
+          APPLICATION_API_RESOURCE,
+          (resource) => (item.catalog_row_by_resource || {})[resource] || resource,
+        )?.grants,
+      ),
+      operationRoles: editApplicationRolePolicy.operationRoles,
+    },
+    applicationOperationCatalog: {
+      resource: APPLICATION_API_RESOURCE,
+      status: applicationApiCatalog.status,
+      knownOperations: knownApplicationOperations,
     },
   });
 
@@ -2688,6 +2809,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditOpenResources((current) => { const next = { ...current }; delete next[resource]; return next; });
     setEditOpenPermissions((current) => { const next = { ...current }; delete next[resource]; return next; });
     setEditOpenTools((current) => { const next = { ...current }; delete next[resource]; return next; });
+    if (resource === APPLICATION_API_RESOURCE) {
+      setEditApplicationRolePolicy({ defaultRole: '', operationRoles: {} });
+    }
   };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
@@ -2781,9 +2905,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         // every other changed selected operation stays suspended.
         acceptedOperations: editAcceptedOperations,
         compositionMode: item.source === 'control' ? editCompositionMode : undefined,
-        properties: editApplicationOperationPolicyEnabled
-          ? withApplicationOperationPolicy(item.properties)
-          : undefined,
+        properties: applicationOperationPropertiesForSelection({
+          properties: item.properties || {},
+          policy: editApplicationRolePolicy,
+          selectedOperations: splits[APPLICATION_API_RESOURCE]?.kept || [],
+          resourceSelected: APPLICATION_API_RESOURCE in routedKept,
+          resourcePreviouslySelected: APPLICATION_API_RESOURCE in (item.resource_grants || {}),
+        }),
       })).unwrap();
     } catch (error) {
       setEditActionError(`Save was not applied: ${String(error || 'request refused')}`);
@@ -3008,6 +3136,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     It cannot be added to this card.
                   </p>
                 ) : null}
+                {item.resource !== APPLICATION_API_RESOURCE ? (
                 <details className="edit-section">
                   <summary>
                     <span className="edit-section__name">Service permissions</span>
@@ -3048,15 +3177,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     ))}
                   </div>
                 </details>
+                ) : null}
                 {item.resource === APPLICATION_API_RESOURCE ? (
                   <ApplicationApiCatalog
                     model={applicationApiCatalog}
                     selectedOperations={resourceOperations[APPLICATION_API_RESOURCE] || []}
-                    selectedRoles={selectedPlatformRoles(
-                      resourceGrants[APPLICATION_API_RESOURCE],
-                    )}
+                    availableRoles={createApplicationRoles}
+                    policy={applicationRolePolicy}
                     disabled={scopeBlocked}
                     onOperationChange={toggleApplicationApiOperation}
+                    onDefaultRoleChange={changeApplicationDefault}
+                    onOperationRoleChange={(operationRef, role) => {
+                      setApplicationRolePolicy((current) => (
+                        changeApplicationOperationRole(current, operationRef, role)
+                      ));
+                    }}
                   />
                 ) : null}
                 {item.operations?.length ? (
@@ -3667,7 +3802,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           ) : null}
           {/* One row per service area, its verbs as the checkboxes. The full
               token stays in the tooltip and in the data-claim attribute. */}
-          {editableClaims.length && !isSelectionRoute ? <details
+          {resource !== APPLICATION_API_RESOURCE && editableClaims.length && !isSelectionRoute ? <details
             className="edit-section"
             data-section="permissions"
             open={editOpenPermissions[resource] ?? isNew}
@@ -3746,11 +3881,36 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             <ApplicationApiCatalog
               model={applicationApiCatalog}
               selectedOperations={editResourceOperations[APPLICATION_API_RESOURCE] || []}
-              selectedRoles={selectedPlatformRoles(editKeptClaims(item, resource))}
+              availableRoles={delegableApplicationRoles(
+                grantOptions.map((option) => option.grant),
+                resourceOption?.grants,
+              )}
+              policy={editApplicationRolePolicy}
+              effectiveSelection={composition ? (() => {
+                const effectivePolicy = applicationOperationRolePolicy(
+                  composition.effective.properties,
+                  composition.effective.resource_grants,
+                );
+                return effectivePolicy ? {
+                  operations: composition.effective.resource_operations?.[APPLICATION_API_RESOURCE] || [],
+                  policy: effectivePolicy,
+                  controlLabel,
+                  mode: composition.mode,
+                } : undefined;
+              })() : undefined}
               disabled={busy}
               onOperationChange={(operationRef, checked) => {
                 if (checked) ensureCallerResource();
                 toggleEditApplicationApiOperation(operationRef, checked);
+              }}
+              onDefaultRoleChange={(role) => {
+                if (role) ensureCallerResource();
+                changeEditApplicationDefault(role);
+              }}
+              onOperationRoleChange={(operationRef, role) => {
+                setEditApplicationRolePolicy((current) => (
+                  changeApplicationOperationRole(current, operationRef, role)
+                ));
               }}
             />
           ) : null}
@@ -5197,6 +5357,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <p className="muted">
             {createApplicationRoleMissing
               ? 'Choose the role this Card uses for selected application APIs.'
+              : createApplicationRoleUnavailable
+                ? 'The selected application role is no longer available. Choose a current role.'
+              : createApplicationStaleOverrides.length
+                ? `Remove the role override for unselected application operation ${createApplicationStaleOverrides.join(', ')}.`
+              : createApplicationCatalogUnavailable
+                ? 'Application APIs cannot be verified against the current catalog. Wait for the catalog before saving.'
+              : createUnavailableApplicationOperations.length
+                ? `Remove application operation ${createUnavailableApplicationOperations.join(', ')} because it is no longer in the current catalog.`
               : selectedResourceEntries.length
               ? `Choose Once or Always for ${createMissingInvocationChoices.map((item) => item.operation).join(', ')}.`
               : 'Select at least one resource grant.'}

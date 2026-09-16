@@ -106,12 +106,22 @@ test('all-services API inventory uses the existing platform endpoint and leaves 
   assert.match(catalog, /api\.operationRef/)
   assert.match(catalog, /api\.alias/)
   assert.match(catalog, /api\.method/)
+  assert.match(catalog, /effectiveSelection/)
+  assert.match(catalog, /ApplicationOperationRoleControl/)
+
+  const roleControls = source('src/features/delegatedAccess/ApplicationOperationRoleControls.tsx')
+  assert.match(roleControls, />Default role</)
+  assert.match(roleControls, />Invocation role</)
+  assert.match(roleControls, /'Elevated'/)
+  assert.match(roleControls, /\(unavailable\)/)
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, />Service permissions</)
   assert.match(panel, /selectedOperations=\{resourceOperations\[APPLICATION_API_RESOURCE\]/)
   assert.match(panel, /selectedOperations=\{editResourceOperations\[APPLICATION_API_RESOURCE\]/)
   assert.match(panel, /createApplicationRoleMissing/)
+  assert.match(panel, /delegableApplicationRoles\(/)
+  assert.match(panel, /applicationOperationCatalog/)
 })
 
 test('API search keeps matching apps whole and narrows other apps to matching operations', () => {
@@ -173,14 +183,25 @@ test('API search keeps matching apps whole and narrows other apps to matching op
 test('a reviewed application selection has an explicit marker and preserves other Card properties', () => {
   const properties = withApplicationOperationPolicy({
     coordination: { version_control: { model: 'shared-main' } },
-  })
+  }, {
+    defaultRole: 'kdcube:role:registered',
+    operationRoles: {
+      'urn:admin': 'kdcube:role:super-admin',
+      'urn:default': 'kdcube:role:registered',
+      'urn:not-selected': 'kdcube:role:paid',
+    },
+  }, ['urn:admin', 'urn:default'])
 
   assert.equal(applicationOperationPolicyEnabled(properties), true)
   assert.deepEqual(properties, {
     coordination: { version_control: { model: 'shared-main' } },
     [APPLICATION_OPERATION_POLICY_PROPERTY]: {
-      schema: 'kdcube.application_operations.v1',
+      schema: 'kdcube.application_operations.v2',
       mode: 'selected',
+      default_role: 'kdcube:role:registered',
+      operation_roles: {
+        'urn:admin': 'kdcube:role:super-admin',
+      },
     },
   })
   assert.equal(applicationOperationPolicyEnabled({}), false)
@@ -196,7 +217,9 @@ test('create, OAuth consent, and edit persist the reviewed application-operation
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
 
   assert.match(panel, /properties: applicationOperationProperties/)
-  assert.match(panel, /applicationOperationPolicyEnabled\(item\.properties\)/)
-  assert.match(panel, /setEditApplicationOperationPolicyEnabled\(true\)/)
-  assert.match(panel, /withApplicationOperationPolicy\(item\.properties\)/)
+  assert.match(panel, /seedApplicationOperationRolePolicy\(/)
+  assert.match(panel, /setEditApplicationRolePolicy/)
+  assert.match(panel, /applicationOperationPropertiesForSelection\(/)
+  assert.match(panel, /draft\.selection\.properties/)
+  assert.match(panel, /grantOptions\.map\(\(option\) => option\.grant\)/)
 })
