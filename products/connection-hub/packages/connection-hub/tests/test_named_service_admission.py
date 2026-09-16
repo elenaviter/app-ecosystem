@@ -20,6 +20,12 @@ from connection_hub.delegated_credentials.controls.attribution import (
 from connection_hub.delegated_credentials.controls.effective import (
     effective_card_authority,
 )
+from connection_hub.delegated_credentials.controls.snapshot import (
+    CONTROL_SNAPSHOT_MODE_EXACT,
+    CONTROL_SNAPSHOT_PROPERTY,
+    CONTROL_SNAPSHOT_SCHEMA,
+    CONTROL_SNAPSHOT_STATE_EXACT,
+)
 from connection_hub.named_service_admission import (
     DELEGATED_CARD_BINDING_SCHEMA,
     NamedServiceAdmissionResolutionError,
@@ -130,6 +136,14 @@ def _control_composition() -> ResolvedCardComposition:
         issuer_ref="work:project:demo",
         issuer_kind="application",
         composition_mode="and",
+        properties={
+            CONTROL_SNAPSHOT_PROPERTY: {
+                "schema": CONTROL_SNAPSHOT_SCHEMA,
+                "mode": CONTROL_SNAPSHOT_MODE_EXACT,
+                "state": CONTROL_SNAPSHOT_STATE_EXACT,
+                "basis_catalog_version": "catalog-before",
+            }
+        },
     )
     caller = CardAuthority(
         access_id="access-1",

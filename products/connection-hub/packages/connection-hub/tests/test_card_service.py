@@ -26,7 +26,10 @@ from connection_hub.delegated_credentials.cards.service import (
     DelegatedCardService,
     replace_state,
 )
-from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
+from connection_hub.delegated_credentials.cards.store import (
+    BundleStorageDelegatedCardStore,
+    CardStorageError,
+)
 from connection_hub.delegated_credentials.durable_io import write_json_atomic
 
 SUBJECT_HASH = hashlib.sha256(b"platform-user-1").hexdigest()
@@ -129,6 +132,91 @@ async def test_service_uses_host_lock_and_commits_authority(tmp_path):
             "wait_seconds": CARD_LOCK_WAIT_SECONDS,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_store_reads_the_first_immutable_revision_as_migration_basis(
+    tmp_path,
+) -> None:
+    @asynccontextmanager
+    async def mutation_lock(**kwargs):
+        yield {"owner": "test"}
+
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    service = DelegatedCardService(
+        store=store,
+        cache=_Cache(),
+        mutation_lock=mutation_lock,
+    )
+    initial = _authority()
+    await service.commit(initial, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
+    await service.commit(
+        CardAuthority.from_mapping(
+            {
+                **initial.to_dict(),
+                "card_revision": 2,
+                "catalog_version": "catalog-v2",
+                "resource_operations": {
+                    "https://example.test/mcp": ["messages.search", "messages.send"]
+                },
+                "operations": ["messages.search", "messages.send"],
+            }
+        ),
+        subject_hash=SUBJECT_HASH,
+        expected_revision=1,
+        now=NOW + 1,
+    )
+
+    basis = await store.read_initial_authority(
+        subject_hash=SUBJECT_HASH,
+        access_id=ACCESS_ID,
+    )
+
+    assert basis == initial
+
+
+@pytest.mark.asyncio
+async def test_store_refuses_an_ambiguous_initial_revision(tmp_path) -> None:
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    initial = _authority()
+    first_time = datetime.fromtimestamp(NOW, tz=timezone.utc)
+    first_name = card_revision_name(
+        card_revision=1,
+        content_hash=initial.content_hash(),
+        updated_at=first_time,
+    )
+    await write_json_atomic(
+        store.revision_path(
+            subject_hash=SUBJECT_HASH,
+            access_id=ACCESS_ID,
+            revision_name=first_name,
+        ),
+        initial.to_dict(),
+    )
+    competing = CardAuthority.from_mapping(
+        {**initial.to_dict(), "label": "Competing uncommitted revision"}
+    )
+    competing_name = card_revision_name(
+        card_revision=1,
+        content_hash=competing.content_hash(),
+        updated_at=datetime.fromtimestamp(NOW + 1, tz=timezone.utc),
+    )
+    await write_json_atomic(
+        store.revision_path(
+            subject_hash=SUBJECT_HASH,
+            access_id=ACCESS_ID,
+            revision_name=competing_name,
+        ),
+        competing.to_dict(),
+    )
+
+    with pytest.raises(CardStorageError) as exc:
+        await store.read_initial_authority(
+            subject_hash=SUBJECT_HASH,
+            access_id=ACCESS_ID,
+        )
+
+    assert str(exc.value) == "initial_revision_ambiguous"
 
 
 @pytest.mark.asyncio

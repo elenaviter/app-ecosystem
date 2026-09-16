@@ -30,6 +30,9 @@ from typing import Any, Iterable, Mapping
 from connection_hub.delegated_credentials.catalog.descriptors import (
     resource_descriptor_state,
 )
+from connection_hub.delegated_credentials.cards.model import (
+    CREDENTIALLESS_CARD_SOURCE,
+)
 from connection_hub.delegated_credentials.catalog.models import (
     CatalogDocument,
 )
@@ -78,6 +81,13 @@ class _CatalogView:
         # holds it: otherwise a withdrawn door reads as still offered and its
         # claims are reported "already ineffective" while they still work.
         return self._config.card_selector_config(resource)
+
+    def resource_keys(self) -> set[str]:
+        return {
+            _clean(getattr(resource, "resource", ""))
+            for resource in (getattr(self._config, "resources", ()) or ())
+            if _clean(getattr(resource, "resource", ""))
+        }
 
     def claims(self, resource: str) -> set[str] | None:
         """``None`` when the resource declares no claim ceiling."""
@@ -250,6 +260,7 @@ def _added(
     card: Any,
     active: _CatalogView,
     baseline: _CatalogView | None,
+    active_catalog: _CatalogView,
     resource_states: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
     """What the card's resources offer now and did not when the card was last
@@ -260,9 +271,22 @@ def _added(
     never described yields no additions: without a baseline for it, "new"
     cannot be distinguished from "already there, left unchecked".
     """
+    resources: list[dict[str, Any]] = []
     claims: list[dict[str, Any]] = []
     outer_operations: list[dict[str, Any]] = []
     named_service_operations: list[dict[str, Any]] = []
+
+    if (
+        baseline is not None
+        and _clean(getattr(card, "source", "")) == CREDENTIALLESS_CARD_SOURCE
+    ):
+        selected_resources = {_clean(resource) for resource in card.resource_grants}
+        for resource in sorted(
+            active_catalog.resource_keys()
+            - baseline.resource_keys()
+            - selected_resources
+        ):
+            resources.append({"resource": resource, "selected": False})
 
     for raw_resource in card.resource_grants:
         resource = _clean(raw_resource)
@@ -308,6 +332,7 @@ def _added(
                 )
 
     return {
+        "resources": resources,
         "claims": claims,
         "outer_operations": outer_operations,
         "named_service_operations": named_service_operations,
@@ -350,7 +375,12 @@ def _any(block: Mapping[str, Iterable[Any]]) -> bool:
 
 
 def _empty_added() -> dict[str, list[dict[str, Any]]]:
-    return {"claims": [], "outer_operations": [], "named_service_operations": []}
+    return {
+        "resources": [],
+        "claims": [],
+        "outer_operations": [],
+        "named_service_operations": [],
+    }
 
 
 def card_drift(
@@ -371,6 +401,7 @@ def card_drift(
     """
     saved_version = _clean(getattr(card, "catalog_version", ""))
     active_view = _CatalogView(active, config=active_config)
+    active_catalog_view = _CatalogView(active)
     removed = _removed(card=card, active=active_view)
     states = resource_states(card=card, active=active_view)
     changed_operations = _changed_operations(card=card, resource_states=states)
@@ -391,7 +422,13 @@ def card_drift(
     if version_current:
         # Same catalog generation: a static row cannot have gained anything,
         # so additions come only from resources with their own authority.
-        added = _added(card=card, active=active_view, baseline=None, resource_states=states)
+        added = _added(
+            card=card,
+            active=active_view,
+            baseline=None,
+            active_catalog=active_catalog_view,
+            resource_states=states,
+        )
         return {
             "status": DRIFT_CHANGED,
             "saved_version": saved_version,
@@ -403,7 +440,11 @@ def card_drift(
         }
 
     added = _added(
-        card=card, active=active_view, baseline=baseline_view, resource_states=states
+        card=card,
+        active=active_view,
+        baseline=baseline_view,
+        active_catalog=active_catalog_view,
+        resource_states=states,
     )
     if baseline is None:
         # Removals still hold against the verified current catalog; additions

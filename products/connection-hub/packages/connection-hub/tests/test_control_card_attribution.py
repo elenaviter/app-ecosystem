@@ -27,6 +27,12 @@ from connection_hub.delegated_credentials.controls.attribution import (
 from connection_hub.delegated_credentials.controls.effective import (
     effective_card_authority,
 )
+from connection_hub.delegated_credentials.controls.snapshot import (
+    CONTROL_SNAPSHOT_MODE_EXACT,
+    CONTROL_SNAPSHOT_PROPERTY,
+    CONTROL_SNAPSHOT_SCHEMA,
+    CONTROL_SNAPSHOT_STATE_EXACT,
+)
 
 RESOURCE = "https://app.example/mcp"
 OWNER = "platform-user-1"
@@ -53,6 +59,14 @@ def _control(*, operations: tuple[str, ...], mode: str) -> CardAuthority:
             "?tab=delegatedAccess&control_card_id=control-card-1"
         ),
         composition_mode=mode,
+        properties={
+            CONTROL_SNAPSHOT_PROPERTY: {
+                "schema": CONTROL_SNAPSHOT_SCHEMA,
+                "mode": CONTROL_SNAPSHOT_MODE_EXACT,
+                "state": CONTROL_SNAPSHOT_STATE_EXACT,
+                "basis_catalog_version": "catalog-before",
+            }
+        },
     )
 
 

@@ -258,7 +258,7 @@ durable read.
 | `resource_grants` | Exact selected KDCube claims per resource. | yes |
 | `resource_operations` | Exact selected outer API/MCP operation names per resource. This is the operation authority. | yes |
 | `operations` | Compatibility union derived from `resource_operations`. It is not an independent authority source. | yes |
-| `named_service_operations` | The card's selection: `"*"`, `{}`, or an exact resource -> namespace -> operation map. | yes, verbatim, including `{}` and `"*"` |
+| `named_service_operations` | The card's selection: caller Cards may carry catalog-bound `"*"`; Control Cards carry only `{}` or an exact resource -> namespace -> operation map. | yes, verbatim |
 | `named_services` | Materialized boundary tree derived from the descriptor and `named_service_operations`. The proc-side bridge consumes it. | no; its expansion surfaces as `effective_named_service_operations` |
 | `effective_named_service_operations` | The selection expanded under the catalog version the card was saved against. Derived, never authority. | yes when the card covers any operation |
 | `catalog_version`, `card_revision` | The catalog generation this card was last saved against, and its monotonic revision. | yes |
@@ -292,7 +292,7 @@ between the four states:
 
 | Stored | Meaning |
 | --- | --- |
-| `"*"` | Every named-service operation present in the referenced `catalog_version`. Operations added later are not included. |
+| `"*"` | Caller Cards only: every named-service operation present in the referenced `catalog_version`. Operations added later are not included. A Control Card never persists this form. |
 | `{}` | No named-service operation. |
 | exact map | That resource -> namespace -> operation selection. |
 | field absent | A record written before this encoding. Its prior set is derived from the materialized boundary. |
@@ -751,7 +751,7 @@ re-authorization.
 | `resource_grants` | Required full replacement. No remaining grant means revoke, not update. |
 | `named_service_operations` omitted | Preserve the stored narrowing. |
 | `named_service_operations: {}` | Disable all named-service operations for the selected resources. |
-| `named_service_operations: "*"` | Select every named-service operation in the current catalog; the stored wildcard is bound to the catalog version saved with the card. |
+| `named_service_operations: "*"` | Caller Cards: select every named-service operation in the current catalog and bind that choice to the saved catalog version. Control Card updates reject this input and require the exact map shown to the operator. |
 | `named_service_operations` with content | Replace with that exact resource -> namespace -> operation selection. |
 | `account_scope` omitted | Preserve the current account binding. |
 | `account_scope: {}` | Bind no provider account; provider-backed use is default-closed. |
@@ -765,7 +765,8 @@ that materialized tree contains the exact operation set present at Save time;
 governed execution can therefore intersect the card with current
 `active.json.connections` without loading catalog history.
 
-The persisted `named_service_operations` field carries the complete policy:
+For credential-backed caller Cards, the persisted
+`named_service_operations` field carries the complete policy:
 
 | Stored value | Meaning |
 | --- | --- |
@@ -773,8 +774,9 @@ The persisted `named_service_operations` field carries the complete policy:
 | `{}` | Permit no named-service operation. |
 | Resource/namespace/operation map | Permit exactly the named entries. |
 
-The list response retains both `"*"` and `{}`. New records always persist one of
-the three forms.
+The list response retains both `"*"` and `{}`. New caller records always persist
+one of the three forms. Control Cards use the stricter exact-snapshot contract
+below and persist only an exact map or `{}`.
 
 Omission means different things per direction:
 
@@ -796,7 +798,7 @@ no explicit selection:
 | The derived set is empty against the active catalog. | The migration would revoke without an operator decision. |
 | The card holds more than one named-service resource. | The boundary is stored as one merged tree; per-resource attribution is not recoverable. |
 
-When an existing `"*"` card is saved after catalog drift without an explicit
+When an existing credential-backed `"*"` card is saved after catalog drift without an explicit
 new wildcard choice, the backend expands the wildcard against the saved
 catalog version and persists the surviving exact set before advancing
 `catalog_version`. An explicitly submitted `"*"` selects all operations shown
@@ -949,14 +951,70 @@ no expiry. It stops contributing only when the owner revokes it or removes the
 link. Unlinking restores the unchanged caller Card; it never resurrects a
 caller Card that was already revoked.
 
-Control Card choices come from the current catalog. A caller Card may supply
-the initially checked values at creation, including authority-defining bounded
-properties such as the application-operation policy marker. Explicit values
-supplied by the issuing application override equal seed-property keys. The
-seed is not retained as a maximum or basis. Later saves may select any option
-the current catalog and grantor allow. Services or operations added after the
-Card's saved catalog version appear as drift and remain unselected until the
-user reviews and saves them.
+Control Card choices come from the current catalog, but the saved authority is
+an **exact snapshot**. On first creation, **Select all** means enumerate every
+entry selected from that active catalog generation. It never means "this entry
+and everything published under it later." The immutable revision stores those
+exact values and the basis `catalog_version`; it stores no authority wildcard
+in `resource_grants`, `resource_operations`, `named_service_operations`, or
+`account_scope`. The wildcard application resource key `"*"` remains its
+stable resource identifier, while its role and operation lists are exact and
+its `kdcube.application_operations` policy is explicitly default-closed.
+
+The Card records this contract in bounded properties:
+
+```json
+{
+  "connection_hub.control_snapshot": {
+    "schema": "connection_hub.control_snapshot.v1",
+    "mode": "exact",
+    "state": "exact",
+    "basis_catalog_version": "delegated_catalog_<timestamp>_<hash>",
+    "origin": "created"
+  }
+}
+```
+
+A caller Card may supply the initially checked values at creation, including
+authority-defining bounded properties such as the application-operation policy
+marker. Explicit values supplied by the issuing application override equal
+seed-property keys. The seed is not retained as a maximum, but the exact
+selection created from it is the Control Card's first catalog snapshot. Later
+saves may select any option the current catalog and grantor allow and write a
+new exact revision with the current catalog as its basis.
+
+Resources and operations published after the basis version are listed as
+newly available with `selected: false`. They remain outside the Control Card
+until the owner selects them and saves. Selecting every currently displayed
+entry performs one bounded inclusion for that catalog generation; it does not
+install a future wildcard. The editor shows **Exact catalog snapshot**, the
+basis and current versions, catalog drift, and any unresolved migration
+dimension, so an exact all-selected state is visibly different from a legacy
+open-ended state.
+
+Runtime composition first verifies the exact marker and rejects every
+authority wildcard. AND and OR preview applies the same check and produces an
+empty effective authority for an unmarked or wildcard control. This keeps the
+preview and the admission decision on the same stored sets.
+
+### Legacy Control Card freeze
+
+The owner-facing read of an unmarked Control Card freezes it once into a new
+immutable revision. Migration reads the first unambiguous immutable revision,
+verifies its content-addressed filename, and materializes any historical
+wildcard only from that revision's accepted catalog evidence and materialized
+boundary. It never expands against the active catalog because doing so would
+silently ratify capabilities added after creation. Every later-added capability
+therefore remains excluded until the owner explicitly selects it in the
+current catalog.
+
+If the first revision lacks evidence for one authority dimension, migration
+does not guess. That dimension becomes an exact empty selection and metadata
+state becomes `review_required`, naming what the owner must inspect. A confirmed
+absence of usable history creates an editable deny-all snapshot. Ambiguous,
+corrupt, or unreadable history refuses migration instead of choosing one
+candidate; runtime remains closed until storage is repaired or the operator
+performs an explicit recovery.
 
 Connection Hub owns creation, immutable revisions, the current pointer,
 catalog drift, editing, update, revoke, linking, and live composition. The
@@ -1492,7 +1550,7 @@ join a Card and why the others may not. Every field is non-secret.
 | Durable revisions and current pointer | `...delegated_credentials.cards.store.DelegatedCardStore` over Connection Hub bundle storage |
 | Persistence port, TTL live projection and read-through | `...delegated_credentials.cards.persistence`, `.cache`, `.handles`, `.resolver` |
 | Stored selection states and card model | `...delegated_credentials.cards.model` |
-| Credentialless Card creation, legacy control migration, and Card composition | `...delegated_credentials.controls.model` and `.effective`; current serving uses the ordinary Card persistence/cache |
+| Credentialless Card creation, historical exact-snapshot migration, and Card composition | `...delegated_credentials.controls.snapshot`, `.model`, and `.effective`; current serving uses the ordinary Card persistence/cache |
 | Stable resident caller identity | `...delegated_credentials.cards.identity` |
 | Per-resource accepted descriptor state | `...delegated_credentials.catalog.descriptors` |
 | Portable card read model and compatible-resource offers | `...delegated_credentials.cards.read_model` |

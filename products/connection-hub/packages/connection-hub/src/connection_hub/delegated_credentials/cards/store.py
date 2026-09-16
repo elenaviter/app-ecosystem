@@ -49,6 +49,7 @@ _REVISION_NAME_PATTERN = re.compile(
     r"^card_revision_[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{3}"
     r"_[0-9]{8}_[0-9a-f]{12}\.json$"
 )
+_REVISION_NUMBER_PATTERN = re.compile(r"_([0-9]{8})_([0-9a-f]{12})\.json$")
 
 
 class CardStorageError(DurableStorageError):
@@ -99,6 +100,10 @@ class DelegatedCardStore(Protocol):
     ) -> None: ...
 
     async def list_card_ids(self, *, subject_hash: str) -> list[str]: ...
+
+    async def read_initial_authority(
+        self, *, subject_hash: str, access_id: str
+    ) -> CardAuthority | None: ...
 
 
 class BundleStorageDelegatedCardStore:
@@ -231,6 +236,43 @@ class BundleStorageDelegatedCardStore:
         path = self.card_path(subject_hash=subject_hash, access_id=access_id) / REVISIONS_DIRNAME
         names = await list_child_names(path)
         return [name for name in names if _REVISION_NAME_PATTERN.match(name)]
+
+    async def read_initial_authority(
+        self, *, subject_hash: str, access_id: str
+    ) -> CardAuthority | None:
+        """The lowest immutable revision for one Card, independent of clock order."""
+
+        names = await self.list_revision_names(
+            subject_hash=subject_hash,
+            access_id=access_id,
+        )
+        ranked: list[tuple[int, str, str]] = []
+        for name in names:
+            match = _REVISION_NUMBER_PATTERN.search(name)
+            if match is not None:
+                ranked.append((int(match.group(1)), match.group(2), name))
+        if not ranked:
+            return None
+        first_revision = min(revision for revision, _, _ in ranked)
+        first = [item for item in ranked if item[0] == first_revision]
+        if first_revision != 1:
+            raise CardStorageError("initial_revision_missing")
+        if len(first) != 1:
+            raise CardStorageError("initial_revision_ambiguous")
+        revision, expected_hash, name = first[0]
+        payload = await self._read_revision_payload(
+            subject_hash=subject_hash,
+            access_id=access_id,
+            revision_name=name,
+        )
+        if payload is None:
+            raise CardStorageError("initial_revision_missing")
+        if card_authority_payload_hash(payload)[:12] != expected_hash:
+            raise CardRecordError("revision_content_hash_mismatch")
+        authority = CardAuthority.from_mapping(payload)
+        if authority.card_revision != revision:
+            raise CardRecordError("revision_number_mismatch")
+        return authority
 
 
 __all__ = [

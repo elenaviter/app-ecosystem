@@ -122,6 +122,7 @@ import {
   authorityOuterOperationCount,
   authorityResourceKeys,
   compositionRowState,
+  controlSnapshotMetadata,
   composeControlCardAuthority,
   outerOperationsExcludedByControl,
   type CompositionRowState,
@@ -934,6 +935,7 @@ function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
     ...(drift.removed?.named_service_operations || []),
   ];
   const added = [
+    ...(drift.added?.resources || []),
     ...(drift.added?.claims || []),
     ...(drift.added?.outer_operations || []),
     ...(drift.added?.named_service_operations || []),
@@ -2766,7 +2768,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           Object.entries(splits).map(([resource, split]) => [resource, split.kept]),
         ),
         namedServiceOperations: Object.keys(offered).length
-          ? encodeNamedServiceSelection(keptNamedServiceOperations, offered)
+          ? (item.source === 'control'
+              ? keptNamedServiceOperations
+              : encodeNamedServiceSelection(keptNamedServiceOperations, offered))
           : undefined,
         accountScope: editAccountScope,
         // What this editor was opened on. The server refuses the save when
@@ -4496,6 +4500,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       `${authorityNamedOperationCount(effectiveComposition.effective)} effective service actions`,
       `${authorityAccountCount(effectiveComposition.effective)} effective accounts`,
     ].join(' · ') : '';
+    const snapshot = record.source === 'control' ? controlSnapshotMetadata(record) : {};
+    const snapshotState = typeof snapshot.state === 'string' ? snapshot.state : '';
+    const snapshotBasis = typeof snapshot.basis_catalog_version === 'string'
+      ? snapshot.basis_catalog_version
+      : record.catalog_version || '';
+    const snapshotReview = Array.isArray(snapshot.review_required)
+      ? snapshot.review_required.filter((value): value is string => typeof value === 'string')
+      : [];
     return (
       <div className="card-workbench" ref={workbenchRef}>
         <aside className="card-rail" aria-label="Access cards">
@@ -4542,6 +4554,29 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 <div>
                   Review <code>{accessCardFocus.claims.join(', ')}</code>, save, and retry the operation.
                 </div>
+              ) : null}
+            </div>
+          ) : null}
+          {record.source === 'control' ? (
+            <div
+              className={`notice ${snapshotState === 'exact' ? '' : 'warning'}`.trim()}
+              role="status"
+            >
+              <strong>{snapshotState === 'exact'
+                ? 'Exact catalog snapshot'
+                : snapshotState === 'review_required'
+                  ? 'Historical snapshot needs review'
+                  : 'Legacy Control Card is closed'}</strong>
+              <span>
+                {' '}Basis <code>{snapshotBasis || 'not recorded'}</code>.
+                {' '}Current catalog <code>{record.catalog_drift?.current_version || 'unavailable'}</code>.
+                {' '}Newly advertised entries remain unselected until this Card is saved.
+              </span>
+              {snapshotReview.length ? (
+                <CountFold
+                  entries={snapshotReview.map(readableIdentifier)}
+                  noun="unresolved selection"
+                />
               ) : null}
             </div>
           ) : null}

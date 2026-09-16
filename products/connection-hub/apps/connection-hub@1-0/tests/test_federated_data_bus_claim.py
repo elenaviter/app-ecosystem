@@ -138,8 +138,22 @@ def test_anonymous_host_context_is_not_a_platform_authenticator():
     assert module._authenticated_platform_request_context(instance) == {}
 
 
-def test_descriptor_owned_platform_authority_is_accepted():
+def test_descriptor_owned_platform_authority_is_accepted(monkeypatch):
     module = _entrypoint_module()
+    from kdcube_ai_app.apps.chat.sdk import config_scopes
+
+    registry = {
+        "authorities": {
+            "custom.platform": {
+                "platform": True,
+            }
+        }
+    }
+    monkeypatch.setattr(
+        config_scopes,
+        "_load_bundles_plain",
+        lambda _path: registry,
+    )
     instance = _entrypoint(
         module,
         identity_authority={
@@ -148,13 +162,7 @@ def test_descriptor_owned_platform_authority_is_accepted():
         },
     )
     instance.bundle_props = {
-        "authority_registry": {
-            "authorities": {
-                "custom.platform": {
-                    "platform": True,
-                }
-            }
-        }
+        "authority_registry": registry,
     }
 
     result = module._authenticated_platform_request_context(instance)

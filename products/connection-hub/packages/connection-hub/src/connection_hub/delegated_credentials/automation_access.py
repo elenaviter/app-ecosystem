@@ -102,6 +102,15 @@ from connection_hub.delegated_credentials.controls.model import (
     control_card_id_for_issuer,
     new_credentialless_card,
 )
+from connection_hub.delegated_credentials.controls.snapshot import (
+    APPLICATION_OPERATIONS_PROPERTY,
+    CONTROL_SNAPSHOT_PROPERTY,
+    control_snapshot_is_exact,
+    control_snapshot_wildcards,
+    fail_closed_control_snapshot,
+    materialize_control_snapshot,
+    reviewed_control_snapshot_properties,
+)
 from connection_hub.delegated_credentials.cards.identity import (
     ResidentCallerProfile,
     is_resident_client_id,
@@ -1210,6 +1219,109 @@ class AutomationAccessService:
             raise CardUnavailable("card_persistence_not_configured")
         return self._persistence
 
+    async def _ensure_control_snapshot(
+        self,
+        record: AutomationAccessRecord,
+    ) -> AutomationAccessRecord:
+        """Migrate one legacy Control Card from its first durable revision.
+
+        The first immutable revision is the only defensible historical
+        boundary. Expanding a wildcard against the active catalog would grant
+        capabilities that did not exist when the project owner created the
+        Card. Missing historical evidence becomes an exact empty selection and
+        is surfaced for review.
+        """
+
+        current = card_authority_from_record(record)
+        if not authority_is_credentialless(current) or control_snapshot_is_exact(
+            current
+        ):
+            return record
+
+        load_initial = getattr(self._cards(), "load_initial", None)
+        initial = (
+            await load_initial(
+                current.access_id,
+                subject_hash=_subject_key(current.grantor_subject),
+            )
+            if callable(load_initial)
+            else None
+        )
+        history_is_trusted = bool(
+            initial is not None
+            and authority_is_credentialless(initial)
+            and initial.access_id == current.access_id
+            and initial.grantor_subject == current.grantor_subject
+            and initial.catalog_version
+        )
+
+        if not history_is_trusted:
+            migrated = dataclasses.replace(
+                fail_closed_control_snapshot(
+                    current,
+                    basis_catalog_version=current.catalog_version,
+                    reason="historical_boundary_unavailable",
+                ),
+                card_revision=current.card_revision + 1,
+            )
+        else:
+            assert initial is not None
+
+            properties = copy.deepcopy(dict(current.properties or {}))
+            properties.pop(CONTROL_SNAPSHOT_PROPERTY, None)
+            properties.pop(APPLICATION_OPERATIONS_PROPERTY, None)
+            initial_application_policy = dict(initial.properties or {}).get(
+                APPLICATION_OPERATIONS_PROPERTY
+            )
+            if isinstance(initial_application_policy, Mapping):
+                properties[APPLICATION_OPERATIONS_PROPERTY] = copy.deepcopy(
+                    dict(initial_application_policy)
+                )
+
+            historical = dataclasses.replace(
+                current,
+                catalog_version=initial.catalog_version,
+                resource_grants=copy.deepcopy(dict(initial.resource_grants)),
+                resource_operations=copy.deepcopy(dict(initial.resource_operations)),
+                named_service_operations=initial.named_service_operations,
+                named_services=copy.deepcopy(dict(initial.named_services or {})),
+                account_scope=copy.deepcopy(dict(initial.account_scope or {})),
+                identity_scope=initial.identity_scope,
+                resource_acceptance=copy.deepcopy(
+                    dict(initial.resource_acceptance or {})
+                ),
+                properties=properties,
+            )
+            migrated = dataclasses.replace(
+                materialize_control_snapshot(
+                    historical,
+                    basis_catalog_version=initial.catalog_version,
+                    origin="legacy_wildcard",
+                    source_card_revision=initial.card_revision,
+                ),
+                card_revision=current.card_revision + 1,
+            )
+        try:
+            await self._persist_record(
+                record_from_card(migrated),
+                expected_revision=current.card_revision,
+            )
+        except CardConflict:
+            reloaded = await self._load_record(
+                current.access_id,
+                grantor_subject=current.grantor_subject,
+            )
+            if reloaded is not None and control_snapshot_is_exact(
+                card_authority_from_record(reloaded)
+            ):
+                return reloaded
+            raise CardUnavailable("control_card_snapshot_migration_conflict")
+        except (CardCommitFailed, CardServingUnavailable) as exc:
+            raise CardUnavailable(
+                getattr(exc, "reason", "control_card_snapshot_migration_failed")
+            ) from exc
+        return record_from_card(migrated)
+
     async def _resolve_control_record(
         self,
         control_id: str,
@@ -1223,7 +1335,7 @@ class AutomationAccessService:
             grantor_subject=grantor_subject,
         )
         if record is not None:
-            return record
+            return await self._ensure_control_snapshot(record)
         if not control_id.startswith("project-control-") or self._redis is None:
             return None
         try:
@@ -3236,6 +3348,17 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_not_found"}
         if existing.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_owned"}
+        if _record_is_credentialless(existing):
+            try:
+                existing = await self._ensure_control_snapshot(existing)
+            except CardUnavailable as exc:
+                return {
+                    "ok": False,
+                    "error": "control_card_snapshot_unavailable",
+                    "reason": exc.reason,
+                    "retryable": True,
+                    "status": 503,
+                }
         selected_composition_mode = (
             _clean(composition_mode).lower()
             if composition_mode is not None
@@ -3358,6 +3481,49 @@ class AutomationAccessService:
         named_services = resolved.named_services
         selected_operations = resolved.operations
         selected_account_scope = resolved.account_scope
+        selected_properties = copy.deepcopy(
+            dict(existing.properties if properties is None else properties)
+        )
+        if _record_is_credentialless(existing):
+            candidate = dataclasses.replace(
+                card_authority_from_record(existing),
+                catalog_version=catalog_version,
+                operations=tuple(selected_operations),
+                resource_grants={
+                    key: tuple(value)
+                    for key, value in selected_resource_grants.items()
+                },
+                resource_operations={
+                    key: tuple(value)
+                    for key, value in selected_resource_operations.items()
+                },
+                named_service_operations=selected_named_service_operations,
+                named_services=copy.deepcopy(named_services),
+                account_scope={
+                    provider: {
+                        account_id: tuple(claims)
+                        for account_id, claims in accounts.items()
+                    }
+                    for provider, accounts in selected_account_scope.items()
+                },
+                properties=selected_properties,
+            )
+            wildcards = control_snapshot_wildcards(candidate)
+            if wildcards:
+                return {
+                    "ok": False,
+                    "error": "control_card_exact_snapshot_required",
+                    "dimensions": list(wildcards),
+                    "status": 400,
+                    "message": (
+                        "A Control Card stores an exact catalog snapshot. "
+                        "Review the named selections and save them without wildcards."
+                    ),
+                }
+            selected_properties = reviewed_control_snapshot_properties(
+                selected_properties,
+                basis_catalog_version=catalog_version,
+            )
         now = int(time.time())
         # Editing is about the grants, expiry about the credential. An expired
         # card is edited like any other; its credential comes back by renewal.
@@ -3411,9 +3577,7 @@ class AutomationAccessService:
             issuer_label=existing.issuer_label,
             manage_url=existing.manage_url,
             composition_mode=selected_composition_mode,
-            properties=copy.deepcopy(
-                dict(existing.properties if properties is None else properties)
-            ),
+            properties=selected_properties,
         )
         del remaining
         try:
@@ -4120,6 +4284,17 @@ class AutomationAccessService:
         if record is None or not _record_is_credentialless(record):
             return {"ok": False, "error": "control_card_not_found", "status": 404}
         state = loaded[1]
+        if state == CARD_STATE_ACTIVE:
+            try:
+                record = await self._ensure_control_snapshot(record)
+            except CardUnavailable as exc:
+                return {
+                    "ok": False,
+                    "error": "control_card_snapshot_unavailable",
+                    "reason": exc.reason,
+                    "retryable": True,
+                    "status": 503,
+                }
         card = await self._control_card_public_view(user, record, state=state)
         authority = dataclasses.replace(card_authority_from_record(record), state=state)
         access = record.to_public_dict()
@@ -4213,6 +4388,16 @@ class AutomationAccessService:
                 return {"ok": False, "error": "control_card_identity_conflict", "status": 409}
             if state != CARD_STATE_ACTIVE:
                 return {"ok": False, "error": "control_card_not_active", "status": 409}
+            try:
+                record = await self._ensure_control_snapshot(record)
+            except CardUnavailable as exc:
+                return {
+                    "ok": False,
+                    "error": "control_card_snapshot_unavailable",
+                    "reason": exc.reason,
+                    "retryable": True,
+                    "status": 503,
+                }
             return {
                 "ok": True,
                 "created": False,
@@ -4350,6 +4535,13 @@ class AutomationAccessService:
                         selected_operations=resolved.resource_operations,
                     ),
                 )
+            record = record_from_card(
+                materialize_control_snapshot(
+                    card_authority_from_record(record),
+                    basis_catalog_version=catalog_version,
+                    origin="created",
+                )
+            )
             await self._persist_record(record, expected_revision=0)
         except (CardRecordError, ControlCardError) as exc:
             return {"ok": False, "error": exc.reason, "status": 400}

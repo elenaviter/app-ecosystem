@@ -78,6 +78,10 @@ class CardPersistence(Protocol):
 
     async def list_current(self, *, subject_hash: str) -> list[CardAuthority]: ...
 
+    async def load_initial(
+        self, access_id: str, *, subject_hash: str
+    ) -> CardAuthority | None: ...
+
 
 class DurableCardPersistence:
     """Immutable revisions in bundle storage, projected into Redis."""
@@ -205,6 +209,24 @@ class DurableCardPersistence:
                 continue
             found.append(authority)
         return found
+
+    async def load_initial(
+        self, access_id: str, *, subject_hash: str
+    ) -> CardAuthority | None:
+        """Read the first immutable revision for an explicit migration."""
+
+        try:
+            authority = await self._store.read_initial_authority(
+                subject_hash=subject_hash,
+                access_id=access_id,
+            )
+        except Exception as exc:
+            raise CardUnavailable("durable_card_history_unreadable") from exc
+        if authority is None:
+            return None
+        if subject_hash_for(authority.grantor_subject) != str(subject_hash):
+            return None
+        return authority
 
 
 __all__ = [

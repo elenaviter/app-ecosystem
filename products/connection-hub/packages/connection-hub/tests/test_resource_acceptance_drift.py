@@ -249,7 +249,12 @@ def test_unrelated_catalog_change_leaves_an_unchanged_connector_current():
     assert drift["status"] == DRIFT_NO_RELEVANT_CHANGE
     assert drift["resources"][connector.resource]["status"] == "current"
     assert drift["resources"][TASKS]["status"] == "current"
-    assert drift["added"] == {"claims": [], "outer_operations": [], "named_service_operations": []}
+    assert drift["added"] == {
+        "resources": [],
+        "claims": [],
+        "outer_operations": [],
+        "named_service_operations": [],
+    }
 
     # A card written before acceptance existed: still no spurious additions,
     # because the connector is unknown to the baseline document.
@@ -264,6 +269,44 @@ def test_unrelated_catalog_change_leaves_an_unchanged_connector_current():
     )
     assert legacy_drift["added"]["outer_operations"] == []
     assert legacy_drift["resources"][connector.resource]["status"] == "unknown"
+
+
+def test_control_card_reports_new_catalog_resources_as_unselected() -> None:
+    from dataclasses import replace
+
+    before = _document(_connections(), stamp=NOW)
+    after = _document(_connections(extra_resource=True), stamp=NOW + 10)
+    config = oauth_delegated_config_from_connections(before.connections)
+    control = replace(
+        _card(
+            resource_grants={MEMORIES: ("memories:read",), TASKS: ("tasks:use",)},
+            resource_operations={MEMORIES: ("search",), TASKS: ("search",)},
+            catalog_version=before.version,
+            acceptance={
+                resource: row_acceptance(
+                    config.card_selector_config(resource),
+                    catalog_version=before.version,
+                )
+                for resource in (MEMORIES, TASKS)
+            },
+        ),
+        source="control",
+        delegate_subject="",
+        expires_at=0,
+        issuer_ref="work:project:demo",
+        issuer_kind="application",
+        composition_mode="and",
+    )
+
+    drift = card_drift(card=control, active=after, baseline=before)
+
+    assert drift["status"] == DRIFT_CHANGED
+    assert drift["added"]["resources"] == [
+        {
+            "resource": "https://host/api/mcp/mail*",
+            "selected": False,
+        }
+    ]
 
 
 def test_changed_selected_tool_is_suspended_and_new_sibling_stays_ungranted():

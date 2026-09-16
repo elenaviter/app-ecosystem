@@ -33,6 +33,9 @@ from connection_hub.delegated_credentials.controls.model import (
     ProjectControlCardAuthority,
     control_card_from_legacy,
 )
+from connection_hub.delegated_credentials.controls.snapshot import (
+    control_snapshot_is_exact,
+)
 
 
 class ControlCardMismatch(RuntimeError):
@@ -231,6 +234,8 @@ def effective_card_authority(
     binding = card.control_card
     if not authority_is_credentialless(control):
         raise ControlCardMismatch("control_card_has_credential")
+    if not control_snapshot_is_exact(control):
+        raise ControlCardMismatch("control_card_exact_snapshot_required")
     if binding is None or binding.control_id != control.access_id:
         raise ControlCardMismatch("control_card_binding_mismatch")
     if binding.issuer_ref != control.issuer_ref:

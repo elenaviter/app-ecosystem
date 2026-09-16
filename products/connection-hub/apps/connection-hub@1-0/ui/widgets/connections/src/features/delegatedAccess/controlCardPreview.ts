@@ -6,6 +6,49 @@ import type {
 export type ControlCompositionMode = 'and' | 'or';
 export type CompositionRowState = 'normal' | 'added' | 'removed' | 'absent';
 
+const CONTROL_SNAPSHOT_PROPERTY = 'connection_hub.control_snapshot';
+const CONTROL_SNAPSHOT_SCHEMA = 'connection_hub.control_snapshot.v1';
+const APPLICATION_OPERATIONS_PROPERTY = 'kdcube.application_operations';
+const APPLICATION_OPERATIONS_SCHEMA = 'kdcube.application_operations.v1';
+
+function object(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+export function controlSnapshotMetadata(
+  authority: DelegatedControlCardAuthority,
+): Record<string, unknown> {
+  return object(object(authority.properties)[CONTROL_SNAPSHOT_PROPERTY]);
+}
+
+/** The same exact-at-rest gate the runtime applies before composition. */
+export function controlSnapshotIsExact(
+  authority: DelegatedControlCardAuthority,
+): boolean {
+  const metadata = controlSnapshotMetadata(authority);
+  if (metadata.schema !== CONTROL_SNAPSHOT_SCHEMA || metadata.mode !== 'exact') return false;
+  if (metadata.state !== 'exact' && metadata.state !== 'review_required') return false;
+  if (typeof metadata.basis_catalog_version !== 'string' || !metadata.basis_catalog_version.trim()) return false;
+  if (Object.values(authority.resource_grants || {}).some((items) => items.includes('*'))) return false;
+  if (Object.values(authority.resource_operations || {}).some((items) => items.includes('*'))) return false;
+  if (!authority.named_service_operations || authority.named_service_operations === '*') return false;
+  if (Object.values(authority.named_service_operations).some((namespaces) => (
+    Object.values(namespaces).some((items) => items.includes('*'))
+  ))) return false;
+  if (Object.entries(authority.account_scope || {}).some(([provider, accounts]) => (
+    provider === '*' || Object.entries(accounts).some(([accountId, claims]) => (
+      accountId === '*' || !claims.length || claims.includes('*')
+    ))
+  ))) return false;
+  if ('*' in (authority.resource_grants || {})) {
+    const policy = object(object(authority.properties)[APPLICATION_OPERATIONS_PROPERTY]);
+    if (policy.schema !== APPLICATION_OPERATIONS_SCHEMA || policy.mode !== 'selected') return false;
+  }
+  return true;
+}
+
 function values(items: string[] | undefined): string[] {
   return Array.from(new Set((items || []).filter(Boolean))).sort();
 }
@@ -94,7 +137,7 @@ export function authorityAllowsOuterOperation(
   operation: string,
 ): boolean {
   const selected = values(authority.resource_operations?.[resource]);
-  return selected.includes('*') || selected.includes(operation);
+  return controlSnapshotIsExact(authority) && selected.includes(operation);
 }
 
 /** How one Caller/Control selection is represented in the Effective Card. */
@@ -203,6 +246,16 @@ export function composeControlCardAuthority(
   control: DelegatedControlCardAuthority,
   mode: ControlCompositionMode,
 ): DelegatedControlCardAuthority {
+  if (!controlSnapshotIsExact(control)) {
+    return {
+      operations: [],
+      resource_grants: {},
+      resource_operations: {},
+      named_service_operations: {},
+      effective_named_service_operations: {},
+      account_scope: {},
+    };
+  }
   const callerGrants = caller.resource_grants || {};
   const controlGrants = control.resource_grants || {};
   const resources = mode === 'or'

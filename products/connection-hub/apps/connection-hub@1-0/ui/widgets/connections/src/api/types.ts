@@ -171,6 +171,7 @@ export interface DelegatedControlCardAuthority {
   named_service_operations?: DelegatedAccessStoredNamedServices;
   effective_named_service_operations?: DelegatedAccessNamedServiceOperations;
   account_scope?: Record<string, Record<string, string[]>>;
+  properties?: Record<string, unknown>;
 }
 
 export interface DelegatedControlCardView {
@@ -373,6 +374,7 @@ export interface DelegatedCatalogDrift {
     named_service_operations?: DelegatedDriftRemoval[];
   };
   added?: {
+    resources?: DelegatedDriftAddition[];
     claims?: DelegatedDriftAddition[];
     outer_operations?: DelegatedDriftAddition[];
     named_service_operations?: DelegatedDriftAddition[];

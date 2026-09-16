@@ -29,6 +29,9 @@ from connection_hub.delegated_credentials.named_service_policy import (
 from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_operations,
 )
+from connection_hub.delegated_credentials.controls.snapshot import (
+    materialize_control_snapshot,
+)
 
 CONTROL_CARD_SCHEMA = "connection_hub.project_control_card.v1"
 CONTROL_CARD_STATE_ACTIVE = "active"
@@ -147,7 +150,9 @@ def new_credentialless_card(
         or "grantor",
         created_at=max(0, int(now)),
         expires_at=0,
-        resource_acceptance={},
+        resource_acceptance=(
+            dict(seed.resource_acceptance or {}) if seed is not None else {}
+        ),
         provenance=provenance,
         issuer_ref=clean_text(issuer_ref),
         issuer_kind=clean_text(issuer_kind),
@@ -162,7 +167,12 @@ def new_credentialless_card(
         raise ControlCardError("control_card_grantor_missing")
     if not result.catalog_version:
         raise ControlCardError("control_card_catalog_version_missing")
-    return result
+    return materialize_control_snapshot(
+        result,
+        basis_catalog_version=result.catalog_version,
+        origin="created",
+        source_card_revision=(seed.card_revision if seed is not None else None),
+    )
 
 
 def control_card_from_legacy(
@@ -172,7 +182,7 @@ def control_card_from_legacy(
 ) -> CardAuthority:
     """Adapt an old PB-owned projection during the bounded migration window."""
 
-    return CardAuthority(
+    card = CardAuthority(
         access_id=authority.control_id,
         client_id=f"control-card:{authority.issuer_kind}",
         grantor_subject=authority.grantor_subject,
@@ -205,6 +215,12 @@ def control_card_from_legacy(
         manage_url=authority.manage_url,
         composition_mode=CONTROL_COMPOSITION_AND,
         properties=dict(properties or {}),
+    )
+    return materialize_control_snapshot(
+        card,
+        basis_catalog_version=authority.basis_catalog_version,
+        origin="legacy_project_control",
+        source_card_revision=authority.revision,
     )
 
 

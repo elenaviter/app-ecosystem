@@ -18,6 +18,12 @@ from connection_hub.delegated_credentials.controls.attribution import (
 from connection_hub.delegated_credentials.controls.effective import (
     effective_card_authority,
 )
+from connection_hub.delegated_credentials.controls.snapshot import (
+    CONTROL_SNAPSHOT_MODE_EXACT,
+    CONTROL_SNAPSHOT_PROPERTY,
+    CONTROL_SNAPSHOT_SCHEMA,
+    CONTROL_SNAPSHOT_STATE_EXACT,
+)
 from connection_hub.delegated_credentials.oauth.surface_policy import (
     authorize_credential_boundary,
     authorize_mcp_capabilities,
@@ -110,6 +116,14 @@ def _control_composition() -> ResolvedCardComposition:
         issuer_kind="application",
         issuer_label="Demo project",
         composition_mode="and",
+        properties={
+            CONTROL_SNAPSHOT_PROPERTY: {
+                "schema": CONTROL_SNAPSHOT_SCHEMA,
+                "mode": CONTROL_SNAPSHOT_MODE_EXACT,
+                "state": CONTROL_SNAPSHOT_STATE_EXACT,
+                "basis_catalog_version": "catalog-before",
+            }
+        },
     )
     caller = CardAuthority(
         access_id="caller-card-1",

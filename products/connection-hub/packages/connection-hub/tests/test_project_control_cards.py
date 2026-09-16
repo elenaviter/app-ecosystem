@@ -11,6 +11,7 @@ import pytest
 
 from connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
+    card_authority_from_record,
     record_from_card,
 )
 from connection_hub.delegated_credentials.cache_io import (
@@ -38,6 +39,13 @@ from connection_hub.delegated_credentials.cards.service import (
     replace_state,
 )
 from connection_hub.delegated_credentials.cards.store import subject_hash_for
+from connection_hub.delegated_credentials.controls.snapshot import (
+    CONTROL_SNAPSHOT_PROPERTY,
+    CONTROL_SNAPSHOT_SCHEMA,
+    CONTROL_SNAPSHOT_STATE_REVIEW_REQUIRED,
+    control_snapshot_is_exact,
+    control_snapshot_metadata,
+)
 from connection_hub.delegated_credentials.controls.cache import (
     CONTROL_CACHE_KIND_CARD,
     CONTROL_CACHE_KIND_UPDATING,
@@ -50,6 +58,9 @@ from connection_hub.delegated_credentials.controls.effective import (
 from connection_hub.delegated_credentials.controls.model import (
     ProjectControlCardAuthority,
     new_credentialless_card,
+)
+from connection_hub.delegated_credentials.catalog.descriptors import (
+    ResourceAcceptance,
 )
 from connection_hub.delegated_credentials.live_grant import (
     LiveGrantCardError,
@@ -73,8 +84,14 @@ class _Redis:
 
 
 class _Persistence:
-    def __init__(self, authority: CardAuthority) -> None:
+    def __init__(
+        self,
+        authority: CardAuthority,
+        *,
+        initial: CardAuthority | None = None,
+    ) -> None:
         self.authority = authority
+        self.initial = initial or authority
         self.handles = CardCredentialHandles(access_id=authority.access_id)
         self.persist_calls = 0
 
@@ -98,6 +115,11 @@ class _Persistence:
         if access_id != self.authority.access_id or not self._owned(subject_hash):
             return None
         return self.authority, self.handles
+
+    async def load_initial(self, access_id: str, *, subject_hash: str):
+        if access_id != self.initial.access_id or not self._owned(subject_hash):
+            return None
+        return self.initial
 
     async def persist(
         self,
@@ -338,7 +360,11 @@ def test_control_card_initial_selection_preserves_authority_properties() -> None
         now=int(time.time()),
     )
 
-    assert control.properties == {
+    assert {
+        key: value
+        for key, value in control.properties.items()
+        if key != CONTROL_SNAPSHOT_PROPERTY
+    } == {
         "kdcube.application_operations": {
             "schema": "kdcube.application_operations.v1",
             "mode": "selected",
@@ -346,6 +372,188 @@ def test_control_card_initial_selection_preserves_authority_properties() -> None
         "source-only": False,
         "coordination": {"project": "demo"},
     }
+    assert control_snapshot_is_exact(control)
+    assert control_snapshot_metadata(control.properties) == {
+        "schema": "connection_hub.control_snapshot.v1",
+        "mode": "exact",
+        "state": "exact",
+        "basis_catalog_version": "catalog-v1",
+        "origin": "created",
+        "source_card_revision": 3,
+    }
+
+
+@pytest.mark.asyncio
+async def test_legacy_control_migrates_from_first_revision_not_current_catalog() -> None:
+    initial = dataclasses.replace(
+        _regular_control(operations=("project.plan.item",), revision=1),
+        properties={},
+        catalog_version="catalog-before-review",
+    )
+    widened = dataclasses.replace(
+        initial,
+        card_revision=9,
+        catalog_version="catalog-with-review",
+        resource_operations={
+            RESOURCE: ("project.plan.item", "review.accept", "review.return")
+        },
+    )
+    persistence = _Persistence(widened, initial=initial)
+    service = AutomationAccessService(
+        redis=_Redis(),
+        tenant="tenant",
+        project="project",
+        config=None,
+        grant_store=object(),
+        card_persistence=persistence,
+    )
+
+    migrated = await service._ensure_control_snapshot(record_from_card(widened))
+
+    assert migrated.card_revision == 10
+    assert migrated.catalog_version == "catalog-before-review"
+    assert migrated.resource_operations == {RESOURCE: ("project.plan.item",)}
+    assert "review.accept" not in migrated.operations
+    assert control_snapshot_is_exact(card_authority_from_record(migrated))
+    assert control_snapshot_metadata(migrated.properties)["source_card_revision"] == 1
+    assert persistence.persist_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_historical_wildcard_is_materialized_only_from_historical_evidence() -> None:
+    initial = dataclasses.replace(
+        _regular_control(revision=1),
+        properties={},
+        catalog_version="catalog-before-upload",
+        resource_grants={RESOURCE: ("*",)},
+        resource_operations={RESOURCE: ("*",)},
+        named_service_operations=NamedServiceSelection.all(),
+        named_services={
+            "namespaces": {
+                "slack": {
+                    "tools": {
+                        "post": {
+                            "operations": {
+                                "object.action.post_message": {
+                                    "grants": ["slack:post"]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        resource_acceptance={
+            RESOURCE: ResourceAcceptance(
+                kind="catalog",
+                revision="catalog-before-upload",
+                digest="a" * 64,
+                grants=("named_services:use",),
+                operations={"object.action.post_message": "b" * 64},
+            )
+        },
+    )
+    widened = dataclasses.replace(
+        initial,
+        card_revision=6,
+        catalog_version="catalog-with-upload",
+        resource_operations={RESOURCE: ("*",)},
+        named_services=_named_services(),
+    )
+    persistence = _Persistence(widened, initial=initial)
+    service = AutomationAccessService(
+        redis=_Redis(),
+        tenant="tenant",
+        project="project",
+        config=None,
+        grant_store=object(),
+        card_persistence=persistence,
+    )
+
+    migrated = await service._ensure_control_snapshot(record_from_card(widened))
+
+    assert migrated.resource_grants == {RESOURCE: ("named_services:use",)}
+    assert migrated.resource_operations == {
+        RESOURCE: ("object.action.post_message",)
+    }
+    assert migrated.named_service_operations.operations == {
+        RESOURCE: {"slack": ("object.action.post_message",)}
+    }
+    assert "object.action.upload_file" not in str(migrated.to_public_dict())
+
+
+@pytest.mark.asyncio
+async def test_legacy_control_without_history_becomes_editable_deny_all() -> None:
+    legacy = dataclasses.replace(
+        _regular_control(revision=4),
+        properties={},
+        resource_grants={RESOURCE: ("*",)},
+        resource_operations={RESOURCE: ("*",)},
+        named_service_operations=NamedServiceSelection.all(),
+        account_scope={"*": {"*": ("*",)}},
+    )
+    persistence = _Persistence(legacy)
+    persistence.initial = dataclasses.replace(legacy, access_id="other-control")
+    service = AutomationAccessService(
+        redis=_Redis(),
+        tenant="tenant",
+        project="project",
+        config=None,
+        grant_store=object(),
+        card_persistence=persistence,
+    )
+
+    migrated = await service._ensure_control_snapshot(record_from_card(legacy))
+
+    assert migrated.resource_grants == {}
+    assert migrated.resource_operations == {}
+    assert migrated.named_service_operations.is_none
+    assert migrated.account_scope == {}
+    metadata = control_snapshot_metadata(migrated.properties)
+    assert metadata["state"] == CONTROL_SNAPSHOT_STATE_REVIEW_REQUIRED
+    assert metadata["review_required"] == ["historical_boundary_unavailable"]
+
+
+def test_runtime_refuses_an_unmarked_or_wildcard_control_snapshot() -> None:
+    exact = _regular_control()
+    caller = dataclasses.replace(
+        _card(),
+        control_card=ControlCardBinding(
+            control_id=exact.access_id,
+            issuer_ref=exact.issuer_ref,
+            issuer_kind=exact.issuer_kind,
+            control_revision=exact.card_revision,
+        ),
+    )
+    unmarked = dataclasses.replace(exact, properties={})
+    with pytest.raises(ControlCardMismatch) as missing_marker:
+        effective_card_authority(caller, unmarked)
+    assert missing_marker.value.reason == "control_card_exact_snapshot_required"
+
+    wildcard = dataclasses.replace(
+        exact,
+        resource_operations={RESOURCE: ("*",)},
+    )
+    with pytest.raises(ControlCardMismatch) as open_ended:
+        effective_card_authority(caller, wildcard)
+    assert open_ended.value.reason == "control_card_exact_snapshot_required"
+
+    for incomplete_metadata in (
+        {"schema": CONTROL_SNAPSHOT_SCHEMA, "mode": "exact", "state": "exact"},
+        {
+            "schema": CONTROL_SNAPSHOT_SCHEMA,
+            "mode": "exact",
+            "state": "unknown",
+            "basis_catalog_version": "catalog-v1",
+        },
+    ):
+        incomplete = dataclasses.replace(
+            exact,
+            properties={CONTROL_SNAPSHOT_PROPERTY: incomplete_metadata},
+        )
+        with pytest.raises(ControlCardMismatch) as invalid_metadata:
+            effective_card_authority(caller, incomplete)
+        assert invalid_metadata.value.reason == "control_card_exact_snapshot_required"
 
 
 def test_effective_authority_refuses_a_different_identity_scope() -> None:

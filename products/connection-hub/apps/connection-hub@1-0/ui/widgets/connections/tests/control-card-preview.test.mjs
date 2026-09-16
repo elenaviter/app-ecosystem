@@ -8,10 +8,26 @@ import {
   authorityResourceKeys,
   compositionRowState,
   composeControlCardAuthority,
+  controlSnapshotIsExact,
   outerOperationsExcludedByControl,
 } from '../src/features/delegatedAccess/controlCardPreview.ts'
 
 const RESOURCE = 'https://example.test/mcp'
+const SNAPSHOT = {
+  schema: 'connection_hub.control_snapshot.v1',
+  mode: 'exact',
+  state: 'exact',
+  basis_catalog_version: 'catalog-v1',
+}
+
+function exactControl(authority) {
+  return {
+    named_service_operations: {},
+    account_scope: {},
+    properties: { 'connection_hub.control_snapshot': SNAPSHOT },
+    ...authority,
+  }
+}
 
 test('pending AND preview uses the raw control authority, not the saved intersection', () => {
   const pendingCaller = {
@@ -22,14 +38,17 @@ test('pending AND preview uses the raw control authority, not the saved intersec
     },
     account_scope: { github: { '*': ['repo:read', 'repo:write'] } },
   }
-  const rawControl = {
+  const rawControl = exactControl({
     resource_grants: { [RESOURCE]: ['work:observe', 'work:relay'] },
     resource_operations: { [RESOURCE]: ['project.plan.item', 'project.plan.search'] },
+    named_service_operations: {
+      [RESOURCE]: { work: ['project.plan.item', 'project.plan.search'] },
+    },
     effective_named_service_operations: {
       [RESOURCE]: { work: ['project.plan.item', 'project.plan.search'] },
     },
     account_scope: { github: { account_a: ['repo:read'] } },
-  }
+  })
 
   assert.deepEqual(composeControlCardAuthority(pendingCaller, rawControl, 'and'), {
     operations: [],
@@ -47,17 +66,18 @@ test('pending AND preview uses the raw control authority, not the saved intersec
 
 test('OR preview unions each authority family and preserves wildcard claims', () => {
   const caller = {
-    resource_grants: { [RESOURCE]: ['work:observe'] },
+    resource_grants: { [RESOURCE]: ['*'] },
     resource_operations: { [RESOURCE]: ['project.plan.item'] },
     effective_named_service_operations: { [RESOURCE]: { work: ['project.plan.item'] } },
-    account_scope: { github: { account_a: ['repo:read'] } },
-  }
-  const control = {
-    resource_grants: { [RESOURCE]: ['*'] },
-    resource_operations: { [RESOURCE]: ['project.plan.search'] },
-    effective_named_service_operations: { [RESOURCE]: { work: ['project.plan.search'] } },
     account_scope: { github: { account_a: ['*'] } },
   }
+  const control = exactControl({
+    resource_grants: { [RESOURCE]: ['work:relay'] },
+    resource_operations: { [RESOURCE]: ['project.plan.search'] },
+    named_service_operations: { [RESOURCE]: { work: ['project.plan.search'] } },
+    effective_named_service_operations: { [RESOURCE]: { work: ['project.plan.search'] } },
+    account_scope: { github: { account_a: ['repo:write'] } },
+  })
 
   const effective = composeControlCardAuthority(caller, control, 'or')
 
@@ -90,10 +110,10 @@ test('AND control identifies selected caller tools that remain inactive', () => 
       [RESOURCE]: ['project.plan.import', 'project.plan.search', 'project.plan.publish'],
     },
   }
-  const control = {
+  const control = exactControl({
     resource_grants: { [RESOURCE]: [] },
     resource_operations: { [RESOURCE]: ['project.plan.search', 'project.plan.publish'] },
-  }
+  })
 
   assert.equal(authorityAllowsOuterOperation(control, RESOURCE, 'project.plan.search'), true)
   assert.equal(authorityAllowsOuterOperation(control, RESOURCE, 'project.plan.import'), false)
@@ -102,9 +122,41 @@ test('AND control identifies selected caller tools that remain inactive', () => 
   ])
 })
 
-test('a wildcard Control Card operation covers every caller tool on that resource', () => {
-  const control = { resource_operations: { [RESOURCE]: ['*'] } }
-  assert.equal(authorityAllowsOuterOperation(control, RESOURCE, 'project.plan.import'), true)
+test('a wildcard Control Card fails closed in preview just as it does at runtime', () => {
+  const control = exactControl({ resource_operations: { [RESOURCE]: ['*'] } })
+  assert.equal(controlSnapshotIsExact(control), false)
+  assert.equal(authorityAllowsOuterOperation(control, RESOURCE, 'project.plan.import'), false)
+  assert.deepEqual(composeControlCardAuthority({}, control, 'or'), {
+    operations: [],
+    resource_grants: {},
+    resource_operations: {},
+    named_service_operations: {},
+    effective_named_service_operations: {},
+    account_scope: {},
+  })
+})
+
+test('an incomplete snapshot marker fails closed in preview', () => {
+  const missingBasis = exactControl({
+    properties: {
+      'connection_hub.control_snapshot': {
+        schema: SNAPSHOT.schema,
+        mode: SNAPSHOT.mode,
+        state: SNAPSHOT.state,
+      },
+    },
+  })
+  const unknownState = exactControl({
+    properties: {
+      'connection_hub.control_snapshot': {
+        ...SNAPSHOT,
+        state: 'unknown',
+      },
+    },
+  })
+
+  assert.equal(controlSnapshotIsExact(missingBasis), false)
+  assert.equal(controlSnapshotIsExact(unknownState), false)
 })
 
 test('Effective Card row states expose AND removals and OR additions', () => {

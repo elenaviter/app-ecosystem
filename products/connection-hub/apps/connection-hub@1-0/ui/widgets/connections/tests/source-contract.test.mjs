@@ -159,6 +159,14 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
   assert.doesNotMatch(panel, /<a href=\{binding\.manage_url\}/)
   assert.match(panel, /Revoke/)
   assert.match(panel, /compositionMode: item\.source === 'control'/)
+  assert.match(panel, /item\.source === 'control'[\s\S]*?keptNamedServiceOperations/)
+  assert.match(panel, /Exact catalog snapshot/)
+  assert.match(panel, /Historical snapshot needs review/)
+  assert.match(panel, /Newly advertised entries remain unselected/)
+
+  const preview = source('src/features/delegatedAccess/controlCardPreview.ts')
+  assert.match(preview, /export function controlSnapshotIsExact\(/)
+  assert.match(preview, /if \(!controlSnapshotIsExact\(control\)\)/)
 
   const styles = source('src/styles.css')
   assert.match(styles, /\.card-field--wide\s*\{[^}]*grid-column:\s*1 \/ -1;/s)
