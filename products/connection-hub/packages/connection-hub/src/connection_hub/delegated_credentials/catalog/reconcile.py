@@ -24,6 +24,10 @@ from connection_hub.delegated_credentials.catalog.models import (
 from connection_hub.delegated_credentials.cards.model import (
     NamedServiceSelection,
 )
+from connection_hub.delegated_credentials.application_operation_policy import (
+    APPLICATION_API_RESOURCE,
+    platform_role_allowed_by,
+)
 from connection_hub.delegated_credentials.named_service_policy import (
     configured_named_service_operations,
 )
@@ -113,7 +117,14 @@ def reconcile_selection(
             if not claim:
                 continue
             # A resource that enumerates no claims carries no ceiling.
-            if ceiling and claim not in ceiling:
+            if (
+                ceiling
+                and claim not in ceiling
+                and not (
+                    resource == APPLICATION_API_RESOURCE
+                    and platform_role_allowed_by(claim, ceiling)
+                )
+            ):
                 pruned_claims.append({"resource": resource, "claim": claim})
                 continue
             if claim not in kept:

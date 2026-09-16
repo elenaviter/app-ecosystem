@@ -132,10 +132,7 @@ def _connections_with_application_apis():
         {
             "resource": "*",
             "label": "Application APIs",
-            "grants": [
-                "kdcube:role:registered",
-                "kdcube:role:super-admin",
-            ],
+            "grants": ["kdcube:role:super-admin"],
             "tools": {},
         }
     )

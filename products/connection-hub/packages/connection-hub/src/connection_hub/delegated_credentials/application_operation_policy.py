@@ -58,6 +58,26 @@ def platform_role_rank(role: Any) -> int | None:
     return _PLATFORM_ROLE_RANK.get(_clean(role))
 
 
+def platform_role_allowed_by(
+    role: Any,
+    allowed_roles: Iterable[Any],
+) -> bool:
+    """Return whether one configured platform-role ceiling admits ``role``."""
+
+    value = _clean(role)
+    allowed = {_clean(candidate) for candidate in allowed_roles if _clean(candidate)}
+    if value in allowed:
+        return True
+    rank = platform_role_rank(value)
+    if rank is None:
+        return False
+    return any(
+        allowed_rank is not None and rank <= allowed_rank
+        for candidate in allowed
+        if (allowed_rank := platform_role_rank(candidate)) is not None
+    )
+
+
 def _require_platform_role(role: Any, *, reason: str) -> str:
     value = _clean(role)
     if value not in _PLATFORM_ROLE_RANK:
@@ -221,8 +241,8 @@ def validate_application_operation_role_policy(
         if requested - delegable:
             raise ApplicationOperationPolicyError("application_roles_not_delegable")
     if allowed_roles is not None:
-        allowed = {_clean(value) for value in allowed_roles if _clean(value)}
-        if requested - allowed:
+        allowed = tuple(allowed_roles)
+        if any(not platform_role_allowed_by(role, allowed) for role in requested):
             raise ApplicationOperationPolicyError(
                 "application_roles_not_allowed_for_resource"
             )
@@ -292,6 +312,7 @@ __all__ = [
     "application_operation_policy_enabled",
     "application_operation_role_policy",
     "compose_application_operation_role_policy",
+    "platform_role_allowed_by",
     "platform_role_rank",
     "stronger_platform_role",
     "strongest_platform_role",

@@ -120,7 +120,8 @@ application operation authority
       INTERSECT application declaration and visibility
 
 application execution role
-    = selected kdcube:role:* grant in the current effective Card
+    = exact operation override OR the current effective Card's default role
+      WITHIN the grantor's delegable roles and configured resource-role ceiling
 ```
 
 The card records the user's explicit selection. The active catalog is the
@@ -145,12 +146,16 @@ KDCube application operations use the same rule with an app-scoped reference:
 `urn:kdcube:application-operation:<application-id>:<operation-id>`. A selected
 Card marks this policy in `properties["kdcube.application_operations"]`, stores
 the references in `resource_operations["*"]`, and stores the delegated platform
-role in `resource_grants["*"]`. The role is a projection chosen for the
-delegate, not a copy of every role held by the grantor. The runtime evaluates
-the live effective Card before application code, then applies the app's own
-`user_types`, roles, enabled state, and auth policy. REST and Data Bus reach the
-same decision when their declarations intentionally share an explicit
-`operation_id`.
+default role in `resource_grants["*"]`. Its versioned property stores that same
+default plus optional exact-operation overrides. The configured resource role
+is a ceiling: `kdcube:role:super-admin` admits lower registered, paid, and
+privileged projections without adding those roles as independent resource
+grants. The role is chosen for the delegate, not copied from the grantor. The
+runtime resolves override-or-default only after the canonical operation is
+known, evaluates the live effective Card before application code, then applies
+the app's own `user_types`, roles, enabled state, and auth policy. REST and Data
+Bus reach the same decision when their declarations intentionally share an
+explicit `operation_id`.
 
 The explicit Card property distinguishes reviewed default-closed application
 authority from legacy wildcard Cards whose empty operation row had another

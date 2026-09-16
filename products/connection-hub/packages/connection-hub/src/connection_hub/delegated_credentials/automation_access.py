@@ -75,6 +75,7 @@ from connection_hub.delegated_credentials.application_operation_policy import (
     ApplicationOperationPolicyError,
     ApplicationOperationRolePolicy,
     application_operation_role_policy,
+    platform_role_allowed_by,
     validate_application_operation_role_policy,
 )
 from connection_hub.delegated_credentials.resource_operations import (
@@ -2585,7 +2586,15 @@ class AutomationAccessService:
             if cfg is None:
                 continue
             allowed_for_resource = set(catalog_config.supported_scopes(resource_value))
-            disallowed = [grant for grant in grants_for_resource if grant not in allowed_for_resource]
+            disallowed = [
+                grant
+                for grant in grants_for_resource
+                if grant not in allowed_for_resource
+                and not (
+                    resource_value == APPLICATION_API_RESOURCE
+                    and platform_role_allowed_by(grant, allowed_for_resource)
+                )
+            ]
             if disallowed:
                 return {
                     "ok": False,
@@ -3354,7 +3363,15 @@ class AutomationAccessService:
             if cfg is None:
                 continue
             allowed_for_resource = set(catalog_config.supported_scopes(resource_value))
-            disallowed = [grant for grant in grants_for_resource if grant not in allowed_for_resource]
+            disallowed = [
+                grant
+                for grant in grants_for_resource
+                if grant not in allowed_for_resource
+                and not (
+                    resource_value == APPLICATION_API_RESOURCE
+                    and platform_role_allowed_by(grant, allowed_for_resource)
+                )
+            ]
             if disallowed:
                 return ResolvedCardAuthority(error={
                     "ok": False,

@@ -107,6 +107,40 @@ def test_v2_policy_rejects_an_override_for_an_unselected_operation() -> None:
         )
 
 
+def test_v2_policy_downscopes_beneath_one_configured_role_ceiling() -> None:
+    policy = application_operation_role_policy(
+        _property(REGISTERED, {OP_ADMIN: SUPER_ADMIN}),
+        resource_grants={"*": [REGISTERED]},
+    )
+
+    assert policy is not None
+    validate_application_operation_role_policy(
+        policy,
+        selected_operations=(OP_READ, OP_ADMIN),
+        delegable_roles=(REGISTERED, SUPER_ADMIN),
+        allowed_roles=(SUPER_ADMIN,),
+    )
+
+
+def test_v2_policy_cannot_raise_above_the_configured_role_ceiling() -> None:
+    policy = application_operation_role_policy(
+        _property(REGISTERED, {OP_ADMIN: SUPER_ADMIN}),
+        resource_grants={"*": [REGISTERED]},
+    )
+
+    assert policy is not None
+    with pytest.raises(
+        ApplicationOperationPolicyError,
+        match="application_roles_not_allowed_for_resource",
+    ):
+        validate_application_operation_role_policy(
+            policy,
+            selected_operations=(OP_READ, OP_ADMIN),
+            delegable_roles=(REGISTERED, SUPER_ADMIN),
+            allowed_roles=(REGISTERED,),
+        )
+
+
 def test_and_and_or_compose_each_selected_operation_role() -> None:
     caller = ApplicationOperationRolePolicy(
         default_role=REGISTERED,

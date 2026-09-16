@@ -375,11 +375,16 @@ The Card stores two independent choices on the wildcard application resource:
 
 ```text
 resource_grants["*"]       selected delegated platform role
-                            for example kdcube:role:registered
+                            used as the default projection, for example
+                            kdcube:role:registered
 
 resource_operations["*"]   selected canonical application operations
                             for example
                             urn:kdcube:application-operation:reports%401-0:report.read
+
+properties["kdcube.application_operations"]
+                            the same default role plus optional exact-operation
+                            role overrides
 ```
 
 The canonical reference is
@@ -395,15 +400,20 @@ At runtime, the application declaration and Card both narrow the call:
 
 ```text
 selected app-scoped operation
-  AND selected delegated platform role
+  AND exact operation override OR selected default platform role
   AND current application visibility and auth policy
   = effective application call
 ```
 
-The selected role is the delegate's execution role. A super-admin may choose
+The selected role is the delegate's execution role. The resource descriptor's
+role is a maximum, so a single `kdcube:role:super-admin` ceiling admits lower
+registered, paid, and privileged projections. It does not add the application
+resource to a Card that did not select that resource. A super-admin may choose
 `kdcube:role:registered`; the resulting call is registered and does not inherit
-the grantor's unselected admin role. An admin-only API therefore remains
-unavailable even when the grantor is an administrator.
+the grantor's unselected admin role. One selected operation may override that
+default with a stronger role when both the grantor and resource ceiling permit
+it. The stronger role exists only for that invocation and cannot raise a
+sibling operation.
 
 An explicit selection is marked in Card `properties` so a reviewed empty list
 continues to mean no application operations:
@@ -411,16 +421,23 @@ continues to mean no application operations:
 ```json
 {
   "kdcube.application_operations": {
-    "schema": "kdcube.application_operations.v1",
-    "mode": "selected"
+    "schema": "kdcube.application_operations.v2",
+    "mode": "selected",
+    "default_role": "kdcube:role:registered",
+    "operation_roles": {
+      "urn:kdcube:application-operation:reports%401-0:report.delete":
+        "kdcube:role:super-admin"
+    }
   }
 }
 ```
 
-Cards created before this marker may already contain an empty wildcard
-operation row for another purpose. They keep their previous behavior until
-the owner changes an Application API choice. New Cards that include the
-wildcard application resource carry the marker from creation. OAuth consent,
+Version 1 marked only the reviewed operation selection and infers one default
+from the historical resource grants. Version 2 makes the default and overrides
+explicit. Cards created before either marker may already contain an empty
+wildcard operation row for another purpose. They keep their previous behavior
+until the owner changes an Application API choice. New Cards that include the
+wildcard application resource carry version 2 from creation. OAuth consent,
 manual Card creation, resident-card updates, Card edits, refresh rotation, and
 Control Card creation all preserve it. This explicit migration boundary avoids
 turning an old empty row into an accidental deny-all policy during upgrade.
