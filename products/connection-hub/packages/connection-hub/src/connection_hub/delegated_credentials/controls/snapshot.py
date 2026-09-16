@@ -10,6 +10,13 @@ import dataclasses
 from typing import Any, Mapping
 
 from connection_hub.agent_account_scope import normalize_account_scope
+from connection_hub.delegated_credentials.application_operation_policy import (
+    APPLICATION_API_RESOURCE,
+    APPLICATION_OPERATIONS_MODE_SELECTED,
+    APPLICATION_OPERATIONS_PROPERTY,
+    APPLICATION_OPERATIONS_SCHEMA_V1,
+    application_operation_policy_enabled,
+)
 from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     NamedServiceSelection,
@@ -25,12 +32,6 @@ CONTROL_SNAPSHOT_MODE_EXACT = "exact"
 CONTROL_SNAPSHOT_STATE_EXACT = "exact"
 CONTROL_SNAPSHOT_STATE_REVIEW_REQUIRED = "review_required"
 
-APPLICATION_OPERATIONS_PROPERTY = "kdcube.application_operations"
-APPLICATION_OPERATIONS_SCHEMA = "kdcube.application_operations.v1"
-APPLICATION_OPERATIONS_MODE_SELECTED = "selected"
-APPLICATION_API_RESOURCE = "*"
-
-
 def _clean(value: Any) -> str:
     return str(value or "").strip()
 
@@ -43,11 +44,7 @@ def _property(value: Any, name: str) -> Mapping[str, Any]:
 
 
 def application_operations_are_explicit(properties: Any) -> bool:
-    policy = _property(properties, APPLICATION_OPERATIONS_PROPERTY)
-    return (
-        _clean(policy.get("schema")) == APPLICATION_OPERATIONS_SCHEMA
-        and _clean(policy.get("mode")) == APPLICATION_OPERATIONS_MODE_SELECTED
-    )
+    return application_operation_policy_enabled(properties)
 
 
 def control_snapshot_metadata(properties: Any) -> Mapping[str, Any]:
@@ -226,7 +223,7 @@ def materialize_control_snapshot(
             resource_operations[APPLICATION_API_RESOURCE] = ()
             unresolved.add("application_operations")
             properties[APPLICATION_OPERATIONS_PROPERTY] = {
-                "schema": APPLICATION_OPERATIONS_SCHEMA,
+                "schema": APPLICATION_OPERATIONS_SCHEMA_V1,
                 "mode": APPLICATION_OPERATIONS_MODE_SELECTED,
             }
 

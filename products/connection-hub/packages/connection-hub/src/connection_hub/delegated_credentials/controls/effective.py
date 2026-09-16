@@ -21,6 +21,14 @@ from connection_hub.delegated_credentials.cards.model import (
     NamedServiceSelection,
     authority_is_credentialless,
 )
+from connection_hub.delegated_credentials.application_operation_policy import (
+    APPLICATION_API_RESOURCE,
+    APPLICATION_OPERATIONS_PROPERTY,
+    ApplicationOperationPolicyError,
+    application_operation_policy_declared,
+    application_operation_role_policy,
+    compose_application_operation_role_policy,
+)
 from connection_hub.delegated_credentials.catalog.drift import (
     selected_named_service_operations,
 )
@@ -219,6 +227,16 @@ def _union_accounts(
     return result
 
 
+def _application_policy(authority: CardAuthority):
+    try:
+        return application_operation_role_policy(
+            authority.properties,
+            resource_grants=authority.resource_grants,
+        )
+    except ApplicationOperationPolicyError as exc:
+        raise ControlCardMismatch(exc.reason) from exc
+
+
 def effective_card_authority(
     card: CardAuthority,
     control: CardAuthority | ProjectControlCardAuthority,
@@ -286,6 +304,59 @@ def effective_card_authority(
             )
             for resource in resource_grants
         }
+    properties = copy.deepcopy(
+        {**dict(card.properties or {}), **dict(control.properties or {})}
+    )
+    if APPLICATION_API_RESOURCE in resource_grants:
+        card_has_resource = APPLICATION_API_RESOURCE in card.resource_grants
+        control_has_resource = APPLICATION_API_RESOURCE in control.resource_grants
+        card_policy = _application_policy(card) if card_has_resource else None
+        control_policy = _application_policy(control) if control_has_resource else None
+        declared = (
+            application_operation_policy_declared(card.properties)
+            or application_operation_policy_declared(control.properties)
+        )
+        effective_policy = None
+        effective_operations: tuple[str, ...] = ()
+        if card_policy is not None and control_policy is not None:
+            effective_policy, effective_operations = (
+                compose_application_operation_role_policy(
+                    card_policy,
+                    control_policy,
+                    card_operations=card.resource_operations.get(
+                        APPLICATION_API_RESOURCE, ()
+                    ),
+                    control_operations=control.resource_operations.get(
+                        APPLICATION_API_RESOURCE, ()
+                    ),
+                    composition_mode=mode,
+                )
+            )
+        elif mode == CONTROL_COMPOSITION_OR and card_policy is not None and not control_has_resource:
+            effective_policy = card_policy
+            effective_operations = tuple(
+                card.resource_operations.get(APPLICATION_API_RESOURCE, ())
+            )
+        elif mode == CONTROL_COMPOSITION_OR and control_policy is not None and not card_has_resource:
+            effective_policy = control_policy
+            effective_operations = tuple(
+                control.resource_operations.get(APPLICATION_API_RESOURCE, ())
+            )
+        elif declared:
+            raise ControlCardMismatch("application_operation_policy_required")
+
+        if effective_policy is not None:
+            resource_grants[APPLICATION_API_RESOURCE] = (
+                effective_policy.default_role,
+            )
+            resource_operations[APPLICATION_API_RESOURCE] = tuple(
+                sorted(set(effective_operations))
+            )
+            properties[APPLICATION_OPERATIONS_PROPERTY] = (
+                effective_policy.to_property()
+            )
+    else:
+        properties.pop(APPLICATION_OPERATIONS_PROPERTY, None)
     try:
         if mode == CONTROL_COMPOSITION_OR:
             named_selection, named_services = _union_named_services(
@@ -323,9 +394,7 @@ def effective_card_authority(
             else card.resource_acceptance
         ),
         control_card=effective_binding,
-        properties=copy.deepcopy(
-            {**dict(card.properties or {}), **dict(control.properties or {})}
-        ),
+        properties=properties,
     )
 
 
