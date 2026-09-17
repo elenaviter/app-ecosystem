@@ -4,6 +4,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 from connection_hub_cli.authorization.models import (
     AuthorizationServerMetadata,
@@ -15,6 +16,75 @@ from connection_hub_cli.authorization.models import (
 from connection_hub_cli.errors import AuthorizationError
 
 MAX_OAUTH_RESPONSE_BYTES = 1024 * 1024
+MAX_OAUTH_ERROR_REASON_CHARS = 512
+
+
+def _request_label(failure_code: str) -> str:
+    return {
+        "oauth_metadata_request_failed": "OAuth metadata",
+        "oauth_client_registration_failed": "OAuth client registration",
+        "oauth_token_request_failed": "OAuth token",
+    }.get(failure_code, "OAuth")
+
+
+def _safe_request_url(endpoint: str, *, failure_code: str) -> str:
+    if failure_code == "oauth_metadata_request_failed":
+        return endpoint
+    parsed = urlsplit(endpoint)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+
+def _bounded_reason(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:MAX_OAUTH_ERROR_REASON_CHARS]
+
+
+def _metadata_response_reason(body: bytes, *, reason_phrase: str) -> str:
+    try:
+        payload = json.loads(body)
+    except (UnicodeError, ValueError):
+        payload = None
+    if isinstance(payload, Mapping):
+        for key in ("detail", "error", "error_description", "message"):
+            reason = _bounded_reason(payload.get(key))
+            if reason:
+                return reason
+    return _bounded_reason(reason_phrase)
+
+
+def _request_error(
+    *,
+    failure_code: str,
+    method: str,
+    endpoint: str,
+    status: int | None = None,
+    server_reason: str = "",
+    failure_kind: str = "",
+) -> AuthorizationError:
+    safe_url = _safe_request_url(endpoint, failure_code=failure_code)
+    label = _request_label(failure_code)
+    details: dict[str, Any] = {"method": method, "url": safe_url}
+    if status is not None:
+        details["status"] = int(status)
+    if server_reason:
+        details["server_reason"] = server_reason
+    if failure_kind:
+        details["failure_kind"] = failure_kind
+    if status is None:
+        message = f"{label} {method} {safe_url} could not be reached"
+        if failure_kind:
+            message += f" ({failure_kind})"
+        message += "."
+    else:
+        message = f"{label} {method} {safe_url} returned HTTP {status}"
+        if server_reason:
+            message += f": {server_reason}"
+        message += "."
+    error = AuthorizationError(failure_code, message)
+    error.status = int(status) if status is not None else None
+    error.details = details
+    return error
 
 
 class OAuthTransport(Protocol):
@@ -93,11 +163,6 @@ class HttpxOAuthTransport:
                     headers={"Accept": "application/json"},
                 ) as response,
             ):
-                if response.status_code not in expected_statuses:
-                    raise AuthorizationError(
-                        failure_code,
-                        "The OAuth server rejected the request.",
-                    )
                 content_length = response.headers.get("content-length")
                 if content_length:
                     try:
@@ -116,12 +181,28 @@ class HttpxOAuthTransport:
                             "oauth_response_too_large",
                             "The OAuth server response is too large.",
                         )
+                if response.status_code not in expected_statuses:
+                    server_reason = ""
+                    if failure_code == "oauth_metadata_request_failed":
+                        server_reason = _metadata_response_reason(
+                            bytes(body),
+                            reason_phrase=str(response.reason_phrase or ""),
+                        )
+                    raise _request_error(
+                        failure_code=failure_code,
+                        method=method,
+                        endpoint=endpoint,
+                        status=response.status_code,
+                        server_reason=server_reason,
+                    )
         except AuthorizationError:
             raise
-        except Exception:  # noqa: BLE001
-            raise AuthorizationError(
-                failure_code,
-                "The OAuth server could not be reached.",
+        except Exception as exc:  # noqa: BLE001
+            raise _request_error(
+                failure_code=failure_code,
+                method=method,
+                endpoint=endpoint,
+                failure_kind=type(exc).__name__,
             ) from None
         try:
             value = json.loads(bytes(body))

@@ -245,6 +245,12 @@ rotation replaces one complete native-store value; the profile keeps the same
 `access_id`. A refresh failure preserves both the profile metadata and prior
 token record so the matching server card can still be identified and revoked.
 
+OAuth metadata failures report the request method, public metadata URL, HTTP
+status when a response arrived, and a bounded public server reason. A network
+failure reports the method and URL without inventing an HTTP status. Token and
+client-registration response bodies remain excluded because they can contain
+credential material.
+
 These commands report platform, backend, profile type, endpoint, `access_id`,
 credential presence, expiry state, refresh readiness, client mode, and entry
 ownership without printing credentials:

@@ -58,6 +58,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-16 | Application API roles are projected per operation | Application Cards carry one downscoped default role plus optional canonical-operation overrides; the configured resource role remains a hierarchy ceiling, Control Cards compose the operation-to-role mapping, and elevation is invocation-local. |
 | 2026-09-16 | Exact Control Card refusals identify the rejected authority | Exact-snapshot refusals now carry structured dimension, resource, and value evidence and state those coordinates in the operator-facing message instead of logging an empty generic mismatch. |
 | 2026-09-17 | Legacy application Cards compose with exact controls | Pre-policy callers in AND mode retain their historical role ceiling while the reviewed Control Card supplies the finite operation set; effective composition ignores application-policy metadata on Cards that carry no application resource. |
+| 2026-09-17 | Actionable OAuth request failures and recovered relay intervals | OAuth failures preserve bounded request evidence without exposing token responses, and Problem Board retains that evidence through a completed retry interval. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

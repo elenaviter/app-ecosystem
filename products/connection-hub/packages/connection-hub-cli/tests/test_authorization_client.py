@@ -305,6 +305,37 @@ def test_authorization_endpoint_cannot_preload_security_parameters() -> None:
 
 
 @pytest.mark.asyncio
+async def test_metadata_rejection_names_request_status_and_server_reason() -> None:
+    import httpx2
+
+    metadata_url = (
+        "https://runtime.example.test/.well-known/oauth-protected-resource"
+        "?resource=https%3A%2F%2Fruntime.example.test%2Fmcp"
+    )
+
+    def handler(request):
+        assert str(request.url) == metadata_url
+        return httpx2.Response(503, json={"detail": "Application catalog is loading"})
+
+    transport = HttpxOAuthTransport(transport=httpx2.MockTransport(handler))
+    with pytest.raises(AuthorizationError) as raised:
+        await transport.get_json(metadata_url)
+
+    assert raised.value.code == "oauth_metadata_request_failed"
+    assert raised.value.status == 503
+    assert raised.value.details == {
+        "method": "GET",
+        "url": metadata_url,
+        "status": 503,
+        "server_reason": "Application catalog is loading",
+    }
+    assert raised.value.message == (
+        f"OAuth metadata GET {metadata_url} returned HTTP 503: "
+        "Application catalog is loading."
+    )
+
+
+@pytest.mark.asyncio
 async def test_http_transport_never_returns_provider_error_body() -> None:
     import httpx2
 
