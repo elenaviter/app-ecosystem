@@ -80,6 +80,17 @@ export function pendingGrantAccessId(
   return pending.accessId;
 }
 
+/** What a pending request asks for, for its pane title: the missing claims,
+ *  or the operation when the card holds every claim and lacks only that. */
+export function pendingRequestSubject(
+  pending: { claims?: string[]; namespace?: string; operation?: string; outerOperation?: string } | null | undefined,
+): string {
+  const claims = (pending?.claims || []).filter(Boolean);
+  if (claims.length) return claims.join(', ');
+  if (pending?.namespace && pending?.operation) return `${pending.namespace} · ${pending.operation}`;
+  return pending?.outerOperation || pending?.operation || '';
+}
+
 /** The focused-grant identity of a pending outer-operation request, or null
  *  when the link lacks a part the server requires (then no policy can be
  *  committed and the buttons stay disabled rather than submitting a grant

@@ -352,8 +352,13 @@ def agent_grant_consent_denial(
             if hub_url
             else denial["next_step"]
         )
+        # A card holding every claim can still lack the operation itself.
+        asked = ", ".join(missing_list) or (
+            f"the operation {namespace} · {operation}" if namespace and operation
+            else f"the operation {operation or tool}"
+        )
         denial["instructions"] = (
-            f"Ask the user to open {hub_url} and approve: {', '.join(missing_list)}. "
+            f"Ask the user to open {hub_url} and approve: {asked}. "
             "Then retry the same call."
         ) if hub_url else denial.get("instructions", "")
     denial["consent"] = consent
