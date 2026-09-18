@@ -130,6 +130,14 @@ def _default_socket_factory() -> Any:
     )
 
 
+def _is_socketio_timeout(error: BaseException) -> bool:
+    try:
+        from socketio.exceptions import TimeoutError as SocketIOTimeoutError
+    except ImportError:  # pragma: no cover - data-bus extra is optional
+        return False
+    return isinstance(error, SocketIOTimeoutError)
+
+
 class FederatedDataBusClient:
     """One bundle-scoped Socket.IO session with correlated terminal replies."""
 
@@ -324,7 +332,14 @@ class FederatedDataBusClient:
                     },
                     timeout=self.ingress_timeout_seconds,
                 )
-            except (asyncio.TimeoutError, TimeoutError) as exc:
+            except Exception as exc:
+                if (
+                    not isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+                    and not _is_socketio_timeout(exc)
+                ):
+                    raise
+                if future.done() and not future.cancelled():
+                    return future.result()
                 raise DataBusOutcomeUnknown(
                     message_id=resolved_message_id, accepted=False
                 ) from exc

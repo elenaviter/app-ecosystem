@@ -66,10 +66,12 @@ The Data Bus client API is under `app_foundation.data_bus`:
 
 The client constructs transport envelopes and correlates replies. The
 application owns subjects, operation names, domain authorization, and the
-meaning of pushed events. It refuses an expired claim before connection,
-bounds event waits by claim expiry, and reports an accepted request with no
-terminal result as outcome unknown so the product can retry with the same
-operation identity.
+meaning of pushed events. It refuses an expired claim before connection and
+bounds event waits by claim expiry. An ingress acknowledgement timeout leaves
+acceptance unknown; a terminal result received before that timeout is returned.
+An accepted request without a terminal result is also outcome unknown. In
+either unknown case, the product preserves the original message and operation
+identity for a retry.
 
 ## Boundary
 

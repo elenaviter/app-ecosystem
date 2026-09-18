@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from socketio.exceptions import TimeoutError as SocketIOTimeoutError
 
 from app_foundation.data_bus import (
     DelegatedCardCredential,
@@ -266,6 +267,59 @@ async def test_accepted_request_without_terminal_reply_is_outcome_unknown() -> N
 
     assert captured.value.accepted is True
     assert captured.value.message_id == "message-1"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_socketio_ack_timeout_preserves_already_received_terminal_result() -> None:
+    class TimedOutAckSocket(_Socket):
+        async def call(self, event: str, data: dict[str, Any], timeout: float) -> dict[str, Any]:
+            await super().call(event, data, timeout)
+            raise SocketIOTimeoutError()
+
+    socket = TimedOutAckSocket()
+    socket.terminal = {
+        "type": "kdcube.data_bus.result",
+        "data": {"data": {"ok": True}},
+    }
+    client = await _client(socket)
+
+    outcome = await client.request(
+        subject="problem_board.command.v1",
+        object_ref="work:worker-stream:abc",
+        payload={},
+        idempotency_key="request-1",
+        message_id="message-1",
+    )
+
+    assert outcome.status == "ok"
+    assert outcome.message_id == "message-1"
+    assert client._pending == {}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_socketio_ack_timeout_without_result_is_outcome_unknown() -> None:
+    class TimedOutAckSocket(_Socket):
+        async def call(self, event: str, data: dict[str, Any], timeout: float) -> dict[str, Any]:
+            self.calls.append((event, data, timeout))
+            raise SocketIOTimeoutError()
+
+    socket = TimedOutAckSocket()
+    client = await _client(socket)
+
+    with pytest.raises(DataBusOutcomeUnknown) as captured:
+        await client.request(
+            subject="problem_board.command.v1",
+            object_ref="work:worker-stream:abc",
+            payload={},
+            idempotency_key="request-1",
+            message_id="message-1",
+        )
+
+    assert captured.value.message_id == "message-1"
+    assert captured.value.accepted is False
+    assert client._pending == {}
     await client.close()
 
 
