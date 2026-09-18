@@ -20,6 +20,10 @@ from connection_hub.delegated_credentials.controls.attribution import (
 from connection_hub.delegated_credentials.controls.effective import (
     effective_card_authority,
 )
+from connection_hub.delegated_credentials.conversation_target_policy import (
+    CONVERSATION_TARGETS_PROPERTY,
+    conversation_targets,
+)
 from connection_hub.delegated_credentials.controls.snapshot import (
     CONTROL_SNAPSHOT_MODE_EXACT,
     CONTROL_SNAPSHOT_PROPERTY,
@@ -31,6 +35,7 @@ from connection_hub.named_service_admission import (
     NamedServiceAdmissionResolutionError,
     delegated_card_binding,
     evaluate_managed_named_service,
+    evaluate_resolved_hub_state,
     snapshot_from_grant,
     validate_relay_selector,
 )
@@ -194,6 +199,56 @@ def test_named_service_is_bounded_by_both_card_and_active_catalog() -> None:
     assert removed.denial["error"]["code"] == (
         "delegated_capability_no_longer_available"
     )
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [("and", ("shared-app",)), ("or", ("caller-app", "control-app", "shared-app"))],
+)
+def test_conversation_targets_follow_card_composition(mode: str, expected: tuple[str, ...]) -> None:
+    composition = _control_composition()
+    caller = dataclasses.replace(
+        composition.caller_card,
+        properties={CONVERSATION_TARGETS_PROPERTY: ["caller-app", "shared-app"]},
+    )
+    control = dataclasses.replace(
+        composition.control_card,
+        composition_mode=mode,
+        properties={
+            **composition.control_card.properties,
+            CONVERSATION_TARGETS_PROPERTY: ["control-app", "shared-app"],
+        },
+    )
+    effective = effective_card_authority(caller, control)
+    resolved = ResolvedCardComposition(caller_card=caller, control_card=control, effective_card=effective)
+    snapshot = snapshot_from_grant(
+        catalog=_catalog(),
+        grant_record={
+            "registry_access_id": "access-1", "client_id": "agent-1",
+            "named_services": _snapshot(_catalog()).named_services,
+        },
+        credential=CredentialEnvelope(subject="integration:agent:user-1"),
+        resource=RESOURCE,
+        request_resource=RESOURCE,
+        card_composition=resolved,
+    )
+
+    assert conversation_targets(effective.properties) == expected
+    assert evaluate_managed_named_service(snapshot, namespace="records", operation="object.search").conversation_targets == expected
+
+
+def test_malformed_conversation_target_property_grants_nothing() -> None:
+    assert conversation_targets({CONVERSATION_TARGETS_PROPERTY: ["valid-app", "*"]}) == ()
+    assert conversation_targets({CONVERSATION_TARGETS_PROPERTY: "valid-app"}) == ()
+
+
+def test_native_admission_carries_only_resolved_targets() -> None:
+    evaluation = evaluate_resolved_hub_state(
+        selector={"client_id": "agent-1", "source": "native"},
+        state={"granted": True, "resource": RESOURCE, "conversation_targets": ["allowed-app"]},
+    )
+    assert evaluation.allowed
+    assert evaluation.conversation_targets == ("allowed-app",)
 
 
 def test_named_service_denial_names_the_control_card_that_removed_it() -> None:

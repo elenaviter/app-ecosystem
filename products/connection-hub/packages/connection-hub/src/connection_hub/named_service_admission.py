@@ -25,6 +25,9 @@ from connection_hub.delegated_credentials.catalog.authorization import (
 from connection_hub.delegated_credentials.controls.attribution import (
     ResolvedCardComposition,
 )
+from connection_hub.delegated_credentials.conversation_target_policy import (
+    conversation_targets,
+)
 from connection_hub.delegated_credentials.named_service_policy import (
     boundary_permits_operation,
     configured_named_service_operations,
@@ -59,6 +62,7 @@ class ManagedNamedServiceAdmissionSnapshot:
     named_services: Mapping[str, Any]
     named_services_present: bool
     account_scope: Mapping[str, Any]
+    conversation_targets: tuple[str, ...] = ()
     card_composition: ResolvedCardComposition | None = None
 
     def selector(self) -> dict[str, Any]:
@@ -83,6 +87,7 @@ class NamedServiceAdmissionEvaluation:
     allowed: bool
     denial: Mapping[str, Any] | None = None
     account_scope: Mapping[str, Any] = field(default_factory=dict)
+    conversation_targets: tuple[str, ...] = ()
     client_id: str = ""
     resource: str = ""
     audit: Mapping[str, Any] = field(default_factory=dict)
@@ -92,6 +97,7 @@ class NamedServiceAdmissionEvaluation:
         cls,
         *,
         account_scope: Mapping[str, Any] | None = None,
+        conversation_targets: tuple[str, ...] = (),
         client_id: str = "",
         resource: str = "",
         audit: Mapping[str, Any] | None = None,
@@ -99,6 +105,7 @@ class NamedServiceAdmissionEvaluation:
         return cls(
             allowed=True,
             account_scope=copy.deepcopy(dict(account_scope or {})),
+            conversation_targets=tuple(conversation_targets),
             client_id=clean(client_id),
             resource=clean(resource),
             audit=dict(audit or {}),
@@ -157,6 +164,10 @@ def snapshot_from_grant(
         ),
         account_scope=copy.deepcopy(
             dict(grant_record.get("account_scope") or {})
+        ),
+        conversation_targets=conversation_targets(
+            card_composition.effective_card.properties
+            if card_composition is not None else None
         ),
         card_composition=card_composition,
     )
@@ -222,6 +233,7 @@ def evaluate_managed_named_service(
         )
     return NamedServiceAdmissionEvaluation.allow(
         account_scope=snapshot.account_scope,
+        conversation_targets=snapshot.conversation_targets,
         client_id=snapshot.client_id,
         resource=snapshot.resource,
         audit={
@@ -339,6 +351,7 @@ def evaluate_resolved_hub_state(
             if isinstance(state.get("account_scope"), Mapping)
             else {}
         ),
+        conversation_targets=tuple(state.get("conversation_targets") or ()),
         client_id=clean(selector.get("client_id")),
         resource=clean(state.get("resource")),
         audit=hub_state_audit(state, selector=selector),
