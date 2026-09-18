@@ -5,9 +5,7 @@
 
 from __future__ import annotations
 
-import base64
 import copy
-import json
 from typing import Any, Mapping
 
 import httpx
@@ -16,8 +14,14 @@ from connection_hub.delegated_to_kdcube.adapters import (
     DelegatedToKdcubeAdapter,
     adapter,
 )
+from connection_hub.delegated_to_kdcube.provider_id_token import (
+    ProviderIdentityUnverified,
+    provider_id_token_verifier,
+)
 
 LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo"
+# Issuer and JWKS location of LinkedIn's ID tokens are read from here at run time.
+LINKEDIN_OIDC_DISCOVERY_URL = "https://www.linkedin.com/oauth/.well-known/openid-configuration"
 LINKEDIN_ORGANIZATION_ACLS_URL = "https://api.linkedin.com/rest/organizationAcls"
 LINKEDIN_ORGANIZATIONS_URL = "https://api.linkedin.com/rest/organizations"
 
@@ -31,18 +35,6 @@ LINKEDIN_ORG_SCOPES = frozenset({"r_organization_social", "w_organization_social
 # via the provider's adapter_config.api_version; this default tracks the
 # integration's shipped default.
 DEFAULT_LINKEDIN_API_VERSION = "202601"
-
-
-def _decode_id_token_claims(id_token: str) -> dict[str, Any]:
-    parts = str(id_token or "").split(".")
-    if len(parts) < 2:
-        return {}
-    payload = parts[1] + "=" * (-len(parts[1]) % 4)
-    try:
-        parsed = json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8"))
-    except Exception:
-        return {}
-    return dict(parsed) if isinstance(parsed, Mapping) else {}
 
 
 def _identity_from_claims(claims: Mapping[str, Any]) -> dict[str, Any]:
@@ -79,18 +71,25 @@ class LinkedInMemberAdapter(DelegatedToKdcubeAdapter):
     # ticked. Org-only connects (see provider_scopes_for_claims) skip them.
     REQUIRED_IDENTITY_SCOPES = ("openid", "profile")
 
-    # Set by bind(); carries adapter_config (api_version) for the org-identity
-    # /rest calls. The registered adapter is a singleton, so bind returns a
-    # bound COPY rather than mutating shared state.
+    # Set by bind(). The provider carries adapter_config (api_version) for the
+    # org-identity /rest calls; the connector app's client id is the audience
+    # an ID token must name. The registered adapter is a singleton, so bind
+    # returns a bound COPY rather than mutating shared state.
     provider: Any = None
+    connector_app: Any = None
 
     def bind(self, *, provider: Any = None, connector_app: Any = None) -> "LinkedInMemberAdapter":
-        del connector_app
-        if provider is None:
+        if provider is None and connector_app is None:
             return self
         bound = copy.copy(self)
         bound.provider = provider
+        bound.connector_app = connector_app
         return bound
+
+    async def _verified_id_token_claims(self, id_token: str) -> dict[str, Any]:
+        audience = str(getattr(self.connector_app, "client_id", "") or "").strip()
+        verifier = provider_id_token_verifier(LINKEDIN_OIDC_DISCOVERY_URL)
+        return await verifier.verify(id_token, audience=audience)
 
     def provider_scopes_for_claims(self, claims: list, claim_map: dict) -> list:
         # `sub` is delivered only at connect time, via id_token or userinfo.
@@ -177,15 +176,29 @@ class LinkedInMemberAdapter(DelegatedToKdcubeAdapter):
                     detail = ""
                     if isinstance(data, Mapping):
                         detail = str(data.get("error_description") or data.get("message") or data.get("error") or "")
-                    # A w_member_social-only token cannot read userinfo.
-                    fallback = _identity_from_claims(_decode_id_token_claims(str((token or {}).get("id_token") or "")))
-                    if fallback.get("external_subject"):
-                        return fallback
+                    # A w_member_social-only token cannot read userinfo; the ID
+                    # token names the member only once its signature and claims
+                    # are verified.
+                    rejected: ProviderIdentityUnverified | None = None
+                    id_token = str((token or {}).get("id_token") or "").strip()
+                    if id_token:
+                        try:
+                            claims = await self._verified_id_token_claims(id_token)
+                        except ProviderIdentityUnverified as exc:
+                            rejected = exc
+                        else:
+                            return _identity_from_claims(claims)
                     # An org-lane token (no OIDC scopes at all) identifies
                     # through the organizations it administers.
                     org_identity = await self._fetch_org_identity(client, access_token)
                     if org_identity.get("external_subject"):
                         return org_identity
+                    if rejected is not None:
+                        raise ProviderIdentityUnverified(
+                            rejected.reason,
+                            f"LinkedIn userinfo failed ({detail or 'unknown error'}) and the ID token "
+                            f"was rejected: {rejected}",
+                        ) from rejected
                     raise RuntimeError(f"LinkedIn userinfo failed: {detail or 'unknown error'}")
         except httpx.HTTPError as exc:
             raise RuntimeError(f"LinkedIn userinfo request failed: {exc}") from exc
@@ -193,10 +206,11 @@ class LinkedInMemberAdapter(DelegatedToKdcubeAdapter):
 
     async def normalize_profile(self, credential: dict) -> dict:
         # The token response carries no subject; it is in the id_token when
-        # openid was granted.
-        data = dict(credential or {})
-        claims = {**_decode_id_token_claims(str(data.get("id_token") or "")), **data}
-        return _identity_from_claims(claims)
+        # openid was granted, and is used only once the token is verified.
+        id_token = str(dict(credential or {}).get("id_token") or "").strip()
+        if not id_token:
+            return _identity_from_claims({})
+        return _identity_from_claims(await self._verified_id_token_claims(id_token))
 
 
 __all__ = ["LinkedInMemberAdapter"]
