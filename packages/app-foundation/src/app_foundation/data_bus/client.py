@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -12,10 +13,22 @@ from .credentials import DataBusCredential, DelegatedCardCredential
 
 
 SocketFactory = Callable[[], Any]
+logger = logging.getLogger(__name__)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _connection_reason(value: Any) -> str:
+    if isinstance(value, Mapping):
+        parts = [
+            f"{key}={str(value[key])[:160]}"
+            for key in ("error_type", "status", "reason", "message", "error")
+            if value.get(key) not in (None, "")
+        ]
+        return " ".join(parts) or "unspecified"
+    return str(value or "unspecified").strip()[:512] or "unspecified"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,11 +116,21 @@ class DataBusRemoteError(DataBusClientError):
 
 
 class DataBusOutcomeUnknown(DataBusClientError):
-    def __init__(self, *, message_id: str, accepted: bool) -> None:
+    def __init__(
+        self,
+        *,
+        message_id: str,
+        accepted: bool,
+        connection: Mapping[str, Any] | None = None,
+    ) -> None:
         super().__init__(
             "data_bus_outcome_unknown",
             "The Data Bus operation did not return a terminal result before the timeout.",
-            details={"message_id": message_id, "accepted": bool(accepted)},
+            details={
+                "message_id": message_id,
+                "accepted": bool(accepted),
+                **dict(connection or {}),
+            },
         )
         self.message_id = message_id
         self.accepted = bool(accepted)
@@ -174,7 +197,10 @@ class FederatedDataBusClient:
         )
         self._connected = asyncio.Event()
         self._closed = False
+        self._connection_generation = 0
+        self._socket_id = ""
         self.socket.on("connect", self._on_connect)
+        self.socket.on("connect_error", self._on_connect_error)
         self.socket.on("disconnect", self._on_disconnect)
         self.socket.on("chat_service", self._on_service_event)
 
@@ -201,16 +227,78 @@ class FederatedDataBusClient:
             and getattr(self.socket, "connected", True)
         )
 
+    @property
+    def connection_generation(self) -> int:
+        return self._connection_generation
+
+    @property
+    def socket_id(self) -> str:
+        return self._socket_id
+
+    def _connection_evidence(self) -> dict[str, Any]:
+        return {
+            "connection_generation": self._connection_generation,
+            "socket_id": self._socket_id,
+            "connection_active": self.connected,
+        }
+
+    def _current_socket_id(self) -> str:
+        get_sid = getattr(self.socket, "get_sid", None)
+        if callable(get_sid):
+            try:
+                value = get_sid()
+            except (KeyError, TypeError, ValueError):
+                value = ""
+            if value:
+                return str(value)
+        return str(getattr(self.socket, "sid", "") or "")
+
     async def _on_connect(self) -> None:
+        previous_generation = self._connection_generation
+        previous_socket_id = self._socket_id
+        self._connection_generation += 1
+        self._socket_id = self._current_socket_id()
         self._connected.set()
+        logger.info(
+            "Data Bus socket lifecycle event=%s connection_generation=%d "
+            "socket_id=%s previous_generation=%d previous_socket_id=%s",
+            "reconnected" if previous_generation else "connected",
+            self._connection_generation,
+            self._socket_id or "unassigned",
+            previous_generation,
+            previous_socket_id or "none",
+        )
+
+    async def _on_connect_error(self, data: Any = None) -> None:
+        logger.warning(
+            "Data Bus socket lifecycle event=%s attempted_generation=%d "
+            "socket_id=%s current_generation=%d current_socket_id=%s "
+            "connection_active=%s generation_replaced=false reason=%s",
+            "reconnect_refused" if self._connection_generation else "connect_refused",
+            self._connection_generation + 1,
+            self._current_socket_id() or "unassigned",
+            self._connection_generation,
+            self._socket_id or "none",
+            str(self.connected).lower(),
+            _connection_reason(data),
+        )
 
     async def _on_disconnect(self, *args: Any) -> None:
-        del args
         self._connected.clear()
+        reason = _connection_reason(args[0] if args else None)
+        logger.info(
+            "Data Bus socket lifecycle event=disconnected connection_generation=%d "
+            "socket_id=%s reason=%s",
+            self._connection_generation,
+            self._socket_id or "unassigned",
+            reason,
+        )
         self._queue_event(
             {
                 "type": "app_foundation.data_bus.disconnected",
                 "timestamp": int(time.time()),
+                **self._connection_evidence(),
+                "reason": reason,
             }
         )
 
@@ -305,9 +393,12 @@ class FederatedDataBusClient:
     ) -> DataBusOutcome:
         if not self.connected:
             raise DataBusClientError(
-                "data_bus_not_connected", "The Data Bus session is not connected."
+                "data_bus_not_connected",
+                "The Data Bus session is not connected.",
+                details=self._connection_evidence(),
             )
         resolved_message_id = str(message_id or uuid.uuid4())
+        connection = self._connection_evidence()
         loop = asyncio.get_running_loop()
         future: asyncio.Future[DataBusOutcome] = loop.create_future()
         self._pending[resolved_message_id] = future
@@ -341,7 +432,9 @@ class FederatedDataBusClient:
                 if future.done() and not future.cancelled():
                     return future.result()
                 raise DataBusOutcomeUnknown(
-                    message_id=resolved_message_id, accepted=False
+                    message_id=resolved_message_id,
+                    accepted=False,
+                    connection=connection,
                 ) from exc
             acknowledgement = _mapping(ack)
             accepted_rows = acknowledgement.get("accepted")
@@ -358,6 +451,7 @@ class FederatedDataBusClient:
                 details = {
                     "message_id": resolved_message_id,
                     "acknowledgement": acknowledgement,
+                    **connection,
                 }
                 message = "The Data Bus ingress rejected the operation package."
                 if isinstance(rejected, list) and rejected:
@@ -382,7 +476,9 @@ class FederatedDataBusClient:
                 )
             except asyncio.TimeoutError as exc:
                 raise DataBusOutcomeUnknown(
-                    message_id=resolved_message_id, accepted=True
+                    message_id=resolved_message_id,
+                    accepted=True,
+                    connection=connection,
                 ) from exc
         finally:
             self._pending.pop(resolved_message_id, None)

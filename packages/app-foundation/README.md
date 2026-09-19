@@ -71,7 +71,13 @@ bounds event waits by claim expiry. An ingress acknowledgement timeout leaves
 acceptance unknown; a terminal result received before that timeout is returned.
 An accepted request without a terminal result is also outcome unknown. In
 either unknown case, the product preserves the original message and operation
-identity for a retry.
+identity for a retry. Client errors include the logical connection generation,
+Socket.IO connection ID, and connection state captured when the request began.
+The client logs successful connections, disconnects, reconnects, and refused
+connection attempts with the same generation and connection ID. A refused
+attempt explicitly records whether it replaced the last successful generation,
+so a product can correlate one request without treating reconnect activity as
+proof that its connection changed.
 
 ## Boundary
 

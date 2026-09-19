@@ -59,6 +59,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-16 | Exact Control Card refusals identify the rejected authority | Exact-snapshot refusals now carry structured dimension, resource, and value evidence and state those coordinates in the operator-facing message instead of logging an empty generic mismatch. |
 | 2026-09-17 | Legacy application Cards compose with exact controls | Pre-policy callers in AND mode retain their historical role ceiling while the reviewed Control Card supplies the finite operation set; effective composition ignores application-policy metadata on Cards that carry no application resource. |
 | 2026-09-17 | Actionable OAuth request failures and recovered relay intervals | OAuth failures preserve bounded request evidence without exposing token responses, and Problem Board retains that evidence through a completed retry interval. |
+| 2026-09-19 | Data Bus connection generations become request evidence | Data Bus lifecycle logs and request errors carry the logical connection generation, Socket.IO connection ID, active state, and whether a refused attempt replaced the last successful generation, allowing one outcome-unknown request to be traced without inferring from reconnect noise. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
