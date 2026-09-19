@@ -389,3 +389,30 @@ async def test_unsolicited_service_event_wakes_event_waiter() -> None:
 
     assert await client.wait_for_event(0.1) == event
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_another_peers_data_bus_reply_does_not_wake_event_waiter() -> None:
+    socket = _Socket()
+    client = await _client(socket)
+
+    await socket.emit_service(
+        {
+            "type": "kdcube.data_bus.result",
+            "data": {
+                "message_id": "another-peers-message",
+                "subject": "problem_board.command.v1",
+                "object_ref": "work:worker-stream:other",
+                "data": {"ok": True},
+            },
+        }
+    )
+    await socket.emit_service(
+        {
+            "type": "kdcube.data_bus.accepted",
+            "data": {"message_id": "another-peers-message"},
+        }
+    )
+
+    assert await client.wait_for_event(0.01) is None
+    await client.close()

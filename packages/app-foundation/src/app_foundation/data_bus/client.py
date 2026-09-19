@@ -316,7 +316,14 @@ class FederatedDataBusClient:
         message_id = str(body.get("message_id") or "").strip()
         event_type = str(envelope.get("type") or "").strip()
         future = self._pending.get(message_id) if message_id else None
-        if future is not None and event_type.startswith("kdcube.data_bus."):
+        if event_type.startswith("kdcube.data_bus."):
+            # Data Bus receipts fan out to the authenticated session so a
+            # reconnecting peer can observe them. They are still replies,
+            # never application push events. A client with no matching
+            # in-flight request must ignore the receipt instead of waking its
+            # host loop for another peer's operation.
+            if future is None:
+                return
             if event_type == "kdcube.data_bus.accepted":
                 return
             terminal = _mapping(body.get("data"))
