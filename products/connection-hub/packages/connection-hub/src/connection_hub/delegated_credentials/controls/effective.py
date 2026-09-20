@@ -21,6 +21,11 @@ from connection_hub.delegated_credentials.cards.model import (
     NamedServiceSelection,
     authority_is_credentialless,
 )
+from connection_hub.delegated_credentials.agent_capability_policy import (
+    AgentCapabilityPolicyError,
+    compose_agent_capability_properties,
+    descriptor_control,
+)
 from connection_hub.delegated_credentials.application_operation_policy import (
     APPLICATION_API_RESOURCE,
     APPLICATION_OPERATIONS_PROPERTY,
@@ -295,6 +300,12 @@ def effective_card_authority(
         raise ControlCardMismatch("control_card_not_active")
 
     mode = control.composition_mode or CONTROL_COMPOSITION_AND
+    try:
+        agent_descriptor = descriptor_control(control.properties)
+    except AgentCapabilityPolicyError as exc:
+        raise ControlCardMismatch(exc.reason) from exc
+    if agent_descriptor is not None and mode != CONTROL_COMPOSITION_AND:
+        raise ControlCardMismatch("agent_descriptor_control_requires_and")
     if mode == CONTROL_COMPOSITION_OR:
         resource_grants = {
             resource: _union_values(
@@ -337,6 +348,16 @@ def effective_card_authority(
     properties[CONVERSATION_TARGETS_PROPERTY] = list(
         compose_conversation_targets(card.properties, control.properties, mode=mode)
     )
+    try:
+        properties.update(
+            compose_agent_capability_properties(
+                card.properties,
+                control.properties,
+                mode=mode,
+            )
+        )
+    except AgentCapabilityPolicyError as exc:
+        raise ControlCardMismatch(exc.reason) from exc
     if APPLICATION_API_RESOURCE in resource_grants:
         card_has_resource = APPLICATION_API_RESOURCE in card.resource_grants
         control_has_resource = APPLICATION_API_RESOURCE in control.resource_grants
@@ -426,7 +447,14 @@ def effective_card_authority(
             named_selection, named_services = _intersect_named_services(
                 card, control, resource_grants
             )
-            account_scope = _intersect_accounts(card.account_scope, control.account_scope)
+            # Descriptor control owns application capability, not the user's
+            # provider-account choice. That choice remains on the caller Card
+            # and is still enforced by the selected operation's live grants.
+            account_scope = (
+                normalize_account_scope(card.account_scope)
+                if agent_descriptor is not None
+                else _intersect_accounts(card.account_scope, control.account_scope)
+            )
     except ControlCardMismatch:
         raise
     except Exception as exc:

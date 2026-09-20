@@ -24,6 +24,9 @@ from connection_hub.delegated_credentials.conversation_target_policy import (
     CONVERSATION_TARGETS_PROPERTY,
     conversation_targets,
 )
+from connection_hub.delegated_credentials.application_resources import (
+    application_resource,
+)
 from connection_hub.delegated_credentials.controls.snapshot import (
     CONTROL_SNAPSHOT_MODE_EXACT,
     CONTROL_SNAPSHOT_PROPERTY,
@@ -244,6 +247,43 @@ def test_conversation_targets_follow_card_composition(mode: str, expected: tuple
 def test_malformed_conversation_target_property_grants_nothing() -> None:
     assert conversation_targets({CONVERSATION_TARGETS_PROPERTY: ["valid-app", "*"]}) == ()
     assert conversation_targets({CONVERSATION_TARGETS_PROPERTY: "valid-app"}) == ()
+
+
+def test_conversation_target_composition_intersects_each_resource_segment() -> None:
+    composition = _control_composition()
+    all_apps_for_agent = application_resource(
+        tenant="tenant",
+        project="project",
+        application="*",
+        agent="worker",
+    )
+    all_agents_for_app = application_resource(
+        tenant="tenant",
+        project="project",
+        application="problem-board@1-0",
+        agent="*",
+    )
+    exact = application_resource(
+        tenant="tenant",
+        project="project",
+        application="problem-board@1-0",
+        agent="worker",
+    )
+    caller = dataclasses.replace(
+        composition.caller_card,
+        properties={CONVERSATION_TARGETS_PROPERTY: [all_apps_for_agent]},
+    )
+    control = dataclasses.replace(
+        composition.control_card,
+        properties={
+            **composition.control_card.properties,
+            CONVERSATION_TARGETS_PROPERTY: [all_agents_for_app],
+        },
+    )
+
+    effective = effective_card_authority(caller, control)
+
+    assert conversation_targets(effective.properties) == (exact,)
 
 
 def test_native_admission_carries_only_resolved_targets() -> None:
