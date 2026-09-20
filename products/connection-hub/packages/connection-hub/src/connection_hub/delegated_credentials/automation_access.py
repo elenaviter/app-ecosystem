@@ -5522,6 +5522,10 @@ class AutomationAccessService:
                     provider: {account_id: list(claims) for account_id, claims in accounts.items()}
                     for provider, accounts in (record.account_scope.items() if record is not None else ())
                 },
+                "resource_claims": sorted(
+                    _card_claims_for_resource(record, cfg.resource)
+                    if record is not None else ()
+                ),
                 "conversation_targets": list(
                     conversation_targets(record.properties if record is not None else None)
                 ),

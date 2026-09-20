@@ -88,6 +88,9 @@ def _snapshot(catalog: ActiveCatalogCapabilities):
             "grantor_subject": "user-1",
             "card_revision": 2,
             "catalog_version": "catalog-before",
+            "resource_grants": {
+                RESOURCE: ["records:read", "records:read:any_user"]
+            },
             "named_services": {
                 "namespaces": {
                     "records": {
@@ -195,6 +198,7 @@ def test_named_service_is_bounded_by_both_card_and_active_catalog() -> None:
     assert allowed.account_scope == {
         "records": {"account-1": ["records:read"]}
     }
+    assert allowed.claims == ("records:read", "records:read:any_user")
     assert not removed.allowed
     assert removed.denial["error"]["code"] == (
         "delegated_capability_no_longer_available"
@@ -245,10 +249,56 @@ def test_malformed_conversation_target_property_grants_nothing() -> None:
 def test_native_admission_carries_only_resolved_targets() -> None:
     evaluation = evaluate_resolved_hub_state(
         selector={"client_id": "agent-1", "source": "native"},
-        state={"granted": True, "resource": RESOURCE, "conversation_targets": ["allowed-app"]},
+        state={
+            "granted": True,
+            "resource": RESOURCE,
+            "resource_claims": ["records:read", "records:read:any_user"],
+            "conversation_targets": ["allowed-app"],
+        },
     )
     assert evaluation.allowed
+    assert evaluation.claims == ("records:read", "records:read:any_user")
     assert evaluation.conversation_targets == ("allowed-app",)
+
+
+def test_managed_admission_carries_only_effective_card_claims() -> None:
+    composition = _control_composition()
+    caller = dataclasses.replace(
+        composition.caller_card,
+        resource_grants={
+            RESOURCE: ("records:read", "records:read:any_user")
+        },
+    )
+    effective = effective_card_authority(caller, composition.control_card)
+    resolved = ResolvedCardComposition(
+        caller_card=caller,
+        control_card=composition.control_card,
+        effective_card=effective,
+    )
+    snapshot = snapshot_from_grant(
+        catalog=_catalog(),
+        grant_record={
+            "registry_access_id": "access-1",
+            "client_id": "agent-1",
+            "named_services": _snapshot(_catalog()).named_services,
+            "resource_grants": {
+                RESOURCE: ["records:read", "records:read:any_user"]
+            },
+        },
+        credential=CredentialEnvelope(subject="integration:agent:user-1"),
+        resource=RESOURCE,
+        request_resource=RESOURCE,
+        card_composition=resolved,
+    )
+
+    evaluation = evaluate_managed_named_service(
+        snapshot,
+        namespace="records",
+        operation="object.search",
+    )
+
+    assert evaluation.allowed
+    assert evaluation.claims == ("records:read",)
 
 
 def test_named_service_denial_names_the_control_card_that_removed_it() -> None:
