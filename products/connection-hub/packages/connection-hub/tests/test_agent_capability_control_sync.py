@@ -31,6 +31,12 @@ from connection_hub.delegated_credentials.cards.model import (
 from connection_hub.delegated_credentials.cards.service import CardConflict
 from connection_hub.delegated_credentials.cards.store import subject_hash_for
 from connection_hub.delegated_credentials.catalog.models import CatalogDocument
+from connection_hub.delegated_credentials.controls.effective import (
+    effective_card_authority,
+)
+from connection_hub.delegated_credentials.conversation_target_policy import (
+    conversation_targets,
+)
 from connection_hub.delegated_credentials.oauth.config import (
     oauth_delegated_config_from_connections,
 )
@@ -108,6 +114,14 @@ def _policy(*tools: str) -> dict:
         "schema": AGENT_CAPABILITY_POLICY_SCHEMA,
         "resource": RESOURCE,
         "capabilities": {"tools": list(tools)},
+    }
+
+
+def _policy_with_targets(*targets: str) -> dict:
+    return {
+        "schema": AGENT_CAPABILITY_POLICY_SCHEMA,
+        "resource": RESOURCE,
+        "capabilities": {"conversation_targets": list(targets)},
     }
 
 
@@ -233,6 +247,57 @@ async def test_descriptor_sync_is_stable_and_new_capabilities_are_unselected() -
     assert added["card_changed"] is False
     assert added["states"]["tools"]["tool.future"] == (CAPABILITY_ALLOWED_UNSELECTED)
     assert added["projection"]["capabilities"] == {"tools": ["tool.old"]}
+
+
+@pytest.mark.asyncio
+async def test_effective_conversation_targets_come_from_capability_projection() -> None:
+    service, persistence = _service()
+    target = application_resource(
+        tenant=TENANT,
+        project=PROJECT,
+        application="*",
+        agent="*",
+    )
+
+    selected = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=_policy_with_targets(target),
+        capability_catalog=_policy_with_targets(target),
+        selected_capabilities=_policy_with_targets(target),
+        replace_selection=True,
+        conversation_target_resources=(target,),
+    )
+
+    resident = persistence.records[selected["card"]["access_id"]][0]
+    control = persistence.records[selected["control_card"]["access_id"]][0]
+    effective = effective_card_authority(resident, control)
+
+    assert selected["projection"]["capabilities"] == {
+        "conversation_targets": [target]
+    }
+    assert conversation_targets(effective.properties) == (target,)
+
+    cleared = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=_policy_with_targets(target),
+        capability_catalog=_policy_with_targets(target),
+        selected_capabilities=_policy_with_targets(),
+        replace_selection=True,
+        conversation_target_resources=(target,),
+    )
+    effective = effective_card_authority(
+        persistence.records[cleared["card"]["access_id"]][0],
+        persistence.records[cleared["control_card"]["access_id"]][0],
+    )
+    assert conversation_targets(effective.properties) == ()
 
 
 @pytest.mark.asyncio

@@ -91,8 +91,14 @@ def test_visible_replacement_preserves_hidden_selection_for_later_restore() -> N
 
 
 def _composition() -> tuple[CardAuthority, CardAuthority]:
-    selection = _policy(tools=("tool.old", "tool.hidden"))
-    authority = _policy(tools=("tool.old", "tool.new"))
+    selection = _policy(
+        tools=("tool.old", "tool.hidden"),
+        conversation_targets=(ALL_DEPLOYMENT_AGENTS,),
+    )
+    authority = _policy(
+        tools=("tool.old", "tool.new"),
+        conversation_targets=(ALL_DEPLOYMENT_AGENTS,),
+    )
     control = CardAuthority(
         access_id="control-agent-worker",
         client_id="control-card:kdcube_agent_descriptor",
@@ -162,13 +168,22 @@ def test_descriptor_control_composes_live_capability_and_keeps_account_choice() 
 
     assert AgentCapabilityPolicy.from_property(
         effective.properties[AGENT_CAPABILITY_PROJECTION_PROPERTY]
-    ).capabilities == {"tools": ("tool.old",)}
+    ).capabilities == {
+        "conversation_targets": (ALL_DEPLOYMENT_AGENTS,),
+        "tools": ("tool.old",),
+    }
     assert AgentCapabilityPolicy.from_property(
         effective.properties[AGENT_CAPABILITY_SELECTION_PROPERTY]
-    ).capabilities == {"tools": ("tool.hidden", "tool.old")}
+    ).capabilities == {
+        "conversation_targets": (ALL_DEPLOYMENT_AGENTS,),
+        "tools": ("tool.hidden", "tool.old"),
+    }
     assert AgentCapabilityPolicy.from_property(
         effective.properties[AGENT_CAPABILITY_AUTHORITY_PROPERTY]
-    ).capabilities == {"tools": ("tool.new", "tool.old")}
+    ).capabilities == {
+        "conversation_targets": (ALL_DEPLOYMENT_AGENTS,),
+        "tools": ("tool.new", "tool.old"),
+    }
     assert effective.properties[AGENT_CAPABILITY_METADATA_PROPERTY]["entries"] == {
         "tools": {"tool.old": {"title": "Old tool"}}
     }

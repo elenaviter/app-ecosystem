@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-09-16
+updated_at: 2026-09-20
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -941,6 +941,14 @@ should not carry over, then grant again.
 A credential-backed caller Card may link at most one credentialless Card. Both
 are ordinary Connection Hub Cards. The link, not a separate Card type, gives
 the credentialless Card its control role:
+
+For a descriptor-controlled resident agent, capability composition has one
+positive projection. The Control Card contributes the descriptor-owned ceiling
+and the resident Agent Card contributes the user's selection. Connection Hub
+derives conventional admission properties, including
+`kdcube.conversation_targets`, from that effective projection. Those properties
+are transport views for established guards, not additional selections and not
+independent sources of authority.
 
 ```text
 presented credential

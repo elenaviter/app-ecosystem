@@ -22,6 +22,8 @@ from connection_hub.delegated_credentials.cards.model import (
     authority_is_credentialless,
 )
 from connection_hub.delegated_credentials.agent_capability_policy import (
+    AGENT_CAPABILITY_PROJECTION_PROPERTY,
+    AgentCapabilityPolicy,
     AgentCapabilityPolicyError,
     compose_agent_capability_properties,
     descriptor_control,
@@ -349,13 +351,22 @@ def effective_card_authority(
         compose_conversation_targets(card.properties, control.properties, mode=mode)
     )
     try:
-        properties.update(
-            compose_agent_capability_properties(
-                card.properties,
-                control.properties,
-                mode=mode,
-            )
+        capability_properties = compose_agent_capability_properties(
+            card.properties,
+            control.properties,
+            mode=mode,
         )
+        properties.update(capability_properties)
+        if agent_descriptor is not None:
+            projection = AgentCapabilityPolicy.from_property(
+                capability_properties[AGENT_CAPABILITY_PROJECTION_PROPERTY]
+            )
+            # Conversation admission consumes this established Card property.
+            # For descriptor-controlled agents it is a derived view of the
+            # same positive capability projection, never a second selection.
+            properties[CONVERSATION_TARGETS_PROPERTY] = list(
+                projection.capabilities.get("conversation_targets", ())
+            )
     except AgentCapabilityPolicyError as exc:
         raise ControlCardMismatch(exc.reason) from exc
     if APPLICATION_API_RESOURCE in resource_grants:
