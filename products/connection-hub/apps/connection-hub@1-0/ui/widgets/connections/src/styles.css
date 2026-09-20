@@ -4153,3 +4153,45 @@ code {
 /* The two axes inside an authority group: who identifies users, and the
    server-side lanes that sign in through them. */
 .authority__axis { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding: 2px 2px 0; font-size: 12px; color: var(--text-2); }
+.conversation-targets {
+  min-width: 0;
+  margin: 12px 0;
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--border, #d9e5e9);
+}
+
+.conversation-targets legend {
+  padding: 0 8px 0 0;
+  font-weight: 700;
+}
+
+.conversation-targets > small {
+  display: block;
+  margin: 4px 0 10px;
+  color: var(--muted, #64748b);
+}
+
+.conversation-targets__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 0 16px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.conversation-targets__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border, #d9e5e9);
+  cursor: pointer;
+}
+
+.conversation-targets__row input { margin: 3px 0 0; }
+.conversation-targets__row span { min-width: 0; overflow-wrap: anywhere; }
+.conversation-targets__row code,
+.conversation-targets__row small { display: block; font-size: 11px; color: var(--muted, #64748b); }
+.conversation-targets__row--stale { color: #9a4a16; }

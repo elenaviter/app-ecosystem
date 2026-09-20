@@ -25,9 +25,15 @@ from connection_hub.delegated_credentials.catalog.authorization import (
 from connection_hub.delegated_credentials.controls.attribution import (
     ResolvedCardComposition,
 )
+from connection_hub.delegated_credentials.conversation_target_policy import (
+    conversation_targets,
+)
 from connection_hub.delegated_credentials.named_service_policy import (
     boundary_permits_operation,
     configured_named_service_operations,
+)
+from connection_hub.delegated_credentials.resource_operations import (
+    resource_matches,
 )
 
 ADMISSION_MODE_APPLICATION = "application"
@@ -41,6 +47,20 @@ DELEGATED_CARD_BINDING_SCHEMA = "connection_hub.delegated_card_binding.v1"
 
 def clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _resource_claims(
+    resource_grants: Mapping[str, Any] | None,
+    request_resource: str,
+) -> tuple[str, ...]:
+    claims = {
+        clean(claim)
+        for resource, values in dict(resource_grants or {}).items()
+        if resource_matches(clean(resource), clean(request_resource))
+        for claim in (values or ())
+        if clean(claim)
+    }
+    return tuple(sorted(claims))
 
 
 @dataclass(frozen=True)
@@ -59,6 +79,8 @@ class ManagedNamedServiceAdmissionSnapshot:
     named_services: Mapping[str, Any]
     named_services_present: bool
     account_scope: Mapping[str, Any]
+    claims: tuple[str, ...] = ()
+    conversation_targets: tuple[str, ...] = ()
     card_composition: ResolvedCardComposition | None = None
 
     def selector(self) -> dict[str, Any]:
@@ -83,6 +105,8 @@ class NamedServiceAdmissionEvaluation:
     allowed: bool
     denial: Mapping[str, Any] | None = None
     account_scope: Mapping[str, Any] = field(default_factory=dict)
+    claims: tuple[str, ...] = ()
+    conversation_targets: tuple[str, ...] = ()
     client_id: str = ""
     resource: str = ""
     audit: Mapping[str, Any] = field(default_factory=dict)
@@ -92,6 +116,8 @@ class NamedServiceAdmissionEvaluation:
         cls,
         *,
         account_scope: Mapping[str, Any] | None = None,
+        claims: tuple[str, ...] = (),
+        conversation_targets: tuple[str, ...] = (),
         client_id: str = "",
         resource: str = "",
         audit: Mapping[str, Any] | None = None,
@@ -99,6 +125,8 @@ class NamedServiceAdmissionEvaluation:
         return cls(
             allowed=True,
             account_scope=copy.deepcopy(dict(account_scope or {})),
+            claims=tuple(claims),
+            conversation_targets=tuple(conversation_targets),
             client_id=clean(client_id),
             resource=clean(resource),
             audit=dict(audit or {}),
@@ -130,6 +158,14 @@ def snapshot_from_grant(
 ) -> ManagedNamedServiceAdmissionSnapshot:
     attrs = getattr(credential, "attrs", None)
     attrs = dict(attrs) if isinstance(attrs, Mapping) else {}
+    effective_card = (
+        card_composition.effective_card
+        if card_composition is not None
+        else None
+    )
+    effective_resource_grants = getattr(effective_card, "resource_grants", None)
+    if not isinstance(effective_resource_grants, Mapping):
+        effective_resource_grants = grant_record.get("resource_grants")
     return ManagedNamedServiceAdmissionSnapshot(
         catalog=catalog,
         access_id=clean(grant_record.get("registry_access_id")),
@@ -157,6 +193,10 @@ def snapshot_from_grant(
         ),
         account_scope=copy.deepcopy(
             dict(grant_record.get("account_scope") or {})
+        ),
+        claims=_resource_claims(effective_resource_grants, request_resource),
+        conversation_targets=conversation_targets(
+            getattr(effective_card, "properties", None)
         ),
         card_composition=card_composition,
     )
@@ -222,6 +262,8 @@ def evaluate_managed_named_service(
         )
     return NamedServiceAdmissionEvaluation.allow(
         account_scope=snapshot.account_scope,
+        claims=snapshot.claims,
+        conversation_targets=snapshot.conversation_targets,
         client_id=snapshot.client_id,
         resource=snapshot.resource,
         audit={
@@ -339,6 +381,8 @@ def evaluate_resolved_hub_state(
             if isinstance(state.get("account_scope"), Mapping)
             else {}
         ),
+        claims=tuple(state.get("resource_claims") or ()),
+        conversation_targets=tuple(state.get("conversation_targets") or ()),
         client_id=clean(selector.get("client_id")),
         resource=clean(state.get("resource")),
         audit=hub_state_audit(state, selector=selector),

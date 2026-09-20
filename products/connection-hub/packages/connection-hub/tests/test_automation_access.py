@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from connection_hub.delegated_credentials.automation_access import (
     ACCESS_SOURCE_AGENT,
     ACCESS_SOURCE_MANUAL,
@@ -10,8 +12,13 @@ from connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
     _account_scope_claims_for_requirements,
 )
+from connection_hub.delegated_credentials.cards.model import NamedServiceSelection
+from connection_hub.delegated_credentials.catalog.models import CatalogDocument
 from connection_hub.delegated_credentials.oauth.clients import (
     client_uses_full_card_catalog,
+)
+from connection_hub.delegated_credentials.oauth.config import (
+    oauth_delegated_config_from_connections,
 )
 from connection_hub.delegated_credentials.resource_operations import (
     resolve_declared_resource_keys,
@@ -126,6 +133,92 @@ def test_account_wildcard_expands_only_current_provider_requirements() -> None:
     )
 
     assert held == {"slack:post", "gmail:read"}
+
+
+@pytest.mark.asyncio
+async def test_native_grant_state_returns_all_effective_resource_claims() -> None:
+    resource = "https://example.test/mcp/conversations"
+    named_services = {
+        "namespaces": {
+            "conv": {
+                "tools": {
+                    "objects": {
+                        "operations": {
+                            "object.list": {
+                                "grants": ["conversations:read"]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    document = CatalogDocument.build({
+        "delegated_credentials": {
+            "oauth": {
+                "enabled": True,
+                "resources": [{
+                    "resource": resource,
+                    "grants": [
+                        "conversations:read",
+                        "conversations:read:any_user",
+                    ],
+                    "named_services": named_services,
+                }],
+            }
+        }
+    })
+    config = oauth_delegated_config_from_connections(document.connections)
+    resolver = SimpleNamespace()
+
+    async def _active():
+        return document
+
+    resolver.resolve_active = _active
+    service = AutomationAccessService(
+        redis=None,
+        tenant="tenant",
+        project="project",
+        config=config,
+        catalog_resolver=resolver,
+    )
+    record = AutomationAccessRecord(
+        access_id="access-1",
+        label="Agent",
+        client_id="agent-1",
+        grantor_subject="user-1",
+        delegate_subject="integration:agent-1:user-1",
+        operations=(),
+        resource_grants={
+            resource: (
+                "conversations:read",
+                "conversations:read:any_user",
+            )
+        },
+        named_service_operations=NamedServiceSelection.exact(
+            {resource: {"conv": ("object.list",)}}
+        ),
+        named_services=named_services,
+        catalog_version=document.version,
+    )
+
+    async def _record(**_kwargs):
+        return record
+
+    service._resident_card_for_resources = _record
+
+    state = await service.agent_namespace_grant_state(
+        grantor_subject="user-1",
+        client_id="agent-1",
+        namespace="conv",
+        operation="object.list",
+    )
+
+    assert state["granted"] is True
+    assert state["resource_claims"] == [
+        "conversations:read",
+        "conversations:read:any_user",
+    ]
 
 
 class _Operation:

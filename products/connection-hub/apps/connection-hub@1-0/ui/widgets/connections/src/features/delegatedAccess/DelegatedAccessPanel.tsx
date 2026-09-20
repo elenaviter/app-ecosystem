@@ -9,6 +9,8 @@ import {
   ApplicationApiCatalog,
   useApplicationApiCatalog,
 } from './ApplicationApiCatalog';
+import { ConversationTargetPicker } from './ConversationTargetPicker';
+import { cardConversationTargets, withConversationTargets } from './conversationTargets';
 import {
   APPLICATION_API_RESOURCE,
   PLATFORM_ROLE_PREFIX,
@@ -1000,9 +1002,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     accounts,
     loading: delegatedAccountsLoading,
   } = useAppSelector((s) => s.delegatedToKdcube);
-  const applicationApiCatalog = useApplicationApiCatalog(
-    resources.some((resource) => resource.resource === '*'),
-  );
+  const applicationApiCatalog = useApplicationApiCatalog(true);
   const knownApplicationOperations = useMemo(
     () => applicationApiCatalog.applications
       .flatMap((app) => app.apis.map((api) => api.operationRef))
@@ -1112,6 +1112,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Rename of the card being edited (a DCR client always registers "Claude").
   const [editLabel, setEditLabel] = useState('');
   const [editCompositionMode, setEditCompositionMode] = useState<'and' | 'or'>('and');
+  const [editConversationTargets, setEditConversationTargets] = useState<string[]>([]);
   const [editActionError, setEditActionError] = useState('');
   // The automation-creation form is folded behind its call to action.
   const [createOpen, setCreateOpen] = useState(false);
@@ -2058,6 +2059,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     editAccountScope,
     editLabel,
     editCompositionMode,
+    editConversationTargets,
     editAddedResources,
     editRemovedResources,
     editInvocationModes,
@@ -2123,6 +2125,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditAccountScope(seedAccountScopeFromRecord(item));
     setEditLabel(item.label || '');
     setEditCompositionMode(item.composition_mode === 'or' ? 'or' : 'and');
+    setEditConversationTargets(cardConversationTargets(item.properties));
     setEditAddedResources([]);
     setEditRemovedResources([]);
     setEditAcceptedOperations({});
@@ -2641,6 +2644,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditAccountScope({});
     setEditLabel('');
     setEditCompositionMode('and');
+    setEditConversationTargets([]);
     setEditActionError('');
     setEditAddedResources([]);
     setEditRemovedResources([]);
@@ -2727,13 +2731,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         .map(([resource, namespaces]) => [resource, namespaces]),
     );
     const applicationOperations = editResourceOperations[APPLICATION_API_RESOURCE] || [];
-    const properties = applicationOperationPropertiesForSelection({
+    const properties = withConversationTargets(applicationOperationPropertiesForSelection({
       properties: item.properties || {},
       policy: editApplicationRolePolicy,
       selectedOperations: applicationOperations,
       resourceSelected: APPLICATION_API_RESOURCE in routed,
       resourcePreviouslySelected: APPLICATION_API_RESOURCE in (item.resource_grants || {}),
-    });
+    }), editConversationTargets);
     return {
       operations: [],
       resource_grants: routed,
@@ -2905,13 +2909,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         // every other changed selected operation stays suspended.
         acceptedOperations: editAcceptedOperations,
         compositionMode: item.source === 'control' ? editCompositionMode : undefined,
-        properties: applicationOperationPropertiesForSelection({
+        properties: withConversationTargets(applicationOperationPropertiesForSelection({
           properties: item.properties || {},
           policy: editApplicationRolePolicy,
           selectedOperations: splits[APPLICATION_API_RESOURCE]?.kept || [],
           resourceSelected: APPLICATION_API_RESOURCE in routedKept,
           resourcePreviouslySelected: APPLICATION_API_RESOURCE in (item.resource_grants || {}),
-        }),
+        }), editConversationTargets),
       })).unwrap();
     } catch (error) {
       setEditActionError(`Save was not applied: ${String(error || 'request refused')}`);
@@ -4616,6 +4620,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       })}
     </div>
   );
+
+  const renderConversationTargetPicker = () => (
+    Object.entries(editPicks).some(([key, selected]) => selected && key.endsWith(':conversations:read'))
+      || editConversationTargets.length > 0
+      ? <ConversationTargetPicker
+          catalog={applicationApiCatalog}
+          selected={editConversationTargets}
+          onChange={setEditConversationTargets}
+        />
+      : null
+  );
   // The workbench: the rail on the left lists every matched card and marks the
   // one being edited; the editor on the right is that card alone, with its
   // Save and Cancel pinned at the viewport bottom while it is in view.
@@ -4790,6 +4805,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               />
             </label>
           ) : null}
+          {renderConversationTargetPicker()}
           {!showingEffective && controlCappedTools.length ? (
             <div className="notice warning control-cap-warning" role="status">
               <strong>
@@ -5049,6 +5065,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           />
                         </label>
                       ) : null}
+                      {editing ? renderConversationTargetPicker() : null}
                       {item.resource_grants && Object.keys(item.resource_grants).length ? (
                         editing ? renderEditResourceSections(item) : null
                       ) : null}

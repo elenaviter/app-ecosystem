@@ -46,6 +46,10 @@ from connection_hub.delegated_credentials.controls.model import (
 from connection_hub.delegated_credentials.controls.snapshot import (
     control_snapshot_is_exact,
 )
+from connection_hub.delegated_credentials.conversation_target_policy import (
+    CONVERSATION_TARGETS_PROPERTY,
+    compose_conversation_targets,
+)
 
 
 class ControlCardMismatch(RuntimeError):
@@ -327,6 +331,11 @@ def effective_card_authority(
         }
     properties = copy.deepcopy(
         {**dict(card.properties or {}), **dict(control.properties or {})}
+    )
+    # Target authority is a finite set, not an ordinary last-writer-wins Card
+    # property. An absent side contributes no cross-application reads.
+    properties[CONVERSATION_TARGETS_PROPERTY] = list(
+        compose_conversation_targets(card.properties, control.properties, mode=mode)
     )
     if APPLICATION_API_RESOURCE in resource_grants:
         card_has_resource = APPLICATION_API_RESOURCE in card.resource_grants

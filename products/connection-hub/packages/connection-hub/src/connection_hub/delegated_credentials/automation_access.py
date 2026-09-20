@@ -102,6 +102,9 @@ from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
 )
+from connection_hub.delegated_credentials.conversation_target_policy import (
+    conversation_targets,
+)
 from connection_hub.delegated_credentials.controls.cache import (
     ControlCardCacheUnusable,
     ControlCardRuntimeCache,
@@ -5392,6 +5395,25 @@ class AutomationAccessService:
                     client_id=client_id,
                     resources=[cfg.resource],
                 )
+            if record is not None and record.control_card is not None:
+                try:
+                    control = await self._resolve_control_record(
+                        record.control_card.control_id,
+                        grantor_subject=record.grantor_subject,
+                    )
+                    if control is None:
+                        raise ControlCardMismatch("control_card_unresolvable")
+                    record = record_from_card(effective_card_authority(
+                        card_authority_from_record(record),
+                        card_authority_from_record(control),
+                    ))
+                except (CardUnavailable, ControlCardMismatch) as exc:
+                    return {
+                        "governed": True,
+                        "granted": False,
+                        "access_id": exact_access_id or record.access_id,
+                        "card_error": getattr(exc, "reason", str(exc)),
+                    }
             # The namespace survives, but the operation under it may not. A
             # capability the catalog no longer offers is refused outright —
             # consent cannot restore it.
@@ -5500,6 +5522,13 @@ class AutomationAccessService:
                     provider: {account_id: list(claims) for account_id, claims in accounts.items()}
                     for provider, accounts in (record.account_scope.items() if record is not None else ())
                 },
+                "resource_claims": sorted(
+                    _card_claims_for_resource(record, cfg.resource)
+                    if record is not None else ()
+                ),
+                "conversation_targets": list(
+                    conversation_targets(record.properties if record is not None else None)
+                ),
             }
         # Nothing in the active catalog publishes the namespace. A card that
         # still carries it is a removed capability, not an ungoverned call: the
