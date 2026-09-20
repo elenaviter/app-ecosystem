@@ -178,6 +178,13 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
   assert.match(app, /'control_card_id'/)
 })
 
+test('an unresolved exact Card deep link is visible instead of becoming an unfiltered list', () => {
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  assert.match(panel, /accessCardFocusState === 'unavailable'/)
+  assert.match(panel, /unavailableAccessCardMessage\(accessCardFocus\)/)
+  assert.match(panel, /<strong>Card unavailable\.<\/strong>/)
+})
+
 test('permission claims are operation prerequisites and tool lists retain exact bulk and individual controls', () => {
   const rules = source('src/features/delegatedAccess/resourceEditing.ts')
   assert.match(rules, /export function retainOperationsWithSelectedClaims\(/)

@@ -3,7 +3,9 @@ import test from 'node:test'
 
 import {
   accessCardFocusFromParams,
+  findAccessCardFocus,
   matchesAccessCardFocus,
+  unavailableAccessCardMessage,
 } from '../src/features/delegatedAccess/accessCardFocus.ts'
 
 function focus(values) {
@@ -56,4 +58,20 @@ test('control_card_id opens only the credentialless control Card', () => {
     { access_id: 'project-control-card', source: 'control' },
     request,
   ), true)
+})
+
+test('the exact visible card is resolved and an unavailable card is named', () => {
+  const request = focus({ access_id: 'oauth-fable-card' })
+  const cards = [
+    { access_id: 'oauth-other-card', source: 'oauth' },
+    { access_id: 'oauth-fable-card', source: 'agent' },
+  ]
+  assert.equal(findAccessCardFocus(cards, request), cards[1])
+
+  const missing = focus({ access_id: 'oauth-hidden-card' })
+  assert.equal(findAccessCardFocus(cards, missing), undefined)
+  assert.equal(
+    unavailableAccessCardMessage(missing),
+    'Card oauth-hidden-card does not exist or is not visible to this account.',
+  )
 })

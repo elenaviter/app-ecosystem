@@ -267,14 +267,15 @@ account at call time.
 ## Standalone site
 
 Connection Hub also ships as its own site. The application declares a main
-view (`ui/main`: `index.html`, `site.js`, `styles.css`, copied as-is at build)
+view (`ui/main`: `index.html`, `site.js`, `site-routing.js`, `styles.css`,
+copied as-is at build)
 and registers it as an application site:
 
 ```yaml
 ui:
   main_view:
     src_folder: ui/main
-    build_command: cp index.html site.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/
+    build_command: cp index.html site.js site-routing.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/
     site:
       enabled: true
       alias: connections     # served at /sites/connections/
@@ -297,9 +298,12 @@ What the shell owns, and what it does not:
   `/profile`, and re-probes on `kdcube-auth-changed`.
 - It hosts the `connections_settings` widget in an iframe served from the
   widget's own bundle route, so the widget resolves tenant, project, and
-  application from its URL exactly as in every other host. A `?tab=` (or
-  `#tab`) on the site URL is passed through, so
-  `/sites/connections/?tab=delegated_by_kdcube` opens that tab.
+  application from its URL exactly as in every other host. The shell passes
+  the widget's allowlisted direct-link fields into that iframe. A `?tab=` (or
+  `#tab`) selects the tab, and an exact delegated Card selector such as
+  `access_id`, `manual_access_id`, or `control_card_id` opens that Card. For
+  example, `/sites/connections/?tab=delegatedAccess&access_id=<id>` opens the
+  named Card. Unknown fields are not copied into the iframe URL.
 - Because the widget route is authenticated and an iframe request is not a
   top-level navigation, the shell mounts the widget only after `/profile`
   confirms a session. Signed out, it sends the visitor to the platform

@@ -52,3 +52,14 @@ export function matchesAccessCardFocus(
     && (!focus.manualOnly || candidate.source === 'manual')
     && (!focus.controlOnly || candidate.source === 'control');
 }
+
+export function findAccessCardFocus<T extends { access_id: string; source?: string }>(
+  candidates: readonly T[],
+  focus: AccessCardFocus,
+): T | undefined {
+  return candidates.find((candidate) => matchesAccessCardFocus(candidate, focus));
+}
+
+export function unavailableAccessCardMessage(focus: AccessCardFocus): string {
+  return `Card ${focus.accessId} does not exist or is not visible to this account.`;
+}

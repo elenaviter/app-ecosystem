@@ -125,7 +125,9 @@ import {
 } from './oauthConsent';
 import {
   accessCardFocusRequest,
+  findAccessCardFocus,
   matchesAccessCardFocus,
+  unavailableAccessCardMessage,
 } from './accessCardFocus';
 import {
   authorityAccountCount,
@@ -1044,6 +1046,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [pendingInvocationMode, setPendingInvocationMode] =
     useState<InvocationMode | null>(() => pendingPresetMode(pendingAgentGrantRequest(openParams)));
   const accessCardFocus = useMemo(() => accessCardFocusRequest(openParams), [openParams]);
+  const [accessCardFocusState, setAccessCardFocusState] =
+    useState<'idle' | 'loading' | 'resolved' | 'unavailable'>(
+      () => (accessCardFocus ? 'loading' : 'idle'),
+    );
   useEffect(() => {
     console.info(
       '[consent-route] pending pane state on mount:',
@@ -2156,17 +2162,43 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const focusedAccessId = useRef<string | null>(null);
   useEffect(() => {
     if (!accessCardFocus?.controlOnly) return;
-    if (focusedCard?.access_id === accessCardFocus.accessId) return;
-    void dispatch(loadControlCard({ controlId: accessCardFocus.accessId }));
+    if (focusedCard && matchesAccessCardFocus(focusedCard, accessCardFocus)) {
+      setAccessCardFocusState('resolved');
+      return;
+    }
+    let current = true;
+    setAccessCardFocusState('loading');
+    void dispatch(loadControlCard({ controlId: accessCardFocus.accessId })).unwrap()
+      .then((result) => {
+        if (!current) return;
+        setAccessCardFocusState(
+          result.access && matchesAccessCardFocus(result.access, accessCardFocus)
+            ? 'resolved'
+            : 'unavailable',
+        );
+      })
+      .catch(() => {
+        if (current) setAccessCardFocusState('unavailable');
+      });
+    return () => { current = false; };
   }, [accessCardFocus, dispatch, focusedCard?.access_id]);
   useEffect(() => {
     if (!accessCardFocus) {
       focusedAccessId.current = null;
+      setAccessCardFocusState('idle');
       return;
     }
-    const item = [...items, ...(focusedCard ? [focusedCard] : [])]
-      .find((candidate) => matchesAccessCardFocus(candidate, accessCardFocus));
-    if (!item) return;
+    const item = findAccessCardFocus(
+      [...items, ...(focusedCard ? [focusedCard] : [])],
+      accessCardFocus,
+    );
+    if (!item) {
+      if (!accessCardFocus.controlOnly) {
+        setAccessCardFocusState(delegatedAccessLoading ? 'loading' : 'unavailable');
+      }
+      return;
+    }
+    setAccessCardFocusState('resolved');
     if (focusedAccessId.current !== accessCardFocus.accessId) {
       focusedAccessId.current = accessCardFocus.accessId;
       startEdit(item);
@@ -2191,7 +2223,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         }));
       }
     }
-  }, [accessCardFocus, items, focusedCard, accounts, startEdit]);
+  }, [
+    accessCardFocus,
+    items,
+    focusedCard,
+    accounts,
+    delegatedAccessLoading,
+    startEdit,
+  ]);
   // Per-account claim binding chosen while granting a PENDING request (consent card).
   const [pendingAccountScope, setPendingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   const [pendingExistingAccountScope, setPendingExistingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
@@ -5221,6 +5260,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const grantedPane = (
     <section className="card">
       {renderRenewDialog()}
+
+      {accessCardFocus && accessCardFocusState === 'loading' ? (
+        <div className="notice" role="status">Opening the requested Card...</div>
+      ) : null}
+      {accessCardFocus && accessCardFocusState === 'unavailable' ? (
+        <div className="error" role="alert">
+          <strong>Card unavailable.</strong>{' '}
+          {unavailableAccessCardMessage(accessCardFocus)}
+        </div>
+      ) : null}
 
       {editingRecord ? renderWorkbench(editingRecord) : null}
       {!editingRecord && compactList ? renderCompactList() : null}

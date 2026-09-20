@@ -6,10 +6,11 @@
 // from the widget's own bundle URL, so the widget resolves tenant, project and
 // application from its route exactly as it does in every other host.
 
+import { buildWidgetUrl } from './site-routing.js'
+
 const DEFAULT_PLATFORM_PREFIX = '/platform'
 const DEFAULT_WIDGET_ALIAS = 'connections_settings'
 const DEFAULT_SIGN_IN_PATH = '/signin/'
-const WIDGET_TAB_PARAMS = ['tab', 'view']
 // One automatic sign-in attempt per page load: a stale session cookie heals
 // without a click, and a genuinely signed-out visitor is not bounced in a loop.
 const SIGN_IN_ATTEMPT_KEY = 'kdcube-connection-hub-signin-attempted'
@@ -138,29 +139,22 @@ function goSignIn() {
 }
 
 // The widget URL: the widget's own bundle route, so its route resolver wins.
-// A ?tab= (or #tab) on the site URL is passed through, so a link such as
-// /sites/connections/?tab=delegated_by_kdcube opens the intended tab.
+// The shell passes the widget's allowlisted direct-link fields into the frame;
+// this includes both the selected tab and an exact delegated Card to open.
 function widgetUrl() {
   const tenant = String(siteConfig?.tenant || platformConfig?.tenant || route?.tenant || '')
   const project = String(siteConfig?.project || platformConfig?.project || route?.project || '')
   const applicationId = String(siteConfig?.application_id || route?.applicationId || '')
   const widgetAlias = String(siteConfig?.widget_alias || DEFAULT_WIDGET_ALIAS)
-  const url = new URL([
-    '/api/integrations/bundles',
-    encodeURIComponent(tenant),
-    encodeURIComponent(project),
-    encodeURIComponent(applicationId),
-    'widgets',
-    encodeURIComponent(widgetAlias),
-  ].join('/'), window.location.origin)
-  const query = new URLSearchParams(window.location.search)
-  for (const key of WIDGET_TAB_PARAMS) {
-    const value = query.get(key)
-    if (value) url.searchParams.set(key, value)
-  }
-  const hash = String(window.location.hash || '').replace(/^#/, '').trim()
-  if (hash && !url.searchParams.has('tab')) url.searchParams.set('tab', hash)
-  return url.toString()
+  return buildWidgetUrl({
+    origin: window.location.origin,
+    tenant,
+    project,
+    applicationId,
+    widgetAlias,
+    search: window.location.search,
+    hash: window.location.hash,
+  })
 }
 
 function runtimeConfig() {

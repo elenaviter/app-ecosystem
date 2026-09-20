@@ -1928,7 +1928,7 @@ bundles:
         # non-root while any application site is enabled.
         main_view:
           src_folder: "ui/main"
-          build_command: "cp index.html site.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/"
+          build_command: "cp index.html site.js site-routing.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/"
           site:
             enabled: false
             alias: "connections"
