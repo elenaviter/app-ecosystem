@@ -7,7 +7,11 @@ from typing import Any
 import pytest
 
 from connection_hub.client import ConnectionsClient, ConnectionsError
-from connection_hub.contract import CONNECTION_GET_TOKEN, OAUTH_START
+from connection_hub.contract import (
+    AGENT_CAPABILITY_SYNC,
+    CONNECTION_GET_TOKEN,
+    OAUTH_START,
+)
 
 
 @dataclass
@@ -38,6 +42,8 @@ class _Transport:
             )
         if operation == OAUTH_START:
             return _Response(object={"authorize_url": "https://example.test/authorize"})
+        if operation == AGENT_CAPABILITY_SYNC:
+            return _Response(object={"projection": {"tools": ["search"]}})
         return _Response(ok=False, error=_Error("unsupported", operation))
 
 
@@ -57,3 +63,14 @@ async def test_client_preserves_structured_transport_error():
     with pytest.raises(ConnectionsError) as exc:
         await ConnectionsClient(_Transport()).status("mail")
     assert exc.value.code == "unsupported"
+
+
+@pytest.mark.asyncio
+async def test_client_forwards_agent_capability_sync_payload() -> None:
+    transport = _Transport()
+    payload = {"application": "workspace@1-0", "agent_id": "assistant"}
+
+    result = await ConnectionsClient(transport).sync_agent_capabilities(payload)
+
+    assert result == {"projection": {"tools": ["search"]}}
+    assert transport.calls == [(AGENT_CAPABILITY_SYNC, payload)]

@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from connection_hub.contract import (
+    AGENT_CAPABILITY_SYNC,
     AGENT_GRANT_CHECK,
     AGENT_GRANT_GET_TOKEN,
     CONNECTION_CATALOG,
@@ -121,6 +122,15 @@ class ConnectionsClient:
         if delegate_identity:
             payload["delegate_identity"] = delegate_identity
         response = await self._call(AGENT_GRANT_CHECK, **payload)
+        return dict(getattr(response, "object", None) or {})
+
+    async def sync_agent_capabilities(
+        self,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Synchronize a trusted runtime's resident-agent descriptor ceiling."""
+
+        response = await self._call(AGENT_CAPABILITY_SYNC, **dict(payload))
         return dict(getattr(response, "object", None) or {})
 
     async def disconnect(self, provider: str, account_id: str) -> dict[str, Any]:

@@ -78,6 +78,9 @@ from connection_hub.delegated_credentials.application_operation_policy import (
     platform_role_allowed_by,
     validate_application_operation_role_policy,
 )
+from connection_hub.delegated_credentials.agent_capability_control import (
+    preserve_descriptor_acceptance,
+)
 from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_operations,
     operation_union,
@@ -3015,12 +3018,22 @@ class AutomationAccessService:
             # A resource the card already held keeps the digests it accepted for
             # selected operations whose descriptor changed since: a consent
             # merge is not a review of unrelated changes.
-            resource_acceptance=next_resource_acceptance(
-                resources=selected_resource_grants,
-                row_for=lambda resource: self._configured_resource(resource, config=catalog_config),
-                catalog_version=catalog_version,
-                selected_operations=selected_resource_operations,
-                previous=existing.resource_acceptance if existing is not None else None,
+            resource_acceptance=preserve_descriptor_acceptance(
+                existing.resource_acceptance if existing is not None else None,
+                next_resource_acceptance(
+                    resources=selected_resource_grants,
+                    row_for=lambda resource: self._configured_resource(
+                        resource,
+                        config=catalog_config,
+                    ),
+                    catalog_version=catalog_version,
+                    selected_operations=selected_resource_operations,
+                    previous=(
+                        existing.resource_acceptance
+                        if existing is not None
+                        else None
+                    ),
+                ),
             ),
             provenance=(
                 copy.deepcopy(dict(existing.provenance or {}))
@@ -3942,6 +3955,10 @@ class AutomationAccessService:
         merged_acceptance: dict[str, ResourceAcceptance] = {}
         merged_selection = NamedServiceSelection.none()
         for record in sources:
+            merged_acceptance = preserve_descriptor_acceptance(
+                record.resource_acceptance,
+                merged_acceptance,
+            )
             frozen = _inherited_selection(record)
             merged_selection = merged_selection.union(frozen) if not merged_selection.is_none else frozen
             for resource, grants in record.resource_grants.items():
@@ -4106,6 +4123,39 @@ class AutomationAccessService:
         provenance["schema"] = "connection_hub.resident_profile_fold.v1"
         if dropped:
             provenance["dropped_consumed_once"] = list(provenance.get("dropped_consumed_once") or []) + dropped
+
+        bindings = {
+            json.dumps(record.control_card.to_dict(), sort_keys=True): record.control_card
+            for record in sources
+            if record.control_card is not None
+        }
+        if len(bindings) > 1:
+            return self._migration_conflict(
+                reason="control_card_binding_conflict",
+                target_access_id=target_access_id,
+                candidates=candidates,
+                evidence={"distinct_bindings": len(bindings)},
+            )
+        merged_control_card = next(iter(bindings.values()), None)
+
+        if target is not None:
+            merged_properties = copy.deepcopy(dict(target.properties or {}))
+        else:
+            property_variants = {
+                json.dumps(dict(record.properties or {}), sort_keys=True): copy.deepcopy(
+                    dict(record.properties or {})
+                )
+                for record in candidates
+                if record.properties
+            }
+            if len(property_variants) > 1:
+                return self._migration_conflict(
+                    reason="card_properties_conflict",
+                    target_access_id=target_access_id,
+                    candidates=candidates,
+                    evidence={"distinct_properties": len(property_variants)},
+                )
+            merged_properties = next(iter(property_variants.values()), {})
         record = AutomationAccessRecord(
             access_id=target_access_id,
             label=(target.label if target is not None else "") or next(
@@ -4153,7 +4203,8 @@ class AutomationAccessService:
                     )
                 )
             ),
-            control_card=target.control_card if target is not None else None,
+            control_card=merged_control_card,
+            properties=merged_properties,
         )
         try:
             await self._persist_record(record, expected_revision=target_revision)
@@ -4398,6 +4449,54 @@ class AutomationAccessService:
         view["credential_delivery"] = "credentialless"
         view["credential_reach"] = "multi_resource"
         return view
+
+    async def sync_agent_capability_control(
+        self,
+        user: Mapping[str, Any],
+        *,
+        application: str,
+        agent_id: str,
+        descriptor_revision: str,
+        descriptor_payload: Mapping[str, Any],
+        capability_authority: Mapping[str, Any],
+        capability_metadata: Mapping[str, Any] | None = None,
+        capability_catalog: Mapping[str, Any] | None = None,
+        selected_capabilities: Mapping[str, Any] | None = None,
+        replace_selection: bool = False,
+        conversation_target_resources: Iterable[str] = (),
+        resource_grants: Mapping[str, Any] | None = None,
+        resource_operations: Mapping[str, Any] | None = None,
+        named_service_operations: Mapping[str, Any] | str | None = None,
+        properties: Mapping[str, Any] | None = None,
+        issuer_label: str = "",
+        manage_url: str = "",
+    ) -> dict[str, Any]:
+        """Synchronize one resident agent's live descriptor ceiling."""
+
+        from connection_hub.delegated_credentials.agent_capability_sync import (
+            sync_agent_capability_control,
+        )
+
+        return await sync_agent_capability_control(
+            self,
+            user,
+            application=application,
+            agent_id=agent_id,
+            descriptor_revision=descriptor_revision,
+            descriptor_payload=descriptor_payload,
+            capability_authority=capability_authority,
+            capability_metadata=capability_metadata,
+            capability_catalog=capability_catalog,
+            selected_capabilities=selected_capabilities,
+            replace_selection=replace_selection,
+            conversation_target_resources=conversation_target_resources,
+            resource_grants=resource_grants,
+            resource_operations=resource_operations,
+            named_service_operations=named_service_operations,
+            properties=properties,
+            issuer_label=issuer_label,
+            manage_url=manage_url,
+        )
 
     async def control_card_get(
         self,

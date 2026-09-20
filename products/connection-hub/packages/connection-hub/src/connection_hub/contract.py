@@ -40,6 +40,11 @@ AGENT_GRANT_GET_TOKEN = "agent_grant.get_token"
 # governed/granted plus the required claims — ready for the one-click grant
 # payload when pending.
 AGENT_GRANT_CHECK = "agent_grant.check"
+# Trusted KDCube runtime producer: synchronize one resident agent's descriptor
+# ceiling and return the live user-selection projection. The operation is
+# intentionally local-only; callers outside the host cannot assert descriptor
+# provenance.
+AGENT_CAPABILITY_SYNC = "agent_capability.sync"
 
 CONNECTION_OPERATIONS = (
     CONNECTION_CATALOG,
@@ -49,6 +54,7 @@ CONNECTION_OPERATIONS = (
     OAUTH_START,
     AGENT_GRANT_GET_TOKEN,
     AGENT_GRANT_CHECK,
+    AGENT_CAPABILITY_SYNC,
 )
 
 
@@ -86,10 +92,18 @@ def build_connection_operations(
 ) -> dict[str, ConnectionOperationSpec]:
     """Operations map for the provider spec (mirrors ``build_default_operations``).
 
-    Every connections operation is exposed over the given transports.
+    Public connection operations are exposed over the requested transports.
+    Descriptor synchronization remains local even when the provider also
+    exposes API transport.
     """
     selected = tuple(str(value or "").strip() for value in transports if str(value or "").strip())
-    return {op: ConnectionOperationSpec(operation=op, transports=selected) for op in CONNECTION_OPERATIONS}
+    return {
+        op: ConnectionOperationSpec(
+            operation=op,
+            transports=(TRANSPORT_LOCAL,) if op == AGENT_CAPABILITY_SYNC else selected,
+        )
+        for op in CONNECTION_OPERATIONS
+    }
 
 
 class AmbiguousConnectionAccount(Exception):
@@ -309,6 +323,7 @@ __all__ = [
     "OAUTH_START",
     "AGENT_GRANT_GET_TOKEN",
     "AGENT_GRANT_CHECK",
+    "AGENT_CAPABILITY_SYNC",
     "CONNECTION_OPERATIONS",
     "ConnectionOperationSpec",
     "build_connection_operations",
