@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -26,6 +27,7 @@ class _Socket:
         self.calls: list[tuple[str, dict[str, Any], float]] = []
         self.connect_args: tuple[Any, ...] | None = None
         self.connect_kwargs: dict[str, Any] = {}
+        self.shutdown_calls = 0
 
     def on(self, event: str, handler: Any) -> None:
         self.handlers[event] = handler
@@ -42,6 +44,11 @@ class _Socket:
     async def disconnect(self) -> None:
         self.connected = False
         await self.handlers["disconnect"]("client disconnect")
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+        if self.connected:
+            await self.disconnect()
 
     async def call(self, event: str, data: dict[str, Any], timeout: float) -> dict[str, Any]:
         self.calls.append((event, data, timeout))
@@ -69,13 +76,17 @@ def _claim() -> DataBusClaim:
 
 
 async def _client(
-    socket: _Socket, *, outcome_timeout: float = 0.1
+    socket: _Socket,
+    *,
+    outcome_timeout: float = 0.1,
+    lifecycle_labels: dict[str, str | int | bool] | None = None,
 ) -> FederatedDataBusClient:
     client = FederatedDataBusClient(
         platform_url="https://platform.example",
         credential=_claim(),
         socket_factory=lambda: socket,
         outcome_timeout_seconds=outcome_timeout,
+        lifecycle_labels=lifecycle_labels,
     )
     await client.connect()
     return client
@@ -118,7 +129,14 @@ async def test_request_separates_ingress_ack_from_correlated_terminal_result() -
 async def test_connection_lifecycle_names_each_generation_and_socket_id(caplog) -> None:
     socket = _Socket()
     with caplog.at_level("INFO", logger="app_foundation.data_bus.client"):
-        client = await _client(socket)
+        client = await _client(
+            socket,
+            lifecycle_labels={
+                "worker_name": "codex-session",
+                "channel_identity": "codex:session-id",
+                "replacement_epoch": 2,
+            },
+        )
         await socket.handlers["disconnect"]("transport error")
         socket.namespace_sid = "socketio-2"
         socket.connected = True
@@ -126,6 +144,7 @@ async def test_connection_lifecycle_names_each_generation_and_socket_id(caplog) 
         await socket.handlers["connect_error"](
             {"error_type": "invalid_bearer", "status": 401}
         )
+        await client.close()
 
     assert client.connection_generation == 2
     assert client.socket_id == "socketio-2"
@@ -144,6 +163,10 @@ async def test_connection_lifecycle_names_each_generation_and_socket_id(caplog) 
         "connection_active=true generation_replaced=false"
     ) in caplog.text
     assert "reason=error_type=invalid_bearer status=401" in caplog.text
+    assert caplog.text.count('channel_identity="codex:session-id"') == 6
+    assert caplog.text.count("replacement_epoch=2") == 6
+    assert caplog.text.count('worker_name="codex-session"') == 6
+    assert "event=closed connection_generation=2 socket_id=socketio-2" in caplog.text
 
     event = await client.wait_for_event(0.1)
     assert event == {
@@ -154,6 +177,53 @@ async def test_connection_lifecycle_names_each_generation_and_socket_id(caplog) 
         "connection_active": False,
         "reason": "transport error",
     }
+
+
+class _ReconnectingSocket(_Socket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reconnect_attempts = 0
+        self._stop_reconnecting = asyncio.Event()
+        self.reconnect_task: asyncio.Task[None] | None = None
+
+    async def start_reconnecting(self) -> None:
+        self.connected = False
+        await self.handlers["disconnect"]("transport error")
+
+        async def reconnect() -> None:
+            while not self._stop_reconnecting.is_set():
+                self.reconnect_attempts += 1
+                await self.handlers["connect_error"]("connection rejected")
+                try:
+                    await asyncio.wait_for(self._stop_reconnecting.wait(), timeout=0.001)
+                except asyncio.TimeoutError:
+                    pass
+
+        self.reconnect_task = asyncio.create_task(reconnect())
+        while self.reconnect_attempts == 0:
+            await asyncio.sleep(0)
+
+    async def shutdown(self) -> None:
+        self.shutdown_calls += 1
+        self._stop_reconnecting.set()
+        if self.reconnect_task is not None:
+            await self.reconnect_task
+
+
+@pytest.mark.asyncio
+async def test_close_awaits_a_disconnected_socket_reconnect_task() -> None:
+    socket = _ReconnectingSocket()
+    client = await _client(socket)
+    await socket.start_reconnecting()
+
+    await client.close()
+    attempts_after_close = socket.reconnect_attempts
+    await asyncio.sleep(0.005)
+
+    assert socket.shutdown_calls == 1
+    assert socket.reconnect_task is not None
+    assert socket.reconnect_task.done()
+    assert socket.reconnect_attempts == attempts_after_close
 
 
 @pytest.mark.asyncio

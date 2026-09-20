@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -14,6 +15,27 @@ from .credentials import DataBusCredential, DelegatedCardCredential
 
 SocketFactory = Callable[[], Any]
 logger = logging.getLogger(__name__)
+
+
+def _normalize_lifecycle_labels(
+    value: Mapping[str, str | int | bool] | None,
+) -> tuple[tuple[str, str | int | bool], ...]:
+    labels: list[tuple[str, str | int | bool]] = []
+    for raw_key, raw_value in sorted(dict(value or {}).items()):
+        key = str(raw_key or "").strip()
+        if (
+            not key
+            or not key[0].isalpha()
+            or any(not (character.isalnum() or character == "_") for character in key)
+        ):
+            raise ValueError(f"invalid Data Bus lifecycle label: {raw_key!r}")
+        if not isinstance(raw_value, (str, int, bool)):
+            raise ValueError(f"Data Bus lifecycle label {key!r} must be scalar")
+        normalized = raw_value.strip() if isinstance(raw_value, str) else raw_value
+        if normalized == "":
+            raise ValueError(f"Data Bus lifecycle label {key!r} must not be empty")
+        labels.append((key, normalized))
+    return tuple(labels)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -175,6 +197,7 @@ class FederatedDataBusClient:
         outcome_timeout_seconds: float = 60.0,
         event_queue_size: int = 256,
         clock: Callable[[], float] = time.time,
+        lifecycle_labels: Mapping[str, str | int | bool] | None = None,
     ) -> None:
         self.platform_url = str(platform_url or "").rstrip("/")
         if not self.platform_url:
@@ -196,9 +219,13 @@ class FederatedDataBusClient:
             maxsize=max(1, int(event_queue_size))
         )
         self._connected = asyncio.Event()
+        self._close_lock = asyncio.Lock()
         self._closed = False
         self._connection_generation = 0
         self._socket_id = ""
+        # Labels are diagnostic coordinates supplied by the owning product.
+        # They must never contain credentials or other secret material.
+        self._lifecycle_labels = _normalize_lifecycle_labels(lifecycle_labels)
         self.socket.on("connect", self._on_connect)
         self.socket.on("connect_error", self._on_connect_error)
         self.socket.on("disconnect", self._on_disconnect)
@@ -242,6 +269,12 @@ class FederatedDataBusClient:
             "connection_active": self.connected,
         }
 
+    def _lifecycle_log_suffix(self) -> str:
+        return "".join(
+            f" {key}={json.dumps(value, ensure_ascii=True, separators=(',', ':'))}"
+            for key, value in self._lifecycle_labels
+        )
+
     def _current_socket_id(self) -> str:
         get_sid = getattr(self.socket, "get_sid", None)
         if callable(get_sid):
@@ -261,19 +294,20 @@ class FederatedDataBusClient:
         self._connected.set()
         logger.info(
             "Data Bus socket lifecycle event=%s connection_generation=%d "
-            "socket_id=%s previous_generation=%d previous_socket_id=%s",
+            "socket_id=%s previous_generation=%d previous_socket_id=%s%s",
             "reconnected" if previous_generation else "connected",
             self._connection_generation,
             self._socket_id or "unassigned",
             previous_generation,
             previous_socket_id or "none",
+            self._lifecycle_log_suffix(),
         )
 
     async def _on_connect_error(self, data: Any = None) -> None:
         logger.warning(
             "Data Bus socket lifecycle event=%s attempted_generation=%d "
             "socket_id=%s current_generation=%d current_socket_id=%s "
-            "connection_active=%s generation_replaced=false reason=%s",
+            "connection_active=%s generation_replaced=false reason=%s%s",
             "reconnect_refused" if self._connection_generation else "connect_refused",
             self._connection_generation + 1,
             self._current_socket_id() or "unassigned",
@@ -281,6 +315,7 @@ class FederatedDataBusClient:
             self._socket_id or "none",
             str(self.connected).lower(),
             _connection_reason(data),
+            self._lifecycle_log_suffix(),
         )
 
     async def _on_disconnect(self, *args: Any) -> None:
@@ -288,10 +323,11 @@ class FederatedDataBusClient:
         reason = _connection_reason(args[0] if args else None)
         logger.info(
             "Data Bus socket lifecycle event=disconnected connection_generation=%d "
-            "socket_id=%s reason=%s",
+            "socket_id=%s reason=%s%s",
             self._connection_generation,
             self._socket_id or "unassigned",
             reason,
+            self._lifecycle_log_suffix(),
         )
         self._queue_event(
             {
@@ -382,11 +418,26 @@ class FederatedDataBusClient:
         self._connected.set()
 
     async def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._connected.clear()
-        await self.socket.disconnect()
+        async with self._close_lock:
+            if self._closed:
+                return
+            self._connected.clear()
+            shutdown = getattr(self.socket, "shutdown", None)
+            if callable(shutdown):
+                # python-socketio disconnect() is a no-op while disconnected and
+                # leaves its reconnect task alive. shutdown() covers both the
+                # connected and reconnecting states and waits for that task to end.
+                await shutdown()
+            else:  # pragma: no cover - compatibility with older socket factories
+                await self.socket.disconnect()
+            self._closed = True
+            logger.info(
+                "Data Bus socket lifecycle event=closed connection_generation=%d "
+                "socket_id=%s%s",
+                self._connection_generation,
+                self._socket_id or "unassigned",
+                self._lifecycle_log_suffix(),
+            )
 
     async def request(
         self,

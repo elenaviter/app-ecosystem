@@ -59,6 +59,8 @@ The Data Bus client API is under `app_foundation.data_bus`:
 - `DataBusClaim.from_mapping(...)` validates a short-lived, bundle-scoped
   claim without rendering its token;
 - `FederatedDataBusClient.connect()` opens the authenticated Socket.IO lane;
+- `close()` stops either a connected socket or an in-progress reconnect loop
+  and waits until the transport task has ended;
 - `request(...)` distinguishes ingress acceptance from the handler's
   correlated terminal result;
 - `wait_for_event(...)` receives application push events that are not replies
@@ -79,7 +81,10 @@ The client logs successful connections, disconnects, reconnects, and refused
 connection attempts with the same generation and connection ID. A refused
 attempt explicitly records whether it replaced the last successful generation,
 so a product can correlate one request without treating reconnect activity as
-proof that its connection changed.
+proof that its connection changed. A product that replaces client objects may
+provide non-secret `lifecycle_labels`; those labels appear on every lifecycle
+record and let the product carry its stable channel identity and replacement
+epoch across object-local generation resets.
 
 ## Boundary
 
