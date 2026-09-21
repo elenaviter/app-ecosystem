@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -92,6 +95,46 @@ def _token_error_code(body: bytes) -> str:
     return code if isinstance(code, str) and code in OAUTH_TOKEN_ERROR_CODES else ""
 
 
+# The longest wait a server's Retry-After is taken at, so a wrong or hostile
+# value cannot silence a client for days.
+MAX_RETRY_AFTER_SECONDS = 86_400
+
+
+def _retry_after_seconds(headers: Mapping[str, Any], body: bytes) -> int | None:
+    """Seconds a refusing server asked the client to wait, if it said.
+
+    Reads the ``Retry-After`` header, as delta-seconds or an HTTP date, and
+    otherwise a ``retry_after`` number in a JSON body, which is how the
+    KDCube gateway states its hourly window. On 2026-09-21 every gateway 429
+    carried ``retry_after: 3600``, and a relay that could not see it kept
+    retrying into a bucket it had already exceeded.
+    """
+
+    raw = str(headers.get("retry-after") or "").strip()
+    seconds: float | None = None
+    if raw:
+        try:
+            seconds = float(raw)
+        except ValueError:
+            try:
+                moment = parsedate_to_datetime(raw)
+                seconds = (moment - datetime.now(timezone.utc)).total_seconds()
+            except (TypeError, ValueError, IndexError, OverflowError):
+                seconds = None
+    if seconds is None:
+        try:
+            payload = json.loads(body)
+        except (UnicodeError, ValueError):
+            payload = None
+        if isinstance(payload, Mapping):
+            value = payload.get("retry_after")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                seconds = float(value)
+    if seconds is None:
+        return None
+    return int(max(0, min(MAX_RETRY_AFTER_SECONDS, seconds)))
+
+
 def _request_error(
     *,
     failure_code: str,
@@ -101,12 +144,15 @@ def _request_error(
     server_reason: str = "",
     failure_kind: str = "",
     oauth_error: str = "",
+    retry_after_seconds: int | None = None,
 ) -> AuthorizationError:
     safe_url = _safe_request_url(endpoint, failure_code=failure_code)
     label = _request_label(failure_code)
     details: dict[str, Any] = {"method": method, "url": safe_url}
     if status is not None:
         details["status"] = int(status)
+    if retry_after_seconds is not None:
+        details["retry_after_seconds"] = int(retry_after_seconds)
     if server_reason:
         details["server_reason"] = server_reason
     if oauth_error:
@@ -241,6 +287,9 @@ class HttpxOAuthTransport:
                         status=response.status_code,
                         server_reason=server_reason,
                         oauth_error=oauth_error,
+                        retry_after_seconds=_retry_after_seconds(
+                            response.headers, bytes(body)
+                        ),
                     )
         except AuthorizationError:
             raise
@@ -281,6 +330,21 @@ class McpOAuthDiscoveryResult:
     scope: str
 
 
+# Discovery results per process. Metadata changes rarely, and a relay that
+# retried a refresh re-fetched both documents every time. Only successes are
+# kept, so a failure is never served from here.
+DISCOVERY_CACHE_SECONDS = 300.0
+_DISCOVERY_CACHE: dict[tuple[str, str], tuple[float, "OAuthDiscoveryResult"]] = {}
+
+
+def clear_discovery_cache() -> None:
+    _DISCOVERY_CACHE.clear()
+
+
+def _rate_limited(error: AuthorizationError) -> bool:
+    return int(getattr(error, "status", 0) or 0) == 429
+
+
 class OAuthDiscovery:
     def __init__(self, *, transport: OAuthTransport) -> None:
         self._transport = transport
@@ -295,6 +359,10 @@ class OAuthDiscovery:
             protected_resource_metadata_url,
             code="oauth_resource_metadata_url_invalid",
         )
+        cache_key = (metadata_url, str(expected_resource or ""))
+        cached = _DISCOVERY_CACHE.get(cache_key)
+        if cached is not None and cached[0] > time.monotonic():
+            return cached[1]
         resource_payload = await self._transport.get_json(metadata_url)
         resource = ProtectedResourceMetadata.from_mapping(
             resource_payload,
@@ -307,7 +375,12 @@ class OAuthDiscovery:
             try:
                 server_payload = await self._transport.get_json(candidate)
                 break
-            except AuthorizationError:
+            except AuthorizationError as exc:
+                # A rate limit is the host's answer for every candidate. Trying
+                # the next one only spends more of the same bucket, and folding
+                # it into "unavailable" would lose the Retry-After it carries.
+                if _rate_limited(exc):
+                    raise
                 continue
         if server_payload is None:
             raise AuthorizationError(
@@ -318,10 +391,12 @@ class OAuthDiscovery:
             server_payload,
             expected_issuer=resource.authorization_server,
         )
-        return OAuthDiscoveryResult(
+        result = OAuthDiscoveryResult(
             protected_resource=resource,
             authorization_server=server,
         )
+        _DISCOVERY_CACHE[cache_key] = (time.monotonic() + DISCOVERY_CACHE_SECONDS, result)
+        return result
 
 
 class McpOAuthEndpointDiscovery:
