@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -10,9 +11,40 @@ from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import (
 )
 
 
+class _Pipeline:
+    def __init__(self, redis: "FakeRedis") -> None:
+        self.redis = redis
+        self.operations: list[tuple[str, str]] = []
+
+    def info(self, section: str) -> "_Pipeline":
+        self.operations.append(("info", section))
+        return self
+
+    def get(self, key: str) -> "_Pipeline":
+        self.operations.append(("get", key))
+        return self
+
+    async def execute(self):
+        return [
+            {"run_id": self.redis.run_id}
+            if operation == "info"
+            else self.redis.values.get(argument)
+            for operation, argument in self.operations
+        ]
+
+
 class FakeRedis:
     def __init__(self) -> None:
+        self.run_id = "run-a"
         self.values: dict[str, str] = {}
+
+    async def info(self, section: str):
+        assert section == "server"
+        return {"run_id": self.run_id}
+
+    def pipeline(self, *, transaction: bool):
+        assert transaction is True
+        return _Pipeline(self)
 
     async def get(self, key: str):
         return self.values.get(key)
@@ -34,10 +66,22 @@ class FakeRedis:
     async def delete(self, key: str):
         return int(self.values.pop(key, None) is not None)
 
-    async def eval(self, _script: str, _numkeys: int, key: str, token: str):
-        if self.values.get(key) != token:
-            return 0
-        return await self.delete(key)
+    async def eval(self, _script: str, _numkeys: int, key: str, *args: str):
+        if len(args) == 1:
+            [token] = args
+            if self.values.get(key) != token:
+                return 0
+            return await self.delete(key)
+        encoded, revision, run_id = args
+        existing = json.loads(self.values[key]) if key in self.values else None
+        if isinstance(existing, dict) and existing.get("redis_run_id") == run_id:
+            existing_revision = int(existing.get("edge_revision") or 0)
+            if existing_revision > int(revision):
+                return 0
+            if existing_revision == int(revision):
+                return 1 if self.values[key] == encoded else -1
+        self.values[key] = encoded
+        return 1
 
 
 class ProjectionDeleteFailRedis(FakeRedis):
