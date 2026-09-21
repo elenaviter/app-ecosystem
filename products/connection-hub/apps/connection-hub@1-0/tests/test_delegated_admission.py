@@ -20,6 +20,10 @@ from connection_hub.delegated_credentials.admission import (
     sign_admission_request,
 )
 from connection_hub.delegated_credentials.cards.model import CardAuthority
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_CONNECTOR,
+    CARD_KIND_CONTROL,
+)
 from connection_hub.delegated_credentials.controls.attribution import (
     ResolvedCardComposition,
 )
@@ -728,6 +732,7 @@ async def test_control_card_account_denial_names_control_without_edit_route(monk
     surface = sys.modules[module.handle_delegated_admission.__module__]
     caller = CardAuthority(
         access_id="caller-card-1",
+        card_kind=CARD_KIND_CONNECTOR,
         client_id="external-client",
         grantor_subject="user-1",
         delegate_subject="integration:client:user-1",
@@ -736,6 +741,7 @@ async def test_control_card_account_denial_names_control_without_edit_route(monk
     )
     control = CardAuthority(
         access_id="control-card-1",
+        card_kind=CARD_KIND_CONTROL,
         client_id="",
         grantor_subject="user-1",
         delegate_subject="",
@@ -747,6 +753,7 @@ async def test_control_card_account_denial_names_control_without_edit_route(monk
     )
     effective = CardAuthority(
         access_id=caller.access_id,
+        card_kind=caller.card_kind,
         client_id=caller.client_id,
         grantor_subject=caller.grantor_subject,
         delegate_subject=caller.delegate_subject,
