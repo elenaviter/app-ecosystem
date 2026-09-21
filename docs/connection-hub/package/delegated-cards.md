@@ -173,6 +173,12 @@ Redis delegated-access:card:<access_id>
 Redis delegated-access:cards-by-grantor:<subject_hash>
   sorted set of access_id -> expiry score for discovery
   credentialless Cards use +inf
+
+Redis delegated-access:cards-epoch
+  the Redis run_id whose projection sweep completed (see Redis rollback)
+
+Redis delegated-access:cards-reconcile-lock
+  <run_id>|<owner token> while one worker sweeps
 ```
 
 The older `delegated-access:automation:<access_id>` and
@@ -247,6 +253,75 @@ process memory. Requests return structured unavailability. Durable-storage
 outage blocks cache-miss recovery and every mutation; a governed request whose
 validated card and active catalog are already hot in Redis does not perform a
 durable read.
+
+### Redis rollback
+
+A Redis that restarts from an older snapshot does not lose Card projections, it
+brings back older ones. A missing projection is safe because it reads through
+to durable state. An older one is not: a present projection is served without
+reading the durable pointer, so a projection one revision behind keeps serving
+superseded authority, and a projection from before a revocation keeps a revoked
+Card usable. On 2026-09-21 three worker Card projections came back one revision
+behind their durable `current.json`, and every reconnect then failed the
+mutation fence below.
+
+Two mechanisms close this.
+
+**Each mutation repairs its own Card first.** Inside the critical section, after
+the durable expected-revision check and before the updating marker is claimed,
+the writer compares the projection with the durable current revision. A `card`
+projection or revoked tombstone strictly older than it is replaced with the
+durable projection, or deleted when the durable revision is revoked or expired.
+The marker fence compares the projection's revision, so after this step the
+fence and the durable check read the same revision. Markers and equal or newer
+values are never touched.
+
+**Projections are served only after the current Redis run is swept.** Redis
+reports a `run_id` that changes on every restart. `cards-epoch` records the
+`run_id` whose sweep completed with no failure, and a restore from an older
+snapshot brings back an older value or none. Every authority read proves the
+run in the same Redis transaction as the projection it reads (`INFO`, the epoch
+and the Card key in one `MULTI`), so the first read after a restart is already
+refused, and no process trusts an earlier check. Until the epoch matches the
+live `run_id`:
+
+| Reader | Behaviour |
+| --- | --- |
+| A store-owning resolver (Connection Hub requests, the durable-backed guard) | Runs the sweep itself, then serves. When the sweep cannot complete, or another worker of this run holds the lock, it returns `card_projection_reconciling` as unavailability (503). |
+| A reader without the durable store (the data bus, live sessions, the cache-only guard branch) | Fails closed with `card_projection_reconciling`. It cannot sweep. |
+| The agent-grant picker probe | Reads as pending. |
+
+The sweep compares every Card projection of the tenant and project with its
+durable `current.json` and repairs the ones behind, as a mutation does. A
+projection with no durable Card behind it is deleted, because durable storage is
+the source of truth. A revoked tombstone is deleted too: it names no grantor to
+find the durable pointer by, one restored from before a re-consent would deny
+the active Card, and without it readers go to the durable revision, which
+denies a revoked Card. Updating markers are skipped. The epoch is
+recorded only when every projection was checked without failure, and only while
+the sweeping worker still owns the lock, so an interrupted or failed sweep runs
+again.
+
+The lock value carries the `run_id` and an owner token. A lock restored from an
+older run is replaced, the owner renews it during a long sweep, and release and
+epoch recording compare the owner token, so an owner whose lock expired cannot
+delete or record over its successor.
+
+The Connection Hub app's `card-projection-reconcile` cron runs once a minute and
+is the guaranteed sweep owner, so readers without the durable store recover
+without waiting for a store-owning request. They wait at most about a minute.
+
+Legacy project Control Cards (`delegated-access:control-card:<id>`) live only
+in Redis, with no durable revision a rollback could be checked against, so no
+path uses them as authority: the live guard, named-service admission, Control
+Card attachment and the owner's effective-authority view all resolve Control
+Cards from durable revisions only. A Card still bound to a legacy one fails
+closed with `control_card_unresolvable`, and the owner view reports it as
+unavailable.
+
+A Redis that reports no `run_id` cannot prove its run, so it serves no Card
+projection. The epoch and the lock are not durable state: losing either costs
+one sweep.
 
 ### Record fields
 

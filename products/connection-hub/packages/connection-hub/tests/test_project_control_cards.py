@@ -69,6 +69,25 @@ from connection_hub.delegated_credentials.live_grant import (
     resolve_live_grant_card,
     resolve_live_grant_composition,
 )
+from connection_hub.delegated_credentials.cards.cache import DelegatedCardRuntimeCache as _CardCache
+from connection_hub.delegated_credentials.cards.reconcile import CardProjectionEpochGate
+
+
+@pytest.fixture(autouse=True)
+def _projections_swept(monkeypatch):
+    """This Redis run's Card projections are already swept against durable
+    state, as after startup (cards/reconcile.py). The fake Redis has no run_id."""
+
+    async def _ready(self):
+        return True
+
+    async def _read_in_current_run(self, access_id):
+        return True, await self.read(access_id)
+
+    monkeypatch.setattr(CardProjectionEpochGate, "is_ready", _ready)
+    monkeypatch.setattr(
+        _CardCache, "read_in_current_run", _read_in_current_run
+    )
 
 
 RESOURCE = "https://example.test/mcp/named-services"
@@ -91,9 +110,12 @@ class _Persistence:
         authority: CardAuthority,
         *,
         initial: CardAuthority | None = None,
+        others: tuple[CardAuthority, ...] = (),
     ) -> None:
         self.authority = authority
         self.initial = initial or authority
+        # Durable Cards besides the one under test, such as regular Control Cards.
+        self.others = {other.access_id: other for other in others}
         self.handles = CardCredentialHandles(access_id=authority.access_id)
         self.persist_calls = 0
 
@@ -101,6 +123,11 @@ class _Persistence:
         return subject_hash_for(self.authority.grantor_subject) == subject_hash
 
     async def load(self, access_id: str, *, subject_hash: str):
+        if access_id in self.others:
+            other = self.others[access_id]
+            if subject_hash_for(other.grantor_subject) != subject_hash:
+                return None
+            return other, CardCredentialHandles(access_id=access_id)
         if (
             access_id != self.authority.access_id
             or not self._owned(subject_hash)
@@ -114,6 +141,8 @@ class _Persistence:
         return self.authority, self.handles
 
     async def load_current(self, access_id: str, *, subject_hash: str):
+        if access_id in self.others:
+            return await self.load(access_id, subject_hash=subject_hash)
         if access_id != self.authority.access_id or not self._owned(subject_hash):
             return None
         return self.authority, self.handles
@@ -234,6 +263,20 @@ def _bound_card(control: ProjectControlCardAuthority) -> CardAuthority:
             issuer_label=control.issuer_label,
             manage_url=control.manage_url,
             control_revision=control.revision,
+        ),
+    )
+
+
+def _regular_bound_card(control: CardAuthority) -> CardAuthority:
+    return dataclasses.replace(
+        _card(),
+        control_card=ControlCardBinding(
+            control_id=control.access_id,
+            issuer_ref=control.issuer_ref,
+            issuer_kind=control.issuer_kind,
+            issuer_label=control.issuer_label,
+            manage_url=control.manage_url,
+            control_revision=control.card_revision,
         ),
     )
 
@@ -686,16 +729,15 @@ def test_effective_authority_keeps_an_explicitly_claimless_operation() -> None:
 @pytest.mark.asyncio
 async def test_effective_view_reports_both_card_and_control_catalog_evidence() -> None:
     redis = _Redis()
-    control = _control()
-    card = _bound_card(control)
-    _put_control(redis, control)
+    control = _regular_control()
+    card = _regular_bound_card(control)
     service = AutomationAccessService(
         redis=redis,
         tenant="tenant",
         project="project",
         config=None,
         grant_store=object(),
-        card_persistence=_Persistence(card),
+        card_persistence=_Persistence(card, others=(control,)),
     )
 
     view = await service._effective_control_view(record_from_card(card))
@@ -715,20 +757,27 @@ async def test_effective_view_reports_both_card_and_control_catalog_evidence() -
 
 
 @pytest.mark.asyncio
-async def test_live_resolution_fails_closed_when_control_projection_is_missing_or_updating() -> None:
+async def test_live_resolution_does_not_use_a_legacy_control_projection() -> None:
+    # 2026-09-21: legacy project Control Cards live only in Redis, with no
+    # durable revision a Redis rollback could be checked against, so the live
+    # path no longer uses them. A Card bound to one fails closed whether its
+    # projection is missing, updating, or present.
     redis = _Redis()
     control = _control()
     card = _bound_card(control)
     _put_card(redis, card)
 
-    with pytest.raises(LiveGrantCardError) as missing:
-        await resolve_live_grant_card(
-            redis,
-            tenant="tenant",
-            project="project",
-            access_id=card.access_id,
-        )
-    assert missing.value.reason == "control_card_unresolvable"
+    async def _resolve():
+        with pytest.raises(LiveGrantCardError) as exc:
+            await resolve_live_grant_card(
+                redis,
+                tenant="tenant",
+                project="project",
+                access_id=card.access_id,
+            )
+        return exc.value.reason
+
+    assert await _resolve() == "control_card_unresolvable"
 
     control_key = ControlCardRuntimeCache(
         redis,
@@ -742,26 +791,10 @@ async def test_live_resolution_fails_closed_when_control_projection_is_missing_o
             "mutation_id": "mutation-1",
         }
     )
-    with pytest.raises(LiveGrantCardError) as updating:
-        await resolve_live_grant_card(
-            redis,
-            tenant="tenant",
-            project="project",
-            access_id=card.access_id,
-        )
-    assert updating.value.reason == "control_card_updating"
+    assert await _resolve() == "control_card_unresolvable"
 
     _put_control(redis, control)
-    effective = await resolve_live_grant_card(
-        redis,
-        tenant="tenant",
-        project="project",
-        access_id=card.access_id,
-    )
-    assert effective is not None
-    assert effective.resource_operations[RESOURCE] == (
-        "object.action.post_message",
-    )
+    assert await _resolve() == "control_card_unresolvable"
 
 
 @pytest.mark.asyncio
@@ -824,9 +857,13 @@ async def test_live_resolution_fails_closed_when_control_identity_scope_changes(
 @pytest.mark.asyncio
 async def test_only_one_project_control_can_attach_and_detach_restores_original_card() -> None:
     redis = _Redis()
-    persistence = _Persistence(_card())
-    control = _control()
-    _put_control(redis, control)
+    control = _regular_control()
+    other = dataclasses.replace(
+        _regular_control(),
+        access_id="control-other",
+        issuer_ref="work:project:other",
+    )
+    persistence = _Persistence(_card(), others=(control, other))
     service = AutomationAccessService(
         redis=redis,
         tenant="tenant",
@@ -840,29 +877,23 @@ async def test_only_one_project_control_can_attach_and_detach_restores_original_
     attached = await service.attach_project_control(
         {"user_id": OWNER},
         access_id=persistence.authority.access_id,
-        control_id=control.control_id,
+        control_id=control.access_id,
     )
     assert attached["ok"] is True
     assert persistence.authority.control_card is not None
     assert persistence.authority.resource_operations == _card().resource_operations
 
-    other = dataclasses.replace(
-        control,
-        control_id="project-control-other",
-        issuer_ref="work:project:other",
-    )
-    _put_control(redis, other)
     refused = await service.attach_project_control(
         {"user_id": OWNER},
         access_id=persistence.authority.access_id,
-        control_id=other.control_id,
+        control_id=other.access_id,
     )
     assert refused["error"] == "control_card_already_attached"
 
     detached = await service.detach_project_control(
         {"user_id": OWNER},
         access_id=persistence.authority.access_id,
-        control_id=control.control_id,
+        control_id=control.access_id,
     )
     assert detached["ok"] is True
     assert persistence.authority.control_card is None
@@ -1005,3 +1036,123 @@ async def test_failed_store_transition_can_restore_only_its_previous_projection(
         "authority": previous.to_dict(),
     }
     assert arguments[4] == "mutation-1"
+
+
+# Re-review 2026-09-21: legacy project Control Cards live only in Redis, with no
+# durable revision a Redis rollback could be checked against. None of the
+# paths that turn a Control Card into authority may use one.
+
+
+def _legacy_grant_state_service(card: CardAuthority, redis: _Redis):
+    from types import SimpleNamespace
+
+    from connection_hub.delegated_credentials.catalog.models import CatalogDocument
+    from connection_hub.delegated_credentials.oauth.config import (
+        oauth_delegated_config_from_connections,
+    )
+
+    document = CatalogDocument.build(
+        {
+            "delegated_credentials": {
+                "oauth": {
+                    "enabled": True,
+                    "resources": [
+                        {
+                            "resource": RESOURCE,
+                            "grants": ["named_services:use"],
+                            "named_services": _named_services(),
+                        }
+                    ],
+                }
+            }
+        }
+    )
+
+    async def _active():
+        return document
+
+    card = dataclasses.replace(card, catalog_version=document.version)
+    service = AutomationAccessService(
+        redis=redis,
+        tenant="tenant",
+        project="project",
+        config=oauth_delegated_config_from_connections(document.connections),
+        catalog_resolver=SimpleNamespace(resolve_active=_active),
+        card_persistence=_Persistence(card),
+    )
+
+    async def _record(**_kwargs):
+        return record_from_card(card)
+
+    service._resident_card_for_resources = _record
+    return service, card
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_only_control_grants_nothing_to_a_named_service_call() -> None:
+    redis = _Redis()
+    control = _control()
+    _put_control(redis, control)
+    service, card = _legacy_grant_state_service(_bound_card(control), redis)
+
+    state = await service.agent_namespace_grant_state(
+        grantor_subject=OWNER,
+        client_id=card.client_id,
+        namespace="slack",
+        operation="object.action.post_message",
+    )
+
+    assert state["granted"] is False
+    assert state["card_error"] == "control_card_unresolvable"
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_only_control_cannot_be_attached() -> None:
+    redis = _Redis()
+    control = _control()
+    _put_control(redis, control)
+    persistence = _Persistence(_card())
+    service = AutomationAccessService(
+        redis=redis,
+        tenant="tenant",
+        project="project",
+        config=None,
+        grant_store=object(),
+        card_persistence=persistence,
+    )
+    service.notify_change = AsyncMock()
+
+    refused = await service.attach_project_control(
+        {"user_id": OWNER},
+        access_id=persistence.authority.access_id,
+        control_id=control.control_id,
+    )
+
+    assert refused["ok"] is False
+    assert refused["error"] == "control_card_unavailable"
+    assert refused["reason"] == "control_card_unresolvable"
+    assert persistence.authority.control_card is None
+    assert persistence.persist_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_the_owner_view_of_a_legacy_bound_card_is_unresolved_not_active() -> None:
+    redis = _Redis()
+    control = _control()
+    _put_control(redis, control)
+    card = _bound_card(control)
+    service = AutomationAccessService(
+        redis=redis,
+        tenant="tenant",
+        project="project",
+        config=None,
+        grant_store=object(),
+        card_persistence=_Persistence(card),
+    )
+
+    view = await service._effective_control_view(record_from_card(card))
+
+    assert view["state"] == "unavailable"
+    assert view["reason"] == "control_card_unresolvable"
+    assert view["fail_closed"] is True
+    assert "control_authority" not in view

@@ -12,8 +12,11 @@ serve two different populations:
                        so no request continues under superseded authority
 
 Inside the section the protocol is: read and validate the current durable
-revision, install the marker, write the immutable next revision, advance
-current.json, then replace the marker with the committed projection.
+revision, bring a projection that fell behind it up to it, install the marker,
+write the immutable next revision, advance current.json, then replace the
+marker with the committed projection. The marker's fence compares against the
+projection, so the repair step makes the fence and the durable check read the
+same revision.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_REVOKED,
     CardAuthority,
     CardCurrentPointer,
+    authority_is_usable,
     authority_projection_ttl,
 )
 from connection_hub.delegated_credentials.cards.store import (
@@ -142,10 +146,13 @@ class DelegatedCardService:
             async with self._critical_section(
                 subject_hash=subject_hash, access_id=authority.access_id
             ):
-                await self._assert_expected(
+                current = await self._assert_expected(
                     subject_hash=subject_hash,
                     access_id=authority.access_id,
                     expected_revision=expected_revision,
+                )
+                await self._reconcile(
+                    access_id=authority.access_id, current=current, moment=moment
                 )
                 await self._mark_updating(
                     access_id=authority.access_id,
@@ -211,6 +218,9 @@ class DelegatedCardService:
                         "card_revision_moved", current_revision=authority.card_revision
                     )
 
+                await self._reconcile(
+                    access_id=access_id, current=current, moment=int(time.time())
+                )
                 await self._mark_updating(
                     access_id=access_id,
                     mutation_id=mutation_id,
@@ -254,14 +264,51 @@ class DelegatedCardService:
 
     async def _assert_expected(
         self, *, subject_hash: str, access_id: str, expected_revision: int
-    ) -> None:
-        """The lost-update check reads durable state, not the cache."""
+    ) -> tuple[CardCurrentPointer, CardAuthority] | None:
+        """The lost-update check reads durable state, not the cache. Returns
+        the durable current revision it checked."""
         current = await self._store.read_current_authority(
             subject_hash=subject_hash, access_id=access_id
         )
         held = current[1].card_revision if current is not None else 0
         if held != int(expected_revision):
             raise CardConflict("card_revision_moved", current_revision=held)
+        return current
+
+    async def _reconcile(
+        self,
+        *,
+        access_id: str,
+        current: tuple[CardCurrentPointer, CardAuthority] | None,
+        moment: int,
+    ) -> None:
+        """Bring a projection older than the durable revision up to it.
+
+        Why: Redis can lose writes the durable store kept. On 2026-09-21 three
+        projections restarted one revision behind their durable Cards, and
+        every reconnect then failed the marker fence with
+        ``card_transition_not_claimed`` because the fence compared the
+        projection while the precondition had checked the durable revision.
+        Runs inside the critical section, after the durable check, so the
+        revision it installs is the one this mutation fences on.
+        """
+        if current is None:
+            return
+        _, durable = current
+        usable = authority_is_usable(durable, moment)
+        repaired = await self._cache.reconcile_projection(
+            access_id,
+            durable_revision=durable.card_revision,
+            authority=durable if usable else None,
+            ttl_seconds=authority_projection_ttl(durable, moment) if usable else None,
+        )
+        if repaired:
+            _LOGGER.warning(
+                "[connection-hub.delegated-cards] projection behind durable card=%s "
+                "revision=%s; repaired before the fence",
+                access_id,
+                durable.card_revision,
+            )
 
     async def _mark_updating(
         self, *, access_id: str, mutation_id: str, expected_revision: int

@@ -825,7 +825,12 @@ store, normally Redis.
 
 Redis loss is safe but product-visible: missing records fail closed, but
 long-lived connectors can require re-consent if dynamic client or refresh-token
-records disappear. State-store resolution belongs to the delegated-credential
+records disappear. A restart from an older snapshot is a different failure: it
+brings back older records instead of dropping them. For Card projections this is
+handled by the rollback sweep in
+[Delegated Cards](delegated-cards.md#redis-rollback), which keeps projections
+out of service until the current Redis run has been compared with durable Card
+state. State-store resolution belongs to the delegated-credential
 adapter, below MCP and REST dispatch. It reuses a request application's shared
 async client when available and otherwise uses the platform's shared async
 client factory. Resolution and I/O failures are logged with the failed

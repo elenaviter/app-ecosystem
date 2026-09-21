@@ -108,13 +108,8 @@ from connection_hub.delegated_credentials.controls.effective import (
 from connection_hub.delegated_credentials.conversation_target_policy import (
     conversation_targets,
 )
-from connection_hub.delegated_credentials.controls.cache import (
-    ControlCardCacheUnusable,
-    ControlCardRuntimeCache,
-)
 from connection_hub.delegated_credentials.controls.model import (
     ControlCardError,
-    control_card_from_legacy,
     control_card_id_for_issuer,
     new_credentialless_card,
 )
@@ -622,9 +617,13 @@ async def read_agent_grant_record(
         agent_grant_access_id(grantor, client, resources)
     ]:
         try:
-            entry = await cache.read(access_id)
+            # A rolled-back projection is not shown as given while the current
+            # Redis run is unswept (cards/reconcile.py): the probe reads pending.
+            in_run, entry = await cache.read_in_current_run(access_id)
         except Exception:
             # A probe enriches a picker; it never denies on its own.
+            return None
+        if not in_run:
             return None
         if entry is None or not entry.is_card or entry.authority is None:
             continue
@@ -1393,36 +1392,22 @@ class AutomationAccessService:
         *,
         grantor_subject: str,
     ) -> AutomationAccessRecord | None:
-        """Resolve a regular Control Card, with read-only legacy migration aid."""
+        """Resolve a regular Control Card from its durable revision.
+
+        Legacy project Control Cards live only in Redis, with no durable
+        revision a Redis rollback could be checked against, so they are not
+        authority here: admission, attachment and effective composition all
+        resolve through this method. A Card still bound to one resolves no
+        control and fails closed.
+        """
 
         record = await self._load_record(
             control_id,
             grantor_subject=grantor_subject,
         )
-        if record is not None:
-            return await self._ensure_control_snapshot(record)
-        if not control_id.startswith("project-control-") or self._redis is None:
+        if record is None:
             return None
-        try:
-            entry = await ControlCardRuntimeCache(
-                self._redis,
-                tenant=self._tenant,
-                project=self._project,
-            ).read(control_id)
-        except ControlCardCacheUnusable as exc:
-            raise CardUnavailable(exc.reason) from exc
-        except Exception as exc:
-            raise CardUnavailable("control_card_lookup_unavailable") from exc
-        if entry is None:
-            return None
-        if entry.is_updating:
-            raise CardUnavailable("control_card_updating")
-        if entry.is_retired or entry.authority is None:
-            return None
-        authority = control_card_from_legacy(entry.authority)
-        if authority.grantor_subject != grantor_subject:
-            return None
-        return record_from_card(authority)
+        return await self._ensure_control_snapshot(record)
 
     async def _effective_control_view(
         self,

@@ -127,6 +127,41 @@ return 1
 """
 
 
+# Bring a projection that fell behind durable state up to it. Redis can lose
+# writes the durable store kept (a restart from an older snapshot), and a
+# projection one revision behind then fails every fenced write and can serve
+# authority a later durable revision revoked. Replaces an ordinary projection
+# or a tombstone strictly older than the durable revision: with the durable
+# projection when ARGV[1] carries one, otherwise by deleting it so readers
+# fall through to the durable revision. An updating marker is never touched
+# (its owner is mid-transition), nor an absent key, nor an equal or newer one.
+_RECONCILE_LUA = """
+local existing = redis.call('GET', KEYS[1])
+if not existing then
+  return 0
+end
+local ok, decoded = pcall(cjson.decode, existing)
+if not ok or type(decoded) ~= 'table' then
+  return 0
+end
+local kind = decoded['kind']
+if kind ~= 'card' and kind ~= 'revoked' then
+  return 0
+end
+if (tonumber(decoded['card_revision']) or 0) >= tonumber(ARGV[2]) then
+  return 0
+end
+if ARGV[1] == '' then
+  redis.call('DEL', KEYS[1])
+elseif ARGV[3] == '' then
+  redis.call('SET', KEYS[1], ARGV[1])
+else
+  redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
+end
+return 1
+"""
+
+
 class CardCacheUnusable(RuntimeError):
     """A cached card value exists but cannot be trusted.
 
@@ -181,7 +216,31 @@ class DelegatedCardRuntimeCache:
         Raises ``CardCacheUnusable`` when a value is present but cannot be
         parsed, so a damaged projection is never mistaken for a revoked card.
         """
-        raw = await self._redis.get(self.card_key(access_id))
+        return self._decode_entry(access_id, await self._redis.get(self.card_key(access_id)))
+
+    async def read_in_current_run(
+        self, access_id: str
+    ) -> tuple[bool, CardCacheEntry | None]:
+        """The cached state, read in one transaction with the proof that the
+        current Redis run has been swept (``cards/reconcile.py``).
+
+        Returns ``(False, None)`` when the run is not proven swept: the live
+        ``run_id`` is missing or differs from the recorded epoch. The run and
+        the projection come from the same ``MULTI``, so a restart cannot fall
+        between the check and the read.
+        """
+        pipe = self._redis.pipeline(transaction=True)
+        pipe.info("server")
+        pipe.get(self.projection_epoch_key())
+        pipe.get(self.card_key(access_id))
+        info, epoch, raw = await pipe.execute()
+        run_id = str((info or {}).get("run_id") or "").strip()
+        recorded = epoch.decode("utf-8") if isinstance(epoch, (bytes, bytearray)) else str(epoch or "")
+        if not run_id or recorded != run_id:
+            return False, None
+        return True, self._decode_entry(access_id, raw)
+
+    def _decode_entry(self, access_id: str, raw: Any) -> CardCacheEntry | None:
         if raw is None:
             return None
         payload = decode_cache_value(raw)
@@ -313,6 +372,61 @@ class DelegatedCardRuntimeCache:
             str(int(authority.card_revision)),
             "" if ttl_seconds is None else str(max(1, int(ttl_seconds))),
         )
+
+    async def reconcile_projection(
+        self,
+        access_id: str,
+        *,
+        durable_revision: int,
+        authority: CardAuthority | None,
+        ttl_seconds: int | None,
+    ) -> bool:
+        """Repair a projection older than the durable revision.
+
+        ``authority`` is the durable revision when it is usable, installed in
+        place of the older projection. ``None`` deletes the older projection
+        instead, so a revoked or expired durable revision denies through the
+        durable read. True when the projection was behind and was repaired.
+        """
+        if authority is not None and ttl_seconds is not None and ttl_seconds <= 0:
+            authority = None
+        payload = (
+            ""
+            if authority is None
+            else encode_cache_value(
+                {
+                    "kind": CARD_CACHE_KIND_CARD,
+                    "card_revision": authority.card_revision,
+                    "authority": authority.to_dict(),
+                }
+            )
+        )
+        return await self._eval_bool(
+            _RECONCILE_LUA,
+            access_id,
+            payload,
+            str(int(durable_revision)),
+            "" if ttl_seconds is None else str(max(1, int(ttl_seconds))),
+        )
+
+    @property
+    def redis(self) -> Any:
+        return self._redis
+
+    def card_key_pattern(self) -> str:
+        """SCAN pattern for every card projection of this tenant and project."""
+        return f"{self._tenant}:{self._project}:kdcube:delegated-access:card:*"
+
+    def projection_epoch_key(self) -> str:
+        """The Redis run whose projection sweep completed (``cards/reconcile.py``)."""
+        return f"{self._tenant}:{self._project}:kdcube:delegated-access:cards-epoch"
+
+    def reconcile_lock_key(self) -> str:
+        return f"{self._tenant}:{self._project}:kdcube:delegated-access:cards-reconcile-lock"
+
+    def access_id_from_key(self, key: Any) -> str:
+        text = key.decode("utf-8") if isinstance(key, (bytes, bytearray)) else str(key)
+        return text.rsplit(":card:", 1)[-1]
 
     # -- per-grantor discovery index ------------------------------------------
     #

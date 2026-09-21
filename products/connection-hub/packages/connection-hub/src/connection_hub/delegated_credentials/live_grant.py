@@ -26,13 +26,6 @@ from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
 )
-from connection_hub.delegated_credentials.controls.cache import (
-    ControlCardCacheUnusable,
-    ControlCardRuntimeCache,
-)
-from connection_hub.delegated_credentials.controls.model import (
-    control_card_from_legacy,
-)
 from connection_hub.delegated_credentials.controls.attribution import (
     ResolvedCardComposition,
 )
@@ -83,20 +76,25 @@ async def resolve_live_grant_composition(
     subject_hash = hashlib.sha256(grantor.encode("utf-8")).hexdigest() if grantor else ""
 
     if card_store is not None and subject_hash:
+        # The resolver serves nothing until the current Redis run is swept.
         resolver = DelegatedCardResolver(cache=cache, store=card_store)
         try:
             record = await resolver.resolve(subject_hash=subject_hash, access_id=pointer)
         except CardUnavailable as exc:
             raise LiveGrantCardError(exc.reason) from exc
     else:
+        # Without a durable store this caller cannot sweep, so it fails closed
+        # until a store owner (the Connection Hub cron) completes the sweep.
         try:
-            entry = await cache.read(pointer)
+            in_run, entry = await cache.read_in_current_run(pointer)
         except CardCacheUnusable as exc:
             # Without a durable source a damaged projection cannot be repaired,
             # so it is unavailability rather than a revoked card.
             raise LiveGrantCardError(exc.reason) from exc
         except Exception as exc:
             raise LiveGrantCardError("lookup_unavailable") from exc
+        if not in_run:
+            raise LiveGrantCardError("card_projection_reconciling")
         if entry is None:
             return None
         if entry.is_updating:
@@ -149,11 +147,13 @@ async def resolve_live_grant_composition(
                 raise LiveGrantCardError(exc.reason) from exc
         else:
             try:
-                control_entry = await cache.read(control_id)
+                in_run, control_entry = await cache.read_in_current_run(control_id)
             except CardCacheUnusable as exc:
                 raise LiveGrantCardError(exc.reason) from exc
             except Exception as exc:
                 raise LiveGrantCardError("control_card_lookup_unavailable") from exc
+            if not in_run:
+                raise LiveGrantCardError("card_projection_reconciling")
             if control_entry is None:
                 control = None
             elif control_entry.is_updating:
@@ -162,26 +162,9 @@ async def resolve_live_grant_composition(
                 control = None
             else:
                 control = control_entry.authority
-        if control is None and control_id.startswith("project-control-"):
-            legacy_cache = ControlCardRuntimeCache(
-                redis,
-                tenant=tenant,
-                project=project,
-            )
-            try:
-                legacy_entry = await legacy_cache.read(control_id)
-            except ControlCardCacheUnusable as exc:
-                raise LiveGrantCardError(exc.reason) from exc
-            except Exception as exc:
-                raise LiveGrantCardError("control_card_lookup_unavailable") from exc
-            if legacy_entry is not None and legacy_entry.is_updating:
-                raise LiveGrantCardError("control_card_updating")
-            if (
-                legacy_entry is not None
-                and legacy_entry.is_card
-                and legacy_entry.authority is not None
-            ):
-                control = control_card_from_legacy(legacy_entry.authority)
+        # A legacy project Control Card lives only in Redis, with no durable
+        # revision a rollback could be checked against, so it is not
+        # authority here. A Card still bound to one fails closed below.
         if control is None:
             raise LiveGrantCardError("control_card_unresolvable")
         if not authority_is_credentialless(control):

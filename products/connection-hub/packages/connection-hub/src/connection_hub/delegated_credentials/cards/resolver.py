@@ -33,6 +33,10 @@ from connection_hub.delegated_credentials.cards.model import (
     authority_is_usable,
     authority_projection_ttl,
 )
+from connection_hub.delegated_credentials.cards.reconcile import (
+    CardProjectionReconciler,
+    CardProjectionReconciling,
+)
 from connection_hub.delegated_credentials.cards.store import (
     BundleStorageDelegatedCardStore,
     CardStorageError,
@@ -60,15 +64,27 @@ class DelegatedCardResolver:
         self._cache = cache
         self._store = store
         self._settings = settings or DelegatedCacheSettings()
+        self._reconciler = CardProjectionReconciler(cache=cache, store=store)
 
     async def resolve(
         self, *, subject_hash: str, access_id: str, now: int | None = None
     ) -> CardAuthority | None:
         moment = int(now if now is not None else time.time())
 
+        # A projection is served only when the same Redis transaction proves
+        # the current Redis run has been swept against durable state
+        # (cards/reconcile.py). When it is not, this store owner sweeps first.
         entry: CardCacheEntry | None = None
         try:
-            entry = await self._cache.read(access_id)
+            in_run, entry = await self._cache.read_in_current_run(access_id)
+            if not in_run:
+                try:
+                    await self._reconciler.ensure_ready(now=moment)
+                except CardProjectionReconciling as exc:
+                    raise CardUnavailable(exc.reason) from exc
+                in_run, entry = await self._cache.read_in_current_run(access_id)
+                if not in_run:
+                    raise CardUnavailable(CardProjectionReconciling.reason)
         except CardCacheUnusable:
             # Unusable cache data is not authority: fall through to the durable
             # revision, which also repairs the projection.
@@ -76,7 +92,7 @@ class DelegatedCardResolver:
                 "[connection-hub.delegated-cards] unusable projection card=%s; reading durable",
                 access_id,
             )
-        except CardStorageError:
+        except (CardStorageError, CardUnavailable):
             raise
         except Exception as exc:
             raise CardUnavailable("cache_unavailable") from exc

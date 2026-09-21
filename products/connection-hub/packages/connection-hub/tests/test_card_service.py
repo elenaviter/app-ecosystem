@@ -44,6 +44,9 @@ class _Cache:
     async def claim_transition(self, *args, **kwargs) -> bool:
         return True
 
+    async def reconcile_projection(self, *args, **kwargs) -> bool:
+        return False
+
     async def commit_projection(self, *args, **kwargs) -> bool:
         return True
 

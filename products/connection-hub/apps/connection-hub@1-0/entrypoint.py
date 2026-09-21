@@ -36,7 +36,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     NamedServiceRegistry,
     dispatch_named_service_api_request,
 )
-from kdcube_ai_app.infra.plugin.bundle_loader import api, bundle_entrypoint, bundle_id, mcp, ui_widget
+from kdcube_ai_app.infra.plugin.bundle_loader import api, bundle_entrypoint, bundle_id, cron, mcp, ui_widget
+from connection_hub.delegated_credentials.cards.cache import DelegatedCardRuntimeCache
+from connection_hub.delegated_credentials.cards.reconcile import CardProjectionReconciler
 
 SITE_BUILD_COMMAND = "cp index.html site.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/"
 from kdcube_ai_app.infra.service_hub.inventory import Config
@@ -2956,6 +2958,42 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     },
                 },
             },
+        }
+
+    # ── Card projection sweep after Redis data loss ──────────────────────────
+
+    @cron(
+        alias="card-projection-reconcile",
+        cron_expression="* * * * *",
+        timezone="UTC",
+        span="system",
+    )
+    async def reconcile_card_projections(self) -> Dict[str, Any]:
+        """Own the projection sweep, so readers without a durable store recover.
+
+        Why: after Redis restarts from an older snapshot, cache-only readers
+        (the data bus, live sessions) fail closed until the current Redis run
+        is swept against durable Cards, and they cannot sweep themselves. This
+        job is the guaranteed owner: a no-op check while the run is recorded,
+        one sweep after a restart. See cards/reconcile.py.
+        """
+        storage_root = self.bundle_storage_root()
+        if storage_root is None:
+            return {"ok": False, "reason": "bundle_storage_unavailable"}
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        tenant, project = _runtime_tenant_project(self)
+        report = await CardProjectionReconciler(
+            cache=DelegatedCardRuntimeCache(redis, tenant=tenant, project=project),
+            store=BundleStorageDelegatedCardStore(storage_root),
+        ).reconcile()
+        if report is None:
+            return {"ok": True, "swept": False}
+        return {
+            "ok": report.completed,
+            "swept": True,
+            "checked": report.checked,
+            "repaired": report.repaired,
+            "failed": report.failed,
         }
 
     # ── named-service over HTTP (serves the whole contract) ──────────────────
