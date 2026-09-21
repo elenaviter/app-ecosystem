@@ -72,9 +72,18 @@ fields and extension fields for DCR, or the validated metadata document for
 CIMD. Values are JSON-safe, bounded in depth, count, length, and encoded size,
 and cannot contain control characters or secret-bearing fields.
 
-The Card label starts with the reported `client_name`, adds the connected door
-when the name does not already contain it, and may add a reported
-`kdcube_agent_id`. The complete accepted metadata stays folded under the Card
+The Card label names the client, the connected door and the reported agent
+identity, each once. A client reporting the full KDCube worker shape
+(`kdcube_worker_id`, `kdcube_worker_alias`, `kdcube_agent_provider` and
+`kdcube_agent_session_id`, as every Problem Board worker does) is named
+`<client product> · <door> · <provider>:<alias>:<session>`, where the product
+is the first segment of its `client_name`, so a first connection and a
+reconnect give the same name. Any other client keeps its `client_name` and
+gains the door, then its `kdcube_agent_id`, only when no segment of the name
+already equals it. On reconnect the consent page proposes the existing Card's
+name unless it is exactly a name Connection Hub generated for that client,
+under the current rule or the earlier one, which is then re-derived. A name a
+person chose is kept. The complete accepted metadata stays folded under the Card
 and can be searched as plain text or filtered by exact metadata key and
 substring value. For example, a worker-aware client can report:
 
