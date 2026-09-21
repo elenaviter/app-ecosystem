@@ -1158,3 +1158,22 @@ async def test_the_owner_view_of_a_legacy_bound_card_is_unresolved_not_active() 
     assert view["reason"] == "control_card_unresolvable"
     assert view["fail_closed"] is True
     assert "control_authority" not in view
+
+
+
+@pytest.mark.asyncio
+async def test_live_resolution_reads_a_missing_caller_projection_as_unavailable() -> None:
+    # 2026-09-21: a migration removed every moved Card's projection; callers
+    # without a durable store read the absence as "revoked" and refused every
+    # refresh. Without a store the absence is unknown, so it is unavailable.
+    redis = _Redis()
+
+    with pytest.raises(LiveGrantCardError) as missing:
+        await resolve_live_grant_card(
+            redis,
+            tenant="tenant",
+            project="project",
+            access_id=_card().access_id,
+        )
+
+    assert missing.value.reason == "card_projection_missing"

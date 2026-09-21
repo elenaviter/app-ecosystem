@@ -256,8 +256,8 @@ durable read.
 ### Redis rollback
 
 A Redis that restarts from an older snapshot does not lose Card projections, it
-brings back older ones. A missing projection is safe because it reads through
-to durable state. An older one is not: a present projection is served without
+brings back older ones. A missing projection is safe because the reader reads
+through to durable state (see "A missing projection" below). An older one is not: a present projection is served without
 reading the durable pointer, so a projection one revision behind keeps serving
 superseded authority, and a projection from before a revocation keeps a revoked
 Card usable. On 2026-09-21 three worker Card projections came back one revision
@@ -286,8 +286,8 @@ live `run_id`:
 
 | Reader | Behaviour |
 | --- | --- |
-| A store-owning resolver (Connection Hub requests, the durable-backed guard) | Runs the sweep itself, then serves. When the sweep cannot complete, or another worker of this run holds the lock, it returns `card_projection_reconciling` as unavailability (503). |
-| A reader without the durable store (the data bus, live sessions, the cache-only guard branch) | Fails closed with `card_projection_reconciling`. It cannot sweep. |
+| A store-owning resolver (Connection Hub requests, the durable-backed guard, OAuth token refresh, Data Bus publish and worker, live sessions) | Runs the sweep itself, then serves. When the sweep cannot complete, or another worker of this run holds the lock, it returns `card_projection_reconciling` as unavailability (503). |
+| A reader without the durable store or the grantor (the cache-only guard branch, a live-session record written before it kept the grantor) | Fails closed with `card_projection_reconciling`. It cannot sweep. |
 | The agent-grant picker probe | Reads as pending. |
 
 The sweep compares every Card projection of the tenant and project with its
@@ -317,6 +317,20 @@ Card attachment and the owner's effective-authority view all resolve Control
 Cards from durable revisions only. A Card still bound to a legacy one fails
 closed with `control_card_unresolvable`, and the owner view reports it as
 unavailable.
+
+**A missing projection.** The sweep repairs the projections that exist; it does
+not list durable Cards, so it does not recreate one that is missing. A missing
+projection is restored by the reader: every Card lookup that knows the Card's
+grantor carries the durable Card store, reads the durable `current.json` and
+the revision it names, serves an active and unexpired Card, and restores its
+projection. That restoration is the only write, and the lost projection is what
+causes it. A reader without the durable store or the grantor cannot tell a
+missing projection from a revoked Card, so it answers `card_projection_missing`
+as unavailability (503 with `Retry-After` on the OAuth token route), never as
+revoked. A revoked tombstone and a revoked or expired durable Card still deny.
+Why: on 2026-09-21 the Card identity migration removed every moved Card's
+projection, and the OAuth token route and the Data Bus read the absence as
+"revoked", so every relay refresh was refused as `invalid_grant`.
 
 A Redis that reports no `run_id` cannot prove its run, so it serves no Card
 projection. The epoch and the lock are not durable state: losing either costs

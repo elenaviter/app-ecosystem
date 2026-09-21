@@ -96,7 +96,11 @@ async def resolve_live_grant_composition(
         if not in_run:
             raise LiveGrantCardError("card_projection_reconciling")
         if entry is None:
-            return None
+            # A missing projection is not a revoked Card: a migration, an
+            # eviction or a restored snapshot can remove it while the durable
+            # Card stays active. Without a durable store this caller cannot
+            # tell, so it answers unavailable, never revoked.
+            raise LiveGrantCardError("card_projection_missing")
         if entry.is_updating:
             raise LiveGrantCardError("card_updating")
         if entry.is_revoked:
