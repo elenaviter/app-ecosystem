@@ -240,17 +240,25 @@ class OAuthProfileSessionService:
                 require_explicit=True,
             )
             try:
-                probe = await self._probe(
-                    endpoint=profile.endpoint,
-                    bearer=replacement.access_token,
-                )
                 committed = await self._commit_reconnected_token(
                     expected=profile,
                     replacement=replacement,
                 )
-            except Exception:
-                await self._revoke_grant(grant)
-                raise
+            except Exception as exc:
+                raise self._matching_grant_failure(
+                    exc,
+                    credential_stored=False,
+                ) from exc
+            try:
+                probe = await self._probe(
+                    endpoint=profile.endpoint,
+                    bearer=replacement.access_token,
+                )
+            except Exception as exc:
+                raise self._matching_grant_failure(
+                    exc,
+                    credential_stored=True,
+                ) from exc
             return OAuthProfileAuthorizationResult(profile=committed, probe=probe)
 
     async def access_token(self, profile_name: str) -> str:
@@ -507,6 +515,49 @@ class OAuthProfileSessionService:
                 "oauth_profile_changed_during_reconnect",
                 "The OAuth profile changed during browser authorization; the new grant was not stored.",
             )
+
+    @staticmethod
+    def _matching_grant_failure(
+        exc: Exception,
+        *,
+        credential_stored: bool,
+    ) -> AuthorizationError:
+        if isinstance(exc, AuthorizationError):
+            code = exc.code
+            message = exc.message.rstrip()
+            details = dict(getattr(exc, "details", {}) or {})
+        else:
+            code = (
+                "oauth_reconnect_probe_failed"
+                if credential_stored
+                else "oauth_reconnect_commit_failed"
+            )
+            message = (
+                "The reconnected OAuth credential could not be checked."
+                if credential_stored
+                else "The reconnected OAuth credential could not be stored."
+            )
+            details = {}
+        if credential_stored:
+            guidance = (
+                " The same-Card credential was stored, but its endpoint probe failed."
+                " The caller Card remains active; retry the governed operation and do"
+                " not replace the Card."
+            )
+        else:
+            guidance = (
+                " The matching caller Card was not revoked. Correct the local failure"
+                " and retry reconnect; do not replace the Card."
+            )
+        error = AuthorizationError(code, message + guidance)
+        details.update(
+            {
+                "card_preserved": True,
+                "credential_stored": credential_stored,
+            }
+        )
+        error.details = details
+        return error
 
     def _load_token(self, profile: CallerProfile) -> OAuthTokenSet:
         token = self._credentials.get(profile.credential_ref)

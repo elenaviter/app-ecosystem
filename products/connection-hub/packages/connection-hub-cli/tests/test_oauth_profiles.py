@@ -223,11 +223,12 @@ def _service(
     *,
     oauth: _OAuth | None = None,
     authorization: _Authorization | None = None,
+    probe=None,
 ):
     profiles = ProfileStore(tmp_path / "profiles.json")
     credentials = _TokenStore()
 
-    async def probe(**_kwargs):
+    async def default_probe(**_kwargs):
         return ProbeResult(tool_count=3, server_name="hub", server_version="1")
 
     service = OAuthProfileSessionService(
@@ -237,7 +238,7 @@ def _service(
         discovery=_Discovery(),
         authorization=authorization or _Authorization(),
         oauth=oauth or _OAuth(),
-        probe=probe,
+        probe=probe or default_probe,
     )
     return service, profiles, credentials
 
@@ -521,6 +522,79 @@ async def test_reconnect_without_local_token_restores_same_card_custody(tmp_path
     assert credentials.values[profile.credential_ref].access_token == (
         "reconnected-access"
     )
+
+
+@pytest.mark.asyncio
+async def test_reconnect_probe_failure_keeps_committed_token_and_card(tmp_path) -> None:
+    async def failed_probe(**_kwargs):
+        raise AuthorizationError("profile_probe_unavailable", "The probe is unavailable.")
+
+    authorization = _Authorization(
+        _token("reconnected-access", "reconnected-refresh")
+    )
+    oauth = _OAuth()
+    service, profiles, credentials = _service(
+        tmp_path,
+        authorization=authorization,
+        oauth=oauth,
+        probe=failed_probe,
+    )
+    profile = _profile()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, _token())
+
+    with pytest.raises(AuthorizationError) as raised:
+        await service.reconnect(profile.name)
+
+    assert raised.value.code == "profile_probe_unavailable"
+    assert raised.value.details == {
+        "card_preserved": True,
+        "credential_stored": True,
+    }
+    assert "same-Card credential was stored" in raised.value.message
+    assert profiles.require(profile.name).access_id == profile.access_id
+    assert credentials.values[profile.credential_ref].access_token == (
+        "reconnected-access"
+    )
+    assert oauth.events == []
+
+
+@pytest.mark.asyncio
+async def test_reconnect_commit_failure_keeps_previous_token_and_card(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    authorization = _Authorization(
+        _token("reconnected-access", "reconnected-refresh")
+    )
+    oauth = _OAuth()
+    service, profiles, credentials = _service(
+        tmp_path,
+        authorization=authorization,
+        oauth=oauth,
+    )
+    profile = _profile()
+    original = _token()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, original)
+
+    def failed_update(_profile) -> None:
+        raise AuthorizationError("profile_store_unavailable", "The store is unavailable.")
+
+    monkeypatch.setattr(profiles, "update", failed_update)
+
+    with pytest.raises(AuthorizationError) as raised:
+        await service.reconnect(profile.name)
+
+    assert raised.value.code == "profile_store_unavailable"
+    assert raised.value.details == {
+        "card_preserved": True,
+        "credential_stored": False,
+    }
+    assert "matching caller Card was not revoked" in raised.value.message
+    assert profiles.require(profile.name).access_id == profile.access_id
+    assert credentials.values[profile.credential_ref] == original
+    assert oauth.events == []
 
 
 @pytest.mark.asyncio
