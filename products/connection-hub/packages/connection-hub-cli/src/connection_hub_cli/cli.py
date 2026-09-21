@@ -319,6 +319,31 @@ async def _run_profile(args: argparse.Namespace, services: Services) -> int:
         )
         return 0
 
+    if args.profile_command == "reconnect":
+        if services.oauth_profile_sessions is None:
+            raise ConnectionHubCliError(
+                "oauth_profiles_unavailable",
+                "OAuth-backed caller profiles are unavailable in this process.",
+            )
+        authorization_options: dict[str, Any] = {}
+        if args.no_open:
+            authorization_options["browser_opener"] = _print_manual_authorization_url
+        result = await services.oauth_profile_sessions.reconnect(
+            args.name,
+            callback_port=args.callback_port,
+            timeout_seconds=args.wait_seconds,
+            **authorization_options,
+        )
+        _print_json(
+            {
+                "reconnected": True,
+                "card_preserved": True,
+                "profile": _profile_view(services, result.profile),
+                "probe": result.probe.to_dict(),
+            }
+        )
+        return 0
+
     if args.profile_command == "list":
         values = [_profile_view(services, item) for item in services.profiles.list()]
         if args.json:
@@ -1404,6 +1429,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the authorization URL and wait for a browser callback.",
     )
     profile_authorize.add_argument("--wait-seconds", type=float, default=300.0)
+    profile_reconnect = profile_commands.add_parser(
+        "reconnect",
+        help="Refresh an OAuth profile through browser login while preserving its caller Card.",
+    )
+    profile_reconnect.add_argument("name")
+    profile_reconnect.add_argument(
+        "--callback-port",
+        type=int,
+        help="Fixed loopback port registered for the profile's OAuth client.",
+    )
+    profile_reconnect.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Print the authorization URL and wait for a browser callback.",
+    )
+    profile_reconnect.add_argument("--wait-seconds", type=float, default=300.0)
     profile_list = profile_commands.add_parser(
         "list", help="List caller profiles without credentials."
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import httpx2
@@ -143,6 +144,16 @@ def _token(
         expires_at=expires_at,
         scope="mcp",
         access_id="access-agent",
+    )
+
+
+def _other_card_token() -> OAuthTokenSet:
+    return OAuthTokenSet(
+        access_token="other-access-secret",
+        refresh_token="other-refresh-secret",
+        expires_at=2_000_000_000,
+        scope="mcp",
+        access_id="access-other",
     )
 
 
@@ -417,6 +428,114 @@ async def test_profile_authorization_forwards_client_identification_metadata(tmp
         "kdcube_agent_id": "codex:session-1",
         "kdcube_machine_id": "machine-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_reconnect_reuses_client_and_preserves_profile_card(tmp_path) -> None:
+    authorization = _Authorization(
+        _token("reconnected-access", "reconnected-refresh")
+    )
+    oauth = _OAuth()
+    service, profiles, credentials = _service(
+        tmp_path,
+        authorization=authorization,
+        oauth=oauth,
+    )
+    profile = _profile()
+    original = _token()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, original)
+
+    result = await service.reconnect(
+        profile.name,
+        callback_port=9124,
+        timeout_seconds=15,
+    )
+
+    call = authorization.calls[0]
+    assert call["provisioned_client_id"] == profile.oauth.client_id
+    assert call["scope"] == profile.oauth.scope
+    assert call["callback_port"] == 9124
+    assert "client_metadata" not in call
+    assert result.profile.name == profile.name
+    assert result.profile.credential_ref == profile.credential_ref
+    assert result.profile.access_id == profile.access_id
+    assert result.profile.created_at == profile.created_at
+    assert result.profile.oauth == profile.oauth
+    assert result.profile.updated_at >= profile.updated_at
+    assert credentials.values[profile.credential_ref].access_token == (
+        "reconnected-access"
+    )
+    assert oauth.events == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        _other_card_token(),
+        replace(_other_card_token(), access_id="invalid card id"),
+    ],
+)
+async def test_reconnect_revokes_unusable_card_and_preserves_local_state(
+    tmp_path,
+    candidate,
+) -> None:
+    authorization = _Authorization(candidate)
+    oauth = _OAuth()
+    service, profiles, credentials = _service(
+        tmp_path,
+        authorization=authorization,
+        oauth=oauth,
+    )
+    profile = _profile()
+    original = _token()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, original)
+
+    with pytest.raises(AuthorizationError) as raised:
+        await service.reconnect(profile.name)
+
+    assert raised.value.code == "oauth_reconnect_card_mismatch"
+    assert raised.value.details["expected_access_id"] == "access-agent"
+    assert profiles.require(profile.name) == profile
+    assert credentials.values[profile.credential_ref] == original
+    assert oauth.events == ["server.revoke"]
+
+
+@pytest.mark.asyncio
+async def test_reconnect_without_local_token_restores_same_card_custody(tmp_path) -> None:
+    authorization = _Authorization(
+        _token("reconnected-access", "reconnected-refresh")
+    )
+    service, profiles, credentials = _service(
+        tmp_path,
+        authorization=authorization,
+    )
+    profile = _profile()
+    profiles.add(profile)
+
+    result = await service.reconnect(profile.name)
+
+    assert result.profile.access_id == profile.access_id
+    assert credentials.values[profile.credential_ref].access_token == (
+        "reconnected-access"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconnect_requires_recorded_oauth_client_id(tmp_path, monkeypatch) -> None:
+    service, profiles, _credentials = _service(tmp_path)
+    profile = _profile()
+    missing_client = replace(profile.oauth, client_id="")
+    malformed = replace(profile, oauth=missing_client)
+    monkeypatch.setattr(profiles, "require", lambda _name: malformed)
+    monkeypatch.setattr(profiles, "get", lambda _name: malformed)
+
+    with pytest.raises(AuthorizationError) as raised:
+        await service.reconnect(profile.name)
+
+    assert raised.value.code == "oauth_reconnect_client_id_missing"
 
 
 @pytest.mark.asyncio

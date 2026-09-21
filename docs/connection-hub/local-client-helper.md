@@ -150,6 +150,18 @@ connection-hub profile authorize coding-agent \
 The command rejects CIMD before browser launch when the server advertises
 CIMD and no fixed callback port was supplied.
 
+When the native token is missing, expired, or refused, reconnect the existing
+profile through the browser:
+
+```bash
+connection-hub profile reconnect coding-agent
+```
+
+Reconnect uses the profile's recorded OAuth client and accepts the new token
+only when it names the same caller Card. A different-Card grant is revoked and
+the profile and its prior native credential remain unchanged. Profiles created
+with a fixed CIMD loopback URI also pass their registered `--callback-port`.
+
 ### Manually Issued Profile
 
 For an existing short-lived delegated caller bearer:

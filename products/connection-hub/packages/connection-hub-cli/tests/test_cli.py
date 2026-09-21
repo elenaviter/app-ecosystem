@@ -208,6 +208,13 @@ class _OAuthProfileSessions:
             probe=ProbeResult(tool_count=4, server_name="hub", server_version="1"),
         )
 
+    async def reconnect(self, name, **kwargs):
+        self.calls.append({"name": name, **kwargs})
+        return SimpleNamespace(
+            profile=self.profiles.require(name),
+            probe=ProbeResult(tool_count=4, server_name="hub", server_version="1"),
+        )
+
     def credential_present(self, _profile: CallerProfile) -> bool:
         return True
 
@@ -946,6 +953,62 @@ def test_profile_authorize_reports_oauth_state_without_tokens(
     assert payload["profile"]["access_id"] == "access-oauth-agent"
     assert payload["profile"]["refresh_ready"] is True
     assert oauth_profiles.calls[0]["callback_port"] == 9124
+
+
+def test_profile_reconnect_reports_preserved_card_without_tokens(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    services = _services(tmp_path)
+    oauth_profiles = _OAuthProfileSessions(services.profiles)
+    services.oauth_profile_sessions = oauth_profiles
+    services.profile_service.oauth_sessions = oauth_profiles
+    services.client_service.oauth_sessions = oauth_profiles
+    monkeypatch.setattr(cli, "build_services", lambda: services)
+
+    assert (
+        cli.main(
+            [
+                "profile",
+                "authorize",
+                "agent",
+                "--endpoint",
+                "https://hub.example/mcp",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    oauth_profiles.calls.clear()
+
+    result = cli.main(
+        [
+            "profile",
+            "reconnect",
+            "agent",
+            "--callback-port",
+            "9124",
+            "--wait-seconds",
+            "5",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert result == 0
+    assert oauth_profiles.access_canary not in captured.out
+    assert oauth_profiles.refresh_canary not in captured.out
+    payload = json.loads(captured.out)
+    assert payload["reconnected"] is True
+    assert payload["card_preserved"] is True
+    assert payload["profile"]["access_id"] == "access-oauth-agent"
+    assert oauth_profiles.calls == [
+        {
+            "name": "agent",
+            "callback_port": 9124,
+            "timeout_seconds": 5.0,
+        }
+    ]
 
 
 def test_client_oauth_install_reports_native_login_command_without_local_profile(

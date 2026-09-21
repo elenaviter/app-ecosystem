@@ -256,6 +256,17 @@ response. Upstream response text is not returned. Connection and timeout errors
 remain separate, allowing a caller to request new consent only after an actual
 authorization rejection instead of rotating a healthy Card during an outage.
 
+OAuth browser reconnect preserves the profile's caller Card:
+
+```bash
+connection-hub profile reconnect coding-agent
+```
+
+The command reuses the recorded OAuth client. It stores the new token only
+after the endpoint proves that token and its `access_id` matches the recorded
+Card. A different-Card grant is revoked while local profile and credential
+state remain unchanged.
+
 Static credential replacement validates the candidate before switching:
 
 ```bash

@@ -123,7 +123,10 @@ class OAuthProfileSessionService:
                 timeout_seconds=timeout_seconds,
                 browser_opener=browser_opener,
             )
-            access_id = validate_access_id(grant.token.access_id)
+            try:
+                access_id = validate_access_id(grant.token.access_id)
+            except ProfileError:
+                access_id = None
             if access_id is None:
                 await self._revoke_grant(grant)
                 raise AuthorizationError(
@@ -165,6 +168,90 @@ class OAuthProfileSessionService:
                 await self._revoke_grant(grant)
                 raise
             return OAuthProfileAuthorizationResult(profile=profile, probe=probe)
+
+    async def reconnect(
+        self,
+        profile_name: str,
+        *,
+        callback_port: int | None = None,
+        timeout_seconds: float = 300.0,
+        browser_opener=None,
+    ) -> OAuthProfileAuthorizationResult:
+        """Replace OAuth custody while preserving the recorded caller Card."""
+
+        name = validate_name(profile_name)
+        async with self._authorization_slot(name, require_existing=True):
+            self.verify_credential_store()
+            profile = self._require_oauth_profile(name)
+            metadata = self._require_oauth(profile)
+            client_id = str(metadata.client_id or "").strip()
+            if not client_id:
+                raise AuthorizationError(
+                    "oauth_reconnect_client_id_missing",
+                    "The OAuth profile needs its recorded client identifier before it can reconnect.",
+                )
+
+            located = await self._endpoint_discovery.discover(
+                profile.endpoint,
+                default_scope=metadata.scope,
+            )
+            self._verify_reconnect_endpoint(profile, located)
+            discovered = OAuthDiscoveryResult(
+                protected_resource=located.protected_resource,
+                authorization_server=located.authorization_server,
+            )
+            grant = await self._authorization.authorize_discovered(
+                protected_resource_metadata_url=(
+                    located.protected_resource_metadata_url
+                ),
+                discovered=discovered,
+                scope=metadata.scope,
+                provisioned_client_id=client_id,
+                callback_port=callback_port,
+                timeout_seconds=timeout_seconds,
+                browser_opener=browser_opener,
+            )
+            if grant.registration.client_id != client_id:
+                await self._revoke_grant(grant)
+                raise AuthorizationError(
+                    "oauth_reconnect_client_mismatch",
+                    "The new OAuth grant used a different client identifier and was revoked.",
+                )
+
+            try:
+                access_id = validate_access_id(grant.token.access_id)
+            except ProfileError:
+                access_id = None
+            if access_id != profile.access_id:
+                await self._revoke_grant(grant)
+                error = AuthorizationError(
+                    "oauth_reconnect_card_mismatch",
+                    "The new OAuth grant belongs to a different caller Card and was revoked.",
+                )
+                error.details = {
+                    "expected_access_id": profile.access_id,
+                    "received_access_id": access_id,
+                }
+                raise error
+
+            replacement = self._token_for_profile(
+                profile,
+                grant.token,
+                require_explicit=True,
+            )
+            try:
+                probe = await self._probe(
+                    endpoint=profile.endpoint,
+                    bearer=replacement.access_token,
+                )
+                committed = await self._commit_reconnected_token(
+                    expected=profile,
+                    replacement=replacement,
+                )
+            except Exception:
+                await self._revoke_grant(grant)
+                raise
+            return OAuthProfileAuthorizationResult(profile=committed, probe=probe)
 
     async def access_token(self, profile_name: str) -> str:
         self._prepare_lock(self._transaction_lock)
@@ -353,6 +440,74 @@ class OAuthProfileSessionService:
             )
         return server
 
+    @staticmethod
+    def _verify_reconnect_endpoint(profile: CallerProfile, located) -> None:
+        metadata = OAuthProfileSessionService._require_oauth(profile)
+        server = located.authorization_server
+        if (
+            located.protected_resource_metadata_url
+            != metadata.protected_resource_metadata_url
+            or located.protected_resource.resource != metadata.resource
+            or server.issuer != metadata.issuer
+            or server.token_endpoint != metadata.token_endpoint
+            or server.revocation_endpoint != metadata.revocation_endpoint
+        ):
+            raise AuthorizationError(
+                "oauth_profile_server_changed",
+                "The OAuth endpoint identity changed; the recorded profile remains unchanged.",
+            )
+
+    async def _commit_reconnected_token(
+        self,
+        *,
+        expected: CallerProfile,
+        replacement: OAuthTokenSet,
+    ) -> CallerProfile:
+        self._prepare_lock(self._transaction_lock)
+        lock = AsyncFileLock(str(self._transaction_lock), timeout=10, mode=0o600)
+        try:
+            async with lock:
+                self._secure_lock(self._transaction_lock)
+                current = self._require_oauth_profile(expected.name)
+                self._require_same_reconnect_binding(expected, current)
+                previous = self._credentials.get(current.credential_ref)
+                self._replace_token(current, previous, replacement)
+                return self._require_oauth_profile(current.name)
+        except Timeout:
+            raise AuthorizationError(
+                "oauth_profile_lock_timeout",
+                "Timed out waiting for the OAuth profile lock.",
+            ) from None
+
+    @staticmethod
+    def _require_same_reconnect_binding(
+        expected: CallerProfile,
+        current: CallerProfile,
+    ) -> None:
+        expected_binding = (
+            expected.name,
+            expected.endpoint,
+            expected.credential_ref,
+            expected.access_id,
+            expected.auth_type,
+            expected.oauth,
+            expected.created_at,
+        )
+        current_binding = (
+            current.name,
+            current.endpoint,
+            current.credential_ref,
+            current.access_id,
+            current.auth_type,
+            current.oauth,
+            current.created_at,
+        )
+        if current_binding != expected_binding:
+            raise AuthorizationError(
+                "oauth_profile_changed_during_reconnect",
+                "The OAuth profile changed during browser authorization; the new grant was not stored.",
+            )
+
     def _load_token(self, profile: CallerProfile) -> OAuthTokenSet:
         token = self._credentials.get(profile.credential_ref)
         if token is None:
@@ -365,7 +520,7 @@ class OAuthProfileSessionService:
     def _replace_token(
         self,
         profile: CallerProfile,
-        previous: OAuthTokenSet,
+        previous: OAuthTokenSet | None,
         replacement: OAuthTokenSet,
     ) -> None:
         self._credentials.put(profile.credential_ref, replacement)
@@ -373,7 +528,10 @@ class OAuthProfileSessionService:
             self._profiles.update(profile.with_credential_replaced())
         except Exception:
             try:
-                self._credentials.put(profile.credential_ref, previous)
+                if previous is None:
+                    self._credentials.remove(profile.credential_ref)
+                else:
+                    self._credentials.put(profile.credential_ref, previous)
             except Exception:  # noqa: BLE001 - rollback must contain any store failure
                 raise AuthorizationError(
                     "oauth_profile_store_rollback_failed",
@@ -452,7 +610,12 @@ class OAuthProfileSessionService:
             ) from None
 
     @asynccontextmanager
-    async def _authorization_slot(self, profile_name: str):
+    async def _authorization_slot(
+        self,
+        profile_name: str,
+        *,
+        require_existing: bool = False,
+    ):
         lock_path = self._profiles.path.with_suffix(
             f"{self._profiles.path.suffix}.{profile_name}.oauth.authorize.lock"
         )
@@ -461,7 +624,13 @@ class OAuthProfileSessionService:
         try:
             async with lock:
                 self._secure_lock(lock_path)
-                if self._profiles.get(profile_name) is not None:
+                exists = self._profiles.get(profile_name) is not None
+                if require_existing and not exists:
+                    raise ProfileError(
+                        "profile_not_found",
+                        f"Caller profile '{profile_name}' does not exist.",
+                    )
+                if not require_existing and exists:
                     raise ProfileError(
                         "profile_exists",
                         f"Caller profile '{profile_name}' already exists.",
