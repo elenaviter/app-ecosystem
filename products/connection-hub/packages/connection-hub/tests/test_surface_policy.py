@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 
 from connection_hub.authority_registry import CredentialEnvelope
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
+    CARD_KIND_CONTROL,
+)
 from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     ControlCardBinding,
@@ -107,6 +111,7 @@ def _control_composition() -> ResolvedCardComposition:
         grantor_subject="user-1",
         delegate_subject="",
         source="control",
+        card_kind=CARD_KIND_CONTROL,
         card_revision=6,
         resource_grants={RESOURCE: ("records:read",)},
         resource_operations={RESOURCE: ()},
@@ -131,6 +136,7 @@ def _control_composition() -> ResolvedCardComposition:
         grantor_subject="user-1",
         delegate_subject="integration:agent:user-1",
         source="agent",
+        card_kind=CARD_KIND_AGENT,
         card_revision=4,
         resource_grants={RESOURCE: ("records:read",)},
         resource_operations={RESOURCE: ("records.read",)},

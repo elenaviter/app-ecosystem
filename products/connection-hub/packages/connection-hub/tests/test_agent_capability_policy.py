@@ -22,6 +22,10 @@ from connection_hub.delegated_credentials.agent_capability_policy import (
 from connection_hub.delegated_credentials.application_resources import (
     application_resource,
 )
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
+    CARD_KIND_CONTROL,
+)
 from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     ControlCardBinding,
@@ -105,6 +109,7 @@ def _composition() -> tuple[CardAuthority, CardAuthority]:
         grantor_subject="user-1",
         delegate_subject="",
         source="control",
+        card_kind=CARD_KIND_CONTROL,
         card_revision=2,
         catalog_version="catalog-v2",
         resource_grants={PROVIDER_RESOURCE: ("records:read",)},
@@ -139,6 +144,7 @@ def _composition() -> tuple[CardAuthority, CardAuthority]:
         grantor_subject="user-1",
         delegate_subject="integration:agent:user-1",
         source="agent",
+        card_kind=CARD_KIND_AGENT,
         card_revision=4,
         catalog_version="catalog-v1",
         resource_grants={PROVIDER_RESOURCE: ("records:read",)},

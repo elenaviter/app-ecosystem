@@ -15,6 +15,7 @@ from connection_hub.delegated_credentials.application_operation_policy import (
     compose_application_operation_role_policy,
     validate_application_operation_role_policy,
 )
+from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT
 from connection_hub.delegated_credentials.cards.model import (
     CONTROL_COMPOSITION_AND,
     CONTROL_COMPOSITION_OR,
@@ -66,6 +67,7 @@ def _card(
         grantor_subject="user-1",
         delegate_subject=f"delegate:{access_id}",
         source="agent",
+        card_kind=CARD_KIND_AGENT,
         card_revision=1,
         catalog_version="catalog-v1",
         resource_grants={"*": (default_role,)},

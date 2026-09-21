@@ -5,6 +5,10 @@ from __future__ import annotations
 
 import dataclasses
 
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
+    CARD_KIND_CONTROL,
+)
 from connection_hub.delegated_credentials.cards.model import (
     CONTROL_COMPOSITION_AND,
     CONTROL_COMPOSITION_OR,
@@ -45,6 +49,7 @@ def _control(*, operations: tuple[str, ...], mode: str) -> CardAuthority:
         grantor_subject=OWNER,
         delegate_subject="",
         source="control",
+        card_kind=CARD_KIND_CONTROL,
         label="Project policy",
         card_revision=7,
         resource_grants={RESOURCE: ("records:read",)},
@@ -83,6 +88,7 @@ def _composition(
         grantor_subject=OWNER,
         delegate_subject=f"integration:agent:{OWNER}",
         source="agent",
+        card_kind=CARD_KIND_AGENT,
         label="Workspace main",
         card_revision=4,
         resource_grants={RESOURCE: ("records:read",)},

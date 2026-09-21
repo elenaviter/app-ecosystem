@@ -19,6 +19,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     NamedServiceSelection,
 )
+from connection_hub.delegated_credentials.cards.identity import CARD_KIND_CONTROL
 from connection_hub.delegated_credentials.catalog.drift import (
     selected_named_service_operations,
 )
@@ -119,6 +120,7 @@ def new_credentialless_card(
         grantor_subject=clean_text(grantor_subject),
         delegate_subject="",
         source=CREDENTIALLESS_CARD_SOURCE,
+        card_kind=CARD_KIND_CONTROL,
         label=clean_text(issuer_label) or clean_text(issuer_ref),
         card_revision=max(1, int(revision)),
         catalog_version=clean_text(catalog_version),
@@ -188,6 +190,7 @@ def control_card_from_legacy(
         grantor_subject=authority.grantor_subject,
         delegate_subject="",
         source="control",
+        card_kind=CARD_KIND_CONTROL,
         label=authority.issuer_label or authority.issuer_ref,
         card_revision=authority.revision,
         catalog_version=authority.basis_catalog_version,

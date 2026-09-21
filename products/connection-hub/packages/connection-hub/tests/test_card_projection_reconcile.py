@@ -27,6 +27,7 @@ from connection_hub.delegated_credentials.cards.cache import (
     DelegatedCardRuntimeCache,
 )
 from connection_hub.delegated_credentials.cache_io import encode_cache_value
+from connection_hub.delegated_credentials.cards.identity import CARD_KIND_CONNECTOR
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
     CardAuthority,
@@ -137,6 +138,7 @@ def _authority(*, revision: int = 1, label: str = "worker") -> CardAuthority:
         grantor_subject=GRANTOR,
         delegate_subject="integration:client-1",
         source="oauth",
+        card_kind=CARD_KIND_CONNECTOR,
         label=label,
         card_revision=revision,
         state=CARD_STATE_ACTIVE,

@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 from datetime import datetime, timezone
 
+from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT
 from connection_hub.delegated_credentials.cards.model import (
     CARD_AUTHORITY_SCHEMA,
     CARD_AUTHORITY_SCHEMA_V2,
@@ -143,6 +144,7 @@ def _card(*, resource_grants, resource_operations, catalog_version, acceptance=N
         grantor_subject="user-1",
         delegate_subject="integration:kdcube-agent:workspace@1-0:lg-react:user-1",
         source="agent",
+        card_kind=CARD_KIND_AGENT,
         label="lg-react",
         card_revision=3,
         catalog_version=catalog_version,

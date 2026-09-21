@@ -78,6 +78,8 @@ class CardPersistence(Protocol):
 
     async def list_current(self, *, subject_hash: str) -> list[CardAuthority]: ...
 
+    async def list_all_current(self, *, subject_hash: str) -> list[CardAuthority]: ...
+
     async def load_initial(
         self, access_id: str, *, subject_hash: str
     ) -> CardAuthority | None: ...
@@ -195,6 +197,19 @@ class DurableCardPersistence:
     async def list_current(self, *, subject_hash: str) -> list[CardAuthority]:
         """Every card the grantor still owns: active and expired, revoked
         excluded. Durable membership decides, as for list_active."""
+        return [
+            authority
+            for authority in await self.list_all_current(subject_hash=subject_hash)
+            if authority.state == CARD_STATE_ACTIVE
+        ]
+
+    async def list_all_current(self, *, subject_hash: str) -> list[CardAuthority]:
+        """Every durable current revision, including revoked history.
+
+        Identity lookup needs this while old non-canonical IDs still exist: a
+        renewed consent must find the tuple stored on a revoked Card instead of
+        creating a second Card at the new canonical id.
+        """
         try:
             durable_ids = await self._store.list_card_ids(subject_hash=subject_hash)
         except Exception as exc:
@@ -205,8 +220,6 @@ class DurableCardPersistence:
             if loaded is None:
                 continue
             authority, _ = loaded
-            if authority.state != CARD_STATE_ACTIVE:
-                continue
             found.append(authority)
         return found
 

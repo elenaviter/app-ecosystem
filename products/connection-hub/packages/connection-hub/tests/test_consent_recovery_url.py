@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
 from connection_hub.delegated_credentials.consent_denial import (
+    card_capability_consent_denial,
     connection_hub_grant_url,
     connection_hub_invocation_policy_url,
 )
@@ -83,6 +85,43 @@ def test_an_unaddressable_card_still_yields_no_url():
         resource="*/remote_mcp_proxy*",
         operation="search",
     ) == ""
+
+
+def test_operation_only_denial_names_the_operation_to_approve():
+    set_connection_hub_public_base_url(_BASE)
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            delegated_credential={
+                "credential": {
+                    "attrs": {
+                        "grants": ["named_services:use"],
+                        "resource": "*/named_services*",
+                    }
+                },
+                "grant_record": {
+                    "client_id": "dcr-client",
+                    "grants": [],
+                    "registry_access_id": "oauth-card",
+                },
+            }
+        )
+    )
+
+    denial = card_capability_consent_denial(
+        request,
+        {"ok": False, "error": {"code": "delegated_capability_not_granted"}},
+        namespace="conv",
+        tool="search",
+        operation="object.search",
+        tenant="acme",
+        project="main",
+    )
+
+    assert denial["consent"]["claims"] == []
+    assert (
+        "approve: the operation conv \u00b7 object.search. Then retry"
+        in denial["instructions"]
+    )
 
 
 def _denial(recovery_url: str) -> dict:

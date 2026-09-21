@@ -31,7 +31,16 @@ from connection_hub.delegated_credentials.named_service_policy import (
     clean_text,
 )
 from connection_hub.delegated_credentials.oauth.clients import (
+    client_uses_full_card_catalog,
     normalize_public_client_metadata,
+)
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KINDS,
+    CARD_KIND_AGENT,
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+    CARD_KIND_CONTROL,
+    is_resident_client_id,
 )
 from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_operations,
@@ -52,13 +61,17 @@ CARD_AUTHORITY_SCHEMA_V5 = "connection_hub.delegated_card_authority.v5"
 # v6 lets an issuer create a credentialless Card. Issuer coordinates,
 # composition, and typed properties travel through the same durable revision
 # and read model as every credential-bearing Card.
-CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v6"
+CARD_AUTHORITY_SCHEMA_V6 = "connection_hub.delegated_card_authority.v6"
+# v7 persists the identity kind that selects the Card-id formula. Runtime code
+# no longer treats source, id prefix, or entry resource as identity-kind data.
+CARD_AUTHORITY_SCHEMA = "connection_hub.delegated_card_authority.v7"
 CARD_AUTHORITY_SCHEMAS = (
     CARD_AUTHORITY_SCHEMA_V1,
     CARD_AUTHORITY_SCHEMA_V2,
     CARD_AUTHORITY_SCHEMA_V3,
     CARD_AUTHORITY_SCHEMA_V4,
     CARD_AUTHORITY_SCHEMA_V5,
+    CARD_AUTHORITY_SCHEMA_V6,
     CARD_AUTHORITY_SCHEMA,
 )
 CARD_POINTER_SCHEMA = "connection_hub.delegated_card_current.v1"
@@ -106,6 +119,31 @@ def card_authority_payload_hash(value: Mapping[str, Any]) -> str:
 
 def _normalized_namespace(value: Any) -> str:
     return clean_text(value).lower().rstrip(":")
+
+
+def _legacy_card_kind(
+    *,
+    source: str,
+    client_id: str,
+    client_metadata: Mapping[str, Any],
+    entry_resource: str,
+) -> str:
+    """Compatibility classification for pre-v7 revisions only.
+
+    The migration rewrites every retained revision with an explicit kind. No
+    v7 payload is accepted without one.
+    """
+    if source == CREDENTIALLESS_CARD_SOURCE:
+        return CARD_KIND_CONTROL
+    if source == "agent" or is_resident_client_id(client_id):
+        return CARD_KIND_AGENT
+    if (
+        source == "oauth"
+        and entry_resource
+        and not client_uses_full_card_catalog(client_metadata)
+    ):
+        return CARD_KIND_CONNECTOR
+    return CARD_KIND_AUTOMATION
 
 
 @dataclass(frozen=True)
@@ -296,6 +334,7 @@ class CardAuthority:
     grantor_subject: str
     delegate_subject: str
     source: str
+    card_kind: str
     label: str = ""
     card_revision: int = 0
     catalog_version: str = ""
@@ -401,12 +440,25 @@ class CardAuthority:
         if not isinstance(properties, Mapping):
             raise CardRecordError("properties_invalid")
         source = clean_text(value.get("source"))
+        client_id = clean_text(value.get("client_id"))
+        card_kind = clean_text(value.get("card_kind"))
+        if schema == CARD_AUTHORITY_SCHEMA:
+            if card_kind not in CARD_KINDS:
+                raise CardRecordError("card_kind_invalid")
+        else:
+            card_kind = _legacy_card_kind(
+                source=source,
+                client_id=client_id,
+                client_metadata=client_metadata,
+                entry_resource=clean_text(value.get("entry_resource")),
+            )
         return cls(
             access_id=clean_text(value.get("access_id")),
-            client_id=clean_text(value.get("client_id")),
+            client_id=client_id,
             grantor_subject=clean_text(value.get("grantor_subject")),
             delegate_subject=clean_text(value.get("delegate_subject")),
             source=source,
+            card_kind=card_kind,
             label=clean_text(value.get("label")),
             card_revision=int(value.get("card_revision") or 0),
             catalog_version=clean_text(value.get("catalog_version")),
@@ -473,6 +525,7 @@ class CardAuthority:
             "grantor_subject": self.grantor_subject,
             "delegate_subject": self.delegate_subject,
             "source": self.source,
+            "card_kind": self.card_kind,
             "label": self.label,
             "card_revision": self.card_revision,
             "catalog_version": self.catalog_version,
@@ -517,6 +570,10 @@ class CardAuthority:
         return payload
 
     def __post_init__(self) -> None:
+        kind = clean_text(self.card_kind)
+        if kind not in CARD_KINDS:
+            raise CardRecordError("card_kind_invalid")
+        object.__setattr__(self, "card_kind", kind)
         try:
             normalized = normalize_resource_operations(self.resource_operations)
         except ValueError as exc:
@@ -718,6 +775,7 @@ __all__ = [
     "CARD_AUTHORITY_SCHEMA_V3",
     "CARD_AUTHORITY_SCHEMA_V4",
     "CARD_AUTHORITY_SCHEMA_V5",
+    "CARD_AUTHORITY_SCHEMA_V6",
     "CREDENTIALLESS_CARD_SOURCE",
     "CONTROL_COMPOSITION_AND",
     "CONTROL_COMPOSITION_OR",

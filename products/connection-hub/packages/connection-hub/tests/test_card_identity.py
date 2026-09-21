@@ -15,11 +15,16 @@ from connection_hub.delegated_credentials.automation_access import (
     resident_access_ids,
 )
 from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
     RESIDENT_ACCESS_ID_PREFIX,
     ResidentCallerProfile,
     is_resident_client_id,
     legacy_resident_access_id,
     resident_client_id,
+    stable_automation_access_id,
+    stable_card_access_id,
+    stable_connector_access_id,
     stable_resident_access_id,
 )
 
@@ -117,3 +122,33 @@ def test_oauth_connections_with_equal_public_metadata_stay_independent():
     assert oauth_access_id(GRANTOR, "claude", MEMORIES) == oauth_access_id(GRANTOR, "claude", MEMORIES)
     assert oauth_access_id(GRANTOR, "claude", MEMORIES) != oauth_access_id(GRANTOR, "claude", TASKS)
     assert ResidentCallerProfile.parse(GRANTOR, "dcr-aaaa1111") is None
+
+
+def test_automation_identity_is_user_client_while_connector_identity_keeps_door():
+    automation = stable_automation_access_id(GRANTOR, "dcr-codex")
+    assert automation == stable_card_access_id(
+        card_kind=CARD_KIND_AUTOMATION,
+        grantor_subject=GRANTOR,
+        client_id="dcr-codex",
+        entry_resource=MEMORIES,
+    )
+    assert automation == stable_card_access_id(
+        card_kind=CARD_KIND_AUTOMATION,
+        grantor_subject=GRANTOR,
+        client_id="dcr-codex",
+        entry_resource=TASKS,
+    )
+
+    memories_connector = stable_connector_access_id(
+        GRANTOR, "dcr-connector", MEMORIES
+    )
+    tasks_connector = stable_connector_access_id(
+        GRANTOR, "dcr-connector", TASKS
+    )
+    assert memories_connector != tasks_connector
+    assert memories_connector == stable_card_access_id(
+        card_kind=CARD_KIND_CONNECTOR,
+        grantor_subject=GRANTOR,
+        client_id="dcr-connector",
+        entry_resource=MEMORIES,
+    )

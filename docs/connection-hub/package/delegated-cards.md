@@ -114,43 +114,42 @@ delivery route; after the user saves the card, the same credential can be
 presented to any selected resource, where the normal live card, catalog, and
 operation checks still run.
 
-## Stable Resident Identity
+## Stable Card Identity
 
-A hosted agent is a **resident caller profile**: one agent of one application
-acting for one grantor. Its card keeps one `access_id` while the resources on
-it change, because everything that binds to a card is keyed by that id: the
-reusable bearer, the invocation policies, the consent recovery links, and the
-audit trail. The earlier deterministic id folded the selected resource set into
-the hash, so adding a resource addressed a different record and one profile
-fragmented into one card per resource.
+Every Card persists an explicit `card_kind`. That field selects the identity
+formula; an ID prefix, source label, selected resource, or request route never
+selects it. The formulas live in
+`connection_hub.delegated_credentials.cards.identity`:
 
-The stable key, implemented once in
-`connection_hub.delegated_credentials.cards.identity`, is:
+| Card kind | Stable identity | Resource meaning |
+| --- | --- | --- |
+| `agent` | grantor + client | One hosted-agent profile can hold several compatible resources. |
+| `automation` | grantor + client | One issued or OAuth-delivered automation profile can hold several compatible resources. |
+| `connector` | grantor + client + entry resource | One external MCP connection represents one entry point. |
+| `control` | issuer-owned credentialless coordinate | The issuing application owns its stable reference and lifecycle. |
 
-```text
-grantor subject
-tenant/project scope                 implied by the store the card lives in
-resident application (app/bundle)    from the client id kdcube-agent:<app>:<agent>
-agent id
-```
+Tenant and project scope are implied by the Card store. For a hosted agent,
+the client is `kdcube-agent:<application>:<agent>`. A manual automation first
+mints its client id and then derives the Card id from the grantor and that
+client. Two separately registered external clients have different client ids
+even when their display labels match.
 
-Selected resources and their acting scope are card contents and never part of
-the key. One resident profile has one card. The current credential contract
-accepts several resources that share one compatible `identity_scope` and
-refuses a conflicting scope before anything is written
-(`delegated_access_resources_have_conflicting_identity_scopes`); it does not
-create another card for the same resident agent.
+Selected resources, operations, accounts, and acting scope are Card contents.
+They do not change the `access_id`. Agent and automation resources must share
+one compatible `identity_scope`; an incompatible addition is refused before a
+revision is written. Connector Cards keep their entry resource in the key
+because the connection itself is that resource-specific profile.
 
-`ResidentCallerProfile.parse(grantor, client_id)` yields the profile and its
-`access_id`; Projection and Gateway read it instead of reproducing hashing. The
-other families keep their own identities: a manual automation mints a random
-id, and an OAuth connection is keyed by grantor, client id, and resource, so two
-dynamic clients registered by the same public app (both named "Claude") never
-collapse into one card.
+Create and consent first search all current Card pointers, including revoked
+history, for the kind's identity tuple. One matching Card is reused. Multiple
+matches are an explicit collision and fail closed; runtime code never merges
+their authority. `ResidentCallerProfile` and `stable_card_access_id()` expose
+the shared formulas to Projection, OAuth issuance, and Gateway code.
 
-Records written under the earlier resource-dependent id are still read (the
-stable id is tried first, then the legacy id) and are folded into the stable
-card by the migration described below.
+Pre-v7 revisions remain readable through bounded compatibility
+classification. New revisions require `card_kind`. The reviewed migration
+below rewrites retained history to v7 and removes runtime dependence on that
+classification.
 
 ## Stored Record
 
@@ -328,6 +327,7 @@ one sweep.
 | Field | Meaning | Public list response |
 | --- | --- | --- |
 | `access_id` | Stable id of this card. It selects authority; it is not the caller's identity. | yes |
+| `card_kind` | Persisted identity family: `agent`, `automation`, `connector`, or `control`. It selects the stable-ID formula. | yes |
 | `label`, `client_id` | Human name and delegated caller-profile identity. | yes |
 | `grantor_subject`, `delegate_subject` | User who granted and integration principal that acts. | yes; list is also owner-scoped to the authenticated grantor. |
 | `resource_grants` | Exact selected KDCube claims per resource. | yes |
@@ -338,7 +338,7 @@ one sweep.
 | `effective_named_service_operations` | The selection expanded under the catalog version the card was saved against. Derived, never authority. | yes when the card covers any operation |
 | `catalog_version`, `card_revision` | The catalog generation this card was last saved against, and its monotonic revision. | yes |
 | `account_scope` | Provider -> account -> exact connected-account claims this caller may use. | yes when non-empty |
-| `entry_resource` | OAuth cards: the protected resource the client connected to (the OAuth `resource` of its consent), the one door that client can reach. Empty on manual and resident cards. A card written before the field existed is derived at list time: its selection door, else its first catalog-row resource. | yes when non-empty |
+| `entry_resource` | The protected resource through which OAuth consent began. It is part of connector identity and transport metadata on a multi-resource automation Card. Empty on manual and resident-agent Cards. A record written before the field existed is derived at list time from its selection door or first catalog row. | yes when non-empty |
 | `identity_scope` | Which identity boundary the delegated resource uses. | yes |
 | `created_at`, `expires_at`, `last_issued_at` | Lifecycle timestamps. | yes when present |
 | `last_four`, `source` | Token fingerprint and card family. | yes |
@@ -372,8 +372,9 @@ between the four states:
 | exact map | That resource -> namespace -> operation selection. |
 | field absent | A record written before this encoding. Its prior set is derived from the materialized boundary. |
 
-Card authority schema `connection_hub.delegated_card_authority.v6` adds
-credentialless Card coordinates, composition, and properties. V5 adds the
+Card authority schema `connection_hub.delegated_card_authority.v7` requires
+the explicit `card_kind` used by identity selection. V6 adds credentialless
+Card coordinates, composition, and properties. V5 adds the
 optional `control_card` reference. V4 adds bounded client metadata; v3 stores
 outer operations as `resource_operations` and adds `resource_acceptance` and
 `provenance`. Older revisions remain readable and the next successful write
@@ -396,8 +397,8 @@ the card's `access_id`, exact resource and operation, and optional connected
 account. `delegated_access_list` joins current policies into each public item
 as `invocation_policies` so the editor can render `Always` or `Once`, but card
 revision history remains a record of delegated capability rather than a usage
-counter. A manual card mints `access_id` and `client_id` independently; neither
-identifier is derived from the other.
+counter. A manual automation mints a client id and derives its stable Card id
+from that client and the grantor.
 
 ## What List And Rendering Read
 

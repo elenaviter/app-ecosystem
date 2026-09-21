@@ -122,9 +122,17 @@ from connection_hub.delegated_credentials.controls.snapshot import (
     reviewed_control_snapshot_properties,
 )
 from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KINDS,
+    CARD_KIND_AGENT,
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+    CARD_KIND_CONTROL,
     ResidentCallerProfile,
     is_resident_client_id,
     legacy_resident_access_id,
+    stable_automation_access_id,
+    stable_card_access_id,
+    stable_connector_access_id,
     stable_resident_access_id,
 )
 from connection_hub.delegated_credentials.cards.read_model import (
@@ -443,12 +451,15 @@ def automation_record_key(tenant: str, project: str, access_id: str) -> str:
 
 
 def oauth_access_id(grantor_subject: str, client_id: str, resource: str = "") -> str:
-    """Deterministic card id for an OAuth-flow delegated client — one card per
-    (grantor, client, resource), stable across token refreshes."""
-    digest = hashlib.sha256(
-        f"{_clean(grantor_subject)}|{_clean(client_id)}|{_clean(resource)}".encode("utf-8")
-    ).hexdigest()[:16]
-    return f"oauth-{digest}"
+    """Compatibility helper for pre-kind callers.
+
+    A resource names a connector Card. An empty resource names a multi-resource
+    automation Card. New code should call ``stable_card_access_id`` with an
+    explicit persisted kind.
+    """
+    if _clean(resource):
+        return stable_connector_access_id(grantor_subject, client_id, resource)
+    return stable_automation_access_id(grantor_subject, client_id)
 
 
 def _subject_key(subject: str) -> str:
@@ -552,6 +563,41 @@ ACCESS_SOURCE_OAUTH = "oauth"
 # client_id is caller-supplied and stable, so re-consent updates one record.
 ACCESS_SOURCE_AGENT = "agent"
 ACCESS_SOURCE_CONTROL = CREDENTIALLESS_CARD_SOURCE
+
+
+def oauth_card_kind(
+    client_metadata: Mapping[str, Any] | None,
+    entry_resource: str = "",
+) -> str:
+    """Kind asserted at OAuth registration and then persisted on the Card.
+
+    A request without an RFC 8707 resource names the client's general profile,
+    which is multi-resource and therefore keyed by user and client. A connector
+    kind is valid only when there is a concrete entry door to include in its
+    identity.
+    """
+    return (
+        CARD_KIND_AUTOMATION
+        if client_uses_full_card_catalog(client_metadata)
+        or not _clean(entry_resource)
+        else CARD_KIND_CONNECTOR
+    )
+
+
+def _legacy_record_card_kind(
+    *,
+    source: str,
+    client_id: str,
+    client_metadata: Mapping[str, Any] | None,
+    entry_resource: str = "",
+) -> str:
+    if source == ACCESS_SOURCE_CONTROL:
+        return CARD_KIND_CONTROL
+    if source == ACCESS_SOURCE_AGENT or is_resident_client_id(client_id):
+        return CARD_KIND_AGENT
+    if source == ACCESS_SOURCE_OAUTH:
+        return oauth_card_kind(client_metadata, entry_resource)
+    return CARD_KIND_AUTOMATION
 
 
 def _record_is_credentialless(record: "AutomationAccessRecord") -> bool:
@@ -783,6 +829,7 @@ class AutomationAccessRecord:
     client_id: str
     grantor_subject: str
     delegate_subject: str
+    card_kind: str
     operations: tuple[str, ...]
     resource_grants: Mapping[str, tuple[str, ...]]
     resource_operations: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
@@ -849,6 +896,10 @@ class AutomationAccessRecord:
     properties: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        kind = _clean(self.card_kind)
+        if kind not in CARD_KINDS:
+            raise CardRecordError("card_kind_invalid")
+        object.__setattr__(self, "card_kind", kind)
         normalized = normalize_resource_operations(self.resource_operations)
         if not normalized and self.operations:
             normalized = project_legacy_operations(
@@ -864,12 +915,28 @@ class AutomationAccessRecord:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "AutomationAccessRecord":
+        source = _clean(value.get("source")) or ACCESS_SOURCE_MANUAL
+        client_id = _clean(value.get("client_id"))
+        metadata = (
+            dict(value.get("client_metadata"))
+            if isinstance(value.get("client_metadata"), Mapping)
+            else {}
+        )
         return cls(
             access_id=_clean(value.get("access_id")),
             label=_clean(value.get("label")),
-            client_id=_clean(value.get("client_id")),
+            client_id=client_id,
             grantor_subject=_clean(value.get("grantor_subject")),
             delegate_subject=_clean(value.get("delegate_subject")),
+            card_kind=(
+                _clean(value.get("card_kind"))
+                or _legacy_record_card_kind(
+                    source=source,
+                    client_id=client_id,
+                    client_metadata=metadata,
+                    entry_resource=_clean(value.get("entry_resource")),
+                )
+            ),
             operations=tuple(_as_list(value.get("operations"))),
             resource_grants={
                 _clean(key): tuple(_as_list(grants))
@@ -898,7 +965,7 @@ class AutomationAccessRecord:
             created_at=int(value.get("created_at") or 0),
             expires_at=int(value.get("expires_at") or 0),
             last_four=_clean(value.get("last_four")),
-            source=_clean(value.get("source")) or ACCESS_SOURCE_MANUAL,
+            source=source,
             refresh_token=_clean(value.get("refresh_token")),
             access_token=_clean(value.get("access_token")),
             last_issued_at=int(value.get("last_issued_at") or 0),
@@ -909,11 +976,7 @@ class AutomationAccessRecord:
                 else {}
             ),
             entry_resource=_clean(value.get("entry_resource")),
-            client_metadata=(
-                dict(value.get("client_metadata"))
-                if isinstance(value.get("client_metadata"), Mapping)
-                else {}
-            ),
+            client_metadata=metadata,
             control_card=(
                 ControlCardBinding.from_mapping(value.get("control_card"))
                 if value.get("control_card") is not None
@@ -939,6 +1002,7 @@ class AutomationAccessRecord:
             "client_id": self.client_id,
             "grantor_subject": self.grantor_subject,
             "delegate_subject": self.delegate_subject,
+            "card_kind": self.card_kind,
             "operations": list(self.operations),
             "resource_grants": {key: list(value) for key, value in self.resource_grants.items()},
             "resource_operations": {
@@ -1037,6 +1101,7 @@ def card_authority_from_record(record: AutomationAccessRecord) -> CardAuthority:
         grantor_subject=record.grantor_subject,
         delegate_subject=record.delegate_subject,
         source=record.source,
+        card_kind=record.card_kind,
         label=record.label,
         card_revision=record.card_revision,
         catalog_version=record.catalog_version,
@@ -1093,6 +1158,7 @@ def record_from_card(
         client_id=authority.client_id,
         grantor_subject=authority.grantor_subject,
         delegate_subject=authority.delegate_subject,
+        card_kind=authority.card_kind,
         operations=tuple(authority.operations),
         resource_grants={key: tuple(value) for key, value in authority.resource_grants.items()},
         resource_operations={
@@ -1521,6 +1587,207 @@ class AutomationAccessService:
             for authority in authorities
             if not authority_is_credentialless(authority)
         ]
+
+    async def _list_all_owner_records(
+        self,
+        grantor_subject: str,
+    ) -> list[AutomationAccessRecord]:
+        """Every current revision used only for tuple identity lookup.
+
+        A revoked pre-migration Card still owns its tuple. Re-consent may write
+        its next revision, but it must not create a second Card at the new
+        canonical id merely because the old one is not active authority.
+        """
+        cards = self._cards()
+        list_all = getattr(cards, "list_all_current", None)
+        list_current = getattr(cards, "list_current", None)
+        if callable(list_all):
+            authorities = await list_all(subject_hash=_subject_key(grantor_subject))
+        elif callable(list_current):
+            authorities = await list_current(subject_hash=_subject_key(grantor_subject))
+        else:
+            # Compatibility for injected persistence ports written before the
+            # all-current identity lookup was added. Production persistence
+            # implements the full method; this fallback cannot see revoked
+            # history and therefore must not be used by migration tooling.
+            authorities = await cards.list_active(
+                subject_hash=_subject_key(grantor_subject),
+                now=int(time.time()),
+            )
+        return [
+            record_from_card(authority)
+            for authority in authorities
+            if not authority_is_credentialless(authority)
+        ]
+
+    async def resolve_card_identity(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+        card_kind: str,
+        entry_resource: str = "",
+    ) -> dict[str, Any]:
+        """Find a Card by its persisted identity tuple before deriving an id.
+
+        This is the create/consent guard during and after migration. Existing
+        non-canonical Cards keep being addressed by their stored tuple until
+        the migration moves them. Multiple pair Cards are an explicit
+        collision; no runtime path merges their authority.
+        """
+        grantor = _clean(grantor_subject)
+        client = _clean(client_id)
+        kind = _clean(card_kind)
+        entry = _clean(entry_resource)
+        if not grantor or not client or kind not in {
+            CARD_KIND_AGENT,
+            CARD_KIND_AUTOMATION,
+            CARD_KIND_CONNECTOR,
+        }:
+            return {"ok": False, "error": "card_identity_incomplete", "status": 400}
+        if kind == CARD_KIND_CONNECTOR and not entry:
+            return {"ok": False, "error": "card_identity_entry_resource_missing", "status": 400}
+        try:
+            records = await self._list_all_owner_records(grantor)
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_cards_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        same_client = [record for record in records if record.client_id == client]
+        same_kind = [record for record in same_client if record.card_kind == kind]
+        candidates = (
+            [record for record in same_kind if _clean(record.entry_resource) == entry]
+            if kind == CARD_KIND_CONNECTOR
+            else same_kind
+        )
+        if len(candidates) > 1:
+            return {
+                "ok": False,
+                "error": "card_identity_collision",
+                "status": 409,
+                "card_kind": kind,
+                "grantor_subject": grantor,
+                "client_id": client,
+                "entry_resource": entry if kind == CARD_KIND_CONNECTOR else "",
+                "access_ids": sorted(record.access_id for record in candidates),
+            }
+        if candidates:
+            record = candidates[0]
+            return {
+                "ok": True,
+                "access_id": record.access_id,
+                "card_kind": kind,
+                "existing": True,
+                "canonical_access_id": stable_card_access_id(
+                    card_kind=kind,
+                    grantor_subject=grantor,
+                    client_id=client,
+                    entry_resource=entry,
+                ),
+            }
+        pair_kinds = {CARD_KIND_AGENT, CARD_KIND_AUTOMATION}
+        incompatible = (
+            [
+                record
+                for record in same_client
+                if record.card_kind in pair_kinds and record.card_kind != kind
+            ]
+            if kind in pair_kinds
+            else []
+        )
+        if incompatible:
+            return {
+                "ok": False,
+                "error": "card_identity_kind_mismatch",
+                "status": 409,
+                "card_kind": kind,
+                "client_id": client,
+                "existing": [
+                    {"access_id": record.access_id, "card_kind": record.card_kind}
+                    for record in sorted(incompatible, key=lambda item: item.access_id)
+                ],
+            }
+        access_id = stable_card_access_id(
+            card_kind=kind,
+            grantor_subject=grantor,
+            client_id=client,
+            entry_resource=entry,
+        )
+        return {
+            "ok": True,
+            "access_id": access_id,
+            "card_kind": kind,
+            "existing": False,
+            "canonical_access_id": access_id,
+        }
+
+    async def resolve_oauth_card_identity(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+        entry_resource: str,
+        client_metadata: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Resolve the identity carried from consent through token issuance."""
+        metadata = normalize_public_client_metadata(client_metadata)
+        if not metadata:
+            grantor = _clean(grantor_subject)
+            client = _clean(client_id)
+            entry = _clean(entry_resource)
+            try:
+                candidates = [
+                    record
+                    for record in await self._list_all_owner_records(grantor)
+                    if record.client_id == client
+                    and (
+                        record.card_kind == CARD_KIND_AUTOMATION
+                        or (
+                            record.card_kind == CARD_KIND_CONNECTOR
+                            and _clean(record.entry_resource) == entry
+                        )
+                    )
+                ]
+            except CardUnavailable as exc:
+                return {
+                    "ok": False,
+                    "error": "delegated_cards_unavailable",
+                    "reason": exc.reason,
+                    "retryable": True,
+                    "status": 503,
+                }
+            if len(candidates) > 1:
+                return {
+                    "ok": False,
+                    "error": "card_identity_collision",
+                    "status": 409,
+                    "client_id": client,
+                    "access_ids": sorted(record.access_id for record in candidates),
+                }
+            if candidates:
+                record = candidates[0]
+                return {
+                    "ok": True,
+                    "access_id": record.access_id,
+                    "card_kind": record.card_kind,
+                    "existing": True,
+                    "canonical_access_id": stable_card_access_id(
+                        card_kind=record.card_kind,
+                        grantor_subject=grantor,
+                        client_id=client,
+                        entry_resource=entry,
+                    ),
+                }
+        return await self.resolve_card_identity(
+            grantor_subject=grantor_subject,
+            client_id=client_id,
+            card_kind=oauth_card_kind(metadata, entry_resource),
+            entry_resource=entry_resource,
+        )
 
     async def _committed_revision(self, access_id: str, *, grantor_subject: str) -> int:
         """The write precondition for this id. A revoked or expired card is not
@@ -2634,15 +2901,15 @@ class AutomationAccessService:
             # are folded into the stable card first, or the fold reports why it
             # cannot be done without widening authority.
             client_id = requested_client_id
-            access_id = stable_resident_access_id(grantor_subject, client_id)
             access_source = ACCESS_SOURCE_AGENT
-            folded = await self._fold_legacy_resident_records(
-                user,
+            identity = await self.resolve_card_identity(
+                grantor_subject=grantor_subject,
                 client_id=client_id,
-                target_access_id=access_id,
+                card_kind=CARD_KIND_AGENT,
             )
-            if folded is not None and folded.get("ok") is False:
-                return folded
+            if identity.get("ok") is not True:
+                return identity
+            access_id = _clean(identity.get("access_id"))
             try:
                 existing = await self._load_record(
                     access_id, grantor_subject=grantor_subject
@@ -2729,11 +2996,11 @@ class AutomationAccessService:
                                 merged_claims.append(claim)
                         target_accounts[account_id] = merged_claims
         else:
-            access_id = "aut_" + secrets.token_urlsafe(10)
             client_id = (
                 f"{AUTOMATION_CLIENT_PREFIX}:"
                 f"{secrets.token_urlsafe(10)}"
             )
+            access_id = stable_automation_access_id(grantor_subject, client_id)
 
         # An exact operation-only demand is a valid incremental update for an
         # existing deterministic agent card: the merge above restores that
@@ -2975,6 +3242,11 @@ class AutomationAccessService:
             client_id=client_id,
             grantor_subject=grantor_subject,
             delegate_subject=integration_subject(grantor_subject, client_id=client_id),
+            card_kind=(
+                CARD_KIND_AGENT
+                if access_source == ACCESS_SOURCE_AGENT
+                else CARD_KIND_AUTOMATION
+            ),
             operations=tuple(selected_operations),
             resource_grants={key: tuple(value) for key, value in selected_resource_grants.items()},
             resource_operations={
@@ -3675,6 +3947,7 @@ class AutomationAccessService:
             client_id=existing.client_id,
             grantor_subject=existing.grantor_subject,
             delegate_subject=existing.delegate_subject,
+            card_kind=existing.card_kind,
             operations=tuple(selected_operations),
             resource_grants={key: tuple(value) for key, value in selected_resource_grants.items()},
             resource_operations={
@@ -4149,6 +4422,7 @@ class AutomationAccessService:
             client_id=client,
             grantor_subject=grantor_subject,
             delegate_subject=integration_subject(grantor_subject, client_id=client),
+            card_kind=CARD_KIND_AGENT,
             operations=tuple(selected_operations),
             resource_grants={key: tuple(value) for key, value in merged_grants.items()},
             resource_operations={key: tuple(value) for key, value in merged_operations.items()},
@@ -5767,7 +6041,16 @@ class AutomationAccessService:
         entry_resource = _clean(resource)
         if not grantor or not client or not entry_resource:
             return {"ok": False, "error": "oauth_consent_identity_incomplete"}
-        access_id = oauth_access_id(grantor, client, entry_resource)
+        identity = await self.resolve_oauth_card_identity(
+            grantor_subject=grantor,
+            client_id=client,
+            entry_resource=entry_resource,
+            client_metadata=client_metadata,
+        )
+        if identity.get("ok") is not True:
+            return identity
+        access_id = _clean(identity.get("access_id"))
+        card_kind = _clean(identity.get("card_kind"))
         try:
             loaded = await self._load_record_any_state(
                 access_id,
@@ -5786,6 +6069,7 @@ class AutomationAccessService:
         payload: dict[str, Any] = {
             "ok": True,
             "access_id": access_id,
+            "card_kind": card_kind,
             "card_revision": int(
                 current_record.card_revision if current_record is not None else 0
             ),
@@ -5933,7 +6217,16 @@ class AutomationAccessService:
                 "resources": [entry],
             }
 
-        access_id = oauth_access_id(grantor, client, entry)
+        identity = await self.resolve_oauth_card_identity(
+            grantor_subject=grantor,
+            client_id=client,
+            entry_resource=entry,
+            client_metadata=client_metadata,
+        )
+        if identity.get("ok") is not True:
+            return identity
+        access_id = _clean(identity.get("access_id"))
+        card_kind = _clean(identity.get("card_kind"))
         try:
             actual_revision = await self._committed_revision(
                 access_id,
@@ -5994,6 +6287,7 @@ class AutomationAccessService:
             client_id=client,
             grantor_subject=grantor,
             delegate_subject=integration_subject(grantor, client_id=client),
+            card_kind=card_kind,
             operations=(),
             resource_grants={entry_key: tuple(requested)},
             resource_operations={entry_key: ()},
@@ -6025,6 +6319,7 @@ class AutomationAccessService:
         return {
             "ok": True,
             "access_id": access_id,
+            "card_kind": card_kind,
             "catalog_version": catalog_version,
             "card_revision": actual_revision,
             "resource_grants": resolved.resource_grants,
@@ -6143,6 +6438,8 @@ class AutomationAccessService:
         resource_grants: Mapping[str, Any] | None = None,
         resource_operations: Mapping[str, Any] | None = None,
         resource: str = "",
+        access_id: str = "",
+        card_kind: str = "",
         identity_scope: str = "",
         access_token: str = "",
         refresh_token: str = "",
@@ -6159,8 +6456,9 @@ class AutomationAccessService:
         Called on every token issuance for an external client (initial consent
         and refresh rotations), so the user sees the connection in Connection
         Hub and revoking it invalidates the CURRENT refresh token and access
-        grant. One record per (grantor, client, resource): reconsent updates
-        it instead of piling up rows.
+        grant. Automation Cards are one record per (grantor, client), while
+        connector Cards also include their entry resource; reconsent updates
+        that identified Card instead of piling up rows.
 
         ``replace_authority`` distinguishes an authorization-code exchange
         from a refresh rotation. A reviewed consent replaces every authority
@@ -6175,7 +6473,31 @@ class AutomationAccessService:
         if not grantor or not client:
             return None
         resource_value = _clean(resource)
-        access_id = oauth_access_id(grantor, client, resource_value)
+        submitted_client_metadata = normalize_public_client_metadata(client_metadata)
+        selected_kind = _clean(card_kind)
+        identity = (
+            await self.resolve_card_identity(
+                grantor_subject=grantor,
+                client_id=client,
+                card_kind=selected_kind,
+                entry_resource=resource_value,
+            )
+            if selected_kind
+            else await self.resolve_oauth_card_identity(
+                grantor_subject=grantor,
+                client_id=client,
+                entry_resource=resource_value,
+                client_metadata=submitted_client_metadata,
+            )
+        )
+        if identity.get("ok") is not True:
+            raise CardConflict(_clean(identity.get("error")) or "card_identity_invalid")
+        selected_kind = _clean(identity.get("card_kind"))
+        resolved_access_id = _clean(identity.get("access_id"))
+        requested_access_id = _clean(access_id)
+        if requested_access_id and requested_access_id != resolved_access_id:
+            raise CardConflict("card_identity_mismatch")
+        access_id = resolved_access_id
         now = int(time.time())
         created_at = now
         existing_resource_grants: dict[str, tuple[str, ...]] = {}
@@ -6230,7 +6552,6 @@ class AutomationAccessService:
                 **selected_properties,
                 **copy.deepcopy(dict(properties)),
             }
-        submitted_client_metadata = normalize_public_client_metadata(client_metadata)
         selected_client_metadata = submitted_client_metadata or existing_client_metadata
         is_initial_consent = existing_card is None
         # A submitted selection is a consent-screen choice and REPLACES what the
@@ -6335,6 +6656,7 @@ class AutomationAccessService:
             client_id=client,
             grantor_subject=grantor,
             delegate_subject=integration_subject(grantor, client_id=client),
+            card_kind=(existing_card.card_kind if existing_card is not None else selected_kind),
             operations=operation_union(selected_resource_operations),
             resource_grants={
                 selector: tuple(grants)
@@ -6413,6 +6735,7 @@ class AutomationAccessService:
         grantor_subject: str,
         client_id: str,
         resource: str,
+        client_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, dict[str, list[str]]]:
         """The account binding a consent screen should pre-check from this
         exact client's existing Card. Another DCR registration is an
@@ -6423,9 +6746,17 @@ class AutomationAccessService:
             return {}
         seed: dict[str, dict[str, list[str]]] = {}
         sources: list[Mapping[str, Mapping[str, Any]]] = []
+        identity = await self.resolve_oauth_card_identity(
+            grantor_subject=grantor,
+            client_id=client,
+            entry_resource=_clean(resource),
+            client_metadata=client_metadata,
+        )
+        if identity.get("ok") is not True:
+            return {}
         try:
             own = await self._load_record(
-                oauth_access_id(grantor, client, _clean(resource)),
+                _clean(identity.get("access_id")),
                 grantor_subject=grantor,
             )
         except CardUnavailable:
@@ -6448,6 +6779,7 @@ class AutomationAccessService:
         grantor_subject: str,
         client_id: str,
         resource: str,
+        client_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, list[str]]:
         """The named-service operations a consent screen should pre-check.
 
@@ -6464,9 +6796,17 @@ class AutomationAccessService:
         client = _clean(client_id)
         if not grantor or not client:
             return {}
+        identity = await self.resolve_oauth_card_identity(
+            grantor_subject=grantor,
+            client_id=client,
+            entry_resource=_clean(resource),
+            client_metadata=client_metadata,
+        )
+        if identity.get("ok") is not True:
+            return {}
         try:
             record = await self._load_record(
-                oauth_access_id(grantor, client, _clean(resource)),
+                _clean(identity.get("access_id")),
                 grantor_subject=grantor,
             )
         except CardUnavailable:
@@ -6486,6 +6826,7 @@ class AutomationAccessService:
         grantor_subject: str,
         client_id: str,
         resource: str,
+        client_metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, list[str]]:
         """Exact child-resource operations held by this OAuth client's card."""
 
@@ -6493,9 +6834,17 @@ class AutomationAccessService:
         client = _clean(client_id)
         if not grantor or not client:
             return {}
+        identity = await self.resolve_oauth_card_identity(
+            grantor_subject=grantor,
+            client_id=client,
+            entry_resource=_clean(resource),
+            client_metadata=client_metadata,
+        )
+        if identity.get("ok") is not True:
+            return {}
         try:
             record = await self._load_record(
-                oauth_access_id(grantor, client, _clean(resource)),
+                _clean(identity.get("access_id")),
                 grantor_subject=grantor,
             )
         except CardUnavailable:
@@ -6649,11 +6998,17 @@ class AutomationAccessService:
             and not (account_scope_provided and replace)
         ):
             return {"ok": False, "error": "delegated_access_requires_client_and_authority"}
-        selected_access_id = _clean(access_id) or oauth_access_id(
-            grantor_subject,
-            client,
-            resource_value,
-        )
+        selected_access_id = _clean(access_id)
+        if not selected_access_id:
+            identity = await self.resolve_oauth_card_identity(
+                grantor_subject=grantor_subject,
+                client_id=client,
+                entry_resource=resource_value,
+                client_metadata=None,
+            )
+            if identity.get("ok") is not True:
+                return identity
+            selected_access_id = _clean(identity.get("access_id"))
         try:
             record = await self._load_record(
                 selected_access_id,

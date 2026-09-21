@@ -22,6 +22,7 @@ from connection_hub.delegated_credentials.cards.cache import (
     CARD_CACHE_KIND_CARD,
     DelegatedCardRuntimeCache,
 )
+from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT
 from connection_hub.delegated_credentials.cards.model import (
     CARD_AUTHORITY_SCHEMA,
     CARD_AUTHORITY_SCHEMA_V4,
@@ -200,6 +201,7 @@ def _card(*, binding: ControlCardBinding | None = None) -> CardAuthority:
         grantor_subject=OWNER,
         delegate_subject=f"integration:agent:{OWNER}",
         source="agent",
+        card_kind=CARD_KIND_AGENT,
         label="Workspace main",
         card_revision=3,
         catalog_version="catalog-v1",

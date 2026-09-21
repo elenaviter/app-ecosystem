@@ -50,6 +50,8 @@ from connection_hub.delegated_credentials.automation_access import (
     record_from_card,
 )
 from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
+    CARD_KIND_CONTROL,
     resident_client_id,
     stable_resident_access_id,
 )
@@ -458,6 +460,7 @@ async def sync_agent_capability_control(
         grantor_subject=grantor_subject,
         delegate_subject="",
         source=ACCESS_SOURCE_CONTROL,
+        card_kind=CARD_KIND_CONTROL,
         label=_clean(issuer_label) or f"{application} / {agent_id}",
         card_revision=control_revision,
         catalog_version=catalog_version,
@@ -623,6 +626,7 @@ async def sync_agent_capability_control(
                 grantor_subject,
                 client_id=client_id,
             ),
+            card_kind=CARD_KIND_AGENT,
             operations=(),
             resource_grants={},
             resource_operations={},

@@ -7,6 +7,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+)
 from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     NamedServiceSelection,
@@ -78,6 +83,7 @@ def test_view_carries_profile_resources_operations_states_and_policies():
         grantor_subject="user-1",
         delegate_subject="integration:kdcube-agent:workspace@1-0:lg-react:user-1",
         source="agent",
+        card_kind=CARD_KIND_AGENT,
         label="lg-react",
         card_revision=4,
         catalog_version=document.version,
@@ -123,9 +129,15 @@ def test_view_carries_profile_resources_operations_states_and_policies():
 
 def test_caller_kind_follows_the_client_family():
     def _authority(client_id, source):
+        card_kind = {
+            "oauth": CARD_KIND_CONNECTOR,
+            "manual": CARD_KIND_AUTOMATION,
+            "agent": CARD_KIND_AGENT,
+        }[source]
         return CardAuthority(
             access_id="x", client_id=client_id, grantor_subject="u", delegate_subject="d",
-            source=source, resource_grants={MEMORIES: ("memories:read",)},
+            source=source, card_kind=card_kind,
+            resource_grants={MEMORIES: ("memories:read",)},
             resource_operations={MEMORIES: ("search",)},
             named_service_operations=NamedServiceSelection.none(), expires_at=NOW + 10,
         )
@@ -170,12 +182,18 @@ def test_the_view_carries_the_token_issuance_stamp_only_where_it_exists():
     """
 
     def _authority(client_id, source, last_issued_at):
+        card_kind = {
+            "oauth": CARD_KIND_CONNECTOR,
+            "manual": CARD_KIND_AUTOMATION,
+            "agent": CARD_KIND_AGENT,
+        }[source]
         return CardAuthority(
             access_id="card-x",
             client_id=client_id,
             grantor_subject="user-1",
             delegate_subject="integration:user-1",
             source=source,
+            card_kind=card_kind,
             label="card",
             card_revision=1,
             catalog_version="v1",
@@ -212,6 +230,7 @@ def test_the_issuance_stamp_survives_a_read_model_round_trip():
             grantor_subject="user-1",
             delegate_subject="integration:user-1",
             source="oauth",
+            card_kind=CARD_KIND_CONNECTOR,
             label="card",
             card_revision=2,
             catalog_version="v1",
@@ -285,6 +304,7 @@ def test_card_authority_keeps_the_entry_door_across_serialization():
     authority = CardAuthority(
         access_id="oauth-abc", client_id="dcr-x", grantor_subject="user-1",
         delegate_subject="integration:dcr-x:user-1", source="oauth",
+        card_kind=CARD_KIND_CONNECTOR,
         resource_grants={MEMORIES: ("memories:read",)},
         resource_operations={MEMORIES: ("search",)},
         named_service_operations=NamedServiceSelection.none(), expires_at=NOW + 10,
@@ -296,6 +316,7 @@ def test_card_authority_keeps_the_entry_door_across_serialization():
     )
     payload = authority.to_dict()
     assert payload["entry_resource"] == MEMORIES
+    assert payload["card_kind"] == CARD_KIND_CONNECTOR
     restored = CardAuthority.from_mapping(payload)
     assert restored.entry_resource == MEMORIES
     assert restored.client_metadata == authority.client_metadata

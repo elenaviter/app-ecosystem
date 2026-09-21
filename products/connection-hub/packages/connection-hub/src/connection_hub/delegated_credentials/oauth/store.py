@@ -148,6 +148,8 @@ class GrantStore:
         resource_grants: Optional[Mapping[str, Any]] = None,
         resource_operations: Optional[Mapping[str, Any]] = None,
         resource: Optional[str] = None,
+        registry_access_id: str = "",
+        card_kind: str = "",
         identity_scope: str = "",
         credential: Optional[Dict[str, Any]] = None,
         grantor_authority: Optional[Dict[str, Any]] = None,
@@ -187,6 +189,8 @@ class GrantStore:
                 key: list(value) for key, value in operation_map.items()
             },
             "resource": resource or "",
+            "registry_access_id": str(registry_access_id or "").strip(),
+            "card_kind": str(card_kind or "").strip(),
             "identity_scope": identity_scope or "",
             "credential": credential or {},
             "grantor_authority": grantor_authority or {},
@@ -254,6 +258,7 @@ class GrantStore:
         delegation_edges: Optional[List[Dict[str, Any]]] = None,
         named_services: Optional[Dict[str, Any]] = None,
         registry_access_id: str = "",
+        card_kind: str = "",
         client_metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         rt = secrets.token_urlsafe(40)
@@ -269,6 +274,7 @@ class GrantStore:
             grant_map = normalize_resource_grants({resource: scopes})
         payload = {
             "registry_access_id": str(registry_access_id or "").strip(),
+            "card_kind": str(card_kind or "").strip(),
             "client_id": client_id,
             "sub": sub,
             "scopes": scopes,
@@ -589,6 +595,7 @@ class GrantStore:
         rec = current.record
         replacement = {
             "registry_access_id": str(rec.get("registry_access_id") or "").strip(),
+            "card_kind": str(rec.get("card_kind") or "").strip(),
             "client_id": rec["client_id"],
             "sub": rec["sub"],
             "scopes": list(rec.get("scopes") or []) if scopes is None else list(scopes),

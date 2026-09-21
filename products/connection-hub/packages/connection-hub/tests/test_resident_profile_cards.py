@@ -26,6 +26,7 @@ from connection_hub.delegated_credentials.application_operation_policy import (
     APPLICATION_OPERATIONS_PROPERTY,
 )
 from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
     ResidentCallerProfile,
     stable_resident_access_id,
 )
@@ -315,6 +316,7 @@ class _Harness:
             grantor_subject=GRANTOR,
             delegate_subject=f"integration:{CLIENT}:{GRANTOR}",
             source=ACCESS_SOURCE_AGENT,
+            card_kind=CARD_KIND_AGENT,
             label="lg-react",
             card_revision=2,
             catalog_version=self.catalog.active.version,
@@ -751,7 +753,10 @@ async def test_fold_refuses_disagreeing_account_bindings_and_changes_nothing(tmp
     blocked = await h.service.create_access(
         USER, label="", resource_grants={MEMORIES: ["memories:read"]}, client_id=CLIENT,
     )
-    assert blocked["error"] == RESIDENT_MIGRATION_CONFLICT
+    assert blocked["error"] == "card_identity_collision"
+    assert blocked["access_ids"] == sorted(
+        [legacy_a.access_id, legacy_b.access_id]
+    )
     assert h.persistence.persist_calls == 0
 
 

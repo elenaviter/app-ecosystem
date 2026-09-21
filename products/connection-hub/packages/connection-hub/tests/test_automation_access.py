@@ -12,6 +12,11 @@ from connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
     _account_scope_claims_for_requirements,
 )
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+)
 from connection_hub.delegated_credentials.cards.model import NamedServiceSelection
 from connection_hub.delegated_credentials.catalog.models import CatalogDocument
 from connection_hub.delegated_credentials.oauth.clients import (
@@ -26,6 +31,15 @@ from connection_hub.delegated_credentials.resource_operations import (
 
 
 def _public_record(*, source: str, metadata=None) -> dict:
+    card_kind = {
+        ACCESS_SOURCE_AGENT: CARD_KIND_AGENT,
+        ACCESS_SOURCE_MANUAL: CARD_KIND_AUTOMATION,
+        ACCESS_SOURCE_OAUTH: (
+            CARD_KIND_AUTOMATION
+            if client_uses_full_card_catalog(metadata or {})
+            else CARD_KIND_CONNECTOR
+        ),
+    }[source]
     return AutomationAccessRecord(
         access_id="access-1",
         label="Caller",
@@ -35,6 +49,7 @@ def _public_record(*, source: str, metadata=None) -> dict:
         operations=(),
         resource_grants={"https://example.test/mcp/service": ("work:read",)},
         source=source,
+        card_kind=card_kind,
         client_metadata=metadata or {},
     ).to_public_dict()
 
@@ -188,6 +203,7 @@ async def test_native_grant_state_returns_all_effective_resource_claims() -> Non
         client_id="agent-1",
         grantor_subject="user-1",
         delegate_subject="integration:agent-1:user-1",
+        card_kind=CARD_KIND_AGENT,
         operations=(),
         resource_grants={
             resource: (

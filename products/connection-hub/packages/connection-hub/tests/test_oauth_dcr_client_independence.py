@@ -17,6 +17,12 @@ from connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
     oauth_access_id,
 )
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+    stable_automation_access_id,
+    stable_connector_access_id,
+)
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_REVOKED,
     CardAuthority,
@@ -179,6 +185,13 @@ class _Persistence:
             and authority_is_usable(authority, moment)
         ]
 
+    async def list_all_current(self, *, subject_hash):
+        return [
+            authority
+            for authority, _handles in self.cards.values()
+            if self._owned(authority, subject_hash)
+        ]
+
 
 class _GrantStore:
     refresh_ttl = 86400
@@ -249,6 +262,233 @@ def test_oauth_reachability_uses_declared_selectors_without_wildcard_fallback():
         client_metadata={"kdcube_credential_use": "multi_resource"},
         config=service._config,
     ) is None
+
+
+@pytest.mark.asyncio
+async def test_multi_resource_consent_reuses_existing_user_client_card_without_widening():
+    store = _GrantStore({})
+    persistence = _Persistence()
+    service = _service(store, persistence)
+    legacy_access_id = "oauth-legacy-agent-card"
+    metadata = {"kdcube_credential_use": "multi_resource"}
+    existing = CardAuthority(
+        access_id=legacy_access_id,
+        client_id="dcr-codex",
+        grantor_subject=GRANTOR,
+        delegate_subject=f"integration:dcr-codex:{GRANTOR}",
+        source=ACCESS_SOURCE_OAUTH,
+        card_kind=CARD_KIND_AUTOMATION,
+        card_revision=1,
+        resource_grants={RESOURCE: ("fixture:use",)},
+        resource_operations={RESOURCE: ("search",)},
+        named_service_operations=NamedServiceSelection.none(),
+        created_at=int(time.time()) - 60,
+        expires_at=int(time.time()) + 3600,
+        entry_resource=RESOURCE,
+        client_metadata=metadata,
+    )
+    persistence.cards[legacy_access_id] = (
+        existing,
+        CardCredentialHandles(access_id=legacy_access_id),
+    )
+
+    reviewed = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-codex",
+        resource=SECOND_RESOURCE,
+        resource_grants={SECOND_RESOURCE: ["fixture:use"]},
+        resource_operations={SECOND_RESOURCE: ["search"]},
+        client_metadata=metadata,
+        replace_authority=True,
+        expected_card_revision=1,
+    )
+
+    assert reviewed is not None
+    assert reviewed.access_id == legacy_access_id
+    assert reviewed.card_kind == CARD_KIND_AUTOMATION
+    assert reviewed.resource_grants == {SECOND_RESOURCE: ("fixture:use",)}
+    assert set(persistence.cards) == {legacy_access_id}
+
+
+@pytest.mark.asyncio
+async def test_multi_resource_consent_refuses_duplicate_user_client_cards():
+    store = _GrantStore({})
+    persistence = _Persistence()
+    service = _service(store, persistence)
+    metadata = {"kdcube_credential_use": "multi_resource"}
+    for access_id, resource in (("agent-old-a", RESOURCE), ("agent-old-b", SECOND_RESOURCE)):
+        persistence.cards[access_id] = (
+            CardAuthority(
+                access_id=access_id,
+                client_id="dcr-codex",
+                grantor_subject=GRANTOR,
+                delegate_subject=f"integration:dcr-codex:{GRANTOR}",
+                source=ACCESS_SOURCE_OAUTH,
+                card_kind=CARD_KIND_AUTOMATION,
+                card_revision=1,
+                resource_grants={resource: ("fixture:use",)},
+                resource_operations={resource: ("search",)},
+                named_service_operations=NamedServiceSelection.none(),
+                created_at=int(time.time()) - 60,
+                expires_at=int(time.time()) + 3600,
+                entry_resource=resource,
+                client_metadata=metadata,
+            ),
+            CardCredentialHandles(access_id=access_id),
+        )
+
+    with pytest.raises(CardConflict) as conflict:
+        await service.record_oauth_grant(
+            grantor_subject=GRANTOR,
+            client_id="dcr-codex",
+            resource=RESOURCE,
+            resource_grants={RESOURCE: ["fixture:use"]},
+            client_metadata=metadata,
+            replace_authority=True,
+        )
+
+    assert conflict.value.reason == "card_identity_collision"
+    assert set(persistence.cards) == {"agent-old-a", "agent-old-b"}
+
+
+@pytest.mark.asyncio
+async def test_connector_and_automation_cards_can_share_a_client() -> None:
+    client_id = "shared-client"
+    persistence = _Persistence()
+    connector_id = stable_connector_access_id(GRANTOR, client_id, RESOURCE)
+    connector = CardAuthority(
+        access_id=connector_id,
+        client_id=client_id,
+        grantor_subject=GRANTOR,
+        delegate_subject=f"integration:{client_id}:{GRANTOR}",
+        source=ACCESS_SOURCE_OAUTH,
+        card_kind=CARD_KIND_CONNECTOR,
+        card_revision=1,
+        resource_grants={RESOURCE: ("fixture:use",)},
+        resource_operations={RESOURCE: ("search",)},
+        named_service_operations=NamedServiceSelection.none(),
+        entry_resource=RESOURCE,
+    )
+    persistence.cards[connector_id] = (
+        connector,
+        CardCredentialHandles(access_id=connector_id),
+    )
+    service = _service(_GrantStore({}), persistence)
+
+    automation = await service.resolve_card_identity(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        card_kind=CARD_KIND_AUTOMATION,
+    )
+    second_connector = await service.resolve_card_identity(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        card_kind=CARD_KIND_CONNECTOR,
+        entry_resource=SECOND_RESOURCE,
+    )
+
+    assert automation == {
+        "ok": True,
+        "access_id": stable_automation_access_id(GRANTOR, client_id),
+        "card_kind": CARD_KIND_AUTOMATION,
+        "existing": False,
+        "canonical_access_id": stable_automation_access_id(GRANTOR, client_id),
+    }
+    assert second_connector["ok"] is True
+    assert second_connector["access_id"] == stable_connector_access_id(
+        GRANTOR,
+        client_id,
+        SECOND_RESOURCE,
+    )
+
+
+@pytest.mark.asyncio
+async def test_consent_seed_selects_card_kind_when_one_client_has_both_cards() -> None:
+    client_id = "shared-client"
+    persistence = _Persistence()
+    service = _service(_GrantStore({}), persistence)
+    automation_metadata = {
+        "client_id": client_id,
+        "client_metadata": {"kdcube_credential_use": "multi_resource"},
+    }
+    connector_metadata = {
+        "client_id": client_id,
+        "registration_kind": "dynamic",
+    }
+
+    automation = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        resource=RESOURCE,
+        account_scope={"fixture": {"automation": ["read"]}},
+        resource_operations={RESOURCE: ["search"]},
+        named_service_operations={RESOURCE: {"fixture": ["object.search"]}},
+        client_metadata=automation_metadata,
+        replace_authority=True,
+        expected_card_revision=0,
+    )
+    connector = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        resource=RESOURCE,
+        account_scope={"fixture": {"connector": ["read"]}},
+        resource_operations={RESOURCE: ["search"]},
+        named_service_operations={RESOURCE: {"fixture": ["object.search"]}},
+        client_metadata=connector_metadata,
+        replace_authority=True,
+        expected_card_revision=0,
+    )
+
+    assert automation is not None
+    assert connector is not None
+    assert automation.card_kind == CARD_KIND_AUTOMATION
+    assert connector.card_kind == CARD_KIND_CONNECTOR
+    assert automation.access_id != connector.access_id
+    for record, operation in (
+        (automation, "automation.search"),
+        (connector, "connector.search"),
+    ):
+        authority, handles = persistence.cards[record.access_id]
+        persistence.cards[record.access_id] = (
+            replace(
+                authority,
+                named_services={
+                    "namespaces": {
+                        "fixture": {
+                            "tools": {
+                                "search": {"operation": operation},
+                            }
+                        }
+                    }
+                },
+                resource_operations={RESOURCE: (operation,)},
+            ),
+            handles,
+        )
+    assert await service.oauth_seed_account_scope(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        resource=RESOURCE,
+        client_metadata=automation_metadata,
+    ) == {"fixture": {"automation": ["read"]}}
+    assert await service.oauth_seed_account_scope(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        resource=RESOURCE,
+        client_metadata=connector_metadata,
+    ) == {"fixture": {"connector": ["read"]}}
+    assert await service.oauth_seed_named_service_operations(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        resource=RESOURCE,
+        client_metadata=automation_metadata,
+    ) == {"fixture": ["automation.search"]}
+    assert await service.oauth_seed_resource_operations(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        resource=RESOURCE,
+        client_metadata=connector_metadata,
+    ) == {RESOURCE: ["connector.search"]}
 
 
 @pytest.mark.asyncio

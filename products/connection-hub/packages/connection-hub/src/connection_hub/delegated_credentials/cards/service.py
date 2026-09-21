@@ -401,6 +401,7 @@ def replace_state(authority: CardAuthority, state: str) -> CardAuthority:
         grantor_subject=authority.grantor_subject,
         delegate_subject=authority.delegate_subject,
         source=authority.source,
+        card_kind=authority.card_kind,
         label=authority.label,
         card_revision=authority.card_revision + 1,
         catalog_version=authority.catalog_version,

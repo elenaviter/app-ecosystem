@@ -344,6 +344,11 @@ def agent_grant_consent_denial(
             "the one-click grant."
         )
     else:
+        approval = ", ".join(missing_list)
+        if not approval and namespace and operation:
+            approval = f"the operation {namespace} \u00b7 {operation}"
+        if not approval:
+            approval = "the requested access"
         denial["next_step"] = (
             "Give the user this link: they sign in with their platform account "
             "and approve the missing access for this client in Connection Hub "
@@ -353,7 +358,7 @@ def agent_grant_consent_denial(
             else denial["next_step"]
         )
         denial["instructions"] = (
-            f"Ask the user to open {hub_url} and approve: {', '.join(missing_list)}. "
+            f"Ask the user to open {hub_url} and approve: {approval}. "
             "Then retry the same call."
         ) if hub_url else denial.get("instructions", "")
     denial["consent"] = consent

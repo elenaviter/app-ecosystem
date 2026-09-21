@@ -9,12 +9,15 @@ from datetime import datetime, timezone
 
 import pytest
 
+from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AUTOMATION
 from connection_hub.delegated_credentials.cards.model import (
     CARD_AUTHORITY_SCHEMA,
     CARD_AUTHORITY_SCHEMA_V1,
+    CARD_AUTHORITY_SCHEMA_V6,
     CARD_STATE_ACTIVE,
     CardAuthority,
     CardCurrentPointer,
+    CardRecordError,
     NamedServiceSelection,
     card_authority_payload_hash,
     card_revision_name,
@@ -71,6 +74,7 @@ def _authority() -> CardAuthority:
         grantor_subject="platform-user-1",
         delegate_subject="integration:automation:abc",
         source="manual",
+        card_kind=CARD_KIND_AUTOMATION,
         label="CI bot",
         card_revision=1,
         catalog_version="catalog-v1",
@@ -265,6 +269,18 @@ def test_v1_card_keeps_flat_authority_and_next_write_is_resource_qualified() -> 
         "https://a.example/mcp": ["search"],
         "https://b.example/mcp": ["search"],
     }
+
+
+def test_v7_requires_explicit_kind_while_v6_is_classified_for_migration() -> None:
+    current = _authority().to_dict()
+    current.pop("card_kind")
+    with pytest.raises(CardRecordError, match="card_kind_invalid"):
+        CardAuthority.from_mapping(current)
+
+    current["schema"] = CARD_AUTHORITY_SCHEMA_V6
+    migrated = CardAuthority.from_mapping(current)
+    assert migrated.card_kind == CARD_KIND_AUTOMATION
+    assert migrated.to_dict()["card_kind"] == CARD_KIND_AUTOMATION
 
 
 @pytest.mark.asyncio

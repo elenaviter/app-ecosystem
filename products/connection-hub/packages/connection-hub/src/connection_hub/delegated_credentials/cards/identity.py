@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Stable identity of a resident caller profile and its delegated card.
+"""Stable identity of delegated Cards.
 
 A resident caller is a hosted agent: one agent of one application acting for
 one grantor. Its delegated card must keep one ``access_id`` while the resources
@@ -23,8 +23,13 @@ the key. A resident caller has one card. The current Card mutation contract
 accepts resources with one compatible acting scope and refuses a conflicting
 scope; it never creates another card for the same resident caller.
 
-This module is the only place the formula lives. Projection and Gateway read
-``ResidentCallerProfile`` instead of reproducing hashing.
+OAuth entry resources are transport doors, not profile identity. Connector
+Cards are the exception: one connector registration represents one entry
+resource, so its door remains in the key. Card kind is durable data and selects
+the formula; callers must never infer it from an id prefix.
+
+This module is the only place the formulas live. Projection, OAuth issuance,
+and migration code consume these helpers instead of reproducing hashing.
 """
 
 from __future__ import annotations
@@ -35,6 +40,19 @@ from typing import Any, Iterable
 
 RESIDENT_CLIENT_PREFIX = "kdcube-agent:"
 RESIDENT_ACCESS_ID_PREFIX = "agent-"
+AUTOMATION_ACCESS_ID_PREFIX = "aut_"
+CONNECTOR_ACCESS_ID_PREFIX = "oauth-"
+
+CARD_KIND_AGENT = "agent"
+CARD_KIND_AUTOMATION = "automation"
+CARD_KIND_CONNECTOR = "connector"
+CARD_KIND_CONTROL = "control"
+CARD_KINDS = (
+    CARD_KIND_AGENT,
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+    CARD_KIND_CONTROL,
+)
 # Versioned so a later change of the key produces distinct ids rather than a
 # silent collision with records written under this formula.
 RESIDENT_PROFILE_KEY_VERSION = "resident-profile-v1"
@@ -72,6 +90,67 @@ def stable_resident_access_id(
     key = f"{grantor}|{client}|{RESIDENT_PROFILE_KEY_VERSION}"
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:_ID_HASH_CHARS]
     return f"{RESIDENT_ACCESS_ID_PREFIX}{digest}"
+
+
+def stable_automation_access_id(
+    grantor_subject: str,
+    client_id: str,
+) -> str:
+    """The canonical Card id for an automation or external agent profile.
+
+    The selected door and the Card's resources are deliberately absent. The
+    ``aut_`` prefix is presentation only; persisted ``card_kind`` is the
+    authority for choosing this formula.
+    """
+    grantor = _clean(grantor_subject)
+    client = _clean(client_id)
+    if not grantor or not client:
+        raise ValueError("stable automation access id needs a grantor and a client id")
+    digest = hashlib.sha256(f"{grantor}|{client}".encode("utf-8")).hexdigest()[
+        :_ID_HASH_CHARS
+    ]
+    return f"{AUTOMATION_ACCESS_ID_PREFIX}{digest}"
+
+
+def stable_connector_access_id(
+    grantor_subject: str,
+    client_id: str,
+    entry_resource: str,
+) -> str:
+    """The canonical Card id for one MCP connector entry point."""
+    grantor = _clean(grantor_subject)
+    client = _clean(client_id)
+    entry = _clean(entry_resource)
+    if not grantor or not client or not entry:
+        raise ValueError(
+            "stable connector access id needs a grantor, client id, and entry resource"
+        )
+    digest = hashlib.sha256(
+        f"{grantor}|{client}|{entry}".encode("utf-8")
+    ).hexdigest()[:_ID_HASH_CHARS]
+    return f"{CONNECTOR_ACCESS_ID_PREFIX}{digest}"
+
+
+def stable_card_access_id(
+    *,
+    card_kind: str,
+    grantor_subject: str,
+    client_id: str,
+    entry_resource: str = "",
+) -> str:
+    """Canonical id for a newly created caller Card of an explicit kind."""
+    kind = _clean(card_kind)
+    if kind == CARD_KIND_AGENT:
+        return stable_resident_access_id(grantor_subject, client_id)
+    if kind == CARD_KIND_AUTOMATION:
+        return stable_automation_access_id(grantor_subject, client_id)
+    if kind == CARD_KIND_CONNECTOR:
+        return stable_connector_access_id(
+            grantor_subject,
+            client_id,
+            entry_resource,
+        )
+    raise ValueError(f"card kind {kind or '<empty>'!r} has no caller id formula")
 
 
 def legacy_resident_access_id(
@@ -148,6 +227,13 @@ class ResidentCallerProfile:
 
 
 __all__ = [
+    "AUTOMATION_ACCESS_ID_PREFIX",
+    "CARD_KINDS",
+    "CARD_KIND_AGENT",
+    "CARD_KIND_AUTOMATION",
+    "CARD_KIND_CONNECTOR",
+    "CARD_KIND_CONTROL",
+    "CONNECTOR_ACCESS_ID_PREFIX",
     "RESIDENT_ACCESS_ID_PREFIX",
     "RESIDENT_CLIENT_PREFIX",
     "RESIDENT_PROFILE_KEY_VERSION",
@@ -155,5 +241,8 @@ __all__ = [
     "is_resident_client_id",
     "legacy_resident_access_id",
     "resident_client_id",
+    "stable_automation_access_id",
+    "stable_card_access_id",
+    "stable_connector_access_id",
     "stable_resident_access_id",
 ]
