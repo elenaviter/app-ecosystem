@@ -37,6 +37,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     dispatch_named_service_api_request,
 )
 from kdcube_ai_app.infra.plugin.bundle_loader import api, bundle_entrypoint, bundle_id, cron, mcp, ui_widget
+from kdcube_ai_app.infra.secrets import ephemeral_secret_store
 from connection_hub.delegated_credentials.cards.cache import DelegatedCardRuntimeCache
 from connection_hub.delegated_credentials.cards.reconcile import CardProjectionReconciler
 
@@ -1233,10 +1234,15 @@ def _delegated_to_kdcube_operations(entrypoint: Any, platform_user_id: str) -> A
 
 def _delegated_to_kdcube_oauth_state_store(entrypoint: Any) -> RedisOAuthStateStore:
     tenant, project = _runtime_tenant_project(entrypoint)
-    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    settings = get_settings()
+    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(settings.REDIS_URL)
     return RedisOAuthStateStore(
         redis,
         prefix=f"kdcube:connection-hub:{tenant}:{project}:delegated-to-kdcube:oauth-state",
+        secret_store=ephemeral_secret_store(
+            namespace="login-attempts",
+            settings=settings,
+        ),
     )
 
 

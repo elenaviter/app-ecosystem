@@ -13,6 +13,13 @@ import time
 import uuid
 from typing import Any, Mapping
 
+from connection_hub.one_time_state import (
+    OneTimeStateSecretStore,
+    RedisRunBoundPointerStore,
+    SecretBackedOneTimeStateStore,
+    state_digest as _state_digest,
+)
+
 
 def _b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
@@ -32,7 +39,9 @@ def _unb64url_json(data: str) -> dict[str, Any]:
 
 
 def state_digest(state: str) -> str:
-    return hashlib.sha256(str(state or "").encode("utf-8")).hexdigest()
+    """Preserve the connected-account public helper over the shared identity."""
+
+    return _state_digest(state)
 
 
 def sign_state(payload: Mapping[str, Any], secret: str) -> str:
@@ -86,29 +95,30 @@ class MemoryOAuthStateStore(OAuthStateStore):
 
 
 class RedisOAuthStateStore(OAuthStateStore):
-    def __init__(self, redis: Any, *, prefix: str) -> None:
-        self.redis = redis
-        self.prefix = str(prefix or "kdcube:connection-hub:delegated-to-kdcube:oauth-state").strip(":")
+    """Account-connect state with a run-bound Redis pointer and secret payload."""
+
+    def __init__(
+        self,
+        redis: Any,
+        *,
+        prefix: str,
+        secret_store: OneTimeStateSecretStore,
+    ) -> None:
+        self._pointers = RedisRunBoundPointerStore(redis, prefix=prefix)
+        self._store = SecretBackedOneTimeStateStore(
+            pointers=self._pointers,
+            secrets=secret_store,
+            purpose="delegated-to-kdcube-oauth",
+        )
 
     def key(self, state: str) -> str:
-        return f"{self.prefix}:{state_digest(state)}"
+        return self._pointers.key(state_digest(state))
 
     async def put(self, state: str, payload: Mapping[str, Any], *, ttl_seconds: int) -> None:
-        await self.redis.set(self.key(state), json.dumps(dict(payload), sort_keys=True, ensure_ascii=True), ex=int(ttl_seconds or 900))
+        await self._store.put(state, payload, ttl_seconds=int(ttl_seconds or 900))
 
     async def pop(self, state: str) -> dict[str, Any] | None:
-        key = self.key(state)
-        raw = await self.redis.get(key)
-        await self.redis.delete(key)
-        if not raw:
-            return None
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        try:
-            parsed = json.loads(str(raw))
-        except Exception:
-            return None
-        return dict(parsed) if isinstance(parsed, dict) else None
+        return await self._store.pop(state)
 
 
 async def create_oauth_state(

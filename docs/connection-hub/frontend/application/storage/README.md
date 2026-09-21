@@ -5,7 +5,7 @@ summary: "Physical storage map for connection-hub@1-0: descriptor and secret aut
 status: active
 tags: ["connection-hub", "storage", "secrets", "postgres", "redis", "identity", "authenticators", "connections"]
 keywords: ["connection edge projection", "platform principal cache", "delegated card storage", "capability catalog storage", "connected account secrets", "OAuth grant store", "Redis authority"]
-updated_at: 2026-09-11
+updated_at: 2026-09-21
 see_also:
   - ../../../connection-hub-architecture.md
   - ../../../package/delegated-cards.md
@@ -47,8 +47,12 @@ user properties + user secrets
 
 Redis
   live OAuth codes, clients, refresh/access bindings, credential handles
+  digest-only, Redis-run-bound account-connect pointers
   replay/CSRF state, catalog/card projections, selector cache,
   named-service discovery, event delivery, coordination
+
+deployment runtime secrets
+  short-lived account-connect state and payload records
 ```
 
 The security rule is strict: **Connection Hub metadata may reference a secret,
@@ -69,6 +73,7 @@ bundle secret lifecycle with `get_secret("b:<path>")`.
 | Capability catalog version and active pointer | Connection Hub delegated authority | shared app storage | no | Immutable versions plus self-contained `active.json` under `delegated-catalog/v1`. |
 | Connected-account metadata | Connection Hub delegated-to-KDCube | user properties | no | Provider, connector app, external subject, claims, status, and credential handle. |
 | Connected-account credential | Connection Hub delegated-to-KDCube | server-side user secrets | yes | OAuth tokens and app-passwords use the same broker contract. They are never stored in descriptors or returned to browsers. |
+| Account-connect OAuth attempt | Connection Hub delegated-to-KDCube | deployment runtime secret plus Redis pointer | yes, in runtime secret only | The short-lived secret contains raw signed state and the account-connect payload. Redis contains only the state digest, opaque secret reference, purpose, expiry, and creating Redis `run_id`; claim consumes the pointer once and a restarted or restored Redis run invalidates it. |
 | External MCP upstream OAuth transaction | Connection Hub external-MCP connector | shared app storage pointer plus server-side user secret | yes, in user secret only | Shared storage contains the SHA-256 state digest, owner, secret reference, and expiry. PKCE, automatic-registration or provider-console client material, endpoints, and the raw transaction remain in the single-use user secret. |
 | External MCP upstream OAuth credential | Connection Hub external-MCP connector | server-side user secrets | yes | Access token, refresh token, token endpoint, optional client secret, non-secret client-source marker, and revocation endpoint share the connector credential reference. Refresh rotation updates this secret under a connector lock. |
 | OAuth authorization code, refresh record, and access-grant binding | Connection Hub delegated OAuth | Redis | yes, bounded protocol state | Codes are single use; refresh records rotate; opaque access tokens resolve through a hashed grant binding and current card pointer. |
@@ -284,6 +289,10 @@ TTL-bounded protocol authority
   access-token grant bindings, card credential handles, consent CSRF,
   direct-admission replay nonces
 
+run-bound secret pointers
+  digest lookup for account-connect state; the payload remains in the
+  deployment secret provider and an older Redis run cannot claim it
+
 coordination and delivery
   discovery, events, locks, pending demand/event state
 ```
@@ -292,6 +301,19 @@ The second group is not reconstructable cache. Losing it invalidates the
 affected OAuth credential or in-flight protocol. It must never produce an
 implicit allow. Durable card/catalog state can restore authority documents,
 but it cannot recreate a lost bearer binding or credential handle.
+
+Account-connect state is a split record rather than Redis protocol authority.
+Its secret-bearing payload is stored under the deployment's short-lived
+`login-attempts` namespace. The Redis pointer is transactionally claimed once
+and includes the creating server `run_id`. Local deployments use the host
+vault. AWS deployments use one Secrets Manager record per attempt under
+`<deployment-prefix>/runtime/login-attempts/`, deleted with
+`ForceDeleteWithoutRecovery` after claim or expiry.
+Expiry cleanup is bounded background work: one scan per namespace and runtime
+process every five minutes, with at most three AWS Secrets Manager pages per
+pass. The host-vault inventory is sorted and refuses inventories above its
+1,024-name response limit instead of silently returning a partial cleanup set.
+Direct claim and deletion remain independent of this best-effort sweep.
 
 Connection Hub also uses Redis as a short-lived selector cache for
 request-authenticator metadata:
