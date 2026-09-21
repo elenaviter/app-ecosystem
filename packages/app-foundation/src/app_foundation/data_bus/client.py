@@ -42,6 +42,32 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _refusal_payload(value: Any) -> dict[str, Any]:
+    """The server's refusal as a flat mapping: message, and a code when it sent one.
+
+    A connect handler that returns False yields ``{"message": "Connection
+    rejected by server"}``. One that raises ``ConnectionRefusedError(message,
+    {"code": ...})`` yields ``{"message": ..., "data": {"code": ...}}``. Both
+    end here as ``message`` plus ``code``, so a caller branches on the code
+    when the server named one and on the refusal itself when it did not.
+    """
+
+    payload: dict[str, Any] = {"message": "", "code": ""}
+    if isinstance(value, Mapping):
+        nested = value.get("data") if isinstance(value.get("data"), Mapping) else {}
+        payload["message"] = str(value.get("message") or value.get("error") or "")[:512]
+        payload["code"] = str(
+            nested.get("code") or value.get("code") or value.get("error_type") or ""
+        )
+        for source in (value, nested):
+            for key in ("reason", "status"):
+                if source.get(key) not in (None, ""):
+                    payload[key] = source[key]
+    elif value not in (None, ""):
+        payload["message"] = str(value)[:512]
+    return payload
+
+
 def _connection_reason(value: Any) -> str:
     if isinstance(value, Mapping):
         parts = [
@@ -223,6 +249,11 @@ class FederatedDataBusClient:
         self._closed = False
         self._connection_generation = 0
         self._socket_id = ""
+        # The server's answer when it refuses the namespace: python-socketio
+        # delivers it to connect_error and then raises a generic
+        # ConnectionError from connect(), so the reason has to be caught here
+        # or the caller cannot tell a refused credential from a dead network.
+        self._connect_refusal: dict[str, Any] | None = None
         # Labels are diagnostic coordinates supplied by the owning product.
         # They must never contain credentials or other secret material.
         self._lifecycle_labels = _normalize_lifecycle_labels(lifecycle_labels)
@@ -304,6 +335,7 @@ class FederatedDataBusClient:
         )
 
     async def _on_connect_error(self, data: Any = None) -> None:
+        self._connect_refusal = _refusal_payload(data)
         logger.warning(
             "Data Bus socket lifecycle event=%s attempted_generation=%d "
             "socket_id=%s current_generation=%d current_socket_id=%s "
@@ -409,12 +441,25 @@ class FederatedDataBusClient:
                 message,
                 details={"expires_at": self._client_side_expiry},
             )
-        await self.socket.connect(
-            self.platform_url,
-            socketio_path="socket.io",
-            transports=["websocket", "polling"],
-            auth=self.credential.auth_payload(),
-        )
+        self._connect_refusal = None
+        try:
+            await self.socket.connect(
+                self.platform_url,
+                socketio_path="socket.io",
+                transports=["websocket", "polling"],
+                auth=self.credential.auth_payload(),
+            )
+        except Exception as exc:
+            refusal = self._connect_refusal
+            if refusal is None:
+                # No connect_error arrived: the transport failed before the
+                # server answered. Callers already classify that as transient.
+                raise
+            raise DataBusIngressRejected(
+                str(refusal.get("code") or "data_bus_connect_refused"),
+                str(refusal.get("message") or "The Data Bus refused this connection."),
+                details=refusal,
+            ) from exc
         self._connected.set()
 
     async def close(self) -> None:

@@ -486,3 +486,88 @@ async def test_another_peers_data_bus_reply_does_not_wake_event_waiter() -> None
 
     assert await client.wait_for_event(0.01) is None
     await client.close()
+
+
+class _RefusingSocket(_Socket):
+    """A server that answers the namespace with a refusal, the way python-socketio delivers it."""
+
+    def __init__(self, refusal: Any) -> None:
+        super().__init__()
+        self.refusal = refusal
+
+    async def connect(self, *args: Any, **kwargs: Any) -> None:
+        from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+        self.connect_args = args
+        self.connect_kwargs = dict(kwargs)
+        await self.handlers["connect_error"](self.refusal)
+        raise SocketIOConnectionError("One or more namespaces failed to connect: /")
+
+
+class _UnreachableSocket(_Socket):
+    async def connect(self, *args: Any, **kwargs: Any) -> None:
+        from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+        raise SocketIOConnectionError("Connection refused by the server")
+
+
+@pytest.mark.asyncio
+async def test_a_namespace_refusal_is_raised_as_ingress_rejected_with_the_servers_code() -> None:
+    # A connect handler that raises ConnectionRefusedError(message, {"code": ...}).
+    socket = _RefusingSocket(
+        {"message": "delegated Card bearer was not accepted", "data": {"code": "delegated_card_bearer_rejected"}}
+    )
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example", credential=_claim(), socket_factory=lambda: socket
+    )
+
+    with pytest.raises(DataBusIngressRejected) as refusal:
+        await client.connect()
+
+    assert refusal.value.code == "delegated_card_bearer_rejected"
+    assert refusal.value.message == "delegated Card bearer was not accepted"
+    assert refusal.value.details["code"] == "delegated_card_bearer_rejected"
+    assert not client.connected
+
+
+@pytest.mark.asyncio
+async def test_a_bare_server_rejection_is_still_ingress_rejected_without_a_code() -> None:
+    # A connect handler that returns False: python-socketio sends only a message.
+    socket = _RefusingSocket({"message": "Connection rejected by server"})
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example", credential=_claim(), socket_factory=lambda: socket
+    )
+
+    with pytest.raises(DataBusIngressRejected) as refusal:
+        await client.connect()
+
+    assert refusal.value.code == "data_bus_connect_refused"
+    assert refusal.value.message == "Connection rejected by server"
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_keeps_its_own_exception() -> None:
+    # No connect_error arrived, so nothing here claims the server refused anything.
+    from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+    socket = _UnreachableSocket()
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example", credential=_claim(), socket_factory=lambda: socket
+    )
+
+    with pytest.raises(SocketIOConnectionError):
+        await client.connect()
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_from_an_earlier_attempt_does_not_leak_into_a_later_one() -> None:
+    socket = _Socket()
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example", credential=_claim(), socket_factory=lambda: socket
+    )
+    await socket.handlers["connect_error"]({"message": "stale"})
+
+    await client.connect()
+
+    assert client.connected
+    await client.close()

@@ -440,6 +440,53 @@ async def test_concurrent_access_refreshes_one_time_and_preserves_access_id(
 
 
 @pytest.mark.asyncio
+async def test_refresh_access_token_mints_now_although_the_local_token_is_current(tmp_path) -> None:
+    # The server lost the session behind this token (a store restart). The
+    # local clock still trusts it, so access_token() would re-present it; the
+    # caller that met the 401 asks for the refresh directly.
+    oauth = _OAuth()
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    profile = _profile()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, _token(expires_at=10_000_000_000))
+
+    assert await service.access_token(profile.name) == "access-secret"
+    assert oauth.refresh_calls == 0
+
+    replacement = await service.refresh_access_token(profile.name)
+
+    assert replacement == "refreshed-access"
+    assert oauth.refresh_calls == 1
+    assert credentials.values[profile.credential_ref].access_token == "refreshed-access"
+    assert credentials.values[profile.credential_ref].access_id == "access-agent"
+    assert await service.access_token(profile.name) == "refreshed-access"
+
+
+@pytest.mark.asyncio
+async def test_refresh_access_token_refused_by_the_server_keeps_the_stored_token(tmp_path) -> None:
+    oauth = _OAuth()
+    refused = AuthorizationError(
+        "oauth_token_request_failed",
+        "The OAuth server rejected refresh.",
+    )
+    refused.status = 400
+    refused.details = {"status": 400}
+    oauth.refresh_error = refused
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    profile = _profile()
+    original = _token(expires_at=10_000_000_000)
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, original)
+
+    with pytest.raises(AuthorizationError) as raised:
+        await service.refresh_access_token(profile.name)
+
+    assert raised.value.code == "oauth_token_request_failed"
+    assert raised.value.status == 400
+    assert credentials.values[profile.credential_ref] == original
+
+
+@pytest.mark.asyncio
 async def test_refresh_failure_preserves_profile_and_complete_token(tmp_path) -> None:
     oauth = _OAuth()
     oauth.refresh_error = AuthorizationError(

@@ -53,6 +53,45 @@ def _metadata_response_reason(body: bytes, *, reason_phrase: str) -> str:
     return _bounded_reason(reason_phrase)
 
 
+# The registered token-endpoint error codes (RFC 6749 section 5.2, RFC 8707
+# invalid_target, and the two section 4.1.2.1 codes servers also return here).
+# Only a value from this set travels with a failure: the code is a fixed word,
+# while a description or an unregistered value is server text that may echo
+# what was submitted.
+OAUTH_TOKEN_ERROR_CODES = frozenset(
+    {
+        "invalid_request",
+        "invalid_client",
+        "invalid_grant",
+        "unauthorized_client",
+        "unsupported_grant_type",
+        "invalid_scope",
+        "invalid_target",
+        "server_error",
+        "temporarily_unavailable",
+    }
+)
+
+
+def _token_error_code(body: bytes) -> str:
+    """The registered ``error`` code of a refused token request, or "".
+
+    It says why a grant was refused (``invalid_grant`` means the grant is
+    gone and only a new authorization mints another, any other code is not
+    the grant). On 2026-09-21 the relay reported only ``status=400`` and the
+    operator could not tell whether re-authorizing was the remedy.
+    """
+
+    try:
+        payload = json.loads(body)
+    except (UnicodeError, ValueError):
+        return ""
+    if not isinstance(payload, Mapping):
+        return ""
+    code = payload.get("error")
+    return code if isinstance(code, str) and code in OAUTH_TOKEN_ERROR_CODES else ""
+
+
 def _request_error(
     *,
     failure_code: str,
@@ -61,6 +100,7 @@ def _request_error(
     status: int | None = None,
     server_reason: str = "",
     failure_kind: str = "",
+    oauth_error: str = "",
 ) -> AuthorizationError:
     safe_url = _safe_request_url(endpoint, failure_code=failure_code)
     label = _request_label(failure_code)
@@ -69,6 +109,8 @@ def _request_error(
         details["status"] = int(status)
     if server_reason:
         details["server_reason"] = server_reason
+    if oauth_error:
+        details["oauth_error"] = oauth_error
     if failure_kind:
         details["failure_kind"] = failure_kind
     if status is None:
@@ -183,17 +225,22 @@ class HttpxOAuthTransport:
                         )
                 if response.status_code not in expected_statuses:
                     server_reason = ""
+                    oauth_error = ""
                     if failure_code == "oauth_metadata_request_failed":
                         server_reason = _metadata_response_reason(
                             bytes(body),
                             reason_phrase=str(response.reason_phrase or ""),
                         )
+                    elif failure_code == "oauth_token_request_failed":
+                        oauth_error = _token_error_code(bytes(body))
+                        server_reason = oauth_error
                     raise _request_error(
                         failure_code=failure_code,
                         method=method,
                         endpoint=endpoint,
                         status=response.status_code,
                         server_reason=server_reason,
+                        oauth_error=oauth_error,
                     )
         except AuthorizationError:
             raise

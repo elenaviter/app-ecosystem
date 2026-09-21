@@ -356,6 +356,50 @@ async def test_http_transport_never_returns_provider_error_body() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_refused_token_request_names_the_registered_error_code_and_nothing_else() -> None:
+    import httpx2
+
+    marker = "provider-secret-marker"
+
+    def handler(_request):
+        return httpx2.Response(
+            400, json={"error": "invalid_grant", "error_description": f"refresh token {marker} expired"}
+        )
+
+    transport = HttpxOAuthTransport(transport=httpx2.MockTransport(handler))
+    with pytest.raises(AuthorizationError) as raised:
+        await transport.post_form(
+            "https://auth.example.test/oauth/token",
+            {"grant_type": "refresh_token", "refresh_token": marker},
+        )
+
+    assert raised.value.status == 400
+    assert raised.value.details["oauth_error"] == "invalid_grant"
+    assert raised.value.details["server_reason"] == "invalid_grant"
+    assert "invalid_grant" in raised.value.message
+    assert marker not in str(raised.value) and marker not in str(raised.value.details)
+
+
+@pytest.mark.asyncio
+async def test_an_unregistered_token_error_value_is_not_carried() -> None:
+    import httpx2
+
+    marker = "provider-secret-marker"
+
+    def handler(_request):
+        return httpx2.Response(400, json={"error": marker})
+
+    transport = HttpxOAuthTransport(transport=httpx2.MockTransport(handler))
+    with pytest.raises(AuthorizationError) as raised:
+        await transport.post_form(
+            "https://auth.example.test/oauth/token",
+            {"grant_type": "refresh_token", "refresh_token": "r"},
+        )
+    assert "oauth_error" not in raised.value.details
+    assert marker not in str(raised.value) and marker not in str(raised.value.details)
+
+
+@pytest.mark.asyncio
 async def test_http_transport_does_not_chain_backend_secret() -> None:
     import httpx2
 

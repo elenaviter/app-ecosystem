@@ -186,6 +186,35 @@ class OAuthProfileSessionService:
                 "Timed out waiting for the OAuth profile lock.",
             ) from None
 
+    async def refresh_access_token(self, profile_name: str) -> str:
+        """Mint a new access token now, whatever the local expiry says.
+
+        ``access_token`` refreshes on this side's clock. A server that lost
+        the session behind a locally current token (a store restart, an
+        eviction) answers 401 to a bearer this clock still trusts, and the
+        clock alone would re-present that bearer until its hour lapsed. The
+        caller that met the refusal asks for the refresh here, once, with the
+        refresh token that proves the card is still the card. A refused
+        refresh is then the card's answer and not a stale session's.
+        """
+
+        self._prepare_lock(self._transaction_lock)
+        lock = AsyncFileLock(str(self._transaction_lock), timeout=10, mode=0o600)
+        try:
+            async with lock:
+                self._secure_lock(self._transaction_lock)
+                profile = self._require_oauth_profile(profile_name)
+                token = self._load_token(profile)
+                replacement = await self._refresh(profile, token)
+                replacement = self._token_for_profile(profile, replacement)
+                self._replace_token(profile, token, replacement)
+                return replacement.access_token
+        except Timeout:
+            raise AuthorizationError(
+                "oauth_profile_lock_timeout",
+                "Timed out waiting for the OAuth profile lock.",
+            ) from None
+
     async def probe(self, profile_name: str) -> ProbeResult:
         profile = self._require_oauth_profile(profile_name)
         bearer = await self.access_token(profile.name)
