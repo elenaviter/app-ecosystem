@@ -119,6 +119,19 @@ def edge_target(edge: Mapping[str, Any]) -> dict[str, Any]:
     return _safe_mapping(edge.get("to"))
 
 
+def edge_revision(edge: Mapping[str, Any]) -> int:
+    """Monotonic durable revision, with a stable legacy-row fallback."""
+
+    for field in ("store_revision", "updated_at", "created_at"):
+        try:
+            revision = int(edge.get(field) or 0)
+        except (TypeError, ValueError):
+            revision = 0
+        if revision > 0:
+            return revision
+    return 1
+
+
 class ConnectionEdgeStore:
     """Small JSON-backed Connection Hub edge store.
 
@@ -146,7 +159,26 @@ class ConnectionEdgeStore:
             raise ConnectionEdgeStoreError("connection edge store edges must be an object")
         parsed.setdefault("version", 1)
         parsed.setdefault("schema", EDGE_SCHEMA)
+        try:
+            revision = int(parsed.get("revision") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ConnectionEdgeStoreError(
+                "connection edge store revision must be an integer"
+            ) from exc
+        if revision < 0:
+            raise ConnectionEdgeStoreError(
+                "connection edge store revision must be non-negative"
+            )
+        parsed["revision"] = max(
+            [revision, *(edge_revision(_safe_mapping(row)) for row in edges.values())]
+        )
         return parsed
+
+    @staticmethod
+    def _advance_revision(data: dict[str, Any]) -> int:
+        revision = int(data.get("revision") or 0) + 1
+        data["revision"] = revision
+        return revision
 
     def _write(self, data: Mapping[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,6 +330,7 @@ class ConnectionEdgeStore:
             "created_by": _clean(created_by) or previous.get("created_by") or target_user,
             "metadata": metadata_map,
         }
+        row["store_revision"] = self._advance_revision(data)
         rows[eid] = row
         self._write(data)
         return row
@@ -333,8 +366,16 @@ class ConnectionEdgeStore:
             removed.append(_safe_mapping(edge))
             del rows[edge_id]
         if removed:
+            revision = self._advance_revision(data)
             self._write(data)
-        return {"ok": True, "removed": bool(removed), "edges": removed}
+        else:
+            revision = int(data.get("revision") or 0)
+        return {
+            "ok": True,
+            "removed": bool(removed),
+            "edges": removed,
+            "store_revision": revision,
+        }
 
     def resolve_edge(
         self,

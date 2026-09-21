@@ -7,6 +7,9 @@ Two independent lifetimes live here. ``catalog:active`` is the ceiling every
 governed call intersects against; ``catalog:version:<version>`` holds immutable
 historical documents used only to explain drift. Neither carries authority
 beyond what the document itself says, and neither is extended by a read.
+Catalog version identity includes the verified document digest, so one version
+name can never be reused for different content. That invariant makes historical
+version keys safe to read across Redis runs without a run fence.
 
 Installation of ``catalog:active`` is a compare-and-set on the sortable version
 so a delayed restoration cannot replace a newer published catalog.
@@ -31,14 +34,18 @@ from connection_hub.delegated_credentials.catalog.store import (
 
 _LOGGER = logging.getLogger("connection_hub.delegated_catalog.cache")
 
-# Install the active document unless the cached one is already at least as new.
+# Install the active document unless the cache belongs to this Redis run and
+# already contains at least as new a version. A restored snapshot carries the
+# old run id, so the durable active version replaces it even when its sortable
+# version is lower than the restored value.
 # ARGV[3] == "1" lets a publication reinstall an equal version with a fresh
 # residency TTL; a restoration passes "0" so it never slides a live entry.
 _INSTALL_ACTIVE_LUA = """
 local existing = redis.call('GET', KEYS[1])
 if existing then
   local ok, decoded = pcall(cjson.decode, existing)
-  if ok and type(decoded) == 'table' and decoded['version'] then
+  if ok and type(decoded) == 'table' and decoded['redis_run_id'] == ARGV[5]
+      and decoded['version'] then
     if decoded['version'] > ARGV[2] then
       return 0
     end
@@ -70,7 +77,18 @@ class DelegatedCatalogRuntimeCache:
         return self._key(f"version:{validated_version_name(version)}")
 
     async def read_active(self) -> CatalogDocument | None:
-        return await self._read(self.active_key(), label="active")
+        pipeline = self._redis.pipeline(transaction=True)
+        pipeline.info("server")
+        pipeline.get(self.active_key())
+        info, raw = await pipeline.execute()
+        payload = decode_cache_value(raw)
+        if payload is None:
+            return None
+        current_run_id = str((info or {}).get("run_id") or "").strip()
+        cached_run_id = str(payload.get("redis_run_id") or "").strip()
+        if not current_run_id or cached_run_id != current_run_id:
+            return None
+        return self._document(payload, label="active")
 
     async def read_version(self, version: str) -> CatalogDocument | None:
         return await self._read(self.version_key(version), label=f"version:{version}")
@@ -96,14 +114,20 @@ class DelegatedCatalogRuntimeCache:
         self, document: CatalogDocument, *, ttl_seconds: int, allow_equal: bool
     ) -> bool:
         document.verify()
+        info = await self._redis.info("server")
+        run_id = str((info or {}).get("run_id") or "").strip()
+        if not run_id:
+            raise RuntimeError("delegated catalog Redis run id is unavailable")
+        payload = {**document.to_dict(), "redis_run_id": run_id}
         result = await self._redis.eval(
             _INSTALL_ACTIVE_LUA,
             1,
             self.active_key(),
-            encode_cache_value(document.to_dict()),
+            encode_cache_value(payload),
             document.version,
             "1" if allow_equal else "0",
             str(max(1, int(ttl_seconds))),
+            run_id,
         )
         installed = bool(int(result or 0))
         if not installed:
@@ -118,6 +142,10 @@ class DelegatedCatalogRuntimeCache:
         payload = decode_cache_value(await self._redis.get(key))
         if payload is None:
             return None
+        return self._document(payload, label=label)
+
+    @staticmethod
+    def _document(payload: Any, *, label: str) -> CatalogDocument | None:
         try:
             return CatalogDocument.from_mapping(payload)
         except CatalogDocumentError as exc:

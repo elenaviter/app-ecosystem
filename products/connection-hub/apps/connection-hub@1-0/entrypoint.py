@@ -1798,10 +1798,16 @@ async def _describe_authorities(entrypoint: Any) -> Dict[str, Any]:
     redis = getattr(entrypoint, "redis", None)
     if redis is not None:
         try:
-            from connection_hub.authority_registry import RedisAuthorityDiscovery
+            from kdcube_ai_app.infra.plugin.authority_discovery import (
+                list_authority_providers,
+            )
 
             tenant, project = _runtime_tenant_project(entrypoint)
-            for spec in await RedisAuthorityDiscovery(redis, tenant=tenant, project=project).list_providers():
+            for spec in await list_authority_providers(
+                redis=redis,
+                tenant=tenant,
+                project=project,
+            ):
                 item = spec.to_dict()
                 item.pop("metadata", None)
                 discovered.append(item)

@@ -78,7 +78,9 @@ bundle secret lifecycle with `get_secret("b:<path>")`.
 | External MCP upstream OAuth credential | Connection Hub external-MCP connector | server-side user secrets | yes | Access token, refresh token, token endpoint, optional client secret, non-secret client-source marker, and revocation endpoint share the connector credential reference. Refresh rotation updates this secret under a connector lock. |
 | OAuth authorization code, refresh record, and access-grant binding | Connection Hub delegated OAuth | Redis | yes, bounded protocol state | Codes are single use; refresh records rotate; opaque access tokens resolve through a hashed grant binding and current card pointer. |
 | Delegated-card credential handle | Connection Hub delegated authority | Redis | yes, bounded live handle | Kept separately from durable card authority and expires with the card/credential. |
-| Card/catalog serving projection | Connection Hub delegated authority | Redis | no | Rebuildable from committed shared app storage; read-through restores missing projections. |
+| Card/catalog serving projection | Connection Hub delegated authority | Redis | no | Rebuildable from committed shared app storage; active reads accept the current Redis run and sortable durable version. |
+| Connection-edge principal projection | Connection Hub identity | Redis | no | Carries the live Redis run and monotonic durable edge revision; a miss reads through from `connection-edges.json`. |
+| Authority-provider discovery generation | KDCube registry source-change and read-through adapter | Redis | no | One atomic, complete generation per bundle. Every record carries the live Redis run; a later generation removes declarations absent from the bundle manifest. |
 | Direct-admission nonce | Connection Hub direct admission | Redis | no | Single-use `(service_id, nonce)` replay record; admission fails closed when this store is unavailable. |
 | Protected-service registration | operator/admin | effective app props | no | Binds a service id and `secret_ref` to catalog resource selectors only. |
 | Protected-service signing and identity-projection secrets | operator/admin | app secret provider | yes | Per-service HMAC secret plus separate deployment projection secret, each at least 32 bytes. |
@@ -271,6 +273,39 @@ delegated-catalog/v1/
 Card and catalog Redis rows are serving projections. A reader restores a
 missing projection from the committed revision or version. Publishing and
 editing commit durable state before projecting it.
+
+The active catalog projection carries the Redis `run_id` beside its sortable
+catalog version. `INFO`, the run id, and the active row are read in one Redis
+transaction. A restored prior-run row is a miss, and durable read-through may
+replace it even when the snapshot contains a lexically newer version. Within
+one run, compare-and-set keeps a delayed older publication from replacing a
+newer active catalog. Historical version keys remain immutable by version.
+
+Connection-edge projections use the same live-run boundary and add the
+durable edge store revision. Publications compare revisions within the run;
+authentication reads through to the durable edge under the shared mutation
+lock after a miss. The edge store advances its revision for every upsert and
+removal, including legacy rows whose initial revision derives from their
+durable update timestamp.
+
+Authority discovery is a complete bundle-manifest projection. Registry source
+changes publish the changed provider generations and clear declarations removed
+from the source. Each record carries one publication generation and Redis
+`run_id`; per-bundle publication records carry the manifest digest. Authority
+ids and bundle ids use SHA-256 key identities, preserving the full identifier
+without key-name collisions. All keys for one tenant/project carry one Redis
+Cluster hash tag, and replacement scripts receive every record key through
+`KEYS`.
+
+The complete-generation epoch carries the source digest, bundle ids, authority
+ids, and Redis `run_id`. A reader obtains the member set, then reads `INFO`, the
+epoch, and provider records in one Redis transaction. It recomputes the source
+digest from those records and accepts the generation only when all parts agree.
+A missing, incomplete, or prior-run generation reads through to the durable
+registry manifests, returns that source view, and refills the projection.
+Durable-source loading and complete reconciliation share one tenant/project
+coordination lease so source-change and recovery writers cannot commit in
+reverse order. V1 key-part records are removed during source reconciliation.
 
 Credential handles are intentionally separate from card authority. A durable
 card says what may be done; a bounded live handle is still required to prove a

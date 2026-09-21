@@ -4,14 +4,48 @@ import json
 
 import pytest
 
-from connection_hub.hub.edge_cache import ConnectionEdgeRuntimeCache
+from connection_hub.hub.edge_cache import (
+    ConnectionEdgeRuntimeCache,
+    ConnectionEdgeRuntimeCacheError,
+)
 from connection_hub.hub.edges import ConnectionEdgeStore, ConnectionEdgeStoreError
 from connection_hub.hub.resolver import resolve_identity_family
 
 
+class _Pipeline:
+    def __init__(self, redis: "FakeRedis") -> None:
+        self.redis = redis
+        self.operations: list[tuple[str, str]] = []
+
+    def info(self, section: str) -> "_Pipeline":
+        self.operations.append(("info", section))
+        return self
+
+    def get(self, key: str) -> "_Pipeline":
+        self.operations.append(("get", key))
+        return self
+
+    async def execute(self):
+        return [
+            {"run_id": self.redis.run_id}
+            if operation == "info"
+            else self.redis.values.get(argument)
+            for operation, argument in self.operations
+        ]
+
+
 class FakeRedis:
     def __init__(self) -> None:
+        self.run_id = "run-a"
         self.values: dict[str, str] = {}
+
+    async def info(self, section: str):
+        assert section == "server"
+        return {"run_id": self.run_id}
+
+    def pipeline(self, *, transaction: bool):
+        assert transaction is True
+        return _Pipeline(self)
 
     async def get(self, key: str):
         return self.values.get(key)
@@ -26,10 +60,25 @@ class FakeRedis:
     async def delete(self, key: str):
         return int(self.values.pop(key, None) is not None)
 
-    async def eval(self, _script: str, _numkeys: int, key: str, token: str):
-        if self.values.get(key) != token:
-            return 0
-        return await self.delete(key)
+    async def eval(self, _script: str, _numkeys: int, key: str, *args: str):
+        if len(args) == 1:
+            [token] = args
+            if self.values.get(key) != token:
+                return 0
+            return await self.delete(key)
+        encoded, revision, run_id = args
+        existing = json.loads(self.values[key]) if key in self.values else None
+        if (
+            isinstance(existing, dict)
+            and existing.get("redis_run_id") == run_id
+        ):
+            existing_revision = int(existing.get("edge_revision") or 0)
+            if existing_revision > int(revision):
+                return 0
+            if existing_revision == int(revision):
+                return 1 if self.values[key] == encoded else -1
+        self.values[key] = encoded
+        return 1
 
 
 def test_edge_resolution_is_scoped_to_the_source_authority(tmp_path):
@@ -96,6 +145,32 @@ def test_remove_is_scoped_to_the_source_authority(tmp_path):
         from_provider="oidc",
         from_subject="same-sub",
     )["to"]["user_id"] == "oidc:second"
+
+
+def test_edge_store_advances_a_durable_revision_for_each_mutation(tmp_path):
+    store = ConnectionEdgeStore(tmp_path)
+    first = store.upsert_edge(
+        from_authority_id="issuer-a",
+        from_provider="oidc",
+        from_subject="subject",
+        to_user_id="oidc:first",
+    )
+    second = store.upsert_edge(
+        from_authority_id="issuer-a",
+        from_provider="oidc",
+        from_subject="subject",
+        to_user_id="oidc:first",
+        label="Updated",
+    )
+    removed = store.remove_edge(
+        from_authority_id="issuer-a",
+        from_provider="oidc",
+        from_subject="subject",
+    )
+
+    assert first["store_revision"] == 1
+    assert second["store_revision"] == 2
+    assert removed["store_revision"] == 3
 
 
 def test_prefixed_platform_principal_is_not_reparsed_as_an_external_actor(tmp_path):
@@ -175,6 +250,67 @@ async def test_redis_projection_ignores_invalid_cached_json():
     redis.values[key] = json.dumps({"schema": "wrong"})
 
     assert await cache.read(authority_id="issuer", subject="subject") is None
+
+
+@pytest.mark.asyncio
+async def test_redis_projection_from_an_older_run_is_not_authority(tmp_path):
+    edge = ConnectionEdgeStore(tmp_path).upsert_edge(
+        from_authority_id="issuer",
+        from_provider="oidc",
+        from_subject="subject",
+        to_user_id="oidc:subject",
+    )
+    redis = FakeRedis()
+    cache = ConnectionEdgeRuntimeCache(redis, tenant="tenant", project="project")
+    await cache.publish_edge(edge)
+
+    redis.run_id = "run-after-restore"
+
+    assert await cache.read(authority_id="issuer", subject="subject") is None
+
+
+@pytest.mark.asyncio
+async def test_redis_projection_returns_the_readable_newer_revision(tmp_path):
+    store = ConnectionEdgeStore(tmp_path)
+    older = store.upsert_edge(
+        from_authority_id="issuer",
+        from_provider="oidc",
+        from_subject="subject",
+        to_user_id="oidc:subject",
+    )
+    newer = store.upsert_edge(
+        from_authority_id="issuer",
+        from_provider="oidc",
+        from_subject="subject",
+        to_user_id="oidc:subject",
+        label="newer",
+    )
+    redis = FakeRedis()
+    cache = ConnectionEdgeRuntimeCache(redis, tenant="tenant", project="project")
+    expected = await cache.publish_edge(newer)
+
+    assert await cache.publish_edge(older) == expected
+
+
+@pytest.mark.asyncio
+async def test_redis_projection_rejects_different_content_at_one_revision(tmp_path):
+    edge = ConnectionEdgeStore(tmp_path).upsert_edge(
+        from_authority_id="issuer",
+        from_provider="oidc",
+        from_subject="subject",
+        to_user_id="oidc:subject",
+    )
+    redis = FakeRedis()
+    cache = ConnectionEdgeRuntimeCache(redis, tenant="tenant", project="project")
+    await cache.publish_edge(edge)
+    conflict = json.loads(json.dumps(edge))
+    conflict["to"]["user_id"] = "oidc:different"
+
+    with pytest.raises(
+        ConnectionEdgeRuntimeCacheError,
+        match="same revision",
+    ):
+        await cache.publish_edge(conflict)
 
 
 @pytest.mark.asyncio
