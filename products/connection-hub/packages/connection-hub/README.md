@@ -65,6 +65,34 @@ registration, or a provider-console client, server-side token storage,
 serialized refresh, and upstream revocation. The existing transport protocol
 remains compatible for direct-credential hosts.
 
+## Device proof and encrypted delivery primitives
+
+Hosts and clients use one product-owned wire implementation from
+`connection_hub.delegated_credentials.devices`. It generates exportable P-256
+keys for native host custody, signs and verifies request-bound ES256 proofs,
+and encrypts bounded JSON packages with ECDH-ES/A256GCM:
+
+```python
+from connection_hub.delegated_credentials.devices import (
+    build_device_proof,
+    decrypt_device_package,
+    generate_device_key,
+    verify_device_proof,
+)
+```
+
+Proof verification binds the embedded public key, HTTP method, normalized
+target URI, server nonce, proof id, and a short issuance window. Package
+decryption requires the exact protected delivery bindings supplied by the
+caller. Algorithms are fixed by the API and malformed P-256 points are
+rejected before signature verification or decryption.
+
+This module owns cryptographic validation and wire formats. The integrating
+host owns nonce issuance, replay reservation, device enrollment, durable
+family and attempt metadata, bounded package custody, token rotation, and
+revocation ordering. The private key remains in the client host's native
+credential store.
+
 ## Flow 1: a guarded service registers itself and admits calls
 
 A backend that wants the hub to regulate its admissions does three things.

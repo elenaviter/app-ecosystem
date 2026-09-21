@@ -62,6 +62,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-19 | Data Bus connection generations become request evidence | Data Bus lifecycle logs and request errors carry the logical connection generation, Socket.IO connection ID, active state, and whether a refused attempt replaced the last successful generation, allowing one outcome-unknown request to be traced without inferring from reconnect noise. |
 | 2026-09-20 | Superseded Data Bus clients stop before replacement | Client shutdown now awaits Socket.IO reconnect-task termination, and caller-supplied lifecycle labels preserve stable channel identity and replacement order across client objects. |
 | 2026-09-20 | Standalone Connection Hub deep links open exact Cards | The site shell now carries its allowlisted Card selectors and guided context into the widget iframe, the exact Card opens across delegated families, and unavailable Card links render an explicit account-safe result. |
+| 2026-09-21 | Profile-device proof and encrypted recovery contract | One host-neutral package owns P-256 profile keys, request-bound ES256 proofs, and ECDH-ES/A256GCM delivery; the local client depends on that package and cannot carry a second wire implementation. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

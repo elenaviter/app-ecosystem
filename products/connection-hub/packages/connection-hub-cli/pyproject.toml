@@ -21,6 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "app-foundation[mcp,native-secrets]>=2026.09.03.1835,<2027",
+    "connection-hub>=2026.09.02.1410,<2027",
     "filelock>=3.16,<4",
     "httpx2>=2.5,<3",
     "json5>=0.12,<1",
