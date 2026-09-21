@@ -12,6 +12,10 @@ import {
 import { ConversationTargetPicker } from './ConversationTargetPicker';
 import { cardConversationTargets, withConversationTargets } from './conversationTargets';
 import {
+  cardAgentCapabilitySelection,
+  type AgentCapabilitySelection,
+} from './agentCapabilitySelection';
+import {
   APPLICATION_API_RESOURCE,
   PLATFORM_ROLE_PREFIX,
   applicationOperationPropertiesForSelection,
@@ -4397,13 +4401,39 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const tools = outerOperationRows(item).length;
     const actionServices = namedServiceRows(item).length;
     const accountIds = Object.values(item.account_scope || {}).flatMap((accounts) => Object.keys(accounts || {}));
+    const capabilityBase = cardAgentCapabilitySelection(item.properties);
     const parts = [
-      `${claims.length} permission${claims.length === 1 ? '' : 's'} on ${services.size} service${services.size === 1 ? '' : 's'}`,
+      claims.length || !capabilityBase
+        ? `${claims.length} permission${claims.length === 1 ? '' : 's'} on ${services.size} service${services.size === 1 ? '' : 's'}`
+        : '',
+      capabilityBase
+        ? `Agent Card base: ${capabilityBase.selectedCount
+            ? `${capabilityBase.selectedCount} selected entr${capabilityBase.selectedCount === 1 ? 'y' : 'ies'}`
+            : 'empty'}`
+        : '',
       tools ? `${tools} tool${tools === 1 ? '' : 's'}` : '',
       actionServices ? `actions on ${actionServices} service${actionServices === 1 ? '' : 's'}` : '',
       accountIds.length ? `${accountIds.length} account${accountIds.length === 1 ? '' : 's'}` : '',
     ].filter(Boolean);
     return parts.join(' · ');
+  };
+  const renderAgentCapabilityBase = (selection: AgentCapabilitySelection | null) => {
+    if (!selection) return null;
+    return (
+      <Field label="Agent capability base" wide>
+        <span className="acct-block">
+          <small>Starting selection for new conversations.</small>
+          {selection.groups.length ? selection.groups.map((group) => (
+            <span className="acct-block" key={group.category}>
+              <span className="acct-provider">{group.label}</span>
+              <FoldedChipRow entries={group.values} expanded="groups" />
+            </span>
+          )) : (
+            <small>New conversations start with an empty capability base.</small>
+          )}
+        </span>
+      </Field>
+    );
   };
   const linkedControlCard = (item: DelegatedAccessRecord) => (
     item.control_card || item.project_control
@@ -4565,6 +4595,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     opts: { active?: boolean; inGroup?: boolean; onSelect?: () => void; actions?: React.ReactNode } = {},
   ) => {
     const selectable = Boolean(opts.onSelect);
+    const capabilityBase = cardAgentCapabilitySelection(item.properties);
     const meta = (item.source === 'control'
       ? [
           cardDoors(item) || 'no resources',
@@ -4573,9 +4604,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         ]
       : [
           cardDoors(item) || (credentialReach(item) === 'multi_resource' ? 'no resources' : 'no service'),
+          capabilityBase
+            ? `Agent Card base: ${capabilityBase.selectedCount} selected`
+            : '',
           `${cardAccessCount(item)} access`,
           `expires ${formatDate(item.expires_at) || 'unknown'}`,
-        ]).join(' · ');
+        ].filter(Boolean)).join(' · ');
     return (
       <div
         key={item.access_id}
@@ -4754,6 +4788,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </button>
           </div>
           {renderCardComposition(record, { editing: true })}
+          {record.source === 'agent' && cardAgentCapabilitySelection(record.properties) ? (
+            <div className="card-fields">
+              {renderAgentCapabilityBase(cardAgentCapabilitySelection(record.properties))}
+            </div>
+          ) : null}
           {accessCardFocus?.accessId === record.access_id
             && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
             <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
@@ -4914,6 +4953,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const renderDetailedAgentCard = (item: DelegatedAccessRecord) => {
                         const editing = editingAccessId === item.access_id;
                         const authority = displayedAuthority(item);
+                        const capabilityBase = cardAgentCapabilitySelection(authority.properties);
                         return (
                           <li className="account" key={item.access_id}>
                             <div>
@@ -4943,13 +4983,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                       </Field>
                                     </Fragment>
                                   ))}
-                                  <Field label="Operations">
-                                    {outerOperationRows(authority).length ? (
+                                  {renderAgentCapabilityBase(capabilityBase)}
+                                  {outerOperationRows(authority).length ? (
+                                    <Field label="Operations">
                                       <CountFold entries={outerOperationRows(authority)} noun="operation" />
-                                    ) : (
+                                    </Field>
+                                  ) : capabilityBase ? null : (
+                                    <Field label="Operations">
                                       <small>None selected on these resources.</small>
-                                    )}
-                                  </Field>
+                                    </Field>
+                                  )}
                                   {invocationPolicyRows(authority).length ? (
                                     <Field label="Invocation">
                                       <FoldedChipRow entries={invocationPolicyRows(authority)} />
