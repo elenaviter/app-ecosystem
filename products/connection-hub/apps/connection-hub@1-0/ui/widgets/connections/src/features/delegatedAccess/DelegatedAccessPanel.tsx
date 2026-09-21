@@ -60,6 +60,7 @@ import {
   pendingFocusedIdentity,
   pendingGrantAccessId,
   pendingPresetMode,
+  pendingRequestSubject,
   randomNonce,
   splitEditedOperations,
   type InvocationMode,
@@ -5528,8 +5529,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         panes={[
           ...(pendingGrantPane ? [{
             id: 'pending-grant',
-            // The claims ride the pane title so the ask reads from the bar alone.
-            title: `Agent access request — ${pendingGrant?.claims.join(', ') || ''}`,
+            // The ask rides the pane title so it reads from the bar alone.
+            title: `Agent access request — ${pendingRequestSubject(pendingGrant)}`,
             content: pendingGrantPane,
             // The request is THE pending action: it leads the tab — full-row,
             // generous height, claims and Grant never below the fold — while

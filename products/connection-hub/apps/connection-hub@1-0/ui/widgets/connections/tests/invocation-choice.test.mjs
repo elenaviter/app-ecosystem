@@ -9,8 +9,17 @@ import {
   pendingFocusedIdentity,
   pendingGrantAccessId,
   pendingPresetMode,
+  pendingRequestSubject,
   splitEditedOperations,
 } from '../src/features/delegatedAccess/invocationChoice.ts'
+
+test('a pending request names its claims, or the operation when no claim is missing', () => {
+  assert.equal(pendingRequestSubject({ claims: ['conversations:read'], namespace: 'conv', operation: 'object.search' }), 'conversations:read')
+  // Regression: an operation-only request was titled "Agent access request —".
+  assert.equal(pendingRequestSubject({ claims: [], namespace: 'conv', operation: 'object.search' }), 'conv · object.search')
+  assert.equal(pendingRequestSubject({ claims: [], outerOperation: 'named_services_search' }), 'named_services_search')
+  assert.equal(pendingRequestSubject(null), '')
+})
 
 test('a plain pending grant names the denied card for its own resource only', () => {
   // Regression: an OAuth card issued at a concrete URL is keyed by that URL, so a
