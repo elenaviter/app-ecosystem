@@ -50,6 +50,9 @@ For each piece selected for release:
    `products/connection-hub/packages/connection-hub/tests`;
    `connection-hub-cli` runs
    `products/connection-hub/packages/connection-hub-cli/tests`;
+   `project-board` runs
+   `products/project-board/packages/project-board/tests` and a clean-wheel
+   command, procedure-data, source-selection, and relay-bootstrap smoke;
    planning-marker foundations run install, import, and version smoke checks.
 4. Build the wheel and source distribution with `python -m build`.
 5. Run `python -m twine check` on every artifact.

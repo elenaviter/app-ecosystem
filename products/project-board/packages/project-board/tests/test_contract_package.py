@@ -18,6 +18,7 @@ CONTRACT_MODULES = (
     "plan_index",
     "plan_nodes",
     "portable_refs",
+    "projection_policy",
     "project_report_contract",
     "reference_artifacts",
     "reference_records",

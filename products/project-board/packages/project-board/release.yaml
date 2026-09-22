@@ -1,16 +1,15 @@
 package:
   id: project-board
-  ref: "2026.09.22.2100"
+  ref: "2026.09.22.2241"
   description: |
-    First release: the installable planning marker that reserves the
-    distribution and import names for the Project Board client and the
-    contract it speaks. The client is `pb`, the command a machine runs to
-    join a board, receive addressed work and report on it. It lives in its
-    application repository today; this name is claimed before that move so
-    machines install a released version instead of copying a checkout.
+    First working client release. The distribution installs `pb`, owns the
+    complete host client and worker procedure, and supplies the shared
+    contract imported by the server. A per-target selector binds both the
+    command and supervised relay to either this exact package version or one
+    verified App Ecosystem commit containing every imported package.
 
 components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.09.22.2100"
+    version: "2026.09.22.2241"
