@@ -694,6 +694,8 @@ function OAuthCardRequest({ draft }: { draft: OAuthConsentDraft }) {
           <strong>{draft.entry_door.label || 'Service endpoint'}</strong>
           <DoorRef value={draft.entry_door.resource} />
         </dd>
+        <dt>Requested authority</dt>
+        <dd><ChipRow entries={draft.oauth.requested_scopes} /></dd>
         {deviceAuthorization ? (
           <>
             <dt>Device code</dt>
@@ -5610,9 +5612,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             <div className="form-title">Services and permissions</div>
             <p className="muted">
               {oauthDraft
-                ? oauthDraft.catalog_scope.mode === 'full'
-                  ? 'The client request is preselected. Change it or add any service this account may delegate.'
-                  : 'The client request is preselected. Change the permissions available through its entry service.'
+                ? oauthDraft.selection_source === 'existing_card'
+                  ? 'The current Card is selected below. Change it only where this connection should differ.'
+                  : 'The requested authority is selected below. Narrow it before approval where needed.'
                 : 'Select the grants inside every surface where this credential can be used.'}
             </p>
             {renderResourceList()}

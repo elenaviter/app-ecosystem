@@ -4,6 +4,7 @@ from connection_hub.delegated_credentials.oauth.config import (
     oauth_delegated_config_from_connections,
 )
 from connection_hub.delegated_credentials.oauth.consent import (
+    requested_card_selection,
     resource_selection_rows,
 )
 
@@ -121,3 +122,68 @@ def test_consent_keeps_an_uncovered_exact_resource_and_marks_it_literal() -> Non
     assert [row["resource"] for row in rows] == [connector]
     assert rows[0]["literal"] is True
     assert rows[0]["label"] == "Configured MCP server (literal)"
+
+
+def test_first_full_card_consent_proposes_every_operation_covered_by_requested_grants() -> None:
+    config = _config(
+        [
+            {
+                "resource": BOARD_PATTERN,
+                "label": "Problem Board",
+                "grants": [GRANT],
+                "tools": {
+                    "worker.receive": {
+                        "label": "Receive work",
+                        "grants": [GRANT],
+                    },
+                    "admin.delete": {
+                        "label": "Delete project",
+                        "grants": ["work:admin"],
+                    },
+                },
+            },
+            {
+                "resource": GATEWAY_PATTERN,
+                "label": "Other service",
+                "grants": ["other:use"],
+                "tools": {
+                    "other.call": {
+                        "label": "Call other service",
+                        "grants": ["other:use"],
+                    },
+                },
+            },
+        ]
+    )
+
+    selection = requested_card_selection(
+        [GRANT],
+        config=config,
+        full_catalog=True,
+    )
+
+    assert selection == {
+        "resource_grants": {BOARD_PATTERN: [GRANT]},
+        "resource_operations": {BOARD_PATTERN: ["worker.receive"]},
+        "named_service_operations": {},
+    }
+
+
+def test_first_entry_consent_uses_the_declared_selector_for_its_proposal() -> None:
+    config = _config(
+        [{
+            "resource": BOARD_PATTERN,
+            "label": "Problem Board",
+            "grants": [GRANT],
+            "tools": _tool(),
+        }]
+    )
+
+    selection = requested_card_selection(
+        [GRANT],
+        config=config,
+        resource=BOARD_URL,
+    )
+
+    assert selection["resource_grants"] == {BOARD_PATTERN: [GRANT]}
+    assert selection["resource_operations"] == {BOARD_PATTERN: ["work.search"]}

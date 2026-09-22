@@ -270,7 +270,9 @@ multi-resource credential delivery by reporting
 application-neutral hint does not identify any product or app and grants nothing by
 itself. It changes the editor from the entry-resource catalog to the full
 delegated-card catalog. Each saved resource is still validated against the
-current descriptor and the approving user's authority.
+current descriptor and the approving user's authority. First-consent defaults,
+exact re-consent seeding, and default-closed provider-account choices are owned
+by [Delegated Cards](delegated-cards.md#consent-view-model).
 
 ## Authorization Model
 

@@ -882,8 +882,21 @@ pinned to, not the current catalog. Each `named_service_operations` row carries
 `held` for the same fact per row. A submission REPLACES the card's selection,
 so a renderer that cannot tell a held operation from a newly offered one cannot
 offer an informed choice: it would present an empty picker whose quiet
-submission removes the whole grant. The built-in page checks held operations and
-lists the rest under "added since this client was last approved".
+submission removes the whole grant.
+
+The initial state has two explicit sources. A first consent starts from the
+resources and operations covered by the client's requested OAuth grants, so an
+unchanged approval creates the Card the client asked for; the operator can
+uncheck any part before approving. A re-consent starts from the exact current
+Card, including a Card intentionally narrowed to zero operations, and lists new
+catalog operations separately and unchecked. The screen states the requested
+OAuth grants once in its request summary instead of maintaining a second,
+read-only authority list beside the editable one.
+
+Provider-account bindings are a different decision and remain default-closed.
+Neither a requested service grant nor a preselected operation chooses one of
+the user's accounts or its provider claims. Only explicit account selections
+enter `account_scope`.
 
 A renderer returns the contract version it implements alongside its HTML. An
 absent or mismatched version is refused with `consent_ui_contract_mismatch`
@@ -897,7 +910,7 @@ The submitted form carries `consent_contract_version`,
 | --- | --- |
 | Every offered operation selected | `"*"`, bound to the catalog version shown on the page. |
 | Some operations selected | That exact selection, re-validated against the catalog. |
-| None selected | `{}`. On a first consent the connection is created without named-service access; on a re-consent this REMOVES every operation the card held. Both can be widened later in Connection Hub. |
+| None selected | `{}`. The operator explicitly narrowed a first proposal to no named-service access, or removed every held operation during re-consent. Both can be widened later in Connection Hub. |
 | `consent_contract_version` absent | No authorization code and no card. |
 | `expected_catalog_version` no longer active | `consent_catalog_changed`; authorization restarts rather than reinterpreting the selection. |
 

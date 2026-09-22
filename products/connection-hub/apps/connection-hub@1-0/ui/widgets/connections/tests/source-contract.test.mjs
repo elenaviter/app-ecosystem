@@ -236,6 +236,17 @@ test('agent consent distinguishes resource requests from existing account permis
   assert.match(css, /\.pending-selection-status\[data-state='pending'\][\s\S]*var\(--warn-text\)/)
 })
 
+test('OAuth consent names requested authority once and explains the editable seed source', () => {
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  const contract = source('src/features/delegatedAccess/oauthConsent.ts')
+
+  assert.equal((panel.match(/<dt>Requested authority<\/dt>/g) || []).length, 1)
+  assert.match(panel, /oauthDraft\.selection_source === 'existing_card'/)
+  assert.match(panel, /The current Card is selected below/)
+  assert.match(panel, /The requested authority is selected below/)
+  assert.match(contract, /selection_source: 'request' \| 'existing_card'/)
+})
+
 test('an ungranted operation offers one atomic once-or-always grant, chosen beside that operation', () => {
   const app = source('src/App.tsx')
   assert.match(app, /'access_id'/)

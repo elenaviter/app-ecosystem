@@ -376,6 +376,88 @@ def named_service_selection_rows(
     return out
 
 
+def requested_card_selection(
+    scopes: Iterable[str],
+    *,
+    config: OAuthDelegatedClientConfig | None = None,
+    resource: str | None = None,
+    full_catalog: bool = False,
+) -> dict[str, Any]:
+    """Build the editable Card proposal expressed by an OAuth request.
+
+    A first consent starts from what the client requested so approving the
+    unchanged form creates a useful Card. This is presentation state, not an
+    authorization decision: the submitted selection is still validated and
+    the operator may narrow it before approval. Provider accounts are
+    deliberately absent because choosing an account or provider claim is the
+    operator's decision and remains default-closed.
+
+    Re-consent must not call this helper. It starts from the exact Card state,
+    including an intentionally empty selection.
+    """
+
+    cfg = config or oauth_delegated_config()
+    requested = tuple(
+        dict.fromkeys(
+            str(scope or "").strip()
+            for scope in (scopes or ())
+            if str(scope or "").strip()
+        )
+    )
+    if not requested:
+        return {
+            "resource_grants": {},
+            "resource_operations": {},
+            "named_service_operations": {},
+        }
+
+    candidates: list[tuple[str, Any]] = []
+    if resource:
+        row = cfg.resource_config(resource)
+        if row is not None:
+            selector, _literal = resolve_declared_resource(cfg, resource)
+            candidates.append((selector, row))
+    elif full_catalog:
+        candidates.extend(
+            (str(row.resource or "").strip(), row)
+            for row in cfg.resources
+            if str(row.resource or "").strip()
+        )
+
+    resource_grants: dict[str, list[str]] = {}
+    resource_operations: dict[str, list[str]] = {}
+    named_service_operations: dict[str, dict[str, list[str]]] = {}
+    for selector, row in candidates:
+        supported = set(cfg.supported_scopes(row.resource))
+        selected_grants = [grant for grant in requested if grant in supported]
+        if not selector or not selected_grants:
+            continue
+        resource_grants[selector] = selected_grants
+        resource_operations[selector] = [
+            tool.name
+            for tool in cfg.tools_for_scopes(requested, resource=row.resource)
+        ]
+        for operation in named_service_selection_rows(
+            requested,
+            config=cfg,
+            resource=row.resource,
+        ):
+            namespace = str(operation["namespace"])
+            selected = named_service_operations.setdefault(selector, {}).setdefault(
+                namespace,
+                [],
+            )
+            operation_id = str(operation["operation"])
+            if operation_id not in selected:
+                selected.append(operation_id)
+
+    return {
+        "resource_grants": resource_grants,
+        "resource_operations": resource_operations,
+        "named_service_operations": named_service_operations,
+    }
+
+
 def _brand_monogram(brand: str) -> str:
     """1-2 uppercase initials from the brand name (first letters of first two words)."""
     words = [w for w in brand.split() if w]
@@ -527,6 +609,7 @@ def render_consent_html(
     connection_hub_url: str = "",
     accounts_needed: AccountRequirements | None = None,
     catalog_version: str = "",
+    existing_card: bool = False,
 ) -> str:
     esc = _html.escape
     # Base URL of the Connection Hub widget (no query). The consent page must
@@ -601,21 +684,21 @@ def render_consent_html(
         resource=req.resource,
         seeded=seeded_named_service_operations,
     )
-    # A submission REPLACES what the card held, so the picker starts from what
-    # the client has rather than from nothing: leaving the section alone must
-    # keep the grant, not empty it. Operations the catalog added since that
-    # consent are listed apart and unchecked — drift is a decision, not a
-    # default.
-    re_consent = any(row["held"] for row in selection_rows)
+    # A first consent proposes the operations covered by the requested scopes;
+    # a re-consent starts from the Card, including a Card deliberately narrowed
+    # to zero operations. Account claims use a separate default-closed picker.
+    # A submission REPLACES the Card selection, so presence must be explicit:
+    # inferring it from checked rows loses the intentionally-empty case.
+    re_consent = bool(existing_card)
 
-    def _rows(rows: list[dict]) -> str:
+    def _rows(rows: list[dict], *, requested_default: bool = False) -> str:
         return _render_grouped((
             (
                 row["namespace_label"],
                 f'    <label class="namespace-row">'
                 f'<input type="checkbox" name="named_service_operations" '
                 f'value="{esc(row["namespace"])}:{esc(row["operation"])}"'
-                f'{" checked" if row["held"] else ""}> '
+                f'{" checked" if row["held"] or requested_default else ""}> '
                 f'<span class="row-text"><b>{esc(row["label"])}</b>'
                 f'<span class="desc">{esc(row["description"])}</span>'
                 f'<span class="grants">{esc(", ".join(row["grants"]) or "none")}</span></span></label>'
@@ -632,8 +715,11 @@ def render_consent_html(
     grant this client holds. Left unchecked, they stay out of it.</p>
 {added_rows}
 """ if added_rows else ""
+        current_section = current_rows or (
+            '    <p class="desc">This Card currently has no named-service operations.</p>'
+        )
         namespace_section = f"""
-    <p class="pick">Named-service operations this client has now:</p>
+    <p class="pick">Named-service operations on this Card:</p>
     <p class="desc">Checked is what the current grant covers. Your choice here
     REPLACES it — unchecking removes the operation from this client. A claim
     lets an operation through the claim gate; it does not select the operation.</p>
@@ -641,16 +727,16 @@ def render_consent_html(
     <span class="row-text"><b>Every operation offered right now</b>
     <span class="desc">Replaces the list below with everything the current
     service catalog offers, including anything added since.</span></span></label>
-{current_rows}{added_section}
-""" if current_rows else ""
+{current_section}{added_section}
+""" if selection_rows else ""
     else:
-        namespace_rows = _rows(selection_rows)
+        namespace_rows = _rows(selection_rows, requested_default=True)
         namespace_section = f"""
-    <p class="pick">Named-service operations:</p>
-    <p class="desc">Nothing is selected by default. A claim lets an operation
-    through the claim gate; it does not select the operation. Selecting none
-    connects this client without named-service access — it can be widened later
-    in Connection Hub.</p>
+    <p class="pick">Named-service operations requested by this client:</p>
+    <p class="desc">Requested operations are selected for this first approval.
+    You may narrow them before approving. A claim lets an operation through the
+    claim gate; it does not select the operation. Provider accounts and their
+    claims remain unselected until you choose them.</p>
     <label class="namespace-row"><input type="checkbox" name="named_service_operations_all" value="1">
     <span class="row-text"><b>Every operation offered right now</b>
     <span class="desc">Bound to the current service catalog; operations added

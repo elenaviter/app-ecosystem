@@ -77,6 +77,7 @@ export interface OAuthConsentDraft {
     mode: 'full' | 'entry';
     resources: string[];
   };
+  selection_source: 'request' | 'existing_card';
   selection: {
     label: string;
     resource_grants: Record<string, string[]>;
