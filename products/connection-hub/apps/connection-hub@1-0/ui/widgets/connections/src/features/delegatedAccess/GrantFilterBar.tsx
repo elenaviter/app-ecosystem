@@ -285,10 +285,10 @@ export function GrantFilterSettings({
         </div>
       </div>
       <div className="grant-filter__row">
-        <span className="grant-filter__label">expires</span>
+        <span className="grant-filter__label">expiry / lease end</span>
         <div className="grant-filter__controls">
           <DateRange
-            name="Expires"
+            name="Expiry or lease end"
             from={filter.expiresFrom}
             to={filter.expiresTo}
             onFrom={(value) => onChange({ expiresFrom: value })}
@@ -350,7 +350,7 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
         <div className="grant-filter__step">
           <div className="grant-filter__step-title">Step 1: every setting must pass</div>
           <p>A card stays visible only when it passes all of them. There is no scoring, so a card is either shown or hidden.</p>
-          <pre className="grant-filter__formula">visible = your cards ∩ where (text) ∩ metadata key/value ∩ kind ∩ state ∩ granted window ∩ expires window</pre>
+          <pre className="grant-filter__formula">visible = your cards ∩ where (text) ∩ metadata key/value ∩ kind ∩ state ∩ granted window ∩ expiry / lease-end window</pre>
         </div>
 
         <div className="grant-filter__step">
@@ -389,25 +389,26 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
         <div className="grant-filter__step">
           <div className="grant-filter__step-title">Step 3: kind and state are exact</div>
           <p>
-            <b>Kind</b> is who holds the credential, the same badge the card shows:{' '}
+            <b>Kind</b> is who the Card represents, the same badge the Card shows:{' '}
             <span className="badge badge-agent">hosted agent</span> a platform-hosted agent,{' '}
             <span className="badge badge-client">connected client</span> an external client with a multi-resource card,{' '}
             <span className="badge badge-app">connected app</span> an OAuth MCP app bound to its entry service,{' '}
             <span className="badge badge-neutral">issued token</span> a token created here for your own script or job.
           </p>
           <p>
-            <b>State</b> reads the card's expiry against now. <b>Active</b>: the expiry is ahead, or none is recorded.{' '}
-            <b>Expiring</b>: it ends within {EXPIRING_DAYS} days. <b>Expired</b>: it has passed and the credential no longer
-            works. Active includes expiring, since that credential still works.
+            <b>State</b> reads the Card's lifecycle against now. A credential-backed Card is <b>expiring</b> when its
+            credential ends within {EXPIRING_DAYS} days. A descriptor-synchronized Agent Card instead carries an
+            auto-renewing inactivity lease: it stays active until the lease ends, then waits for the agent's next
+            message. It is never classified as expiring. Active includes expiring credentials because they still work.
           </p>
         </div>
 
         <div className="grant-filter__step">
           <div className="grant-filter__step-title">Step 4: two date windows</div>
           <p>
-            <b>Granted</b> is the moment the card came to exist: the consent you gave, or the create you did here.{' '}
-            <b>Expires</b> is when its credential stops working. From and to are whole days in your time zone,
-            both inclusive. A card without a recorded date matches only while that window is empty, since nothing
+            <b>Granted</b> is the moment the Card came to exist: the consent you gave, or the create you did here.{' '}
+            <b>Expiry / lease end</b> is when a credential stops working or an Agent Card's inactivity lease ends.
+            From and to are whole days in your time zone, both inclusive. A Card without a recorded date matches only while that window is empty, since nothing
             can be said about it.
           </p>
         </div>
@@ -424,8 +425,8 @@ export function GrantFilterInfo({ onClose }: { onClose: () => void }) {
           <div className="grant-filter__step-title">Order</div>
           <p>
             Agent cards are listed before the other cards, and the order applies within each group. Newest granted
-            first by default. Expiring soonest puts cards without a recorded expiry last. Name orders by label, and
-            an agent card by agent and app.
+            first by default. Expiring soonest puts Cards without a pending credential expiry, including
+            auto-renewing capability Cards, last. Name orders by label, and an Agent Card by agent and app.
           </p>
         </div>
 

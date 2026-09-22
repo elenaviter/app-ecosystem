@@ -11,6 +11,7 @@
  * read in one place, together with the explainer that describes them.
  */
 import type { DelegatedAccessRecord } from '../../api/types';
+import { isAgentCapabilityCard } from './agentCardLifecycle.ts';
 
 export type GrantSearchField = 'name' | 'app' | 'client' | 'door' | 'metadata';
 export type GrantKind = 'any' | 'agent' | 'client' | 'oauth' | 'manual';
@@ -51,7 +52,7 @@ export const DEFAULT_GRANT_FILTER: GrantFilter = {
   sort: 'newest',
 };
 
-/** "Expiring" means the credential stops working within this many seconds. */
+/** "Expiring" means a credential stops working within this many seconds. */
 export const EXPIRING_SOON_SECONDS = 7 * 24 * 3600;
 
 export interface AgentIdentity {
@@ -94,12 +95,15 @@ export function recordKind(record: DelegatedAccessRecord): RecordKind {
   return 'manual';
 }
 
-/** The card's expiry read against now. A card with no recorded expiry counts
- *  as active: the UI shows "expires unknown" and cannot claim more. */
+/** The card's expiry read against now. Capability Agent Cards use an
+ *  auto-renewing inactivity lease, so they are active or lapsed, never
+ *  "expiring". A card with no recorded expiry counts as active. */
 export function recordState(record: DelegatedAccessRecord, now: number): RecordState {
   const expires = record.expires_at;
+  if (record.expired) return 'expired';
   if (!expires) return 'active';
   if (expires <= now) return 'expired';
+  if (isAgentCapabilityCard(record)) return 'active';
   if (expires - now <= EXPIRING_SOON_SECONDS) return 'expiring';
   return 'active';
 }
@@ -243,9 +247,14 @@ function newestOf(records: DelegatedAccessRecord[]): number {
   return records.reduce((max, record) => Math.max(max, record.created_at || 0), 0);
 }
 
-/** Soonest expiry of a group; Infinity when none is recorded, so those sort last. */
+/** Soonest pending credential expiry. Auto-renewing capability leases sort
+ *  with cards that have no pending credential expiry. */
 function soonestExpiryOf(records: DelegatedAccessRecord[]): number {
-  return records.reduce((min, record) => (record.expires_at ? Math.min(min, record.expires_at) : min), Infinity);
+  return records.reduce((min, record) => (
+    record.expires_at && !isAgentCapabilityCard(record)
+      ? Math.min(min, record.expires_at)
+      : min
+  ), Infinity);
 }
 
 export function compareRecords(sort: GrantSort, a: DelegatedAccessRecord, b: DelegatedAccessRecord): number {

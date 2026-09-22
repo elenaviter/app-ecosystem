@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-09-20
+updated_at: 2026-09-22
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -77,7 +77,7 @@ over the same records, not another store or migration.
 | `source` | Represents | How it is created | Credential material retained in the card record |
 | --- | --- | --- | --- |
 | `manual` | A script, service, or external automation whose operator copies a bearer. | `delegated_access_create`. | The raw bearer is returned once and is not retained. The record keeps `session_id` and `last_four` for revocation and identification. |
-| `agent` | A hosted agent with deterministic identity `kdcube-agent:<app>:<agent>`. | Demand-driven consent or `delegated_agent_grant_create`, backed by `create_access(client_id=...)`. | The reusable access token is retained server-side so each turn can resolve the same consented bearer. It is never returned by list. |
+| `agent` | A hosted agent with deterministic identity `kdcube-agent:<app>:<agent>`. | Demand-driven consent, or descriptor synchronization for a resident agent whose Card selects from a Control Card. | A consented agent retains its reusable access token server-side. A descriptor-synchronized capability Card retains no bearer; it carries the user's selection and a bounded inactivity lease. Token material is never returned by list. |
 | `oauth` | An external OAuth/MCP client. | Automatically on initial token issuance and every refresh rotation. | Current access- and refresh-token handles are retained server-side so revoke can invalidate both. They are never returned by list. |
 | `control` | A reusable authorization rule linked to one or more caller Cards. | An owner-scoped `control_card_create`, normally initiated by the application that will link it. | None. It has no delegate, bearer, refresh token, session, or expiry. |
 
@@ -251,19 +251,21 @@ or newer revision.
 
 Expiration deletes a credential-backed Card's Redis projection. The durable
 revision remains and `expires_at` prevents cache restoration or use. A
-credentialless Card has no expiry, so its projection remains until an update or
-revocation replaces it. Revocation commits a new durable `revoked` revision
+descriptor-synchronized capability Card has no bearer, but its `expires_at` is
+an inactivity lease and the same expiry gate applies. A Control Card
+(`source=control`) has neither a bearer nor an expiry, so its projection remains
+until an update or revocation replaces it. Revocation commits a new durable `revoked` revision
 before live credential cleanup; it does not delete history. Open is Redis-first:
 it reads the live-card projection by `access_id` and computes drift against
 Redis-cached `active.json`. List decides membership from durable storage on
 every call, because a partially lost index cannot be detected without reading
 it; the grantor index accelerates discovery and carries expiry scores, using
-`+inf` for credentialless Cards. It has no fixed seven-day expiry; expired
+`+inf` for expiry-free Control Cards. The index itself has no fixed seven-day expiry; expired
 members are pruned by score. Every candidate is resolved through the card
 cache/store: one that no longer resolves is pruned, and a durable member the
 index lost is re-admitted. A missing projection is rebuilt from durable
 `current.json` and the referenced timestamped revision, repopulating active,
-unexpired credential-backed Cards and active credentialless Cards. Retention of
+unexpired caller Cards and active expiry-free Control Cards. Retention of
 card history is an explicit administrative policy separate from authorization
 TTL.
 
@@ -271,8 +273,8 @@ The relevant cache lifetimes have different meanings:
 
 | Projection | Lifetime | Cache hit | Expiry or eviction |
 | --- | --- | --- | --- |
-| Live card | Credential-backed: remaining authorization lifetime, `expires_at - now`. Credentialless: no TTL. | Does not extend authorization. | Read the durable current revision; re-cache an active Card when its lifecycle permits use. |
-| Grantor card index | No fixed whole-key TTL; credential-backed members are scored by `expires_at`, credentialless members by `+inf`. | Prune expired members. | Rebuild active members from durable current revisions. |
+| Live card | Credential-backed or descriptor-synchronized capability Card: remaining authorization or inactivity lifetime, `expires_at - now`. Expiry-free Control Card: no TTL. | Does not extend authorization. | Read the durable current revision; re-cache an active Card when its lifecycle permits use. |
+| Grantor card index | No fixed whole-key TTL; expiring members are scored by `expires_at`, expiry-free Control Cards by `+inf`. | Prune expired members. | Rebuild active members from durable current revisions. |
 | Updating/revoked marker | Short descriptor-owned safety or negative-cache TTL. | Deny or return temporary unavailability as appropriate. | Resolve durable current state; never infer authority from marker expiry. |
 
 Redis outage is not a reason to bypass this serving and coordination layer with
@@ -782,6 +784,19 @@ agent attempts a governed operation
   -> explicit edit uses replace semantics
   -> reusable agent bearer and card are stored server-side
 ```
+
+A descriptor-controlled resident agent uses the same stable profile Card ID
+with a different credential contract. Descriptor synchronization creates a
+Card whose `kdcube.agent_capability_selection` property stores the user's
+starting selection and whose linked Control Card stores the descriptor-owned
+ceiling. This Card carries no bearer or refresh token. Its seven-day
+`expires_at` is an inactivity lease chosen for the capability projection, not
+an access-token lifetime. Every agent message synchronizes before projecting
+tools. While the Card remains current, an unchanged sync writes nothing. After
+the lease lapses, the Card grants nothing; the next message writes a renewed
+revision under the same `access_id`, preserves the selected capability base,
+and only then projects tools. The owner therefore keeps one legible Card and
+selection across revisions without abandoned authority remaining live forever.
 
 The focused consent view projects that one denied invocation into an
 always-expanded review. It keeps four selections separate:

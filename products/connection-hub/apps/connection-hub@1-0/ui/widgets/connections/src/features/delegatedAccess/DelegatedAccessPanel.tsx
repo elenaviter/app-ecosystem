@@ -16,6 +16,10 @@ import {
   type AgentCapabilitySelection,
 } from './agentCapabilitySelection';
 import {
+  agentCapabilityCardLifecycle,
+  isAgentCapabilityCard,
+} from './agentCardLifecycle';
+import {
   APPLICATION_API_RESOURCE,
   PLATFORM_ROLE_PREFIX,
   applicationOperationPropertiesForSelection,
@@ -619,13 +623,10 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
 }
 
 /** A copyable identifier under a card title — truncated to one line, full value
- *  on hover. Which id it is depends on the caller: a connected app and a hosted
- *  agent are identified by their CLIENT id (what the platform authorizes and
- *  what appears in logs), while an automation's client id is minted internally
- *  and never presented by anyone - its actionable id is the ACCESS id, the one
- *  a revoke takes. */
-function ClientIdRef({ value, kind }: { value: string; kind: 'client' | 'access' }) {
-  const label = kind === 'access' ? 'access id' : 'client id';
+ *  on hover. The client id identifies the caller, an access id identifies an
+ *  issued token, and a card id is the stable authority record across revisions. */
+function ClientIdRef({ value, kind }: { value: string; kind: 'client' | 'access' | 'card' }) {
+  const label = kind === 'access' ? 'access id' : kind === 'card' ? 'card id' : 'client id';
   return (
     <span className="id-ref" title={`${label}: ${value}`}>
       <span className="id-kind">{label}</span>
@@ -1689,6 +1690,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     item.expired ? 'expired' : recordState(item, nowSeconds)
   );
   const expiryBadge = (item: DelegatedAccessRecord) => {
+    const lifecycle = agentCapabilityCardLifecycle(
+      item,
+      nowSeconds,
+      formatDate(item.expires_at) || '',
+    );
+    if (lifecycle) {
+      return (
+        <span className={`badge ${lifecycle.state === 'awaiting_sync' ? 'badge-error' : 'badge-neutral'}`}>
+          {lifecycle.badge}
+        </span>
+      );
+    }
     const state = cardState(item);
     if (state === 'expired') return <span className="badge badge-error">expired</span>;
     if (state === 'expiring') return <span className="badge badge-warn">expires soon</span>;
@@ -1698,6 +1711,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // here; the other two keep their card and renew where their credential is
   // issued.
   const expiryHint = (item: DelegatedAccessRecord) => {
+    const lifecycle = agentCapabilityCardLifecycle(
+      item,
+      nowSeconds,
+      formatDate(item.expires_at) || '',
+    );
+    if (lifecycle) {
+      return <div className="card-expiry-hint">{lifecycle.hint}</div>;
+    }
     if (cardState(item) !== 'expired') return null;
     const how = item.source === 'oauth'
       ? 'Reconnect from the client to renew it.'
@@ -4342,7 +4363,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     <>
       <span className={`badge ${callerBadgeClass(item)}`}>{callerLabel(item)}</span>
       <span className="badge badge-reach">
-        {item.source === 'control' ? 'credentialless' : reachLabel(item)}
+        {item.source === 'control' ? 'credentialless'
+          : isAgentCapabilityCard(item) ? 'credentialless' : reachLabel(item)}
       </span>
       {expiryBadge(item)}
     </>
@@ -4396,6 +4418,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const actionServices = namedServiceRows(item).length;
     const accountIds = Object.values(item.account_scope || {}).flatMap((accounts) => Object.keys(accounts || {}));
     const capabilityBase = cardAgentCapabilitySelection(item.properties);
+    const lifecycle = agentCapabilityCardLifecycle(
+      item,
+      nowSeconds,
+      formatDate(item.expires_at) || '',
+    );
     const parts = [
       claims.length || !capabilityBase
         ? `${claims.length} permission${claims.length === 1 ? '' : 's'} on ${services.size} service${services.size === 1 ? '' : 's'}`
@@ -4405,6 +4432,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             ? `${capabilityBase.selectedCount} selected entr${capabilityBase.selectedCount === 1 ? 'y' : 'ies'}`
             : 'empty'}`
         : '',
+      lifecycle?.summary || '',
       tools ? `${tools} tool${tools === 1 ? '' : 's'}` : '',
       actionServices ? `actions on ${actionServices} service${actionServices === 1 ? '' : 's'}` : '',
       accountIds.length ? `${accountIds.length} account${accountIds.length === 1 ? '' : 's'}` : '',
@@ -4590,6 +4618,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   ) => {
     const selectable = Boolean(opts.onSelect);
     const capabilityBase = cardAgentCapabilitySelection(item.properties);
+    const lifecycle = agentCapabilityCardLifecycle(
+      item,
+      nowSeconds,
+      formatDate(item.expires_at) || '',
+    );
     const meta = (item.source === 'control'
       ? [
           cardDoors(item) || 'no resources',
@@ -4602,7 +4635,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             ? `Agent Card base: ${capabilityBase.selectedCount} selected`
             : '',
           `${cardAccessCount(item)} access`,
-          `expires ${formatDate(item.expires_at) || 'unknown'}`,
+          lifecycle?.summary || `expires ${formatDate(item.expires_at) || 'unknown'}`,
         ].filter(Boolean)).join(' · ');
     return (
       <div
@@ -4771,6 +4804,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               {record.source === 'manual' || record.source === 'control'
                 ? <ClientIdRef value={record.access_id} kind="access" />
                 : (record.client_id ? <ClientIdRef value={record.client_id} kind="client" /> : null)}
+              {isAgentCapabilityCard(record)
+                ? <ClientIdRef value={record.access_id} kind="card" />
+                : null}
             </div>
             <button
               className="btn btn-ghost"
@@ -4781,6 +4817,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               All cards
             </button>
           </div>
+          {expiryHint(record)}
           {renderCardComposition(record, { editing: true })}
           {record.source === 'agent' && cardAgentCapabilitySelection(record.properties) ? (
             <div className="card-fields">
@@ -4948,6 +4985,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         const editing = editingAccessId === item.access_id;
                         const authority = displayedAuthority(item);
                         const capabilityBase = cardAgentCapabilitySelection(authority.properties);
+                        const lifecycle = agentCapabilityCardLifecycle(
+                          item,
+                          nowSeconds,
+                          formatDate(item.expires_at) || '',
+                        );
                         return (
                           <li className="account" key={item.access_id}>
                             <div>
@@ -4956,6 +4998,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                 {cardBadge(item)}
                               </div>
                               {item.client_id ? <ClientIdRef value={item.client_id} kind="client" /> : null}
+                              {lifecycle ? <ClientIdRef value={item.access_id} kind="card" /> : null}
+                              {expiryHint(item)}
                               {renderCardComposition(item, { editing })}
                               {/* Edit mode keeps the per-claim checkboxes; the
                                   read-only view uses the same labelled rows as
@@ -5042,9 +5086,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                 { existingScope: seedAccountScopeFromRecord(item) },
                               ) : null}
                               <div className="card-fields">
-                                <Field label="Granted">
-                                  {formatDate(item.created_at) || 'unknown'}
-                                  {' · expires '}{formatDate(item.expires_at) || 'unknown'}
+                                <Field label={lifecycle ? 'Lifecycle' : 'Granted'}>
+                                  {lifecycle ? lifecycle.summary : (
+                                    <>
+                                      {formatDate(item.created_at) || 'unknown'}
+                                      {' · expires '}{formatDate(item.expires_at) || 'unknown'}
+                                    </>
+                                  )}
                                 </Field>
                               </div>
                             </div>

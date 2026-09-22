@@ -4,8 +4,12 @@ import time
 
 import pytest
 
+from connection_hub.delegated_credentials import agent_capability_sync
 from connection_hub.delegated_credentials.agent_capability_control import (
     AGENT_DESCRIPTOR_ACCEPTANCE_KIND,
+)
+from connection_hub.delegated_credentials.agent_capability_sync import (
+    AGENT_CAPABILITY_CARD_LEASE_SECONDS,
 )
 from connection_hub.delegated_credentials.agent_capability_policy import (
     AGENT_CAPABILITY_POLICY_SCHEMA,
@@ -27,6 +31,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     CardCredentialHandles,
     authority_is_credentialless,
+    authority_is_usable,
 )
 from connection_hub.delegated_credentials.cards.service import CardConflict
 from connection_hub.delegated_credentials.cards.store import subject_hash_for
@@ -247,6 +252,51 @@ async def test_descriptor_sync_is_stable_and_new_capabilities_are_unselected() -
     assert added["card_changed"] is False
     assert added["states"]["tools"]["tool.future"] == (CAPABILITY_ALLOWED_UNSELECTED)
     assert added["projection"]["capabilities"] == {"tools": ["tool.old"]}
+
+
+@pytest.mark.asyncio
+async def test_expired_capability_lease_renews_the_same_card_and_selection(
+    monkeypatch,
+) -> None:
+    service, persistence = _service()
+    created_at = 2_000_000_000
+    monkeypatch.setattr(agent_capability_sync.time, "time", lambda: created_at)
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old", "tool.new"),
+        catalog=("tool.old", "tool.new"),
+        selection=("tool.old",),
+    )
+    access_id = created["card"]["access_id"]
+    first_revision = created["card"]["card_revision"]
+    first_authority, first_handles = persistence.records[access_id]
+    assert first_handles.empty is True
+    assert created["card"]["expires_at"] == (
+        created_at + AGENT_CAPABILITY_CARD_LEASE_SECONDS
+    )
+
+    renewed_at = created_at + AGENT_CAPABILITY_CARD_LEASE_SECONDS + 1
+    assert authority_is_usable(first_authority, renewed_at) is False
+    monkeypatch.setattr(agent_capability_sync.time, "time", lambda: renewed_at)
+    renewed = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old", "tool.new"),
+        catalog=("tool.old", "tool.new"),
+    )
+
+    assert renewed["card_changed"] is True
+    assert renewed["card"]["access_id"] == access_id
+    assert renewed["card"]["card_revision"] == first_revision + 1
+    assert renewed["card"]["expires_at"] == (
+        renewed_at + AGENT_CAPABILITY_CARD_LEASE_SECONDS
+    )
+    assert renewed["selection"]["capabilities"] == {"tools": ["tool.old"]}
+    assert renewed["projection"]["capabilities"] == {"tools": ["tool.old"]}
+    renewed_authority, renewed_handles = persistence.records[access_id]
+    assert authority_is_usable(renewed_authority, renewed_at) is True
+    assert renewed_handles.empty is True
 
 
 @pytest.mark.asyncio

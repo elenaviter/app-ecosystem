@@ -36,7 +36,6 @@ from connection_hub.delegated_credentials.application_resources import (
 from connection_hub.delegated_credentials.automation_access import (
     ACCESS_SOURCE_AGENT,
     ACCESS_SOURCE_CONTROL,
-    AUTOMATION_ACCESS_DEFAULT_TTL_SECONDS,
     AutomationAccessRecord,
     ResolvedCardAuthority,
     _application_policy_refusal,
@@ -97,6 +96,14 @@ from connection_hub.delegated_credentials.resource_operations import (
     operation_union,
     resolve_declared_resource_keys,
 )
+
+
+# A descriptor-synchronized Agent Card carries capability selection, not a
+# bearer. Its expiry is an inactivity lease that bounds stale authority when an
+# application stops syncing. One week avoids access-token-scale churn while
+# keeping abandoned resident projections finite. The first agent message after
+# a lapse renews this same Card id and preserves its selection in a new revision.
+AGENT_CAPABILITY_CARD_LEASE_SECONDS = 7 * 24 * 60 * 60
 
 
 async def resolve_agent_descriptor_standard_authority(
@@ -637,7 +644,7 @@ async def sync_agent_capability_control(
             catalog_version=catalog_version,
             card_revision=1,
             created_at=now,
-            expires_at=now + AUTOMATION_ACCESS_DEFAULT_TTL_SECONDS,
+            expires_at=now + AGENT_CAPABILITY_CARD_LEASE_SECONDS,
             source=ACCESS_SOURCE_AGENT,
             resource_acceptance={agent_resource: descriptor_evidence},
             control_card=binding,
@@ -660,7 +667,7 @@ async def sync_agent_capability_control(
                 else existing_resident.catalog_version
             ),
             expires_at=(
-                now + AUTOMATION_ACCESS_DEFAULT_TTL_SECONDS
+                now + AGENT_CAPABILITY_CARD_LEASE_SECONDS
                 if existing_resident.expires_at <= now
                 and not existing_resident.access_token
                 else existing_resident.expires_at
@@ -746,6 +753,7 @@ async def sync_agent_capability_control(
 
 
 __all__ = [
+    "AGENT_CAPABILITY_CARD_LEASE_SECONDS",
     "resolve_agent_descriptor_standard_authority",
     "sync_agent_capability_control",
 ]
