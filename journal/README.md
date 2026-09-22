@@ -67,6 +67,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-21 | Catalog, edge, and authority discovery projections gain rollback fences | The active catalog binds sortable versions to the live Redis run, connection edges add durable monotonic revisions, and bundle authority discovery publishes complete run-bound generations with collision-free key identities. |
 | 2026-09-22 | Whole-Card OAuth authority for agent profiles | Agent and automation profiles carry the server-issued Card kind without an entry resource, connector profiles retain their fixed protected resource, refresh resolves the whole Card once, and each concrete surface continues to enforce its exact Card grant. |
 | 2026-09-22 | First-consent authority proposal restored | A first whole-Card consent now starts from the exact resources and operations covered by the client's requested grants, re-consent remains seeded only from the existing Card, and provider-account choices remain default-closed. |
+| 2026-09-22 | Resident Card bearer custody gains durable cleanup claims | PostgreSQL records prepared secret intent before host creation, consumes installation atomically, and retains token-fenced cleanup obligations across retries; one row-then-reference lock order governs installation, rotation, retirement, and terminal acknowledgement. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

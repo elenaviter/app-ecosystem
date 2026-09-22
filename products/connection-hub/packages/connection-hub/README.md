@@ -260,13 +260,26 @@ For resident Card bearers, `ResidentCardSecretService` owns the portable
 cross-store lifecycle. The host supplies PostgreSQL-backed
 `CardHandleMetadataStore` and an expiring `ResidentSecretStore`. Secret records
 are created atomically under fresh opaque references; metadata stores only the
-reference and SHA-256 fingerprint. Rotation and retirement delete the verified
-secret before acknowledging its durable cleanup record, while reads compare
-the access id, Card revision, fingerprint, and expiry before returning the
-bearer. A lost create response retains only a bounded, expiring prepared
-record; it never guesses ownership by deleting that reference. A host that
+reference and SHA-256 fingerprint. Before the host write, PostgreSQL records a
+prepared intent containing that reference, binding metadata, and expiry, never
+the bearer. The metadata installation transaction consumes the intent and
+returns the exact outgoing reference it recorded for cleanup. Rotation and
+retirement delete the verified secret before acknowledging its durable cleanup
+record, while reads compare the access id, Card revision, fingerprint, and
+expiry before returning the bearer. Host creation atomically refuses a live
+reference collision without overwriting it, and stale-reference resolution
+fails closed on the envelope binding. A lost create or metadata response leaves
+a durable address for reconciliation; cleanup verifies the envelope and first
+guards against deleting a current reference. Cleanup is claimed durably before
+host I/O, failed attempts retain their reason and exponential retry time, and a
+prepared intent selected for cleanup can no longer be installed. A host that
 binds both ports gets a custody boundary formed by PostgreSQL and its secret
 provider.
+
+A refused host create quarantines its prepared intent through that same
+claim-and-retry protocol. It neither drops the custody address nor deletes the
+colliding host record; verified cleanup converges after the bounded foreign
+record expires.
 
 ## Documentation
 

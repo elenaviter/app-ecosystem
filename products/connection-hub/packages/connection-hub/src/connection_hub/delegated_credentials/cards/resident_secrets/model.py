@@ -21,7 +21,6 @@ from connection_hub.delegated_credentials.cards.store import (
     validated_access_id,
 )
 
-
 RESIDENT_SECRET_SCHEMA = "connection_hub.card.resident_access.v1"
 RESIDENT_SECRET_MAX_BEARER_BYTES = 65_536
 RESIDENT_SECRET_MAX_ENVELOPE_BYTES = 131_072
@@ -50,12 +49,14 @@ class ResidentSecretError(RuntimeError):
         reason: str,
         *,
         access_id: str = "",
+        secret_ref: str = "",
         operation_error_type: str = "",
         cleanup_error_type: str = "",
     ) -> None:
         super().__init__(reason)
         self.reason = str(reason)
         self.access_id = str(access_id or "")
+        self.secret_ref = str(secret_ref or "")
         self.operation_error_type = str(operation_error_type or "")
         self.cleanup_error_type = str(cleanup_error_type or "")
 
@@ -147,7 +148,7 @@ class ResidentSecretEnvelope:
         value: str,
         created_at: int,
         expires_at: int,
-    ) -> "ResidentSecretEnvelope":
+    ) -> ResidentSecretEnvelope:
         bearer = _validated_bearer(value)
         return cls(
             access_id=access_id,
@@ -158,7 +159,7 @@ class ResidentSecretEnvelope:
             expires_at=expires_at,
         ).validated()
 
-    def validated(self) -> "ResidentSecretEnvelope":
+    def validated(self) -> ResidentSecretEnvelope:
         if not isinstance(self.access_id, str):
             raise ResidentSecretError("resident_secret_access_id_invalid")
         try:
@@ -219,7 +220,7 @@ class ResidentSecretEnvelope:
         return encoded
 
     @classmethod
-    def from_json(cls, value: Any) -> "ResidentSecretEnvelope":
+    def from_json(cls, value: Any) -> ResidentSecretEnvelope:
         if not isinstance(value, str):
             raise ResidentSecretError("resident_secret_envelope_invalid")
         try:

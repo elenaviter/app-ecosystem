@@ -206,23 +206,51 @@ carries its filename, integer `card_revision`, and full content hash.
 
 The portable destination contract for a resident Card's reusable bearer keeps
 non-secret handle metadata in PostgreSQL and the recoverable bearer in a
-host-owned expiring secret store. `ResidentCardSecretService` creates a fresh
-secret reference before committing its metadata, verifies the envelope against
-the access id, Card revision, fingerprint, and expiry on every resolution, and
-keeps durable cleanup obligations until verified deletion succeeds. A secret
-reference is create-only and never reused for a different envelope; changing a
-bound Card revision, fingerprint, or expiry requires a fresh reference.
+host-owned expiring secret store. `ResidentCardSecretService` first reserves a
+fresh reference with a PostgreSQL prepared intent, then creates the host-secret
+record, and finally consumes that intent in the metadata installation
+transaction. The intent contains the access id, Card revision, fingerprint,
+envelope creation time, and expiry; bearer material remains exclusively in the
+secret store. Resolution verifies the envelope against the access id, Card
+revision, fingerprint, and expiry. The service generates a fresh 128-bit opaque
+reference for each attempt, and the host create operation atomically refuses a
+live collision without overwriting the existing envelope. Changing a bound
+Card revision, fingerprint, or expiry requires a fresh reference. If a stale
+database snapshot ever names a reference that now contains another envelope,
+the binding checks fail closed rather than returning that bearer.
+
+A refused host create moves its prepared intent irreversibly into cleanup and
+schedules retry. It does not delete the intent or the colliding host record.
+Cleanup keeps verifying the foreign envelope and retains the durable address
+until that bounded record expires, after which idempotent deletion can settle
+the intent.
 
 Rotation records the outgoing reference durably in the same PostgreSQL
-transaction that installs the replacement. Cleanup reads and verifies the
-outgoing envelope, deletes it from host custody, and only then acknowledges the
-cleanup row. A metadata-commit response loss retains the prepared expiring
-secret because the commit outcome is unknown. A definitive conflict deletes
-the prepared secret. A secret-create response loss also retains the bounded
-record because deleting an unowned collision would be unsafe. Once a host
-binds both ports, PostgreSQL plus its secret provider form the complete
-resident-bearer custody boundary, while that host may use Redis for rebuildable,
-non-secret Card projections.
+transaction that installs the replacement, and returns that exact cleanup row
+to the caller. Cleanup reads and verifies the outgoing envelope, deletes it
+from host custody, and only then acknowledges the cleanup row. A
+metadata-commit response loss is reconciled through the prepared intent: a
+committed installation consumed it atomically, while an uncommitted operation
+left it available for verified cleanup. A secret-create response loss likewise
+retains the intent and opaque reference. Prepared cleanup reads current
+metadata before touching host custody and refuses to delete a current
+reference. Once a host binds both ports, PostgreSQL plus its secret provider
+form the complete resident-bearer custody boundary, while that host may use
+Redis for rebuildable, non-secret Card projections.
+
+Cleanup selection is durable before any host-secret I/O. A prepared intent
+moves irreversibly from `installable` to `cleanup`, which prevents a delayed
+installer from adopting a reference after deletion starts. New intents receive
+a five-minute reconciliation grace; definitive installation failures may claim
+their exact intent immediately. Prepared, rotated, and terminal references use
+bounded PostgreSQL claims. A failed read, verification, deletion, or
+acknowledgement clears the claim, records the reason, and schedules exponential
+retry from five seconds up to one hour. Due scans use `FOR UPDATE SKIP LOCKED`,
+so one failing row does not block later work. Only the current claim token may
+acknowledge or reschedule a row. The three queue tables retain
+`cleanup_attempts`, `cleanup_next_attempt_at`, and `cleanup_last_error` as the
+durable diagnostic record; claim timestamps show work currently leased without
+exposing the claim token through the service result.
 
 Revision filenames follow the same timestamped, content-addressed convention
 as catalog versions:
