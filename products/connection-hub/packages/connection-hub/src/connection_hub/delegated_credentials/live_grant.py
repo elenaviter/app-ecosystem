@@ -14,6 +14,8 @@ from connection_hub.delegated_credentials.cards.cache import (
     DelegatedCardRuntimeCache,
 )
 from connection_hub.delegated_credentials.cards.model import (
+    CARD_KIND_AGENT,
+    CARD_KIND_AUTOMATION,
     CARD_STATE_ACTIVE,
     CardAuthority,
     authority_is_credentialless,
@@ -214,13 +216,32 @@ def live_grants_for_resource(
     record: CardAuthority,
     resource: str,
 ) -> tuple[str, ...] | None:
-    """Return the live grant union for a resource, preserving an empty grant."""
+    """Return live grants for one concrete surface."""
 
+    requested_resource = str(resource or "").strip()
+    if not requested_resource:
+        return None
     matched = False
     grants: list[str] = []
     for configured_resource, configured_grants in record.resource_grants.items():
-        if not resource_matches(str(configured_resource), str(resource or "")):
+        if not resource_matches(str(configured_resource), requested_resource):
             continue
+        matched = True
+        for grant in configured_grants:
+            text = str(grant or "").strip()
+            if text and text not in grants:
+                grants.append(text)
+    return tuple(grants) if matched else None
+
+
+def whole_card_grants(record: CardAuthority) -> tuple[str, ...] | None:
+    """Return the union used only when refreshing a whole-Card credential."""
+
+    if record.card_kind not in {CARD_KIND_AGENT, CARD_KIND_AUTOMATION}:
+        return None
+    matched = False
+    grants: list[str] = []
+    for configured_grants in record.resource_grants.values():
         matched = True
         for grant in configured_grants:
             text = str(grant or "").strip()
@@ -234,4 +255,5 @@ __all__ = [
     "live_grants_for_resource",
     "resolve_live_grant_card",
     "resolve_live_grant_composition",
+    "whole_card_grants",
 ]

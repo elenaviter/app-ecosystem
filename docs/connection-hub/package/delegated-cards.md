@@ -114,6 +114,12 @@ delivery route; after the user saves the card, the same credential can be
 presented to any selected resource, where the normal live card, catalog, and
 operation checks still run.
 
+Agent and automation credentials represent that whole Card. Their OAuth
+profile, access credential, and refresh record carry no entry resource; each
+surface resolves its own exact grant from the Card's resource maps. Connector
+credentials represent one MCP connection and retain its protected resource in
+the profile, token exchange, refresh record, and stable identity.
+
 ## Stable Card Identity
 
 Every Card persists an explicit `card_kind`. That field selects the identity
@@ -352,7 +358,7 @@ one sweep.
 | `effective_named_service_operations` | The selection expanded under the catalog version the card was saved against. Derived, never authority. | yes when the card covers any operation |
 | `catalog_version`, `card_revision` | The catalog generation this card was last saved against, and its monotonic revision. | yes |
 | `account_scope` | Provider -> account -> exact connected-account claims this caller may use. | yes when non-empty |
-| `entry_resource` | The protected resource through which OAuth consent began. It is part of connector identity and transport metadata on a multi-resource automation Card. Empty on manual and resident-agent Cards. A record written before the field existed is derived at list time from its selection door or first catalog row. | yes when non-empty |
+| `entry_resource` | The protected resource represented by a connector Card. Agent, automation, manual, resident-agent, and control Cards leave it empty because their authority is the Card's resource maps. | yes when non-empty |
 | `identity_scope` | Which identity boundary the delegated resource uses. | yes |
 | `created_at`, `expires_at`, `last_issued_at` | Lifecycle timestamps. | yes when present |
 | `last_four`, `source` | Token fingerprint and card family. | yes |

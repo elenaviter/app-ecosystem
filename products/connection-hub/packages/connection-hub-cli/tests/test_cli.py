@@ -200,6 +200,7 @@ class _OAuthProfileSessions:
                 client_source=("cimd" if kwargs.get("client_metadata_url") else "dcr"),
                 client_metadata_url=kwargs.get("client_metadata_url"),
                 scope=kwargs.get("scope") or "mcp",
+                card_kind="connector",
             ),
         )
         self.profiles.add(profile)

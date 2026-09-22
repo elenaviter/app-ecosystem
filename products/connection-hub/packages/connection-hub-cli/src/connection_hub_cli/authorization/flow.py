@@ -107,6 +107,7 @@ class BrowserAuthorizationFlow:
         grant = await self.authorize_discovered(
             protected_resource_metadata_url=protected_resource_metadata_url,
             discovered=discovered,
+            resource=resource,
             scope=scope,
             client_name=client_name,
             client_metadata=client_metadata,
@@ -154,6 +155,7 @@ class BrowserAuthorizationFlow:
         *,
         protected_resource_metadata_url: str,
         discovered: OAuthDiscoveryResult,
+        resource: str | None = None,
         scope: str = "",
         client_name: str = "Connection Hub CLI",
         client_metadata: Mapping[str, Any] | None = None,
@@ -167,6 +169,11 @@ class BrowserAuthorizationFlow:
         """Complete browser PKCE for already-validated protected-resource metadata."""
 
         server = discovered.authorization_server
+        authorization_resource = (
+            discovered.protected_resource.resource
+            if resource is None
+            else str(resource or "").strip()
+        )
         if not server.revocation_endpoint:
             raise AuthorizationError(
                 "oauth_revocation_unsupported",
@@ -205,7 +212,7 @@ class BrowserAuthorizationFlow:
                 metadata=server,
                 client=registration,
                 redirect_uri=callback.redirect_uri,
-                resource=discovered.protected_resource.resource,
+                resource=authorization_resource,
                 pkce=pkce,
                 scope=scope,
                 extra_parameters=authorization_parameters,
@@ -234,7 +241,7 @@ class BrowserAuthorizationFlow:
                 metadata=server,
                 client=registration,
                 redirect_uri=callback.redirect_uri,
-                resource=discovered.protected_resource.resource,
+                resource=authorization_resource,
                 code=callback_result.code,
                 code_verifier=pkce.code_verifier,
                 scope=scope,

@@ -7,6 +7,10 @@ from types import SimpleNamespace
 
 import httpx2
 import pytest
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+)
 from connection_hub_cli.authorization.discovery import (
     MAX_OAUTH_RESPONSE_BYTES,
     McpOAuthDiscoveryResult,
@@ -118,6 +122,7 @@ def _metadata() -> ProfileOAuthMetadata:
         client_source="dcr",
         client_metadata_url=None,
         scope="mcp",
+        card_kind=CARD_KIND_CONNECTOR,
     )
 
 
@@ -137,6 +142,7 @@ def _token(
     refresh: str = "refresh-secret",
     *,
     expires_at: int = 2_000_000_000,
+    card_kind: str = CARD_KIND_CONNECTOR,
 ) -> OAuthTokenSet:
     return OAuthTokenSet(
         access_token=access,
@@ -144,6 +150,7 @@ def _token(
         expires_at=expires_at,
         scope="mcp",
         access_id="access-agent",
+        card_kind=card_kind,
     )
 
 
@@ -154,6 +161,7 @@ def _other_card_token() -> OAuthTokenSet:
         expires_at=2_000_000_000,
         scope="mcp",
         access_id="access-other",
+        card_kind=CARD_KIND_CONNECTOR,
     )
 
 
@@ -204,11 +212,13 @@ class _OAuth:
             "rotated-refresh",
         )
         self.refresh_calls = 0
+        self.refresh_kwargs: list[dict] = []
         self.events: list[str] = []
         self.refresh_error: Exception | None = None
 
-    async def refresh(self, **_kwargs):
+    async def refresh(self, **kwargs):
         self.refresh_calls += 1
+        self.refresh_kwargs.append(dict(kwargs))
         await asyncio.sleep(0.01)
         if self.refresh_error:
             raise self.refresh_error
@@ -385,7 +395,7 @@ def test_legacy_profile_record_migrates_to_static_bearer_on_next_write(
     store.update(profile.with_credential_replaced())
 
     persisted = json.loads(path.read_text())["profiles"]["agent"]
-    assert persisted["record_version"] == 2
+    assert persisted["record_version"] == 3
     assert persisted["auth_type"] == "static_bearer"
     assert persisted["oauth"] is None
 
@@ -416,7 +426,7 @@ async def test_profile_authorization_forwards_client_identification_metadata(tmp
     await service.authorize(
         name="agent",
         endpoint=ENDPOINT,
-        client_name="Connection Hub CLI · worker_stream · codex:session-1",
+        client_name="Connection Hub CLI · codex:session-1",
         client_metadata={
             "kdcube_agent_id": "codex:session-1",
             "kdcube_machine_id": "machine-1",
@@ -429,6 +439,69 @@ async def test_profile_authorization_forwards_client_identification_metadata(tmp
         "kdcube_agent_id": "codex:session-1",
         "kdcube_machine_id": "machine-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_whole_card_authorization_omits_entry_resource_from_profile(tmp_path) -> None:
+    authorization = _Authorization(
+        _token(card_kind=CARD_KIND_AUTOMATION)
+    )
+    service, profiles, _credentials = _service(
+        tmp_path,
+        authorization=authorization,
+    )
+
+    result = await service.authorize(
+        name="agent",
+        endpoint=ENDPOINT,
+        whole_card=True,
+    )
+
+    assert authorization.calls[0]["resource"] == ""
+    assert result.profile.oauth.card_kind == CARD_KIND_AUTOMATION
+    assert result.profile.oauth.resource is None
+    assert result.profile.oauth.protected_resource_metadata_url is None
+    persisted = json.loads(profiles.path.read_text())["profiles"]["agent"]["oauth"]
+    assert "resource" not in persisted
+    assert "protected_resource_metadata_url" not in persisted
+
+
+@pytest.mark.asyncio
+async def test_whole_card_refresh_omits_entry_resource(tmp_path) -> None:
+    oauth = _OAuth(
+        _token(
+            "refreshed-access",
+            "rotated-refresh",
+            card_kind=CARD_KIND_AUTOMATION,
+        )
+    )
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    profile = CallerProfile.create_oauth(
+        name="agent",
+        endpoint=ENDPOINT,
+        access_id="access-agent",
+        oauth=ProfileOAuthMetadata(
+            protected_resource_metadata_url=None,
+            resource=None,
+            issuer=ISSUER,
+            token_endpoint=f"{ISSUER}/token",
+            revocation_endpoint=f"{ISSUER}/revoke",
+            client_id="native-client",
+            client_source="dcr",
+            client_metadata_url=None,
+            scope="mcp",
+            card_kind=CARD_KIND_AUTOMATION,
+        ),
+        credential_ref="a" * 32,
+    )
+    profiles.add(profile)
+    credentials.put(
+        profile.credential_ref,
+        _token(expires_at=1, card_kind=CARD_KIND_AUTOMATION),
+    )
+
+    assert await service.access_token(profile.name) == "refreshed-access"
+    assert oauth.refresh_kwargs[0]["resource"] is None
 
 
 @pytest.mark.asyncio

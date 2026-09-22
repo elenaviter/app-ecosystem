@@ -188,7 +188,7 @@ class OAuthClient:
         metadata: AuthorizationServerMetadata,
         client: OAuthClientRegistration,
         redirect_uri: str,
-        resource: str,
+        resource: str | None,
         pkce: PKCEParameters,
         scope: str = "",
         extra_parameters: Mapping[str, str] | None = None,
@@ -210,8 +210,9 @@ class OAuthClient:
             "state": _oauth_value(pkce.state),
             "code_challenge": _oauth_value(pkce.code_challenge),
             "code_challenge_method": "S256",
-            "resource": validate_resource_identifier(resource),
         }
+        if str(resource or "").strip():
+            values["resource"] = validate_resource_identifier(resource)
         normalized_scope = str(scope or "").strip()
         if normalized_scope:
             values["scope"] = _oauth_value(normalized_scope)
@@ -231,7 +232,7 @@ class OAuthClient:
         metadata: AuthorizationServerMetadata,
         client: OAuthClientRegistration,
         redirect_uri: str,
-        resource: str,
+        resource: str | None,
         code: str,
         code_verifier: str,
         scope: str = "",
@@ -247,8 +248,9 @@ class OAuthClient:
             ),
             "client_id": client.client_id,
             "code_verifier": _oauth_value(code_verifier),
-            "resource": validate_resource_identifier(resource),
         }
+        if str(resource or "").strip():
+            payload["resource"] = validate_resource_identifier(resource)
         response = await self._transport.post_form(metadata.token_endpoint, payload)
         return OAuthTokenSet.from_mapping(
             response,
@@ -261,7 +263,7 @@ class OAuthClient:
         *,
         metadata: AuthorizationServerMetadata,
         client: OAuthClientRegistration,
-        resource: str,
+        resource: str | None,
         refresh_token: str,
         scope: str = "",
         now: int | None = None,
@@ -276,8 +278,9 @@ class OAuthClient:
             "grant_type": "refresh_token",
             "refresh_token": current_refresh,
             "client_id": client.client_id,
-            "resource": validate_resource_identifier(resource),
         }
+        if str(resource or "").strip():
+            payload["resource"] = validate_resource_identifier(resource)
         normalized_scope = str(scope or "").strip()
         if normalized_scope:
             payload["scope"] = _oauth_value(normalized_scope)

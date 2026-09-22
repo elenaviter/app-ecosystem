@@ -89,7 +89,7 @@ substring value. For example, a worker-aware client can report:
 
 ```json
 {
-  "client_name": "Connection Hub CLI · worker_stream · codex:session-1",
+  "client_name": "Connection Hub CLI · codex:session-1",
   "kdcube_agent_provider": "codex",
   "kdcube_agent_id": "codex:session-1",
   "kdcube_agent_session_id": "session-1",
@@ -978,9 +978,11 @@ through `KDCubeMCPServer` and the proc bridge and checks:
 
 The authorization adapter implements the corresponding registration and OAuth
 changes: CIMD is supported, DCR remains as a separately configurable
-compatibility path, DCR records carry `application_type`, authorization
-responses carry `iss`, and persisted delegated state remains issuer- and
-resource-bound.
+compatibility path, DCR records carry `application_type`, and authorization
+responses carry `iss`. Connector state is issuer- and resource-bound. Agent
+and automation state is issuer-bound and carries the server-issued `card_kind`
+without an entry resource; its credential is authorized by the full Card grant
+map at each concrete surface.
 
 This is a support statement for the capabilities KDCube exposes, backed by the
 focused wire and OAuth suites. It is not a blanket claim that every optional

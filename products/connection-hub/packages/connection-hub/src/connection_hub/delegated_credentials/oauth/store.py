@@ -577,6 +577,8 @@ class GrantStore:
         operations: Optional[List[str]] = None,
         resource_grants: Optional[Mapping[str, Any]] = None,
         resource_operations: Optional[Mapping[str, Any]] = None,
+        resource: Optional[str] = None,
+        card_kind: Optional[str] = None,
         state: Optional[RefreshTokenState] = None,
     ) -> Optional[str]:
         """Rotate a refresh token and persist any freshly resolved authority.
@@ -595,7 +597,11 @@ class GrantStore:
         rec = current.record
         replacement = {
             "registry_access_id": str(rec.get("registry_access_id") or "").strip(),
-            "card_kind": str(rec.get("card_kind") or "").strip(),
+            "card_kind": (
+                str(rec.get("card_kind") or "").strip()
+                if card_kind is None
+                else str(card_kind or "").strip()
+            ),
             "client_id": rec["client_id"],
             "sub": rec["sub"],
             "scopes": list(rec.get("scopes") or []) if scopes is None else list(scopes),
@@ -624,7 +630,11 @@ class GrantStore:
                     ).items()
                 }
             ),
-            "resource": rec.get("resource") or "",
+            "resource": (
+                rec.get("resource") or ""
+                if resource is None
+                else str(resource or "").strip()
+            ),
             "identity_scope": rec.get("identity_scope") or "",
             "credential": rec.get("credential") or {},
             "grantor_authority": rec.get("grantor_authority") or {},

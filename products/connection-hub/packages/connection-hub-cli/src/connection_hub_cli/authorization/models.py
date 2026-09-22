@@ -9,10 +9,18 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+)
 from connection_hub_cli.errors import AuthorizationError
 
 _TOKEN_AUTH_METHODS = frozenset({"none"})
 _ACCESS_ID_RE = re.compile(r"^[^\s\x00-\x1f\x7f]{1,256}$")
+_OAUTH_CARD_KINDS = frozenset(
+    {CARD_KIND_AGENT, CARD_KIND_AUTOMATION, CARD_KIND_CONNECTOR}
+)
 
 
 def _text(value: Any, *, maximum: int = 4096) -> str:
@@ -403,6 +411,7 @@ class OAuthTokenSet:
     expires_at: int = 0
     scope: str = ""
     access_id: str | None = None
+    card_kind: str | None = None
 
     @classmethod
     def from_mapping(
@@ -433,6 +442,7 @@ class OAuthTokenSet:
             message="The authorization server returned an invalid token response.",
         )
         access_id = _text(value.get("access_id"), maximum=256) or None
+        card_kind = _text(value.get("card_kind"), maximum=64) or None
         try:
             expires_in = int(value.get("expires_in") or 0)
         except (TypeError, ValueError):
@@ -447,6 +457,7 @@ class OAuthTokenSet:
             or token_type.lower() != "bearer"
             or expires_in < 0
             or (access_id is not None and not _ACCESS_ID_RE.fullmatch(access_id))
+            or (card_kind is not None and card_kind not in _OAUTH_CARD_KINDS)
         ):
             raise AuthorizationError(
                 "oauth_token_response_invalid",
@@ -460,6 +471,7 @@ class OAuthTokenSet:
             expires_at=issued_at + expires_in if expires_in else 0,
             scope=scope,
             access_id=access_id,
+            card_kind=card_kind,
         )
 
     def is_expiring(self, *, now: int | None = None, leeway_seconds: int = 60) -> bool:
@@ -475,6 +487,7 @@ class OAuthTokenSet:
             message="The OAuth session credential is invalid.",
         )
         access_id = _text(self.access_id, maximum=256) or None
+        card_kind = _text(self.card_kind, maximum=64) or None
         if (
             _secret_token(self.access_token) != self.access_token
             or (
@@ -488,6 +501,8 @@ class OAuthTokenSet:
             or scope != self.scope
             or access_id != self.access_id
             or (access_id is not None and not _ACCESS_ID_RE.fullmatch(access_id))
+            or card_kind != self.card_kind
+            or (card_kind is not None and card_kind not in _OAUTH_CARD_KINDS)
         ):
             raise AuthorizationError(
                 "oauth_session_credential_invalid",
@@ -502,6 +517,7 @@ class OAuthTokenSet:
                 "expires_at": self.expires_at,
                 "scope": self.scope,
                 "access_id": self.access_id,
+                "card_kind": self.card_kind,
             },
             ensure_ascii=True,
             sort_keys=True,
@@ -534,6 +550,7 @@ class OAuthTokenSet:
             message="The stored OAuth session credential is invalid.",
         )
         access_id = _text(payload.get("access_id"), maximum=256) or None
+        card_kind = _text(payload.get("card_kind"), maximum=64) or None
         try:
             expires_at = int(payload.get("expires_at") or 0)
         except (TypeError, ValueError):
@@ -547,6 +564,7 @@ class OAuthTokenSet:
             or token_type.lower() != "bearer"
             or expires_at < 0
             or (access_id is not None and not _ACCESS_ID_RE.fullmatch(access_id))
+            or (card_kind is not None and card_kind not in _OAUTH_CARD_KINDS)
         ):
             raise AuthorizationError(
                 "oauth_session_credential_invalid",
@@ -559,4 +577,5 @@ class OAuthTokenSet:
             expires_at=expires_at,
             scope=scope,
             access_id=access_id,
+            card_kind=card_kind,
         )

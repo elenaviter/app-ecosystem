@@ -56,6 +56,12 @@ configuration contains only this command shape:
 connection-hub mcp serve --profile coding-agent
 ```
 
+The default profile is an agent/automation profile. It stores the server-issued
+Card kind and OAuth server identity, but no MCP entry resource; one credential
+can therefore use every surface granted on that Card. Use `--resource-bound`
+when creating a connector profile for one fixed MCP endpoint. Reconnect follows
+the persisted server-issued Card kind and does not reclassify a profile.
+
 An application embedding the profile-session API can identify one concrete
 client instance during dynamic registration:
 
@@ -63,7 +69,7 @@ client instance during dynamic registration:
 await oauth_profile_sessions.authorize(
     name=profile_name,
     endpoint=endpoint,
-    client_name="Connection Hub CLI · worker_stream · codex:session-1",
+    client_name="Connection Hub CLI · codex:session-1",
     client_metadata={
         "kdcube_agent_id": "codex:session-1",
         "kdcube_machine_id": "machine-1",

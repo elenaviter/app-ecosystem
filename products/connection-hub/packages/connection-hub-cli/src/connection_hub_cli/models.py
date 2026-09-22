@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+)
 from connection_hub_cli.errors import ClientConfigurationError, ProfileError
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -16,6 +21,10 @@ _CLIENTS = frozenset({"claude-code", "claude-desktop", "codex", "hermes", "openc
 _HOST_KINDS = frozenset({"local", "endpoint"})
 _PROFILE_AUTH_TYPES = frozenset({"static_bearer", "oauth"})
 _OAUTH_CLIENT_SOURCES = frozenset({"cimd", "dcr", "provisioned"})
+_OAUTH_CARD_KINDS = frozenset(
+    {CARD_KIND_AGENT, CARD_KIND_AUTOMATION, CARD_KIND_CONNECTOR}
+)
+_WHOLE_CARD_KINDS = frozenset({CARD_KIND_AGENT, CARD_KIND_AUTOMATION})
 _INSTALLATION_MODES = frozenset({"bridge", "oauth"})
 
 
@@ -144,8 +153,8 @@ def _profile_oauth_url(value: Any, *, field: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class ProfileOAuthMetadata:
-    protected_resource_metadata_url: str
-    resource: str
+    protected_resource_metadata_url: str | None
+    resource: str | None
     issuer: str
     token_endpoint: str
     revocation_endpoint: str | None
@@ -153,13 +162,27 @@ class ProfileOAuthMetadata:
     client_source: str
     client_metadata_url: str | None
     scope: str
+    card_kind: str
 
     def verify(self) -> None:
-        _profile_oauth_url(
-            self.protected_resource_metadata_url,
-            field="protected-resource metadata URL",
-        )
-        _profile_oauth_text(self.resource, field="resource")
+        kind = str(self.card_kind or "").strip()
+        if kind not in _OAUTH_CARD_KINDS:
+            raise ProfileError(
+                "invalid_oauth_profile_record",
+                "The OAuth profile card kind is invalid.",
+            )
+        if kind in _WHOLE_CARD_KINDS:
+            if self.protected_resource_metadata_url is not None or self.resource is not None:
+                raise ProfileError(
+                    "invalid_oauth_profile_record",
+                    "A whole-Card OAuth profile cannot store an entry resource.",
+                )
+        else:
+            _profile_oauth_url(
+                self.protected_resource_metadata_url,
+                field="protected-resource metadata URL",
+            )
+            _profile_oauth_text(self.resource, field="resource")
         _profile_oauth_url(self.issuer, field="issuer")
         _profile_oauth_url(self.token_endpoint, field="token endpoint")
         if self.revocation_endpoint is not None:
@@ -188,9 +211,7 @@ class ProfileOAuthMetadata:
 
     def to_dict(self) -> dict[str, Any]:
         self.verify()
-        return {
-            "protected_resource_metadata_url": self.protected_resource_metadata_url,
-            "resource": self.resource,
+        value = {
             "issuer": self.issuer,
             "token_endpoint": self.token_endpoint,
             "revocation_endpoint": self.revocation_endpoint,
@@ -199,15 +220,23 @@ class ProfileOAuthMetadata:
             "client_metadata_url": self.client_metadata_url,
             "scope": self.scope,
         }
+        if self.protected_resource_metadata_url is not None:
+            value["protected_resource_metadata_url"] = self.protected_resource_metadata_url
+        if self.resource is not None:
+            value["resource"] = self.resource
+        value["card_kind"] = self.card_kind
+        return value
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> ProfileOAuthMetadata:
         try:
             record = cls(
-                protected_resource_metadata_url=str(
-                    value["protected_resource_metadata_url"]
+                protected_resource_metadata_url=(
+                    str(value["protected_resource_metadata_url"])
+                    if value.get("protected_resource_metadata_url")
+                    else None
                 ),
-                resource=str(value["resource"]),
+                resource=(str(value["resource"]) if value.get("resource") else None),
                 issuer=str(value["issuer"]),
                 token_endpoint=str(value["token_endpoint"]),
                 revocation_endpoint=(
@@ -223,6 +252,7 @@ class ProfileOAuthMetadata:
                     else None
                 ),
                 scope=str(value.get("scope") or ""),
+                card_kind=str(value["card_kind"]),
             )
             record.verify()
             return record
@@ -302,6 +332,29 @@ class CallerProfile:
             updated_at=now or utc_now(),
         )
 
+    def with_oauth_replaced(
+        self,
+        oauth: ProfileOAuthMetadata,
+        *,
+        now: str | None = None,
+    ) -> CallerProfile:
+        if self.auth_type != "oauth":
+            raise ProfileError(
+                "profile_not_oauth",
+                f"Caller profile '{self.name}' is not OAuth-backed.",
+            )
+        oauth.verify()
+        return CallerProfile(
+            name=self.name,
+            endpoint=self.endpoint,
+            credential_ref=self.credential_ref,
+            access_id=self.access_id,
+            auth_type=self.auth_type,
+            oauth=oauth,
+            created_at=self.created_at,
+            updated_at=now or utc_now(),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -310,7 +363,7 @@ class CallerProfile:
             "access_id": self.access_id,
             "auth_type": self.auth_type,
             "oauth": self.oauth.to_dict() if self.oauth is not None else None,
-            "record_version": 2,
+            "record_version": 3,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

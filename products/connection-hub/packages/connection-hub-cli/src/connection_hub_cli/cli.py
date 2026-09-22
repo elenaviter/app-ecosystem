@@ -263,12 +263,15 @@ def _profile_view(services: Services, profile: Any) -> dict[str, Any]:
                 "OAuth-backed caller profiles are unavailable in this process.",
             )
         value.update(services.oauth_profile_sessions.credential_status(profile))
-        value["oauth"] = {
-            "resource": profile.oauth.resource,
+        oauth = {
             "issuer": profile.oauth.issuer,
             "scope": profile.oauth.scope,
             "client_source": profile.oauth.client_source,
+            "card_kind": profile.oauth.card_kind,
         }
+        if profile.oauth.resource is not None:
+            oauth["resource"] = profile.oauth.resource
+        value["oauth"] = oauth
     return value
 
 
@@ -306,6 +309,7 @@ async def _run_profile(args: argparse.Namespace, services: Services) -> int:
             scope=args.scope,
             provisioned_client_id=args.client_id,
             client_metadata_url=args.client_metadata_url,
+            whole_card=not args.resource_bound,
             callback_port=args.callback_port,
             timeout_seconds=args.wait_seconds,
             **authorization_options,
@@ -1422,6 +1426,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--callback-port",
         type=int,
         help="Fixed loopback port published by the selected Client ID Metadata Document.",
+    )
+    profile_authorize.add_argument(
+        "--resource-bound",
+        action="store_true",
+        help="Create a connector profile bound to this one protected resource.",
     )
     profile_authorize.add_argument(
         "--no-open",

@@ -174,6 +174,56 @@ async def test_dcr_authorization_exchange_and_refresh() -> None:
 
 
 @pytest.mark.asyncio
+async def test_whole_card_oauth_omits_rfc8707_resource_everywhere() -> None:
+    transport = _Transport()
+    transport.values["https://auth.example.test/oauth/token"] = {
+        "access_token": "whole-card-access",
+        "refresh_token": "whole-card-refresh",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "access_id": "access_cli",
+        "card_kind": "automation",
+    }
+    client = OAuthClient(transport=transport)
+    metadata = _server_metadata()
+    registration = OAuthClientRegistration(
+        client_id="native-client",
+        redirect_uris=("http://127.0.0.1:9123/callback",),
+    )
+    pkce = generate_pkce()
+
+    authorize_url = client.authorization_url(
+        metadata=metadata,
+        client=registration,
+        redirect_uri="http://127.0.0.1:9123/callback",
+        resource=None,
+        pkce=pkce,
+        scope="records:read",
+    )
+    query = parse_qs(urlsplit(authorize_url).query)
+    assert "resource" not in query
+
+    token = await client.exchange_code(
+        metadata=metadata,
+        client=registration,
+        redirect_uri="http://127.0.0.1:9123/callback",
+        resource=None,
+        code="authorization-code",
+        code_verifier=pkce.code_verifier,
+        scope="records:read",
+    )
+    assert "resource" not in transport.forms[-1][1]
+
+    await client.refresh(
+        metadata=metadata,
+        client=registration,
+        resource=None,
+        refresh_token=token.refresh_token,
+    )
+    assert "resource" not in transport.forms[-1][1]
+
+
+@pytest.mark.asyncio
 async def test_dcr_sends_client_name_and_identification_metadata() -> None:
     transport = _Transport()
     transport.values["https://auth.example.test/oauth/register"] = {
@@ -185,7 +235,7 @@ async def test_dcr_sends_client_name_and_identification_metadata() -> None:
     await OAuthClient(transport=transport).register_native_client(
         metadata=_server_metadata(),
         redirect_uri="http://127.0.0.1:9123/callback",
-        client_name="Connection Hub CLI · worker_stream · codex:session-1",
+        client_name="Connection Hub CLI · codex:session-1",
         client_metadata={
             "kdcube_agent_id": "codex:session-1",
             "kdcube_machine_id": "machine-1",

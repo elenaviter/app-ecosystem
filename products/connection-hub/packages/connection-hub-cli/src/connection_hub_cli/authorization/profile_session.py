@@ -13,6 +13,14 @@ from typing import Any, Protocol
 
 from filelock import AsyncFileLock, Timeout
 
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+)
+from connection_hub.delegated_credentials.oauth.clients import (
+    client_uses_full_card_catalog,
+)
 from connection_hub_cli.authorization.client import OAuthClient
 from connection_hub_cli.authorization.discovery import (
     McpOAuthEndpointDiscovery,
@@ -45,6 +53,7 @@ class OAuthProfileCredentialStore(Protocol):
 
 
 Probe = Callable[..., Awaitable[ProbeResult]]
+_WHOLE_CARD_KINDS = frozenset({CARD_KIND_AGENT, CARD_KIND_AUTOMATION})
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +98,7 @@ class OAuthProfileSessionService:
         client_metadata: Mapping[str, Any] | None = None,
         provisioned_client_id: str | None = None,
         client_metadata_url: str | None = None,
+        whole_card: bool | None = None,
         callback_port: int | None = None,
         timeout_seconds: float = 300.0,
         browser_opener=None,
@@ -109,11 +119,17 @@ class OAuthProfileSessionService:
                 protected_resource=located.protected_resource,
                 authorization_server=located.authorization_server,
             )
+            use_whole_card = (
+                client_uses_full_card_catalog(client_metadata)
+                if whole_card is None
+                else bool(whole_card)
+            )
             grant = await self._authorization.authorize_discovered(
                 protected_resource_metadata_url=(
                     located.protected_resource_metadata_url
                 ),
                 discovered=discovered,
+                resource=("" if use_whole_card else located.protected_resource.resource),
                 scope=selected_scope,
                 client_name=client_name,
                 client_metadata=client_metadata,
@@ -133,19 +149,14 @@ class OAuthProfileSessionService:
                     "oauth_access_id_missing",
                     "The OAuth credential is not bound to a delegated caller card.",
                 )
-            metadata = ProfileOAuthMetadata(
-                protected_resource_metadata_url=(grant.protected_resource_metadata_url),
-                resource=grant.discovered.protected_resource.resource,
-                issuer=grant.discovered.authorization_server.issuer,
-                token_endpoint=(grant.discovered.authorization_server.token_endpoint),
-                revocation_endpoint=(
-                    grant.discovered.authorization_server.revocation_endpoint
-                ),
-                client_id=grant.registration.client_id,
-                client_source=grant.registration.source,
-                client_metadata_url=grant.registration.client_metadata_url,
-                scope=grant.token.scope or selected_scope,
-            )
+            try:
+                metadata = self._metadata_from_grant(
+                    grant,
+                    scope=grant.token.scope or selected_scope,
+                )
+            except AuthorizationError:
+                await self._revoke_grant(grant)
+                raise
             profile = CallerProfile.create_oauth(
                 name=profile_name,
                 endpoint=target,
@@ -195,7 +206,12 @@ class OAuthProfileSessionService:
                 profile.endpoint,
                 default_scope=metadata.scope,
             )
-            self._verify_reconnect_endpoint(profile, located)
+            use_whole_card = metadata.card_kind in _WHOLE_CARD_KINDS
+            self._verify_reconnect_endpoint(
+                profile,
+                located,
+                compare_resource=not use_whole_card,
+            )
             discovered = OAuthDiscoveryResult(
                 protected_resource=located.protected_resource,
                 authorization_server=located.authorization_server,
@@ -205,6 +221,7 @@ class OAuthProfileSessionService:
                     located.protected_resource_metadata_url
                 ),
                 discovered=discovered,
+                resource=("" if use_whole_card else located.protected_resource.resource),
                 scope=metadata.scope,
                 provisioned_client_id=client_id,
                 callback_port=callback_port,
@@ -240,9 +257,18 @@ class OAuthProfileSessionService:
                 require_explicit=True,
             )
             try:
+                replacement_metadata = self._metadata_from_grant(
+                    grant,
+                    scope=grant.token.scope or metadata.scope,
+                )
+            except AuthorizationError:
+                await self._revoke_grant(grant)
+                raise
+            try:
                 committed = await self._commit_reconnected_token(
                     expected=profile,
                     replacement=replacement,
+                    replacement_metadata=replacement_metadata,
                 )
             except Exception as exc:
                 raise self._matching_grant_failure(
@@ -426,18 +452,29 @@ class OAuthProfileSessionService:
         return await self._oauth.refresh(
             metadata=server,
             client=self._registration(profile),
-            resource=metadata.resource,
+            resource=(
+                None if metadata.card_kind in _WHOLE_CARD_KINDS else metadata.resource
+            ),
             refresh_token=token.refresh_token,
             scope=metadata.scope,
         )
 
     async def _discover_server(self, profile: CallerProfile):
         metadata = self._require_oauth(profile)
-        discovered = await self._discovery.discover(
-            protected_resource_metadata_url=(metadata.protected_resource_metadata_url),
-            expected_resource=metadata.resource,
-        )
-        server = discovered.authorization_server
+        if metadata.protected_resource_metadata_url and metadata.resource:
+            discovered = await self._discovery.discover(
+                protected_resource_metadata_url=(
+                    metadata.protected_resource_metadata_url
+                ),
+                expected_resource=metadata.resource,
+            )
+            server = discovered.authorization_server
+        else:
+            located = await self._endpoint_discovery.discover(
+                profile.endpoint,
+                default_scope=metadata.scope,
+            )
+            server = located.authorization_server
         if (
             server.issuer != metadata.issuer
             or server.token_endpoint != metadata.token_endpoint
@@ -449,16 +486,26 @@ class OAuthProfileSessionService:
         return server
 
     @staticmethod
-    def _verify_reconnect_endpoint(profile: CallerProfile, located) -> None:
+    def _verify_reconnect_endpoint(
+        profile: CallerProfile,
+        located,
+        *,
+        compare_resource: bool,
+    ) -> None:
         metadata = OAuthProfileSessionService._require_oauth(profile)
         server = located.authorization_server
         if (
-            located.protected_resource_metadata_url
-            != metadata.protected_resource_metadata_url
-            or located.protected_resource.resource != metadata.resource
-            or server.issuer != metadata.issuer
+            server.issuer != metadata.issuer
             or server.token_endpoint != metadata.token_endpoint
             or server.revocation_endpoint != metadata.revocation_endpoint
+            or (
+                compare_resource
+                and (
+                    located.protected_resource_metadata_url
+                    != metadata.protected_resource_metadata_url
+                    or located.protected_resource.resource != metadata.resource
+                )
+            )
         ):
             raise AuthorizationError(
                 "oauth_profile_server_changed",
@@ -470,6 +517,7 @@ class OAuthProfileSessionService:
         *,
         expected: CallerProfile,
         replacement: OAuthTokenSet,
+        replacement_metadata: ProfileOAuthMetadata,
     ) -> CallerProfile:
         self._prepare_lock(self._transaction_lock)
         lock = AsyncFileLock(str(self._transaction_lock), timeout=10, mode=0o600)
@@ -479,7 +527,12 @@ class OAuthProfileSessionService:
                 current = self._require_oauth_profile(expected.name)
                 self._require_same_reconnect_binding(expected, current)
                 previous = self._credentials.get(current.credential_ref)
-                self._replace_token(current, previous, replacement)
+                self._replace_token(
+                    current,
+                    previous,
+                    replacement,
+                    oauth=replacement_metadata,
+                )
                 return self._require_oauth_profile(current.name)
         except Timeout:
             raise AuthorizationError(
@@ -559,6 +612,78 @@ class OAuthProfileSessionService:
         error.details = details
         return error
 
+    @staticmethod
+    def _metadata_from_grant(
+        grant: Any,
+        *,
+        scope: str,
+    ) -> ProfileOAuthMetadata:
+        card_kind = str(grant.token.card_kind or "").strip()
+        if not card_kind:
+            raise AuthorizationError(
+                "oauth_card_kind_missing",
+                "The OAuth credential did not declare its delegated Card kind.",
+            )
+        if card_kind not in _WHOLE_CARD_KINDS | {CARD_KIND_CONNECTOR}:
+            raise AuthorizationError(
+                "oauth_profile_card_kind_invalid",
+                "The OAuth credential declared an invalid delegated Card kind.",
+            )
+        whole_card = card_kind in _WHOLE_CARD_KINDS
+        return ProfileOAuthMetadata(
+            protected_resource_metadata_url=(
+                None if whole_card else grant.protected_resource_metadata_url
+            ),
+            resource=(
+                None if whole_card else grant.discovered.protected_resource.resource
+            ),
+            issuer=grant.discovered.authorization_server.issuer,
+            token_endpoint=grant.discovered.authorization_server.token_endpoint,
+            revocation_endpoint=(
+                grant.discovered.authorization_server.revocation_endpoint
+            ),
+            client_id=grant.registration.client_id,
+            client_source=grant.registration.source,
+            client_metadata_url=grant.registration.client_metadata_url,
+            scope=scope,
+            card_kind=card_kind,
+        )
+
+    @staticmethod
+    def _metadata_for_refreshed_token(
+        metadata: ProfileOAuthMetadata,
+        token: OAuthTokenSet,
+    ) -> ProfileOAuthMetadata:
+        card_kind = str(token.card_kind or "").strip()
+        if not card_kind:
+            raise AuthorizationError(
+                "oauth_card_kind_missing",
+                "The refreshed OAuth credential did not declare its delegated Card kind.",
+            )
+        if metadata.card_kind != card_kind:
+            raise AuthorizationError(
+                "oauth_profile_card_kind_mismatch",
+                "The refreshed OAuth credential belongs to a different Card kind.",
+            )
+        if card_kind in _WHOLE_CARD_KINDS:
+            return replace(
+                metadata,
+                protected_resource_metadata_url=None,
+                resource=None,
+                card_kind=card_kind,
+            )
+        if card_kind != CARD_KIND_CONNECTOR:
+            raise AuthorizationError(
+                "oauth_profile_card_kind_invalid",
+                "The refreshed OAuth credential declared an invalid Card kind.",
+            )
+        if not metadata.protected_resource_metadata_url or not metadata.resource:
+            raise AuthorizationError(
+                "oauth_profile_resource_missing",
+                "A connector OAuth profile requires its protected resource.",
+            )
+        return replace(metadata, card_kind=card_kind)
+
     def _load_token(self, profile: CallerProfile) -> OAuthTokenSet:
         token = self._credentials.get(profile.credential_ref)
         if token is None:
@@ -573,10 +698,25 @@ class OAuthProfileSessionService:
         profile: CallerProfile,
         previous: OAuthTokenSet | None,
         replacement: OAuthTokenSet,
+        *,
+        oauth: ProfileOAuthMetadata | None = None,
     ) -> None:
+        current_oauth = self._require_oauth(profile)
+        replacement_oauth = oauth or self._metadata_for_refreshed_token(
+            current_oauth,
+            replacement,
+        )
+        if (
+            current_oauth.card_kind
+            and replacement_oauth.card_kind != current_oauth.card_kind
+        ):
+            raise AuthorizationError(
+                "oauth_profile_card_kind_mismatch",
+                "The OAuth credential belongs to a different Card kind.",
+            )
         self._credentials.put(profile.credential_ref, replacement)
         try:
-            self._profiles.update(profile.with_credential_replaced())
+            self._profiles.update(profile.with_oauth_replaced(replacement_oauth))
         except Exception:
             try:
                 if previous is None:
@@ -609,6 +749,18 @@ class OAuthProfileSessionService:
             raise AuthorizationError(
                 "oauth_profile_access_id_mismatch",
                 "The OAuth credential does not match its caller card.",
+            )
+        profile_kind = str((profile.oauth.card_kind if profile.oauth else None) or "")
+        token_kind = str(token.card_kind or "")
+        if profile.auth_type == "oauth" and not token_kind:
+            raise AuthorizationError(
+                "oauth_card_kind_missing",
+                "The OAuth credential does not declare its delegated Card kind.",
+            )
+        if profile_kind != token_kind:
+            raise AuthorizationError(
+                "oauth_profile_card_kind_mismatch",
+                "The OAuth credential does not match its caller Card kind.",
             )
         return token
 
