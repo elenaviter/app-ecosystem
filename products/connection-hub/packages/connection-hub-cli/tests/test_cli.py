@@ -1007,6 +1007,8 @@ def test_profile_reconnect_reports_preserved_card_without_tokens(
         {
             "name": "agent",
             "callback_port": 9124,
+            "device": False,
+            "device_presenter": None,
             "timeout_seconds": 5.0,
         }
     ]
