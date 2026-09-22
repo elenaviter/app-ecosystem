@@ -77,10 +77,9 @@ its machine can reach.
 - **Notes are the record, not the briefing.** Worker Cards do not grant
   `plan.notes.list` today, so "read the newest note" refuses. Decide by what the
   Card grants, not by what the coordinator can see.
-- **Never send a local filesystem path as the carrier.** An absolute
-  home-directory path is bound to one machine and one user. The moment a
-  worker runs on another host it points at nothing, and the failure looks like
-  a worker ignoring instructions.
+- **Never send a local filesystem path as the carrier.** A path is bound to one
+  machine and one user. The moment a worker runs on another host it points at
+  nothing, and the failure looks like a worker ignoring instructions.
 - **Attachments are operator-only.** Worker-to-worker mail refuses them with
   `field_attachments_operator_only`; local worker mail carries paths in its
   body, which is subject to the rule above.

@@ -52,7 +52,7 @@ def test_worker_procedure_revision_records_its_exact_content() -> None:
         (PACKAGE_ROOT / "procedure-revisions.json").read_text(encoding="utf-8")
     )
 
-    assert package["revision"] == "2026.09.22.7"
+    assert package["revision"] == "2026.09.22.8"
     assert ledger[package["revision"]] == package["source_digest"]
 
 
