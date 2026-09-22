@@ -17,6 +17,7 @@ from connection_hub.delegated_credentials.agent_capability_control import (
     resident_selection_properties,
 )
 from connection_hub.delegated_credentials.agent_capability_policy import (
+    AGENT_CAPABILITY_AUTHORITY_PROPERTY,
     AGENT_CAPABILITY_PROJECTION_PROPERTY,
     AGENT_CAPABILITY_SELECTION_PROPERTY,
     AgentCapabilityPolicy,
@@ -51,6 +52,7 @@ from connection_hub.delegated_credentials.automation_access import (
 from connection_hub.delegated_credentials.cards.identity import (
     CARD_KIND_AGENT,
     CARD_KIND_CONTROL,
+    is_resident_client_id,
     resident_client_id,
     stable_resident_access_id,
 )
@@ -752,8 +754,222 @@ async def sync_agent_capability_control(
     }
 
 
+async def update_agent_capability_selection(
+    service: Any,
+    user: Mapping[str, Any],
+    *,
+    access_id: str,
+    selected_capabilities: Mapping[str, Any],
+    expected_card_revision: int | None,
+) -> dict[str, Any]:
+    """Replace one resident Agent Card's visible descriptor selection.
+
+    The current linked Control Card supplies the editable ceiling. Values that
+    disappeared from that ceiling remain stored but hidden, while a submitted
+    value outside it can never be added. The exact Card revision is mandatory
+    so a browser cannot overwrite a concurrent descriptor sync or user edit.
+    """
+
+    grantor_subject = _subject_from_user(user)
+    if not grantor_subject:
+        return {
+            "ok": False,
+            "error": "delegated_access_requires_authenticated_user",
+        }
+    refusal = _delegate_mutation_refusal(user)
+    if refusal is not None:
+        return refusal
+    access_id = _clean(access_id)
+    if not access_id:
+        return {
+            "ok": False,
+            "error": "delegated_access_requires_access_id",
+            "status": 400,
+        }
+    if expected_card_revision is None:
+        return {
+            "ok": False,
+            "error": "agent_capability_card_revision_required",
+            "status": 400,
+        }
+
+    try:
+        loaded_resident = await service._load_record_any_state(
+            access_id,
+            grantor_subject=grantor_subject,
+        )
+    except CardUnavailable as exc:
+        return {
+            "ok": False,
+            "error": "delegated_cards_unavailable",
+            "reason": exc.reason,
+            "retryable": True,
+            "status": 503,
+        }
+    if loaded_resident is None:
+        return {"ok": False, "error": "delegated_access_not_found", "status": 404}
+    resident, resident_state = loaded_resident
+    if resident_state != CARD_STATE_ACTIVE:
+        return {"ok": False, "error": "agent_capability_card_not_active", "status": 409}
+    if (
+        resident.source != ACCESS_SOURCE_AGENT
+        or resident.card_kind != CARD_KIND_AGENT
+        or not is_resident_client_id(resident.client_id)
+        or resident.access_id
+        != stable_resident_access_id(grantor_subject, resident.client_id)
+        or resident.control_card is None
+        or AGENT_CAPABILITY_SELECTION_PROPERTY
+        not in dict(resident.properties or {})
+    ):
+        return {
+            "ok": False,
+            "error": "agent_capability_card_required",
+            "status": 409,
+        }
+    if int(expected_card_revision) != int(resident.card_revision):
+        return {
+            "ok": False,
+            "error": "agent_capability_card_revision_conflict",
+            "expected": int(expected_card_revision),
+            "actual": int(resident.card_revision),
+            "access": resident.to_public_dict(),
+            "status": 409,
+        }
+
+    control_id = resident.control_card.control_id
+    try:
+        loaded_control = await service._load_record_any_state(
+            control_id,
+            grantor_subject=grantor_subject,
+        )
+    except CardUnavailable as exc:
+        return {
+            "ok": False,
+            "error": "control_card_unavailable",
+            "reason": exc.reason,
+            "retryable": True,
+            "status": 503,
+        }
+    if loaded_control is None or loaded_control[1] != CARD_STATE_ACTIVE:
+        return {
+            "ok": False,
+            "error": "agent_capability_control_not_active",
+            "status": 409,
+        }
+    control = loaded_control[0]
+    if (
+        not _record_is_credentialless(control)
+        or control.card_kind != CARD_KIND_CONTROL
+        or control.issuer_kind != AGENT_DESCRIPTOR_ISSUER_KIND
+        or control.access_id != control_id
+    ):
+        return {
+            "ok": False,
+            "error": "agent_capability_control_identity_conflict",
+            "status": 409,
+        }
+
+    try:
+        authority = AgentCapabilityPolicy.from_property(
+            dict(control.properties or {}).get(
+                AGENT_CAPABILITY_AUTHORITY_PROPERTY
+            )
+        )
+        requested = AgentCapabilityPolicy.from_property(selected_capabilities)
+        raw_current = dict(resident.properties or {}).get(
+            AGENT_CAPABILITY_SELECTION_PROPERTY
+        )
+        current = (
+            AgentCapabilityPolicy.from_property(raw_current)
+            if raw_current is not None
+            else AgentCapabilityPolicy.empty(authority.resource)
+        )
+        selected = replace_visible_selection(
+            current=current,
+            authority=authority,
+            requested=requested,
+        )
+    except AgentCapabilityPolicyError as exc:
+        return {"ok": False, "error": exc.reason, "status": 400}
+
+    acceptance = dict(resident.resource_acceptance or {})
+    descriptor_evidence = dict(control.resource_acceptance or {}).get(
+        authority.resource
+    )
+    if descriptor_evidence is not None:
+        acceptance[authority.resource] = descriptor_evidence
+    updated = dataclasses.replace(
+        resident,
+        card_revision=resident.card_revision + 1,
+        catalog_version=control.catalog_version,
+        resource_acceptance=acceptance,
+        properties=resident_selection_properties(
+            resident.properties,
+            selection=selected,
+        ),
+    )
+    if updated.properties == resident.properties and (
+        updated.catalog_version == resident.catalog_version
+        and updated.resource_acceptance == resident.resource_acceptance
+    ):
+        updated = resident
+        changed = False
+    else:
+        try:
+            await service._persist_record(
+                updated,
+                expected_revision=resident.card_revision,
+            )
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
+        except CardConflict as exc:
+            return {
+                "ok": False,
+                "error": "agent_capability_card_revision_conflict",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 409,
+            }
+        except (CardUnavailable, CardCommitFailed) as exc:
+            return {
+                "ok": False,
+                "error": "agent_capability_card_not_committed",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 503,
+            }
+        changed = True
+        await service.notify_change(
+            grantor_subject,
+            action="updated",
+            access=updated.to_public_dict(),
+        )
+
+    try:
+        projection = AgentCapabilityPolicy.from_property(
+            effective_card_authority(
+                card_authority_from_record(updated),
+                card_authority_from_record(control),
+            ).properties[AGENT_CAPABILITY_PROJECTION_PROPERTY]
+        )
+    except (ControlCardMismatch, AgentCapabilityPolicyError) as exc:
+        return {
+            "ok": False,
+            "error": getattr(exc, "reason", "agent_capability_projection_failed"),
+            "status": 409,
+        }
+    return {
+        "ok": True,
+        "access": updated.to_public_dict(),
+        "selection": selected.to_property(),
+        "projection": projection.to_property(),
+        "card_changed": changed,
+    }
+
+
 __all__ = [
     "AGENT_CAPABILITY_CARD_LEASE_SECONDS",
     "resolve_agent_descriptor_standard_authority",
     "sync_agent_capability_control",
+    "update_agent_capability_selection",
 ]

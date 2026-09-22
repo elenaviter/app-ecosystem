@@ -45,6 +45,12 @@ class _RecordingService:
         self.calls.append({"method": "update", "user": user, **kwargs})
         return {"ok": True}
 
+    async def update_agent_capability_selection(self, user, **kwargs):
+        self.calls.append(
+            {"method": "update_agent_capability_selection", "user": user, **kwargs}
+        )
+        return {"ok": True}
+
     async def extend_client_access(self, user, **kwargs):
         self.calls.append({"method": "extend", "user": user, **kwargs})
         return {"ok": True}
@@ -312,6 +318,33 @@ async def test_update_forwards_explicit_empty_account_scope(entrypoint):
     )
     assert entrypoint.service.calls[-1]["method"] == "update"
     assert entrypoint.service.calls[-1]["account_scope"] == {}
+
+
+@pytest.mark.asyncio
+async def test_update_dispatches_agent_capability_selection_without_generic_grants(
+    entrypoint,
+):
+    selection = {
+        "schema": "connection_hub.agent_capability_policy.v1",
+        "resource": "urn:kdcube:app:tenant:project:bundle:agent",
+        "capabilities": {"tools": ["web/search"]},
+    }
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance,
+        data={
+            "access_id": "agent-card-1",
+            "selected_capabilities": selection,
+            "expected_card_revision": 4,
+        },
+    )
+
+    assert entrypoint.service.calls[-1] == {
+        "method": "update_agent_capability_selection",
+        "user": {"user_id": "google:1"},
+        "access_id": "agent-card-1",
+        "selected_capabilities": selection,
+        "expected_card_revision": 4,
+    }
 
 
 @pytest.mark.asyncio

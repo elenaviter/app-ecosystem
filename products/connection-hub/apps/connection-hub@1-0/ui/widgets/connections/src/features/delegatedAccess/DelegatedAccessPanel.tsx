@@ -12,9 +12,16 @@ import {
 import { ConversationTargetPicker } from './ConversationTargetPicker';
 import { cardConversationTargets, withConversationTargets } from './conversationTargets';
 import {
+  agentCapabilitySelectionFromMap,
+  agentCapabilitySelectionMap,
+  agentCapabilitySelectionProperty,
+  cardAgentCapabilityAuthority,
+  cardAgentCapabilityMetadata,
   cardAgentCapabilitySelection,
+  isAgentDescriptorControl,
   type AgentCapabilitySelection,
 } from './agentCapabilitySelection';
+import { AgentCapabilityPolicyView } from './AgentCapabilityPolicyView';
 import {
   agentCapabilityCardLifecycle,
   isAgentCapabilityCard,
@@ -123,6 +130,7 @@ import {
   revokeDelegatedAccess,
   setDelegatedInvocationPolicy,
   updateDelegatedAccess,
+  updateAgentCapabilitySelection,
 } from './delegatedAccessSlice';
 import {
   approveOAuthConsent,
@@ -1131,6 +1139,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [editLabel, setEditLabel] = useState('');
   const [editCompositionMode, setEditCompositionMode] = useState<'and' | 'or'>('and');
   const [editConversationTargets, setEditConversationTargets] = useState<string[]>([]);
+  const [editAgentCapabilities, setEditAgentCapabilities] = useState<Record<string, string[]>>({});
   const [editActionError, setEditActionError] = useState('');
   // The automation-creation form is folded behind its call to action.
   const [createOpen, setCreateOpen] = useState(false);
@@ -2098,6 +2107,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     editLabel,
     editCompositionMode,
     editConversationTargets,
+    editAgentCapabilities,
     editAddedResources,
     editRemovedResources,
     editInvocationModes,
@@ -2164,6 +2174,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditLabel(item.label || '');
     setEditCompositionMode(item.composition_mode === 'or' ? 'or' : 'and');
     setEditConversationTargets(cardConversationTargets(item.properties));
+    setEditAgentCapabilities(agentCapabilitySelectionMap(
+      cardAgentCapabilitySelection(item.properties),
+    ));
     setEditAddedResources([]);
     setEditRemovedResources([]);
     setEditAcceptedOperations({});
@@ -2716,6 +2729,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditLabel('');
     setEditCompositionMode('and');
     setEditConversationTargets([]);
+    setEditAgentCapabilities({});
     setEditActionError('');
     setEditAddedResources([]);
     setEditRemovedResources([]);
@@ -3032,6 +3046,42 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         void dispatch(loadDelegatedAccess());
         return;
       }
+    }
+    clearEditState();
+    void dispatch(loadDelegatedAccess());
+  };
+
+  const saveAgentCapabilityBase = async (
+    item: DelegatedAccessRecord,
+    authority: AgentCapabilitySelection,
+  ) => {
+    if (typeof item.card_revision !== 'number') {
+      setEditActionError('This Agent Card has no revision and cannot be updated. Reload the Card and try again.');
+      return;
+    }
+    setEditActionError('');
+    let updated;
+    try {
+      updated = await dispatch(updateAgentCapabilitySelection({
+        accessId: item.access_id,
+        selectedCapabilities: agentCapabilitySelectionProperty(
+          authority.resource,
+          editAgentCapabilities,
+        ),
+        expectedCardRevision: item.card_revision,
+      })).unwrap();
+    } catch (error) {
+      setEditActionError(`Save was not applied: ${String(error || 'request refused')}`);
+      return;
+    }
+    if (!updated || updated.ok === false) {
+      setEditActionError(
+        updated?.message
+        || (updated?.status === 409
+          ? 'This Agent Card changed while you were editing it. Your draft is still here; review the current base and save again.'
+          : `Save was not applied: ${updated?.error || 'request refused'}`),
+      );
+      return;
     }
     clearEditState();
     void dispatch(loadDelegatedAccess());
@@ -4431,19 +4481,23 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const actionServices = namedServiceRows(item).length;
     const accountIds = Object.values(item.account_scope || {}).flatMap((accounts) => Object.keys(accounts || {}));
     const capabilityBase = cardAgentCapabilitySelection(item.properties);
+    const descriptorCapability = cardAgentCapabilityAuthority(item.properties);
     const lifecycle = agentCapabilityCardLifecycle(
       item,
       nowSeconds,
       formatDate(item.expires_at) || '',
     );
     const parts = [
-      claims.length || !capabilityBase
+      claims.length || (!capabilityBase && !descriptorCapability)
         ? `${claims.length} permission${claims.length === 1 ? '' : 's'} on ${services.size} service${services.size === 1 ? '' : 's'}`
         : '',
       capabilityBase
         ? `Agent Card base: ${capabilityBase.selectedCount
             ? `${capabilityBase.selectedCount} selected entr${capabilityBase.selectedCount === 1 ? 'y' : 'ies'}`
             : 'empty'}`
+        : '',
+      descriptorCapability
+        ? `Descriptor ceiling: ${descriptorCapability.selectedCount} entr${descriptorCapability.selectedCount === 1 ? 'y' : 'ies'}`
         : '',
       lifecycle?.summary || '',
       tools ? `${tools} tool${tools === 1 ? '' : 's'}` : '',
@@ -4631,6 +4685,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   ) => {
     const selectable = Boolean(opts.onSelect);
     const capabilityBase = cardAgentCapabilitySelection(item.properties);
+    const descriptorCapability = cardAgentCapabilityAuthority(item.properties);
     const lifecycle = agentCapabilityCardLifecycle(
       item,
       nowSeconds,
@@ -4638,10 +4693,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
     const meta = (item.source === 'control'
       ? [
-          cardDoors(item) || 'no resources',
-          `${cardAccessCount(item)} access`,
+          descriptorCapability
+            ? `Descriptor ceiling: ${descriptorCapability.selectedCount} entries`
+            : cardDoors(item) || 'no resources',
+          descriptorCapability ? '' : `${cardAccessCount(item)} access`,
           'no credential',
-        ]
+        ].filter(Boolean)
       : [
           cardDoors(item) || (credentialReach(item) === 'multi_resource' ? 'no resources' : 'no service'),
           capabilityBase
@@ -4748,20 +4805,40 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // one being edited; the editor on the right is that card alone, with its
   // Save and Cancel pinned at the viewport bottom while it is in view.
   const renderWorkbench = (record: DelegatedAccessRecord) => {
+    const residentCapabilityCard = isAgentCapabilityCard(record);
+    const descriptorCapabilityControl = record.source === 'control'
+      && isAgentDescriptorControl(record.properties);
+    const specializedCapabilityCard = residentCapabilityCard || descriptorCapabilityControl;
+    const linkedControl = linkedControlCard(record);
+    const linkedCapabilityProperties = linkedControl?.control_authority?.properties
+      || linkedControl?.properties;
+    const residentCapabilityAuthority = residentCapabilityCard
+      ? cardAgentCapabilityAuthority(linkedCapabilityProperties)
+      : null;
+    const residentCapabilityMetadata = residentCapabilityCard
+      ? cardAgentCapabilityMetadata(linkedCapabilityProperties)
+      : {};
+    const descriptorCapabilityAuthority = descriptorCapabilityControl
+      ? cardAgentCapabilityAuthority(record.properties)
+      : null;
+    const descriptorCapabilityMetadata = descriptorCapabilityControl
+      ? cardAgentCapabilityMetadata(record.properties)
+      : {};
     const roleLabel = callerNoun(record);
-    const problems = editSaveProblems(record);
-    const showingEffective = authorityReading(record) === 'effective'
+    const problems = specializedCapabilityCard ? [] : editSaveProblems(record);
+    const showingEffective = !specializedCapabilityCard
+      && authorityReading(record) === 'effective'
       && linkedControlCard(record)?.state === 'active'
       && Boolean(linkedControlCard(record)?.control_authority);
     const problemText = problems
       .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(record, resource)))
       .join(' ');
-    const linkedControl = linkedControlCard(record);
     const controlLabel = linkedControl?.binding?.issuer_label
       || linkedControl?.binding?.issuer_ref
       || linkedControl?.binding?.control_id
       || 'Control Card';
-    const controlCappedTools = linkedControl?.state === 'active'
+    const controlCappedTools = !specializedCapabilityCard
+      && linkedControl?.state === 'active'
       && linkedControl.composition_mode !== 'or'
       && linkedControl.control_authority
       ? outerOperationsExcludedByControl(
@@ -4771,7 +4848,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const compositionMode: ControlCompositionMode = linkedControl?.composition_mode === 'or'
       ? 'or'
       : 'and';
-    const callerDraft = pendingCallerAuthority(record);
+    const callerDraft = specializedCapabilityCard ? record : pendingCallerAuthority(record);
     const effectiveComposition: EffectiveCompositionView | undefined = showingEffective
       && linkedControl?.control_authority
       ? {
@@ -4831,13 +4908,39 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </button>
           </div>
           {expiryHint(record)}
-          {renderCardComposition(record, { editing: true })}
-          {record.source === 'agent' && cardAgentCapabilitySelection(record.properties) ? (
-            <div className="card-fields">
-              {renderAgentCapabilityBase(cardAgentCapabilitySelection(record.properties))}
+          {!specializedCapabilityCard ? renderCardComposition(record, { editing: true }) : null}
+          {residentCapabilityCard && residentCapabilityAuthority ? (
+            <AgentCapabilityPolicyView
+              title="Starting capabilities for new conversations"
+              authority={residentCapabilityAuthority}
+              selection={agentCapabilitySelectionFromMap(
+                residentCapabilityAuthority.resource,
+                editAgentCapabilities,
+              )}
+              metadata={residentCapabilityMetadata}
+              editable
+              onChange={setEditAgentCapabilities}
+            />
+          ) : null}
+          {residentCapabilityCard && !residentCapabilityAuthority ? (
+            <div className="error" role="alert">
+              The linked descriptor Control Card is unavailable. Reload the Card before editing its capability base.
             </div>
           ) : null}
-          {accessCardFocus?.accessId === record.access_id
+          {descriptorCapabilityControl && descriptorCapabilityAuthority ? (
+            <>
+              <AgentCapabilityPolicyView
+                title="Descriptor capability ceiling"
+                authority={descriptorCapabilityAuthority}
+                metadata={descriptorCapabilityMetadata}
+              />
+              <div className="notice" role="status">
+                This ceiling is synchronized from the agent descriptor. Change the descriptor to revise it.
+              </div>
+            </>
+          ) : null}
+          {!specializedCapabilityCard
+            && accessCardFocus?.accessId === record.access_id
             && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
             <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
               <strong>Access update required</strong>
@@ -4854,7 +4957,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               ) : null}
             </div>
           ) : null}
-          {record.source === 'control' ? (
+          {record.source === 'control' && !descriptorCapabilityControl ? (
             <div
               className={`notice ${snapshotState === 'exact' ? '' : 'warning'}`.trim()}
               role="status"
@@ -4916,7 +5019,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               </Field>
             </div>
           ) : null}
-          {record.source !== 'agent' ? (
+          {record.source !== 'agent' && !descriptorCapabilityControl ? (
             <label className="rename-row">
               <span className="card-field-label">Name</span>
               <input
@@ -4927,7 +5030,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               />
             </label>
           ) : null}
-          {renderConversationTargetPicker()}
+          {!specializedCapabilityCard ? renderConversationTargetPicker() : null}
           {!showingEffective && controlCappedTools.length ? (
             <div className="notice warning control-cap-warning" role="status">
               <strong>
@@ -4954,39 +5057,55 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               </small>
             </div>
           ) : null}
-          {record.source === 'agent'
+          {!specializedCapabilityCard && (
+            record.source === 'agent'
             || record.source === 'control'
-            || Object.keys(record.resource_grants || {}).length
+            || Object.keys(record.resource_grants || {}).length)
             ? renderEditResourceSections(record, effectiveComposition)
             : null}
-          {renderAccountScopePicker(
-            editAccountScope,
-            toggleEditAccount,
-            roleLabel,
-            {
-              existingScope: seedAccountScopeFromRecord(record),
-              composition: effectiveComposition,
-            },
-          )}
+          {!specializedCapabilityCard ? renderAccountScopePicker(
+              editAccountScope,
+              toggleEditAccount,
+              roleLabel,
+              {
+                existingScope: seedAccountScopeFromRecord(record),
+                composition: effectiveComposition,
+              },
+            ) : null}
           <div className="form-actions form-actions--sticky">
             {editActionError || delegatedAccessError || problemText ? (
               <div className="error form-actions__error" role="alert">
                 {editActionError || delegatedAccessError || problemText}
               </div>
             ) : null}
-            <button
-              className="btn"
-              type="button"
-              disabled={busy || problems.length > 0}
-              title={problemText || undefined}
-              onClick={() => saveEdit(record)}
-            >
-              Save
-            </button>
+            {residentCapabilityCard ? (
+              <button
+                className="btn"
+                type="button"
+                disabled={busy || !residentCapabilityAuthority}
+                onClick={() => {
+                  if (residentCapabilityAuthority) {
+                    void saveAgentCapabilityBase(record, residentCapabilityAuthority);
+                  }
+                }}
+              >
+                Save
+              </button>
+            ) : descriptorCapabilityControl ? null : (
+              <button
+                className="btn"
+                type="button"
+                disabled={busy || problems.length > 0}
+                title={problemText || undefined}
+                onClick={() => saveEdit(record)}
+              >
+                Save
+              </button>
+            )}
             <button className="btn btn-ghost" type="button" disabled={busy} onClick={clearEditState}>
-              Cancel
+              {descriptorCapabilityControl ? 'Done' : 'Cancel'}
             </button>
-            {renderRevokeControl(record)}
+            {!specializedCapabilityCard ? renderRevokeControl(record) : null}
           </div>
         </section>
       </div>

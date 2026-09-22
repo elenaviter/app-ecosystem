@@ -255,6 +255,42 @@ async def test_descriptor_sync_is_stable_and_new_capabilities_are_unselected() -
 
 
 @pytest.mark.asyncio
+async def test_agent_card_selection_update_is_revision_checked_and_ceiling_bounded() -> None:
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old", "tool.new"),
+        catalog=("tool.old", "tool.new", "tool.outside"),
+        selection=("tool.old",),
+    )
+
+    changed = await service.update_agent_capability_selection(
+        {"user_id": OWNER},
+        access_id=created["card"]["access_id"],
+        selected_capabilities=_policy("tool.new", "tool.outside"),
+        expected_card_revision=created["card"]["card_revision"],
+    )
+
+    assert changed["ok"] is True
+    assert changed["card_changed"] is True
+    assert changed["selection"]["capabilities"] == {"tools": ["tool.new"]}
+    assert changed["projection"] == changed["selection"]
+    assert changed["access"]["card_revision"] == created["card"]["card_revision"] + 1
+
+    stale = await service.update_agent_capability_selection(
+        {"user_id": OWNER},
+        access_id=created["card"]["access_id"],
+        selected_capabilities=_policy("tool.old"),
+        expected_card_revision=created["card"]["card_revision"],
+    )
+
+    assert stale["ok"] is False
+    assert stale["error"] == "agent_capability_card_revision_conflict"
+    assert stale["status"] == 409
+
+
+@pytest.mark.asyncio
 async def test_expired_capability_lease_renews_the_same_card_and_selection(
     monkeypatch,
 ) -> None:

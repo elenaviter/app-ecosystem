@@ -798,6 +798,21 @@ revision under the same `access_id`, preserves the selected capability base,
 and only then projects tools. The owner therefore keeps one legible Card and
 selection across revisions without abandoned authority remaining live forever.
 
+When no resident selection exists, the application supplies the descriptor
+default as the first positive Agent Card selection. Once the Card exists,
+ordinary descriptor synchronization preserves that selection: a capability
+added to the descriptor appears inside the Control Card ceiling but remains
+outside the resident Card until the user selects it. Connection Hub edits this
+base through a dedicated revision-checked selection update, bounded by the
+current linked Control Card. Values outside that ceiling cannot be added.
+
+The owner-facing surfaces preserve the distinction. The resident Agent Card
+is the editable starting selection. Its descriptor Control Card is a read-only
+view of the synchronized ceiling and its labels and descriptions, rather than
+an empty generic resource editor. A capability picker can open the resident
+Card directly with `tab=delegated_by_kdcube&access_id=<resident-card-id>`; the
+Connection Hub surface resolves and edits that exact Card.
+
 The focused consent view projects that one denied invocation into an
 always-expanded review. It keeps four selections separate:
 

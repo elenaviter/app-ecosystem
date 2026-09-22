@@ -250,6 +250,39 @@ export const updateDelegatedAccess = createAsyncThunk<
   },
 );
 
+export interface UpdateAgentCapabilitySelectionArgs {
+  accessId: string;
+  selectedCapabilities: Record<string, unknown>;
+  expectedCardRevision: number;
+}
+
+/** Replace the visible descriptor-bounded selection on one resident Agent
+ *  Card. The existing delegated-access operation dispatches to the dedicated
+ *  server path when `selected_capabilities` is present. */
+export const updateAgentCapabilitySelection = createAsyncThunk<
+  DelegatedAccessCreateResult,
+  UpdateAgentCapabilitySelectionArgs,
+  { rejectValue: string }
+>(
+  'delegatedAccess/updateAgentCapabilitySelection',
+  async ({ accessId, selectedCapabilities, expectedCardRevision }, { rejectWithValue }) => {
+    try {
+      const res = await postOp<DelegatedAccessCreateResult>('delegated_access_update', {
+        access_id: accessId,
+        selected_capabilities: selectedCapabilities,
+        expected_card_revision: expectedCardRevision,
+      });
+      if (res?.ok === false && res?.status === 409) return res;
+      if (res?.ok === false) {
+        return rejectWithValue(resultError(res, 'Failed to update the Agent Card base'));
+      }
+      return res || {};
+    } catch (e) {
+      return rejectWithValue(message(e));
+    }
+  },
+);
+
 export const revokeDelegatedAccess = createAsyncThunk<
   DelegatedAccessRevokeResult,
   { accessId: string },
@@ -449,6 +482,29 @@ const delegatedAccessSlice = createSlice({
       .addCase(updateDelegatedAccess.rejected, (state, action) => {
         state.busy = false;
         state.error = action.payload ?? 'Failed to update delegated access';
+      })
+      .addCase(updateAgentCapabilitySelection.pending, (state) => {
+        state.busy = true;
+        state.error = '';
+      })
+      .addCase(updateAgentCapabilitySelection.fulfilled, (state, action) => {
+        state.busy = false;
+        const updated = action.payload.access;
+        if (action.payload.status === 409) {
+          state.error = 'This Agent Card changed while you were editing it. Review the current base and save again.';
+        }
+        if (updated) {
+          state.items = state.items.map((item) => (
+            item.access_id === updated.access_id ? updated : item
+          ));
+          if (state.focusedCard?.access_id === updated.access_id) {
+            state.focusedCard = updated;
+          }
+        }
+      })
+      .addCase(updateAgentCapabilitySelection.rejected, (state, action) => {
+        state.busy = false;
+        state.error = action.payload ?? 'Failed to update the Agent Card base';
       })
       .addCase(renewDelegatedAccess.pending, (state) => {
         state.busy = true;

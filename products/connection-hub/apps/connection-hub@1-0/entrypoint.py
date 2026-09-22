@@ -4339,53 +4339,65 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             sorted((payload.get("accepted_operations") or {}).keys()),
         )
         try:
-            _result = await _automation_access_service(self, request).update_access(
-                user,
-                access_id=str(payload.get("access_id") or "").strip(),
-                resource_grants=dict(payload.get("resource_grants") or {}),
-                resource_operations=(
-                    dict(payload.get("resource_operations") or {})
-                    if "resource_operations" in payload
-                    else None
-                ),
-                operations=(
-                    _safe_list(payload.get("operations"))
-                    if "operations" in payload
-                    else ()
-                ),
-                named_service_operations=(
-                    payload.get("named_service_operations")
-                    if "named_service_operations" in payload
-                    else None
-                ),
-                account_scope=(
-                    dict(payload.get("account_scope") or {})
-                    if "account_scope" in payload
-                    else None
-                ),
-                label=str(payload.get("label") or "").strip() or None,
-                expected_card_revision=_expected_card_revision(payload),
-                expected_catalog_version=str(
-                    payload.get("expected_catalog_version") or ""
-                ).strip()
-                or None,
-                accepted_operations=(
-                    dict(payload.get("accepted_operations") or {})
-                    if "accepted_operations" in payload
-                    else None
-                ),
-                properties=(
-                    dict(payload.get("properties") or {})
-                    if "properties" in payload
-                    and isinstance(payload.get("properties"), Mapping)
-                    else None
-                ),
-                composition_mode=(
-                    str(payload.get("composition_mode") or "").strip()
-                    if "composition_mode" in payload
-                    else None
-                ),
-            )
+            access_service = _automation_access_service(self, request)
+            if "selected_capabilities" in payload:
+                selected_capabilities = payload.get("selected_capabilities")
+                if not isinstance(selected_capabilities, Mapping):
+                    raise ValueError("selected_capabilities must be an object")
+                _result = await access_service.update_agent_capability_selection(
+                    user,
+                    access_id=_access_id_for_log,
+                    selected_capabilities=dict(selected_capabilities),
+                    expected_card_revision=_expected_card_revision(payload),
+                )
+            else:
+                _result = await access_service.update_access(
+                    user,
+                    access_id=_access_id_for_log,
+                    resource_grants=dict(payload.get("resource_grants") or {}),
+                    resource_operations=(
+                        dict(payload.get("resource_operations") or {})
+                        if "resource_operations" in payload
+                        else None
+                    ),
+                    operations=(
+                        _safe_list(payload.get("operations"))
+                        if "operations" in payload
+                        else ()
+                    ),
+                    named_service_operations=(
+                        payload.get("named_service_operations")
+                        if "named_service_operations" in payload
+                        else None
+                    ),
+                    account_scope=(
+                        dict(payload.get("account_scope") or {})
+                        if "account_scope" in payload
+                        else None
+                    ),
+                    label=str(payload.get("label") or "").strip() or None,
+                    expected_card_revision=_expected_card_revision(payload),
+                    expected_catalog_version=str(
+                        payload.get("expected_catalog_version") or ""
+                    ).strip()
+                    or None,
+                    accepted_operations=(
+                        dict(payload.get("accepted_operations") or {})
+                        if "accepted_operations" in payload
+                        else None
+                    ),
+                    properties=(
+                        dict(payload.get("properties") or {})
+                        if "properties" in payload
+                        and isinstance(payload.get("properties"), Mapping)
+                        else None
+                    ),
+                    composition_mode=(
+                        str(payload.get("composition_mode") or "").strip()
+                        if "composition_mode" in payload
+                        else None
+                    ),
+                )
             LOGGER.info(
                 "[automation-access.update] result access_id=%s ok=%s error=%s status=%s mismatched=%s message=%s",
                 _access_id_for_log,

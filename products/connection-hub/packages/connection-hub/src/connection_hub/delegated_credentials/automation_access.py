@@ -4775,6 +4775,28 @@ class AutomationAccessService:
             manage_url=manage_url,
         )
 
+    async def update_agent_capability_selection(
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        selected_capabilities: Mapping[str, Any],
+        expected_card_revision: int | None,
+    ) -> dict[str, Any]:
+        """Replace the visible selection on one resident Agent Card."""
+
+        from connection_hub.delegated_credentials.agent_capability_sync import (
+            update_agent_capability_selection,
+        )
+
+        return await update_agent_capability_selection(
+            self,
+            user,
+            access_id=access_id,
+            selected_capabilities=selected_capabilities,
+            expected_card_revision=expected_card_revision,
+        )
+
     async def control_card_get(
         self,
         user: Mapping[str, Any],

@@ -3,9 +3,17 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
+  AGENT_CAPABILITY_AUTHORITY_PROPERTY,
+  AGENT_CAPABILITY_METADATA_PROPERTY,
   AGENT_CAPABILITY_SELECTION_PROPERTY,
   AGENT_CAPABILITY_POLICY_SCHEMA,
+  AGENT_CAPABILITY_METADATA_SCHEMA,
+  AGENT_DESCRIPTOR_CONTROL_PROPERTY,
+  AGENT_DESCRIPTOR_CONTROL_SCHEMA,
+  cardAgentCapabilityAuthority,
+  cardAgentCapabilityMetadata,
   cardAgentCapabilitySelection,
+  isAgentDescriptorControl,
 } from '../src/features/delegatedAccess/agentCapabilitySelection.ts'
 
 const RESOURCE = 'urn:kdcube:app:demo-tenant:demo-project:problem-board@1-0:main'
@@ -65,6 +73,37 @@ test('malformed properties are not presented as capability authority', () => {
   assert.equal(cardAgentCapabilitySelection(selection({ named_services: '*' })), null)
 })
 
+test('the descriptor Control Card exposes its ceiling and presentation metadata', () => {
+  const properties = {
+    [AGENT_CAPABILITY_AUTHORITY_PROPERTY]: {
+      schema: AGENT_CAPABILITY_POLICY_SCHEMA,
+      resource: RESOURCE,
+      capabilities: { tools: ['web/search'] },
+    },
+    [AGENT_CAPABILITY_METADATA_PROPERTY]: {
+      schema: AGENT_CAPABILITY_METADATA_SCHEMA,
+      resource: RESOURCE,
+      entries: {
+        tools: {
+          'web/search': { title: 'Search', description: 'Search project records.' },
+        },
+      },
+    },
+    [AGENT_DESCRIPTOR_CONTROL_PROPERTY]: {
+      schema: AGENT_DESCRIPTOR_CONTROL_SCHEMA,
+      resource: RESOURCE,
+    },
+  }
+
+  assert.equal(cardAgentCapabilityAuthority(properties)?.selectedCount, 1)
+  assert.deepEqual(cardAgentCapabilityMetadata(properties), {
+    tools: {
+      'web/search': { title: 'Search', description: 'Search project records.' },
+    },
+  })
+  assert.equal(isAgentDescriptorControl(properties), true)
+})
+
 test('the Card surface renders the property as an Agent capability base', () => {
   const panel = readFileSync(
     new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url),
@@ -74,4 +113,21 @@ test('the Card surface renders the property as an Agent capability base', () => 
   assert.match(panel, /Starting selection for new conversations\./)
   assert.match(panel, /New conversations start with an empty capability base\./)
   assert.match(panel, /capabilityBase \? null/)
+})
+
+test('resident and descriptor capability Cards use their dedicated workbench paths', () => {
+  const panel = readFileSync(
+    new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url),
+    'utf8',
+  )
+  const slice = readFileSync(
+    new URL('../src/features/delegatedAccess/delegatedAccessSlice.ts', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(panel, /title="Starting capabilities for new conversations"/)
+  assert.match(panel, /title="Descriptor capability ceiling"/)
+  assert.match(panel, /saveAgentCapabilityBase/)
+  assert.match(panel, /descriptorCapabilityControl \? null/)
+  assert.match(slice, /selected_capabilities: selectedCapabilities/)
 })
