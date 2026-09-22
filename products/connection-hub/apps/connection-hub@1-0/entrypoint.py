@@ -86,6 +86,10 @@ from connection_hub.delegated_credentials.request_approval import (
     peek_request_approval_ticket,
     verify_request_approval_ticket,
 )
+from connection_hub.delegated_credentials.oauth.authority_store import (
+    PostgresOAuthAuthorityStore,
+)
+from connection_hub.delegated_credentials.oauth.store import GrantStore
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
 )
@@ -737,6 +741,40 @@ def _authenticator_store(entrypoint: Any) -> AuthenticatorStore:
     )
 
 
+def _oauth_authority_store(entrypoint: Any) -> PostgresOAuthAuthorityStore:
+    existing = getattr(entrypoint, "_oauth_authority_store", None)
+    if existing is not None:
+        return existing
+    pg_pool = getattr(entrypoint, "pg_pool", None)
+    if pg_pool is None:
+        raise RuntimeError("PostgreSQL OAuth authority is unavailable")
+    tenant, project = _runtime_tenant_project(entrypoint)
+    store = PostgresOAuthAuthorityStore(
+        pg_pool=pg_pool,
+        tenant=tenant,
+        project=project,
+    )
+    entrypoint._oauth_authority_store = store
+    return store
+
+
+def _oauth_grant_store(entrypoint: Any) -> GrantStore:
+    existing = getattr(entrypoint, "_oauth_grant_store", None)
+    if existing is not None:
+        return existing
+    redis = getattr(entrypoint, "redis", None)
+    if redis is None:
+        raise RuntimeError("shared Redis is unavailable for OAuth handoffs")
+    tenant, project = _runtime_tenant_project(entrypoint)
+    store = GrantStore(
+        redis,
+        tenant,
+        project,
+    )
+    entrypoint._oauth_grant_store = store
+    return store
+
+
 def _identity_config(entrypoint: Any) -> Dict[str, Any]:
     props = getattr(entrypoint, "bundle_props", None)
     if isinstance(props, Mapping):
@@ -848,6 +886,9 @@ def _bind_delegated_client_request_config(entrypoint: Any, request: Any) -> Dict
     if request is not None:
         request.state.oauth_delegated_config = cfg
         request.state.oauth_delegated_issuer = str(cfg.get("issuer") or "").rstrip("/")
+        request.state.oauth_grant_store_required = True
+        if getattr(entrypoint, "redis", None) is not None:
+            request.state.oauth_grant_store = _oauth_grant_store(entrypoint)
         request.state.connection_hub_authority_registry = _authority_registry_config(entrypoint)
         # Parsed provider/claim registry, so the OAuth consent page can resolve
         # which connected accounts the requested scope needs (the "Accounts this
@@ -1183,6 +1224,7 @@ def _automation_access_service_for(entrypoint: Any, config: Any) -> AutomationAc
         redis=redis,
         tenant=tenant,
         project=project,
+        grant_store=_oauth_grant_store(entrypoint),
         config=config,
         catalog_resolver=_delegated_catalog_resolver(entrypoint, redis),
         card_persistence=_delegated_card_persistence(entrypoint, redis),
@@ -2407,6 +2449,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         pg_pool = self.pg_pool or kwargs.get("pg_pool")
         if pg_pool is not None:
             self.pg_pool = pg_pool
+            try:
+                await _oauth_authority_store(self).ensure_schema()
+            except Exception:
+                LOGGER.exception(
+                    "[connection-hub] on_bundle_load: failed to ensure OAuth authority schema"
+                )
             try:
                 await _authenticator_store(self).ensure_schema()
                 bootstrapped = await _bootstrap_descriptor_authenticators(self)

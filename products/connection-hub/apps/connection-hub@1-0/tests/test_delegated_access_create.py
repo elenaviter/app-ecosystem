@@ -107,11 +107,30 @@ def test_service_factory_injects_invocation_policy_service(monkeypatch):
     monkeypatch.setattr(module, "_delegated_catalog_resolver", lambda *_args: object())
     monkeypatch.setattr(module, "_delegated_card_persistence", lambda *_args: object())
     monkeypatch.setattr(module, "_invocation_policy_service", lambda _entrypoint: policies)
+    grant_store = object()
+    monkeypatch.setattr(module, "_oauth_grant_store", lambda _entrypoint: grant_store)
 
     module._automation_access_service_for(SimpleNamespace(redis=redis), object())
 
     assert captured["redis"] is redis
+    assert captured["grant_store"] is grant_store
     assert captured["invocation_policy_service"] is policies
+
+
+def test_oauth_grant_store_stays_on_redis_before_migration_cutover(monkeypatch):
+    module = _entrypoint_module()
+    redis = object()
+    entrypoint = SimpleNamespace(redis=redis, pg_pool=object())
+    monkeypatch.setattr(
+        module,
+        "_runtime_tenant_project",
+        lambda _entrypoint: ("demo-tenant", "demo-project"),
+    )
+
+    store = module._oauth_grant_store(entrypoint)
+
+    assert store._r is redis
+    assert store._authority_store is None
 
 
 def test_entrypoint_registers_delegated_gateway_contract():

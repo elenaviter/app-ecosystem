@@ -1,24 +1,25 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""
-Redis-backed store for OAuth authorization codes and refresh tokens.
+"""OAuth protocol state and durable authority composition.
 
-Authorization codes are short-lived and single-use (replay protection via
-delete-on-consume). Refresh tokens are long-lived and rotated on use so a
-feedback-triage routine that runs *daily or seldom* keeps working unattended;
-rotation invalidates the previous token (reuse-detection boundary).
-
-Keys are tenant/project namespaced, matching the platform-session convention.
+Authorization codes and consent handoffs are short-lived, run-bound Redis
+records. Long-lived clients, refresh generations, and access bindings delegate
+to the configured authority store. Redis remains the live migration source
+until an explicit migration and cutover supplies PostgreSQL authority.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import secrets
-from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
+from connection_hub.delegated_credentials.oauth.authority_store import (
+    OAuthAuthorityStore,
+    RefreshTokenReuseDetected,
+    RefreshTokenState,
+)
 from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_grants,
     normalize_resource_operations,
@@ -91,15 +92,6 @@ class GrantStoreUnavailable(RuntimeError):
         super().__init__(f"OAuth grant store unavailable during {self.operation}")
 
 
-@dataclass(frozen=True)
-class RefreshTokenState:
-    """Exact Redis record used to authorize one refresh-token rotation."""
-
-    token: str
-    raw: Any
-    record: Dict[str, Any]
-
-
 class GrantStore:
     def __init__(
         self,
@@ -109,12 +101,14 @@ class GrantStore:
         *,
         auth_code_ttl: int = AUTH_CODE_TTL_SECONDS,
         refresh_ttl: int = REFRESH_TTL_SECONDS,
+        authority_store: OAuthAuthorityStore | None = None,
     ):
         self._r = redis
         self._tenant = tenant
         self._project = project
         self._auth_code_ttl = auth_code_ttl
         self._refresh_ttl = refresh_ttl
+        self._authority_store = authority_store
 
     async def _redis_call(
         self,
@@ -126,6 +120,25 @@ class GrantStore:
         try:
             method = getattr(self._r, method_name)
             return await method(*args, **kwargs)
+        except GrantStoreUnavailable:
+            raise
+        except Exception as exc:
+            raise GrantStoreUnavailable(operation) from exc
+
+    async def _authority_call(
+        self,
+        operation: str,
+        method_name: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        if self._authority_store is None:
+            raise GrantStoreUnavailable(f"{operation}.authority_not_configured")
+        try:
+            method = getattr(self._authority_store, method_name)
+            return await method(*args, **kwargs)
+        except RefreshTokenReuseDetected:
+            raise
         except GrantStoreUnavailable:
             raise
         except Exception as exc:
@@ -293,6 +306,13 @@ class GrantStore:
             "named_services": named_services or {},
             "client_metadata": dict(client_metadata or {}),
         }
+        if self._authority_store is not None:
+            return await self._authority_call(
+                "refresh_token.create",
+                "create_refresh_token",
+                payload,
+                ttl_seconds=self._refresh_ttl,
+            )
         await self._redis_call(
             "refresh_token.create",
             "setex",
@@ -309,6 +329,12 @@ class GrantStore:
         token = str(refresh_token or "").strip()
         if not token:
             return None
+        if self._authority_store is not None:
+            return await self._authority_call(
+                "refresh_token.read",
+                "get_refresh_token_state",
+                token,
+            )
         raw = await self._redis_call(
             "refresh_token.read",
             "get",
@@ -332,6 +358,14 @@ class GrantStore:
         token = str(refresh_token or "").strip()
         if not token:
             return False
+        if self._authority_store is not None:
+            return bool(
+                await self._authority_call(
+                    "refresh_token.revoke",
+                    "revoke_refresh_token",
+                    token,
+                )
+            )
         return bool(
             await self._redis_call(
                 "refresh_token.revoke",
@@ -496,6 +530,13 @@ class GrantStore:
             "application_type": application_type,
             "metadata": metadata or {},
         }
+        if self._authority_store is not None:
+            return await self._authority_call(
+                "dynamic_client.register",
+                "register_client",
+                record,
+                ttl_seconds=CLIENT_TTL_SECONDS,
+            )
         # Sliding TTL (see CLIENT_TTL_SECONDS): long-lived for a connector in
         # use, finite for the registration junk repeated reconnects leave.
         await self._redis_call(
@@ -508,6 +549,13 @@ class GrantStore:
         return record
 
     async def get_client_record(self, client_id: str) -> Optional[Dict[str, Any]]:
+        if self._authority_store is not None:
+            return await self._authority_call(
+                "dynamic_client.read",
+                "get_client_record",
+                client_id,
+                ttl_seconds=CLIENT_TTL_SECONDS,
+            )
         raw = await self._redis_call(
             "dynamic_client.read",
             "eval",
@@ -644,6 +692,16 @@ class GrantStore:
         }
         encoded_replacement = json.dumps(replacement)
 
+        if self._authority_store is not None:
+            return await self._authority_call(
+                "refresh_token.rotate",
+                "rotate_refresh_token",
+                token,
+                replacement,
+                ttl_seconds=self._refresh_ttl,
+                expected_generation=current.raw,
+            )
+
         # A generated-token collision must not consume the old token. The Lua
         # transition checks the replacement key before deleting the old key.
         for _attempt in range(3):
@@ -728,6 +786,15 @@ class GrantStore:
         }
         if str(registry_access_id or "").strip():
             payload["registry_access_id"] = str(registry_access_id).strip()
+        if self._authority_store is not None:
+            await self._authority_call(
+                "access_grant.bind",
+                "bind_access_grant",
+                access_token,
+                payload,
+                ttl_seconds=max(1, int(ttl_seconds)),
+            )
+            return
         await self._redis_call(
             "access_grant.bind",
             "setex",
@@ -742,6 +809,15 @@ class GrantStore:
         token = str(access_token or "").strip()
         if not token:
             return False
+        if self._authority_store is not None:
+            return bool(
+                await self._authority_call(
+                    "access_grant.extend",
+                    "extend_access_grant",
+                    token,
+                    max(1, int(ttl_seconds)),
+                )
+            )
         return bool(
             await self._redis_call(
                 "access_grant.extend",
@@ -757,6 +833,15 @@ class GrantStore:
         token = str(refresh_token or "").strip()
         if not token:
             return False
+        if self._authority_store is not None:
+            return bool(
+                await self._authority_call(
+                    "refresh.extend",
+                    "extend_refresh_token",
+                    token,
+                    max(1, int(ttl_seconds)),
+                )
+            )
         return bool(
             await self._redis_call(
                 "refresh.extend",
@@ -770,6 +855,14 @@ class GrantStore:
         token = str(access_token or "").strip()
         if not token:
             return False
+        if self._authority_store is not None:
+            return bool(
+                await self._authority_call(
+                    "access_grant.revoke",
+                    "revoke_access_grant",
+                    token,
+                )
+            )
         return bool(
             await self._redis_call(
                 "access_grant.revoke",
@@ -780,6 +873,12 @@ class GrantStore:
 
     async def get_access_grant_record(self, access_token: str) -> Optional[Dict[str, Any]]:
         """Grant metadata bound to ``access_token`` (None if no grant record)."""
+        if self._authority_store is not None:
+            return await self._authority_call(
+                "access_grant.read",
+                "get_access_grant_record",
+                access_token,
+            )
         raw = await self._redis_call(
             "access_grant.read",
             "get",
