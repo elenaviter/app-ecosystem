@@ -15,6 +15,7 @@ on:
           - harness-foundation
           - capabilities-foundation
           - economics-foundation
+          - project-board
       expected_version:
         description: Exact committed PEP 440 version
         required: true
@@ -69,6 +70,11 @@ jobs:
               "harness-foundation": ("packages/harness-foundation", "harness_foundation", None),
               "capabilities-foundation": ("packages/capabilities-foundation", "capabilities_foundation", None),
               "economics-foundation": ("packages/economics-foundation", "economics_foundation", None),
+              "project-board": (
+                  "products/project-board/packages/project-board",
+                  "project_board",
+                  None,
+              ),
           }
           name = os.environ["PACKAGE_NAME"]
           expected = os.environ["EXPECTED_VERSION"].strip()

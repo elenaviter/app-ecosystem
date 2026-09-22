@@ -1,0 +1,16 @@
+package:
+  id: project-board
+  ref: "2026.09.22.2100"
+  description: |
+    First release: the installable planning marker that reserves the
+    distribution and import names for the Project Board client and the
+    contract it speaks. The client is `pb`, the command a machine runs to
+    join a board, receive addressed work and report on it. It lives in its
+    application repository today; this name is claimed before that move so
+    machines install a released version instead of copying a checkout.
+
+components:
+  python_package:
+    id: project-board
+    path: products/project-board/packages/project-board
+    version: "2026.09.22.2100"
