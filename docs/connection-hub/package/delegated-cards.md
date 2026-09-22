@@ -202,6 +202,28 @@ that bounded state separately and returns its normal reconnect/reissue denial
 when it is gone. `current.json` points to the latest committed revision and
 carries its filename, integer `card_revision`, and full content hash.
 
+### Resident bearer custody contract
+
+The portable destination contract for a resident Card's reusable bearer keeps
+non-secret handle metadata in PostgreSQL and the recoverable bearer in a
+host-owned expiring secret store. `ResidentCardSecretService` creates a fresh
+secret reference before committing its metadata, verifies the envelope against
+the access id, Card revision, fingerprint, and expiry on every resolution, and
+keeps durable cleanup obligations until verified deletion succeeds. A secret
+reference is create-only and never reused for a different envelope; changing a
+bound Card revision, fingerprint, or expiry requires a fresh reference.
+
+Rotation records the outgoing reference durably in the same PostgreSQL
+transaction that installs the replacement. Cleanup reads and verifies the
+outgoing envelope, deletes it from host custody, and only then acknowledges the
+cleanup row. A metadata-commit response loss retains the prepared expiring
+secret because the commit outcome is unknown. A definitive conflict deletes
+the prepared secret. A secret-create response loss also retains the bounded
+record because deleting an unowned collision would be unsafe. Once a host
+binds both ports, PostgreSQL plus its secret provider form the complete
+resident-bearer custody boundary, while that host may use Redis for rebuildable,
+non-secret Card projections.
+
 Revision filenames follow the same timestamped, content-addressed convention
 as catalog versions:
 
@@ -1679,6 +1701,7 @@ join a Card and why the others may not. Every field is non-secret.
 | Card operations and authority orchestration | `connection_hub.delegated_credentials.automation_access` |
 | Authority resolution shared by every save | `automation_access.AutomationAccessService._resolve_card_authority` |
 | Durable revisions and current pointer | `...delegated_credentials.cards.store.DelegatedCardStore` over Connection Hub bundle storage |
+| Resident bearer metadata, host-secret custody, rotation, and cleanup | `...delegated_credentials.cards.handle_authority`, `.handle_metadata`, and `.resident_secrets` |
 | Persistence port, TTL live projection and read-through | `...delegated_credentials.cards.persistence`, `.cache`, `.handles`, `.resolver` |
 | Stored selection states and card model | `...delegated_credentials.cards.model` |
 | Credentialless Card creation, historical exact-snapshot migration, and Card composition | `...delegated_credentials.controls.snapshot`, `.model`, and `.effective`; current serving uses the ordinary Card persistence/cache |

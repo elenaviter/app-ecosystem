@@ -73,9 +73,7 @@ class PostgresCardHandleMetadataStore:
             access_id=str(row.get("access_id") or ""),
             card_revision=int(row.get("card_revision") or 0),
             expires_at=int(row.get("expires_at") or 0),
-            resident_access_secret_ref=str(
-                row.get("resident_access_secret_ref") or ""
-            ),
+            resident_access_secret_ref=str(row.get("resident_access_secret_ref") or ""),
             resident_access_sha256=str(row.get("resident_access_sha256") or ""),
             session_id=str(row.get("session_id") or ""),
             state=str(row.get("state") or ""),
@@ -282,6 +280,40 @@ class PostgresCardHandleMetadataStore:
                 ):
                     raise self._conflict(
                         "card_handle_reactivation_requires_new_card_revision",
+                        expected_revision=expected,
+                        current_revision=current.revision,
+                    )
+                if (
+                    current.state != HANDLE_STATE_ACTIVE
+                    and candidate.state == HANDLE_STATE_ACTIVE
+                    and current.resident_access_secret_ref
+                    and candidate.resident_access_secret_ref
+                    == current.resident_access_secret_ref
+                ):
+                    raise self._conflict(
+                        "card_handle_reactivation_requires_fresh_secret_ref",
+                        expected_revision=expected,
+                        current_revision=current.revision,
+                    )
+                if (
+                    current.resident_access_secret_ref
+                    and candidate.resident_access_secret_ref
+                    == current.resident_access_secret_ref
+                    and candidate.card_revision != current.card_revision
+                ):
+                    raise self._conflict(
+                        "card_handle_secret_card_revision_changed_without_new_ref",
+                        expected_revision=expected,
+                        current_revision=current.revision,
+                    )
+                if (
+                    current.resident_access_secret_ref
+                    and candidate.resident_access_secret_ref
+                    == current.resident_access_secret_ref
+                    and candidate.expires_at != current.expires_at
+                ):
+                    raise self._conflict(
+                        "card_handle_secret_expiry_changed_without_new_ref",
                         expected_revision=expected,
                         current_revision=current.revision,
                     )
@@ -579,9 +611,7 @@ class PostgresCardHandleMetadataStore:
             bounded,
         )
         return [
-            record
-            for row in rows
-            if (record := self._retired_secret(row)) is not None
+            record for row in rows if (record := self._retired_secret(row)) is not None
         ]
 
     async def delete_retired_secret_record(

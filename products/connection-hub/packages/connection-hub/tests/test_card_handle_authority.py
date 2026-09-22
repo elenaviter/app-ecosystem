@@ -268,10 +268,13 @@ async def test_put_refuses_a_secret_reference_pending_cleanup() -> None:
         await _store(connection).put(_metadata(), expected_revision=3)
 
     assert error.value.reason == "card_handle_secret_ref_pending_cleanup"
-    assert sum(
-        "pg_advisory_xact_lock" in sql
-        for _kind, sql, _args, _depth in connection.calls
-    ) == 2
+    assert (
+        sum(
+            "pg_advisory_xact_lock" in sql
+            for _kind, sql, _args, _depth in connection.calls
+        )
+        == 2
+    )
     assert not any(
         sql.lstrip().startswith("UPDATE")
         for _kind, sql, _args, _depth in connection.calls
@@ -289,9 +292,52 @@ async def test_put_rejects_changed_fingerprint_for_same_secret_reference() -> No
         )
 
     assert (
-        error.value.reason
-        == "card_handle_secret_fingerprint_changed_without_new_ref"
+        error.value.reason == "card_handle_secret_fingerprint_changed_without_new_ref"
     )
+    assert len(connection.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("changes", "reason"),
+    [
+        (
+            {"card_revision": 4},
+            "card_handle_secret_card_revision_changed_without_new_ref",
+        ),
+        (
+            {"expires_at": 2_500},
+            "card_handle_secret_expiry_changed_without_new_ref",
+        ),
+    ],
+)
+async def test_put_rejects_changed_envelope_binding_for_same_secret_reference(
+    changes: dict[str, Any],
+    reason: str,
+) -> None:
+    connection = _Connection(rows=[_row(revision=2)])
+
+    with pytest.raises(CardHandleMetadataConflict) as error:
+        await _store(connection).put(
+            _metadata(**changes),
+            expected_revision=2,
+        )
+
+    assert error.value.reason == reason
+    assert len(connection.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_reactivation_requires_a_fresh_resident_secret_reference() -> None:
+    connection = _Connection(rows=[_row(revision=3, state="revoked")])
+
+    with pytest.raises(CardHandleMetadataConflict) as error:
+        await _store(connection).put(
+            _metadata(card_revision=4),
+            expected_revision=3,
+        )
+
+    assert error.value.reason == "card_handle_reactivation_requires_fresh_secret_ref"
     assert len(connection.calls) == 1
 
 
@@ -470,6 +516,25 @@ async def test_card_handle_contract_against_real_postgres() -> None:
         current = await store.read_current("agent_card_1")
         assert current is not None
         assert current.revision == 2
+        unsafe_same_ref_binding = CardHandleMetadata(
+            access_id="agent_card_1",
+            card_revision=8,
+            resident_access_secret_ref="vault://resident/card-1",
+            resident_access_sha256="b" * 64,
+            session_id="session-2",
+            expires_at=4_000_000_000,
+        )
+        with pytest.raises(CardHandleMetadataConflict) as binding_error:
+            await store.put(
+                unsafe_same_ref_binding,
+                expected_revision=current.revision,
+            )
+        assert (
+            binding_error.value.reason
+            == "card_handle_secret_card_revision_changed_without_new_ref"
+        )
+        assert await store.read_current("agent_card_1") == current
+
         replacement = CardHandleMetadata(
             access_id="agent_card_1",
             card_revision=7,
@@ -525,6 +590,24 @@ async def test_card_handle_contract_against_real_postgres() -> None:
         assert retired.revision == 4
         assert await store.read_active("agent_card_1", now=2_000) is None
 
+        unsafe_reactivation = CardHandleMetadata(
+            access_id="agent_card_1",
+            card_revision=8,
+            resident_access_secret_ref="vault://resident/card-2",
+            resident_access_sha256="c" * 64,
+            session_id="session-2",
+            expires_at=4_000_000_000,
+        )
+        with pytest.raises(CardHandleMetadataConflict) as reactivation_error:
+            await store.put(
+                unsafe_reactivation,
+                expected_revision=retired.revision,
+            )
+        assert (
+            reactivation_error.value.reason
+            == "card_handle_reactivation_requires_fresh_secret_ref"
+        )
+
         cleared = await store.clear_retired_resident_secret(
             "agent_card_1",
             expected_revision=retired.revision,
@@ -532,19 +615,25 @@ async def test_card_handle_contract_against_real_postgres() -> None:
         assert cleared is not None
         assert cleared.revision == 5
         assert cleared.resident_access_secret_ref == ""
-        assert await store.purge_terminal(
-            retired_before=4_100_000_000,
-            limit=1,
-        ) == 0
+        assert (
+            await store.purge_terminal(
+                retired_before=4_100_000_000,
+                limit=1,
+            )
+            == 0
+        )
         assert await store.delete_retired_secret_record(
             access_id="agent_card_1",
             secret_ref="vault://resident/card-1",
         )
         assert await store.list_retired_secret_cleanup_candidates() == []
-        assert await store.purge_terminal(
-            retired_before=4_100_000_000,
-            limit=1,
-        ) == 1
+        assert (
+            await store.purge_terminal(
+                retired_before=4_100_000_000,
+                limit=1,
+            )
+            == 1
+        )
 
         expiring = CardHandleMetadata(
             access_id="manual_card_1",
@@ -557,10 +646,13 @@ async def test_card_handle_contract_against_real_postgres() -> None:
         assert len(expired) == 1
         assert expired[0].access_id == "manual_card_1"
         assert expired[0].state == "expired"
-        assert await store.purge_terminal(
-            retired_before=4_100_000_000,
-            limit=1,
-        ) == 1
+        assert (
+            await store.purge_terminal(
+                retired_before=4_100_000_000,
+                limit=1,
+            )
+            == 1
+        )
     finally:
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
@@ -570,6 +662,5 @@ async def test_card_handle_contract_against_real_postgres() -> None:
 def test_table_name_is_stable() -> None:
     assert TABLE_CARD_HANDLE_METADATA == "connection_hub_card_handle_metadata"
     assert (
-        TABLE_RETIRED_RESIDENT_SECRETS
-        == "connection_hub_card_retired_resident_secrets"
+        TABLE_RETIRED_RESIDENT_SECRETS == "connection_hub_card_retired_resident_secrets"
     )

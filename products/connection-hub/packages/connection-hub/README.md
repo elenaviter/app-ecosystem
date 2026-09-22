@@ -256,6 +256,18 @@ resolution, and the UI.
 The boundary is documented in
 [package extraction architecture](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/package/extraction-architecture.md).
 
+For resident Card bearers, `ResidentCardSecretService` owns the portable
+cross-store lifecycle. The host supplies PostgreSQL-backed
+`CardHandleMetadataStore` and an expiring `ResidentSecretStore`. Secret records
+are created atomically under fresh opaque references; metadata stores only the
+reference and SHA-256 fingerprint. Rotation and retirement delete the verified
+secret before acknowledging its durable cleanup record, while reads compare
+the access id, Card revision, fingerprint, and expiry before returning the
+bearer. A lost create response retains only a bounded, expiring prepared
+record; it never guesses ownership by deleting that reference. A host that
+binds both ports gets a custody boundary formed by PostgreSQL and its secret
+provider.
+
 ## Documentation
 
 - [Configuration and capabilities overview](https://github.com/elenaviter/app-ecosystem/blob/main/docs/connection-hub/configuration-and-capabilities.md)
