@@ -1143,6 +1143,16 @@ class SharedFieldStore:
             "state": "assigned",
             "received_at": utc_now(),
         }
+        returned = assignment.get("returned")
+        if isinstance(returned, Mapping):
+            # A review return keeps the worker under a new ownership version
+            # (W245); the notice must say so and name the review to cite.
+            row["returned"] = {
+                "review_ref": str(returned.get("review_ref") or ""),
+                "reason": str(returned.get("reason") or ""),
+                "source_revision": int(returned.get("source_revision") or 0),
+                "decision": "return",
+            }
         row["content_hash"] = content_hash(
             {key: value for key, value in row.items() if key != "received_at"}
         )
@@ -1238,17 +1248,50 @@ class SharedFieldStore:
         notice_work_ref = str(
             assignment.get("identity_ref") or assignment.get("work_ref") or ""
         ).strip()
-        return self.send_mail(
-            project_id,
-            sender="control-plane",
-            recipient=recipient,
-            kind="assign",
-            subject=(
+        returned = assignment.get("returned")
+        returned = dict(returned) if isinstance(returned, Mapping) else None
+        if returned is not None:
+            review_ref = str(returned.get("review_ref") or "")
+            subject = (
+                f"Returned from review: {notice_work_ref}"
+                if notice_work_ref
+                else "Returned from review"
+            )
+            body = (
+                "Your work was returned from review. You keep the item, under a "
+                "new ownership version.\n\n"
+                f"Work item: {notice_work_ref or '(not recorded)'}\n"
+                f"Assignment: {assignment_ref}\n"
+                f"Ownership version: {ownership_version}\n"
+                f"Review: {review_ref or '(not recorded)'}\n"
+                f"Reason: {str(returned.get('reason') or '').strip() or '(none given)'}\n\n"
+                "Rework it, then report against this assignment ref and this "
+                "ownership version, citing this notice (its message_ref) as the "
+                "source event, as you do for a fresh assignment. The review is "
+                "the reason, not the source event: the return already spent it. "
+                "Your report under the previous version is final and is not "
+                "repeated.\n\n"
+                "  pb coordinate project.plan.item --object-ref <project-ref> "
+                "--payload-json '{\"item_key\":\"<Wn>\"}'\n"
+                "  pb worker report --assignment-ref <assignment> "
+                "--ownership-version <version> --source-event-ref <this notice>\n"
+            )
+            payload = {
+                "assignment_id": assignment_id,
+                "assignment_ref": assignment_ref,
+                "work_ref": notice_work_ref,
+                "ownership_version": ownership_version,
+                "review_ref": review_ref,
+                "reason": str(returned.get("reason") or ""),
+                "expected_reaction": "resume_work",
+            }
+        else:
+            subject = (
                 f"Assignment available: {notice_work_ref}"
                 if notice_work_ref
                 else "Assignment available"
-            ),
-            body=(
+            )
+            body = (
                 "You have been assigned work.\n\n"
                 f"Work item: {notice_work_ref or '(not recorded)'}\n"
                 f"Assignment: {assignment_ref}\n"
@@ -1260,14 +1303,22 @@ class SharedFieldStore:
                 "--payload-json '{\"item_key\":\"<Wn>\"}'\n"
                 "  pb worker report --assignment-ref <assignment> "
                 "--ownership-version <version>\n"
-            ),
-            payload={
+            )
+            payload = {
                 "assignment_id": assignment_id,
                 "assignment_ref": assignment_ref,
                 "work_ref": notice_work_ref,
                 "ownership_version": ownership_version,
                 "expected_reaction": "begin_work",
-            },
+            }
+        return self.send_mail(
+            project_id,
+            sender="control-plane",
+            recipient=recipient,
+            kind="assign",
+            subject=subject,
+            body=body,
+            payload=payload,
             work_ref=notice_work_ref,
             correlation_id=assignment_ref,
             idempotency_key=(
