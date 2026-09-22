@@ -32,9 +32,12 @@ onboarding was skipped at the moment of acting with the rule already written.
    a reason. The service refuses the worker that submitted the work from
    deciding on it (`work_review_self_forbidden`), for all three decisions.
 4. The item is the record. After the decision, read the item back: status
-   `done` for accept, `todo` with no assignee for return (the prior worker is
-   recorded as the preferred reworker), `cancelled` for cancel, and the
-   assignment state beside it. Mail about the decision is commentary.
+   `done` for accept, `todo` with the same assignee for return (the worker
+   keeps the assignment, its ownership version advances, and it reworks
+   against the new version), `cancelled` for cancel, and the assignment state
+   beside it. To hand returned work to someone else, release it with
+   `assignment.return` and its reason, then assign. Mail about the decision is
+   commentary.
 
 ## Release a stalled assignment
 

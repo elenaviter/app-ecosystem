@@ -88,8 +88,9 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     },
     "review.return": {
         "description": (
-            "Return reviewed work to todo unassigned, preserving the prior worker "
-            "as the preferred reworker and recording the reason."
+            "Return reviewed work to todo for rework, recording the reason. The "
+            "assignee keeps the assignment and its ownership version advances, so "
+            "the rework has its own reports."
         ),
         "grants": ("work:review",),
     },

@@ -85,7 +85,11 @@ An assignment records who owns an item and nothing about its status. Assigning
 leaves the status as it was (new work stays `todo`), and so does releasing. The
 other direction holds too: a status edit never changes the assignee, the
 assignment or its ownership version, whatever the new status. A move to Todo
-keeps your assignment.
+keeps your assignment, and so does a review return: the reviewer sends the
+work back to you for rework, your ownership version advances, and you report
+against that new version, citing the returned-work notice as the source event
+(the return already spent the review ref, so citing the review is refused as
+`work_source_event_taken`).
 Status moves by the assignee's reports (`working` moves the item to Working), a
 review decision, or a status edit by a caller permitted to set status. A coordinator releases a
 stalled assignment with `assignment.return` (Release assignment, reason
