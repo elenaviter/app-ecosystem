@@ -1,0 +1,15 @@
+package:
+  id: app-foundation
+  ref: "2026.09.22.2029"
+  description: |
+    First published release of the implementation candidate: the shared
+    contracts, MCP and data-bus integration, and native secret custody
+    that Connection Hub, its CLI and the Problem Board client all build
+    on. Published so those clients can be installed from an index instead
+    of copied from a checkout.
+
+components:
+  python_package:
+    id: app-foundation
+    path: packages/app-foundation
+    version: "2026.09.22.2029"

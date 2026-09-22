@@ -4,7 +4,7 @@ Host-neutral foundations shared by applications in an ecosystem.
 
 ## Current Status
 
-`2026.09.03.1835` is the first implementation candidate. It contains two
+`2026.09.22.2029` is the first implementation candidate. It contains two
 host-neutral foundations: MCP client construction and strict native
 credential-value storage.
 

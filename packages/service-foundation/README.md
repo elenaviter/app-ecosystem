@@ -5,7 +5,7 @@ processes.
 
 ## Current Status
 
-`2026.09.03.1835` is the first implementation candidate. It includes a generic
+`2026.09.22.2029` is the first implementation candidate. It includes a generic
 host-relay lifecycle under `service_foundation.host_relay`:
 
 - `HostRelayAdapter` defines one asynchronous `poll_once()` domain boundary;
