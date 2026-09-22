@@ -146,6 +146,9 @@ bundles:
             issuer: ""
             public_clients:
             - client_id: "claude"
+              grant_types:
+              - "authorization_code"
+              - "refresh_token"
               redirect_uris:
               - "http://localhost/callback"
               - "http://127.0.0.1/callback"

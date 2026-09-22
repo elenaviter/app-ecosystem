@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Mapping
 
+from connection_hub.delegated_credentials.oauth.device import DEVICE_GRANT_TYPE
+
 # Discovery document paths (RFC 8414 / RFC 9728).
 WELL_KNOWN_AS_PATH = "/.well-known/oauth-authorization-server"
 WELL_KNOWN_OIDC_PATH = "/.well-known/openid-configuration"
@@ -21,6 +23,7 @@ def authorization_server_metadata(
     issuer: str,
     *,
     authorization_endpoint: str | None = None,
+    device_authorization_endpoint: str | None = None,
     token_endpoint: str | None = None,
     revocation_endpoint: str | None = None,
     registration_endpoint: str | None = None,
@@ -41,12 +44,19 @@ def authorization_server_metadata(
     out: Dict[str, Any] = {
         "issuer": issuer,
         "authorization_endpoint": authorization_endpoint or f"{issuer}/oauth/authorize",
+        "device_authorization_endpoint": (
+            device_authorization_endpoint or f"{issuer}/oauth/device_authorization"
+        ),
         "token_endpoint": token_endpoint or f"{issuer}/oauth/token",
         # RFC 7009 token revocation — a disconnecting client revokes its token
         # here, which also retires its Connection Hub card (no orphan).
         "revocation_endpoint": revocation_endpoint or f"{issuer}/oauth/revoke",
         "revocation_endpoint_auth_methods_supported": ["none"],
-        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "grant_types_supported": [
+            "authorization_code",
+            "refresh_token",
+            DEVICE_GRANT_TYPE,
+        ],
         "response_types_supported": ["code"],
         "code_challenge_methods_supported": ["S256"],
         # Public client, no secret -> 'none'.

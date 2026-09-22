@@ -49,6 +49,16 @@ connection-hub client install claude-code \
   --profile coding-agent
 ```
 
+For a headless host with a supported native credential store, use device
+authorization. Open the printed verification URL on any browser-capable device;
+the headless host opens no callback listener:
+
+```bash
+connection-hub profile authorize coding-agent \
+  --endpoint https://runtime.example/mcp \
+  --device
+```
+
 The bridge retrieves and refreshes the OAuth token set internally. The client
 configuration contains only this command shape:
 
@@ -272,6 +282,11 @@ The command reuses the recorded OAuth client. It stores the new token only
 after the endpoint proves that token and its `access_id` matches the recorded
 Card. A different-Card grant is revoked while local profile and credential
 state remain unchanged.
+
+Use `connection-hub profile reconnect coding-agent --device` to preserve the
+same Card without a browser or callback listener on the client host. Device
+mode prints only the public verification URL and user code; tokens remain in
+the native credential store.
 
 Static credential replacement validates the candidate before switching:
 

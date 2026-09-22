@@ -14,6 +14,7 @@ from connection_hub.delegated_credentials.cards.identity import (
     CARD_KIND_AUTOMATION,
     CARD_KIND_CONNECTOR,
 )
+from connection_hub.delegated_credentials.oauth.device import DEVICE_GRANT_TYPE
 from connection_hub_cli.errors import AuthorizationError
 
 _TOKEN_AUTH_METHODS = frozenset({"none"})
@@ -259,6 +260,8 @@ class AuthorizationServerMetadata:
     supports_refresh: bool
     authorization_response_issuer_required: bool
     client_id_metadata_document_supported: bool = False
+    device_authorization_endpoint: str | None = None
+    supports_device_authorization: bool = False
 
     @classmethod
     def from_mapping(
@@ -312,6 +315,15 @@ class AuthorizationServerMetadata:
             )
         registration_raw = _text(value.get("registration_endpoint"), maximum=8192)
         revocation_raw = _text(value.get("revocation_endpoint"), maximum=8192)
+        device_authorization_raw = _text(
+            value.get("device_authorization_endpoint"), maximum=8192
+        )
+        supports_device_authorization = DEVICE_GRANT_TYPE in grants
+        if supports_device_authorization and not device_authorization_raw:
+            raise AuthorizationError(
+                "oauth_device_authorization_endpoint_missing",
+                "The authorization server advertises device login without its endpoint.",
+            )
         return cls(
             issuer=issuer,
             authorization_endpoint=validate_web_url(
@@ -346,6 +358,15 @@ class AuthorizationServerMetadata:
             client_id_metadata_document_supported=bool(
                 value.get("client_id_metadata_document_supported")
             ),
+            device_authorization_endpoint=(
+                validate_web_url(
+                    device_authorization_raw,
+                    code="oauth_device_authorization_endpoint_invalid",
+                )
+                if device_authorization_raw
+                else None
+            ),
+            supports_device_authorization=supports_device_authorization,
         )
 
 

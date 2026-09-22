@@ -30,6 +30,7 @@ from connection_hub.delegated_credentials.oauth.clients import (
     normalize_public_client_metadata,
 )
 from connection_hub.delegated_credentials.oauth.config import (
+    DEFAULT_PUBLIC_CLIENT_GRANT_TYPES,
     OAuthDelegatedClientMetadataDocumentsConfig,
 )
 from connection_hub.delegated_credentials.oauth.store import (
@@ -487,6 +488,7 @@ def validate_client_metadata_document(client_id: str, document: Mapping[str, Any
     return PublicClient(
         client_id=client_id,
         redirect_uris=tuple(redirects),
+        grant_types=tuple(grant_types or DEFAULT_PUBLIC_CLIENT_GRANT_TYPES),
         token_endpoint_auth_method=token_auth_method,
         application_type=application_type,
         registration_kind=CLIENT_REGISTRATION_METADATA_DOCUMENT,

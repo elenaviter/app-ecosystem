@@ -13,6 +13,11 @@ from connection_hub_cli.authorization.discovery import (
     OAuthDiscoveryResult,
     OAuthTransport,
 )
+from connection_hub_cli.authorization.device import (
+    DeviceAuthorizationFlow,
+    DeviceAuthorizationGrant,
+    DeviceAuthorizationPrompt,
+)
 from connection_hub_cli.authorization.flow import (
     BrowserAuthorizationFlow,
     BrowserAuthorizationGrant,
@@ -47,6 +52,9 @@ __all__ = [
     "BrowserAuthorizationFlow",
     "BrowserAuthorizationGrant",
     "BrowserAuthorizationResult",
+    "DeviceAuthorizationFlow",
+    "DeviceAuthorizationGrant",
+    "DeviceAuthorizationPrompt",
     "HttpxOAuthTransport",
     "LoopbackCallbackServer",
     "MacOSOAuthSessionCredentialStore",

@@ -17,6 +17,7 @@ from connection_hub_cli.authorization.discovery import (
     McpOAuthEndpointDiscovery,
 )
 from connection_hub_cli.authorization.flow import BrowserAuthorizationGrant
+from connection_hub_cli.authorization.device import DeviceAuthorizationGrant
 from connection_hub_cli.authorization.models import (
     AuthorizationServerMetadata,
     OAuthClientRegistration,
@@ -205,6 +206,25 @@ class _Authorization:
         )
 
 
+class _DeviceAuthorization:
+    def __init__(self, token: OAuthTokenSet | None = None) -> None:
+        self.token = token or _token()
+        self.calls: list[dict] = []
+
+    async def authorize_discovered(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return DeviceAuthorizationGrant(
+            protected_resource_metadata_url=METADATA_URL,
+            discovered=kwargs["discovered"],
+            registration=OAuthClientRegistration(
+                client_id=str(kwargs.get("provisioned_client_id") or "native-client"),
+                redirect_uris=("http://127.0.0.1/callback",),
+                source="provisioned",
+            ),
+            token=self.token,
+        )
+
+
 class _OAuth:
     def __init__(self, replacement: OAuthTokenSet | None = None) -> None:
         self.replacement = replacement or _token(
@@ -233,6 +253,7 @@ def _service(
     *,
     oauth: _OAuth | None = None,
     authorization: _Authorization | None = None,
+    device_authorization: _DeviceAuthorization | None = None,
     probe=None,
 ):
     profiles = ProfileStore(tmp_path / "profiles.json")
@@ -247,6 +268,7 @@ def _service(
         endpoint_discovery=_EndpointDiscovery(),
         discovery=_Discovery(),
         authorization=authorization or _Authorization(),
+        device_authorization=device_authorization,
         oauth=oauth or _OAuth(),
         probe=probe or default_probe,
     )
@@ -541,6 +563,41 @@ async def test_reconnect_reuses_client_and_preserves_profile_card(tmp_path) -> N
         "reconnected-access"
     )
     assert oauth.events == []
+
+
+@pytest.mark.asyncio
+async def test_device_reconnect_reuses_client_and_preserves_profile_card(
+    tmp_path,
+) -> None:
+    device_authorization = _DeviceAuthorization(
+        _token("device-access", "device-refresh")
+    )
+    service, profiles, credentials = _service(
+        tmp_path,
+        device_authorization=device_authorization,
+    )
+    profile = _profile()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, _token())
+    prompts = []
+
+    result = await service.reconnect(
+        profile.name,
+        device=True,
+        device_presenter=prompts.append,
+        timeout_seconds=15,
+    )
+
+    call = device_authorization.calls[0]
+    assert call["provisioned_client_id"] == profile.oauth.client_id
+    assert call["requested_access_id"] == profile.access_id
+    assert call["scope"] == profile.oauth.scope
+    assert call["presenter"] == prompts.append
+    assert result.profile.name == profile.name
+    assert result.profile.credential_ref == profile.credential_ref
+    assert result.profile.access_id == profile.access_id
+    assert len(profiles.list()) == 1
+    assert credentials.values[profile.credential_ref].access_token == "device-access"
 
 
 @pytest.mark.asyncio

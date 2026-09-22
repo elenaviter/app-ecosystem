@@ -656,6 +656,7 @@ function OAuthCardRequest({ draft }: { draft: OAuthConsentDraft }) {
   const clientName = draft.client.client_name || draft.client.client_id;
   const registration = draft.trusted ? 'registered client' : 'client-published metadata';
   const multiResource = draft.catalog_scope.mode === 'full';
+  const deviceAuthorization = draft.device_authorization;
   return (
     <div className="oauth-card-request">
       <div className="oauth-card-request__head">
@@ -667,6 +668,7 @@ function OAuthCardRequest({ draft }: { draft: OAuthConsentDraft }) {
           <span className={`badge ${multiResource ? 'badge-client' : 'badge-app'}`}>
             {multiResource ? 'connected client' : 'connected app'}
           </span>
+          {deviceAuthorization ? <span className="badge badge-reach">device login</span> : null}
           <span className="badge badge-reach">{multiResource ? 'multi-resource' : 'single-resource'}</span>
         </span>
       </div>
@@ -684,8 +686,19 @@ function OAuthCardRequest({ draft }: { draft: OAuthConsentDraft }) {
           <strong>{draft.entry_door.label || 'Service endpoint'}</strong>
           <DoorRef value={draft.entry_door.resource} />
         </dd>
-        <dt>Returns to</dt>
-        <dd><code>{draft.oauth.redirect_host || draft.oauth.redirect_uri}</code></dd>
+        {deviceAuthorization ? (
+          <>
+            <dt>Device code</dt>
+            <dd><code>{deviceAuthorization.user_code}</code></dd>
+            <dt>Completion</dt>
+            <dd>Returns to the requesting terminal</dd>
+          </>
+        ) : (
+          <>
+            <dt>Returns to</dt>
+            <dd><code>{draft.oauth.redirect_host || draft.oauth.redirect_uri}</code></dd>
+          </>
+        )}
       </dl>
       <div className="oauth-card-request__registration">{registration}</div>
       <ClientMetadataDetails metadata={draft.client.client_metadata} />

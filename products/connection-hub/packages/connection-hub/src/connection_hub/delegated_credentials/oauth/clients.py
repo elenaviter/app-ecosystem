@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from connection_hub.delegated_credentials.oauth.config import (
     DEFAULT_CLAUDE_REDIRECT_URIS,
     DEFAULT_DCR_REDIRECT_URIS,
+    DEFAULT_PUBLIC_CLIENT_GRANT_TYPES,
     oauth_delegated_config,
 )
 
@@ -164,6 +165,7 @@ def client_uses_full_card_catalog(value: Mapping[str, Any] | None) -> bool:
 class PublicClient:
     client_id: str
     redirect_uris: Tuple[str, ...]
+    grant_types: Tuple[str, ...] = DEFAULT_PUBLIC_CLIENT_GRANT_TYPES
     token_endpoint_auth_method: str = "none"
     application_type: str = "native"
     registration_kind: str = CLIENT_REGISTRATION_PRE_REGISTERED
@@ -176,6 +178,7 @@ class PublicClient:
         payload = {
             "client_id": self.client_id,
             "redirect_uris": list(self.redirect_uris),
+            "grant_types": list(self.grant_types),
             "token_endpoint_auth_method": self.token_endpoint_auth_method,
             "application_type": self.application_type,
             "registration_kind": self.registration_kind,
@@ -206,6 +209,9 @@ def client_from_record(record: dict) -> "PublicClient":
     return PublicClient(
         client_id=record["client_id"],
         redirect_uris=tuple(record.get("redirect_uris") or ()),
+        grant_types=tuple(
+            record.get("grant_types") or DEFAULT_PUBLIC_CLIENT_GRANT_TYPES
+        ),
         token_endpoint_auth_method=record.get("token_endpoint_auth_method", "none"),
         application_type=record.get("application_type", "native"),
         registration_kind=CLIENT_REGISTRATION_DYNAMIC,
@@ -237,6 +243,7 @@ def get_client(client_id: str, source: Any | None = None) -> Optional[PublicClie
             return PublicClient(
                 client_id=client.client_id,
                 redirect_uris=client.redirect_uris,
+                grant_types=client.grant_types,
                 token_endpoint_auth_method=client.token_endpoint_auth_method,
                 application_type=client.application_type,
                 registration_kind=CLIENT_REGISTRATION_PRE_REGISTERED,

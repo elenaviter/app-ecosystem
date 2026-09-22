@@ -23,11 +23,19 @@ def test_public_client_metadata_is_json_safe_and_round_trips() -> None:
         {
             "client_id": "dcr-worker",
             "redirect_uris": ["http://127.0.0.1/callback"],
+            "grant_types": [
+                "urn:ietf:params:oauth:grant-type:device_code",
+                "refresh_token",
+            ],
             "metadata": {"client_name": "Worker", "client_metadata": metadata},
         }
     )
 
     assert client.client_metadata == metadata
+    assert client.grant_types == (
+        "urn:ietf:params:oauth:grant-type:device_code",
+        "refresh_token",
+    )
     assert client.snapshot()["client_metadata"] == metadata
     assert PublicClient(
         client_id="dcr-worker",

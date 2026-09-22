@@ -22,7 +22,7 @@ native OAuth
 
 MCP client -> remote Streamable HTTP endpoint -> Connection Hub
      |
-     +-> browser OAuth + PKCE
+     +-> browser OAuth + PKCE or client-supported device authorization
      +-> access and refresh credentials in the client's own OAuth store
 
 local bridge
@@ -107,7 +107,7 @@ The bridge keeps caller credentials outside client configuration, process
 arguments, environment variables, command history, and ordinary logs. It
 supports two profile types.
 
-### Browser-Authorized Profile
+### OAuth-Authorized Profile
 
 Create an OAuth-backed bridge profile through the MCP endpoint:
 
@@ -127,6 +127,22 @@ The command:
 5. probes the governed MCP endpoint;
 6. stores the complete token set in the native operating-system store;
 7. commits only non-secret profile metadata after storage succeeds.
+
+On a host where the user cannot open a browser, use RFC 8628 device
+authorization instead of a loopback callback:
+
+```bash
+connection-hub profile authorize coding-agent \
+  --endpoint https://runtime.example/mcp \
+  --device
+```
+
+The command prints a public verification URL and user code, then polls at the
+server-provided interval. Open the URL on any device, sign in, enter the code,
+and approve the same Connection Hub Card editor. The headless host opens no
+listener and needs no SSH tunnel. The private device code is retained only in
+the running CLI process, and the resulting token set is committed to that
+host's native credential store.
 
 Use a provisioned public client when the server does not permit dynamic
 registration:
@@ -161,6 +177,10 @@ Reconnect uses the profile's recorded OAuth client and accepts the new token
 only when it names the same caller Card. A different-Card grant is revoked and
 the profile and its prior native credential remain unchanged. Profiles created
 with a fixed CIMD loopback URI also pass their registered `--callback-port`.
+Use `connection-hub profile reconnect coding-agent --device` for the same
+Card-preserving reconnect from a headless host. Device mode is mutually
+exclusive with `--no-open` and `--callback-port` because it has no callback
+listener.
 
 ### Manually Issued Profile
 
@@ -236,9 +256,11 @@ success. Existing direct values remain readable until their next successful
 replacement. The logical value bound is 288 KiB of UTF-8 text, enough for the
 largest OAuth token record accepted by the CLI after worst-case JSON escaping.
 
-Linux requires a graphical session D-Bus, an available Secret Service
-provider, and an unlocked default collection. Headless Linux and WSL without
-Secret Service can use a client's native remote OAuth path.
+Linux bridge mode requires a session D-Bus, an available Secret Service
+provider, and an unlocked default collection. Device authorization removes the
+browser and callback requirement; it does not replace secure credential
+custody. Headless Linux and WSL hosts without Secret Service must use a client's
+native remote OAuth path or provide a supported native store.
 
 The same selected native backend holds three separate Connection Hub service
 names:

@@ -1,10 +1,10 @@
 ---
 id: connection-hub/package/oauth-delegated-credential-protocol
 title: "OAuth Delegated Credential Protocol Adapter"
-summary: "How the OAuth2 protocol adapter resolves and identifies pre-registered, Client ID Metadata Document, and DCR clients, issues least-privilege Connection Hub credentials, and advertises managed or direct protected-resource admission."
+summary: "How the OAuth2 protocol adapter resolves public clients, supports browser PKCE and RFC 8628 device authorization, issues least-privilege Connection Hub credentials, and advertises managed or direct protected-resource admission."
 tags: ["sdk", "solutions", "connections", "delegated-credentials", "oauth", "mcp", "descriptor"]
-keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "client metadata", "tool consent", "live grant lookup", "operation csrf protection", "descriptor configuration"]
-updated_at: 2026-09-11
+keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "RFC 8628", "device authorization", "Client ID Metadata Document", "CIMD", "dynamic client registration", "client metadata", "tool consent", "live grant lookup", "operation csrf protection", "descriptor configuration"]
+updated_at: 2026-09-22
 see_also:
   - ../connection-hub-architecture.md
   - ./delegated-authority-and-admission.md
@@ -58,10 +58,11 @@ KDCube resolves an OAuth client in this order:
    `/oauth/register`; KDCube stores the generated `dcr-...` client id. This path
    remains available for existing clients and can be disabled independently.
 
-All three paths lead into the same PKCE, consent, grant, token, refresh, and
-revocation machinery. Registration does not grant authority. It establishes
-the client identity and valid callback URIs that the user sees before deciding
-what to delegate.
+All three paths lead into the same consent, Card, token, refresh, and revocation
+machinery. A browser-local client uses Authorization Code with PKCE. A headless
+client uses the RFC 8628 Device Authorization Grant and does not open a callback
+listener. Registration does not grant authority. It establishes the public
+client identity before the user decides what to delegate.
 
 ### Client-reported identification
 
@@ -137,6 +138,7 @@ Connection Hub delegated credential OAuth adapter
   v
 Client learns:
   authorization_endpoint = /api/.../connection-hub@1-0/public/oauth/authorize
+  device_authorization_endpoint = /api/.../connection-hub@1-0/public/oauth/device_authorization
   token_endpoint         = /api/.../connection-hub@1-0/public/oauth/token
   registration_endpoint  = /api/.../connection-hub@1-0/public/oauth/register
   resource               = concrete bundle MCP URL
@@ -218,9 +220,48 @@ Proc bundle MCP bridge
 Allowed MCP tool result
 ```
 
-The card editor is the OAuth decision screen. **Save card and connect** creates
-the authorization code; **Cancel** denies the request. Its opaque draft id is a
-one-use, user-bound Redis record with a 15-minute expiry. It contains protocol
+### Headless Device Authorization
+
+RFC 8628 is the alternate front door into the same Card editor and token
+issuer. It changes how the human and client rendezvous; it does not create a
+second authority model. The public client must register
+`urn:ietf:params:oauth:grant-type:device_code`; the device endpoint rejects an
+ordinary authorization-code client with `unauthorized_client`:
+
+```text
+Headless client
+  | POST /oauth/device_authorization
+  | client_id, resource, scope, optional existing access_id
+  v
+short-lived device request
+  | returns private device_code plus public verification URI and user_code
+  | stores only digests, client/Card binding, consent context, and expiry
+  v
+browser on any device
+  | GET /oauth/device?user_code=<public code>
+  | platform login -> existing Connection Hub Card editor -> approve or deny
+  v
+headless client polls /oauth/token
+  | grant_type=urn:ietf:params:oauth:grant-type:device_code
+  | device_code=<private code> + client_id
+  v
+one atomic consumer receives the approved authority
+  | the common issuer mints the normal Card-bound token set
+```
+
+The CLI waits for the advertised interval and applies RFC 8628 `slow_down`
+increments. Approval, denial, expiry, client mismatch, Card mismatch, Card
+revision conflict, and replay are distinct outcomes. A consumed or expired
+device code never mints a token. The browser URL contains only the public user
+code; the private device code and issued tokens stay out of URLs, device
+records, output, and ordinary logs.
+
+The card editor is the OAuth decision screen. For a device login it labels the
+request and displays the same public user code as the requesting terminal, so
+the person can compare them before approval. **Save card and connect** creates
+an authorization code for the PKCE flow or approves the bound device request;
+**Cancel** denies that flow's request. Its opaque draft id is a one-use,
+user-bound Redis record with a 15-minute expiry. It contains protocol
 coordinates and fingerprints, never an access token or provider credential.
 
 The default is the existing entry-bound MCP flow. A custom client can request
@@ -355,6 +396,9 @@ registration endpoint:
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/.well-known/oauth-protected-resource?resource=<bundle-mcp-url>
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/authorize
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/authorize/consent
+/api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/device_authorization
+/api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/device
+/api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/device/complete
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/register
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/token
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/jwks
@@ -622,8 +666,10 @@ Rules:
   `context.project`.
 - Platform session cookie name comes from the selected platform authority
   provider in `connection-hub@1-0.config.authority_registry`.
-- This flow currently uses public clients plus PKCE and does not require a new
-  secret in `secrets.yaml`.
+- Both authorization-code and device flows use public clients and require no
+  new secret in `secrets.yaml`. Authorization Code uses PKCE; Device
+  Authorization uses a high-entropy, short-lived device code and interval-bound
+  polling.
 
 If route guarding or bypass policy must be configurable, use the existing
 gateway/ingress descriptor model instead of feature-specific hardcoded route
@@ -819,6 +865,8 @@ store, normally Redis.
 | CSRF token | Single-use consent POST protection bound to grantor subject plus client metadata digest. | Short TTL. |
 | Bundle operation CSRF token | Protects cookie-authenticated state-changing bundle operations; binds subject, tenant, project, bundle, operation, and method. Connection Hub keeps an exhaustive protected-or-exempt inventory of every effective POST surface. | Ten minutes, single use. |
 | Authorization code | Stores client, redirect URI, PKCE challenge, grantor subject, resource, final scopes, selected operations, delegation edges, and grantor authority facts captured at consent. | Short TTL, single use. |
+| Device request | Stores digests, client and requested Card binding, consent context, polling interval, expiry, and after approval the Card authority needed by the common token issuer. It never stores the raw device/user code or an issued token. | Ten minutes by default, one terminal decision and one token consumer. |
+| Device user-code pointer and guess limiter | Resolves a public user-code digest to one pending device digest and limits incorrect code attempts per authenticated subject. | Request TTL for the pointer; bounded attempt window for the limiter. |
 | Access grant | Binds an access token to selected operations, the `delegated_client` credential envelope, delegation edges, and server-side grantor authority facts. | Same TTL as access token. |
 | Refresh token | Stores client, grantor subject, resource, scopes, selected operations, credential envelope, delegation edges, grantor authority facts, and rotation state. | Long-lived, rotating. |
 | KDCube `kst1` session record | The issued access token is a session for the integration identity, stored through KDCube's `BundleSessionAuthority`. | Access-token TTL. |
@@ -856,6 +904,14 @@ deployment-specific store is required. The solution-level durability design note
 | CIMD metadata changes after the consent page is shown | Consent submit fails and the client must restart authorization. |
 | Bad redirect URI on authorize/token | Request fails; codes are not delivered to unvalidated redirects. |
 | Missing or invalid PKCE verifier | Token request fails with `invalid_grant`. |
+| Device request has not been approved | Token polling returns `authorization_pending` and no token is minted. |
+| Client did not register the device grant | Device authorization returns `unauthorized_client` before a device code is created. |
+| Device client polls before the advertised interval | Token polling returns `slow_down`, increases the interval by five seconds, and no token is minted. |
+| User denies or the device request expires | Polling returns `access_denied` or `expired_token`; the request cannot mint a token. |
+| Device code is consumed by another poller | The atomic winner receives the approved authority; every later poll returns `device_code_replayed`. |
+| Token issuance fails after the approved device code is consumed | The terminal error `device_authorization_restart_required` tells the client to begin a new device authorization. |
+| Device client, requested Card, or expected Card revision does not match | The flow terminates with `device_client_mismatch`, `device_card_mismatch`, or `device_card_revision_conflict`; authority is not issued to the mismatched request. |
+| Authenticated user repeatedly guesses invalid user codes | Verification returns a bounded rate-limit response before another lookup. |
 | Token has grant but no selected operation | Bundle MCP `tools/call` fails closed. |
 | Tool is not listed by endpoint policy or not selected during consent | Bundle MCP `tools/call` returns an MCP tool authorization error. |
 | Pointed-to live grant card is absent or expired | The delegated credential is treated as revoked. |
@@ -920,7 +976,7 @@ connection-hub@1-0/public/oauth/authorize
 descriptor-allowed scopes + selected operations
       |
       v
-auth code + PKCE
+auth code + PKCE, or one approved device code
       |
       v
 integration token + refresh token + selected-operation grant
@@ -1260,3 +1316,17 @@ Use focused tests and one live connector test.
     in every generated link, and a public host is published as `https`.
 33. Origin construction emits only `http` or `https` and recognizes bracketed
     IPv6 loopback hosts with ports.
+34. Authorization-server metadata advertises the device-authorization endpoint
+    and RFC 8628 grant exactly when the HTTP route and token exchange are
+    available.
+35. Device polling honors the advertised interval and `slow_down`; denial,
+    expiry, replay, wrong client, Card mismatch, and Card revision conflict are
+    stable distinct errors.
+36. Two pollers for one approved device code produce exactly one token result;
+    a consumed or expired code cannot mint again.
+37. The verification URL contains only the public user code, while raw device
+    codes and issued tokens are absent from device records, browser URLs,
+    command output, and ordinary logs.
+38. Device reconnect requests the recorded `access_id`, preserves that Card
+    and its grants unless the user edits them, and leaves exactly one profile
+    and Card after success.

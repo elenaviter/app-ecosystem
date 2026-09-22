@@ -19,6 +19,8 @@ from kdcube_cli.management.presentation import management_view
 from connection_hub_cli import __version__
 from connection_hub_cli.authorization import (
     BrowserAuthorizationFlow,
+    DeviceAuthorizationFlow,
+    DeviceAuthorizationPrompt,
     HttpxOAuthTransport,
     McpOAuthEndpointDiscovery,
     NativeOAuthProfileCredentialStore,
@@ -127,6 +129,7 @@ def build_services(*, paths: StatePaths | None = None) -> Services:
         client=oauth_client,
         sessions=oauth_repository,
     )
+    device_authorization_flow = DeviceAuthorizationFlow(client=oauth_client)
     oauth_profile_sessions = OAuthProfileSessionService(
         profiles=profiles,
         credentials=oauth_profile_credentials,
@@ -135,6 +138,7 @@ def build_services(*, paths: StatePaths | None = None) -> Services:
         ),
         discovery=oauth_discovery,
         authorization=authorization_flow,
+        device_authorization=device_authorization_flow,
         oauth=oauth_client,
         probe=probe_remote_tools,
     )
@@ -244,6 +248,17 @@ def _print_manual_authorization_url(url: str) -> bool:
     return True
 
 
+def _print_device_authorization(prompt: DeviceAuthorizationPrompt) -> None:
+    sys.stderr.write("Open this verification URL in a browser on any device:\n")
+    sys.stderr.write(f"{prompt.verification_uri}\n")
+    sys.stderr.write("Enter this code:\n")
+    sys.stderr.write(f"{prompt.user_code}\n")
+    if prompt.verification_uri_complete:
+        sys.stderr.write("Direct verification URL:\n")
+        sys.stderr.write(f"{prompt.verification_uri_complete}\n")
+    sys.stderr.flush()
+
+
 def _profile_view(services: Services, profile: Any) -> dict[str, Any]:
     value = {
         "name": profile.name,
@@ -300,6 +315,12 @@ async def _run_profile(args: argparse.Namespace, services: Services) -> int:
                 "OAuth-backed caller profiles are unavailable in this process.",
             )
         endpoint = args.endpoint or services.host_service.mcp_endpoint()
+        use_device = bool(getattr(args, "device", False))
+        if use_device and (args.callback_port is not None or args.no_open):
+            raise ConnectionHubCliError(
+                "oauth_device_option_conflict",
+                "Device authorization does not use --callback-port or --no-open.",
+            )
         authorization_options: dict[str, Any] = {}
         if args.no_open:
             authorization_options["browser_opener"] = _print_manual_authorization_url
@@ -311,6 +332,10 @@ async def _run_profile(args: argparse.Namespace, services: Services) -> int:
             client_metadata_url=args.client_metadata_url,
             whole_card=not args.resource_bound,
             callback_port=args.callback_port,
+            device=use_device,
+            device_presenter=(
+                _print_device_authorization if use_device else None
+            ),
             timeout_seconds=args.wait_seconds,
             **authorization_options,
         )
@@ -329,12 +354,22 @@ async def _run_profile(args: argparse.Namespace, services: Services) -> int:
                 "oauth_profiles_unavailable",
                 "OAuth-backed caller profiles are unavailable in this process.",
             )
+        use_device = bool(getattr(args, "device", False))
+        if use_device and (args.callback_port is not None or args.no_open):
+            raise ConnectionHubCliError(
+                "oauth_device_option_conflict",
+                "Device authorization does not use --callback-port or --no-open.",
+            )
         authorization_options: dict[str, Any] = {}
         if args.no_open:
             authorization_options["browser_opener"] = _print_manual_authorization_url
         result = await services.oauth_profile_sessions.reconnect(
             args.name,
             callback_port=args.callback_port,
+            device=use_device,
+            device_presenter=(
+                _print_device_authorization if use_device else None
+            ),
             timeout_seconds=args.wait_seconds,
             **authorization_options,
         )
@@ -1428,6 +1463,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fixed loopback port published by the selected Client ID Metadata Document.",
     )
     profile_authorize.add_argument(
+        "--device",
+        action="store_true",
+        help="Authorize in a browser on another device without a callback listener.",
+    )
+    profile_authorize.add_argument(
         "--resource-bound",
         action="store_true",
         help="Create a connector profile bound to this one protected resource.",
@@ -1447,6 +1487,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--callback-port",
         type=int,
         help="Fixed loopback port registered for the profile's OAuth client.",
+    )
+    profile_reconnect.add_argument(
+        "--device",
+        action="store_true",
+        help="Reconnect in a browser on another device without a callback listener.",
     )
     profile_reconnect.add_argument(
         "--no-open",

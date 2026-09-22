@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from connection_hub.delegated_credentials.oauth.device import DEVICE_GRANT_TYPE
 from connection_hub_cli.authorization.discovery import OAuthTransport
 from connection_hub_cli.authorization.models import (
     AuthorizationServerMetadata,
@@ -109,6 +110,7 @@ class OAuthClient:
         client_metadata: Mapping[str, Any] | None = None,
         provisioned_client_id: str | None = None,
         client_metadata_url: str | None = None,
+        device_authorization: bool = False,
     ) -> OAuthClientRegistration:
         callback = validate_web_url(
             redirect_uri,
@@ -169,6 +171,7 @@ class OAuthClient:
             "grant_types": [
                 "authorization_code",
                 *(["refresh_token"] if metadata.supports_refresh else []),
+                *([DEVICE_GRANT_TYPE] if device_authorization else []),
             ],
             "response_types": ["code"],
         }
@@ -180,6 +183,92 @@ class OAuthClient:
         return OAuthClientRegistration.from_mapping(
             registered,
             expected_redirect_uri=callback,
+        )
+
+    async def register_device_client(
+        self,
+        *,
+        metadata: AuthorizationServerMetadata,
+        client_name: str = "Connection Hub CLI",
+        client_metadata: Mapping[str, Any] | None = None,
+        provisioned_client_id: str | None = None,
+        client_metadata_url: str | None = None,
+    ) -> OAuthClientRegistration:
+        """Identify one public client without opening a callback listener."""
+
+        return await self.register_native_client(
+            metadata=metadata,
+            redirect_uri="http://127.0.0.1/callback",
+            client_name=client_name,
+            client_metadata=client_metadata,
+            provisioned_client_id=provisioned_client_id,
+            client_metadata_url=client_metadata_url,
+            device_authorization=True,
+        )
+
+    async def request_device_authorization(
+        self,
+        *,
+        metadata: AuthorizationServerMetadata,
+        client: OAuthClientRegistration,
+        resource: str | None,
+        scope: str = "",
+        requested_access_id: str = "",
+        expected_card_revision: int | None = None,
+    ):
+        from connection_hub_cli.authorization.device import DeviceAuthorizationPrompt
+
+        if (
+            not metadata.supports_device_authorization
+            or not metadata.device_authorization_endpoint
+        ):
+            raise AuthorizationError(
+                "oauth_device_authorization_unsupported",
+                "The authorization server does not support device login.",
+            )
+        payload = {"client_id": client.client_id}
+        if str(resource or "").strip():
+            payload["resource"] = validate_resource_identifier(resource)
+        normalized_scope = str(scope or "").strip()
+        if normalized_scope:
+            payload["scope"] = _oauth_value(normalized_scope)
+        if str(requested_access_id or "").strip():
+            payload["access_id"] = _oauth_value(
+                requested_access_id, maximum=256
+            )
+        if expected_card_revision is not None:
+            revision = int(expected_card_revision)
+            if revision < 1:
+                raise AuthorizationError(
+                    "oauth_card_revision_invalid",
+                    "The recorded Card revision is invalid.",
+                )
+            payload["expected_card_revision"] = str(revision)
+        response = await self._transport.post_form(
+            metadata.device_authorization_endpoint,
+            payload,
+        )
+        return DeviceAuthorizationPrompt.from_mapping(response)
+
+    async def exchange_device_code(
+        self,
+        *,
+        metadata: AuthorizationServerMetadata,
+        client: OAuthClientRegistration,
+        device_code: str,
+        scope: str = "",
+        now: int | None = None,
+    ) -> OAuthTokenSet:
+        payload = {
+            "grant_type": DEVICE_GRANT_TYPE,
+            "device_code": _oauth_value(device_code, maximum=65536),
+            "client_id": client.client_id,
+        }
+        response = await self._transport.post_form(metadata.token_endpoint, payload)
+        return OAuthTokenSet.from_mapping(
+            response,
+            default_scope=scope,
+            now=now,
         )
 
     def authorization_url(

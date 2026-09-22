@@ -28,11 +28,17 @@ DEFAULT_DCR_REDIRECT_URIS: tuple[str, ...] = (
     "http://127.0.0.1/callback",
 )
 
+DEFAULT_PUBLIC_CLIENT_GRANT_TYPES: tuple[str, ...] = (
+    "authorization_code",
+    "refresh_token",
+)
+
 
 @dataclass(frozen=True)
 class OAuthDelegatedPublicClientConfig:
     client_id: str
     redirect_uris: tuple[str, ...]
+    grant_types: tuple[str, ...] = DEFAULT_PUBLIC_CLIENT_GRANT_TYPES
     token_endpoint_auth_method: str = "none"
     application_type: str = "native"
     client_name: str = ""
@@ -530,6 +536,10 @@ def _parse_public_clients(raw: Any) -> tuple[OAuthDelegatedPublicClientConfig, .
             OAuthDelegatedPublicClientConfig(
                 client_id=client_id,
                 redirect_uris=redirects,
+                grant_types=(
+                    _coerce_string_tuple(item.get("grant_types"))
+                    or DEFAULT_PUBLIC_CLIENT_GRANT_TYPES
+                ),
                 token_endpoint_auth_method=_coerce_str(item.get("token_endpoint_auth_method")) or "none",
                 application_type=_coerce_str(item.get("application_type")) or "native",
                 client_name=_coerce_str(item.get("client_name")) or "",
@@ -665,6 +675,7 @@ def oauth_delegated_config(
 __all__ = [
     "DEFAULT_CLAUDE_REDIRECT_URIS",
     "DEFAULT_DCR_REDIRECT_URIS",
+    "DEFAULT_PUBLIC_CLIENT_GRANT_TYPES",
     "OAuthDelegatedAccountRequirement",
     "OAuthDelegatedCapabilityConfig",
     "OAuthDelegatedClientConfig",

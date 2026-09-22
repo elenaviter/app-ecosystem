@@ -64,6 +64,9 @@ export interface OAuthConsentDraft {
     redirect_host: string;
     requested_scopes: string[];
   };
+  device_authorization?: {
+    user_code: string;
+  };
   account_requirements: {
     providers: OAuthConsentProviderRequirement[];
     choices: Array<{ label: string; options: OAuthConsentChoiceOption[] }>;

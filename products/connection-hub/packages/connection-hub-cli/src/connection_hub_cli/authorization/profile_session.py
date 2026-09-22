@@ -22,6 +22,7 @@ from connection_hub.delegated_credentials.oauth.clients import (
     client_uses_full_card_catalog,
 )
 from connection_hub_cli.authorization.client import OAuthClient
+from connection_hub_cli.authorization.device import DeviceAuthorizationFlow, Presenter
 from connection_hub_cli.authorization.discovery import (
     McpOAuthEndpointDiscovery,
     OAuthDiscovery,
@@ -73,6 +74,7 @@ class OAuthProfileSessionService:
         endpoint_discovery: McpOAuthEndpointDiscovery,
         discovery: OAuthDiscovery,
         authorization: BrowserAuthorizationFlow,
+        device_authorization: DeviceAuthorizationFlow | None = None,
         oauth: OAuthClient,
         probe: Probe,
     ) -> None:
@@ -81,6 +83,7 @@ class OAuthProfileSessionService:
         self._endpoint_discovery = endpoint_discovery
         self._discovery = discovery
         self._authorization = authorization
+        self._device_authorization = device_authorization
         self._oauth = oauth
         self._probe = probe
         self._transaction_lock = profiles.path.with_suffix(
@@ -100,6 +103,8 @@ class OAuthProfileSessionService:
         client_metadata_url: str | None = None,
         whole_card: bool | None = None,
         callback_port: int | None = None,
+        device: bool = False,
+        device_presenter: Presenter | None = None,
         timeout_seconds: float = 300.0,
         browser_opener=None,
     ) -> OAuthProfileAuthorizationResult:
@@ -124,21 +129,45 @@ class OAuthProfileSessionService:
                 if whole_card is None
                 else bool(whole_card)
             )
-            grant = await self._authorization.authorize_discovered(
-                protected_resource_metadata_url=(
-                    located.protected_resource_metadata_url
-                ),
-                discovered=discovered,
-                resource=("" if use_whole_card else located.protected_resource.resource),
-                scope=selected_scope,
-                client_name=client_name,
-                client_metadata=client_metadata,
-                provisioned_client_id=provisioned_client_id,
-                client_metadata_url=client_metadata_url,
-                callback_port=callback_port,
-                timeout_seconds=timeout_seconds,
-                browser_opener=browser_opener,
+            authorization_resource = (
+                "" if use_whole_card else located.protected_resource.resource
             )
+            if device:
+                if self._device_authorization is None or device_presenter is None:
+                    raise AuthorizationError(
+                        "oauth_device_authorization_unavailable",
+                        "Device authorization is unavailable in this process.",
+                    )
+                grant = await self._device_authorization.authorize_discovered(
+                    protected_resource_metadata_url=(
+                        located.protected_resource_metadata_url
+                    ),
+                    discovered=discovered,
+                    resource=authorization_resource,
+                    scope=selected_scope,
+                    client_name=client_name,
+                    client_metadata=client_metadata,
+                    provisioned_client_id=provisioned_client_id,
+                    client_metadata_url=client_metadata_url,
+                    presenter=device_presenter,
+                    timeout_seconds=timeout_seconds,
+                )
+            else:
+                grant = await self._authorization.authorize_discovered(
+                    protected_resource_metadata_url=(
+                        located.protected_resource_metadata_url
+                    ),
+                    discovered=discovered,
+                    resource=authorization_resource,
+                    scope=selected_scope,
+                    client_name=client_name,
+                    client_metadata=client_metadata,
+                    provisioned_client_id=provisioned_client_id,
+                    client_metadata_url=client_metadata_url,
+                    callback_port=callback_port,
+                    timeout_seconds=timeout_seconds,
+                    browser_opener=browser_opener,
+                )
             try:
                 access_id = validate_access_id(grant.token.access_id)
             except ProfileError:
@@ -185,6 +214,8 @@ class OAuthProfileSessionService:
         profile_name: str,
         *,
         callback_port: int | None = None,
+        device: bool = False,
+        device_presenter: Presenter | None = None,
         timeout_seconds: float = 300.0,
         browser_opener=None,
     ) -> OAuthProfileAuthorizationResult:
@@ -216,18 +247,40 @@ class OAuthProfileSessionService:
                 protected_resource=located.protected_resource,
                 authorization_server=located.authorization_server,
             )
-            grant = await self._authorization.authorize_discovered(
-                protected_resource_metadata_url=(
-                    located.protected_resource_metadata_url
-                ),
-                discovered=discovered,
-                resource=("" if use_whole_card else located.protected_resource.resource),
-                scope=metadata.scope,
-                provisioned_client_id=client_id,
-                callback_port=callback_port,
-                timeout_seconds=timeout_seconds,
-                browser_opener=browser_opener,
+            authorization_resource = (
+                "" if use_whole_card else located.protected_resource.resource
             )
+            if device:
+                if self._device_authorization is None or device_presenter is None:
+                    raise AuthorizationError(
+                        "oauth_device_authorization_unavailable",
+                        "Device authorization is unavailable in this process.",
+                    )
+                grant = await self._device_authorization.authorize_discovered(
+                    protected_resource_metadata_url=(
+                        located.protected_resource_metadata_url
+                    ),
+                    discovered=discovered,
+                    resource=authorization_resource,
+                    scope=metadata.scope,
+                    provisioned_client_id=client_id,
+                    requested_access_id=profile.access_id,
+                    presenter=device_presenter,
+                    timeout_seconds=timeout_seconds,
+                )
+            else:
+                grant = await self._authorization.authorize_discovered(
+                    protected_resource_metadata_url=(
+                        located.protected_resource_metadata_url
+                    ),
+                    discovered=discovered,
+                    resource=authorization_resource,
+                    scope=metadata.scope,
+                    provisioned_client_id=client_id,
+                    callback_port=callback_port,
+                    timeout_seconds=timeout_seconds,
+                    browser_opener=browser_opener,
+                )
             if grant.registration.client_id != client_id:
                 await self._revoke_grant(grant)
                 raise AuthorizationError(

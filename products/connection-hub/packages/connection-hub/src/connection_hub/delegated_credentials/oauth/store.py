@@ -519,6 +519,7 @@ class GrantStore:
         self,
         *,
         redirect_uris: List[str],
+        grant_types: Optional[List[str]] = None,
         application_type: str = "native",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
@@ -526,6 +527,9 @@ class GrantStore:
         record = {
             "client_id": client_id,
             "redirect_uris": list(redirect_uris),
+            "grant_types": list(
+                grant_types or ("authorization_code", "refresh_token")
+            ),
             "token_endpoint_auth_method": "none",
             "application_type": application_type,
             "metadata": metadata or {},
