@@ -34,9 +34,11 @@ def test_package_content_is_recorded_for_its_revision() -> None:
     """A content change under an unchanged revision fails here.
 
     Why: installed copies compare revisions, so an edit that keeps the
-    revision is invisible to every session that already installed it. The
-    ledger records the source digest of each revision; a changed package needs
-    a new revision and a new ledger line.
+    revision is invisible to every session that already installed it. On
+    2026-09-22 the W257 edits to SKILL.md and first-run.md were committed under
+    2026.09.22.4, which claude-main had installed minutes earlier, so no worker
+    received them. The ledger records the source digest of each revision; a
+    changed package needs a new revision and a new ledger line.
     """
 
     package = source_package()
@@ -56,7 +58,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.2"
+    assert package["revision"] == "2026.09.22.12"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -77,7 +79,7 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
 
 
 def test_first_run_guides_the_user_from_the_state_command() -> None:
-    # A new user is guided through setup, not merely told it is unconfigured.
+    # A new user is guided through setup, not told the machine is unconfigured (W249).
     skill = _words(_read("SKILL.md"))
     assert "guide the user through setup with [first run](references/first-run.md)" in skill
     assert "report that state instead" not in skill
@@ -90,16 +92,59 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
     assert "preserve the returned profile and append `--device`" in first_run
     assert "append `--device`, never callback flags" in skill
     assert "the credential goes to the native store" in skill
-    # The identifiers have one home, reached through the installed package's source root.
+    # The released package owns the setup coordinate meanings and install path.
     assert "What The Setup Coordinates Mean" in first_run
     assert "This section is the owning definition" in first_run
     assert "setup guides point here rather than restating the meanings" in first_run
     assert "`pb` is the console command in the released `project-board` distribution" in first_run
+    assert 'pipx install "project-board==<approved-version>"' in first_run
+    assert "do not replace this with a checkout launcher or an editable install" in first_run
     assert "run it after they approve" in first_run
     # A worker whose credential was refused is not attending (coordinator, 2026-09-21 10:41Z).
     assert "its channel is `pending_authorization`" in first_run
     assert "ask before proposing `pb relay-service start`. Do not reinstall it" in first_run
     assert "This state means the channel works (`active`) and the worker attends a project" in first_run
+
+
+def test_package_preserves_the_application_revision_chain() -> None:
+    ledger = json.loads(REVISION_LEDGER.read_text(encoding="utf-8"))
+    assert {key: ledger[key] for key in (
+        "2026.09.22.5",
+        "2026.09.22.6",
+        "2026.09.22.7",
+        "2026.09.22.8",
+        "2026.09.22.9",
+        "2026.09.22.10",
+        "2026.09.22.11",
+    )} == {
+        "2026.09.22.5": "7780045d697a87850c8f0726960dd9b4d09b17afec431cee7b78200ef6a684be",
+        "2026.09.22.6": "2127819a70989cc25a073b5fbf3a516ea2b4344ccf231727dba74eb73f1c9c66",
+        "2026.09.22.7": "f94c9cefb90d44068aa4c609522c07c5d112531a063423d5eb267d8edaed9512",
+        "2026.09.22.8": "7e15e9c62d4c8f3b4b11ef0bf18e3da79d39d687b09e9ea169e831edee88057b",
+        "2026.09.22.9": "41bbcb76a230d7073cbca4dd09a1a8320afc1640bb1a9ab984c61b138e92484e",
+        "2026.09.22.10": "3eaf24b787db4b0b4295352bfd1e2234d44ef3e235baba9b9aa6250a0f1128c3",
+        "2026.09.22.11": "cfada6d4d51411e45330b4300d812295b54292d67a9eaa3744abe1c40b775e2e",
+    }
+
+
+def test_source_selection_guidance_is_added_without_rewriting_collaboration() -> None:
+    skill = _words(_read("SKILL.md"))
+    first_run = _words(_read("references/first-run.md"))
+    runtime = _words(_read("references/runtime-actions.md"))
+    coordinator = _words(_read("references/coordinator.md"))
+    collaboration = _words(_read("references/collaboration.md"))
+
+    assert "Selecting a released client version or an App Ecosystem commit with `pb source`" in skill
+    assert "released `project-board` distribution" in first_run
+    assert "`pb source use-release --expect-version <version>`" in runtime
+    assert "`pb source use-code --repository <app-ecosystem> --ref <ref> --expect <full-commit>`" in runtime
+    assert "`client.pinned: false` with `source.mode: checkout`" in runtime
+    assert "Cut Over A Host That Still Runs The Checkout Client" in runtime
+    assert "only then fast-forward or remove the checkout implementation" in runtime
+    assert "collect the same host-local readiness" in coordinator
+    assert "before fast-forwarding that checkout" in coordinator
+    assert "one recorded source selection, not from any working tree" in collaboration
+    assert "The integration ref is source history, not a runtime selection" in collaboration
 
 
 def test_skill_carries_rules_not_stories() -> None:
@@ -132,7 +177,7 @@ def test_authority_and_next_action_rules() -> None:
     assert "Direct conversation, project attendance, and assignment are independent states" in words
     assert "Reassess after a wake or a returned command" in words
     assert "use a bounded attempt count" in words
-    # Each idle-wait rule names its runtime first.
+    # Each idle-wait rule names its runtime first (W177).
     codex = words.index("Codex: ending the model turn is the idle wait")
     assert codex < words.index("does not poll inbox availability")
     assert codex < words.index("background watch, timer, repeated `receive`, or status query")
@@ -157,7 +202,7 @@ def test_start_or_resume_and_the_claude_code_wake_path() -> None:
     assert "leave it running" not in words
     assert "`session.inbox_check_state` reads `current`" in words
     assert "Receive once immediately" in words
-    # The wake reference holds the mechanics.
+    # The wake reference holds the mechanics (W177, W182).
     assert "caps an attachment at 30 minutes" in wake
     assert "posts one task notification when the attachment ends, on expiry and on a kill alike" in wake
     assert "usually starts a model turn and sometimes does not" in wake
@@ -315,27 +360,49 @@ def test_project_report_reference_holds_the_contract() -> None:
 
 
 def test_repository_sharing_rules() -> None:
+    # The change-request model (operator ruling 2026-09-22, W262): the skill
+    # carries what every worker does, the collaboration reference carries the
+    # rules, their reasons and the rehearsal log.
     skill = _read("SKILL.md")
     words = _words(skill)
-    collaboration = _read("references/collaboration.md")
-    collaboration_words = _words(collaboration)
+    assert "(references/collaboration.md)" in skill
     assert "One working tree per agent" in words
+    assert "Never edit a shared checkout except to land an approved change" in words
     assert "Work on a branch, exchange through a change request" in words
+    assert "work/<wN>-<short-slug>" in skill
+    assert "push it yourself" in words
     assert "Commit each coherent piece as you finish it" in words
+    assert "The coordinator merges after approval and pushes the integration ref" in words
+    assert "Deploying stays the operator's" in words
+    assert "A branch is closed by its merge, a later push is a new change request" in words
+    assert "Publish your intent before the first edit" in words
     assert "workspace.shared_write.list" in skill
     assert "workspace.shared_write.publish" in skill
     assert "workspace.shared_write.clear" in skill
     assert "kind=source_in_flight" in skill
     assert "send an overlap to the coordinator" in words
-    assert "Clear the entry when the change request is open" in words
+    assert "The dashboard grants nothing and blocks nothing" in words
+    assert "Clear your dashboard entry when the change request is open" in words
     assert "TTL is recovery" in words
-    assert "git merge-base --is-ancestor origin/main <head>" in collaboration
-    assert "push with `--force-with-lease`" in collaboration
-    assert "Runtime path" in collaboration
-    assert "Complete enforcement" in collaboration
-    assert "Independent approval" in collaboration
+    assert "git merge-base --is-ancestor origin/main" in words
+    assert "regression written for a finding fails without the fix" in words
+    assert "list every place the rule you changed is enforced" in words
+    assert "Approval is a board mail naming the head, quoted on the change request" in words
     assert "Reporting an item complete means its change request is merged" in words
-    assert "Merging or fast-forwarding it never advances a host's Problem Board source" in collaboration_words
+    # Documentation is part of the item that changes the behaviour it describes (operator, 2026-09-21 09:39Z).
+    assert "when behaviour a doc describes changes, the doc changes in the same item" in words
+    assert "because undocumented behaviour is how a diagnosis goes wrong" in words
+    assert "One home per concept, one-line pointers elsewhere, no links to gitignored paths" in words
+    # Landing into a shared checkout stays the interim on a machine that still shares one.
+    assert "take a bounded turn for a shared Git operation" in words
+    assert "Prepare and verify in a private index" in words
+    assert "GIT_INDEX_FILE" in skill
+    # The refresh must run outside the private index (two stale shared indexes, 2026-09-21 00:31Z).
+    assert "env -u GIT_INDEX_FILE git read-tree HEAD" in skill
+    assert "Never `git add -A`, never `git stash`" in words
+    # Retired with the ruling: pushing a work branch is the author's act.
+    assert "Pushing is the operator's decision" not in words
+    assert "Being able to push is not being allowed to" not in words
 
 
 def test_operator_runtime_and_conduct_rules() -> None:
@@ -346,7 +413,7 @@ def test_operator_runtime_and_conduct_rules() -> None:
     assert "question blocked decision delivery_failed progress reply update result" in words
     assert "work_mail_kind_invalid" in skill
     assert "executed by the coordinator" in words
-    assert "A client-source selection and relay restart are host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves" in words
+    assert "A relay restart is host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves" in words
     assert "A container-local patch is not an action this team has" in words
     assert "(references/runtime-actions.md)" in skill and "(references/test-window.md)" in skill
     assert "(references/coordinator.md)" in skill
@@ -385,6 +452,7 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "kdcube refresh --path \"$REPO\" --build" in runtime
     assert "--maintainer-local-python-package DIST=SOURCE" in runtime
     assert "Verify in the running artifact, not in the checkout" in runtime
+    assert "pb source status" in runtime
     assert "the reload returns before that build finishes" in _words(runtime)
     assert "Ask what it released" in runtime
     coordinator = _words(_read("references/coordinator.md"))

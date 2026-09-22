@@ -1,5 +1,5 @@
 ---
-id: project-board.worker-reference.delivery-and-recovery
+id: applications.playground.problem-board.skill-reference.delivery-and-recovery
 title: Problem Board Worker Delivery And Recovery
 summary: Defines compact mail receipt, project revision markers, demand-driven context reads, leases, visible responses, settlement, discard, and route evidence for a Problem Board worker.
 tags: [procedure, problem-board, worker, delivery, recovery]

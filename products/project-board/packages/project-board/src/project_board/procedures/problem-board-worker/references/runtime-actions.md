@@ -53,6 +53,23 @@ exported package. A running relay observes a new selector only when restarted;
 the source command performs that restart and rolls the selector back when the
 new process does not report the expected source.
 
+## Cut Over A Host That Still Runs The Checkout Client
+
+The package must exist in the relay interpreter before a shared checkout stops
+providing `pb`. Read `program_arguments[0]` from `pb relay-service status`; it
+is the relay interpreter. Then, before fast-forwarding the old checkout:
+
+1. install the exact approved `project-board` release with that interpreter;
+2. invoke `project_board.client.entrypoint source use-release` with that same
+   interpreter and `--expect-version <version>`;
+3. verify `source.mode: released`, the exact version, and the restarted relay's
+   matching startup record with the same interpreter's `source status`;
+4. only then fast-forward or remove the checkout implementation.
+
+`use-release` performs the coordinated relay restart. Running the fast-forward
+first is an outage: the checkout entry point imports a package the relay
+interpreter does not yet have.
+
 ## Relay Restart Is Host-Local
 
 Each machine runs one relay, and it carries only that machine's channels. A

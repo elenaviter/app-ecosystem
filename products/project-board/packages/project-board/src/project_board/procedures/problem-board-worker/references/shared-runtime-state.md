@@ -1,5 +1,5 @@
 ---
-id: project-board.worker-reference.shared-runtime-state
+id: applications.playground.problem-board.skill-reference.shared-runtime-state
 title: Shared Runtime State
 summary: What may live in Redis, when shared state is written, and how a projection recovers after Redis is restarted or rolled back. Operator rulings.
 tags: [procedure, problem-board, worker, design, review, redis, durability]

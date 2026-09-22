@@ -1,5 +1,5 @@
 ---
-id: project-board.worker-reference.identity-and-authorization
+id: applications.playground.problem-board.skill-reference.identity-and-authorization
 title: Problem Board Worker Identity And Authorization
 summary: Defines the selected-session identity, display alias, Connection Hub profile, credential boundary, attendance, assignment, revocation, and reauthorization states used by the worker skill.
 tags: [procedure, problem-board, worker, identity, authorization]

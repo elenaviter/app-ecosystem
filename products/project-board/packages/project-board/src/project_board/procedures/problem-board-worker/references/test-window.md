@@ -1,5 +1,5 @@
 ---
-id: project-board.worker-reference.test-window
+id: applications.playground.problem-board.skill-reference.test-window
 title: Pause For A Test Window
 summary: What a worker does when the coordinator relays a test window: converge to a clean committed tree, report it, stop, and wait for the window to close.
 tags: [procedure, problem-board, worker, test-window]

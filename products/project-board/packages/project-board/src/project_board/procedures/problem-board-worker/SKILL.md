@@ -353,40 +353,56 @@ move status ([ownership](references/identity-and-authorization.md)).
 ## Share The Repository With The Other Workers
 
 Several agents work on the same repositories at once. The rules that keep
-them apart are the collaboration procedure, [collaboration](references/collaboration.md).
-What every worker does, from it:
+them apart are the collaboration procedure, [collaboration](references/collaboration.md),
+revised one rehearsal round at a time. What every worker does, from it:
 
 - **One working tree per agent.** Develop in your own clone or `git worktree`.
-  Never edit a shared checkout except to land an approved change, and leave
-  nothing of yours there. A branch separates history; a working tree separates
-  files and the Git index.
+  Never edit a shared checkout except to land an approved change (below), and
+  leave nothing of yours there. Why: a branch does not separate files on disk,
+  and on a machine where the shared checkout is also the live `pb` runtime an
+  edit there is live for every worker at once.
 - **Work on a branch, exchange through a change request.** Branch
   `work/<wN>-<short-slug>` from the pushed integration ref (`origin/main`),
-  push it yourself, and open a change request against `main` when the work is
-  ready for review. Commit each coherent piece as you finish it. Put the link
-  on the item and in your report. The coordinator merges after approval and
-  pushes the integration ref. Deploying stays the operator's.
+  push it yourself (the operator's ruling of 2026-09-22), and open a change
+  request against `main` when the work is ready for review. Commit each
+  coherent piece as you finish it. Put the link on the item and in your
+  report. The coordinator merges after approval and pushes the integration
+  ref. Deploying stays the operator's. A branch is closed by its merge, a
+  later push is a new change request, and you delete your own branch when it
+  merges or you abandon it.
 - **Publish your intent before the first edit** on the shared-write dashboard
-  (`kind=source_in_flight`, the item key, and every repository path or ownership
-  boundary you will touch), read the list first, and send an overlap to the
-  coordinator. Clear the entry when the change request is open. TTL is recovery
-  for an abandoned entry, not the completion path.
+  (`kind=source_in_flight`, the item key, the repository paths you will
+  touch), read the list first, and send an overlap to the coordinator rather
+  than settling it with the other agent. The dashboard grants nothing and
+  blocks nothing. Clear your dashboard entry when the change request is open.
+  TTL is recovery for an abandoned entry, not the completion path.
   ```bash
   pb coordinate workspace.shared_write.list --object-ref <project-ref> --payload-json '{}'
-  pb coordinate workspace.shared_write.publish --object-ref <project-ref> --payload-json '{"kind":"source_in_flight","summary":"W123: move one client contract to its package owner","targets":["repo:product/packages/client"],"ttl_seconds":14400}'
+  pb coordinate workspace.shared_write.publish --object-ref <project-ref> --payload-json '{"kind":"source_in_flight","summary":"W123: what changes and why it matters","targets":["repo:applications/<path>"],"ttl_seconds":14400}'
   pb coordinate workspace.shared_write.clear --object-ref <project-ref> --payload-json '{}'
   ```
 - **Before you ask for a review:** `git merge-base --is-ancestor origin/main
-  <head>` must pass. Rebase and rerun affected suites when it does not. State
-  test counts, prove the runtime import path for moved code, and list every
-  place the changed rule is enforced. Approval names the exact head.
+  <head>` (every integration push moves the base under every open change
+  request), rebase with `--force-with-lease` on your own branch when it fails,
+  run the suites on the head you name and state the counts, show that a
+  regression written for a finding fails without the fix, and list every
+  place the rule you changed is enforced. Nothing non-public in a public
+  repository's branch, commits, description or comments. Approval is a board
+  mail naming the head, quoted on the change request: GitHub sees one account
+  for all agents and refuses its own author.
 - **Reporting an item complete means its change request is merged** into the
-  integration ref, with its documentation, unless the item explicitly defines
-  another terminal condition.
-- **Landing an approved change into a shared checkout** is an interim operation
-  for a machine without isolated worker trees. Take a bounded shared Git turn,
-  prepare and verify through a private index, and refresh the shared index after
-  moving the ref. Never `git add -A`, never `git stash`.
+  integration ref, with its documentation: when behaviour a doc describes
+  changes, the doc changes in the same item, because undocumented behaviour is
+  how a diagnosis goes wrong. One home per concept, one-line pointers
+  elsewhere, no links to gitignored paths.
+- **Landing an approved change into a shared checkout** (the interim where
+  agents still share one): take a bounded turn for a shared Git operation,
+  announced on the dashboard. Copy to `.landing` names in one pass, move in
+  one pass, verify with `cmp`, run both suites live. Prepare and verify in a
+  private index (`GIT_INDEX_FILE`), commit by explicit path, then refresh the
+  shared index with `env -u GIT_INDEX_FILE git read-tree HEAD`, or the next
+  ordinary commit by anyone records a reversal. Never `git add -A`, never
+  `git stash`.
 
 ## Keep The Operator Informed, And Name The Kind
 
@@ -407,12 +423,13 @@ refused with `work_mail_kind_invalid`, which names the set.
 ## Runtime Actions And Test Windows
 
 A bundle reload and an app refresh are coordinated between the workers and
-executed by the coordinator. A client-source selection and relay restart are
-host-local: the agents on that
+executed by the coordinator. A relay restart is host-local: the agents on that
 host agree, then the coordinator on that host restarts it, or on a host without
 one the agents pick one of themselves. For a reload or refresh, ask the
 coordinator, naming what you need live and by which tree the change is in:
 another worker may hold an uncommitted patch that a reload would stage and run.
+A client-source selection includes that host-local restart and follows the
+same agreement.
 A direct checkout invocation is a development process and must remain visibly
 unpinned; it never changes the host selector. A container-local patch is not an action this team has. Before any runtime
 action, read [runtime-actions](references/runtime-actions.md), and for a test

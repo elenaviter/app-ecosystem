@@ -165,3 +165,8 @@ used by both the host command and that service, and include the restart needed
 for the relay to observe it. Announce the exact package version or full commit,
 collect the same host-local readiness, and verify `pb source status` plus the
 new relay startup record before reporting the move complete.
+
+When a host still runs the checkout client, follow the cutover section in
+[runtime actions](runtime-actions.md) before fast-forwarding that checkout.
+The package install, released-source verification, and relay restart are one
+precondition for the fast-forward, not recovery steps after it.

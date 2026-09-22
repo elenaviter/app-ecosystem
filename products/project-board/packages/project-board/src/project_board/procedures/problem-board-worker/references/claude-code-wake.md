@@ -1,5 +1,5 @@
 ---
-id: project-board.worker-reference.claude-code-wake
+id: applications.playground.problem-board.skill-reference.claude-code-wake
 title: Claude Code Wake Path
 summary: How a Claude Code worker stays reachable: the watch attachment and its cap, the guard that replaces it, the board-side fields that show a stopped watch, and what a network outage does to both.
 tags: [procedure, problem-board, worker, claude-code, wake]

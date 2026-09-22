@@ -1,10 +1,11 @@
 ---
-id: project-board.worker-reference.project-report
+id: applications.playground.problem-board.skill-reference.project-report
 title: Answer A Project Report Request
 summary: The coordinator's procedure for a project.report request: a capped delta the service composes, previewed, published, and announced only on the service's receipt.
 tags: [procedure, problem-board, coordinator, project-report]
 keywords: [project.report, preview, publish, published, field_project_report_refused, intent_not_receipt, not-seen]
-see_also: []
+see_also:
+  - ../../../docs/project-status-reports.md
 ---
 
 # Answer A Project Report Request
