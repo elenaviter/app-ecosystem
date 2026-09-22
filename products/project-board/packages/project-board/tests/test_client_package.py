@@ -13,6 +13,7 @@ from project_board.client.procedures import source_package, source_package_path
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+CLIENT_ROOT = Path(project_board.client.__file__).resolve().parent
 
 
 def test_every_client_module_imports_from_the_distribution() -> None:
@@ -34,6 +35,19 @@ def test_distribution_installs_the_pb_console_script() -> None:
 
     assert metadata["project"]["scripts"]["pb"] == "project_board.client.entrypoint:main"
     assert _top_level_command(["--format", "brief", "worker", "receive"]) == "worker"
+
+
+def test_pb_automation_uses_direct_mcp_and_data_bus_transports() -> None:
+    sources = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in CLIENT_ROOT.glob("*.py")
+    }
+    combined = "\n".join(sources.values())
+
+    assert "ProblemBoardNamedServicesClient" not in combined
+    assert "named_services_action" not in combined
+    assert "ProblemBoardMcpClient" in sources["mcp_client.py"]
+    assert "ProblemBoardDataBusClient" in sources["cli.py"]
 
 
 def test_worker_procedure_is_package_data_owned_by_project_board() -> None:
