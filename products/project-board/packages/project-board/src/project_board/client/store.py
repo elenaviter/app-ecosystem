@@ -284,7 +284,7 @@ MAX_MAIL_RECEIVE_FAILURES = 3
 # enqueueing another copy.
 WAKE_ACK_BASE_SECONDS = 60
 WAKE_ACK_MAX_SECONDS = 300
-# The operator-report threshold (W198). It is not the retry deadline: the
+# The operator-report threshold. It is not the retry deadline: the
 # retry deadline governs what the relay does to the queue, this governs when
 # a human is told. It applies to two of the three terminal wake states. A
 # wake consumed twice without acknowledgement is reported once its retry has
@@ -303,11 +303,9 @@ WAKE_ACK_MAX_SECONDS = 300
 # is derived only from a listing taken after it fell due: the relay forces
 # that listing when the report is due and the last one predates it.
 #
-# The two measured cases the value was decided against, 2026-09-19:
-#   codex-ui    overdue at 60 s, took its wake at 105 s   not reported
-#   codex-main  overdue for 5 h 11 min                    reported at 12:10:52Z
-# 90 s (the session stale window) reports codex-ui on fewer than two
-# listings; 180 s, the second listing, is defensible and rejected for
+# Measured cases distinguish a wake taken shortly after 60 seconds from one
+# overdue for several hours. Ninety seconds reports a healthy slow wake on
+# fewer than two listings; 180 seconds, the second listing, is defensible and rejected for
 # asymmetry, since a report that fires on a transient teaches its reader to
 # ignore it and two minutes are nothing against an outage measured in hours;
 # 600 s, the fourth listing, adds no evidence the third did not. Whoever
@@ -316,7 +314,7 @@ WAKE_OVERDUE_GRACE_SECONDS = 300
 MAX_WAKE_MESSAGE_REFS = 100
 MAX_WAKE_ACKNOWLEDGEMENTS = 20
 MAX_WAKE_QUEUE_SUBMISSIONS = 20
-# Per-wake observation fields (W198). They describe one outstanding wake and
+# Per-wake observation fields describe one outstanding wake and
 # are cleared with it, on acknowledgement and when a fresh wake replaces it.
 WAKE_OBSERVATION_FIELDS = (
     "wake_overdue_checks",
@@ -336,7 +334,7 @@ ASSIGNMENT_RECONCILIATION_ISSUE_SCHEMA = (
 RELAY_DIAGNOSTIC_SCHEMA = "problem-board.relay-channel-diagnostic.v1"
 HOST_KINDS = {"local", "hosted", "remote"}
 SESSION_STATES = {"waiting", "working", "blocked", "detached"}
-# W68 settled that a worker's workload is its live assignment rows and that no
+# A worker's workload is its live assignment rows, and no
 # persisted focus field may exist in any shape. The service and the UI dropped
 # current_work_ref, but records written before that still carry the value they
 # last held, and a copy-modify-write preserves whatever it does not name. A
@@ -354,7 +352,7 @@ def listener_without_legacy_fields(value: Any) -> dict[str, Any]:
         isinstance(subscription, Mapping)
         and str(subscription.get("wake_delivery_state") or "") == "delivered"
     ):
-        # Rows written before W198 say "delivered" for a submission the native
+        # Legacy rows say "delivered" for a submission the native
         # queue accepted, with no deadline. Read them as what they were: a
         # queued wake whose deadline has passed, so the refusal, the
         # reconciliation trigger and the queue-incident report (a factual
@@ -465,7 +463,7 @@ def _overdue_wake_state(subscription: Mapping[str, Any]) -> tuple[str, str]:
     it and the one retry never reached the queue, reported at once. The name
     follows the persisted wake_delivery_state, so the report says what
     happened rather than one story for two transport outcomes. All three
-    hold the one-retry ceiling (W198). This is the attention state; it is
+    hold the one-retry ceiling. This is the attention state; it is
     derived beside presence and never rewrites it. Anything else returns
     empty.
     """
@@ -505,7 +503,7 @@ def _observe_outstanding_wake(
     it: the wake is consumed. Neither is delivery, and neither clears the
     deadline. A wake still listed past its deadline is stamped overdue once
     and its deadline renewed with backoff, so the relay re-reads the queue
-    at a bounded cadence instead of enqueueing again (W198). A submission
+    at a bounded cadence instead of enqueueing again. A submission
     still in flight (attempting) or refused (failed) that is not listed keeps
     its state, and so does a queued wake whose submission id was never known
     (expected is False): the listing alone cannot tell those from consumed.
@@ -547,7 +545,7 @@ def _observe_outstanding_wake(
         # The one retry never reached the queue. That is an observed
         # transport failure and the listing has just confirmed nothing sits
         # in the queue: the terminal condition holds now, no deadline waits
-        # on it (W198 acceptance, a failed retry is reported at once).
+        # on it; a failed retry is reported at once.
         subscription.setdefault("wake_retry_exhausted_since", now)
         if _wake_deadline_passed(subscription, now):
             _renew_overdue_wake_deadline(subscription)
@@ -1146,7 +1144,7 @@ class SharedFieldStore:
         returned = assignment.get("returned")
         if isinstance(returned, Mapping):
             # A review return keeps the worker under a new ownership version
-            # (W245); the notice must say so and name the review to cite.
+            # and the notice must say so and name the review to cite.
             row["returned"] = {
                 "review_ref": str(returned.get("review_ref") or ""),
                 "reason": str(returned.get("reason") or ""),
@@ -3604,7 +3602,7 @@ class SharedFieldStore:
             # queue incident, reported as a factual notice and never as a
             # verdict on the session; a retry that never reached the queue,
             # or a wake taken twice without acknowledgement, is a dead path
-            # (W198). It stands beside presence and does not rewrite it.
+            # It stands beside presence and does not rewrite it.
             "wake_state": (
                 _overdue_wake_state(subscription)[0]
                 or str(subscription.get("wake_delivery_state") or "")
@@ -3630,7 +3628,7 @@ class SharedFieldStore:
         process gone before it was remembered, a session recovered before the
         next cycle. The record carries the outage start and a phase for each
         of the two notes, pending until the outbox holds it and enqueued
-        after, and every cycle resumes from the phase it finds (W198).
+        after, and every cycle resumes from the phase it finds.
         """
 
         worker = self.read_worker(worker_name)
@@ -3676,7 +3674,7 @@ class SharedFieldStore:
                     # since when. The kind decides the keys, the notes, the
                     # log lines and the state the reporter returns, so a wake
                     # still queued opens and closes as a queue notice and is
-                    # never announced as a dead path (W198 acceptance).
+                    # never announced as a dead path.
                     "kind": bounded_text(
                         record.get("kind") or "dead_path", field="kind", maximum=32
                     ),
@@ -3742,7 +3740,7 @@ class SharedFieldStore:
                 row = {
                     "schema": "problem-board.relay-transport.v1",
                     "degraded": True,
-                    # code/started_at/ended_at, matching the interval shape W52
+                    # code/started_at/ended_at, matching the interval shape
                     # publishes to the board, so one vocabulary describes this
                     # locally and remotely instead of two that drift.
                     "code": bounded_text(
@@ -3793,7 +3791,7 @@ class SharedFieldStore:
             "degraded_seconds": (
                 _seconds_since(started_at) if degraded and started_at else None
             ),
-            # Completed intervals, the same rows W52 publishes to the board.
+            # Completed intervals, the same rows published to the board.
             "recent": list(row.get("history") or [])[-5:],
         }
 
@@ -3959,14 +3957,14 @@ class SharedFieldStore:
             ):
                 # A wake the native queue still holds needs no second
                 # submission: the model has not taken the first, and another
-                # would hand it two turns when it wakes (W180). The same holds
+                # would hand it two turns when it wakes. The same holds
                 # once a consumed wake has had its one retry, whatever state
                 # that retry left behind: consumed again, or failed at the
                 # queue boundary. Keying on the count and not the state name
                 # is what keeps the ceiling at one. Ask for a queue re-read
                 # instead, renew the deadline so the caller does not spin, and
                 # refuse with the code the relay already treats as "not
-                # queued" (W198).
+                # queued".
                 subscription["queue_reconciliation_required"] = True
                 _renew_overdue_wake_deadline(subscription)
                 if delivery_state == "queued":
@@ -4245,7 +4243,7 @@ class SharedFieldStore:
                 # says the model took it, so the wake is queued, not delivered,
                 # and its deadline stays: when the acknowledgement does not
                 # come, the relay re-reads the queue instead of trusting the
-                # acceptance forever (W198).
+                # acceptance forever.
                 subscription["wake_delivery_state"] = (
                     "queued" if delivered else "failed"
                 )
@@ -5001,7 +4999,7 @@ class SharedFieldStore:
             # it: a live session with a delayed wake reads working and
             # queued_overdue at once. Presence is what the inbox checks say;
             # calling a session dead needs evidence about the session, not a
-            # timer on its queue (W198 acceptance, facts apart from
+            # timer on its queue; keep facts apart from
             # classification).
             value["wake_state"] = overdue_state
         return value
@@ -8070,8 +8068,8 @@ class SharedFieldStore:
         """Say which working items are actually moving.
 
         An item goes to working when somebody says so and nothing ever
-        contradicts it. W32 sat at working while its assignee was idle and the
-        operator read that as progress. The board already held the evidence and
+        contradicts it. An item can remain at working while its assignee is idle,
+        which an operator may read as progress. The board already held the evidence and
         ignored it.
 
         Derived rather than stored, which is the whole point: a worker that

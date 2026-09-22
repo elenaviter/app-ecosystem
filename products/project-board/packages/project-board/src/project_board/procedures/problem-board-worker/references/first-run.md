@@ -130,7 +130,7 @@ handshake timed out is retried within seconds (up to a minute). Other failures
 keep the normal backoff, up to thirty minutes. Until then `pb coordinate`
 refuses at once with `work_coordinate_channel_reconnecting`. Why: a worker
 that cannot reach the board should learn that at once, not after a 90-second
-deadline behind "the relay did not claim the operation" (W265).
+deadline behind "the relay did not claim the operation".
 
 ## `session_attending`
 

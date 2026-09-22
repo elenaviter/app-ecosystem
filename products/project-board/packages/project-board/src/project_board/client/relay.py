@@ -177,7 +177,7 @@ async def _http_download(url: str) -> bytes:
 
 
 def _deadline_passed(value: Any) -> bool:
-    """A missing or unreadable wake deadline counts as passed (W198)."""
+    """A missing or unreadable wake deadline counts as passed."""
 
     deadline = str(value or "")
     if not deadline:
@@ -611,7 +611,7 @@ class ProblemBoardHostRelayAdapter:
         # A Data Bus push starts a reconciliation cycle immediately. It does
         # not make every linked project's presence heartbeat due. Child
         # adapters are rebuilt each cycle, so they share this monotonic clock
-        # state with the persistent channel adapter (W197).
+        # state with the persistent channel adapter.
         self._heartbeat_sent_at = (
             heartbeat_sent_at if heartbeat_sent_at is not None else {}
         )
@@ -1582,13 +1582,12 @@ class ProblemBoardHostRelayAdapter:
     # conditions are about its wake: a retry that never reached the queue or
     # a wake taken twice without acknowledgement are dead paths, and a wake
     # the native queue still holds past the report threshold is a factual
-    # queue notice, not a verdict (W198, 76 minutes silent on 2026-09-19
-    # while this tuple excluded Codex). Retired and detached sessions are not
+    # queue notice, not a verdict. Retired and detached sessions are not
     # dead paths.
     DEAD_PATH_RUNTIMES = ("claude-code", "codex")
 
     def _report_dead_notification_path(self) -> dict[str, Any]:
-        """Act on a dead notification path instead of only exposing it (W182, W198).
+        """Act on a dead notification path instead of only exposing it.
 
         On 2026-09-18 two Claude Code workers sat unreachable for hours while
         every listing carried `reachability.overdue_by_seconds` for them and
@@ -1606,8 +1605,7 @@ class ProblemBoardHostRelayAdapter:
         path dead" and close as "restored". A Codex wake still queued past the
         report threshold is a fact about the queue, not a verdict on the
         session: it opens as "wake still queued" and closes as "wake no longer
-        queued", and its state is never "dead" (W198 acceptance, reporting is
-        state-specific).
+        queued", and its state is never "dead"; reporting is state-specific.
 
         The relay builds a fresh adapter per worker per cycle, so the incident
         being reported lives in a durable record in the field store: kind,
@@ -1803,7 +1801,7 @@ class ProblemBoardHostRelayAdapter:
         Kind, wake id and start together. Two incidents that differ in kind
         on the same wake and stamp (a failed retry read as consumed a cycle
         later) are two incidents, and keys that carried only the start let
-        the second one's open note replay the first's (W198 review).
+        the second one's open note replay the first's.
         """
         return (
             f"{self.config.worker_name}:{record.get('kind') or 'dead_path'}:"
@@ -2698,7 +2696,7 @@ class ProblemBoardHostRelayAdapter:
             # Discovery is the bootstrap and relink path. Once a project is
             # known, its heartbeat refreshes the same authoritative snapshot.
             # An unrelated Data Bus push still starts a control reconciliation,
-            # but it does not make unchanged discovery presence due (W197).
+            # but it does not make unchanged discovery presence due.
             discovery_session_delta, session_signature = self._session_report_delta(
                 project_ref="",
                 sessions=sessions,
@@ -2985,14 +2983,14 @@ class ProblemBoardRelaySupervisor:
             str, tuple[str, str, str]
         ] = {}
         # Coordinate requests are served beside the channel cycle, so a slow
-        # channel or a reload cannot hold every worker's pb coordinate (W267).
+        # channel or a reload cannot hold every worker's pb coordinate.
         self._coordinate_task: asyncio.Task | None = None
         self._coordinate_draining: dict[str, asyncio.Task] = {}
         # One drain per worker at a time, whichever path starts it. The
         # queue's claim is exclusive per request and released before the
         # request runs, so without this a side drain executing an earlier
         # request and a cycle drain claiming a later one overlap, and the
-        # later operation can run first (W267 review 5, 2026-09-22).
+        # later operation can run first.
         self._coordinate_drain_locks: dict[str, asyncio.Lock] = {}
 
     def _is_retryable(self, error: BaseException) -> bool:
@@ -3145,7 +3143,7 @@ class ProblemBoardRelaySupervisor:
         # A queued or consumed wake is re-read once its deadline has passed,
         # not every cycle: the listing is a subprocess against the native
         # queue, and the deadline is the bounded cadence the store renews.
-        # Without this a queued wake could never change state by itself (W198).
+        # Without this a queued wake could never change state by itself.
         uncertain = state in {"attempting", "failed"} or (
             state in {"queued", "consumed"}
             and _deadline_passed(subscription.get("wake_ack_deadline_at"))
@@ -3156,7 +3154,7 @@ class ProblemBoardRelaySupervisor:
             # before that. The notice claims the queue still holds the wake,
             # so it is derived only from a listing taken after it fell due:
             # force that listing here when the last one predates the due
-            # point (W198).
+            # point.
             overdue_since = str(subscription.get("wake_queued_overdue_since") or "")
             confirmed_at = str(subscription.get("wake_queued_confirmed_at") or "")
             if overdue_since and _seconds_since(overdue_since) >= WAKE_OVERDUE_GRACE_SECONDS:
@@ -3311,11 +3309,11 @@ class ProblemBoardRelaySupervisor:
             # the relay asks the store to prepare a retry, and the store decides
             # by state: a failed submission is retried, a consumed one once, a
             # queued one never, since the native queue still holds the first
-            # and a second would hand the session two turns (W180). A refusal
+            # and a second would hand the session two turns. A refusal
             # comes back as wake_not_queued with reconciliation requested, so
             # the queue is re-read instead. Until 2026-09-19 a "delivered"
             # state returned here for every later message and the record
-            # never moved again (W198).
+            # never moved again.
             deadline = str(subscription.get("wake_ack_deadline_at") or "")
             if _deadline_passed(deadline):
                 return await self._notify_session(
@@ -3430,7 +3428,7 @@ class ProblemBoardRelaySupervisor:
     ) -> bool:
         """Whether ``session`` is the one opened for this channel and Card.
 
-        Both paths that drain coordinate requests ask this (W267 review): the
+        Both paths that drain coordinate requests ask this: the
         cycle before it reuses a cached session, the side server before it
         starts a drain. A different profile, native channel identity or bound
         Card means the session belongs to what was replaced.
@@ -3474,7 +3472,7 @@ class ProblemBoardRelaySupervisor:
             return code
         if is_descriptor_exhaustion(error):
             # A raw Errno 24 from a field-file read reaches this line
-            # without passing through staged_failure (W199).
+            # without passing through staged_failure.
             return "work_relay_descriptor_exhausted"
         return type(error).__name__
 
@@ -4136,8 +4134,7 @@ class ProblemBoardRelaySupervisor:
             # The Card can be replaced while the connector opens. The new
             # session then carries the Card read before the open, so it is
             # checked again before anything is drained through it, and
-            # reopened once against the Card the profile holds now (W267
-            # review 4).
+            # reopened once against the Card the profile holds now.
             for _attempt in range(2):
                 started = time.monotonic()
                 try:
@@ -4209,7 +4206,7 @@ class ProblemBoardRelaySupervisor:
 
     async def aclose(self) -> None:
         # Stop serving coordinate requests before any session closes, so no
-        # drain uses a client that is being torn down (W267 review).
+        # drain uses a client that is being torn down.
         await self.stop_coordinate_server()
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)
@@ -4530,7 +4527,7 @@ class ProblemBoardRelaySupervisor:
                 # Attendance is server-owned. A targeted transition event is
                 # the explicit reason to bypass the discovery heartbeat
                 # deadline for this channel; unrelated pushes only reconcile
-                # controls and cannot amplify its presence traffic (W197).
+                # controls and cannot amplify its presence traffic.
                 refs = data.get("refs")
                 adapter.request_attendance_refresh(
                     kind=kind,
@@ -4545,7 +4542,7 @@ class ProblemBoardRelaySupervisor:
             await self.stop_coordinate_server()
         return stopping
 
-    # -- coordinate requests, served beside the channel cycle (W267) ----------
+    # -- coordinate requests, served beside the channel cycle -----------------
 
     COORDINATE_SERVE_INTERVAL_SECONDS = 0.25
 
@@ -4574,9 +4571,8 @@ class ProblemBoardRelaySupervisor:
         """Serve local coordinate requests as they arrive, not once per cycle.
 
         Why: the channel cycle runs every channel's network work together and
-        waits for the slowest, so a request that arrived mid-cycle waited out
-        a reload or another channel's 15-second Data Bus timeout (codex-main
-        waited 38.5 s on 2026-09-22 for a 1 s read). Claims stay exclusive per
+        waits for the slowest, so a request that arrived mid-cycle can wait out
+        a reload or another channel's Data Bus timeout. Claims stay exclusive per
         request, so the cycle's own drain remains a safe fallback.
         """
 

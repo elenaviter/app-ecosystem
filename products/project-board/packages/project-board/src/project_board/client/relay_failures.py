@@ -107,7 +107,7 @@ def staged_failure(
     if exhausted:
         # Errno 24 arrives through the same socket calls a network failure
         # does and used to be reported as one; only the sub-quarter-second
-        # elapsed time hinted at the difference (W199). Say what it is and
+        # elapsed time hinted at the difference. Say what it is and
         # what the ceiling was.
         message = (
             f"{operation} against {target_label} could not open a file or socket: "

@@ -352,56 +352,41 @@ move status ([ownership](references/identity-and-authorization.md)).
 
 ## Share The Repository With The Other Workers
 
-Every worker uses one checkout, and Git's index is per repository, so staging
-into it collides when two of you do it at once.
+Several agents work on the same repositories at once. The rules that keep
+them apart are the collaboration procedure, [collaboration](references/collaboration.md).
+What every worker does, from it:
 
-- **Commit each coherent piece as you finish it**, not when the item is
-  finished. Do not start a new assignment while work from the previous one is
-  uncommitted; one `git status` tells you.
-- **Read the shared-write dashboard only when you are about to change shared
-  state** before staging, commit, pull, deploy, reload, restart, or restructuring shared source. Publish `kind=source_in_flight` once a reload is unsafe.
-  Its summary says what behavior or area is in flux and why it matters; a Wn key
-  carries its plain-language identity. Targets name each concrete path, ref,
-  bundle, or runtime operation another change could collide with. The dashboard
-  grants nothing and blocks nothing. Coordinate overlap. Do not poll an entry.
+- **One working tree per agent.** Develop in your own clone or `git worktree`.
+  Never edit a shared checkout except to land an approved change, and leave
+  nothing of yours there. A branch separates history; a working tree separates
+  files and the Git index.
+- **Work on a branch, exchange through a change request.** Branch
+  `work/<wN>-<short-slug>` from the pushed integration ref (`origin/main`),
+  push it yourself, and open a change request against `main` when the work is
+  ready for review. Commit each coherent piece as you finish it. Put the link
+  on the item and in your report. The coordinator merges after approval and
+  pushes the integration ref. Deploying stays the operator's.
+- **Publish your intent before the first edit** on the shared-write dashboard
+  (`kind=source_in_flight`, the item key, and every repository path or ownership
+  boundary you will touch), read the list first, and send an overlap to the
+  coordinator. Clear the entry when the change request is open. TTL is recovery
+  for an abandoned entry, not the completion path.
   ```bash
   pb coordinate workspace.shared_write.list --object-ref <project-ref> --payload-json '{}'
-  pb coordinate workspace.shared_write.publish --object-ref <project-ref> --payload-json '{"kind":"commit","summary":"Commit W123 after detached-tree verification.","targets":["refs/heads/main"],"ttl_seconds":900}'
-  ```
-
-- **Take a bounded turn for a shared Git operation.** Announce the turn naming
-  what you commit, finish, say the hash, release. While another worker holds
-  that turn, do not commit.
-- **Prepare and verify in a private index.** Set `GIT_INDEX_FILE` to your own
-  index, stage into it, build a tree from it, and run the focused suite against
-  that detached tree. The tree you test is the snapshot you commit.
-- **After advancing a ref by hand, refresh the main index** with
-  `env -u GIT_INDEX_FILE git read-tree HEAD`: `commit-tree` plus `update-ref`
-  move `HEAD` without touching the repository's index, which then holds an old
-  tree, so the next ordinary `git commit` by anyone would record a reversal of
-  every commit since. With `GIT_INDEX_FILE` still exported the refresh lands in
-  your private index and the shared one stays behind (it did, twice, on
-  2026-09-21). Read `git diff --cached --stat` before every commit you make and
-  after the refresh: a line naming your paths means the shared index is behind.
-- **Reporting an item complete means its work is committed**, not written,
-  and that includes the repository documentation the change alters: when
-  behaviour a doc describes changes, the doc changes in the same item,
-  because undocumented behaviour is how a diagnosis goes wrong. One home per
-  concept, one-line pointers elsewhere, and no links to ignored or private
-  paths a reader of the repository cannot open.
-- **Pushing is the operator's decision, for that exact commit.** Being able to
-  push is not being allowed to, and an instruction to push one commit is not
-  authority to push the next. Ask, name the commit, and stop until she answers.
-- **Clear your dashboard entry when the announced write is finished**,
-  including after the coordinator confirms a requested reload or restart. TTL
-  is recovery for an abandoned entry, not the completion path.
-
-  ```bash
+  pb coordinate workspace.shared_write.publish --object-ref <project-ref> --payload-json '{"kind":"source_in_flight","summary":"W123: move one client contract to its package owner","targets":["repo:product/packages/client"],"ttl_seconds":14400}'
   pb coordinate workspace.shared_write.clear --object-ref <project-ref> --payload-json '{}'
   ```
-
-The dashboard supplies the worker identities at the moment of overlap, no peer
-list is assumed, and the protocol holds for any number of workers.
+- **Before you ask for a review:** `git merge-base --is-ancestor origin/main
+  <head>` must pass. Rebase and rerun affected suites when it does not. State
+  test counts, prove the runtime import path for moved code, and list every
+  place the changed rule is enforced. Approval names the exact head.
+- **Reporting an item complete means its change request is merged** into the
+  integration ref, with its documentation, unless the item explicitly defines
+  another terminal condition.
+- **Landing an approved change into a shared checkout** is an interim operation
+  for a machine without isolated worker trees. Take a bounded shared Git turn,
+  prepare and verify through a private index, and refresh the shared index after
+  moving the ref. Never `git add -A`, never `git stash`.
 
 ## Keep The Operator Informed, And Name The Kind
 

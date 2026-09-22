@@ -34,11 +34,9 @@ def test_package_content_is_recorded_for_its_revision() -> None:
     """A content change under an unchanged revision fails here.
 
     Why: installed copies compare revisions, so an edit that keeps the
-    revision is invisible to every session that already installed it. On
-    2026-09-22 the W257 edits to SKILL.md and first-run.md were committed under
-    2026.09.22.4, which claude-main had installed minutes earlier, so no worker
-    received them. The ledger records the source digest of each revision; a
-    changed package needs a new revision and a new ledger line.
+    revision is invisible to every session that already installed it. The
+    ledger records the source digest of each revision; a changed package needs
+    a new revision and a new ledger line.
     """
 
     package = source_package()
@@ -58,7 +56,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.1"
+    assert package["revision"] == "2026.09.23.2"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -71,6 +69,7 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
         "references/test-window.md",
         "references/first-run.md",
         "references/shared-runtime-state.md",
+        "references/collaboration.md",
     }
     for reference in references:
         assert (PROCEDURE_ROOT / reference).is_file(), reference
@@ -78,7 +77,7 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
 
 
 def test_first_run_guides_the_user_from_the_state_command() -> None:
-    # A new user is guided through setup, not told the machine is unconfigured (W249).
+    # A new user is guided through setup, not merely told it is unconfigured.
     skill = _words(_read("SKILL.md"))
     assert "guide the user through setup with [first run](references/first-run.md)" in skill
     assert "report that state instead" not in skill
@@ -133,7 +132,7 @@ def test_authority_and_next_action_rules() -> None:
     assert "Direct conversation, project attendance, and assignment are independent states" in words
     assert "Reassess after a wake or a returned command" in words
     assert "use a bounded attempt count" in words
-    # Each idle-wait rule names its runtime first (W177).
+    # Each idle-wait rule names its runtime first.
     codex = words.index("Codex: ending the model turn is the idle wait")
     assert codex < words.index("does not poll inbox availability")
     assert codex < words.index("background watch, timer, repeated `receive`, or status query")
@@ -158,7 +157,7 @@ def test_start_or_resume_and_the_claude_code_wake_path() -> None:
     assert "leave it running" not in words
     assert "`session.inbox_check_state` reads `current`" in words
     assert "Receive once immediately" in words
-    # The wake reference holds the mechanics (W177, W182).
+    # The wake reference holds the mechanics.
     assert "caps an attachment at 30 minutes" in wake
     assert "posts one task notification when the attachment ends, on expiry and on a kill alike" in wake
     assert "usually starts a model turn and sometimes does not" in wake
@@ -318,35 +317,25 @@ def test_project_report_reference_holds_the_contract() -> None:
 def test_repository_sharing_rules() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)
+    collaboration = _read("references/collaboration.md")
+    collaboration_words = _words(collaboration)
+    assert "One working tree per agent" in words
+    assert "Work on a branch, exchange through a change request" in words
     assert "Commit each coherent piece as you finish it" in words
-    assert "Read the shared-write dashboard only when you are about to change shared state" in words
     assert "workspace.shared_write.list" in skill
     assert "workspace.shared_write.publish" in skill
     assert "workspace.shared_write.clear" in skill
     assert "kind=source_in_flight" in skill
-    assert "summary says what behavior or area is in flux and why it matters" in words
-    assert "a Wn key carries its plain-language identity" in words
-    assert "Targets name each concrete path, ref, bundle, or runtime operation" in words
-    assert "another change could collide with" in words
-    assert "The dashboard grants nothing and blocks nothing" in words
-    assert "Do not poll an entry" in words
-    assert "Take a bounded turn for a shared Git operation" in words
-    assert "Prepare and verify in a private index" in words
-    assert "GIT_INDEX_FILE" in skill
-    assert "After advancing a ref by hand, refresh the main index" in words
-    # The refresh must run outside the private index (two stale shared indexes, 2026-09-21 00:31Z).
-    assert "env -u GIT_INDEX_FILE git read-tree HEAD" in skill
-    assert "a line naming your paths means the shared index is behind" in words
-    assert "Read `git diff --cached --stat` before every commit you make" in words
-    assert "Reporting an item complete means its work is committed" in words
-    # Documentation is part of the item that changes the behaviour it describes (operator, 2026-09-21 09:39Z).
-    assert "when behaviour a doc describes changes, the doc changes in the same item" in words
-    assert "because undocumented behaviour is how a diagnosis goes wrong" in words
-    assert "One home per concept, one-line pointers elsewhere, and no links to ignored or private paths" in words
-    assert "Pushing is the operator's decision, for that exact commit" in words
-    assert "Being able to push is not being allowed to" in words
-    assert "Clear your dashboard entry when the announced write is finished" in words
+    assert "send an overlap to the coordinator" in words
+    assert "Clear the entry when the change request is open" in words
     assert "TTL is recovery" in words
+    assert "git merge-base --is-ancestor origin/main <head>" in collaboration
+    assert "push with `--force-with-lease`" in collaboration
+    assert "Runtime path" in collaboration
+    assert "Complete enforcement" in collaboration
+    assert "Independent approval" in collaboration
+    assert "Reporting an item complete means its change request is merged" in words
+    assert "Merging or fast-forwarding it never advances a host's Problem Board source" in collaboration_words
 
 
 def test_operator_runtime_and_conduct_rules() -> None:

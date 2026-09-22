@@ -1,9 +1,8 @@
-"""A pb coordinate request is served beside the relay's channel cycle (W267).
+"""A pb coordinate request is served beside the relay's channel cycle.
 
-2026-09-22: codex-main's project.plan.item waited 38.5 s in the local queue
-for a governed action that took about 1 s, because the relay drained the queue
-only inside the channel cycle, and that cycle was waiting on other work after
-a reload.
+A request can otherwise wait much longer than its governed action because the
+relay drains the queue only inside a channel cycle that is waiting on other
+work after a reload.
 """
 
 from __future__ import annotations
@@ -258,7 +257,7 @@ def test_an_unknown_card_never_drains_beside_the_cycle(tmp_path):
 
 
 def test_the_cycle_reopens_a_session_whose_card_was_replaced_before_draining(tmp_path):
-    """The ordinary cycle applies the same exact-session check (W267 review 3)."""
+    """The ordinary cycle applies the same exact-session check."""
 
     host, _identity, channel = _host(tmp_path)
     supervisor = _supervisor(host)
@@ -345,8 +344,7 @@ def test_a_card_replaced_while_the_channel_opens_never_drains_through_it(
     tmp_path, monkeypatch
 ):
     """The connector is blocked, the profile's Card is replaced during the
-    await, and the session bound to the old Card is dropped before any drain
-    (W267 review 4)."""
+    await, and the session bound to the old Card is dropped before any drain."""
 
     host, _identity, channel = _host(tmp_path)
     _write_profile(host, channel, access_id="oauth-card-old", updated_at="t0")

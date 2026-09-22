@@ -47,12 +47,12 @@ def test_versioned_plan_reference_round_trips() -> None:
     version = f"20260922T190100Z-{'a' * 64}"
     ref = make_plan_node_ref(
         timestamp="20260922T190000Z",
-        key="W255",
+        key="W1",
         semantic_name="shared-contract",
         version=version,
     )
 
     parsed = parse_plan_node_ref(ref)
-    assert parsed.key == "w255"
+    assert parsed.key == "w1"
     assert parsed.semantic_name == "shared-contract"
     assert parsed.version == version

@@ -69,7 +69,7 @@ action begins. A selector change made before relay installation records
 it from that selection.
 
 To agree: announce what you restart and why with a shared-write entry of kind
-`relay_restart` whose target names the host (for example `host:dev-main`,
+`relay_restart` whose target names the host (for example `host:development-one`,
 summary "I am restarting the relay: <why>"), and mail each agent on that host.
 Collect their ready: a worker mid-call or holding an uncommitted relay patch
 says wait. Then restart, report the result, and clear the entry.

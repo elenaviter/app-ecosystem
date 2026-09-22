@@ -38,7 +38,7 @@ STARTUP_POLL_SECONDS = 0.5
 # worker session plus the control-plane and Data Bus connections and opens
 # worker-row and receipt files on every cycle. Eleven `Errno 24` tracebacks
 # sit in the relay log (io.read_json seven times, store._recover_expired_mail
-# four), all in its unstamped part, and the ceiling was never raised (W199).
+# four), all in its unstamped part, and the ceiling was never raised.
 #
 # Measured on 2026-09-20, relay pid 76474 at 135be994, 192 lsof readings from
 # 11:55:40Z to 12:26:59Z with four attached worker channels: min 11, median 13,
@@ -57,7 +57,7 @@ STARTUP_POLL_SECONDS = 0.5
 # sit in the log, every one before stamped logging began on 2026-09-19 at
 # 11:09:57Z and none since. A leak of that class is a defect and no limit
 # covers it. At today's four sessions and the 15 s per-session cycle floor
-# (W197), a leak of one descriptor per session per cycle binds 256 in about
+# a leak of one descriptor per session per cycle binds 256 in about
 # 15 minutes and 1024 in about 63, long enough for the named failure code and
 # the start line in cli.py to be read before the relay stops reading its
 # field. Higher would only hide the same leak longer.
@@ -150,7 +150,7 @@ class RelayService:
     user_home: Path
     # checkout: the entrypoint in the shared work tree, loaded as it is at
     # start. snapshot: the entrypoint under relay-source/current, one exported
-    # commit (W202).
+    # commit.
     source_mode: str
     source_root: Path
     module_entrypoint: bool

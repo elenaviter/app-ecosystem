@@ -1,6 +1,6 @@
 """Render a Problem Board CLI envelope as complete, readable text.
 
-Why this module exists (W183). The CLI prints one JSON envelope, ``{"ok": true,
+The CLI prints one JSON envelope, ``{"ok": true,
 "result": ...}`` on stdout or ``{"ok": false, "error": ...}`` on stderr. Every
 worker then wrote its own reader for that JSON, from scratch, in a shell
 heredoc, dozens of times a day. Those readers were the least reliable code on
@@ -362,8 +362,8 @@ def _render_settled(result: Mapping[str, Any]) -> list[str]:
 def _render_worker_list(result: Mapping[str, Any]) -> list[str]:
     """One line per worker, then the reachability facts that tell a dead path.
 
-    `reachability.overdue_by_seconds` is the field that showed a stopped Claude
-    Code watch for five hours on 2026-09-18 while nothing read it (W182).
+    `reachability.overdue_by_seconds` exposes a stopped Claude Code watch even
+    when nothing is currently reading the queue.
     """
     workers = result.get("workers") or []
     lines = [f"workers: {len(workers)}"]

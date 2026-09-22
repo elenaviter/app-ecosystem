@@ -727,7 +727,7 @@ class CoordinateQueue:
 
         Reads and removes under the worker lock, so a relay cannot claim it
         in between. A request that was claimed once and recovered to pending
-        stays where it is: the relay may still finish or reconcile it (W265).
+        stays where it is: the relay may still finish or reconcile it.
         Returns the withdrawn request, or None when nothing was withdrawn.
         """
 

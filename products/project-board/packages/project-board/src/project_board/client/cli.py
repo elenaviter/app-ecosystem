@@ -1420,7 +1420,7 @@ def _worker_tokens(identity: Any, action: str) -> list[str]:
 
 
 def _status_command(args: Any) -> dict[str, Any]:
-    """First-run state of this machine and, when named, this session (W249)."""
+    """First-run state of this machine and, when named, this session."""
 
     from .first_run import first_run_status
 
@@ -1912,7 +1912,7 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
         )
     # A channel the relay is reconnecting cannot carry this request. Say so at
     # once, with what the relay knows, instead of waiting out the deadline
-    # behind "the relay did not claim the operation" (W265).
+    # behind "the relay did not claim the operation".
     _raise_if_channel_reconnecting(path, channel.worker_name)
     queue = CoordinateQueue(config.field_root)
     request = queue.submit(
@@ -3505,7 +3505,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
         channel_row = channel.to_mapping()
         reconnect = channel_reconnect_state(path, identity.worker_name)
         if reconnect is not None and channel.state == "active":
-            # Configured active, but the relay is reconnecting it (W265).
+            # Configured active, but the relay is reconnecting it.
             channel_row["state"] = "reconnecting"
             channel_row["connection"] = reconnect
         return {
@@ -4187,12 +4187,12 @@ async def _relay(args: Any) -> Any:
         # The effective descriptor ceiling, once per start. A relay begun
         # before the service definition carried a limit runs under the
         # session default until it is reinstalled, and this line is how a
-        # log reader knows which (W199).
+        # log reader knows which.
         # And where the code came from: one exported commit, or the checkout
         # with its head and dirty flag as evidence. The same facts go into a
         # startup record the activation command waits for, so "activated"
         # is said by the process that started and not by the one that asked
-        # for it (W202).
+        # for it.
         source = describe_source(Path(__file__), scope_paths=CLIENT_SOURCE_PATHS)
         logging.getLogger(__name__).info(
             "Problem Board relay starting pid=%s file_descriptor_limit=%s %s",
@@ -4257,7 +4257,7 @@ async def _relay(args: Any) -> Any:
 
 
 def _render_command(args: argparse.Namespace) -> int:
-    """`pb render`: the shipped reader for saved pb output (W183).
+    """`pb render`: the shipped reader for saved pb output.
 
     Exit 0 for an ok envelope, 1 for an error envelope, 2 for text that is not
     an envelope. Every case prints something, so a reader that produced nothing
@@ -4293,7 +4293,7 @@ def main(argv: list[str] | None = None) -> int:
     worker_flags = worker_flags_from_argv(cleaned_argv)
     try:
         # Inline prose is one line or a file, before any command runs, so the
-        # sender learns at the moment of typing and not from a reader (W238).
+        # sender learns at the moment of typing and not from a reader.
         guard_inline_prose(args)
         if args.command == "relay":
             result = asyncio.run(_relay(args))

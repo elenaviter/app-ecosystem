@@ -88,7 +88,7 @@ its machine can reach.
   body, which is subject to the rule above.
 - **A repository ref is portable, a working-tree path is not.** Point at a
   committed file by repository alias and path, never at `/home/...` or
-  `/Users/...`.
+  `<home>/...`.
 
 A refusal a worker reports while following a route is the coordinator's defect
 first: fix how the work was handed over, and raise the grant when the refusal

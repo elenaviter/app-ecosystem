@@ -2,7 +2,7 @@
 
 The relay LaunchAgent used to run ``tools/problem_board.py`` straight out of
 the shared checkout, so a restart loaded whatever the working tree held at
-that instant, including another worker's half-typed edit (W202). Here the
+that instant, including another worker's half-typed edit. Here the
 input is a commit. ``git archive`` reads the object store, so the state of
 the working tree cannot reach the export, and the exported files are
 verified blob by blob against ``git ls-tree`` before the release is named.
@@ -183,7 +183,7 @@ def checkout_evidence(repository: Path, *paths: str) -> dict[str, Any]:
 
     Evidence and not a gate: the export reads the object store, so nothing
     here can change what a release contains. It is recorded so an activation
-    can be read after the fact (W202 acceptance line 5).
+    can be read after the fact.
     """
 
     scope = [p for p in paths if p]
@@ -347,7 +347,7 @@ def export_release(
 
     ``between`` runs after the ref is pinned to a commit and before the
     export. It exists for the regression test that edits the work tree in
-    that gap (W202 acceptance line 4). Nothing in this module reads the work
+    that gap. Nothing in this module reads the work
     tree after the pin.
     """
 
@@ -672,7 +672,7 @@ def prepare_release(
 
     ``expect`` is compared before anything is written: a ref that resolves
     to a commit other than the approved one refuses the whole activation
-    (W202 acceptance line 3), so the check lives in the command and not in
+    so the check lives in the command and not in
     the reader. The swap, the restart and the prune are the caller's, in
     that order, because success is known only once the new process has said
     which commit it loaded.

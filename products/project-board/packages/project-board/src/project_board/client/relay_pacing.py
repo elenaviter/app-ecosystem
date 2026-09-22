@@ -16,11 +16,11 @@ Three rules, all enforced here:
                 One exception: when the server accepted the connection and
                 only the Data Bus namespace handshake timed out, the channel
                 retries within seconds, capped at one minute, for a bounded
-                number of attempts before the normal backoff applies. Why: on
-                2026-09-22 claude-main's channel was accepted three times,
-                each handshake timed out under load after relay restarts, and
+                number of attempts before the normal backoff applies. Why: a
+                channel can be accepted repeatedly while each namespace
+                handshake times out under load after relay restarts, and
                 the doubling pushed the next attempt more than 20 minutes out
-                while the worker could not reach the board (W265).
+                while the worker could not reach the board.
     pending     a channel waiting for authorization is retried at once when
                 its local profile changes (what ``pb worker authorize`` does),
                 otherwise after its backoff; a permanent refusal waits the
@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 PACING_FILENAME = "relay-pacing.json"
 CHANNEL_BACKOFF_BASE_SECONDS = 60.0
 CHANNEL_BACKOFF_CAP_SECONDS = 1800.0
-# An accepted connection whose namespace handshake timed out (W265).
+# An accepted connection whose namespace handshake timed out.
 HANDSHAKE_RETRY_BASE_SECONDS = 5.0
 HANDSHAKE_RETRY_CAP_SECONDS = 60.0
 HANDSHAKE_RETRY_LIMIT = 6

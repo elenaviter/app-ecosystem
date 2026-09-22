@@ -157,7 +157,7 @@ class ClientSourceController:
             )
             selected = write_selection(self.root, snapshot_selection(release))
             # ``selection.json`` is authoritative and atomic. The link is
-            # retained for W202 readers, after the source decision is durable.
+            # retained for compatibility readers, after the source decision is durable.
             activate_release(self.root, release)
             receipt = {
                 "schema": "project-board.client-source-activation.v1",

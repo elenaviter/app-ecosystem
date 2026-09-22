@@ -81,12 +81,11 @@ def plan_status_mutation(
 
     A status edit changes the status and nothing else: the assignee, the
     preferred reworker, the assignment state and the ownership version stay as
-    they are. Assignment and status are independent in both directions
-    (operator rulings 2026-09-22, W245 and W270): ownership moves only through
+    they are. Assignment and status are independent in both directions:
+    ownership moves only through
     assignment.assign, assignment.return, a reassignment, or a named review
     decision. The one business rule kept here is that Working needs an assignee.
-    Why: on 2026-09-22 the operator moved W239 to Todo and the status edit
-    silently released codex-main's assignment.
+    Why: a status-only edit must not silently release an existing assignment.
     """
 
     del assignment_worker, assignment_state

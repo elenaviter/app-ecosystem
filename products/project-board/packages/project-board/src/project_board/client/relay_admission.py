@@ -50,7 +50,7 @@ def is_namespace_handshake_timeout(error: BaseException) -> bool:
     Bus client turns a refusal (a connect_error from the server) into
     DataBusIngressRejected, so a raw socketio failure with that message and no
     refusal anywhere in its chain is a handshake that did not finish in time.
-    That is a load symptom worth retrying soon, not a refusal (W265).
+    That is a load symptom worth retrying soon, not a refusal.
     """
 
     seen: list[BaseException] = []

@@ -1,4 +1,4 @@
-"""Which first-run step this machine and this session are at, read in one call (W249).
+"""Which first-run step this machine and this session are at, read in one call.
 
 A new user installs `pb`, starts a coding agent and tells it to use the worker
 skill. The agent then has to know where the user is: nothing configured, a
@@ -42,7 +42,7 @@ SESSION_ATTENDING = "session_attending"
 RELAY_STOPPED = "relay_stopped"
 # The channel is enrolled and authorized, but the relay is reconnecting it
 # after a failure, so it cannot reach the board right now. Distinct from
-# attending: its next step is to wait for the relay's own retry (W265).
+# attending: its next step is to wait for the relay's own retry.
 SESSION_RECONNECTING = "session_reconnecting"
 STATES = (
     MACHINE_NOT_CONFIGURED,
@@ -278,7 +278,7 @@ def first_run_status(
         session = _session(loaded, identity, reader, inspector)
         if session.get("channel_state") == CHANNEL_ACTIVE:
             # The config says active; the relay's pacing record says whether
-            # the channel is actually open now (W265).
+            # the channel is actually open now.
             reconnect = channel_reconnect_state(config_path, identity.worker_name)
             if reconnect is not None:
                 session["channel_state"] = "reconnecting"

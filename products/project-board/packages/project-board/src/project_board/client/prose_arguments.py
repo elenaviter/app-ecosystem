@@ -3,7 +3,7 @@
 A double-quoted shell removes backticked spans and dollar names before `pb`
 starts, so the command receives a well-formed string with a hole in it and
 nothing downstream can tell. Three messages lost their identifiers that way
-on one day, after the procedure had said to use ``--body-file`` (W238). A
+on one day, after the procedure had said to use ``--body-file``. A
 rule the sender must remember at the moment of typing does not hold; a
 property of the argument does. Every legitimate inline body in use is one
 short line (``ready``, ``now``, ``hold``), and every loss was multiline
