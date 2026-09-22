@@ -14,6 +14,48 @@ const CHILD_CATEGORY: Record<string, string> = Object.fromEntries(
   Object.entries(PARENT_CATEGORY).map(([child, parent]) => [parent, child]),
 );
 
+const CAPABILITY_FAMILIES = [
+  {
+    id: 'tools',
+    label: 'Tools',
+    parentCategory: 'tool_groups',
+    childCategory: 'tools',
+    parentSelectionLabel: 'Tool group available',
+    childNoun: 'tools',
+  },
+  {
+    id: 'mcp',
+    label: 'MCP',
+    parentCategory: 'mcp_servers',
+    childCategory: 'mcp_tools',
+    parentSelectionLabel: 'MCP server available',
+    childNoun: 'tools',
+  },
+  {
+    id: 'services',
+    label: 'Named services',
+    parentCategory: 'named_services',
+    childCategory: 'named_service_operations',
+    parentSelectionLabel: 'Service available',
+    childNoun: 'operations',
+  },
+  {
+    id: 'resources',
+    label: 'Resources',
+    parentCategory: 'resources',
+    childCategory: 'resource_operations',
+    parentSelectionLabel: 'Resource available',
+    childNoun: 'operations',
+  },
+] as const;
+
+const FAMILY_CATEGORIES: Set<string> = new Set(
+  CAPABILITY_FAMILIES.flatMap(({ parentCategory, childCategory }) => [
+    parentCategory,
+    childCategory,
+  ]),
+);
+
 function memberParent(value: string): string {
   const separator = value.indexOf('/');
   if (separator < 0) return '';
@@ -109,6 +151,51 @@ export function AgentCapabilityPolicyView({
     0,
   );
   const total = authority.groups.reduce((sum, group) => sum + group.values.length, 0);
+  const authorityByCategory = policyMap(authority);
+
+  const renderEntry = (
+    category: string,
+    capability: string,
+    displayLabel?: string,
+  ) => {
+    const entry = metadataEntry(metadata, category, capability);
+    const label = displayLabel || entry?.title || fallbackLabel(capability);
+    const checked = (selected[category] || []).includes(capability);
+    const copy = (
+      <span className="agent-capability-policy__entry-copy">
+        <span>{label}</span>
+        {entry?.description ? <small>{entry.description}</small> : null}
+      </span>
+    );
+    return editable ? (
+      <label
+        className="agent-capability-policy__entry"
+        key={`${category}:${capability}`}
+        title={capability}
+      >
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange?.(withToggle(
+            authority,
+            selection,
+            category,
+            capability,
+            event.target.checked,
+          ))}
+        />
+        {copy}
+      </label>
+    ) : (
+      <span
+        className="agent-capability-policy__entry agent-capability-policy__entry--readonly"
+        key={`${category}:${capability}`}
+        title={capability}
+      >
+        {copy}
+      </span>
+    );
+  };
 
   return (
     <section className="agent-capability-policy" aria-label={title}>
@@ -137,35 +224,71 @@ export function AgentCapabilityPolicyView({
         ) : null}
       </div>
       <div className="agent-capability-policy__groups">
-        {authority.groups.map((group) => (
+        {CAPABILITY_FAMILIES.map((family) => {
+          const parents = authorityByCategory[family.parentCategory] || [];
+          const children = authorityByCategory[family.childCategory] || [];
+          if (!parents.length && !children.length) return null;
+          const knownParents = new Set(parents);
+          const orphaned = children.filter((value) => !knownParents.has(memberParent(value)));
+          return (
+            <fieldset key={family.id} className="agent-capability-policy__group">
+              <legend>{family.label}</legend>
+              <div className="agent-capability-policy__branches">
+                {parents.map((parent) => {
+                  const entry = metadataEntry(metadata, family.parentCategory, parent);
+                  const label = entry?.title || fallbackLabel(parent);
+                  const members = children.filter((value) => memberParent(value) === parent);
+                  const selectedMembers = members.filter((value) => (
+                    selected[family.childCategory] || []
+                  ).includes(value)).length;
+                  return (
+                    <details className="agent-capability-policy__branch" key={parent}>
+                      <summary>
+                        <span>
+                          <strong>{label}</strong>
+                          {entry?.description ? <small>{entry.description}</small> : null}
+                        </span>
+                        <span className="agent-capability-policy__branch-count">
+                          {editable
+                            ? `${selectedMembers} of ${members.length} ${family.childNoun} selected`
+                            : `${members.length} ${family.childNoun}`}
+                        </span>
+                      </summary>
+                      <div className="agent-capability-policy__entries agent-capability-policy__entries--nested">
+                        {renderEntry(
+                          family.parentCategory,
+                          parent,
+                          family.parentSelectionLabel,
+                        )}
+                        {members.map((capability) => renderEntry(
+                          family.childCategory,
+                          capability,
+                        ))}
+                      </div>
+                    </details>
+                  );
+                })}
+                {orphaned.length ? (
+                  <div className="agent-capability-policy__branch agent-capability-policy__branch--orphaned">
+                    <strong>Other {family.childNoun}</strong>
+                    <div className="agent-capability-policy__entries agent-capability-policy__entries--nested">
+                      {orphaned.map((capability) => renderEntry(
+                        family.childCategory,
+                        capability,
+                        `${fallbackLabel(memberParent(capability))}: ${metadataEntry(metadata, family.childCategory, capability)?.title || fallbackLabel(capability)}`,
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </fieldset>
+          );
+        })}
+        {authority.groups.filter((group) => !FAMILY_CATEGORIES.has(group.category)).map((group) => (
           <fieldset key={group.category} className="agent-capability-policy__group">
             <legend>{group.label}</legend>
             <div className="agent-capability-policy__entries">
-              {group.values.map((capability) => {
-                const entry = metadataEntry(metadata, group.category, capability);
-                const label = entry?.title || fallbackLabel(capability);
-                const checked = (selected[group.category] || []).includes(capability);
-                return editable ? (
-                  <label className="agent-capability-policy__entry" key={capability} title={entry?.description || capability}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(event) => onChange?.(withToggle(
-                        authority,
-                        selection,
-                        group.category,
-                        capability,
-                        event.target.checked,
-                      ))}
-                    />
-                    <span>{label}</span>
-                  </label>
-                ) : (
-                  <span className="claim-chip" key={capability} title={entry?.description || capability}>
-                    {label}
-                  </span>
-                );
-              })}
+              {group.values.map((capability) => renderEntry(group.category, capability))}
             </div>
           </fieldset>
         ))}

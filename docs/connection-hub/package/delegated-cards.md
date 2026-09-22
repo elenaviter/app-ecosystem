@@ -813,6 +813,13 @@ an empty generic resource editor. A capability picker can open the resident
 Card directly with `tab=delegated_by_kdcube&access_id=<resident-card-id>`; the
 Connection Hub surface resolves and edits that exact Card.
 
+The capability editor preserves the descriptor's hierarchy. Tool groups own
+their tools, MCP servers own their tools, named services own their operations,
+and resources own their operations. Each parent is a scannable group and each
+child shows its declared label and description in that context. The stored
+selection remains the same positive category/member policy; grouping is its
+owner-facing projection, not another authority representation.
+
 The focused consent view projects that one denied invocation into an
 always-expanded review. It keeps four selections separate:
 

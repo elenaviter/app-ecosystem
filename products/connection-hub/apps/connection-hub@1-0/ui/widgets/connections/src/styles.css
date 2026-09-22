@@ -4252,6 +4252,60 @@ code {
   gap: 6px;
 }
 
+.agent-capability-policy__branches {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid var(--line);
+}
+
+.agent-capability-policy__branch {
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-capability-policy__branch > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 7px 4px;
+  cursor: pointer;
+}
+
+.agent-capability-policy__branch > summary > span:first-child {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-capability-policy__branch > summary small,
+.agent-capability-policy__entry-copy small {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.agent-capability-policy__branch-count {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.agent-capability-policy__entries--nested {
+  display: grid;
+  gap: 0;
+  padding: 0 4px 8px 22px;
+}
+
+.agent-capability-policy__branch--orphaned {
+  display: grid;
+  gap: 6px;
+  padding: 8px 4px;
+}
+
 .agent-capability-policy__entry {
   display: inline-flex;
   align-items: center;
@@ -4264,11 +4318,50 @@ code {
   font-size: 12px;
 }
 
+.agent-capability-policy__entries--nested .agent-capability-policy__entry {
+  width: 100%;
+  padding: 7px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.agent-capability-policy__entries--nested .agent-capability-policy__entry:last-child {
+  border-bottom: 0;
+}
+
+.agent-capability-policy__entry--readonly {
+  cursor: default;
+}
+
+.agent-capability-policy__entry-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
 .agent-capability-policy__entry input {
   flex: 0 0 auto;
   margin: 0;
 }
 
-.agent-capability-policy__entry span {
+.agent-capability-policy__entry-copy > span {
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 620px) {
+  .agent-capability-policy__branch > summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .agent-capability-policy__branch-count {
+    white-space: normal;
+  }
+
+  .agent-capability-policy__entries--nested {
+    padding-left: 12px;
+  }
 }

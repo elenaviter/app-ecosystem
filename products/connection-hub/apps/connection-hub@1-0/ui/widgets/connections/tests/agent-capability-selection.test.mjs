@@ -131,3 +131,17 @@ test('resident and descriptor capability Cards use their dedicated workbench pat
   assert.match(panel, /descriptorCapabilityControl \? null/)
   assert.match(slice, /selected_capabilities: selectedCapabilities/)
 })
+
+test('the capability editor groups child entries under their owning capability', () => {
+  const view = readFileSync(
+    new URL('../src/features/delegatedAccess/AgentCapabilityPolicyView.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(view, /parentCategory: 'tool_groups',[\s\S]*childCategory: 'tools'/)
+  assert.match(view, /parentCategory: 'mcp_servers',[\s\S]*childCategory: 'mcp_tools'/)
+  assert.match(view, /parentCategory: 'named_services',[\s\S]*childCategory: 'named_service_operations'/)
+  assert.match(view, /parentCategory: 'resources',[\s\S]*childCategory: 'resource_operations'/)
+  assert.match(view, /agent-capability-policy__branch/)
+  assert.match(view, /entry\?\.description \? <small>\{entry\.description\}<\/small>/)
+})
