@@ -584,6 +584,24 @@ def oauth_card_kind(
     )
 
 
+def _whole_card_consent(
+    *,
+    client_metadata: Mapping[str, Any] | None,
+    identity: Mapping[str, Any],
+) -> bool:
+    """Whether an OAuth consent without an entry resource may proceed.
+
+    An agent or automation Card is keyed by user and client, so its consent
+    names no entry door. The evidence is the client's registration (a
+    full-catalog client) or an existing agent/automation Card of this user and
+    client, never the mere absence of a resource: a connector Card belongs to
+    one fixed gate and still needs it.
+    """
+    if _clean(identity.get("card_kind")) not in {CARD_KIND_AGENT, CARD_KIND_AUTOMATION}:
+        return False
+    return client_uses_full_card_catalog(client_metadata) or bool(identity.get("existing"))
+
+
 def _legacy_record_card_kind(
     *,
     source: str,
@@ -6031,15 +6049,16 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Return the non-secret card state used to seed OAuth review.
 
-        A reconnect edits the exact OAuth card identified by grantor, client,
-        and entry resource. A first connection has no stored card and starts
-        from the request's proposed authority in the HTTP adapter.
+        A reconnect edits the exact OAuth card identified by grantor and client,
+        plus the entry resource for a connector. A first connection has no
+        stored card and starts from the request's proposed authority in the
+        HTTP adapter.
         """
 
         grantor = _clean(grantor_subject)
         client = _clean(client_id)
         entry_resource = _clean(resource)
-        if not grantor or not client or not entry_resource:
+        if not grantor or not client:
             return {"ok": False, "error": "oauth_consent_identity_incomplete"}
         identity = await self.resolve_oauth_card_identity(
             grantor_subject=grantor,
@@ -6049,6 +6068,10 @@ class AutomationAccessService:
         )
         if identity.get("ok") is not True:
             return identity
+        if not entry_resource and not _whole_card_consent(
+            client_metadata=client_metadata, identity=identity
+        ):
+            return {"ok": False, "error": "oauth_consent_identity_incomplete"}
         access_id = _clean(identity.get("access_id"))
         card_kind = _clean(identity.get("card_kind"))
         try:
@@ -6086,26 +6109,37 @@ class AutomationAccessService:
             else record
         )
         full_catalog = client_uses_full_card_catalog(client_metadata)
-        allowed = (
-            self._oauth_allowed_resources(
-                entry_resource=entry_resource,
-                client_metadata=client_metadata,
-                config=catalog_config,
+        if not entry_resource:
+            # A whole Card has no entry door: a full-catalog client may select
+            # from the whole catalog; otherwise the Card's own resources bound it.
+            allowed = (
+                None
+                if full_catalog
+                else set(view_record.resource_grants if view_record is not None else ())
             )
-            if catalog_config is not None
-            else (None if full_catalog else set())
-        )
+        else:
+            allowed = (
+                self._oauth_allowed_resources(
+                    entry_resource=entry_resource,
+                    client_metadata=client_metadata,
+                    config=catalog_config,
+                )
+                if catalog_config is not None
+                else (None if full_catalog else set())
+            )
         payload["catalog_scope"] = {
             "mode": "full" if allowed is None else "entry",
             "resources": sorted(allowed or ()),
         }
         rows: dict[str, str] = {}
         if catalog_config is not None:
-            entry_key, _literal = resolve_declared_resource(
-                catalog_config,
-                entry_resource,
-            )
-            selected_resources = [entry_key]
+            selected_resources: list[str] = []
+            if entry_resource:
+                entry_key, _literal = resolve_declared_resource(
+                    catalog_config,
+                    entry_resource,
+                )
+                selected_resources.append(entry_key)
             if view_record is not None:
                 selected_resources.extend(view_record.resource_grants)
             for selected_resource in selected_resources:
@@ -6185,7 +6219,7 @@ class AutomationAccessService:
         refusal = _delegate_mutation_refusal(user)
         if refusal is not None:
             return refusal
-        if not client or not entry:
+        if not client:
             return {"ok": False, "error": "oauth_consent_identity_incomplete"}
 
         try:
@@ -6209,8 +6243,10 @@ class AutomationAccessService:
             }
 
         catalog_config = await self._catalog_config(active, owner_subject=grantor)
-        entry_config = self._configured_resource(entry, config=catalog_config)
-        if entry_config is None:
+        entry_config = (
+            self._configured_resource(entry, config=catalog_config) if entry else None
+        )
+        if entry and entry_config is None:
             return {
                 "ok": False,
                 "error": "delegated_access_unknown_resources",
@@ -6225,6 +6261,10 @@ class AutomationAccessService:
         )
         if identity.get("ok") is not True:
             return identity
+        if not entry and not _whole_card_consent(
+            client_metadata=client_metadata, identity=identity
+        ):
+            return {"ok": False, "error": "oauth_consent_identity_incomplete"}
         access_id = _clean(identity.get("access_id"))
         card_kind = _clean(identity.get("card_kind"))
         try:
@@ -6263,11 +6303,20 @@ class AutomationAccessService:
             selected,
         )
         requested = _as_list(requested_grants)
-        allowed = self._oauth_allowed_resources(
-            entry_resource=entry,
-            client_metadata=client_metadata,
-            config=catalog_config,
-        )
+        if entry:
+            allowed = self._oauth_allowed_resources(
+                entry_resource=entry,
+                client_metadata=client_metadata,
+                config=catalog_config,
+            )
+        else:
+            # A whole Card: the full catalog for a full-catalog client, else
+            # the resources this client's existing Card already holds.
+            allowed = (
+                None
+                if client_uses_full_card_catalog(client_metadata)
+                else set(existing.resource_grants if existing is not None else ())
+            )
         outside_entry = sorted(
             resource for resource in selected if allowed is not None and resource not in allowed
         )
@@ -6280,7 +6329,15 @@ class AutomationAccessService:
                 "entry_resource": entry,
             }
 
-        entry_key, _literal = resolve_declared_resource(catalog_config, entry)
+        if entry:
+            entry_key, _literal = resolve_declared_resource(catalog_config, entry)
+            seeded_grants = {entry_key: tuple(requested)}
+            seeded_operations: dict[str, tuple[str, ...]] = {entry_key: ()}
+        else:
+            # A whole Card seeds no entry row; its authority is the exact
+            # selection validated below.
+            seeded_grants = {}
+            seeded_operations = {}
         baseline = existing or AutomationAccessRecord(
             access_id=access_id,
             label=client,
@@ -6289,8 +6346,8 @@ class AutomationAccessService:
             delegate_subject=integration_subject(grantor, client_id=client),
             card_kind=card_kind,
             operations=(),
-            resource_grants={entry_key: tuple(requested)},
-            resource_operations={entry_key: ()},
+            resource_grants=seeded_grants,
+            resource_operations=seeded_operations,
             named_service_operations=NamedServiceSelection.none(),
             identity_scope=_clean(getattr(entry_config, "identity_scope", "")) or "grantor",
             catalog_version=catalog_version,

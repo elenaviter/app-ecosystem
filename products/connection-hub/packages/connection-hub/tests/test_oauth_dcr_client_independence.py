@@ -872,3 +872,69 @@ async def test_card_update_keeps_ordinary_oauth_client_on_its_entry_resource():
         RESOURCE,
         SECOND_RESOURCE,
     }
+
+
+
+@pytest.mark.asyncio
+async def test_agent_reconsent_without_a_resource_seeds_the_existing_card() -> None:
+    # 2026-09-22: option B made agent authorizations resource-free, and the
+    # consent seed still required an entry resource, so a same-Card reconnect
+    # stopped at oauth_consent_identity_incomplete.
+    client_id = "agent-client"
+    persistence = _Persistence()
+    service = _service(_GrantStore({}), persistence)
+    metadata = {
+        "client_id": client_id,
+        "client_metadata": {"kdcube_credential_use": "multi_resource"},
+    }
+    record = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        resource=RESOURCE,
+        resource_operations={RESOURCE: ["search"]},
+        client_metadata=metadata,
+        replace_authority=True,
+        expected_card_revision=0,
+    )
+    assert record is not None and record.card_kind == CARD_KIND_AUTOMATION
+
+    seed = await service.oauth_consent_card_seed(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        resource="",
+        client_metadata=metadata,
+    )
+
+    assert seed["ok"] is True, seed
+    assert seed["access_id"] == record.access_id
+    assert seed["card_kind"] == CARD_KIND_AUTOMATION
+    assert seed["catalog_scope"]["mode"] == "full"
+
+
+@pytest.mark.asyncio
+async def test_connector_consent_without_a_resource_is_still_incomplete() -> None:
+    # A connector Card belongs to one fixed gate; a missing resource is not
+    # evidence of a whole Card.
+    client_id = "connector-client"
+    persistence = _Persistence()
+    service = _service(_GrantStore({}), persistence)
+    metadata = {"client_id": client_id, "registration_kind": "dynamic"}
+    record = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        resource=RESOURCE,
+        resource_operations={RESOURCE: ["search"]},
+        client_metadata=metadata,
+        replace_authority=True,
+        expected_card_revision=0,
+    )
+    assert record is not None and record.card_kind == CARD_KIND_CONNECTOR
+
+    seed = await service.oauth_consent_card_seed(
+        grantor_subject=GRANTOR,
+        client_id=client_id,
+        resource="",
+        client_metadata=metadata,
+    )
+
+    assert seed == {"ok": False, "error": "oauth_consent_identity_incomplete"}

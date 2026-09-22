@@ -1059,3 +1059,49 @@ async def test_oauth_consent_validates_and_returns_application_role_policy(tmp_p
     assert resolved["ok"], resolved
     assert resolved["resource_grants"] == {"*": ["kdcube:role:registered"]}
     assert resolved["properties"] == properties
+
+
+
+@pytest.mark.asyncio
+async def test_oauth_consent_editor_accepts_a_whole_card_without_an_entry_resource(tmp_path):
+    h = _Harness(tmp_path)
+    h.catalog.publish(_connections_with_application_apis())
+
+    resolved = await h.service.resolve_oauth_consent_authority(
+        SUPER_ADMIN_USER,
+        client_id="oauth-client-1",
+        entry_resource="",
+        requested_grants=["memories:read"],
+        client_metadata={"kdcube_credential_use": "multi_resource"},
+        resource_grants={"*": ["kdcube:role:registered"]},
+        resource_operations={"*": [APP_READ]},
+        named_service_operations={},
+        account_scope={},
+        expected_card_revision=0,
+        expected_catalog_version=h.catalog.active.version,
+    )
+
+    assert resolved["ok"], resolved
+    assert resolved["resource_grants"] == {"*": ["kdcube:role:registered"]}
+
+
+@pytest.mark.asyncio
+async def test_oauth_consent_editor_refuses_a_first_connector_without_an_entry_resource(tmp_path):
+    h = _Harness(tmp_path)
+    h.catalog.publish(_connections_with_application_apis())
+
+    resolved = await h.service.resolve_oauth_consent_authority(
+        SUPER_ADMIN_USER,
+        client_id="oauth-client-2",
+        entry_resource="",
+        requested_grants=["memories:read"],
+        client_metadata={},
+        resource_grants={"*": ["kdcube:role:registered"]},
+        resource_operations={"*": [APP_READ]},
+        named_service_operations={},
+        account_scope={},
+        expected_card_revision=0,
+        expected_catalog_version=h.catalog.active.version,
+    )
+
+    assert resolved == {"ok": False, "error": "oauth_consent_identity_incomplete"}
