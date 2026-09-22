@@ -2933,6 +2933,7 @@ class _ChannelSession:
     replacement_epoch: int
     stack: AsyncExitStack
     adapter: ProblemBoardHostRelayAdapter
+    card_fingerprint: str = ""
     closing: bool = False
     close_failure: Exception | None = None
 
@@ -2983,6 +2984,16 @@ class ProblemBoardRelaySupervisor:
         self._expected_open_failure_signatures: dict[
             str, tuple[str, str, str]
         ] = {}
+        # Coordinate requests are served beside the channel cycle, so a slow
+        # channel or a reload cannot hold every worker's pb coordinate (W267).
+        self._coordinate_task: asyncio.Task | None = None
+        self._coordinate_draining: dict[str, asyncio.Task] = {}
+        # One drain per worker at a time, whichever path starts it. The
+        # queue's claim is exclusive per request and released before the
+        # request runs, so without this a side drain executing an earlier
+        # request and a cycle drain claiming a later one overlap, and the
+        # later operation can run first (W267 review 5, 2026-09-22).
+        self._coordinate_drain_locks: dict[str, asyncio.Lock] = {}
 
     def _is_retryable(self, error: BaseException) -> bool:
         if (
@@ -3352,7 +3363,29 @@ class ProblemBoardRelaySupervisor:
                 raise
 
     @staticmethod
-    def _profile_fingerprint(host: HostRelayConfig, channel: WorkerChannelConfig) -> str:
+    def _profile_entry(
+        host: HostRelayConfig, channel: WorkerChannelConfig
+    ) -> Mapping[str, Any] | None:
+        """The channel's local profile record, read without any credential."""
+
+        root = host.connection_hub_state_root
+        if root is None:
+            return None
+        try:
+            data = json.loads((root / "profiles.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        profiles = data.get("profiles") if isinstance(data, Mapping) else None
+        entries = profiles.values() if isinstance(profiles, Mapping) else (profiles or [])
+        for entry in entries:
+            if isinstance(entry, Mapping) and str(entry.get("name") or "") == channel.profile:
+                return entry
+        return None
+
+    @classmethod
+    def _profile_fingerprint(
+        cls, host: HostRelayConfig, channel: WorkerChannelConfig
+    ) -> str:
         """Non-secret identity of the channel's local profile record.
 
         ``pb worker authorize`` rewrites the record (a new ``updated_at``, or a
@@ -3360,22 +3393,67 @@ class ProblemBoardRelaySupervisor:
         worth one more gateway call.
         """
 
-        root = host.connection_hub_state_root
-        if root is None:
+        entry = cls._profile_entry(host, channel)
+        if entry is None:
             return ""
-        try:
-            data = json.loads((root / "profiles.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        return "|".join(
+            str(entry.get(key) or "")
+            for key in ("access_id", "credential_ref", "updated_at", "record_version")
+        )
+
+    @classmethod
+    def _card_fingerprint(
+        cls, host: HostRelayConfig, channel: WorkerChannelConfig
+    ) -> str:
+        """Non-secret identity of the Card the channel's profile is bound to.
+
+        A token refresh rewrites ``updated_at`` for the same Card, so this
+        leaves it out: only a different Card, credential slot, endpoint or
+        authentication kind means an open session belongs to another Card.
+        """
+
+        entry = cls._profile_entry(host, channel)
+        if entry is None:
             return ""
-        profiles = data.get("profiles") if isinstance(data, Mapping) else None
-        entries = profiles.values() if isinstance(profiles, Mapping) else (profiles or [])
-        for entry in entries:
-            if isinstance(entry, Mapping) and str(entry.get("name") or "") == channel.profile:
-                return "|".join(
-                    str(entry.get(key) or "")
-                    for key in ("access_id", "credential_ref", "updated_at", "record_version")
-                )
-        return ""
+        return "|".join(
+            str(entry.get(key) or "")
+            for key in ("access_id", "credential_ref", "endpoint", "auth_type")
+        )
+
+    def _session_matches(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        session: _ChannelSession,
+        *,
+        require_card: bool,
+    ) -> bool:
+        """Whether ``session`` is the one opened for this channel and Card.
+
+        Both paths that drain coordinate requests ask this (W267 review): the
+        cycle before it reuses a cached session, the side server before it
+        starts a drain. A different profile, native channel identity or bound
+        Card means the session belongs to what was replaced.
+
+        ``require_card`` fails closed on an unknown Card: the side server
+        carries nothing unless both the Card at open and the Card now were
+        read and agree, so an unreadable profile leaves the request to the
+        cycle. The cycle reopens on any change, including a Card that became
+        unreadable, and keeps a session only when neither read found a Card,
+        which is a host without a local profile store, where the open had
+        nothing to bind to either.
+        """
+
+        if (
+            session.closing
+            or session.profile != channel.profile
+            or session.channel_identity != channel.worker_identity
+        ):
+            return False
+        current = self._card_fingerprint(host, channel)
+        if require_card:
+            return bool(session.card_fingerprint) and session.card_fingerprint == current
+        return session.card_fingerprint == current
 
     def _record_channel_failure(
         self, pacing: RelayPacing, worker_name: str, error: BaseException
@@ -3526,6 +3604,10 @@ class ProblemBoardRelaySupervisor:
             channel.worker_identity,
             replacement_epoch,
         )
+        # Read before connecting: a Card replaced while the connection opens
+        # leaves this session with the old identity, so it is refused beside
+        # the cycle rather than trusted.
+        card_fingerprint = self._card_fingerprint(host, channel)
         stack = AsyncExitStack()
         try:
             client = await stack.enter_async_context(
@@ -3594,6 +3676,7 @@ class ProblemBoardRelaySupervisor:
             replacement_epoch=replacement_epoch,
             stack=stack,
             adapter=adapter,
+            card_fingerprint=card_fingerprint,
         )
         logger.info(
             "Problem Board relay channel lifecycle event=opened worker_name=%s "
@@ -3620,6 +3703,16 @@ class ProblemBoardRelaySupervisor:
             )
             raise session.close_failure
         session.closing = True
+        # A drain beside the cycle may be using this session's client. Closing
+        # marks the session so no new drain starts; the running one finishes
+        # its request and writes the response before the client closes.
+        side_drain = self._coordinate_draining.get(worker_name)
+        if (
+            side_drain is not None
+            and not side_drain.done()
+            and side_drain is not asyncio.current_task()
+        ):
+            await asyncio.gather(side_drain, return_exceptions=True)
         logger.info(
             "Problem Board relay channel lifecycle event=stopping worker_name=%s "
             "channel_identity=%s replacement_epoch=%d",
@@ -3661,6 +3754,29 @@ class ProblemBoardRelaySupervisor:
             session.channel_identity,
             session.replacement_epoch,
         )
+
+    def _coordinate_drain_lock(self, worker_name: str) -> asyncio.Lock:
+        lock = self._coordinate_drain_locks.get(worker_name)
+        if lock is None:
+            lock = self._coordinate_drain_locks[worker_name] = asyncio.Lock()
+        return lock
+
+    async def _drain_coordinate_for_worker(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        session: _ChannelSession,
+    ) -> dict[str, int]:
+        """Drain this worker's requests, one drain at a time across both paths.
+
+        The channel cycle and the side server both end here. The cycle waits
+        for a side drain in progress, so a later request is claimed only after
+        the earlier one has run and answered, and the side server does not
+        start while the cycle holds the lock (serve_coordinate_once checks it).
+        """
+
+        async with self._coordinate_drain_lock(channel.worker_name):
+            return await self._drain_coordinate_requests(host, channel, session)
 
     async def _drain_coordinate_requests(
         self,
@@ -4011,28 +4127,53 @@ class ProblemBoardRelaySupervisor:
                 },
             )
         session = self._sessions.get(channel.worker_name)
-        if session is not None and (
-            session.closing or session.profile != channel.profile
+        if session is not None and not self._session_matches(
+            host, channel, session, require_card=False
         ):
             await self._drop_session(channel.worker_name)
             session = None
         if session is None:
-            started = time.monotonic()
-            try:
-                session = await self._open_session(host, channel)
-            except Exception as exc:
-                failure = staged_failure(
-                    exc, operation="channel.open", target=host.endpoint,
-                    elapsed_seconds=time.monotonic() - started,
-                    retryable=self._is_retryable(exc),
+            # The Card can be replaced while the connector opens. The new
+            # session then carries the Card read before the open, so it is
+            # checked again before anything is drained through it, and
+            # reopened once against the Card the profile holds now (W267
+            # review 4).
+            for _attempt in range(2):
+                started = time.monotonic()
+                try:
+                    session = await self._open_session(host, channel)
+                except Exception as exc:
+                    failure = staged_failure(
+                        exc, operation="channel.open", target=host.endpoint,
+                        elapsed_seconds=time.monotonic() - started,
+                        retryable=self._is_retryable(exc),
+                    )
+                    if failure is exc:
+                        raise
+                    raise failure from exc
+                self._sessions[channel.worker_name] = session
+                if self._session_matches(host, channel, session, require_card=False):
+                    break
+                logger.info(
+                    "Problem Board relay channel lifecycle event=card_replaced_during_open "
+                    "worker_name=%s channel_identity=%s replacement_epoch=%d",
+                    session.worker_name,
+                    session.channel_identity,
+                    session.replacement_epoch,
                 )
-                if failure is exc:
-                    raise
-                raise failure from exc
-            self._sessions[channel.worker_name] = session
+                await self._drop_session(channel.worker_name)
+                session = None
+            if session is None:
+                raise DomainError(
+                    "work_relay_channel_card_replaced_during_open",
+                    "The worker's Card changed twice while its channel opened; "
+                    "the next cycle opens it again.",
+                    status=503,
+                    details={"worker_name": channel.worker_name},
+                )
         started = time.monotonic()
         try:
-            coordinate = await self._drain_coordinate_requests(host, channel, session)
+            coordinate = await self._drain_coordinate_for_worker(host, channel, session)
         except Exception as exc:
             failure = staged_failure(
                 exc, operation="coordinate.drain", target=channel.worker_name,
@@ -4067,6 +4208,9 @@ class ProblemBoardRelaySupervisor:
             raise
 
     async def aclose(self) -> None:
+        # Stop serving coordinate requests before any session closes, so no
+        # drain uses a client that is being torn down (W267 review).
+        await self.stop_coordinate_server()
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)
 
@@ -4396,9 +4540,114 @@ class ProblemBoardRelaySupervisor:
             task.cancel()
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-        return bool(stop_task is not None and stop_task in done and stop_task.result())
+        stopping = bool(stop_task is not None and stop_task in done and stop_task.result())
+        if stopping:
+            await self.stop_coordinate_server()
+        return stopping
+
+    # -- coordinate requests, served beside the channel cycle (W267) ----------
+
+    COORDINATE_SERVE_INTERVAL_SECONDS = 0.25
+
+    def _ensure_coordinate_server(self) -> None:
+        task = self._coordinate_task
+        if task is None or task.done():
+            self._coordinate_task = asyncio.create_task(
+                self._serve_coordinate_requests(),
+                name="problem-board-coordinate-server",
+            )
+
+    async def stop_coordinate_server(self) -> None:
+        tasks = [
+            task
+            for task in (self._coordinate_task, *self._coordinate_draining.values())
+            if task is not None and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._coordinate_task = None
+        self._coordinate_draining.clear()
+
+    async def _serve_coordinate_requests(self) -> None:
+        """Serve local coordinate requests as they arrive, not once per cycle.
+
+        Why: the channel cycle runs every channel's network work together and
+        waits for the slowest, so a request that arrived mid-cycle waited out
+        a reload or another channel's 15-second Data Bus timeout (codex-main
+        waited 38.5 s on 2026-09-22 for a 1 s read). Claims stay exclusive per
+        request, so the cycle's own drain remains a safe fallback.
+        """
+
+        while True:
+            try:
+                self.serve_coordinate_once()
+            except Exception:  # noqa: BLE001 - the next pass retries
+                logger.warning("Problem Board coordinate server pass failed", exc_info=True)
+            await asyncio.sleep(self.COORDINATE_SERVE_INTERVAL_SECONDS)
+
+    def serve_coordinate_once(self) -> list[str]:
+        """Start a drain for each worker with ready requests and an open channel.
+
+        Returns the worker names a drain was started for. A worker without an
+        open session, or whose channel is backing off, is left to the cycle
+        (pb coordinate already refuses at once while it is reconnecting).
+        """
+
+        host = HostRelayConfig.load(self.config_path)
+        queue = CoordinateQueue(host.field_root)
+        started: list[str] = []
+        for channel in host.workers:
+            name = channel.worker_name
+            if channel.state != "active" or name in self._coordinate_draining:
+                continue
+            if self._coordinate_drain_lock(name).locked():
+                continue  # the cycle is draining this worker now
+            session = self._sessions.get(name)
+            if session is None or session.closing:
+                continue
+            if not self._pacing.channel_due(name):
+                continue
+            if not queue.has_ready_work(worker_names=[name]):
+                continue
+            # Only the session opened for this exact channel and Card may
+            # carry its requests. During a replacement the cached session can
+            # still belong to the old one; the cycle drops and reopens it
+            # before its own drain, and until then the requests wait. The
+            # check reads the profile record, so it runs only when there is
+            # work to carry.
+            if not self._session_matches(host, channel, session, require_card=True):
+                continue
+            task = asyncio.create_task(
+                self._drain_coordinate_beside_cycle(host, channel, session),
+                name=f"problem-board-coordinate-{name}",
+            )
+            self._coordinate_draining[name] = task
+            started.append(name)
+        return started
+
+    async def _drain_coordinate_beside_cycle(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        session: _ChannelSession,
+    ) -> None:
+        try:
+            await self._drain_coordinate_for_worker(host, channel, session)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - per-request errors are already answered
+            logger.warning(
+                "Problem Board coordinate drain beside the cycle failed worker=%s",
+                channel.worker_name,
+                exc_info=True,
+            )
+        finally:
+            self._coordinate_draining.pop(channel.worker_name, None)
 
     async def poll_once(self) -> dict[str, Any]:
+        self._ensure_coordinate_server()
         host = HostRelayConfig.load(self.config_path)
         locally_retired = await self._disable_locally_terminal_channels(host)
         if locally_retired:
