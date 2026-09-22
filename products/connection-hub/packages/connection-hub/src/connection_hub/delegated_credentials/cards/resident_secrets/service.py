@@ -11,11 +11,11 @@ import time
 from collections.abc import Callable
 
 from connection_hub.delegated_credentials.cards.handle_metadata import (
+    HANDLE_STATE_ACTIVE,
     CardHandleMetadata,
     CardHandleMetadataConflict,
     CardHandleMetadataStore,
-    HANDLE_STATE_ACTIVE,
-    RetiredResidentSecret,
+    PreparedResidentSecret,
 )
 from connection_hub.delegated_credentials.cards.resident_secrets.cleanup import (
     ResidentSecretCleanupService,
@@ -29,7 +29,6 @@ from connection_hub.delegated_credentials.cards.resident_secrets.model import (
     ResidentSecretRetirementResult,
     ResidentSecretStore,
 )
-
 
 _SECRET_REF_CREATE_ATTEMPTS = 8
 
@@ -70,27 +69,51 @@ class ResidentCardSecretService:
     async def _delete_prepared_after_definitive_failure(
         self,
         *,
-        access_id: str,
-        secret_ref: str,
+        prepared: PreparedResidentSecret,
         original: Exception,
     ) -> None:
-        try:
-            await self._secrets.delete(secret_ref=secret_ref)
-        except Exception as cleanup_error:
+        failure = await self._cleanup.cleanup_prepared_candidate(prepared)
+        if failure is not None:
             error = ResidentSecretError(
                 "resident_secret_metadata_rejected_cleanup_pending",
-                access_id=access_id,
+                access_id=prepared.access_id,
+                secret_ref=prepared.secret_ref,
                 operation_error_type=type(original).__name__,
-                cleanup_error_type=type(cleanup_error).__name__,
+                cleanup_error_type=failure.reason,
             )
             raise error from original
 
     async def _create_prepared_secret(
         self,
         envelope: ResidentSecretEnvelope,
-    ) -> str:
+    ) -> PreparedResidentSecret:
         for _attempt in range(_SECRET_REF_CREATE_ATTEMPTS):
             secret_ref = self._new_secret_ref()
+            prepared = PreparedResidentSecret(
+                access_id=envelope.access_id,
+                secret_ref=secret_ref,
+                resident_access_sha256=envelope.fingerprint,
+                card_revision=envelope.card_revision,
+                created_at=envelope.created_at,
+                expires_at=envelope.expires_at,
+            ).validated()
+            try:
+                reserved = await self._metadata.prepare_resident_secret(prepared)
+            except Exception as intent_error:
+                raise ResidentSecretError(
+                    "resident_secret_intent_create_outcome_unknown",
+                    access_id=envelope.access_id,
+                    secret_ref=secret_ref,
+                    operation_error_type=type(intent_error).__name__,
+                ) from intent_error
+            if reserved is not True:
+                if reserved is False:
+                    continue
+                raise ResidentSecretError(
+                    "resident_secret_intent_create_outcome_unknown",
+                    access_id=envelope.access_id,
+                    secret_ref=secret_ref,
+                )
             try:
                 created = await self._secrets.create(
                     secret_ref=secret_ref,
@@ -101,14 +124,23 @@ class ResidentCardSecretService:
                 raise ResidentSecretError(
                     "resident_secret_create_outcome_unknown",
                     access_id=envelope.access_id,
+                    secret_ref=secret_ref,
                     operation_error_type=type(write_error).__name__,
                 ) from write_error
             if created is True:
-                return secret_ref
+                return prepared
             if created is not False:
                 raise ResidentSecretError(
                     "resident_secret_create_outcome_unknown",
                     access_id=envelope.access_id,
+                    secret_ref=secret_ref,
+                )
+            quarantined = await self._cleanup.quarantine_prepared_collision(prepared)
+            if quarantined is not True:
+                raise ResidentSecretError(
+                    "resident_secret_collision_quarantine_outcome_unknown",
+                    access_id=envelope.access_id,
+                    secret_ref=secret_ref,
                 )
         raise ResidentSecretError(
             "resident_secret_reference_collision",
@@ -142,27 +174,25 @@ class ResidentCardSecretService:
             created_at=moment,
             expires_at=expires_at,
         )
-        previous = await self._read_current(envelope.access_id)
-        secret_ref = await self._create_prepared_secret(envelope)
+        prepared = await self._create_prepared_secret(envelope)
 
         candidate = CardHandleMetadata(
             access_id=envelope.access_id,
             card_revision=envelope.card_revision,
             expires_at=envelope.expires_at,
-            resident_access_secret_ref=secret_ref,
+            resident_access_secret_ref=prepared.secret_ref,
             resident_access_sha256=envelope.fingerprint,
             session_id=session_id,
             state=HANDLE_STATE_ACTIVE,
         ).validated()
         try:
-            saved = await self._metadata.put(
+            mutation = await self._metadata.install_prepared_resident_secret(
                 candidate,
                 expected_revision=int(expected_revision),
             )
         except (CardHandleMetadataConflict, ValueError) as exc:
             await self._delete_prepared_after_definitive_failure(
-                access_id=envelope.access_id,
-                secret_ref=secret_ref,
+                prepared=prepared,
                 original=exc,
             )
             raise
@@ -170,24 +200,16 @@ class ResidentCardSecretService:
             raise ResidentSecretError(
                 "resident_secret_metadata_commit_outcome_unknown",
                 access_id=envelope.access_id,
+                secret_ref=prepared.secret_ref,
             ) from exc
 
         cleanup_failure = None
-        if (
-            previous is not None
-            and previous.resident_access_secret_ref
-            and previous.resident_access_secret_ref != saved.resident_access_secret_ref
-        ):
+        if mutation.retired_secret is not None:
             cleanup_failure = await self._cleanup.cleanup_retired_candidate(
-                RetiredResidentSecret(
-                    access_id=previous.access_id,
-                    secret_ref=previous.resident_access_secret_ref,
-                    resident_access_sha256=previous.resident_access_sha256,
-                    retired_at=0,
-                )
+                mutation.retired_secret
             )
         return ResidentSecretInstallResult(
-            metadata=saved,
+            metadata=mutation.metadata,
             cleanup_failure=cleanup_failure,
         )
 
@@ -280,6 +302,13 @@ class ResidentCardSecretService:
         limit: int = 100,
     ) -> ResidentSecretCleanupResult:
         return await self._cleanup.cleanup_retired_secrets(limit=limit)
+
+    async def cleanup_prepared_secrets(
+        self,
+        *,
+        limit: int = 100,
+    ) -> ResidentSecretCleanupResult:
+        return await self._cleanup.cleanup_prepared_secrets(limit=limit)
 
     async def cleanup_terminal_secrets(
         self,
