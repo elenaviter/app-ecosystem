@@ -685,12 +685,6 @@ function OAuthCardRequest({ draft }: { draft: OAuthConsentDraft }) {
         </dd>
         <dt>Returns to</dt>
         <dd><code>{draft.oauth.redirect_host || draft.oauth.redirect_uri}</code></dd>
-        <dt>Requested access</dt>
-        <dd>
-          {draft.oauth.requested_scopes.length
-            ? <ChipRow entries={draft.oauth.requested_scopes} />
-            : <span className="muted">No named capabilities</span>}
-        </dd>
       </dl>
       <div className="oauth-card-request__registration">{registration}</div>
       <ClientMetadataDetails metadata={draft.client.client_metadata} />
