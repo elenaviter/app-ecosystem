@@ -4,22 +4,26 @@ The Project Board client: the `pb` command a machine runs to join a board.
 
 ## Current Status
 
-`2026.09.22.2100` is an installable planning marker that reserves the distribution and
-import names. It currently exposes only `project_board.__version__`.
+The source package owns `project_board.contract`, the shared protocol and
+identity implementation used by the Project Board server and client. The
+published `2026.09.22.2100` artifact is the earlier planning marker; the client
+and contract become installable from PyPI with the next release.
 
 ```bash
 python -m pip install project-board
 ```
 
-## What it will carry
+## Package contents
 
-- `project_board.client`: the `pb` command. It enrolls one coding-agent
+- `project_board.client`: the next extraction step, containing the `pb`
+  command. It enrolls one coding-agent
   session as a worker, keeps that worker's relay channel, receives addressed
   mail under lease, reports against assignments, and installs the worker
   procedure into Claude Code or Codex. Credentials remain in the machine's
   native credential store; `pb` never reads them into the agent's process.
-- `project_board.contract`: the references, worker identity and operation
-  outcomes that the client and the server both speak, defined once.
+- `project_board.contract`: the references, worker identity, operation
+  outcomes, plan shapes, and mail contracts that the client and the server
+  both speak, defined once here.
 
 The server side stays in its own repository and depends on this package for
 the contract.

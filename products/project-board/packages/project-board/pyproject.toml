@@ -16,6 +16,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<10",
+]
+
 [project.urls]
 Homepage = "https://github.com/elenaviter/app-ecosystem"
 Repository = "https://github.com/elenaviter/app-ecosystem"
@@ -25,3 +30,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 project_board = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

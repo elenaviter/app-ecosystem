@@ -19,6 +19,7 @@ release.
 | `harness-foundation` | `packages/harness-foundation` | `pyproject.toml` and `harness_foundation.__version__` | `packages/harness-foundation/release.yaml` when released | `publish-python-package.yml` |
 | `capabilities-foundation` | `packages/capabilities-foundation` | `pyproject.toml` and `capabilities_foundation.__version__` | `packages/capabilities-foundation/release.yaml` | `publish-python-package.yml` |
 | `economics-foundation` | `packages/economics-foundation` | `pyproject.toml` and `economics_foundation.__version__` | `packages/economics-foundation/release.yaml` | `publish-python-package.yml` |
+| `project-board` | `products/project-board/packages/project-board` | `pyproject.toml` and `project_board.__version__` | `products/project-board/packages/project-board/release.yaml` | `publish-python-package.yml` |
 
 ## Version and tag contract
 

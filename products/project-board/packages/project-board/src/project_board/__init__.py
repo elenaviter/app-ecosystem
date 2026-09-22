@@ -11,9 +11,9 @@ speak: work and message references, worker identity, operation outcomes.
 `project_board.client` is `pb` itself, together with the worker procedure
 it installs into a coding agent.
 
-This version claims the distribution and import names. The running client
-lives in its application repository today and moves here, so a machine
-installs a released version instead of copying a checkout.
+The shared contract now lives here. The running client still lives in its
+application repository and moves next, so a machine can install one released
+version instead of copying a checkout.
 Status: https://github.com/elenaviter/app-ecosystem
 """
 
