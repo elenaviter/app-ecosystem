@@ -75,6 +75,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-23 | Agent selections and enforceable Card authority stay aligned | Every hosted-agent sync projects the Agent Card's positive MCP and named-service selection into exact resource authority, intersects it with the live Control Card, and preserves user-connected MCP resources and account bindings. |
 | 2026-09-23 | Hosted app-agent Cards reset to live Control defaults | A holder-visible, revision-checked action restores a descriptor-synchronized app-agent Card from its current Control defaults while preserving connected accounts, custom MCP resources, stable Card identity, and existing conversation choices under the live Control ceiling; worker Agent Cards keep their owner-granted starting selection. |
 | 2026-09-23 | Device authorization reaches the public bundle surface | The Connection Hub bundle dispatches RFC 8628 device authorization, verification, and completion through its mounted OAuth surface and advertises the exact mounted device endpoint. |
+| 2026-09-23 | Authority cutover evolves durable receipts before schema verification | The cutover store transactionally evolves legacy receipt identity, while target preflight verifies every required authority table and column before writers stop. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

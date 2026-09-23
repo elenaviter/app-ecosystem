@@ -63,6 +63,38 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_AUTHORITY_CUTOVERS} (
     applied_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+LOCK TABLE {schema}.{TABLE_AUTHORITY_CUTOVERS} IN ACCESS EXCLUSIVE MODE;
+
+DO $authority_cutover_generation_id$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = '{schema}'
+          AND table_name = '{TABLE_AUTHORITY_CUTOVERS}'
+          AND column_name = 'migration_id'
+    ) AND EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = '{schema}'
+          AND table_name = '{TABLE_AUTHORITY_CUTOVERS}'
+          AND column_name = 'generation_id'
+    ) THEN
+        RAISE EXCEPTION
+            'authority cutover table has both migration_id and generation_id';
+    ELSIF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = '{schema}'
+          AND table_name = '{TABLE_AUTHORITY_CUTOVERS}'
+          AND column_name = 'migration_id'
+    ) THEN
+        ALTER TABLE {schema}.{TABLE_AUTHORITY_CUTOVERS}
+            RENAME COLUMN migration_id TO generation_id;
+    END IF;
+END
+$authority_cutover_generation_id$;
+
 ALTER TABLE {schema}.{TABLE_AUTHORITY_CUTOVERS}
     ADD COLUMN IF NOT EXISTS prerequisites JSONB NOT NULL DEFAULT '{{}}'::jsonb;
 """
