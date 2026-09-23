@@ -12,6 +12,9 @@ from connection_hub.delegated_credentials.oauth.authority_schema import (
     TABLE_CLIENTS,
     oauth_authority_schema_sql,
 )
+from connection_hub.delegated_credentials.devices.authority_schema import (
+    TABLE_PROFILE_DEVICES,
+)
 from connection_hub.delegated_credentials.oauth.authority_store import (
     PostgresOAuthAuthorityStore,
     RefreshTokenReuseDetected,
@@ -94,6 +97,36 @@ def test_schema_has_hash_columns_and_no_raw_bearer_columns() -> None:
     assert "connection_hub_oauth_access_bindings" in sql
     assert "revision" in sql
     assert "activated_revision" in sql
+
+
+@pytest.mark.asyncio
+async def test_ensure_schema_installs_device_authority_in_one_transaction() -> None:
+    connection = _Connection()
+    store = _store(connection)
+
+    await store.ensure_schema()
+
+    assert connection.transaction_enters == 1
+    assert connection.transaction_exits == 1
+    assert len(connection.calls) == 2
+    assert all(depth == 1 for _kind, _sql, _args, depth in connection.calls)
+    assert "connection_hub_oauth_credential_families" in connection.calls[0][1]
+    assert TABLE_PROFILE_DEVICES in connection.calls[1][1]
+
+
+def test_grant_store_exposes_the_configured_device_authority() -> None:
+    class Authority:
+        profile_devices = object()
+
+    authority = Authority()
+    store = GrantStore(
+        object(),
+        tenant="demo-tenant",
+        project="demo-project",
+        authority_store=authority,
+    )
+
+    assert store.profile_devices is authority.profile_devices
 
 
 @pytest.mark.asyncio
