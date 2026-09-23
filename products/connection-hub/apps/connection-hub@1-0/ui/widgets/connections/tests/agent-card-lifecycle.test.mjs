@@ -20,6 +20,14 @@ function capabilityCard(overrides = {}) {
     source: 'agent',
     card_revision: 7,
     expires_at: now + 60,
+    control_card: {
+      state: 'active',
+      binding: {
+        control_id: 'descriptor-control',
+        issuer_ref: resource,
+        issuer_kind: 'kdcube_agent_descriptor',
+      },
+    },
     properties: {
       [AGENT_CAPABILITY_SELECTION_PROPERTY]: {
         schema: AGENT_CAPABILITY_POLICY_SCHEMA,
@@ -30,6 +38,22 @@ function capabilityCard(overrides = {}) {
     ...overrides,
   }
 }
+
+test('a worker Agent Card never inherits descriptor Control defaults', () => {
+  const worker = capabilityCard({
+    control_card: {
+      state: 'active',
+      binding: {
+        control_id: 'worker-control',
+        issuer_ref: 'urn:kdcube:worker:session-1',
+        issuer_kind: 'project_board_worker_policy',
+      },
+    },
+  })
+
+  assert.equal(isAgentCapabilityCard(worker), false)
+  assert.equal(agentCapabilityCardLifecycle(worker, now, 'soon'), null)
+})
 
 test('an active capability Card auto-renews instead of appearing to expire soon', () => {
   const card = capabilityCard()

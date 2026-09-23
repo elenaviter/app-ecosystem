@@ -138,6 +138,7 @@ import {
   renewDelegatedAccess,
   revokeDelegatedAccess,
   setDelegatedInvocationPolicy,
+  updateAgentCapabilitySelection,
   updateDelegatedAccess,
 } from './delegatedAccessSlice';
 import {
@@ -1717,6 +1718,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // button arms a "Revoke? Confirm / Cancel" row on the same spot.
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [confirmRenew, setConfirmRenew] = useState<{ accessId: string; mode: 'prolong' | 'reissue' } | null>(null);
+  const [confirmAgentReset, setConfirmAgentReset] = useState<{
+    accessId: string;
+    cardRevision: number;
+    label: string;
+  } | null>(null);
   const nowSeconds = Math.floor(Date.now() / 1000);
   const [railGroupBy, setRailGroupBy] = useState<CardGroupBy>('kind');
   const [pendingLeave, setPendingLeave] = useState<{ kind: 'switch'; item: DelegatedAccessRecord } | { kind: 'leave' } | null>(null);
@@ -1841,6 +1847,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const renderRevokeControl = (item: DelegatedAccessRecord) => {
+    if (isAgentCapabilityCard(item)) return null;
     const accessId = item.access_id;
     if (confirmRevokeId === accessId) {
       return (
@@ -2756,6 +2763,45 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditRemovedResources([]);
     setEditAcceptedOperations({});
   };
+
+  const resetAgentToControlDefaults = async () => {
+    const pending = confirmAgentReset;
+    if (!pending) return;
+    setConfirmAgentReset(null);
+    setEditActionError('');
+    try {
+      const result = await dispatch(updateAgentCapabilitySelection({
+        accessId: pending.accessId,
+        resetToControlDefaults: true,
+        expectedCardRevision: pending.cardRevision,
+      })).unwrap();
+      if (!result || result.ok === false) {
+        setEditActionError(
+          result?.message
+          || (result?.status === 409
+            ? 'This Agent Card changed while the reset was open. Review the current Card and try again.'
+            : `Control defaults were not applied: ${result?.error || 'request refused'}`),
+        );
+        void dispatch(loadDelegatedAccess());
+        return;
+      }
+      clearEditState();
+      void dispatch(loadDelegatedAccess());
+    } catch (error) {
+      setEditActionError(`Control defaults were not applied: ${String(error || 'request refused')}`);
+    }
+  };
+
+  const renderAgentResetDialog = () => (
+    <ConfirmDialog
+      open={confirmAgentReset !== null}
+      title={`Reset ${confirmAgentReset?.label || 'this Agent Card'}?`}
+      body="The current Control Card defaults become the starting selection for new conversations. Connected accounts and custom MCP servers stay on this card. Existing conversations keep their saved choices within the live Control Card."
+      confirmLabel="Use Control defaults"
+      onCancel={() => setConfirmAgentReset(null)}
+      onConfirm={() => { void resetAgentToControlDefaults(); }}
+    />
+  );
 
   // The catalog's claims (so one can be added) union the record's own (so a
   // claim the catalog dropped is still shown and removable).
@@ -4485,8 +4531,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     <>
       <span className={`badge ${callerBadgeClass(item)}`}>{callerLabel(item)}</span>
       <span className="badge badge-reach">
-        {item.source === 'control' ? 'credentialless'
-          : isAgentCapabilityCard(item) ? 'credentialless' : reachLabel(item)}
+        {item.source === 'control' ? 'credentialless' : reachLabel(item)}
       </span>
       {expiryBadge(item)}
     </>
@@ -4865,6 +4910,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Save and Cancel pinned at the viewport bottom while it is in view.
   const renderWorkbench = (record: DelegatedAccessRecord) => {
     const residentCapabilityCard = isAgentCapabilityCard(record);
+    const residentCapabilityRevision = typeof record.card_revision === 'number'
+      ? record.card_revision
+      : null;
     const descriptorCapabilityControl = record.source === 'control'
       && isAgentDescriptorControl(record.properties);
     const linkedControl = linkedControlCard(record);
@@ -5151,6 +5199,23 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               <div className="error form-actions__error" role="alert">
                 {editActionError || delegatedAccessError || problemText}
               </div>
+            ) : null}
+            {residentCapabilityCard ? (
+              <button
+                className="btn btn-ghost"
+                type="button"
+                disabled={busy || !residentCapabilityAuthority || residentCapabilityRevision === null}
+                onClick={() => {
+                  if (residentCapabilityRevision === null) return;
+                  setConfirmAgentReset({
+                    accessId: record.access_id,
+                    cardRevision: residentCapabilityRevision,
+                    label: cardTitle(record),
+                  });
+                }}
+              >
+                Reset to Control defaults
+              </button>
             ) : null}
             <button
               className="btn"
@@ -5539,6 +5604,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const grantedPane = (
     <section className="card">
       {renderRenewDialog()}
+      {renderAgentResetDialog()}
 
       {accessCardFocus && accessCardFocusState === 'loading' ? (
         <div className="notice" role="status">Opening the requested Card...</div>
