@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 
 from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT
+from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE
 from connection_hub.delegated_credentials.migration.model import (
     AuthorityMigrationInspection,
     AuthorityMigrationRecord,
@@ -33,6 +34,8 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
 
     async def _resident_card_handles(
         self,
+        *,
+        captured_at_ms: int,
     ) -> tuple[list[AuthorityMigrationRecord], dict[str, int]]:
         prefix = (
             f"{self._tenant}:{self._project}:kdcube:delegated-access:"
@@ -61,6 +64,14 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
                     reset_counts.get(authority.card_kind, 0) + 1
                 )
                 continue
+            if authority.state != CARD_STATE_ACTIVE:
+                bucket = f"{authority.card_kind}_{authority.state}"
+                reset_counts[bucket] = reset_counts.get(bucket, 0) + 1
+                continue
+            if int(authority.expires_at) * 1000 <= captured_at_ms:
+                bucket = f"{authority.card_kind}_expired"
+                reset_counts[bucket] = reset_counts.get(bucket, 0) + 1
+                continue
             resident.append(
                 await self._read_card_handle_record(
                     key=key,
@@ -80,7 +91,9 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
             if captured_at_ms is not None
             else time.time_ns() // 1_000_000
         )
-        resident_handles, reset_handle_counts = await self._resident_card_handles()
+        resident_handles, reset_handle_counts = await self._resident_card_handles(
+            captured_at_ms=captured,
+        )
 
         reset_counts = {
             "admission_replay": len(

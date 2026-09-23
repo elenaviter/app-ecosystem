@@ -18,7 +18,10 @@ from connection_hub.delegated_credentials.cards.identity import (
     CARD_KIND_AGENT,
     CARD_KIND_CONNECTOR,
 )
-from connection_hub.delegated_credentials.cards.model import CardAuthority
+from connection_hub.delegated_credentials.cards.model import (
+    CARD_STATE_REVOKED,
+    CardAuthority,
+)
 from connection_hub.delegated_credentials.migration.model import (
     build_migration_preview,
 )
@@ -264,6 +267,29 @@ async def test_reset_source_does_not_read_discarded_handle_payloads() -> None:
         created_at=1_900_000_000,
         expires_at=EXPIRY_MS // 1000,
     )
+    revoked_agent = CardAuthority(
+        access_id="revoked-agent-card-1",
+        client_id="client-3",
+        grantor_subject="user-1",
+        delegate_subject="agent-2",
+        source="agent",
+        card_kind=CARD_KIND_AGENT,
+        card_revision=1,
+        created_at=1_800_000_000,
+        expires_at=EXPIRY_MS // 1000,
+        state=CARD_STATE_REVOKED,
+    )
+    expired_agent = CardAuthority(
+        access_id="expired-agent-card-1",
+        client_id="client-4",
+        grantor_subject="user-1",
+        delegate_subject="agent-3",
+        source="agent",
+        card_kind=CARD_KIND_AGENT,
+        card_revision=1,
+        created_at=1_800_000_000,
+        expires_at=1_850_000_000,
+    )
     prefix = f"{TENANT}:{PROJECT}:kdcube:delegated-access:card-handles:"
     redis = _Redis(
         {
@@ -278,6 +304,8 @@ async def test_reset_source_does_not_read_discarded_handle_payloads() -> None:
                 EXPIRY_MS,
             ),
             prefix + connector.access_id: ("not-json", EXPIRY_MS),
+            prefix + revoked_agent.access_id: ("not-json", EXPIRY_MS),
+            prefix + expired_agent.access_id: ("not-json", EXPIRY_MS),
             prefix + "orphan-card-1": ("not-json", EXPIRY_MS),
         }
     )
@@ -286,13 +314,17 @@ async def test_reset_source_does_not_read_discarded_handle_payloads() -> None:
         redis,
         tenant=TENANT,
         project=PROJECT,
-        card_authorities=_CardsById([agent, connector]),
+        card_authorities=_CardsById(
+            [agent, connector, revoked_agent, expired_agent]
+        ),
     ).inspect(captured_at_ms=1_900_000_000_000)
 
     assert redis.eval_calls == [prefix + agent.access_id]
     assert inspection.source_summary["reset"] == {
         "admission_replay": 0,
         "card_handles_connector": 1,
+        "card_handles_agent_expired": 1,
+        "card_handles_agent_revoked": 1,
         "card_handles_orphaned": 1,
         "legacy_automation_cards": 0,
         "legacy_control_cards": 0,
