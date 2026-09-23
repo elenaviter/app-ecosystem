@@ -126,7 +126,17 @@ def test_service_factory_injects_invocation_policy_service(monkeypatch):
 def test_oauth_grant_store_stays_on_redis_before_migration_cutover(monkeypatch):
     module = _entrypoint_module()
     redis = object()
-    entrypoint = SimpleNamespace(redis=redis, pg_pool=object())
+    entrypoint = SimpleNamespace(
+        redis=redis,
+        pg_pool=object(),
+        bundle_props={
+            "connections": {
+                "delegated_credentials": {
+                    "authority": {"backend": "redis-migration-source"}
+                }
+            }
+        },
+    )
     monkeypatch.setattr(
         module,
         "_runtime_tenant_project",
@@ -137,6 +147,41 @@ def test_oauth_grant_store_stays_on_redis_before_migration_cutover(monkeypatch):
 
     assert store._r is redis
     assert store._authority_store is None
+
+
+def test_oauth_grant_store_uses_the_prepared_postgresql_authority(monkeypatch):
+    module = _entrypoint_module()
+    redis = object()
+    oauth_authority = object()
+    durable = SimpleNamespace(
+        oauth=oauth_authority,
+        require_ready=lambda: None,
+    )
+    entrypoint = SimpleNamespace(
+        redis=redis,
+        pg_pool=object(),
+        _durable_authority=durable,
+        bundle_props={
+            "connections": {
+                "delegated_credentials": {
+                    "authority": {
+                        "backend": "postgresql",
+                        "migration_id": "w253-durable-authority-v1",
+                    }
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "_runtime_tenant_project",
+        lambda _entrypoint: ("demo-tenant", "demo-project"),
+    )
+
+    store = module._oauth_grant_store(entrypoint)
+
+    assert store._r is redis
+    assert store._authority_store is oauth_authority
 
 
 def test_entrypoint_registers_delegated_gateway_contract():
@@ -167,6 +212,10 @@ def test_entrypoint_registers_delegated_gateway_contract():
     }
     assert defaults["connections"]["delegated_credentials"]["gateway"] == {
         "requestable_discovery": {"caller_types": ["resident"]}
+    }
+    assert defaults["connections"]["delegated_credentials"]["authority"] == {
+        "backend": "postgresql",
+        "migration_id": "w253-durable-authority-v1",
     }
     gateway_rows = [
         row

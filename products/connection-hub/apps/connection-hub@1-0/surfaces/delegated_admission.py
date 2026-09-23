@@ -96,11 +96,21 @@ async def _claim_nonce(
     ttl_seconds: int,
 ) -> bool:
     if context.replay_claims is not None:
-        return await context.replay_claims.claim(
+        claimed = await context.replay_claims.claim(
             service_id=service_id,
             nonce=nonce,
             ttl_seconds=ttl_seconds,
         )
+        try:
+            purge_expired = getattr(context.replay_claims, "purge_expired", None)
+            if purge_expired is not None:
+                await purge_expired(limit=32)
+        except Exception:
+            LOGGER.warning(
+                "admission replay cleanup is temporarily unavailable",
+                exc_info=True,
+            )
+        return claimed
     digest = hashlib.sha256(f"{service_id}\n{nonce}".encode("utf-8")).hexdigest()
     key = (
         f"connection-hub:admission:{context.tenant}:{context.project}:nonce:{digest}"

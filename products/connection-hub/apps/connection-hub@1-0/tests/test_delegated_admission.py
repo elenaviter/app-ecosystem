@@ -71,6 +71,7 @@ class _Redis:
 class _ReplayClaims:
     def __init__(self) -> None:
         self.claimed: set[tuple[str, str]] = set()
+        self.purge_limits: list[int] = []
 
     async def claim(self, *, service_id, nonce, ttl_seconds, now=None):
         del ttl_seconds, now
@@ -79,6 +80,10 @@ class _ReplayClaims:
             return False
         self.claimed.add(identity)
         return True
+
+    async def purge_expired(self, *, limit):
+        self.purge_limits.append(int(limit))
+        return 0
 
 
 class _UnavailableRedis:
@@ -627,6 +632,7 @@ async def test_direct_admission_uses_injected_durable_replay_claims(monkeypatch)
     assert first.status_code == 200
     assert second.status_code == 409
     assert replay_claims.claimed == {("crm-api", "nonce-1234567890abcd")}
+    assert replay_claims.purge_limits == [32, 32]
 
 
 @pytest.mark.asyncio

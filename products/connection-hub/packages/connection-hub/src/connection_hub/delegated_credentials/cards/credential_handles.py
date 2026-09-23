@@ -104,6 +104,21 @@ class PostgresCardCredentialHandleStore:
         self._metadata = metadata_store
         self._resident_secrets = resident_secrets
 
+    async def ensure_schema(self) -> None:
+        ensure = getattr(self._metadata, "ensure_schema", None)
+        if ensure is None:
+            raise CardCredentialHandleUnavailable(
+                "card_handle_schema_installer_missing"
+            )
+        await ensure()
+
+    async def reconcile_cleanup(self, *, limit: int = 100) -> None:
+        """Retry bounded host-secret cleanup left by interrupted mutations."""
+
+        await self._resident_secrets.cleanup_prepared_secrets(limit=limit)
+        await self._resident_secrets.cleanup_retired_secrets(limit=limit)
+        await self._resident_secrets.cleanup_terminal_secrets(limit=limit)
+
     @staticmethod
     def _validate_binding(
         authority: CardAuthority,
