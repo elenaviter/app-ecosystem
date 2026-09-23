@@ -178,10 +178,13 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentia
     authorize_consent as oauth_authorize_consent,
     authorize_consent_decision as oauth_authorize_consent_decision,
     authorize_consent_draft as oauth_authorize_consent_draft,
+    device_authorization as oauth_device_authorization,
+    device_complete as oauth_device_complete,
     oauth_logout,
     register_client as oauth_register_client,
     revoke as oauth_revoke,
     token as oauth_token,
+    verify_device as oauth_verify_device,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.surface_guard import (
     authorize_delegated_mcp_proxy_request,
@@ -3191,6 +3194,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 authorization_server_metadata(
                     issuer,
                     authorization_endpoint=f"{public_base}/authorize",
+                    device_authorization_endpoint=f"{public_base}/device_authorization",
                     token_endpoint=f"{public_base}/token",
                     revocation_endpoint=f"{public_base}/revoke",
                     registration_endpoint=f"{public_base}/register",
@@ -3256,6 +3260,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return await oauth_authorize(request)
         if path == "authorize/consent/draft":
             return await oauth_authorize_consent_draft(request)
+        if path == "device":
+            return await oauth_verify_device(request)
+        if path == "device/complete":
+            return await oauth_device_complete(request)
         if path in {"jwks", ".well-known/jwks.json"}:
             # Empty and permanent: kst1 tokens are opaque, so there is no
             # public key to publish. The document exists because discovery
@@ -3288,6 +3296,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         )
         if path == "register":
             return await oauth_register_client(request)
+        if path == "device_authorization":
+            return await oauth_device_authorization(request)
         if path == "authorize/consent":
             return await oauth_authorize_consent(request)
         if path == "authorize/consent/decision":
