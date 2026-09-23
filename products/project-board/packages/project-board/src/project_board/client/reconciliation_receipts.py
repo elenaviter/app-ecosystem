@@ -1,7 +1,29 @@
+"""Local mailbox reconciliation receipts, kept only for runs that carry information.
+
+A reconciliation run examines every mailbox of a project and archives mail no
+one can read. Until W287 every run wrote a receipt and queued it for the
+service, whether it archived anything or not: dev-main held 51,855 receipts,
+every one empty, and the relay re-read all of them after each restart. The
+rules this module follows are in ``docs/project-board/storage-and-retention.md``,
+section "Relay Local State" (LS1 to LS5).
+
+Layout, per project and reporting worker (the agent)::
+
+    mail-reconciliation/<agent>/marker.json
+        the last run, overwritten in place (LS1)
+    mail-reconciliation/<agent>/pending/<receipt_id>.json
+        receipts whose publication is not yet terminal (LS3: recovery reads only this)
+    mail-reconciliation/<agent>/<yyyy>/<mm>/<dd>/<hh>/<started>_<completed>_<publication>_<receipt_id>.json
+        finished receipts, in the hour the run started; retention drops whole
+        hour folders by name, without opening a file (LS2)
+"""
+
 from __future__ import annotations
 
-import re
-import threading
+import logging
+import os
+import shutil
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -11,22 +33,34 @@ from ..contract.mailbox_reconciliation_contract import (
     MAILBOX_RECONCILIATION_RETENTION_DAYS,
     normalize_receipt,
 )
-from ..contract.mailbox_reconciliation_publication import publication_batches
-from .io import atomic_write_json, content_hash, exclusive_lock, read_json, utc_now
+from .io import atomic_write_json, exclusive_lock, read_json, utc_now
+from .reconciliation_publication import (
+    PRUNABLE_PUBLICATION_STATES,
+    TERMINAL_PUBLICATION_STATES,
+    publication_is_queued,
+    publication_state,
+    queue_publication,
+)
 
 
-LOCAL_RECEIPT_RECORD_SCHEMA = (
-    "problem-board.local-mailbox-reconciliation-receipt.v1"
-)
-OUTBOX_KIND = "mail.reconciliation.publish"
-_RECEIPT_TIMESTAMP = re.compile(
-    r"_(?P<stamp>\d{8}T\d{6}Z)(?:_[0-9a-fA-F]{4})?\.json$"
-)
-# One host relay process owns each worker. A failed record clears this marker,
-# and a process restart clears all markers, so both crash boundaries re-audit.
-_RECOVERY_STATE_LOCK = threading.Lock()
-_RECOVERY_LOCKS: dict[tuple[str, str], Any] = {}
-_RECOVERY_COMPLETED: set[tuple[str, str]] = set()
+logger = logging.getLogger(__name__)
+
+LOCAL_RECEIPT_RECORD_SCHEMA = "problem-board.local-mailbox-reconciliation-receipt.v1"
+LOCAL_MARKER_SCHEMA = "problem-board.local-mailbox-reconciliation-marker.v1"
+STORE = "mail-reconciliation"
+PENDING = "pending"
+MARKER = "marker.json"
+
+
+def receipt_carries_information(receipt: Mapping[str, Any]) -> bool:
+    """A run carries information when it archived mail or hit a failure."""
+
+    return bool(
+        int(receipt.get("archived_count") or 0)
+        or receipt.get("archived_mailboxes")
+        or receipt.get("failure_notices")
+        or receipt.get("report_failures")
+    )
 
 
 def record_receipt(
@@ -36,49 +70,42 @@ def record_receipt(
     worker_name: str,
     receipt: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Persist one complete run before creating its retryable publications."""
+    """Keep one run: the marker always, a receipt only when it carries information.
+
+    Returns the stored receipt record, or for a run that changed nothing a
+    record with ``stored`` false and no file behind it.
+    """
 
     normalized = normalize_receipt(receipt)
     clean_worker = _require_reporter(normalized, worker_name)
-    path = _receipt_path(field, project_id, normalized["receipt_id"])
-    recovery_key, recovery_lock = _recovery_state(
-        field, project_id, worker_name=clean_worker
-    )
-    with recovery_lock:
-        _mark_recovery_incomplete(recovery_key)
-        created = False
-        with exclusive_lock(field._project_lock(project_id)):
-            existing = read_json(path, required=False)
-            if existing:
-                stored = normalize_receipt(existing.get("receipt") or {})
-                if stored["content_hash"] != normalized["content_hash"]:
-                    raise DomainError(
-                        "field_mail_reconciliation_idempotency_conflict",
-                        "The reconciliation receipt identity has different content.",
-                        status=409,
-                    )
-            else:
-                created = True
-                existing = {
-                    "schema": LOCAL_RECEIPT_RECORD_SCHEMA,
-                    "receipt": normalized,
-                    "publication": {},
-                    "created_at": utc_now(),
-                }
-                atomic_write_json(path, existing)
-        if _publication_is_complete(existing):
-            queued = existing
+    if not receipt_carries_information(normalized):
+        # LS1: a run that changed nothing leaves no receipt, only the marker.
+        _write_marker(field, project_id, clean_worker, normalized, stored=False)
+        return {"schema": LOCAL_RECEIPT_RECORD_SCHEMA, "receipt": normalized, "publication": {}, "stored": False}
+    path = pending_path(field, project_id, clean_worker, normalized["receipt_id"])
+    with exclusive_lock(field._project_lock(project_id)):
+        existing = read_json(path, required=False)
+        if existing:
+            stored = normalize_receipt(existing.get("receipt") or {})
+            if stored["content_hash"] != normalized["content_hash"]:
+                raise DomainError(
+                    "field_mail_reconciliation_idempotency_conflict",
+                    "The reconciliation receipt identity has different content.",
+                    status=409,
+                )
         else:
-            queued = ensure_publication(
-                field,
-                project_id,
-                worker_name=clean_worker,
-                record_path=path,
-                discover_existing=not created,
-            )
-        prune_published_receipts(field, project_id)
-        _mark_recovery_complete(recovery_key)
-        return queued
+            existing = {
+                "schema": LOCAL_RECEIPT_RECORD_SCHEMA,
+                "receipt": normalized,
+                "publication": {},
+                "created_at": utc_now(),
+            }
+            atomic_write_json(path, existing)
+    if not publication_is_queued(existing):
+        queue_publication(field, project_id, worker_name=clean_worker, record_path=path)
+    record = settle_if_terminal(field, project_id, worker_name=clean_worker, path=path)
+    _write_marker(field, project_id, clean_worker, normalized, stored=True)
+    return {**record, "stored": True}
 
 
 def recover_unpublished_receipts(
@@ -86,256 +113,233 @@ def recover_unpublished_receipts(
     project_id: str,
     *,
     worker_name: str,
-    force: bool = False,
 ) -> dict[str, int]:
-    """Repair the receipt-write/outbox-write crash boundary idempotently."""
+    """Finish every receipt this worker left in ``pending/``, and nothing else.
 
-    root = _receipt_root(field, project_id)
+    LS3 and LS4: the work is proportional to the receipts still in flight, and
+    no process-memory flag decides whether it runs, so a restart costs the
+    same as any other cycle.
+    """
+
     clean_worker = str(worker_name or "").strip().lower()
-    recovery_key, recovery_lock = _recovery_state(
-        field, project_id, worker_name=clean_worker
-    )
-    with recovery_lock:
-        if not force and _recovery_is_complete(recovery_key):
-            return {"receipts_recovered": 0, "publication_batches": 0}
-        recovered = 0
-        batches = 0
-        for path in sorted(root.glob("*.json")):
-            record = read_json(path, required=False)
-            if not record:
-                continue
-            receipt = normalize_receipt(record.get("receipt") or {})
-            if receipt["reporter_worker_name"] != clean_worker:
-                continue
-            if _publication_is_complete(record):
-                continue
-            result = ensure_publication(
-                field,
-                project_id,
-                worker_name=clean_worker,
-                record_path=path,
-            )
+    root = agent_root(field, project_id, clean_worker) / PENDING
+    started = time.monotonic()
+    recovered = batches = settled = examined = 0
+    for path in sorted(root.glob("*.json")) if root.is_dir() else ():
+        examined += 1
+        record = read_json(path, required=False)
+        if not record:
+            continue
+        receipt = normalize_receipt(record.get("receipt") or {})
+        if receipt["reporter_worker_name"] != clean_worker:
+            continue
+        if not publication_is_queued(record):
+            record = queue_publication(field, project_id, worker_name=clean_worker, record_path=path)
             recovered += 1
-            batches += len(result.get("publication", {}).get("outbox_ids") or [])
-        prune_published_receipts(field, project_id)
-        _mark_recovery_complete(recovery_key)
-        return {"receipts_recovered": recovered, "publication_batches": batches}
+            batches += len((record.get("publication") or {}).get("outbox_ids") or [])
+        if str(settle_if_terminal(field, project_id, worker_name=clean_worker, path=path).get("publication", {}).get("state") or "") in TERMINAL_PUBLICATION_STATES:
+            settled += 1
+    if examined:
+        logger.info(
+            "relay store read worker=%s store=%s op=startup_recovery range=pending/ partitions=1 records=%d ms=%d",
+            clean_worker, STORE, examined, int((time.monotonic() - started) * 1000),
+        )
+    return {"receipts_recovered": recovered, "publication_batches": batches, "receipts_settled": settled}
 
 
-def ensure_publication(
+def settle_if_terminal(
     field: Any,
     project_id: str,
     *,
     worker_name: str,
-    record_path: Path,
-    discover_existing: bool = True,
+    path: Path,
 ) -> dict[str, Any]:
-    record = read_json(record_path)
-    receipt = normalize_receipt(record.get("receipt") or {})
-    _require_reporter(receipt, worker_name)
-    publications = publication_batches(receipt)
-    root = field.control / "outbox"
-    outbox_ids: list[str] = []
-    with exclusive_lock(root / ".outbox.lock"):
-        existing = (
-            _publication_outbox_rows(root, receipt["receipt_ref"])
-            if discover_existing
-            else {}
-        )
-        for publication in publications:
-            batch_index = int(publication["batch_index"])
-            publication_hash = content_hash(publication)
-            row = existing.get(batch_index)
-            if not row:
-                outbox_id = _publication_outbox_id(publication_hash)
-                row = _outbox_row(root, outbox_id)
-            if row:
-                _require_publication_row(
-                    row,
-                    receipt_ref=receipt["receipt_ref"],
-                    batch_index=batch_index,
-                    publication_hash=publication_hash,
-                )
-                outbox_ids.append(str(row.get("outbox_id") or ""))
-                continue
-            row = {
-                "schema": "problem-board.service-outbox.v1",
-                "outbox_id": outbox_id,
-                "kind": OUTBOX_KIND,
-                "worker_name": receipt["reporter_worker_name"],
-                "project_ref": receipt["project_ref"],
-                "content_hash": publication_hash,
-                "payload": publication,
-                "state": "pending",
-                "created_at": utc_now(),
-                "retry_count": 0,
-                "next_attempt_at": "",
-            }
-            atomic_write_json(root / "pending" / f"{outbox_id}.json", row)
-            outbox_ids.append(outbox_id)
+    """Move a receipt out of ``pending/`` once its publication is terminal."""
 
+    record = read_json(path, required=False)
+    if not record:
+        return {}
+    state = publication_state(field, record)
+    if state not in TERMINAL_PUBLICATION_STATES:
+        return record
+    receipt = normalize_receipt(record.get("receipt") or {})
+    target = partition_path(field, project_id, worker_name, receipt, publication=state)
     with exclusive_lock(field._project_lock(project_id)):
-        current = read_json(record_path)
-        current["publication"] = {
-            "kind": OUTBOX_KIND,
-            "outbox_ids": outbox_ids,
-            "batch_count": len(publications),
-            "queued_at": str(
-                (current.get("publication") or {}).get("queued_at") or utc_now()
-            ),
-        }
-        atomic_write_json(record_path, current)
+        current = read_json(path, required=False)
+        if not current:
+            return read_json(target, required=False)
+        current["publication"] = {**dict(current.get("publication") or {}), "state": state}
+        current["settled_at"] = utc_now()
+        atomic_write_json(target, current)
+        path.unlink(missing_ok=True)
         return current
 
 
-def prune_published_receipts(field: Any, project_id: str) -> int:
-    """Apply local retention only after every publication batch was sent."""
-
-    cutoff = datetime.now(timezone.utc) - timedelta(
-        days=MAILBOX_RECONCILIATION_RETENTION_DAYS
-    )
-    removed = 0
-    root = _receipt_root(field, project_id)
-    outbox_root = field.control / "outbox"
-    with exclusive_lock(field._project_lock(project_id)):
-        for path in sorted(root.glob("*.json")):
-            if _receipt_filename_is_recent(path, cutoff=cutoff):
-                continue
-            record = read_json(path, required=False)
-            receipt = dict(record.get("receipt") or {})
-            try:
-                completed_at = datetime.fromisoformat(
-                    str(receipt.get("completed_at") or "").replace("Z", "+00:00")
-                )
-            except ValueError:
-                continue
-            if completed_at.tzinfo is None:
-                completed_at = completed_at.replace(tzinfo=timezone.utc)
-            publication = dict(record.get("publication") or {})
-            outbox_ids = [
-                str(value) for value in publication.get("outbox_ids") or [] if value
-            ]
-            if completed_at >= cutoff or not outbox_ids:
-                continue
-            if not all(
-                _outbox_is_sent(outbox_root, outbox_id) for outbox_id in outbox_ids
-            ):
-                continue
-            path.unlink(missing_ok=True)
-            removed += 1
-    return removed
-
-
-def _publication_is_complete(record: Mapping[str, Any]) -> bool:
-    publication = dict(record.get("publication") or {})
-    expected = int(publication.get("batch_count") or 0)
-    outbox_ids = [
-        str(value) for value in publication.get("outbox_ids") or [] if value
-    ]
-    return expected > 0 and len(outbox_ids) == expected
-
-
-def _publication_outbox_id(publication_hash: str) -> str:
-    return f"outbox_mailrecon_{publication_hash}"
-
-
-def _outbox_row(outbox_root: Path, outbox_id: str) -> dict[str, Any]:
-    for state in ("pending", "leased", "sent"):
-        row = read_json(outbox_root / state / f"{outbox_id}.json", required=False)
-        if row:
-            return row
-    return {}
-
-
-def _require_publication_row(
-    row: Mapping[str, Any],
+def apply_receipt_retention(
+    field: Any,
+    project_id: str,
     *,
-    receipt_ref: str,
-    batch_index: int,
-    publication_hash: str,
-) -> None:
-    payload = dict(row.get("payload") or {})
-    header = dict(payload.get("receipt") or {})
-    if (
-        row.get("kind") == OUTBOX_KIND
-        and header.get("receipt_ref") == receipt_ref
-        and int(payload.get("batch_index") or 0) == batch_index
-        and str(row.get("content_hash") or "") == publication_hash
-    ):
-        return
-    raise DomainError(
-        "field_mail_reconciliation_idempotency_conflict",
-        "A reconciliation publication batch has different content.",
-        status=409,
-        details={"receipt_ref": receipt_ref, "batch_index": batch_index},
-    )
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Remove hour folders past retention whose receipts were all published.
 
+    LS2: the decision reads folder and file names only. A folder holding a
+    refused receipt is kept whole, because that evidence never reached the
+    service (W287 acceptance 1).
+    """
 
-def _receipt_filename_is_recent(path: Path, *, cutoff: datetime) -> bool:
-    match = _RECEIPT_TIMESTAMP.search(path.name)
-    if not match:
-        return False
-    created_at = datetime.strptime(match.group("stamp"), "%Y%m%dT%H%M%SZ").replace(
-        tzinfo=timezone.utc
-    )
-    return created_at >= cutoff
-
-
-def _recovery_state(
-    field: Any, project_id: str, *, worker_name: str
-) -> tuple[tuple[str, str], Any]:
-    key = (str(_receipt_root(field, project_id).resolve()), worker_name)
-    with _RECOVERY_STATE_LOCK:
-        lock = _RECOVERY_LOCKS.setdefault(key, threading.Lock())
-    return key, lock
-
-
-def _recovery_is_complete(key: tuple[str, str]) -> bool:
-    with _RECOVERY_STATE_LOCK:
-        return key in _RECOVERY_COMPLETED
-
-
-def _mark_recovery_incomplete(key: tuple[str, str]) -> None:
-    with _RECOVERY_STATE_LOCK:
-        _RECOVERY_COMPLETED.discard(key)
-
-
-def _mark_recovery_complete(key: tuple[str, str]) -> None:
-    with _RECOVERY_STATE_LOCK:
-        _RECOVERY_COMPLETED.add(key)
-
-
-def _publication_outbox_rows(
-    outbox_root: Path, receipt_ref: str
-) -> dict[int, dict[str, Any]]:
-    rows: dict[int, dict[str, Any]] = {}
-    for state in ("pending", "leased", "sent"):
-        for path in sorted((outbox_root / state).glob("*.json")):
-            row = read_json(path, required=False)
-            payload = dict(row.get("payload") or {})
-            header = dict(payload.get("receipt") or {})
-            if row.get("kind") != OUTBOX_KIND or header.get("receipt_ref") != receipt_ref:
+    current = now or datetime.now(timezone.utc)
+    cutoff = current - timedelta(days=MAILBOX_RECONCILIATION_RETENTION_DAYS)
+    root = store_root(field, project_id)
+    totals = {"partitions_removed": 0, "receipts_removed": 0, "receipts_kept_refused": 0}
+    if not root.is_dir():
+        return totals
+    for agent_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
+        started = time.monotonic()
+        visited: list[str] = []
+        records = 0
+        for hour_dir, hour_start in _hour_partitions(agent_dir):
+            if hour_start + timedelta(hours=1) > cutoff:
                 continue
-            index = int(payload.get("batch_index") or 0)
-            prior = rows.get(index)
-            if prior and str(prior.get("content_hash") or "") != str(
-                row.get("content_hash") or ""
-            ):
-                raise DomainError(
-                    "field_mail_reconciliation_idempotency_conflict",
-                    "Duplicate reconciliation batches carry different content.",
-                    status=409,
-                    details={"receipt_ref": receipt_ref, "batch_index": index},
+            names = [name for name in os.listdir(hour_dir) if name.endswith(".json")]
+            visited.append(hour_start.strftime("%Y-%m-%dT%H"))
+            records += len(names)
+            if all(_publication_of(name) in PRUNABLE_PUBLICATION_STATES for name in names):
+                shutil.rmtree(hour_dir)
+                totals["partitions_removed"] += 1
+                totals["receipts_removed"] += len(names)
+            else:
+                totals["receipts_kept_refused"] += sum(
+                    1 for name in names if _publication_of(name) not in PRUNABLE_PUBLICATION_STATES
                 )
-            rows[index] = row
-    return rows
+        _remove_empty_date_folders(agent_dir)
+        if visited:
+            logger.info(
+                "relay store read worker=%s store=%s op=retention range=%s..%s partitions=%d records=%d ms=%d",
+                agent_dir.name, STORE, visited[0], visited[-1], len(visited), records,
+                int((time.monotonic() - started) * 1000),
+            )
+    return totals
 
 
-def _outbox_is_sent(outbox_root: Path, outbox_id: str) -> bool:
-    path = outbox_root / "sent" / f"{outbox_id}.json"
-    if not path.is_file():
-        return False
-    return str(read_json(path).get("state") or "") in {"sent", "ignored"}
+def read_marker(field: Any, project_id: str, worker_name: str) -> dict[str, Any]:
+    return dict(read_json(agent_root(field, project_id, worker_name) / MARKER, required=False) or {})
+
+
+def store_root(field: Any, project_id: str) -> Path:
+    return field._project_dir(project_id) / STORE
+
+
+def agent_root(field: Any, project_id: str, worker_name: str) -> Path:
+    return store_root(field, project_id) / str(worker_name or "").strip().lower()
+
+
+def pending_path(field: Any, project_id: str, worker_name: str, receipt_id: str) -> Path:
+    return agent_root(field, project_id, worker_name) / PENDING / f"{receipt_id}.json"
+
+
+def partition_path(
+    field: Any,
+    project_id: str,
+    worker_name: str,
+    receipt: Mapping[str, Any],
+    *,
+    publication: str,
+) -> Path:
+    started = _parse(receipt.get("started_at"))
+    completed = _parse(receipt.get("completed_at")) or started
+    hour = started.strftime("%Y/%m/%d/%H").split("/")
+    name = f"{_stamp(started)}_{_stamp(completed)}_{publication}_{receipt['receipt_id']}.json"
+    return agent_root(field, project_id, worker_name).joinpath(*hour, name)
+
+
+def _write_marker(
+    field: Any,
+    project_id: str,
+    worker_name: str,
+    receipt: Mapping[str, Any],
+    *,
+    stored: bool,
+) -> None:
+    path = agent_root(field, project_id, worker_name) / MARKER
+    examined = dict(receipt.get("examined") or {})
+    with exclusive_lock(field._project_lock(project_id)):
+        marker = dict(read_json(path, required=False) or {})
+        marker.update(
+            schema=LOCAL_MARKER_SCHEMA,
+            worker_name=worker_name,
+            project_ref=str(receipt.get("project_ref") or ""),
+            last_run_started_at=str(receipt.get("started_at") or ""),
+            last_run_completed_at=str(receipt.get("completed_at") or ""),
+            last_run_examined={
+                "recipient_directory_entries": int(examined.get("recipient_directory_entries") or 0),
+                "undeliverable_records": int(examined.get("undeliverable_records") or 0),
+                "mailboxes": len(examined.get("mailboxes") or []),
+            },
+            runs_total=int(marker.get("runs_total") or 0) + 1,
+            runs_since_receipt=0 if stored else int(marker.get("runs_since_receipt") or 0) + 1,
+            updated_at=utc_now(),
+        )
+        if stored:
+            marker["last_receipt_ref"] = str(receipt.get("receipt_ref") or "")
+            marker["last_receipt_at"] = str(receipt.get("completed_at") or "")
+        atomic_write_json(path, marker)
+
+
+def _hour_partitions(agent_dir: Path):
+    for year in _numbered(agent_dir, 4):
+        for month in _numbered(year, 2):
+            for day in _numbered(month, 2):
+                for hour in _numbered(day, 2):
+                    try:
+                        start = datetime(
+                            int(year.name), int(month.name), int(day.name), int(hour.name),
+                            tzinfo=timezone.utc,
+                        )
+                    except ValueError:
+                        continue
+                    yield hour, start
+
+
+def _numbered(parent: Path, width: int) -> list[Path]:
+    return sorted(
+        child for child in parent.iterdir()
+        if child.is_dir() and len(child.name) == width and child.name.isdigit()
+    )
+
+
+def _remove_empty_date_folders(agent_dir: Path) -> None:
+    for year in _numbered(agent_dir, 4):
+        for month in _numbered(year, 2):
+            for day in _numbered(month, 2):
+                _rmdir_if_empty(day)
+            _rmdir_if_empty(month)
+        _rmdir_if_empty(year)
+
+
+def _rmdir_if_empty(path: Path) -> None:
+    try:
+        path.rmdir()
+    except OSError:
+        pass
+
+
+def _publication_of(name: str) -> str:
+    parts = name.split("_")
+    return parts[2] if len(parts) > 3 else ""
+
+
+def _parse(value: Any) -> datetime:
+    text = str(value or "").replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return datetime.now(timezone.utc)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _stamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
 def _require_reporter(receipt: Mapping[str, Any], worker_name: str) -> str:
@@ -346,27 +350,25 @@ def _require_reporter(receipt: Mapping[str, Any], worker_name: str) -> str:
             "Only the worker that recorded a reconciliation receipt may publish it.",
             status=403,
             details={
-                "reporter_worker_name": str(
-                    receipt.get("reporter_worker_name") or ""
-                ),
+                "reporter_worker_name": str(receipt.get("reporter_worker_name") or ""),
                 "worker_name": clean_worker,
             },
         )
     return clean_worker
 
 
-def _receipt_root(field: Any, project_id: str) -> Path:
-    return field._project_dir(project_id) / "mail" / "reconciliation-receipts"
-
-
-def _receipt_path(field: Any, project_id: str, receipt_id: str) -> Path:
-    return _receipt_root(field, project_id) / f"{receipt_id}.json"
-
-
 __all__ = [
+    "LOCAL_MARKER_SCHEMA",
     "LOCAL_RECEIPT_RECORD_SCHEMA",
-    "OUTBOX_KIND",
-    "prune_published_receipts",
+    "STORE",
+    "agent_root",
+    "apply_receipt_retention",
+    "partition_path",
+    "pending_path",
+    "read_marker",
+    "receipt_carries_information",
     "record_receipt",
     "recover_unpublished_receipts",
+    "settle_if_terminal",
+    "store_root",
 ]

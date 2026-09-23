@@ -26,6 +26,7 @@ from .io import (
     read_json,
     utc_now,
 )
+from .outbox_layout import OUTBOX_TERMINAL_FOLDERS
 from .plan_storage import BucketedPlanStore, PLAN_STORAGE_BUCKETED
 
 
@@ -549,7 +550,11 @@ def _assignment_outcomes(
     root = field.control / "outbox"
     candidates: list[dict[str, Any]] = []
     with exclusive_lock(root / ".outbox.lock"):
-        for path in sorted((root / "sent").glob("*.json")):
+        for path in sorted(
+            path
+            for folder in OUTBOX_TERMINAL_FOLDERS
+            for path in (root / folder).glob("*.json")
+        ):
             row = read_json(path)
             if (
                 row.get("kind") != "assignment.report"
@@ -1026,7 +1031,11 @@ def _redact_plan_outbox_unlocked(
                 status=409,
                 details={"outbox_ids": busy},
             )
-        for path in sorted((root / "sent").glob("*.json")):
+        for path in sorted(
+            path
+            for folder in OUTBOX_TERMINAL_FOLDERS
+            for path in (root / folder).glob("*.json")
+        ):
             row = read_json(path)
             if (
                 row.get("kind") != "plan.nodes.publish"
