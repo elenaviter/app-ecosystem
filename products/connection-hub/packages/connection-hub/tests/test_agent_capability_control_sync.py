@@ -655,6 +655,189 @@ async def test_agent_card_selection_update_is_revision_checked_and_ceiling_bound
 
 
 @pytest.mark.asyncio
+async def test_agent_card_reset_uses_live_control_defaults_and_keeps_user_state() -> None:
+    service, persistence = _service(named_services=True, review_mcp=True)
+    defaults = _policy_with_capabilities(
+        mcp_servers=["review"],
+        mcp_tools=["review/review_accept", "review/review_cancel"],
+        named_services=["slack"],
+        named_service_operations=[
+            "slack/object.action.post_message",
+            "slack/object.list",
+        ],
+        resource_families=["user_external_mcp"],
+    )
+    named_operations = {
+        NAMED_RESOURCE: {
+            "slack": ["object.action.post_message", "object.list"],
+        }
+    }
+    descriptor_payload = {
+        "revision": "descriptor-r1",
+        "standard_authority_overridden": True,
+        "standard_authority": {
+            "resources": [{
+                "server_id": "review",
+                "resource": REVIEW_RESOURCE,
+                "grants": ["review:use"],
+                "operations": ["review_accept", "review_cancel"],
+            }],
+            "named_services": [
+                {"namespace": "slack", "operations": ["object"]},
+            ],
+            "resource_families": [{"id": "user_external_mcp"}],
+        },
+        "capability_defaults": defaults,
+    }
+    control_resource_grants = {
+        NAMED_RESOURCE: ["named_services:use", "slack:read", "slack:post"],
+        REVIEW_RESOURCE: ["review:use"],
+    }
+    control_resource_operations = {
+        NAMED_RESOURCE: ["named_services_call"],
+        REVIEW_RESOURCE: ["review_accept", "review_cancel"],
+    }
+    created = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload=descriptor_payload,
+        capability_authority=defaults,
+        capability_catalog=defaults,
+        selected_capabilities=_policy_with_capabilities(
+            named_services=[],
+            named_service_operations=[],
+            resource_families=["user_external_mcp"],
+        ),
+        resource_grants=control_resource_grants,
+        resource_operations=control_resource_operations,
+        named_service_operations=named_operations,
+        selected_resource_grants={},
+        selected_resource_operations={},
+        selected_named_service_operations={},
+    )
+    assert created["ok"] is True, created
+
+    access_id = created["card"]["access_id"]
+    resident, handles = persistence.records[access_id]
+    account_scope = {"slack": {"workspace-1": ("slack:read",)}}
+    persistence.records[access_id] = (
+        dataclasses.replace(
+            resident,
+            operations=("remote_call",),
+            resource_grants={REMOTE_MCP_RESOURCE: ("external_mcp:use",)},
+            resource_operations={REMOTE_MCP_RESOURCE: ("remote_call",)},
+            account_scope=account_scope,
+        ),
+        handles,
+    )
+
+    refused = await service.update_agent_capability_selection(
+        {"user_id": "user-2"},
+        access_id=access_id,
+        selected_capabilities=None,
+        reset_to_control_defaults=True,
+        expected_card_revision=resident.card_revision,
+    )
+    assert refused == {
+        "ok": False,
+        "error": "delegated_access_not_found",
+        "status": 404,
+    }
+
+    reset = await service.update_agent_capability_selection(
+        {"user_id": OWNER},
+        access_id=access_id,
+        selected_capabilities=None,
+        reset_to_control_defaults=True,
+        expected_card_revision=resident.card_revision,
+    )
+
+    assert reset["ok"] is True, reset
+    assert reset["reset_to_control_defaults"] is True
+    assert reset["selection"] == defaults
+    updated = persistence.records[access_id][0]
+    assert updated.resource_grants == {
+        NAMED_RESOURCE: ("named_services:use", "slack:post", "slack:read"),
+        REMOTE_MCP_RESOURCE: ("external_mcp:use",),
+        REVIEW_RESOURCE: ("review:use",),
+    }
+    assert updated.resource_operations == {
+        NAMED_RESOURCE: ("named_services_call",),
+        REMOTE_MCP_RESOURCE: ("remote_call",),
+        REVIEW_RESOURCE: ("review_accept", "review_cancel"),
+    }
+    assert updated.named_service_operations.to_stored() == named_operations
+    assert updated.account_scope == account_scope
+
+
+@pytest.mark.asyncio
+async def test_descriptor_managed_agent_card_cannot_be_revoked() -> None:
+    service, persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+
+    refused = await service.revoke_access(
+        {"user_id": OWNER},
+        access_id=created["card"]["access_id"],
+    )
+
+    assert refused == {
+        "ok": False,
+        "error": "agent_capability_card_managed",
+        "message": (
+            "This hosted Agent Card is managed by its linked Control Card. "
+            "Use Reset to Control defaults to restore its starting selection."
+        ),
+        "status": 409,
+    }
+    assert persistence.records[created["card"]["access_id"]][0].state == CARD_STATE_ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_worker_agent_card_linked_to_control_cannot_reset_to_its_ceiling() -> None:
+    service, persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old", "tool.new"),
+        catalog=("tool.old", "tool.new"),
+        selection=("tool.old",),
+    )
+    access_id = created["card"]["access_id"]
+    resident, handles = persistence.records[access_id]
+    worker = dataclasses.replace(
+        resident,
+        control_card=dataclasses.replace(
+            resident.control_card,
+            issuer_kind="project_board_worker_policy",
+        ),
+    )
+    persistence.records[access_id] = (worker, handles)
+
+    refused = await service.update_agent_capability_selection(
+        {"user_id": OWNER},
+        access_id=access_id,
+        selected_capabilities=None,
+        reset_to_control_defaults=True,
+        expected_card_revision=worker.card_revision,
+    )
+
+    assert refused == {
+        "ok": False,
+        "error": "agent_capability_card_required",
+        "status": 409,
+    }
+    assert persistence.records[access_id][0] == worker
+
+
+@pytest.mark.asyncio
 async def test_expired_capability_lease_renews_the_same_card_and_selection(
     monkeypatch,
 ) -> None:

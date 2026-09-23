@@ -116,6 +116,17 @@ _LOGGER = logging.getLogger(__name__)
 # on the same Card id and preserves the user's selection in a new revision.
 AGENT_CAPABILITY_CARD_LEASE_SECONDS = 7 * 24 * 60 * 60
 
+_STANDARD_CAPABILITY_PARENT_CATEGORIES = (
+    "mcp_servers",
+    "named_services",
+    "resources",
+)
+_STANDARD_CAPABILITY_CHILD_CATEGORIES = (
+    "mcp_tools",
+    "named_service_operations",
+    "resource_operations",
+)
+
 
 async def _ensure_resident_card_credential(
     service: Any,
@@ -401,6 +412,114 @@ def _bound_standard_authority_to_control(
         account_scope={},
         identity_scope=bounded.identity_scope or "grantor",
     )
+
+
+def _defaults_cover_control_standard_authority(
+    *,
+    authority: AgentCapabilityPolicy,
+    defaults: AgentCapabilityPolicy,
+) -> bool:
+    """Whether Control defaults select its complete standard Card authority."""
+
+    if authority.resource != defaults.resource:
+        raise AgentCapabilityPolicyError("agent_capability_resource_mismatch")
+    for category in _STANDARD_CAPABILITY_PARENT_CATEGORIES:
+        if set(defaults.capabilities.get(category, ())) != set(
+            authority.capabilities.get(category, ())
+        ):
+            return False
+    for category in _STANDARD_CAPABILITY_CHILD_CATEGORIES:
+        if category in defaults.capabilities and set(
+            defaults.capabilities.get(category, ())
+        ) != set(authority.capabilities.get(category, ())):
+            return False
+    return True
+
+
+def _reset_standard_authority(
+    *,
+    resident: AutomationAccessRecord,
+    control: AutomationAccessRecord,
+    materialize_control: bool,
+) -> dict[str, Any]:
+    """Replace Control-managed resources while preserving user-owned state."""
+
+    managed_resource_keys = (
+        set(control.resource_grants)
+        | set(control.resource_operations)
+        | set(control.named_service_operations.operations)
+    )
+    resource_grants = {
+        resource: tuple(grants)
+        for resource, grants in resident.resource_grants.items()
+        if resource not in managed_resource_keys
+    }
+    resource_operations = {
+        resource: tuple(operations)
+        for resource, operations in resident.resource_operations.items()
+        if resource not in managed_resource_keys
+    }
+    if materialize_control:
+        resource_grants.update(
+            {
+                resource: tuple(grants)
+                for resource, grants in control.resource_grants.items()
+            }
+        )
+        resource_operations.update(
+            {
+                resource: tuple(operations)
+                for resource, operations in control.resource_operations.items()
+            }
+        )
+
+    resident_named = resident.named_service_operations.to_stored()
+    preserved_named = (
+        {
+            resource: copy.deepcopy(namespaces)
+            for resource, namespaces in resident_named.items()
+            if resource not in managed_resource_keys
+        }
+        if isinstance(resident_named, Mapping)
+        else {}
+    )
+    if materialize_control:
+        control_named = control.named_service_operations.to_stored()
+        if isinstance(control_named, Mapping):
+            preserved_named.update(copy.deepcopy(dict(control_named)))
+            named_service_operations = NamedServiceSelection.exact(preserved_named)
+        elif control_named == "*":
+            named_service_operations = NamedServiceSelection.all()
+        else:
+            named_service_operations = NamedServiceSelection.exact(preserved_named)
+    else:
+        named_service_operations = NamedServiceSelection.exact(preserved_named)
+
+    acceptance = {
+        resource: evidence
+        for resource, evidence in dict(resident.resource_acceptance or {}).items()
+        if resource not in managed_resource_keys
+    }
+    if materialize_control:
+        acceptance.update(
+            {
+                resource: evidence
+                for resource, evidence in dict(control.resource_acceptance or {}).items()
+                if resource in resource_grants
+            }
+        )
+    return {
+        "operations": operation_union(resource_operations),
+        "resource_grants": resource_grants,
+        "resource_operations": resource_operations,
+        "named_service_operations": named_service_operations,
+        "named_services": (
+            copy.deepcopy(dict(control.named_services or {}))
+            if materialize_control
+            else {}
+        ),
+        "resource_acceptance": acceptance,
+    }
 
 
 def _descriptor_standard_maps(
@@ -1524,15 +1643,17 @@ async def update_agent_capability_selection(
     user: Mapping[str, Any],
     *,
     access_id: str,
-    selected_capabilities: Mapping[str, Any],
+    selected_capabilities: Mapping[str, Any] | None,
     expected_card_revision: int | None,
+    reset_to_control_defaults: bool = False,
 ) -> dict[str, Any]:
     """Replace one resident Agent Card's visible descriptor selection.
 
-    The current linked Control Card supplies the editable ceiling. Values that
-    disappeared from that ceiling remain stored but hidden, while a submitted
-    value outside it can never be added. The exact Card revision is mandatory
-    so a browser cannot overwrite a concurrent descriptor sync or user edit.
+    The current linked Control Card supplies the editable ceiling. An explicit
+    reset uses that Control Card's current defaults. A normal edit retains
+    values hidden by the ceiling, while a reset replaces the complete positive
+    selection. The exact Card revision is mandatory so a browser cannot
+    overwrite a concurrent descriptor sync or user edit.
     """
 
     grantor_subject = _subject_from_user(user)
@@ -1557,6 +1678,12 @@ async def update_agent_capability_selection(
             "error": "agent_capability_card_revision_required",
             "status": 400,
         }
+    if reset_to_control_defaults and selected_capabilities is not None:
+        return {
+            "ok": False,
+            "error": "agent_capability_reset_input_conflict",
+            "status": 400,
+        }
 
     try:
         loaded_resident = await service._load_record_any_state(
@@ -1576,6 +1703,9 @@ async def update_agent_capability_selection(
     resident, resident_state = loaded_resident
     if resident_state != CARD_STATE_ACTIVE:
         return {"ok": False, "error": "agent_capability_card_not_active", "status": 409}
+    # Only descriptor-synchronized app-agent Cards inherit Control defaults.
+    # A worker Agent Card can have a linked Control ceiling, but treating that
+    # ceiling as defaults would widen the authority its owner selected.
     if (
         resident.source != ACCESS_SOURCE_AGENT
         or resident.card_kind != CARD_KIND_AGENT
@@ -1583,6 +1713,7 @@ async def update_agent_capability_selection(
         or resident.access_id
         != stable_resident_access_id(grantor_subject, resident.client_id)
         or resident.control_card is None
+        or resident.control_card.issuer_kind != AGENT_DESCRIPTOR_ISSUER_KIND
         or AGENT_CAPABILITY_SELECTION_PROPERTY
         not in dict(resident.properties or {})
     ):
@@ -1640,24 +1771,53 @@ async def update_agent_capability_selection(
                 AGENT_CAPABILITY_AUTHORITY_PROPERTY
             )
         )
-        requested = AgentCapabilityPolicy.from_property(selected_capabilities)
-        raw_current = dict(resident.properties or {}).get(
-            AGENT_CAPABILITY_SELECTION_PROPERTY
-        )
-        current = (
-            AgentCapabilityPolicy.from_property(raw_current)
-            if raw_current is not None
-            else AgentCapabilityPolicy.empty(authority.resource)
-        )
-        selected = replace_visible_selection(
-            current=current,
-            authority=authority,
-            requested=requested,
-        )
+        if reset_to_control_defaults:
+            raw_defaults = dict(control.properties or {}).get(
+                AGENT_CAPABILITY_DEFAULTS_PROPERTY
+            )
+            defaults = (
+                AgentCapabilityPolicy.from_property(raw_defaults)
+                if raw_defaults is not None
+                else AgentCapabilityPolicy.empty(authority.resource)
+            )
+            selected = defaults.intersection(authority)
+        else:
+            requested = AgentCapabilityPolicy.from_property(selected_capabilities)
+            raw_current = dict(resident.properties or {}).get(
+                AGENT_CAPABILITY_SELECTION_PROPERTY
+            )
+            current = (
+                AgentCapabilityPolicy.from_property(raw_current)
+                if raw_current is not None
+                else AgentCapabilityPolicy.empty(authority.resource)
+            )
+            selected = replace_visible_selection(
+                current=current,
+                authority=authority,
+                requested=requested,
+            )
     except AgentCapabilityPolicyError as exc:
         return {"ok": False, "error": exc.reason, "status": 400}
 
-    acceptance = dict(resident.resource_acceptance or {})
+    standard_replacement: dict[str, Any] = {}
+    standard_materialized = False
+    if reset_to_control_defaults:
+        standard_materialized = _defaults_cover_control_standard_authority(
+            authority=authority,
+            defaults=selected,
+        )
+        standard_replacement = _reset_standard_authority(
+            resident=resident,
+            control=control,
+            materialize_control=standard_materialized,
+        )
+
+    acceptance = dict(
+        standard_replacement.get(
+            "resource_acceptance",
+            resident.resource_acceptance or {},
+        )
+    )
     descriptor_evidence = dict(control.resource_acceptance or {}).get(
         authority.resource
     )
@@ -1672,6 +1832,11 @@ async def update_agent_capability_selection(
             resident.properties,
             selection=selected,
         ),
+        **{
+            key: value
+            for key, value in standard_replacement.items()
+            if key != "resource_acceptance"
+        },
     )
     try:
         updated, credential_issued = await _ensure_resident_card_credential(
@@ -1692,9 +1857,12 @@ async def update_agent_capability_selection(
             "retryable": True,
             "status": 503,
         }
-    if not credential_issued and updated.properties == resident.properties and (
-        updated.catalog_version == resident.catalog_version
-        and updated.resource_acceptance == resident.resource_acceptance
+    comparable = dataclasses.replace(
+        card_authority_from_record(updated),
+        card_revision=resident.card_revision,
+    )
+    if not credential_issued and (
+        comparable.to_dict() == card_authority_from_record(resident).to_dict()
     ):
         updated = resident
         changed = False
@@ -1748,6 +1916,8 @@ async def update_agent_capability_selection(
         "selection": selected.to_property(),
         "projection": projection.to_property(),
         "card_changed": changed,
+        "reset_to_control_defaults": reset_to_control_defaults,
+        "standard_authority_materialized": standard_materialized,
     }
 
 

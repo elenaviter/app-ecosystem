@@ -160,6 +160,10 @@ test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
   assert.match(panel, /title="KDCube administrator preset"[\s\S]*editable[\s\S]*singleChoiceCategories/)
   assert.match(panel, /mergeBundleProps\(descriptorTarget\.application/)
   assert.match(panel, /agent_capability_control_overrides/)
+  assert.match(panel, /Reset to Control defaults/)
+  assert.match(panel, /resetToControlDefaults: true/)
+  assert.match(panel, /Connected accounts and custom MCP servers stay on this card/)
+  assert.match(panel, /if \(isAgentCapabilityCard\(item\)\) return null/)
   assert.doesNotMatch(panel, /saveAgentCapabilityBase/)
   assert.doesNotMatch(panel, /specializedCapabilityCard/)
 

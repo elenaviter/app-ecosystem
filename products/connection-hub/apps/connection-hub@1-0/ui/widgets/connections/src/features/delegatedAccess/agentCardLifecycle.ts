@@ -8,14 +8,18 @@ export interface AgentCapabilityCardLifecycle {
   hint: string;
 }
 
-/** Descriptor-synchronized resident Agent Cards carry a selected capability
- * base but no bearer. Other agent Cards retain their credential lifecycle. */
+const AGENT_DESCRIPTOR_ISSUER_KIND = 'kdcube_agent_descriptor';
+
+/** Only descriptor-synchronized app-agent Cards inherit Control defaults.
+ * Worker Agent Cards may have a linked Control ceiling, but resetting them to
+ * that ceiling would widen the authority their owner actually granted. */
 export function isAgentCapabilityCard(record: DelegatedAccessRecord): boolean {
   return record.source === 'agent'
+    && record.control_card?.binding?.issuer_kind === AGENT_DESCRIPTOR_ISSUER_KIND
     && cardAgentCapabilitySelection(record.properties) !== null;
 }
 
-/** Owner-facing lifecycle language for the credentialless capability Card. */
+/** Owner-facing lifecycle language for the auto-renewing capability Card. */
 export function agentCapabilityCardLifecycle(
   record: DelegatedAccessRecord,
   now: number,
@@ -34,6 +38,6 @@ export function agentCapabilityCardLifecycle(
     summary: `Card revision ${revision} · capability lease ${timing}`,
     hint: lapsed
       ? 'This Card currently grants nothing. The next agent message renews it before tools are projected; the selected capability base and stable Card ID are preserved.'
-      : 'This credentialless Agent Card renews automatically when the agent sends a message. If its inactivity lease lapses, it grants nothing until the next message; that sync preserves the selected capability base and stable Card ID before projecting tools.',
+      : 'This Agent Card credential renews automatically when the agent sends a message. If its inactivity lease lapses, it grants nothing until the next message; that sync preserves the selected capability base and stable Card ID before projecting tools.',
   };
 }

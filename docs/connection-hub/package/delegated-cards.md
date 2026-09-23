@@ -286,10 +286,11 @@ or newer revision.
 
 Expiration deletes a credential-backed Card's Redis projection. The durable
 revision remains and `expires_at` prevents cache restoration or use. A
-descriptor-synchronized capability Card has no bearer, but its `expires_at` is
-an inactivity lease and the same expiry gate applies. A Control Card
-(`source=control`) has neither a bearer nor an expiry, so its projection remains
-until an update or revocation replaces it. Revocation commits a new durable `revoked` revision
+descriptor-synchronized capability Card keeps its bearer under trusted runtime
+custody, and its `expires_at` is also an inactivity lease with the same expiry
+gate. A Control Card (`source=control`) has neither a bearer nor an expiry, so
+its projection remains until an update or revocation replaces it. Revocation
+commits a new durable `revoked` revision
 before live credential cleanup; it does not delete history. Open is Redis-first:
 it reads the live-card projection by `access_id` and computes drift against
 Redis-cached `active.json`. List decides membership from durable storage on
@@ -824,15 +825,16 @@ A descriptor-controlled resident agent uses the same stable profile Card ID
 with a different credential contract. Descriptor synchronization creates a
 Card whose `kdcube.agent_capability_selection` property stores the user's
 positive default selection and whose linked Control Card stores the
-descriptor-owned ceiling and administrator defaults. This Card carries no
-bearer or refresh token. Its seven-day `expires_at` is an inactivity lease
-chosen for the capability projection, not an access-token lifetime. Every
+descriptor-owned ceiling and administrator defaults. The hosted runtime keeps
+the Agent Card's reusable bearer under trusted runtime custody. Its seven-day
+`expires_at` also acts as an inactivity lease for capability projection. Every
 agent message synchronizes before projecting tools. While the Card remains
 current, an unchanged sync writes nothing. After the lease lapses, the Card
 grants nothing; the next message writes a renewed revision under the same
-`access_id`, preserves the selected capability base, and only then projects
-tools. The owner therefore keeps one legible Card and selection across
-revisions without abandoned authority remaining live forever.
+`access_id`, preserves the selected capability base, renews the credential,
+and only then projects tools. The owner therefore keeps one legible Card and
+selection across revisions without abandoned authority remaining live
+forever.
 
 Connection Hub persists the Control and Agent Cards, their revisions, links,
 leases, and positive selections. KDCube owns the synchronization-field
@@ -872,6 +874,20 @@ accounts and connector credentials remain owned by the user's Agent Card. Only
 a platform administrator may read or mutate the descriptor Control Card;
 direct access by an ordinary user is denied without returning its authority
 payload.
+
+The descriptor-synchronized app-agent Card editor offers **Reset to Control
+defaults** to its holder. The revision-checked action replaces the complete
+positive Agent selection with the linked descriptor Control Card's current
+defaults intersected with its current ceiling. It also replaces the standard
+named-service and managed-MCP authority represented by that selection.
+User-connected MCP resources and account scope remain unchanged. New
+conversations start from the reset selection; existing conversations retain
+their saved positive choices and remain intersected with the live Control Card
+at every governed operation. Problem Board worker Agent Cards do not offer the
+action: their linked Control Card is a ceiling, while their owner grant is the
+starting selection. A descriptor-managed hosted Agent Card has a stable
+identity, so Connection Hub refuses direct revocation; the reset action
+restores its starting selection without destroying that identity.
 
 For an administrator save, Connection Hub submits the revision-checked live
 Control Card update only after the KDCube host write succeeds, so the Card

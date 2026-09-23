@@ -4410,7 +4410,21 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         )
         try:
             access_service = _automation_access_service(self, request)
-            if "selected_capabilities" in payload:
+            if "reset_to_control_defaults" in payload:
+                if payload.get("reset_to_control_defaults") is not True:
+                    raise ValueError("reset_to_control_defaults must be true")
+                if "selected_capabilities" in payload:
+                    raise ValueError(
+                        "reset_to_control_defaults cannot include selected_capabilities"
+                    )
+                _result = await access_service.update_agent_capability_selection(
+                    user,
+                    access_id=_access_id_for_log,
+                    selected_capabilities=None,
+                    expected_card_revision=_expected_card_revision(payload),
+                    reset_to_control_defaults=True,
+                )
+            elif "selected_capabilities" in payload:
                 selected_capabilities = payload.get("selected_capabilities")
                 if not isinstance(selected_capabilities, Mapping):
                     raise ValueError("selected_capabilities must be an object")

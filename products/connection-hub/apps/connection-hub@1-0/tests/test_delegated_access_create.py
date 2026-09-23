@@ -396,6 +396,27 @@ async def test_update_dispatches_agent_capability_selection_without_generic_gran
 
 
 @pytest.mark.asyncio
+async def test_update_dispatches_agent_reset_to_control_defaults(entrypoint):
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance,
+        data={
+            "access_id": "agent-card-1",
+            "reset_to_control_defaults": True,
+            "expected_card_revision": 4,
+        },
+    )
+
+    assert entrypoint.service.calls[-1] == {
+        "method": "update_agent_capability_selection",
+        "user": {"user_id": "google:1"},
+        "access_id": "agent-card-1",
+        "selected_capabilities": None,
+        "reset_to_control_defaults": True,
+        "expected_card_revision": 4,
+    }
+
+
+@pytest.mark.asyncio
 async def test_update_forwards_per_operation_descriptor_acceptance(entrypoint):
     accepted = {"urn:resource:one": ["search"]}
     await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(

@@ -5054,8 +5054,9 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         access_id: str,
-        selected_capabilities: Mapping[str, Any],
+        selected_capabilities: Mapping[str, Any] | None,
         expected_card_revision: int | None,
+        reset_to_control_defaults: bool = False,
     ) -> dict[str, Any]:
         """Replace the visible selection on one resident Agent Card."""
 
@@ -5069,6 +5070,7 @@ class AutomationAccessService:
             access_id=access_id,
             selected_capabilities=selected_capabilities,
             expected_card_revision=expected_card_revision,
+            reset_to_control_defaults=reset_to_control_defaults,
         )
 
     async def control_card_get(
@@ -7835,6 +7837,22 @@ class AutomationAccessService:
         record = loaded[0]
         if record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
+        if (
+            record.source == ACCESS_SOURCE_AGENT
+            and record.card_kind == CARD_KIND_AGENT
+            and record.control_card is not None
+            and record.control_card.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND
+            and AGENT_CAPABILITY_SELECTION_PROPERTY in dict(record.properties or {})
+        ):
+            return {
+                "ok": False,
+                "error": "agent_capability_card_managed",
+                "message": (
+                    "This hosted Agent Card is managed by its linked Control Card. "
+                    "Use Reset to Control defaults to restore its starting selection."
+                ),
+                "status": 409,
+            }
         # The revoked revision commits before any credential cleanup, so a
         # failure below cannot leave the card usable.
         serving_error: CardServingUnavailable | None = None

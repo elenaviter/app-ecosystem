@@ -252,24 +252,35 @@ export const updateDelegatedAccess = createAsyncThunk<
 
 export interface UpdateAgentCapabilitySelectionArgs {
   accessId: string;
-  selectedCapabilities: Record<string, unknown>;
+  selectedCapabilities?: Record<string, unknown>;
+  resetToControlDefaults?: boolean;
   expectedCardRevision: number;
 }
 
-/** Replace the visible descriptor-bounded selection on one resident Agent
- *  Card. The existing delegated-access operation dispatches to the dedicated
- *  server path when `selected_capabilities` is present. */
+/** Replace the visible Control-bounded selection on one resident Agent Card,
+ *  or restore the current Control Card defaults. */
 export const updateAgentCapabilitySelection = createAsyncThunk<
   DelegatedAccessCreateResult,
   UpdateAgentCapabilitySelectionArgs,
   { rejectValue: string }
 >(
   'delegatedAccess/updateAgentCapabilitySelection',
-  async ({ accessId, selectedCapabilities, expectedCardRevision }, { rejectWithValue }) => {
+  async (
+    {
+      accessId,
+      selectedCapabilities,
+      resetToControlDefaults,
+      expectedCardRevision,
+    },
+    { rejectWithValue },
+  ) => {
     try {
       const res = await postOp<DelegatedAccessCreateResult>('delegated_access_update', {
         access_id: accessId,
-        selected_capabilities: selectedCapabilities,
+        ...(selectedCapabilities !== undefined
+          ? { selected_capabilities: selectedCapabilities }
+          : {}),
+        ...(resetToControlDefaults ? { reset_to_control_defaults: true } : {}),
         expected_card_revision: expectedCardRevision,
       });
       if (res?.ok === false && res?.status === 409) return res;
