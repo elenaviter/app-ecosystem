@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.6"
+    assert package["revision"] == "2026.09.23.7"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -227,6 +227,14 @@ def test_skill_carries_rules_not_stories() -> None:
 
 def test_authority_and_next_action_rules() -> None:
     words = _words(_read("SKILL.md"))
+    # W262, worker estimate: the rule's three moments are in the skill and the
+    # command is named, so a worker learns to say until when it expects to finish.
+    assert "Your estimate is visible state" in words
+    assert "says until when you expect to finish and what you are on" in words
+    assert "Set it again with the reason when it slips" in words
+    assert "when the work is done" in words
+    assert "marks it overdue once the time has passed" in words
+    assert "pb worker busy-until" in words
     assert "Connection Hub owns worker credentials" in words
     assert "A worker alias is display text" in words
     assert "Direct conversation, project attendance, and assignment are independent states" in words

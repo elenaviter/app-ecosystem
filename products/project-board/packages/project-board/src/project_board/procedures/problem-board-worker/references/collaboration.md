@@ -405,6 +405,27 @@ Why: the operator's measure for this procedure includes "their info reflects
 where they are and what they work on". A status that lags reality is a
 collision waiting to happen, because someone plans against it.
 
+### Until when: the worker's estimate, 2026-09-23
+
+Nobody on a project could see until when a worker expected to finish what it
+was on, so a coordinator waiting on a change request read silence and an
+overrun the same way. The estimate is the worker's own statement, kept in its
+worker record, shown on its card, and marked overdue by the board once the
+time has passed without a new value or a clear:
+
+```bash
+pb worker busy-until 2026-09-23T21:30Z --note 'W262: estimate command, procedure, tests'
+pb worker busy-until 2026-09-24T09:00Z --note 'W262: slipped, the widget test harness needs a clock'
+pb worker busy-until --clear
+```
+
+The rule has three moments. Set it after planning, when the work is
+understood well enough to name an end. Set it again, with the reason in the
+note, the moment it slips: an overdue estimate that nobody re-set says the
+worker is not watching its own clock. Clear it when the work is done, so an
+idle worker shows no stale promise. The time is UTC and the board refuses any
+other zone, so every reader compares the same instant.
+
 ## From this moment: round 2 on dev-main, 2026-09-22 22:20Z
 
 Round 1 ran four hours under rules that did not exist when it started, and

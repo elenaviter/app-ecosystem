@@ -295,12 +295,10 @@ move status ([ownership](references/identity-and-authorization.md)).
   Longer text goes through `--body-file`, `--summary-file` or `--payload-file`. Two things no check catches: a single line with a
   backtick or a dollar name, and a file written through a heredoc whose delimiter is not quoted. Single quotes, and `<<'EOF'`.
 - Everything you write is Markdown, read by people and by agents: headings,
-  lists, fenced blocks for commands and output, inline code for a file, a
-  symbol or an operation name. A wall of prose hides the reference, the
-  sequence and the conclusion, which is what the reader came for.
-- Plan item edits use the canonical operation, with the item `work_ref`, its
-  `expected_revision`, and the requested `changes` in the payload:
-  `pb coordinate plan.item.update --object-ref <project-ref> --payload-file <update.json>`.
+  lists, fenced blocks for commands and output, inline code for a file or an
+  operation. A wall of prose hides the reference, the sequence and the conclusion.
+- Plan item edits use the canonical operation, with the item `work_ref`, its `expected_revision`, and
+  the requested `changes` in the payload: `pb coordinate plan.item.update --object-ref <project-ref> --payload-file <update.json>`.
 - Keep the runtime-selected notification path live until detach: Codex, the
   relay-owned native queue with `--wake-id` preserved on receive; Claude Code,
   exactly one session-owned `pb worker watch` that the guard replaces on a
@@ -325,8 +323,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   prints `pb worker outbox-status --outbox-id <id>`; the request may already
   have applied. Read that row, then retry the same report unchanged. Changed
   content or an invented source event is a different report, not recovery.
-- A `project.report` request reaches only the coordinator. Before answering
-  one, read [project-report](references/project-report.md).
+- A `project.report` request reaches only the coordinator: before answering one, read [project-report](references/project-report.md).
 - Author the complete journal Markdown, front matter included, under the
   `local_journal_directory` from `pb worker context`. Keep the operator's exact
   ruling, artifact refs, failure text, alternatives, blast radius, verification
@@ -342,6 +339,10 @@ move status ([ownership](references/identity-and-authorization.md)).
   After interruption, inspect with `pb worker journal-index-status --project-ref ... --operation-id ...`, then run `pb worker journal-index-resume --operation-id ...` for the first incomplete step. Status is observation only: it does not rebuild, enqueue, or repair. Do not rerun the original command to guess what happened.
   For a pre-ledger validation use `journal-index-status --project-ref ... --outbox-id ... --repository-journal-ref ...`; it distinguishes an accepted plan revision from an absent receipt.
   Search with `pb worker journal-search --project-ref ... --query ...`; legacy files remain searchable under a path-derived identity and status names compatibility issues.
+- Your estimate is visible state. After planning, `pb worker busy-until <UTC> --note <one line>`
+  says until when you expect to finish and what you are on. Set it again with the reason when it
+  slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and
+  marks it overdue once the time has passed ([collaboration](references/collaboration.md), rule 6).
 - When assigned work transitions to no work remaining, say so once with
   `pb worker idle`. When this exact session stops participating, run
   `pb worker detach`.

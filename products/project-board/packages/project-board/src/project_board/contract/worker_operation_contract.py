@@ -221,6 +221,9 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     "worker.heartbeat": {
         "description": "Refresh worker presence and read its current project attendance.",
     },
+    "worker.estimate": {
+        "description": "Record or clear until when (UTC) this worker expects to finish what it is on, with a one-line note.",
+    },
     "control.pull": {
         "description": "Lease controls addressed to this worker.",
     },
@@ -367,6 +370,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
     "work.worker": (
         "worker.publish",
         "worker.rename",
+        "worker.estimate",
         "worker.heartbeat",
         "worker.evict",
         "worker.restore",
