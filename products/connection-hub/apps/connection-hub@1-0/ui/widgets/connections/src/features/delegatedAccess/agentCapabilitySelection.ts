@@ -100,7 +100,7 @@ export function cardAgentCapabilitySelection(
   return cardAgentCapabilityPolicy(properties, AGENT_CAPABILITY_SELECTION_PROPERTY);
 }
 
-/** Parse the descriptor-owned ceiling carried by its linked Control Card. */
+/** Parse the live administrator authority carried by the linked Control Card. */
 export function cardAgentCapabilityAuthority(
   properties: Record<string, unknown> | undefined,
 ): AgentCapabilitySelection | null {

@@ -140,6 +140,8 @@ test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
   assert.match(panel, /renderAccountScopePicker\(/)
   assert.match(panel, /updateDelegatedAccess\(\{/)
   assert.match(panel, /AGENT_CAPABILITY_SELECTION_PROPERTY/)
+  assert.match(panel, /const capabilityControl = item\.control_card;/)
+  assert.match(panel, /The application and agent descriptor initializes this preset\./)
   assert.doesNotMatch(panel, /saveAgentCapabilityBase/)
   assert.doesNotMatch(panel, /specializedCapabilityCard/)
 })

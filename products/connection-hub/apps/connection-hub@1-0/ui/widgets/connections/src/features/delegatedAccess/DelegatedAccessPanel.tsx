@@ -2999,7 +2999,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }),
       editConversationTargets,
     );
-    const capabilityControl = item.control_card || item.project_control;
+    const capabilityControl = item.control_card;
     const capabilityAuthority = isAgentCapabilityCard(item)
       ? cardAgentCapabilityAuthority(
           capabilityControl?.control_authority?.properties
@@ -4908,7 +4908,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           {renderCardComposition(record, { editing: true })}
           {residentCapabilityCard && !residentCapabilityAuthority ? (
             <div className="error" role="alert">
-              The linked descriptor Control Card is unavailable. Reload the Card before editing its capability base.
+              The linked administrator Control Card is unavailable. Reload the Card before editing its capability base.
             </div>
           ) : null}
           {accessCardFocus?.accessId === record.access_id
@@ -5073,7 +5073,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 categories={KDCUBE_AGENT_CARD_CATEGORIES}
               />
               <div className="notice" role="status">
-                This KDCube-specific preset is synchronized from the application and agent descriptor.
+                The application and agent descriptor initializes this preset. Platform administrators may edit the live Control Card.
               </div>
             </>
           ) : null}
