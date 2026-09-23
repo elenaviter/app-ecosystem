@@ -56,6 +56,7 @@ from .outbox_outcomes import (
     submit_assignment_report,
 )
 from .quarantine import list_quarantine, read_quarantine, settle_quarantine
+from .card_refusal import with_actionable_refusal
 from .render import (
     FORMATS,
     FORMAT_BRIEF,
@@ -4436,6 +4437,22 @@ def _render_command(args: argparse.Namespace) -> int:
     return code
 
 
+def _channel_profile(args: argparse.Namespace) -> str:
+    """This session's worker channel profile, or empty when no channel is known.
+
+    Read only to name the fix in a refusal, so any failure here is nothing: the
+    refusal still prints, with a placeholder where the profile would be.
+    """
+
+    try:
+        identity = _identity(args)
+        config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
+        channel = config.worker(identity)
+    except Exception:  # noqa: BLE001 - a missing channel never hides the refusal
+        return ""
+    return str(getattr(channel, "profile", "") or "")
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     try:
@@ -4483,6 +4500,10 @@ def main(argv: list[str] | None = None) -> int:
             "code": "problem_board_command_failed",
             "message": str(exc),
         }
+        # A Card refusal names the operation, its permission group and the
+        # replace-card command with this session's profile (W262): the reader
+        # of this output is the one who has to act on it.
+        payload = with_actionable_refusal(payload, profile=_channel_profile(args))
         envelope = {"ok": False, "error": payload}
         if output_format == FORMAT_BRIEF:
             # Brief mode puts the error on stdout: a reader of stdout must see it.

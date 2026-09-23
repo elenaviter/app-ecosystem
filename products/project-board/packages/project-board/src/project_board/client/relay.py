@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
             self.message = str(message or "The host relay cycle can be retried.")
 
 
+from .card_refusal import actionable_card_refusal
 from ..contract.errors import DomainError
 from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
@@ -5005,6 +5006,14 @@ class ProblemBoardRelaySupervisor:
                         if details.get(key)
                     },
                 }
+                # A Card whose operation list predates the operation is fixed
+                # by one command, and the row names it with this channel's
+                # profile (W262, operator 2026-09-23: re-approval, no fallback).
+                actionable = actionable_card_refusal(
+                    self._failure_code(result), details, profile=channel.profile
+                )
+                if actionable:
+                    error_row["needed"] = {**error_row["needed"], **actionable}
                 if request:
                     error_row["request"] = request
                 if delivery is not None:
