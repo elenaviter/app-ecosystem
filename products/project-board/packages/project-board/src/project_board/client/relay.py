@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 from .card_refusal import actionable_card_refusal
 from .limit_state import session_with_limit_state, wake_deferred_until
+from .worktree_files import observations_signature, observe_assignments
 from ..contract.errors import DomainError
 from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
@@ -589,6 +590,9 @@ class ProblemBoardHostRelayAdapter:
         # and only then is the worker published again. This keeps one governed
         # call per idle cycle instead of two.
         self._published_interval: int | None = None
+        # W278 part B: per project, the signature of the files in flight last
+        # published, so an unchanged set rides no heartbeat.
+        self._assignment_files_signatures: dict[str, str] = {}
         # Child adapters are rebuilt for attended projects every cycle. Share
         # this map with them so each discovery/project scope sends a full
         # session projection once, then omits it until that projection changes.
@@ -636,6 +640,32 @@ class ProblemBoardHostRelayAdapter:
         if self._session_report_signatures.get(project_ref) == signature:
             return None, signature
         return projected, signature
+
+    def _assignment_files_delta(
+        self, *, project_ref: str
+    ) -> tuple[list[dict[str, Any]] | None, str]:
+        """The tracked files in flight per active assignment and repository (W278 part B).
+
+        Read from the worktrees this worker declared on this host (``pb worker
+        workspace``), against the base commit the assignment binds for that
+        repository. Published only when the set changed: a derived signal, not
+        the handoff. No declaration means nothing here, and the board says so.
+        """
+
+        workspaces = self.field.workspaces(self.config.worker_name)
+        observations = (
+            observe_assignments(
+                workspaces,
+                self.field.list_assignments(self.config.project_id),
+                worker_name=self.config.worker_name,
+            )
+            if workspaces
+            else []
+        )
+        signature = observations_signature(observations)
+        if self._assignment_files_signatures.get(project_ref) == signature:
+            return None, signature
+        return observations, signature
 
     def _record_session_report(self, *, project_ref: str, signature: str) -> None:
         self._session_report_signatures[project_ref] = signature
@@ -2512,7 +2542,10 @@ class ProblemBoardHostRelayAdapter:
             project_ref=project_ref,
             sessions=agent_sessions,
         )
-        heartbeat_sent = force_heartbeat or session_delta is not None or (
+        assignment_files_delta, files_signature = self._assignment_files_delta(
+            project_ref=project_ref
+        )
+        heartbeat_sent = force_heartbeat or session_delta is not None or assignment_files_delta is not None or (
             self._project_heartbeat_wait(
                 project_ref=project_ref,
                 sessions=agent_sessions,
@@ -2531,6 +2564,8 @@ class ProblemBoardHostRelayAdapter:
             }
             if session_delta is not None:
                 heartbeat_payload["agent_sessions"] = session_delta
+            if assignment_files_delta is not None:
+                heartbeat_payload["assignment_files"] = assignment_files_delta
             try:
                 heartbeat_response = await self.client.action(
                     object_ref="work:worker:self",
@@ -2568,6 +2603,7 @@ class ProblemBoardHostRelayAdapter:
                 project_ref=project_ref,
                 signature=session_signature,
             )
+            self._assignment_files_signatures[project_ref] = files_signature
             heartbeat_result = _object_result(heartbeat_response)
             self._record_attendance_observation(heartbeat_result)
             journal_workspace = self._reconcile_journal_binding(heartbeat_result)

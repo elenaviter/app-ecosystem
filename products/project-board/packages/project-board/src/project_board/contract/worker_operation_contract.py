@@ -219,7 +219,12 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "description": "Publish this coding-agent session and its logical host identity.",
     },
     "worker.heartbeat": {
-        "description": "Refresh worker presence and read its current project attendance.",
+        "description": (
+            "Refresh worker presence and read its current project attendance. "
+            "May carry agent_sessions and, per active assignment and repository, "
+            "assignment_files: the tracked paths the relay saw changing in the "
+            "worker's declared worktree since the base commit (W278)."
+        ),
     },
     "worker.estimate": {
         "description": "Record or clear until when (UTC) this worker expects to finish what it is on, with a one-line note.",
@@ -271,6 +276,8 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
             "item; a superseded report remains durable without changing "
             "current state, and an accepted terminal report is final for that "
             "ownership version."
+            " An optional scope, one line, names the module, path prefixes or"
+            " runtime surface the work will change, and the assignment keeps it (W278)."
         ),
     },
     "plan.nodes.publish": {
