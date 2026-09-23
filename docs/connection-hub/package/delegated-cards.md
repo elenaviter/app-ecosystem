@@ -840,40 +840,36 @@ The synchronization request keeps the two meanings in separate fields:
   Card;
 - `selected_capabilities` is the current user's Agent Card selection.
 
-The descriptor defaults participate in the descriptor revision. A model or
-instruction default change therefore rematerializes an older Control Card
-even when the allowed inventory did not change. When no resident selection
-exists, the application supplies the administrator defaults as the first
-positive Agent Card selection. Once the Agent Card exists, synchronization
-preserves the user's explicit choices. It may fill a missing single-choice
-model or instruction default, but it does not replace a selected model and it
-does not turn an ordinary deselected capability back on. A capability added
-to the descriptor for the first time appears inside the Control Card ceiling
-and remains unselected until the user chooses it. A selected capability that
-is removed from the Control ceiling remains in the user's stored selection as
-unavailable provenance. Restoring that same capability makes the preserved
-selection effective again; a scope that had deselected it remains off.
+Connection Hub persists the Control and Agent Cards, their revisions, links,
+leases, and positive selections. KDCube owns the projection rules: when
+descriptor defaults seed a new Agent Card, when a descriptor revision may fill
+a missing singleton, how conversation snapshots retain provenance, and how the
+current descriptor ceiling is intersected at execution time. Those rules and
+the administrator write-through path are specified in
+[Agent Capability Selection And Enforcement](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md).
 
-The owner-facing surfaces preserve the distinction while using the same full
-Card editor. The resident Agent Card is the user's editable default selection.
-It includes the descriptor-projected services, tools, skills, MCPs, models and
-instructions beside the user's connected accounts and user-configured MCPs.
-The descriptor Control Card presents the same capability sections as the
-administrator-owned ceiling and default preset. Only a platform administrator
-may open or mutate that Control Card; an ordinary user cannot obtain its
-authority payload by navigating directly to its id.
+The Card read model applies that contract to the resource picker. A
+descriptor-backed Control Card offers only named-service and MCP catalog rows
+that the host can serialize back into the descriptor. It omits global aggregate
+choices such as **All platform and application APIs**, management-only rows,
+and user-owned connector instances. Managed named-service and MCP permissions,
+tools, and actions remain in the standard Card resource sections rather than
+appearing again as empty KDCube metadata groups.
 
-Saving the administrator Control Card first merges an exact
-`agent_capability_control_overrides[agent]` entry into the target
-application's descriptor-owned properties. That entry carries
-`capability_defaults`, resource grants and operations, named-service
-operations, and the bounded properties the administrator reviewed. The
-platform writes through its authoritative descriptor store, updates the
-derived runtime view, and then revisions the live Card. A successful edit is
-therefore not a divergent Card-only copy. The active deployment descriptor is
-the source of truth across a runtime restart, reload, or `kdcube refresh`;
-refresh reuses the staged descriptor set. Reinitializing a deployment from a
-different descriptor set establishes that new set as the authority.
+A linked hosted Agent Card offers the exact standard resources selected by its
+Control Card. A permitted user-owned resource family also contributes a
+discovery container such as **My MCP connectors** and the owner's matching
+exact connector resources. The container is not itself submitted as Card
+authority. Connected accounts and connector credentials remain owned by the
+user's Agent Card. Only a platform administrator may read or mutate the
+descriptor Control Card; direct access by an ordinary user is denied without
+returning its authority payload.
+
+An administrator save first merges the exact
+`agent_capability_control_overrides[agent]` value into descriptor-owned bundle
+properties. Connection Hub submits the revision-checked live Control Card
+update only after that host write succeeds, so the Card cannot report a
+descriptor write-through that did not persist.
 
 A capability picker can open the resident Card directly with
 `tab=delegated_by_kdcube&access_id=<resident-card-id>`; the Connection Hub

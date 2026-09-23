@@ -212,17 +212,31 @@ credentials, authorization codes, cookies, or tokens.
 2. As the administrator, open the Control Card before making a UI edit.
 3. Confirm its selected model, instruction, skills and tools match the
    descriptor defaults on this first open.
-4. Confirm the full Card editor contains named services, custom MCP allowance,
-   knowledge MCP, platform/application APIs, service permissions, tools,
-   service actions, models, instructions, skills, native tools and metadata.
-5. Reopen it and confirm the same stable card id is used.
-6. Open User A's Agent Card and confirm the same initial defaults are selected
-   within the Control ceiling. Confirm User A's connected Slack account and
-   custom MCP are present in that same Card experience.
+4. Confirm the full Card editor contains the descriptor-selected named-service
+   and knowledge-MCP resources, with their service permissions, tools, and
+   service actions, plus models, instructions, skills, native tools, resource
+   families, helper-agent settings, and bounded metadata.
+5. Open **Add to this card**. Confirm it contains only descriptor-serializable
+   named-service and MCP resources. It must not contain **All platform and
+   application APIs**, management-only resources, or User A's connector
+   instances. Confirm the knowledge MCP is not repeated as a generic
+   zero-tool KDCube metadata row.
+6. Reopen it and confirm the same stable card id is used.
+7. Open User A's Agent Card. Confirm its initially selected standard resources
+   exactly equal the Control Card's selected named-service and managed-MCP
+   resources, and that the same model, instruction, skill, native-tool,
+   resource-family, and helper-agent defaults are selected.
+8. Open **Add to this card** on the Agent Card. Confirm it offers only those
+   exact Control resources. Because the custom-MCP resource family is enabled,
+   confirm **My MCP connectors** appears as a discovery container and User A's
+   matching connector appears beneath it by default. The container itself must
+   not be saved as resource authority. Confirm User A's connected Slack account
+   remains present in the same Card experience.
 
 Expected result: neither Card first opens with blank defaults or a reduced
-specialized view. Values inside the ceiling are mutable. A value outside the
-ceiling is visibly unavailable and cannot be selected.
+specialized view. Every value offered inside the ceiling is mutable. Unrelated
+global catalog resources are not offered. A saved value removed by a later
+Control revision remains visible as unavailable provenance and cannot execute.
 
 ### Administrator boundary
 
@@ -242,7 +256,8 @@ descriptor Control Card.
 1. Open the capability picker from the full Agent Card and from chat.
 2. Expand it, scroll every section, collapse it, and reopen it.
 3. Repeat at a narrow viewport.
-4. Inspect one selected row, one available but unselected row, and one row
+4. Inspect one selected row and one available but unselected row. After the
+   later descriptor-removal phase, inspect one retained selection that is now
    outside the Control ceiling.
 
 Expected result: the expanded picker uses the available viewport rather than
@@ -288,16 +303,20 @@ operation guard agree on one permitted side effect.
 
 Expected result: descriptor/default changes advance the Control descriptor
 revision and appear on first open. A fresh Agent Card receives the new
-defaults. Explicit existing user choices remain choices; a missing singleton
-model or instruction may inherit its default. Removed authority is unavailable
-to every Card and conversation.
+defaults. Explicit existing user choices remain choices. Only this descriptor
+revision transition may fill a missing singleton model or instruction from the
+new default; an ordinary read, lease renewal, or Agent Card save does not.
+Removed authority is unavailable to every Card and conversation.
 
 ### Control Card to descriptor write-through
 
 1. As administrator, edit the Control Card's default model, instruction,
    selected skills/tools, Slack action allowance and custom-MCP allowance.
-2. Save and inspect the active authoritative application descriptor.
-3. Confirm the exact agent entry under
+2. Save. Confirm the administrator-only bundle-properties request succeeds
+   before the Card revision changes; a forced host-write refusal must leave the
+   Card revision and descriptor unchanged.
+3. Inspect the active authoritative application descriptor and confirm the
+   exact agent entry under
    `agent_capability_control_overrides` contains the reviewed defaults,
    resource operations and named-service operations.
 4. Restart/reload the runtime, reopen the Control Card, and create a fresh
