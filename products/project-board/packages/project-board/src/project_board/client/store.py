@@ -2591,7 +2591,14 @@ class SharedFieldStore:
                     )
                 ),
             }
+            # Start from the row as it is and overwrite only what registration
+            # owns. Anything a worker declared about itself (worktrees, the
+            # limit state its runtime reported, whatever comes next) survives
+            # the relay's per-cycle registration by construction. On
+            # 2026-09-23 a rebuilt row dropped a worktree declared minutes
+            # earlier, and the board never saw a file in flight.
             record = {
+                **(dict(existing) if isinstance(existing, Mapping) else {}),
                 "schema": FIELD_SCHEMA,
                 "worker_name": clean_name,
                 "worker_alias": alias,
@@ -2646,22 +2653,6 @@ class SharedFieldStore:
                     existing.get("attendances_observed_at") or ""
                 ),
                 "listener": listener_without_legacy_fields(existing.get("listener")),
-                # Declared by the worker, never by registration: the worktrees it
-                # edits in (W278 part B) and the limit state its runtime reported
-                # (W26). Registration runs on every relay cycle, and on 2026-09-23
-                # it rebuilt the row without them, so a declaration made at
-                # 22:09:20Z was gone by the next cycle and the board never saw
-                # a file in flight.
-                "workspaces": [
-                    dict(item)
-                    for item in (existing.get("workspaces") or [])
-                    if isinstance(item, Mapping)
-                ],
-                "runtime_limit_state": (
-                    dict(existing.get("runtime_limit_state") or {})
-                    if isinstance(existing.get("runtime_limit_state"), Mapping)
-                    else {}
-                ),
                 "heartbeat_at": now,
                 "published_at": existing.get("published_at") or now,
                 "updated_at": now,
