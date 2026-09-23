@@ -1100,3 +1100,34 @@ async def test_a_second_caller_of_the_hung_profile_waits_and_refreshes_once(tmp_
     assert await asyncio.wait_for(first, 1.0) == "refreshed-access"
     assert await asyncio.wait_for(second, 1.0) == "refreshed-access"
     assert oauth.refresh_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_that_completes_during_a_refresh_is_not_overwritten_by_it(tmp_path) -> None:
+    # claude-main's review of #33: the reconnect commit writes under the same
+    # credential_ref and access_id, so the commit must compare the stored
+    # token with the one that was refreshed, not only the profile identity.
+    oauth = _HangingOAuth(hang_for="refresh-secret")
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    profile = _profile()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, _token(expires_at=1))
+
+    stale = asyncio.create_task(service.access_token(profile.name))
+    await asyncio.wait_for(oauth.hanging.wait(), 1.0)
+
+    reconnected = _token("reconnected-access", "reconnected-refresh")
+    await service._commit_reconnected_token(
+        expected=profile,
+        replacement=reconnected,
+        replacement_metadata=profile.oauth,
+    )
+    assert credentials.values[profile.credential_ref] == reconnected
+
+    oauth.release.set()
+    assert await asyncio.wait_for(stale, 1.0) == "reconnected-access"
+    assert credentials.values[profile.credential_ref] == reconnected, (
+        "the refresh of the old chain must not overwrite the reconnect's credential"
+    )
+    assert await service.access_token(profile.name) == "reconnected-access"
+    assert oauth.refresh_calls == 1

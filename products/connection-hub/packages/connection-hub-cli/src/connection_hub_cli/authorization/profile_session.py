@@ -361,7 +361,7 @@ class OAuthProfileSessionService:
             if not token.is_expiring(leeway_seconds=60):
                 return token.access_token
             replacement = await self._refresh(profile, token)
-            return await self._commit_refreshed_token(profile, replacement)
+            return await self._commit_refreshed_token(profile, token, replacement)
 
     async def refresh_access_token(self, profile_name: str) -> str:
         """Mint a new access token now, whatever the local expiry says.
@@ -378,7 +378,7 @@ class OAuthProfileSessionService:
         async with self._refresh_slot(profile_name):
             profile, token = await self._read_token(profile_name)
             replacement = await self._refresh(profile, token)
-            return await self._commit_refreshed_token(profile, replacement)
+            return await self._commit_refreshed_token(profile, token, replacement)
 
     async def _read_token(self, profile_name: str) -> tuple[CallerProfile, OAuthTokenSet]:
         """The profile record and its stored token, read under the store lock."""
@@ -390,26 +390,31 @@ class OAuthProfileSessionService:
     async def _commit_refreshed_token(
         self,
         profile: CallerProfile,
+        refreshed: OAuthTokenSet,
         replacement: OAuthTokenSet,
     ) -> str:
         """Store a refreshed token under the store lock and return its access token.
 
-        The profile is read again under the lock: a browser authorization or
-        a reconnect that completed while the refresh was in flight has
-        replaced the credential, and the newer one wins over a refresh of the
-        old one.
+        The profile and its stored token are read again under the lock. When
+        the stored token is no longer the one that was refreshed, a browser
+        authorization or a reconnect completed while the refresh was in
+        flight (a reconnect writes under the same credential_ref and
+        access_id), and its credential wins: the refresh result came from a
+        chain the server may already have rotated, so it is dropped.
         """
 
         async with self._transaction(self._transaction_lock):
             current = self._require_oauth_profile(profile.name)
+            stored = self._load_token(current)
             if (
                 current.credential_ref != profile.credential_ref
                 or current.access_id != profile.access_id
+                or stored.refresh_token != refreshed.refresh_token
+                or stored.access_token != refreshed.access_token
             ):
-                return self._load_token(current).access_token
-            previous = self._credentials.get(current.credential_ref)
+                return stored.access_token
             replacement = self._token_for_profile(current, replacement)
-            self._replace_token(current, previous, replacement)
+            self._replace_token(current, stored, replacement)
             return replacement.access_token
 
     @asynccontextmanager
