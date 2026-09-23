@@ -1029,6 +1029,183 @@ async def test_descriptor_mcp_selection_never_expands_sibling_tools_by_claim() -
 
 
 @pytest.mark.asyncio
+async def test_mcp_server_selection_without_tool_rows_selects_declared_operations() -> None:
+    service, persistence = _service(review_mcp=True)
+    policy = _policy_with_capabilities(mcp_servers=["review"])
+    descriptor_payload = {
+        "revision": "descriptor-r1",
+        "standard_authority": {
+            "resources": [{
+                "server_id": "review",
+                "resource": REVIEW_RESOURCE,
+                "grants": ["review:use"],
+                "operations": ["review_accept", "review_cancel"],
+            }],
+            "named_services": [],
+            "resource_families": [],
+        },
+    }
+
+    result = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload=descriptor_payload,
+        capability_authority=policy,
+        capability_catalog=policy,
+        selected_capabilities=policy,
+    )
+
+    assert result["ok"] is True, result
+    resident = persistence.records[result["card"]["access_id"]][0]
+    assert resident.resource_grants == {REVIEW_RESOURCE: ("review:use",)}
+    assert resident.resource_operations == {
+        REVIEW_RESOURCE: ("review_accept", "review_cancel"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_existing_selection_repairs_control_managed_authority_only() -> None:
+    service, persistence = _service(named_services=True, review_mcp=True)
+    authority = _policy_with_capabilities(
+        mcp_servers=["review"],
+        mcp_tools=["review/review_accept", "review/review_cancel"],
+        named_services=["slack"],
+        named_service_operations=[
+            "slack/object.action.post_message",
+            "slack/object.list",
+        ],
+        resource_families=["user_external_mcp"],
+    )
+    selected = _policy_with_mcp_tools("review_accept")
+    named_operations = {
+        NAMED_RESOURCE: {
+            "slack": ["object.action.post_message", "object.list"],
+        }
+    }
+    descriptor_payload = {
+        "revision": "descriptor-r1",
+        "standard_authority_overridden": True,
+        "standard_authority": {
+            "resources": [{
+                "server_id": "review",
+                "resource": REVIEW_RESOURCE,
+                "grants": ["review:use"],
+                "operations": ["review_accept", "review_cancel"],
+            }],
+            "named_services": [
+                {"namespace": "slack", "operations": ["object"]},
+            ],
+            "resource_families": [{"id": "user_external_mcp"}],
+        },
+        "capability_defaults": authority,
+    }
+    control_resource_grants = {
+        NAMED_RESOURCE: ["named_services:use", "slack:read", "slack:post"],
+        REVIEW_RESOURCE: ["review:use"],
+    }
+    control_resource_operations = {
+        NAMED_RESOURCE: ["named_services_call"],
+        REVIEW_RESOURCE: ["review_accept", "review_cancel"],
+    }
+
+    created = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload=descriptor_payload,
+        capability_authority=authority,
+        capability_catalog=authority,
+        selected_capabilities=selected,
+        resource_grants=control_resource_grants,
+        resource_operations=control_resource_operations,
+        named_service_operations=named_operations,
+        selected_resource_grants={REVIEW_RESOURCE: ["review:use"]},
+        selected_resource_operations={REVIEW_RESOURCE: ["review_accept"]},
+        selected_named_service_operations={},
+    )
+    assert created["ok"] is True, created
+
+    access_id = created["card"]["access_id"]
+    resident, handles = persistence.records[access_id]
+    account_scope = {"slack": {"workspace-1": ("slack:read",)}}
+    persistence.records[access_id] = (
+        dataclasses.replace(
+            resident,
+            operations=("remote_call",),
+            resource_grants={REMOTE_MCP_RESOURCE: ("external_mcp:use",)},
+            resource_operations={REMOTE_MCP_RESOURCE: ("remote_call",)},
+            account_scope=account_scope,
+        ),
+        handles,
+    )
+
+    repaired = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload=descriptor_payload,
+        capability_authority=authority,
+        capability_catalog=authority,
+        selected_capabilities=authority,
+        resource_grants=control_resource_grants,
+        resource_operations=control_resource_operations,
+        named_service_operations=named_operations,
+        selected_resource_grants=control_resource_grants,
+        selected_resource_operations=control_resource_operations,
+        selected_named_service_operations=named_operations,
+    )
+
+    assert repaired["ok"] is True, repaired
+    assert repaired["card_changed"] is True
+    updated = persistence.records[access_id][0]
+    assert updated.resource_grants == {
+        REMOTE_MCP_RESOURCE: ("external_mcp:use",),
+        REVIEW_RESOURCE: ("review:use",),
+    }
+    assert updated.resource_operations == {
+        REMOTE_MCP_RESOURCE: ("remote_call",),
+        REVIEW_RESOURCE: ("review_accept",),
+    }
+    assert updated.named_service_operations.is_none
+    assert updated.account_scope == account_scope
+    assert updated.properties[AGENT_CAPABILITY_SELECTION_PROPERTY] == selected
+
+    reset_to_defaults = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload=descriptor_payload,
+        capability_authority=authority,
+        capability_catalog=authority,
+        selected_capabilities=authority,
+        replace_selection=True,
+        resource_grants=control_resource_grants,
+        resource_operations=control_resource_operations,
+        named_service_operations=named_operations,
+    )
+
+    assert reset_to_defaults["ok"] is True, reset_to_defaults
+    reset = persistence.records[access_id][0]
+    assert reset.resource_grants == {
+        NAMED_RESOURCE: ("named_services:use", "slack:post", "slack:read"),
+        REMOTE_MCP_RESOURCE: ("external_mcp:use",),
+        REVIEW_RESOURCE: ("review:use",),
+    }
+    assert reset.resource_operations == {
+        NAMED_RESOURCE: ("named_services_call",),
+        REMOTE_MCP_RESOURCE: ("remote_call",),
+        REVIEW_RESOURCE: ("review_accept", "review_cancel"),
+    }
+    assert reset.named_service_operations.to_stored() == named_operations
+    assert reset.account_scope == account_scope
+
+
+@pytest.mark.asyncio
 async def test_live_control_defaults_seed_a_recreated_agent_card() -> None:
     service, persistence = _service()
     created = await _sync(

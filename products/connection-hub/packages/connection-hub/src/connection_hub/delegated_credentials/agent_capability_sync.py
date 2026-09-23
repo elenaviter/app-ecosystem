@@ -352,15 +352,70 @@ def _resolved_from_card(authority: CardAuthority) -> ResolvedCardAuthority:
     )
 
 
+def _bound_standard_authority_to_control(
+    *,
+    selected: ResolvedCardAuthority,
+    selection: AgentCapabilityPolicy,
+    control: CardAuthority,
+    binding: ControlCardBinding,
+    access_id: str,
+    client_id: str,
+    delegate_subject: str,
+) -> ResolvedCardAuthority:
+    """Cap a positive Agent selection with the current live Control Card."""
+
+    candidate = CardAuthority(
+        access_id=access_id,
+        client_id=client_id,
+        grantor_subject=control.grantor_subject,
+        delegate_subject=delegate_subject,
+        source=ACCESS_SOURCE_AGENT,
+        card_kind=CARD_KIND_AGENT,
+        resource_grants={
+            resource: tuple(grants)
+            for resource, grants in selected.resource_grants.items()
+        },
+        resource_operations={
+            resource: tuple(operations)
+            for resource, operations in selected.resource_operations.items()
+        },
+        named_service_operations=selected.named_service_operations,
+        named_services=copy.deepcopy(selected.named_services),
+        identity_scope=selected.identity_scope or control.identity_scope or "grantor",
+        control_card=binding,
+        properties=resident_selection_properties({}, selection=selection),
+    )
+    bounded = effective_card_authority(candidate, control)
+    return ResolvedCardAuthority(
+        resource_grants={
+            resource: list(grants)
+            for resource, grants in bounded.resource_grants.items()
+        },
+        resource_operations={
+            resource: list(operations)
+            for resource, operations in bounded.resource_operations.items()
+        },
+        operations=list(operation_union(bounded.resource_operations)),
+        named_service_operations=bounded.named_service_operations,
+        named_services=copy.deepcopy(dict(bounded.named_services or {})),
+        account_scope={},
+        identity_scope=bounded.identity_scope or "grantor",
+    )
+
+
 def _descriptor_standard_maps(
     *,
     catalog_config: Any,
     descriptor_payload: Mapping[str, Any],
     selection: AgentCapabilityPolicy | None,
+    include_overridden: bool = False,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, Any]]:
     """Resolve consumer requests through the active provider-owned catalog."""
 
-    if descriptor_payload.get("standard_authority_overridden") is True:
+    if (
+        descriptor_payload.get("standard_authority_overridden") is True
+        and not include_overridden
+    ):
         return {}, {}, {}
     request = descriptor_payload.get("standard_authority")
     if request is None:
@@ -396,7 +451,7 @@ def _descriptor_standard_maps(
             if str(tool.name or "").strip()
         }
         requested = _strings(raw.get("operations"))
-        if selection is not None:
+        if selection is not None and "mcp_tools" in selection.capabilities:
             selected_tools = _capability_children(selection, "mcp_tools", server_id)
             requested = [name for name in requested if name == "*" or name in selected_tools]
             if "*" in _strings(raw.get("operations")):
@@ -443,6 +498,7 @@ def _descriptor_standard_maps(
                 selection, "named_service_operations", namespace
             )
             if selection is not None
+            and "named_service_operations" in selection.capabilities
             else None
         )
         candidates: list[tuple[Any, set[str], dict[str, set[str]]]] = []
@@ -1152,8 +1208,73 @@ async def sync_agent_capability_control(
             control_revision=control_authority.card_revision,
         )
     )
+    reconciled_standard: ResolvedCardAuthority | None = None
+    managed_resource_keys: set[str] = set()
+    if isinstance(descriptor_payload.get("standard_authority"), Mapping):
+        try:
+            all_grants, all_operations, all_named = _descriptor_standard_maps(
+                catalog_config=catalog_config,
+                descriptor_payload=descriptor_payload,
+                selection=None,
+                include_overridden=True,
+            )
+            selected_grants, selected_operations, selected_named = (
+                _descriptor_standard_maps(
+                    catalog_config=catalog_config,
+                    descriptor_payload=descriptor_payload,
+                    selection=selected,
+                    include_overridden=True,
+                )
+            )
+            projected_standard = await resolve_agent_descriptor_standard_authority(
+                service,
+                active=active,
+                owner_subject=grantor_subject,
+                resource_grants=selected_grants,
+                resource_operations=selected_operations,
+                named_service_operations=selected_named,
+                properties=descriptor_properties,
+            )
+        except (AgentCapabilityPolicyError, ValueError) as exc:
+            return {
+                "ok": False,
+                "error": getattr(exc, "reason", "agent_descriptor_authority_invalid"),
+                "message": str(exc),
+                "status": 400,
+            }
+        if projected_standard.error is not None:
+            return projected_standard.error
+        managed_resource_keys.update(all_grants)
+        managed_resource_keys.update(all_operations)
+        managed_resource_keys.update(all_named)
+        managed_resource_keys.update(control_authority.resource_grants)
+        managed_resource_keys.update(control_authority.resource_operations)
+        try:
+            reconciled_standard = _bound_standard_authority_to_control(
+                selected=projected_standard,
+                selection=selected,
+                control=control_authority,
+                binding=binding,
+                access_id=resident_id,
+                client_id=client_id,
+                delegate_subject=(
+                    existing_resident.delegate_subject
+                    if existing_resident is not None
+                    else integration_subject(grantor_subject, client_id=client_id)
+                ),
+            )
+        except ControlCardMismatch as exc:
+            return {
+                "ok": False,
+                "error": "agent_capability_control_mismatch",
+                "reason": str(exc),
+                "status": 409,
+            }
+
     initial_standard = (
-        _resolved_from_card(control_authority)
+        reconciled_standard
+        if reconciled_standard is not None
+        else _resolved_from_card(control_authority)
         if descriptor_is_current
         else (selected_standard or resolved)
     )
@@ -1206,28 +1327,42 @@ async def sync_agent_capability_control(
         expected_resident_revision = 0
     else:
         acceptance = dict(existing_resident.resource_acceptance or {})
-        replace_standard = replace_selection and selected_standard is not None
-        if replace_standard:
-            acceptance = preserve_descriptor_acceptance(
-                acceptance,
-                next_resource_acceptance(
-                    resources=selected_standard.resource_grants,
-                    row_for=lambda resource: service._configured_resource(
-                        resource,
-                        config=catalog_config,
-                    ),
-                    catalog_version=catalog_version,
-                    selected_operations=selected_standard.resource_operations,
-                    previous=existing_resident.resource_acceptance,
+        reconcile_standard = reconciled_standard is not None
+        replace_standard = (
+            reconcile_standard
+            or (replace_selection and selected_standard is not None)
+        )
+        replacement_standard = reconciled_standard or selected_standard
+        if replace_standard and replacement_standard is not None:
+            selected_acceptance = next_resource_acceptance(
+                resources=replacement_standard.resource_grants,
+                row_for=lambda resource: service._configured_resource(
+                    resource,
+                    config=catalog_config,
                 ),
+                catalog_version=catalog_version,
+                selected_operations=replacement_standard.resource_operations,
+                previous=existing_resident.resource_acceptance,
             )
+            if reconcile_standard:
+                acceptance = {
+                    resource: evidence
+                    for resource, evidence in acceptance.items()
+                    if resource not in managed_resource_keys
+                }
+                acceptance.update(selected_acceptance)
+            else:
+                acceptance = preserve_descriptor_acceptance(
+                    acceptance,
+                    selected_acceptance,
+                )
         if replace_selection or agent_resource not in acceptance:
             acceptance[agent_resource] = descriptor_evidence
         replacements: dict[str, Any] = {
             "card_revision": existing_resident.card_revision + 1,
             "catalog_version": (
                 catalog_version
-                if replace_selection
+                if replace_selection or reconcile_standard
                 else existing_resident.catalog_version
             ),
             "expires_at": (
@@ -1243,22 +1378,52 @@ async def sync_agent_capability_control(
                 selection=selected,
             ),
         }
-        if replace_standard:
+        if replace_standard and replacement_standard is not None:
+            if reconcile_standard:
+                resource_grants = {
+                    resource: tuple(grants)
+                    for resource, grants in existing_resident.resource_grants.items()
+                    if resource not in managed_resource_keys
+                }
+                resource_grants.update(
+                    {
+                        resource: tuple(grants)
+                        for resource, grants in replacement_standard.resource_grants.items()
+                    }
+                )
+                resource_operations = {
+                    resource: tuple(operations)
+                    for resource, operations in existing_resident.resource_operations.items()
+                    if resource not in managed_resource_keys
+                }
+                resource_operations.update(
+                    {
+                        resource: tuple(operations)
+                        for resource, operations in replacement_standard.resource_operations.items()
+                    }
+                )
+            else:
+                resource_grants = {
+                    key: tuple(value)
+                    for key, value in replacement_standard.resource_grants.items()
+                }
+                resource_operations = {
+                    key: tuple(value)
+                    for key, value in replacement_standard.resource_operations.items()
+                }
             replacements.update(
-                operations=tuple(selected_standard.operations),
-                resource_grants={
-                    key: tuple(value)
-                    for key, value in selected_standard.resource_grants.items()
-                },
-                resource_operations={
-                    key: tuple(value)
-                    for key, value in selected_standard.resource_operations.items()
-                },
+                operations=operation_union(resource_operations),
+                resource_grants=resource_grants,
+                resource_operations=resource_operations,
                 named_service_operations=(
-                    selected_standard.named_service_operations
+                    replacement_standard.named_service_operations
                 ),
-                named_services=copy.deepcopy(selected_standard.named_services),
-                identity_scope=selected_standard.identity_scope or "grantor",
+                named_services=copy.deepcopy(replacement_standard.named_services),
+                identity_scope=(
+                    existing_resident.identity_scope
+                    or replacement_standard.identity_scope
+                    or "grantor"
+                ),
             )
         resident = dataclasses.replace(existing_resident, **replacements)
         expected_resident_revision = existing_resident.card_revision
