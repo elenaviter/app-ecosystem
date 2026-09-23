@@ -46,6 +46,7 @@ project_board = [
     "py.typed",
     "procedure-revisions.json",
     "procedures/*.md",
+    "procedures/*.py",
     "procedures/problem-board-worker/*.md",
     "procedures/problem-board-worker/*.json",
     "procedures/problem-board-worker/references/*.md",

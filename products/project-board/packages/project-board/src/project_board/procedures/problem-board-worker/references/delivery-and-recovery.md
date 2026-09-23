@@ -195,6 +195,26 @@ and only the handshake timed out, which the relay retries within seconds.
 `work_coordinate_relay_unavailable` still means the relay process did not pick
 the request up at all (for example, it is stopped).
 
+`pb worker send` to a remote recipient refuses the same way, with
+`work_send_channel_reconnecting`. Its details carry `delivered: false` and the
+`idempotency_key` you gave: the message was not delivered. Retry after
+`next_attempt_at` with the same key, which replays a delivered message and
+sends a lost one. A send counts as delivered only when it returns a receipt,
+never because the command ran, and a send that failed with
+`data_bus_outcome_unknown` or `work_relay_transport_unavailable` is repeated
+under the same key for the same reason.
+
+A transport drop with the runtime up is not a reconnecting channel in this
+sense. The Data Bus client reconnects on its own within seconds and presents
+the bearer valid at that moment, and the relay's cycle waits ten seconds for
+it before it replaces the session (relay log: `event=awaiting_reconnect`, then
+`reconnect_observed` or `reconnect_grace_expired`) and records the failure that
+`pb status` then shows. A send queued in that gap is delivered when the socket
+returns. Why: until 2026-09-23 the reconnect presented the bearer captured at
+first connect, an hour-long bearer under sockets that lived up to nine hours,
+so it was refused as expired on every attempt and the channel came back only
+through the cycle's full reopen, minutes later (W265).
+
 ## Diagnosing A Failure Layer By Layer
 
 A failed board call, a silent channel or a slow operation has one layer that

@@ -68,7 +68,7 @@ declared distribution the interpreter lacks in one sentence, and every line it
 prints names the interpreter it asked, because the answer differs per host:
 
 ```bash
-<ai-app chat-processor python3.11> "$PB/procedures/dependency_preflight.py" \
+<ai-app chat-processor python3.11> "$AE/products/project-board/packages/project-board/src/project_board/procedures/dependency_preflight.py" \
   "$KD/pyproject.toml" "$KD/kdcube_cli/pyproject.toml" \
   "$AE/packages/app-foundation/pyproject.toml" \
   "$AE/packages/service-foundation/pyproject.toml" \

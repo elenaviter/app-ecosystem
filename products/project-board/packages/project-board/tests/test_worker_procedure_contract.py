@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.2"
+    assert package["revision"] == "2026.09.23.3"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -650,3 +650,41 @@ def test_skill_keeps_the_small_facts_that_compression_removed() -> None:
     assert "a code it does not know is treated as outcome unknown" in brief
     assert "`observed_revision` is in every receipt, applied or refused" in brief
     assert "never taken from a wrapped fragment, and never composed from a key and a title" in brief
+
+
+def test_revision_2026_09_23_3_carries_the_brief_rule_and_the_w265_lines() -> None:
+    # Finding twenty: codex-main compacted every few turns because settlement
+    # commands printed full JSON envelopes into its context. The skill states
+    # the brief rule with its reason and the session-wide export; the reference
+    # carries the words. The research paragraph moved to the coordinator
+    # reference to make room (gate 8: content moves, prose is not compressed).
+    words = _words(_read("SKILL.md"))
+    assert "`export PB_FORMAT=brief` once before the first command" in words
+    assert "settle and send included" in words
+    assert "compacts every few turns" in words
+    assert "The coordinator names one researcher for a question" in words
+    brief = _words(_read("references/brief-output.md"))
+    assert "Bounded output is the session default" in brief
+    assert "export PB_FORMAT=brief" in brief
+    assert "settlement commands print full JSON bodies instead of --format brief" in brief
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "Research Is Coordinated Progressively" in coordinator
+    assert "A second investigation starts only when the coordinator or operator names a specific reason" in coordinator
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "finding nineteen" in collaboration and "finding twenty" in collaboration
+    # W265: the reconnecting channel's new messages and the receipt rule for a send.
+    delivery = _words(_read("references/delivery-and-recovery.md"))
+    assert "`work_send_channel_reconnecting`" in delivery
+    assert "A send counts as delivered only when it returns a receipt" in delivery
+    assert "the relay's cycle waits ten seconds for it" in delivery
+    assert "`event=awaiting_reconnect`" in delivery
+
+
+def test_testing_procedure_runs_the_packaged_dependency_preflight_before_the_suite() -> None:
+    # The preflight moved into the package with the procedures that name it,
+    # so a published-package reader has the script the procedure runs.
+    testing = (PACKAGE_ROOT / "src" / "project_board" / "procedures" / "testing.md").read_text(encoding="utf-8")
+    script = PACKAGE_ROOT / "src" / "project_board" / "procedures" / "dependency_preflight.py"
+    assert script.is_file()
+    assert "project_board/procedures/dependency_preflight.py" in testing
+    assert "$PB/procedures/dependency_preflight.py" not in testing

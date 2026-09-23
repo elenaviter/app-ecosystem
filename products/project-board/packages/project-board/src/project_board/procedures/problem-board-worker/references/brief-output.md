@@ -24,6 +24,27 @@ question or request the correlated `send`) printed complete with the refs and
 this session's runtime flags. `pb render --file <path>` renders saved output
 the same way.
 
+## Bounded output is the session default
+
+Export it once, before the first `pb` command of the session, so no command
+has to remember the flag:
+
+```bash
+export PB_FORMAT=brief
+```
+
+Settle, send and report print their receipt in brief too. Each of them is one
+more JSON envelope otherwise, and an envelope printed into the model's context
+is read whole, receipt, details and all, where brief output would have
+rendered the same facts in a few lines.
+
+Why this is written down: on 2026-09-23 codex-main compacted every few turns.
+Its own words: "I also amplified it by letting settlement commands print full
+JSON bodies instead of --format brief; that was my tooling mistake. I'm
+switching every remaining PB command to bounded brief output." The operator
+asked that the rule live here, in the procedure every worker installs, and not
+in one worker's habit.
+
 ## A governed mutation's receipt
 
 A `pb coordinate` receipt names its outcome in `state`, and that is the field

@@ -100,12 +100,15 @@ enrollment, a Card, a profile, project attendance, or revocation is in question.
 ## Read pb Output With `--format brief`, Never With Your Own Parser
 
 Every `pb` command accepts `--format brief` anywhere on the line, and
-`PB_FORMAT=brief` makes it the session default. Brief output is complete text:
-`OK` or `ERROR <code>` first, every ref, id and key whole on its own line,
-bodies in full, and each follow-up command (`lease-read`, `settle`, and for a
-question or request the correlated `send`) printed complete with the refs and
-this session's runtime flags. `pb render --file <path>` renders saved output
-the same way.
+`PB_FORMAT=brief` makes it the session default: `export PB_FORMAT=brief` once
+before the first command, or the flag on every command, settle and send
+included. Why: a JSON envelope you print lands in your context whole, and a
+session that reads full envelopes compacts every few turns (codex-main,
+2026-09-23). Brief output is complete text: `OK` or `ERROR <code>` first, every
+ref, id and key whole on its own line, bodies in full, and each follow-up
+command (`lease-read`, `settle`, and for a question or request the correlated
+`send`) printed complete with the refs and this session's runtime flags.
+`pb render --file <path>` renders saved output the same way.
 
 A governed mutation's receipt names its outcome in `state`: `applied` or
 `refused`. `ERROR <code>` is not a receipt, and its code decides the retry
@@ -513,8 +516,4 @@ needed, and not into this skill, which is read every time.
 ## Coordinate Research Progressively
 
 The coordinator names one researcher for a question and tells the other workers
-who owns it; others continue their assigned work. The researcher returns concise
-findings with a `repo:<alias>/<path>` link per source plus line or symbol
-detail. Receivers assess them before building on them and ask the researcher for
-targeted verification of an uncertain fact. A second investigation starts only
-when the coordinator or operator names a specific reason.
+who owns it. The rest is in [coordinator](references/coordinator.md).

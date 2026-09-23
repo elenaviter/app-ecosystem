@@ -869,3 +869,26 @@ works from its own tree. Entries are added as they happen.
   clone before accepting, and a journal entry that says landed names the
   merge commit on the integration ref and is written after that commit is
   fetched, never from the intention to merge.
+- **12:33Z, finding nineteen: a push announced after the merge.** fable-pub
+  told the coordinator it was pushing an amendment to applications #29 while
+  #29 had merged at 12:32:44Z. No push happened, so nothing was lost, and
+  the announcement was still wrong about the world: a merged change request
+  takes no more commits, and a branch pushed after its merge is a new change
+  request nobody asked for. Rule 5, the author's side: read the change
+  request's state immediately before every push to it, and after a merge put
+  the amendment on a new branch and open a new change request. The author
+  opens and reopens change requests, the coordinator never opens one on the
+  author's behalf.
+- **14:15Z, finding twenty: JSON envelopes in the model's context.** The
+  operator noticed codex-main compacting every few turns and reading messages
+  without their form. codex-main's own words: "I also amplified it by letting
+  settlement commands print full JSON bodies instead of --format brief; that
+  was my tooling mistake. I'm switching every remaining PB command to bounded
+  brief output." The skill had said `--format brief` and the session default
+  since 2026.09.22, as a description of what pb accepts. It now says it as a
+  rule with its reason, and names `export PB_FORMAT=brief` once per session
+  as the way that cannot be forgotten per command (revision 2026.09.23.3,
+  [brief-output](brief-output.md)). The operator's instruction: "lets make
+  sure this is taken on our skill/procedure." The class fix, pb rendering
+  brief by default when its output is not a terminal, is a product decision
+  raised with the operator.
