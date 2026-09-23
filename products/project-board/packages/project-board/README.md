@@ -49,6 +49,8 @@ and the source reported by the supervised relay.
 - `project_board.contract`: the references, worker identity, operation
   outcomes, plan shapes, and mail contracts that the client and the server
   both speak, defined once here.
+- `project_board.procedures`: the operator, worker-host, setup, testing, and
+  live-acceptance runbooks that travel with the client they operate.
 
 The server side stays in its own repository and depends on this package for
 the contract.

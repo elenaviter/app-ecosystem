@@ -21,6 +21,16 @@ from project_board.client.procedures import (
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 PROCEDURE_ROOT = source_package_path()
+OPERATIONAL_PROCEDURE_ROOT = PACKAGE_ROOT / "src" / "project_board" / "procedures"
+OPERATIONAL_PROCEDURES = {
+    "add-a-worker-host.md",
+    "agent-worker.md",
+    "first-time-setup.md",
+    "live-acceptance.md",
+    "local-worker-session.md",
+    "operator.md",
+    "testing.md",
+}
 
 
 def _read(relative: str) -> str:
@@ -32,6 +42,19 @@ def _words(text: str) -> str:
 
 
 REVISION_LEDGER = source_revision_ledger_path()
+
+
+def test_project_board_owns_its_operational_procedures() -> None:
+    present = {
+        path.name
+        for path in OPERATIONAL_PROCEDURE_ROOT.glob("*.md")
+        if path.is_file()
+    }
+    assert present == OPERATIONAL_PROCEDURES
+    for name in OPERATIONAL_PROCEDURES:
+        text = (OPERATIONAL_PROCEDURE_ROOT / name).read_text(encoding="utf-8")
+        assert "id: app-ecosystem.project-board.procedure." in text
+        assert "id: applications.playground.problem-board.procedure." not in text
 
 
 def test_package_content_is_recorded_for_its_revision() -> None:
