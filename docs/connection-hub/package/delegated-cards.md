@@ -833,20 +833,11 @@ grants nothing; the next message writes a renewed revision under the same
 tools. The owner therefore keeps one legible Card and selection across
 revisions without abandoned authority remaining live forever.
 
-The synchronization request keeps the two meanings in separate fields:
-
-- `descriptor_payload.capability_defaults` is the administrator's default
-  selection carried by the descriptor projection and stored on the Control
-  Card;
-- `selected_capabilities` is the current user's Agent Card selection.
-
 Connection Hub persists the Control and Agent Cards, their revisions, links,
-leases, and positive selections. KDCube owns the projection rules: when
-descriptor defaults seed a new Agent Card, when a descriptor revision may fill
-a missing singleton, how conversation snapshots retain provenance, and how the
-current descriptor ceiling is intersected at execution time. Those rules and
-the administrator write-through path are specified in
-[Agent Capability Selection And Enforcement](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md).
+leases, and positive selections. KDCube owns the synchronization-field
+semantics, default-fill rules, conversation projection, live intersection, and
+descriptor write path; see
+[Agent Capability Control And Selection](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md).
 
 The Card read model applies that contract to the resource picker. A
 descriptor-backed Control Card offers only named-service and MCP catalog rows
@@ -865,11 +856,10 @@ user's Agent Card. Only a platform administrator may read or mutate the
 descriptor Control Card; direct access by an ordinary user is denied without
 returning its authority payload.
 
-An administrator save first merges the exact
-`agent_capability_control_overrides[agent]` value into descriptor-owned bundle
-properties. Connection Hub submits the revision-checked live Control Card
-update only after that host write succeeds, so the Card cannot report a
-descriptor write-through that did not persist.
+For an administrator save, Connection Hub submits the revision-checked live
+Control Card update only after the KDCube host write succeeds, so the Card
+cannot report a descriptor write-through that did not persist. The linked
+KDCube capability document owns the descriptor field and write path.
 
 A capability picker can open the resident Card directly with
 `tab=delegated_by_kdcube&access_id=<resident-card-id>`; the Connection Hub
@@ -1180,25 +1170,11 @@ derives conventional admission properties, including
 are transport views for established guards, not additional selections and not
 independent sources of authority.
 
-The current Control Card is resolved at the governed operation boundary. It is
-not copied into the Agent Card, a conversation, or a bearer. A conversation
-may retain a selection made under an older Control revision, but that selection
-does not retain authority removed later. If the active descriptor removes
-Slack posting, a custom-MCP resource family, a named service operation, a
-skill, or any other capability, every old and new conversation loses that
-capability on its next call. No Card re-mint or new conversation is required.
-The saved positive choice remains visible but contributes no authority while
-the capability is absent. Restoring the same capability makes that preserved
-choice effective again. A capability that was never selected, or was
-explicitly deselected before removal, remains off.
-
-This gives each layer one responsibility:
-
-| Layer | Stored meaning | Effect of a later edit |
-| --- | --- | --- |
-| Application descriptor and Control Card | Current administrator ceiling and defaults for one application agent | Removals deny every caller immediately; default changes seed new or missing defaults without overwriting explicit user choices. |
-| Agent Card | One user's defaults inside the current ceiling, plus user-owned account and MCP bindings | Changes seed future conversations and do not rewrite existing conversation choices. |
-| Conversation selection | That conversation's positive selection and provenance | Changes apply to that conversation from its next message; the current Control ceiling still bounds every operation. |
+The current Control Card is resolved at the governed operation boundary, so a
+removed capability stops contributing authority to old and new conversations
+without a Card re-mint. KDCube owns the retained-selection, restoration,
+default, and conversation-layer semantics; see
+[Agent Capability Control And Selection](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md).
 
 The complete human acceptance sequence, including a real Slack side effect,
 administrator write-through, non-administrator denial, existing-conversation

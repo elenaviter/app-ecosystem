@@ -1,7 +1,7 @@
 ---
 id: connection-hub/testing/end-to-end-acceptance
 title: "Connection Hub And Governed MCP End-To-End Acceptance"
-summary: "Human-runnable acceptance procedure for resident-agent Control and Agent Cards, conversation capability selection, delegated cards, invocation policy, external MCP proxying, connected accounts, revocation, and durability."
+summary: "Human-runnable acceptance for resident-agent capability Cards, delegated MCP, direct protected-service admission, native or bridged OAuth clients, revocation, and durability."
 status: current
 tags: ["testing", "connection-hub", "delegated-access", "control-card", "agent-card", "conversation-selection", "mcp", "proxy", "admission", "invocation-policy", "consent", "claude-code"]
 keywords: ["Connection Hub acceptance", "agent capability Control Card", "Agent Card defaults", "conversation override", "live descriptor ceiling", "delegated card test", "allow once", "allow always", "external MCP proxy", "delegated MCP gateway", "one resident card", "multi-resource card", "direct admission", "descriptor drift", "live consent", "operation-only consent", "resource_operations", "named services MCP", "Claude Code OAuth", "revocation test"]
@@ -303,10 +303,11 @@ operation guard agree on one permitted side effect.
 
 Expected result: descriptor/default changes advance the Control descriptor
 revision and appear on first open. A fresh Agent Card receives the new
-defaults. Explicit existing user choices remain choices. Only this descriptor
-revision transition may fill a missing singleton model or instruction from the
-new default; an ordinary read, lease renewal, or Agent Card save does not.
-Removed authority is unavailable to every Card and conversation.
+defaults. A synchronization fills a singleton model or instruction from the
+current default only while that selection holds no value, and it never
+overwrites a chosen value. An explicit Agent Card selection replacement does
+not fill during that replacement; a later synchronization fills a singleton
+left empty. Removed authority is unavailable to every Card and conversation.
 
 ### Control Card to descriptor write-through
 
