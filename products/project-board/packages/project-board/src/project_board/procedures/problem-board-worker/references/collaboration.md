@@ -5,13 +5,11 @@ summary: How several agents on several machines work on the same repositories wi
 tags: [procedure, problem-board, collaboration, git, change-request, coordinator, multi-machine]
 keywords: [one tree per agent, work branch, change request, pull request, merge gate, integration ref, intent before edit, shared write, coordinator decides, rehearsal round, collision log]
 see_also:
-  - ../../agent-worker.md
-  - ../SKILL.md
-  - ./operator.md
-  - ./add-a-worker-host.md
-  - ./problem-board-worker/SKILL.md
-  - ./problem-board-worker/references/coordinator.md
-  - ./problem-board-worker/references/runtime-actions.md
+  - ./coordinator.md
+  - ./runtime-actions.md
+  - repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/agent-worker.md
+  - repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/operator.md
+  - repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/add-a-worker-host.md
 ---
 
 # Collaborate Across Agents And Machines

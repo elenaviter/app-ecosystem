@@ -5,8 +5,8 @@ summary: Routes a selected Claude Code or Codex session to the versioned worker 
 tags: [procedure, local-worker, codex, claude-code]
 keywords: [worker skill, worker listen, worker receive, lease settlement, native session identity]
 see_also:
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/local/AGENTS.md
-  - repo:applications/playground/domain-solution/docs/worker-mail-protocol.md
+  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/local/AGENTS.md
+  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/docs/worker-mail-protocol.md
 ---
 
 # Run A Problem Board Local Worker Session

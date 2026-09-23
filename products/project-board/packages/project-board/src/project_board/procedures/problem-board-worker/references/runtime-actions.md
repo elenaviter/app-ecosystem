@@ -16,7 +16,7 @@ live that has never executed.
 | You changed | It reaches the runtime when | Not enough |
 | --- | --- | --- |
 | Platform or SDK Python (`kdcube_ai_app/...`), including server-rendered OAuth consent pages | `kdcube refresh --path "$REPO" --build` | bare `refresh --build`, which rebuilds the old staged copy; restarting containers |
-| A package from `app-ecosystem` used inside KDCube (`project-board`, `app-foundation`, `connection-hub`) | the same refresh, with every such distribution staged in the SAME build through `--maintainer-local-python-package DIST=SOURCE` | rebuilding without the selector, which keeps the published version |
+| Every `app-ecosystem` distribution the images import (read the list from the runtime's requirements files, `requirements-chat*.txt`, and what they declare, never from memory) | the same refresh, with every such distribution staged in the SAME build through `--maintainer-local-python-package DIST=SOURCE`, as [the maintainer rebuild procedure](repo:app-ecosystem/products/kdcube/procedures/maintainer-rebuild.md) shows | rebuilding without the selector, which keeps the published version |
 | Widget `src/` | the same refresh, or a bundle reload for the widget's bundle; the pipeline builds `dist/`, and the reload returns before that build finishes | editing `src/` alone, building widgets by hand, or reading the reload receipt as the widget being live |
 | Descriptor content (`bundles.yaml`) | `bundle config apply` or `bundle reload <bundle-id>` | `refresh`, which preserves `$WORKDIR/config` |
 | An app under `apps/` | a bundle reload | nothing further |

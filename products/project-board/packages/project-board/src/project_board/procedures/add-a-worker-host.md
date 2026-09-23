@@ -7,7 +7,7 @@ keywords: [worker host, tailnet, headless, deploy key, pinned client, systemd re
 see_also:
   - ./first-time-setup.md
   - ./operator.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/add-a-machine-README.md
+  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/docs/add-a-machine-README.md
 ---
 
 # Add A Worker Host
@@ -25,7 +25,7 @@ and every problem met there is either fixed or written below as a **Known gap**
 with its workaround and the work item that removes it.
 
 The short version a user follows, and what they hand their setup agent, is
-[add a machine](repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/add-a-machine-README.md).
+[add a machine](https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/docs/add-a-machine-README.md).
 
 ## Who does what
 

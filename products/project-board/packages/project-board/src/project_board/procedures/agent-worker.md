@@ -8,8 +8,8 @@ see_also:
   - ./first-time-setup.md
   - ./operator.md
   - ./live-acceptance.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/local/AGENTS.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/topology-and-flows.md
+  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/local/AGENTS.md
+  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/docs/topology-and-flows.md
 ---
 
 # Choose The Problem Board Worker Or Operator Procedure
@@ -22,7 +22,7 @@ Choose the role before loading detailed instructions.
 | Configure a machine, target, filesystem roots, repository mappings, Connection Hub consent, or relay service | [First-time setup](first-time-setup.md) and [operator procedure](operator.md) |
 | Enroll and operate one exact user-selected Claude Code or Codex session | Run `pb procedure show`, then read the installed `problem-board-worker` skill |
 | Verify a live deployment and end-to-end delivery route | [Live acceptance](live-acceptance.md) |
-| Maintain or test the app and local CLI | [App agent rules](repo:applications/playground/domain-solution/apps/problem-board@1-0/AGENTS.md) and [testing](testing.md) |
+| Maintain or test the app and local CLI | [App agent rules](https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/AGENTS.md) and [testing](testing.md) |
 
 The user starts or resumes every coding-agent session. The operator configures
 the receiving machine and grants authority. The selected session identifies

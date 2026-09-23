@@ -9,7 +9,7 @@ see_also:
   - ./first-time-setup.md
   - ./operator.md
   - ./testing.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/topology-and-flows.md
+  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/docs/topology-and-flows.md
 ---
 
 # Run Problem Board Live Acceptance
