@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import time
 
 import pytest
@@ -14,6 +15,7 @@ from connection_hub.delegated_credentials.agent_capability_sync import (
 from connection_hub.delegated_credentials.agent_capability_policy import (
     AGENT_CAPABILITY_SELECTION_PROPERTY,
     AGENT_CAPABILITY_POLICY_SCHEMA,
+    AGENT_DESCRIPTOR_CONTROL_PROPERTY,
     CAPABILITY_ALLOWED_SELECTED,
     CAPABILITY_ALLOWED_UNSELECTED,
     CAPABILITY_NOT_ALLOWED,
@@ -696,7 +698,7 @@ async def test_standard_agent_card_edit_updates_the_runtime_projection() -> None
 
 
 @pytest.mark.asyncio
-async def test_only_an_administrator_may_edit_a_control_card() -> None:
+async def test_only_an_administrator_may_edit_a_descriptor_control_card() -> None:
     service, _persistence = _service()
     created = await _sync(
         service,
@@ -718,6 +720,63 @@ async def test_only_an_administrator_may_edit_a_control_card() -> None:
         "error": "platform_admin_required",
         "status": 403,
     }
+
+
+@pytest.mark.asyncio
+async def test_non_admin_grantor_may_edit_a_non_descriptor_control_card() -> None:
+    service, persistence = _service(named_services=True)
+    descriptor_operations = {
+        NAMED_RESOURCE: {"slack": ["object.list"]},
+    }
+    created = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=_policy_with_named_operations("object.list"),
+        resource_grants={
+            NAMED_RESOURCE: ["named_services:use", "slack:read"],
+        },
+        named_service_operations=descriptor_operations,
+    )
+    control_id = created["control_card"]["access_id"]
+    descriptor_control_card, handles = persistence.records[control_id]
+    ordinary_properties = dict(descriptor_control_card.properties)
+    ordinary_properties.pop(AGENT_DESCRIPTOR_CONTROL_PROPERTY)
+    ordinary_acceptance = {
+        resource: acceptance
+        for resource, acceptance in descriptor_control_card.resource_acceptance.items()
+        if acceptance.kind != AGENT_DESCRIPTOR_ACCEPTANCE_KIND
+    }
+    ordinary_control_card = dataclasses.replace(
+        descriptor_control_card,
+        issuer_kind="application",
+        properties=ordinary_properties,
+        resource_acceptance=ordinary_acceptance,
+    )
+    persistence.records[control_id] = (ordinary_control_card, handles)
+
+    changed = await service.update_access(
+        {
+            "user_id": OWNER,
+            "roles": ["kdcube:role:registered"],
+            "permissions": ["named_services:use", "slack:read"],
+        },
+        access_id=control_id,
+        resource_grants={
+            NAMED_RESOURCE: ["named_services:use", "slack:read"],
+        },
+        resource_operations={},
+        named_service_operations=descriptor_operations,
+        account_scope={},
+        expected_card_revision=ordinary_control_card.card_revision,
+        expected_catalog_version=ordinary_control_card.catalog_version,
+        composition_mode="and",
+        properties=ordinary_properties,
+    )
+
+    assert changed["ok"] is True, changed
 
 
 @pytest.mark.asyncio

@@ -79,6 +79,7 @@ from connection_hub.delegated_credentials.application_operation_policy import (
     validate_application_operation_role_policy,
 )
 from connection_hub.delegated_credentials.agent_capability_control import (
+    AGENT_DESCRIPTOR_ISSUER_KIND,
     align_resident_selection_to_card_authority,
     preserve_descriptor_acceptance,
     resident_selection_properties,
@@ -3816,7 +3817,15 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_not_found"}
         if existing.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_owned"}
-        if _record_is_credentialless(existing) and not _is_platform_admin(user):
+        try:
+            descriptor_marker = descriptor_control(existing.properties)
+        except AgentCapabilityPolicyError as exc:
+            return {"ok": False, "error": exc.reason, "status": 409}
+        administrator_preset = (
+            descriptor_marker is not None
+            or existing.issuer_kind == AGENT_DESCRIPTOR_ISSUER_KIND
+        )
+        if administrator_preset and not _is_platform_admin(user):
             return {
                 "ok": False,
                 "error": "platform_admin_required",
@@ -3851,10 +3860,6 @@ class AutomationAccessService:
                 "error": "control_card_composition_mode_invalid",
                 "status": 400,
             }
-        try:
-            descriptor_marker = descriptor_control(existing.properties)
-        except AgentCapabilityPolicyError as exc:
-            return {"ok": False, "error": exc.reason, "status": 409}
         if (
             descriptor_marker is not None
             and selected_composition_mode != CONTROL_COMPOSITION_AND
