@@ -13,8 +13,13 @@ intended-scope line (P4b) is its statement of intent.
 
 Two git commands, both read-only and bounded:
 
-    git diff --name-only <base_commit>...HEAD      committed since the base
-    git status --porcelain --untracked-files=no    modified or staged, tracked only
+    git --no-optional-locks diff --name-only -z <base_commit>...HEAD
+    git --no-optional-locks status --porcelain -z --untracked-files=no
+
+The first is what changed since the base, the second what is modified or
+staged now, tracked only. ``--no-optional-locks`` keeps a background reader
+from ever taking the worker's index lock, ``-z`` keeps unusual file names
+intact.
 """
 
 from __future__ import annotations
@@ -32,7 +37,10 @@ GIT_TIMEOUT_SECONDS = 10
 def _git(path: Path, *args: str) -> tuple[int, str]:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(path), *args],
+            # A background reader never takes the worker's .git/index.lock:
+            # git status would otherwise refresh the index under a commit in
+            # progress and the worker would see "index.lock: File exists".
+            ["git", "--no-optional-locks", "-C", str(path), *args],
             capture_output=True,
             text=True,
             timeout=GIT_TIMEOUT_SECONDS,
@@ -56,20 +64,35 @@ def worktree_root(path: Path | str) -> Path | None:
 
 
 def _status_paths(text: str) -> list[str]:
+    """Paths from ``git status --porcelain -z --untracked-files=no``.
+
+    Fields are NUL-separated. Each entry is two status letters, a space and
+    the path. A rename or copy (``R`` or ``C`` in either column) is followed by
+    one more field, the original path, which is skipped: the path that exists
+    now is the one in flight. Nothing is C-quoted with ``-z``, so a name with
+    spaces or quotes comes through as it is.
+    """
+
+    fields = text.split("\0")
     paths: list[str] = []
-    for line in text.splitlines():
-        if len(line) < 4:
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if len(entry) < 4:
             continue
-        # Porcelain v1: two status letters, a space, then the path, with a
-        # rename shown as "old -> new". Untracked entries are excluded by the
-        # flag, and "!!" ignored entries never appear without it.
-        entry = line[3:]
-        if " -> " in entry:
-            entry = entry.split(" -> ", 1)[1]
-        entry = entry.strip().strip('"')
-        if entry:
-            paths.append(entry)
+        status, path = entry[:2], entry[3:]
+        if path:
+            paths.append(path)
+        if "R" in status or "C" in status:
+            index += 1  # the original name, not in flight
     return paths
+
+
+def _diff_paths(text: str) -> list[str]:
+    """Paths from ``git diff --name-only -z``: NUL-separated, unquoted."""
+
+    return [field for field in text.split("\0") if field]
 
 
 def observe_worktree(
@@ -104,12 +127,12 @@ def observe_worktree(
     head_commit = head.strip() if code == 0 else ""
     base = str(base_commit or "").strip()
     if base:
-        code, out = _git(root, "diff", "--name-only", f"{base}...HEAD")
+        code, out = _git(root, "diff", "--name-only", "-z", f"{base}...HEAD")
         if code == 0:
-            found.update(line.strip() for line in out.splitlines() if line.strip())
+            found.update(_diff_paths(out))
         else:
             errors.append("base_commit_unreachable")
-    code, out = _git(root, "status", "--porcelain", "--untracked-files=no")
+    code, out = _git(root, "status", "--porcelain", "-z", "--untracked-files=no")
     if code == 0:
         found.update(_status_paths(out))
     else:
@@ -135,13 +158,16 @@ def observe_assignments(
     *,
     worker_name: str,
     limit: int = MAX_OBSERVED_PATHS,
+    observe: Any = None,
 ) -> list[dict[str, Any]]:
     """One observation per declared worktree whose assignment this worker still holds.
 
     ``assignments`` are the field's assignment records (with ``sources`` from
     W278 part A); the base commit for a repository comes from there. A
     declaration for an assignment that ended, or that belongs to another
-    worker, yields nothing.
+    worker, yields nothing. ``observe`` replaces the git reader, which is how the
+    relay keeps one observation per worktree for an interval instead of running
+    git on every cycle.
     """
 
     mine = str(worker_name or "").lower()
@@ -166,7 +192,8 @@ def observe_assignments(
             ),
             "",
         )
-        seen = observe_worktree(str(workspace.get("path") or ""), base_commit=base_commit, limit=limit)
+        observer = observe or observe_worktree
+        seen = observer(str(workspace.get("path") or ""), base_commit=base_commit, limit=limit)
         observations.append(
             {
                 "assignment_ref": str(workspace.get("assignment_ref") or ""),
@@ -180,6 +207,42 @@ def observe_assignments(
             }
         )
     return observations
+
+
+OBSERVE_INTERVAL_SECONDS = 30.0
+
+
+class WorktreeObserverCache:
+    """One observation per worktree per interval (review on #43).
+
+    The relay cycles every few seconds and a declared worktree can be as large
+    as kdcube-ai-app, so git runs at most once per interval per path unless the
+    caller asks for a fresh read (a forced heartbeat).
+    """
+
+    def __init__(self, *, interval_seconds: float = OBSERVE_INTERVAL_SECONDS, clock: Any = None) -> None:
+        import time
+
+        self.interval_seconds = float(interval_seconds)
+        self._clock = clock or time.monotonic
+        self._last: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    def __call__(self, path: str, *, base_commit: str = "", limit: int = MAX_OBSERVED_PATHS, fresh: bool = False) -> dict[str, Any]:
+        key = f"{path}\n{base_commit}\n{int(limit)}"
+        now = self._clock()
+        cached = self._last.get(key)
+        if cached is not None and not fresh and now - cached[0] < self.interval_seconds:
+            return dict(cached[1])
+        seen = observe_worktree(path, base_commit=base_commit, limit=limit)
+        self._last[key] = (now, dict(seen))
+        return seen
+
+    def forget(self, path: str = "") -> None:
+        if not path:
+            self._last.clear()
+            return
+        for key in [k for k in self._last if k.split("\n", 1)[0] == path]:
+            self._last.pop(key, None)
 
 
 def observations_signature(observations: Iterable[Mapping[str, Any]]) -> str:
@@ -212,6 +275,8 @@ def observation_signature(observation: Mapping[str, Any]) -> str:
 __all__ = [
     "ACTIVE_OBSERVED_ASSIGNMENT_STATES",
     "MAX_OBSERVED_PATHS",
+    "OBSERVE_INTERVAL_SECONDS",
+    "WorktreeObserverCache",
     "observations_signature",
     "observe_assignments",
     "observation_signature",

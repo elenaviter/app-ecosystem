@@ -28,7 +28,12 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 from .card_refusal import actionable_card_refusal
 from .limit_state import session_with_limit_state, wake_deferred_until
-from .worktree_files import observations_signature, observe_assignments
+from .worktree_files import (
+    MAX_OBSERVED_PATHS as MAX_OBSERVED_PATHS_DEFAULT,
+    WorktreeObserverCache,
+    observations_signature,
+    observe_assignments,
+)
 from ..contract.errors import DomainError
 from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
@@ -593,6 +598,7 @@ class ProblemBoardHostRelayAdapter:
         # W278 part B: per project, the signature of the files in flight last
         # published, so an unchanged set rides no heartbeat.
         self._assignment_files_signatures: dict[str, str] = {}
+        self._worktree_observer = WorktreeObserverCache()
         # Child adapters are rebuilt for attended projects every cycle. Share
         # this map with them so each discovery/project scope sends a full
         # session projection once, then omits it until that projection changes.
@@ -642,7 +648,7 @@ class ProblemBoardHostRelayAdapter:
         return projected, signature
 
     def _assignment_files_delta(
-        self, *, project_ref: str
+        self, *, project_ref: str, fresh: bool = False
     ) -> tuple[list[dict[str, Any]] | None, str]:
         """The tracked files in flight per active assignment and repository (W278 part B).
 
@@ -658,6 +664,9 @@ class ProblemBoardHostRelayAdapter:
                 workspaces,
                 self.field.list_assignments(self.config.project_id),
                 worker_name=self.config.worker_name,
+                observe=lambda path, *, base_commit="", limit=MAX_OBSERVED_PATHS_DEFAULT: self._worktree_observer(
+                    path, base_commit=base_commit, limit=limit, fresh=fresh
+                ),
             )
             if workspaces
             else []
@@ -2543,7 +2552,7 @@ class ProblemBoardHostRelayAdapter:
             sessions=agent_sessions,
         )
         assignment_files_delta, files_signature = self._assignment_files_delta(
-            project_ref=project_ref
+            project_ref=project_ref, fresh=force_heartbeat
         )
         heartbeat_sent = force_heartbeat or session_delta is not None or assignment_files_delta is not None or (
             self._project_heartbeat_wait(
