@@ -1,9 +1,9 @@
 ---
 id: project-board-storage-and-retention
 title: Problem Board Storage And Retention
-summary: Where Problem Board state lives, remote and on each machine, how mailbox reconciliation receipts are published, how the owner-worker conversation and the project timeline are kept, and how a worker, its mail and its projects continue across long-running work.
+summary: Where Problem Board state lives, remote and on each machine, how mailbox reconciliation receipts are published, the rules that keep each relay's local state bounded, how the owner-worker conversation and the project timeline are kept, and how a worker, its mail and its projects continue across long-running work.
 tags: [project-board, storage, timeline, retention, conversation]
-keywords: [artifact uri, mailbox link, conversation turns, postgres, local field, git journal]
+keywords: [artifact uri, mailbox link, conversation turns, postgres, local field, git journal, relay local state, retention, pending folder, hour partition]
 see_also:
   - ./README.md
   - ./topology-and-flows.md
@@ -68,13 +68,14 @@ LOCAL: each participating machine
 
 ## Mailbox Reconciliation Receipts
 
-Every host-local mailbox reconciliation run first writes a complete local
-receipt, including runs that archive no messages and emit no failure notices.
-The receipt records the run interval, reporter identity, directory and archive
-counts, every mailbox disposition, each archive result, each failure-notice
-delivery and recipient, and every reporting failure with its code and reason.
-It records operational metadata and references; message bodies remain in the
-private local field.
+A host-local mailbox reconciliation run that archives mail, sends a failure
+notice or hits a reporting failure writes a complete local receipt. A run that
+changes nothing writes no receipt: it updates one small per-worker marker with
+its time and counts (rule LS1 below). The receipt records the run interval,
+reporter identity, directory and archive counts, every mailbox disposition,
+each archive result, each failure-notice delivery and recipient, and every
+reporting failure with its code and reason. It records operational metadata and
+references. Message bodies remain in the private local field.
 
 The relay divides that receipt into independently retryable publications no
 larger than 48 KiB. PostgreSQL stores a receipt header, publication-batch
@@ -93,9 +94,46 @@ bound to the caller, project, query, and last row.
 
 Completed remote receipts have a rolling 30-day window measured from
 `published_at`. Incomplete remote publications have a seven-day recovery
-window. A new publication prunes both windows in the same transaction. A local
-receipt remains until all of its publication batches are durably sent; only
-then may the host apply the 30-day local window.
+window. A new publication prunes both windows in the same transaction.
+
+Locally, a receipt waits in its worker's `pending/` folder until every
+publication batch is terminal, then moves to the hour folder of the run and
+names the outcome in its file name: `published` or `refused`. The host removes
+hour folders of published receipts after 30 days. A refused receipt is kept:
+its evidence never reached the service. A publication needs
+`mail.reconciliation.publish` on the worker's Card.
+
+## Relay Local State
+
+Why this section exists: until W287 the relay kept a receipt for every
+reconciliation run, empty or not, filed refused publications with sent ones,
+and re-read that whole history after every restart. On 2026-09-23 one host held
+51,855 empty receipts and 54,827 settled outbox rows, and each relay restart
+stalled for about four minutes before its first cycle finished.
+
+Five rules govern every store the relay keeps on a host. Code cites them by id
+at the place it enforces them.
+
+| Rule | Statement |
+| --- | --- |
+| LS1 | A record is written only when it carries information. A run that changed nothing updates a marker in place. |
+| LS2 | Every local store has a retention bound and a size bound, enforced by the relay. |
+| LS3 | Startup and per-cycle work is proportional to in-flight work, never to history. |
+| LS4 | A fact that gates expensive work (recovery done, retention due) is kept in the field, never in process memory. |
+| LS5 | Nothing whose cost grows with history runs on the relay's main loop. |
+
+Records in flight live in a `pending/` folder, and recovery reads only that
+folder. Finished records live in hour folders,
+`<store>/<agent>/<yyyy>/<mm>/<dd>/<hh>/`, and a record's file name starts with
+its UTC time range, so retention removes whole folders by name and a listing
+sorts by time without opening a file. Housekeeping (retention and the one-time
+cleanup of the pre-W287 flat receipt directory) runs in a thread beside the
+relay cycle on its own schedule, and records in the field when retention last
+ran.
+
+The outbox files a settled row by its outcome: `sent/` when the service
+accepted it or ignored it, `refused/` when it refused it. Settled rows are
+removed 30 days after they settled.
 
 ## Owner And Worker Conversation
 

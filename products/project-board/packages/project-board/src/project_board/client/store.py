@@ -82,6 +82,11 @@ from .mail_attachments import (
 )
 from .projection import build_projection
 from .plan_storage import BucketedPlanStore
+from .outbox_layout import (
+    OUTBOX_FOLDERS,
+    OUTBOX_IN_FLIGHT_FOLDERS,
+    terminal_folder,
+)
 from .reconciliation_receipts import (
     record_receipt as record_mailbox_reconciliation_receipt,
 )
@@ -686,7 +691,7 @@ class SharedFieldStore:
                 "updated_at": now,
             }
             atomic_write_json(self.manifest_path, record)
-            for relative in ("workers", "projects", "outbox/pending", "outbox/leased", "outbox/sent"):
+            for relative in ("workers", "projects", "outbox/pending", "outbox/leased", "outbox/sent", "outbox/refused"):
                 (self.control / relative).mkdir(parents=True, exist_ok=True, mode=0o700)
             return record
 
@@ -7902,7 +7907,14 @@ class SharedFieldStore:
         return {
             "schema": "problem-board.mailbox-reconciliation.v1",
             "project_ref": make_ref("project", clean_project),
-            "receipt_ref": str(normalized_receipt.get("receipt_ref") or ""),
+            # A run that changed nothing keeps no receipt (W287, LS1), so it
+            # names none.
+            "receipt_ref": (
+                str(normalized_receipt.get("receipt_ref") or "")
+                if stored_receipt.get("stored")
+                else ""
+            ),
+            "receipt_stored": bool(stored_receipt.get("stored")),
             "archived_count": int(normalized_receipt.get("archived_count") or 0),
             "archived_mailboxes": archived_mailboxes,
             "failure_notices": len(failure_notices),
@@ -8239,8 +8251,11 @@ class SharedFieldStore:
         # Reports and service events reach the board through the outbox, so a
         # worker that queued one has demonstrably done something even before it
         # is delivered. Leaving these out made a worker look silent between
-        # doing the work and the relay sending it.
-        for state in ("pending", "leased", "sent"):
+        # doing the work and the relay sending it. Only rows still in flight
+        # count: a delivered row is already a service event, and reading the
+        # delivered history made every plan index pay for 54,843 rows on
+        # dev-main (W287, rule LS3 in storage-and-retention.md).
+        for state in OUTBOX_IN_FLIGHT_FOLDERS:
             for row in json_records(self.control / "outbox" / state):
                 note(str(row.get("worker_name") or ""), str(row.get("created_at") or ""))
         return latest
@@ -8495,7 +8510,7 @@ class SharedFieldStore:
         now = utc_now()
 
         with exclusive_lock(root / ".outbox.lock"):
-            for state in ("pending", "leased", "sent"):
+            for state in OUTBOX_FOLDERS:
                 for path in (root / state).glob("*.json"):
                     existing = read_json(path)
                     if (
@@ -9294,7 +9309,7 @@ class SharedFieldStore:
 
         clean_id = component(outbox_id, field="outbox_id")
         root = self.control / "outbox"
-        for folder in ("sent", "leased", "pending"):
+        for folder in ("sent", "refused", "leased", "pending"):
             row = read_json(root / folder / f"{clean_id}.json", required=False)
             if row:
                 return dict(row)
@@ -9442,7 +9457,7 @@ class SharedFieldStore:
         }
         root = self.control / "outbox"
         with exclusive_lock(root / ".outbox.lock"):
-            for state in ("sent", "leased", "pending"):
+            for state in ("sent", "refused", "leased", "pending"):
                 existing = read_json(
                     root / state / f"{clean_outbox_id}.json", required=False
                 )
@@ -9470,7 +9485,7 @@ class SharedFieldStore:
         clean_id = component(outbox_id, field="outbox_id")
         root = self.control / "outbox"
         with exclusive_lock(root / ".outbox.lock"):
-            for state in ("pending", "leased", "sent"):
+            for state in OUTBOX_FOLDERS:
                 path = root / state / f"{clean_id}.json"
                 if path.exists():
                     return read_json(path)
@@ -9547,7 +9562,7 @@ class SharedFieldStore:
         root = self.control / "outbox"
         rows: list[dict[str, Any]] = []
         with exclusive_lock(root / ".outbox.lock"):
-            for folder in ("pending", "leased", "sent"):
+            for folder in OUTBOX_FOLDERS:
                 for row in json_records(root / folder):
                     if str(row.get("kind") or "") != "mail.route":
                         continue
@@ -9631,7 +9646,7 @@ class SharedFieldStore:
             source = next(
                 (
                     root / folder / f"{clean_id}.json"
-                    for folder in ("pending", "leased", "sent")
+                    for folder in OUTBOX_FOLDERS
                     if (root / folder / f"{clean_id}.json").is_file()
                 ),
                 None,
@@ -9726,7 +9741,7 @@ class SharedFieldStore:
             source = next(
                 (
                     root / folder / f"{clean_id}.json"
-                    for folder in ("pending", "leased", "sent")
+                    for folder in OUTBOX_FOLDERS
                     if (root / folder / f"{clean_id}.json").is_file()
                 ),
                 None,
@@ -9893,7 +9908,9 @@ class SharedFieldStore:
             if outcome == "sent":
                 row.pop("payload", None)
             atomic_write_json(source, row)
-            os.replace(source, root / "sent" / source.name)
+            destination = root / terminal_folder(outcome)
+            destination.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.replace(source, destination / source.name)
             if outcome != "sent":
                 self._release_outbox_idempotency(row)
             return row

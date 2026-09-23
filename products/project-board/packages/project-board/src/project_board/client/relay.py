@@ -62,6 +62,7 @@ from .relay_failures import (
     is_descriptor_exhaustion,
     staged_failure,
 )
+from .local_state_maintenance import run_local_state_maintenance
 from .store import WAKE_OVERDUE_GRACE_SECONDS, SharedFieldStore, _seconds_since
 
 
@@ -2554,7 +2555,16 @@ class ProblemBoardHostRelayAdapter:
         assignment_files_delta, files_signature = self._assignment_files_delta(
             project_ref=project_ref, fresh=force_heartbeat
         )
-        heartbeat_sent = force_heartbeat or session_delta is not None or assignment_files_delta is not None or (
+        # A change in files in flight is worth a heartbeat of its own. An empty
+        # set that this process never published is not a change: without this,
+        # every rebuilt adapter of a worker with no declared worktree forced one
+        # extra heartbeat (30 in one push burst), a regression from W278 part B.
+        # The empty set still rides on the next heartbeat that goes anyway.
+        files_changed = assignment_files_delta is not None and (
+            bool(assignment_files_delta)
+            or project_ref in self._assignment_files_signatures
+        )
+        heartbeat_sent = force_heartbeat or session_delta is not None or files_changed or (
             self._project_heartbeat_wait(
                 project_ref=project_ref,
                 sessions=agent_sessions,
@@ -3093,6 +3103,10 @@ class ProblemBoardRelaySupervisor:
         # channel or a reload cannot hold every worker's pb coordinate.
         self._coordinate_task: asyncio.Task | None = None
         self._coordinate_draining: dict[str, asyncio.Task] = {}
+        # Local-state housekeeping (legacy cleanup, retention) costs time in
+        # proportion to history, so it runs in a thread beside the cycle, never
+        # inside it (W287, rule LS5 in storage-and-retention.md).
+        self._maintenance_task: asyncio.Task | None = None
         # One drain per worker at a time, whichever path starts it. The
         # queue's claim is exclusive per request and released before the
         # request runs, so without this a side drain executing an earlier
@@ -4468,6 +4482,7 @@ class ProblemBoardRelaySupervisor:
         # Stop serving coordinate requests before any session closes, so no
         # drain uses a client that is being torn down.
         await self.stop_coordinate_server()
+        await self.stop_local_state_maintenance()
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)
 
@@ -4802,6 +4817,49 @@ class ProblemBoardRelaySupervisor:
             await self.stop_coordinate_server()
         return stopping
 
+    # -- local-state housekeeping, beside the channel cycle -------------------
+
+    LOCAL_STATE_MAINTENANCE_FIRST_DELAY_SECONDS = 30.0
+    LOCAL_STATE_MAINTENANCE_INTERVAL_SECONDS = 300.0
+
+    def _ensure_local_state_maintenance(self, field_root: Path) -> None:
+        task = self._maintenance_task
+        if task is None or task.done():
+            self._maintenance_task = asyncio.create_task(
+                self._maintain_local_state(field_root),
+                name="problem-board-local-state-maintenance",
+            )
+
+    async def stop_local_state_maintenance(self) -> None:
+        task = self._maintenance_task
+        self._maintenance_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _maintain_local_state(self, field_root: Path) -> None:
+        """Run housekeeping in a thread, first shortly after start, then on an interval.
+
+        Whether retention is due is recorded in the field (LS4), so this
+        interval only decides how often the check runs.
+        """
+
+        await asyncio.sleep(self.LOCAL_STATE_MAINTENANCE_FIRST_DELAY_SECONDS)
+        while True:
+            try:
+                await asyncio.to_thread(
+                    run_local_state_maintenance, SharedFieldStore(field_root)
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - housekeeping never stops the relay
+                logger.warning(
+                    "Problem Board local-state maintenance failed field=%s",
+                    field_root,
+                    exc_info=True,
+                )
+            await asyncio.sleep(self.LOCAL_STATE_MAINTENANCE_INTERVAL_SECONDS)
+
     # -- coordinate requests, served beside the channel cycle -----------------
 
     COORDINATE_SERVE_INTERVAL_SECONDS = 0.25
@@ -4905,6 +4963,7 @@ class ProblemBoardRelaySupervisor:
     async def poll_once(self) -> dict[str, Any]:
         self._ensure_coordinate_server()
         host = HostRelayConfig.load(self.config_path)
+        self._ensure_local_state_maintenance(host.field_root)
         locally_retired = await self._disable_locally_terminal_channels(host)
         if locally_retired:
             host = HostRelayConfig.load(self.config_path)
