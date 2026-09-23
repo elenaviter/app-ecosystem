@@ -5,10 +5,11 @@ summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-09-22
+updated_at: 2026-09-23
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
+  - ../testing/end-to-end-acceptance.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
 ---
@@ -70,9 +71,11 @@ stored card selection                 current deployment catalogs
 All four families use `AutomationAccessRecord`, the same immutable revision
 format, and the same lifecycle implementation. Their purpose and credential
 retention differ. The three caller families appear in the central **Delegated
-by KDCube** list. A Control Card is currently opened by exact id from the
-application that gave it its control role; a future central listing is a view
-over the same records, not another store or migration.
+by KDCube** list. A Control Card is opened by exact id from the application
+that gave it its control role; a future central listing is a view over the same
+records, not another store or migration. A descriptor-controlled agent's
+Control Card is an administrator surface. That access boundary is independent
+of an ordinary user's right to edit their own Agent Card.
 
 | `source` | Represents | How it is created | Credential material retained in the card record |
 | --- | --- | --- | --- |
@@ -88,8 +91,11 @@ different authorization model.
 A Control Card is the same Card aggregate without credential handles. It uses
 the same catalog choices, revisions, current pointer, drift calculation,
 editor, update path, and revoke lifecycle. Connection Hub owns it physically
-and durably. The issuing application stores only its Card reference and any
-observed revision, state, catalog, composition, or synchronization facts.
+and durably. A descriptor-controlled agent gives the Card an exact application
+and agent target. The application synchronizes the descriptor projection;
+Connection Hub stores the Card and, for an administrator edit, writes the
+reviewed change through the target application's descriptor-owned
+configuration.
 
 ### Credential delivery and resource reach
 
@@ -816,30 +822,62 @@ agent attempts a governed operation
 A descriptor-controlled resident agent uses the same stable profile Card ID
 with a different credential contract. Descriptor synchronization creates a
 Card whose `kdcube.agent_capability_selection` property stores the user's
-starting selection and whose linked Control Card stores the descriptor-owned
-ceiling. This Card carries no bearer or refresh token. Its seven-day
-`expires_at` is an inactivity lease chosen for the capability projection, not
-an access-token lifetime. Every agent message synchronizes before projecting
-tools. While the Card remains current, an unchanged sync writes nothing. After
-the lease lapses, the Card grants nothing; the next message writes a renewed
-revision under the same `access_id`, preserves the selected capability base,
-and only then projects tools. The owner therefore keeps one legible Card and
-selection across revisions without abandoned authority remaining live forever.
+positive default selection and whose linked Control Card stores the
+descriptor-owned ceiling and administrator defaults. This Card carries no
+bearer or refresh token. Its seven-day `expires_at` is an inactivity lease
+chosen for the capability projection, not an access-token lifetime. Every
+agent message synchronizes before projecting tools. While the Card remains
+current, an unchanged sync writes nothing. After the lease lapses, the Card
+grants nothing; the next message writes a renewed revision under the same
+`access_id`, preserves the selected capability base, and only then projects
+tools. The owner therefore keeps one legible Card and selection across
+revisions without abandoned authority remaining live forever.
 
-When no resident selection exists, the application supplies the descriptor
-default as the first positive Agent Card selection. Once the Card exists,
-ordinary descriptor synchronization preserves that selection: a capability
-added to the descriptor appears inside the Control Card ceiling but remains
-outside the resident Card until the user selects it. Connection Hub edits this
-base through a dedicated revision-checked selection update, bounded by the
-current linked Control Card. Values outside that ceiling cannot be added.
+The synchronization request keeps the two meanings in separate fields:
 
-The owner-facing surfaces preserve the distinction. The resident Agent Card
-is the editable starting selection. Its descriptor Control Card is a read-only
-view of the synchronized ceiling and its labels and descriptions, rather than
-an empty generic resource editor. A capability picker can open the resident
-Card directly with `tab=delegated_by_kdcube&access_id=<resident-card-id>`; the
-Connection Hub surface resolves and edits that exact Card.
+- `descriptor_payload.capability_defaults` is the administrator's default
+  selection carried by the descriptor projection and stored on the Control
+  Card;
+- `selected_capabilities` is the current user's Agent Card selection.
+
+The descriptor defaults participate in the descriptor revision. A model or
+instruction default change therefore rematerializes an older Control Card
+even when the allowed inventory did not change. When no resident selection
+exists, the application supplies the administrator defaults as the first
+positive Agent Card selection. Once the Agent Card exists, synchronization
+preserves the user's explicit choices. It may fill a missing single-choice
+model or instruction default, but it does not replace a selected model and it
+does not turn an ordinary deselected capability back on. A capability added
+to the descriptor for the first time appears inside the Control Card ceiling
+and remains unselected until the user chooses it. A selected capability that
+is removed from the Control ceiling remains in the user's stored selection as
+unavailable provenance. Restoring that same capability makes the preserved
+selection effective again; a scope that had deselected it remains off.
+
+The owner-facing surfaces preserve the distinction while using the same full
+Card editor. The resident Agent Card is the user's editable default selection.
+It includes the descriptor-projected services, tools, skills, MCPs, models and
+instructions beside the user's connected accounts and user-configured MCPs.
+The descriptor Control Card presents the same capability sections as the
+administrator-owned ceiling and default preset. Only a platform administrator
+may open or mutate that Control Card; an ordinary user cannot obtain its
+authority payload by navigating directly to its id.
+
+Saving the administrator Control Card first merges an exact
+`agent_capability_control_overrides[agent]` entry into the target
+application's descriptor-owned properties. That entry carries
+`capability_defaults`, resource grants and operations, named-service
+operations, and the bounded properties the administrator reviewed. The
+platform writes through its authoritative descriptor store, updates the
+derived runtime view, and then revisions the live Card. A successful edit is
+therefore not a divergent Card-only copy. The active deployment descriptor is
+the source of truth across a runtime restart, reload, or `kdcube refresh`;
+refresh reuses the staged descriptor set. Reinitializing a deployment from a
+different descriptor set establishes that new set as the authority.
+
+A capability picker can open the resident Card directly with
+`tab=delegated_by_kdcube&access_id=<resident-card-id>`; the Connection Hub
+surface resolves and edits that exact Card.
 
 The capability editor preserves the descriptor's hierarchy. Tool groups own
 their tools, MCP servers own their tools, named services own their operations,
@@ -1145,6 +1183,31 @@ derives conventional admission properties, including
 `kdcube.conversation_targets`, from that effective projection. Those properties
 are transport views for established guards, not additional selections and not
 independent sources of authority.
+
+The current Control Card is resolved at the governed operation boundary. It is
+not copied into the Agent Card, a conversation, or a bearer. A conversation
+may retain a selection made under an older Control revision, but that selection
+does not retain authority removed later. If the active descriptor removes
+Slack posting, a custom-MCP resource family, a named service operation, a
+skill, or any other capability, every old and new conversation loses that
+capability on its next call. No Card re-mint or new conversation is required.
+The saved positive choice remains visible but contributes no authority while
+the capability is absent. Restoring the same capability makes that preserved
+choice effective again. A capability that was never selected, or was
+explicitly deselected before removal, remains off.
+
+This gives each layer one responsibility:
+
+| Layer | Stored meaning | Effect of a later edit |
+| --- | --- | --- |
+| Application descriptor and Control Card | Current administrator ceiling and defaults for one application agent | Removals deny every caller immediately; default changes seed new or missing defaults without overwriting explicit user choices. |
+| Agent Card | One user's defaults inside the current ceiling, plus user-owned account and MCP bindings | Changes seed future conversations and do not rewrite existing conversation choices. |
+| Conversation selection | That conversation's positive selection and provenance | Changes apply to that conversation from its next message; the current Control ceiling still bounds every operation. |
+
+The complete human acceptance sequence, including a real Slack side effect,
+administrator write-through, non-administrator denial, existing-conversation
+revocation and restart durability, is in
+[Connection Hub And Governed MCP End-To-End Acceptance](../testing/end-to-end-acceptance.md#resident-agent-control-card-agent-card-and-conversation-projection).
 
 ```text
 presented credential
