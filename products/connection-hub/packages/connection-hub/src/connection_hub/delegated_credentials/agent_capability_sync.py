@@ -9,6 +9,7 @@ import copy
 import dataclasses
 import time
 from typing import Any, Iterable, Mapping
+from urllib.parse import unquote
 
 from connection_hub.delegated_credentials.agent_capability_control import (
     AGENT_DESCRIPTOR_ACCEPTANCE_KIND,
@@ -20,6 +21,7 @@ from connection_hub.delegated_credentials.agent_capability_control import (
 )
 from connection_hub.delegated_credentials.agent_capability_policy import (
     AGENT_CAPABILITY_AUTHORITY_PROPERTY,
+    AGENT_CAPABILITY_DEFAULTS_PROPERTY,
     AGENT_CAPABILITY_PROJECTION_PROPERTY,
     AGENT_CAPABILITY_SELECTION_PROPERTY,
     AgentCapabilityPolicy,
@@ -92,7 +94,9 @@ from connection_hub.delegated_credentials.conversation_target_policy import (
     CONVERSATION_TARGETS_PROPERTY,
 )
 from connection_hub.delegated_credentials.named_service_policy import (
+    configured_named_service_operations,
     named_service_policy_for_resource,
+    operation_grants,
 )
 from connection_hub.delegated_credentials.oauth.grants import integration_subject
 from connection_hub.delegated_credentials.resource_operations import (
@@ -108,6 +112,343 @@ from connection_hub.delegated_credentials.resource_operations import (
 # keeping abandoned resident projections finite. The first agent message after
 # a lapse renews this same Card id and preserves its selection in a new revision.
 AGENT_CAPABILITY_CARD_LEASE_SECONDS = 7 * 24 * 60 * 60
+
+
+def _strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        values = value
+    else:
+        return []
+    return sorted({str(item or "").strip() for item in values if str(item or "").strip()})
+
+
+def _capability_children(
+    policy: AgentCapabilityPolicy | None,
+    category: str,
+    parent: str,
+) -> set[str]:
+    if policy is None:
+        return set()
+    prefix = f"{parent}/"
+    return {
+        unquote(value[len(prefix) :])
+        for value in policy.capabilities.get(category, ())
+        if value.startswith(prefix)
+    }
+
+
+def _operation_matches(declared: str, operation: str) -> bool:
+    return declared == "*" or operation == declared or operation.startswith(
+        f"{declared}."
+    )
+
+
+_NAMED_SERVICE_OUTER_OPERATION = {
+    "provider.about": "named_services_about",
+    "provider.capabilities": "named_services_capabilities",
+    "object.list": "named_services_list",
+    "object.search": "named_services_search",
+    "object.get": "named_services_get",
+    "object.schema": "named_services_schema",
+    "object.upsert": "named_services_upsert",
+    "object.host_file": "named_services_host_file",
+    "object.action": "named_services_action",
+    "object.delete": "named_services_delete",
+}
+
+
+def _named_service_outer_operations(
+    inner_operations: Iterable[str],
+    offered_operations: Iterable[str],
+) -> set[str]:
+    """Map selected inner operations to their exact MCP bridge operations."""
+
+    offered = {
+        str(operation or "").strip()
+        for operation in offered_operations
+        if str(operation or "").strip()
+    }
+    selected: set[str] = set()
+    for operation in sorted({
+        str(value or "").strip()
+        for value in inner_operations
+        if str(value or "").strip()
+    }):
+        family = "object.action" if operation.startswith("object.action.") else operation
+        bridge = _NAMED_SERVICE_OUTER_OPERATION.get(family)
+        if bridge in offered:
+            selected.add(bridge)
+        elif "named_services_call" in offered:
+            # Some providers expose only the generic bridge. The inner Card
+            # boundary still carries the exact operation it may invoke.
+            selected.add("named_services_call")
+    return selected
+
+
+def _named_operation_grants(
+    named_services: Mapping[str, Any],
+    namespace: str,
+) -> dict[str, set[str]]:
+    namespaces = named_services.get("namespaces")
+    if not isinstance(namespaces, Mapping):
+        return {}
+    raw_namespace = next(
+        (
+            value
+            for name, value in namespaces.items()
+            if str(name or "").strip().lower().rstrip(":") == namespace
+            and isinstance(value, Mapping)
+        ),
+        None,
+    )
+    if not isinstance(raw_namespace, Mapping):
+        return {}
+    result: dict[str, set[str]] = {}
+    tools = raw_namespace.get("tools")
+    if not isinstance(tools, Mapping):
+        return result
+    for tool_name, raw_tool in tools.items():
+        if not isinstance(raw_tool, Mapping):
+            continue
+        nested = raw_tool.get("operations")
+        if isinstance(nested, Mapping) and nested:
+            for operation, raw_policy in nested.items():
+                name = str(operation or "").strip()
+                if name:
+                    result[name] = operation_grants(
+                        raw_policy if isinstance(raw_policy, Mapping) else {},
+                        raw_tool,
+                    )
+            continue
+        name = str(raw_tool.get("operation") or tool_name or "").strip()
+        if name:
+            result[name] = operation_grants(raw_tool, {})
+    return result
+
+
+def _merge_authority_map(
+    base: Mapping[str, Iterable[str]],
+    extra: Mapping[str, Iterable[str]],
+) -> dict[str, list[str]]:
+    merged = {key: set(_strings(values)) for key, values in dict(base or {}).items()}
+    for key, values in dict(extra or {}).items():
+        merged.setdefault(str(key), set()).update(_strings(values))
+    return {key: sorted(values) for key, values in merged.items() if values}
+
+
+def _merge_named_authority(
+    base: Mapping[str, Any] | str | None,
+    extra: Mapping[str, Any],
+) -> Mapping[str, Any] | str:
+    if base == "*":
+        return "*"
+    merged: dict[str, dict[str, list[str]]] = {}
+    for source in (base or {}, extra or {}):
+        if not isinstance(source, Mapping):
+            continue
+        for resource, namespaces in source.items():
+            if not isinstance(namespaces, Mapping):
+                continue
+            for namespace, operations in namespaces.items():
+                selected = merged.setdefault(str(resource), {}).setdefault(
+                    str(namespace), []
+                )
+                raw_operations = (
+                    [operations]
+                    if isinstance(operations, str)
+                    else operations
+                    if isinstance(operations, (list, tuple, set, frozenset))
+                    else ()
+                )
+                for operation in raw_operations:
+                    value = str(operation or "").strip()
+                    if value and value not in selected:
+                        selected.append(value)
+    return {
+        resource: {
+            namespace: operations
+            for namespace, operations in namespaces.items()
+            if operations
+        }
+        for resource, namespaces in merged.items()
+        if any(namespaces.values())
+    }
+
+
+def _resolved_from_card(authority: CardAuthority) -> ResolvedCardAuthority:
+    """Use a live Control Card as the preset for a newly attached Agent Card."""
+
+    return ResolvedCardAuthority(
+        resource_grants={
+            resource: list(grants)
+            for resource, grants in authority.resource_grants.items()
+        },
+        resource_operations={
+            resource: list(operations)
+            for resource, operations in authority.resource_operations.items()
+        },
+        operations=list(authority.operations),
+        named_service_operations=authority.named_service_operations,
+        named_services=copy.deepcopy(dict(authority.named_services or {})),
+        account_scope={},
+        identity_scope=authority.identity_scope,
+        properties=copy.deepcopy(dict(authority.properties or {})),
+    )
+
+
+def _descriptor_standard_maps(
+    *,
+    catalog_config: Any,
+    descriptor_payload: Mapping[str, Any],
+    selection: AgentCapabilityPolicy | None,
+) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, Any]]:
+    """Resolve consumer requests through the active provider-owned catalog."""
+
+    if descriptor_payload.get("standard_authority_overridden") is True:
+        return {}, {}, {}
+    request = descriptor_payload.get("standard_authority")
+    if request is None:
+        return {}, {}, {}
+    if not isinstance(request, Mapping):
+        raise ValueError("agent_descriptor_standard_authority_invalid")
+
+    grants: dict[str, set[str]] = {}
+    operations: dict[str, set[str]] = {}
+    named: dict[str, dict[str, set[str]]] = {}
+
+    selected_servers = (
+        set(selection.capabilities.get("mcp_servers", ()))
+        if selection is not None
+        else None
+    )
+    for raw in request.get("resources") or ():
+        if not isinstance(raw, Mapping):
+            raise ValueError("agent_descriptor_resource_request_invalid")
+        server_id = str(raw.get("server_id") or "").strip()
+        resource = str(raw.get("resource") or "").strip()
+        if not server_id or not resource:
+            raise ValueError("agent_descriptor_resource_request_invalid")
+        if selected_servers is not None and server_id not in selected_servers:
+            continue
+        configured = catalog_config.card_selector_config(resource)
+        if configured is None:
+            raise ValueError(f"unknown delegated resource: {resource}")
+        resource_key = str(configured.resource or "").strip()
+        offered_tools = {
+            str(tool.name or "").strip(): tool
+            for tool in configured.tools or ()
+            if str(tool.name or "").strip()
+        }
+        requested = _strings(raw.get("operations"))
+        if selection is not None:
+            selected_tools = _capability_children(selection, "mcp_tools", server_id)
+            requested = [name for name in requested if name == "*" or name in selected_tools]
+            if "*" in _strings(raw.get("operations")):
+                requested = sorted(selected_tools)
+        selected_operations = (
+            sorted(offered_tools)
+            if "*" in requested
+            else requested
+        )
+        unknown = sorted(set(selected_operations) - set(offered_tools))
+        if unknown:
+            raise ValueError(
+                f"unknown delegated operation(s) for {resource_key!r}: "
+                + ", ".join(unknown)
+            )
+        selected_grants = set(_strings(raw.get("grants")))
+        for operation in selected_operations:
+            selected_grants.update(offered_tools[operation].grants or ())
+        allowed_grants = set(catalog_config.supported_scopes(resource_key))
+        if not selected_grants.issubset(allowed_grants):
+            raise ValueError(f"delegated resource grants invalid for {resource_key!r}")
+        if selected_grants:
+            grants.setdefault(resource_key, set()).update(selected_grants)
+        if selected_operations:
+            operations.setdefault(resource_key, set()).update(selected_operations)
+
+    requested_namespaces = request.get("named_services") or ()
+    selected_namespaces = (
+        set(selection.capabilities.get("named_services", ()))
+        if selection is not None
+        else None
+    )
+    for raw in requested_namespaces:
+        if not isinstance(raw, Mapping):
+            raise ValueError("agent_descriptor_named_service_request_invalid")
+        namespace = str(raw.get("namespace") or "").strip().lower().rstrip(":")
+        if not namespace:
+            raise ValueError("agent_descriptor_named_service_request_invalid")
+        if selected_namespaces is not None and namespace not in selected_namespaces:
+            continue
+        declared = _strings(raw.get("operations"))
+        selected_inner = (
+            _capability_children(
+                selection, "named_service_operations", namespace
+            )
+            if selection is not None
+            else None
+        )
+        candidates: list[tuple[Any, set[str], dict[str, set[str]]]] = []
+        for configured in catalog_config.resources:
+            if not isinstance(configured.named_services, Mapping):
+                continue
+            offered = configured_named_service_operations(configured.named_services)
+            if namespace not in offered:
+                continue
+            matched = {
+                operation
+                for operation in offered[namespace]
+                if any(_operation_matches(wanted, operation) for wanted in declared)
+                and (
+                    selected_inner is None
+                    or any(
+                        _operation_matches(wanted, operation)
+                        for wanted in selected_inner
+                    )
+                )
+            }
+            if matched:
+                candidates.append(
+                    (
+                        configured,
+                        matched,
+                        _named_operation_grants(configured.named_services, namespace),
+                    )
+                )
+        if len(candidates) != 1:
+            raise ValueError(
+                f"named-service namespace {namespace!r} resolves to "
+                f"{len(candidates)} catalog resources"
+            )
+        configured, matched, grants_by_operation = candidates[0]
+        resource_key = str(configured.resource or "").strip()
+        resource_grants = grants.setdefault(resource_key, set())
+        for operation in matched:
+            resource_grants.update(grants_by_operation.get(operation, ()))
+        operations.setdefault(resource_key, set()).update(
+            _named_service_outer_operations(
+                matched,
+                (tool.name for tool in configured.tools or ()),
+            )
+        )
+        named.setdefault(resource_key, {}).setdefault(namespace, set()).update(matched)
+
+    return (
+        {resource: sorted(values) for resource, values in grants.items() if values},
+        {resource: sorted(values) for resource, values in operations.items() if values},
+        {
+            resource: {
+                namespace: sorted(values)
+                for namespace, values in namespaces.items()
+                if values
+            }
+            for resource, namespaces in named.items()
+            if any(namespaces.values())
+        },
+    )
 
 
 async def resolve_agent_descriptor_standard_authority(
@@ -343,6 +684,7 @@ async def sync_agent_capability_control(
             raise AgentCapabilityPolicyError("agent_capability_resource_mismatch")
         descriptor_properties = descriptor_control_properties(
             authority=authority,
+            defaults=requested_selection,
             metadata=capability_metadata,
             targets=conversation_target_resources,
         )
@@ -365,13 +707,36 @@ async def sync_agent_capability_control(
     try:
         active = await service._active_catalog()
         catalog_version = service._version_of(active)
+        catalog_config = await service._catalog_config(
+            active,
+            owner_subject=grantor_subject,
+        )
+        descriptor_grants, descriptor_operations, descriptor_named = (
+            _descriptor_standard_maps(
+                catalog_config=catalog_config,
+                descriptor_payload=descriptor_payload,
+                selection=None,
+            )
+        )
+        control_grants = _merge_authority_map(
+            resource_grants or {},
+            descriptor_grants,
+        )
+        control_operations = _merge_authority_map(
+            resource_operations or {},
+            descriptor_operations,
+        )
+        control_named = _merge_named_authority(
+            named_service_operations,
+            descriptor_named,
+        )
         resolved = await resolve_agent_descriptor_standard_authority(
             service,
             active=active,
             owner_subject=grantor_subject,
-            resource_grants=resource_grants or {},
-            resource_operations=resource_operations,
-            named_service_operations=named_service_operations,
+            resource_grants=control_grants,
+            resource_operations=control_operations,
+            named_service_operations=control_named,
             properties=descriptor_properties,
         )
         selected_standard = None
@@ -382,16 +747,41 @@ async def sync_agent_capability_control(
                 selected_resource_operations,
                 selected_named_service_operations,
             )
-        ):
+        ) or requested_selection is not None:
+            default_grants, default_operations, default_named = (
+                _descriptor_standard_maps(
+                    catalog_config=catalog_config,
+                    descriptor_payload=descriptor_payload,
+                    selection=requested_selection,
+                )
+                if requested_selection is not None
+                else ({}, {}, {})
+            )
             selected_standard = await resolve_agent_descriptor_standard_authority(
                 service,
                 active=active,
                 owner_subject=grantor_subject,
-                resource_grants=selected_resource_grants or {},
-                resource_operations=selected_resource_operations,
-                named_service_operations=selected_named_service_operations,
+                resource_grants=_merge_authority_map(
+                    selected_resource_grants or {},
+                    default_grants,
+                ),
+                resource_operations=_merge_authority_map(
+                    selected_resource_operations or {},
+                    default_operations,
+                ),
+                named_service_operations=_merge_named_authority(
+                    selected_named_service_operations,
+                    default_named,
+                ),
                 properties=descriptor_properties,
             )
+    except (AgentCapabilityPolicyError, ValueError) as exc:
+        return {
+            "ok": False,
+            "error": getattr(exc, "reason", "agent_descriptor_authority_invalid"),
+            "message": str(exc),
+            "status": 400,
+        }
     except CatalogUnavailable as exc:
         return {
             "ok": False,
@@ -461,10 +851,6 @@ async def sync_agent_capability_control(
             "status": 409,
         }
 
-    catalog_config = await service._catalog_config(
-        active,
-        owner_subject=grantor_subject,
-    )
     now = int(time.time())
     existing_descriptor = (
         dict(existing_control.resource_acceptance or {}).get(agent_resource)
@@ -569,6 +955,14 @@ async def sync_agent_capability_control(
         authority = AgentCapabilityPolicy.from_property(
             control_authority.properties[AGENT_CAPABILITY_AUTHORITY_PROPERTY]
         )
+        raw_defaults = control_authority.properties.get(
+            AGENT_CAPABILITY_DEFAULTS_PROPERTY
+        )
+        defaults = (
+            AgentCapabilityPolicy.from_property(raw_defaults)
+            if raw_defaults is not None
+            else AgentCapabilityPolicy.empty(agent_resource)
+        )
     except (KeyError, AgentCapabilityPolicyError) as exc:
         return {
             "ok": False,
@@ -632,7 +1026,9 @@ async def sync_agent_capability_control(
             if raw_current_selection is not None
             else (
                 requested_selection
-                if requested_selection is not None
+                if requested_selection is not None and not descriptor_is_current
+                else defaults
+                if existing_resident is None
                 else AgentCapabilityPolicy.empty(agent_resource)
             )
         )
@@ -663,7 +1059,11 @@ async def sync_agent_capability_control(
             control_revision=control_authority.card_revision,
         )
     )
-    initial_standard = selected_standard or resolved
+    initial_standard = (
+        _resolved_from_card(control_authority)
+        if descriptor_is_current
+        else (selected_standard or resolved)
+    )
     if existing_resident is None:
         resident_acceptance = next_resource_acceptance(
             resources=initial_standard.resource_grants,

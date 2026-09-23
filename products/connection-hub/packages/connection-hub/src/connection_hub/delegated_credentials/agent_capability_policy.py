@@ -20,6 +20,7 @@ AGENT_CAPABILITY_METADATA_SCHEMA = "connection_hub.agent_capability_metadata.v1"
 AGENT_DESCRIPTOR_CONTROL_SCHEMA = "connection_hub.agent_descriptor_control.v1"
 
 AGENT_CAPABILITY_AUTHORITY_PROPERTY = "kdcube.agent_capability_authority"
+AGENT_CAPABILITY_DEFAULTS_PROPERTY = "kdcube.agent_capability_defaults"
 AGENT_CAPABILITY_SELECTION_PROPERTY = "kdcube.agent_capability_selection"
 AGENT_CAPABILITY_METADATA_PROPERTY = "kdcube.agent_capability_metadata"
 AGENT_CAPABILITY_PROJECTION_PROPERTY = "kdcube.agent_capability_projection"
@@ -291,6 +292,14 @@ def compose_agent_capability_properties(
         AGENT_CAPABILITY_SELECTION_PROPERTY: selection.to_property(),
         AGENT_CAPABILITY_PROJECTION_PROPERTY: projection.to_property(),
     }
+    raw_defaults = (control or {}).get(AGENT_CAPABILITY_DEFAULTS_PROPERTY)
+    if raw_defaults is not None:
+        defaults = AgentCapabilityPolicy.from_property(raw_defaults)
+        if defaults.resource != marker.resource:
+            raise AgentCapabilityPolicyError("agent_capability_resource_mismatch")
+        result[AGENT_CAPABILITY_DEFAULTS_PROPERTY] = defaults.intersection(
+            authority
+        ).to_property()
     metadata = (control or {}).get(AGENT_CAPABILITY_METADATA_PROPERTY)
     if metadata is not None:
         if not isinstance(metadata, Mapping):
@@ -305,6 +314,7 @@ def compose_agent_capability_properties(
 
 __all__ = [
     "AGENT_CAPABILITY_AUTHORITY_PROPERTY",
+    "AGENT_CAPABILITY_DEFAULTS_PROPERTY",
     "AGENT_CAPABILITY_METADATA_PROPERTY",
     "AGENT_CAPABILITY_METADATA_SCHEMA",
     "AGENT_CAPABILITY_POLICY_SCHEMA",

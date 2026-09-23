@@ -1,5 +1,6 @@
 export const AGENT_CAPABILITY_SELECTION_PROPERTY = 'kdcube.agent_capability_selection';
 export const AGENT_CAPABILITY_AUTHORITY_PROPERTY = 'kdcube.agent_capability_authority';
+export const AGENT_CAPABILITY_DEFAULTS_PROPERTY = 'kdcube.agent_capability_defaults';
 export const AGENT_CAPABILITY_METADATA_PROPERTY = 'kdcube.agent_capability_metadata';
 export const AGENT_DESCRIPTOR_CONTROL_PROPERTY = 'kdcube.agent_descriptor_control';
 export const AGENT_CAPABILITY_POLICY_SCHEMA = 'connection_hub.agent_capability_policy.v1';
@@ -40,6 +41,11 @@ export interface AgentCapabilitySelection {
 export interface AgentCapabilityMetadataEntry {
   title?: string;
   description?: string;
+}
+
+export interface AgentDescriptorTarget {
+  application: string;
+  agent: string;
 }
 
 export type AgentCapabilityMetadata = Record<string, Record<string, AgentCapabilityMetadataEntry>>;
@@ -107,6 +113,13 @@ export function cardAgentCapabilityAuthority(
   return cardAgentCapabilityPolicy(properties, AGENT_CAPABILITY_AUTHORITY_PROPERTY);
 }
 
+/** Parse the administrator-selected defaults carried by a descriptor Control Card. */
+export function cardAgentCapabilityDefaults(
+  properties: Record<string, unknown> | undefined,
+): AgentCapabilitySelection | null {
+  return cardAgentCapabilityPolicy(properties, AGENT_CAPABILITY_DEFAULTS_PROPERTY);
+}
+
 export function cardAgentCapabilityMetadata(
   properties: Record<string, unknown> | undefined,
 ): AgentCapabilityMetadata {
@@ -140,6 +153,27 @@ export function isAgentDescriptorControl(
     && raw.schema === AGENT_DESCRIPTOR_CONTROL_SCHEMA
     && typeof raw.resource === 'string'
     && Boolean(raw.resource.trim());
+}
+
+export function cardAgentDescriptorTarget(
+  properties: Record<string, unknown> | undefined,
+): AgentDescriptorTarget | null {
+  const raw = properties?.[AGENT_DESCRIPTOR_CONTROL_PROPERTY];
+  if (!isRecord(raw) || raw.schema !== AGENT_DESCRIPTOR_CONTROL_SCHEMA) return null;
+  const resource = typeof raw.resource === 'string' ? raw.resource.trim() : '';
+  const prefix = 'urn:kdcube:app:';
+  if (!resource.startsWith(prefix)) return null;
+  const parts = resource.slice(prefix.length).split(':');
+  if (parts.length !== 4) return null;
+  try {
+    const application = decodeURIComponent(parts[2]);
+    const agent = decodeURIComponent(parts[3]);
+    return application && agent && application !== '*' && agent !== '*'
+      ? { application, agent }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export function agentCapabilitySelectionMap(

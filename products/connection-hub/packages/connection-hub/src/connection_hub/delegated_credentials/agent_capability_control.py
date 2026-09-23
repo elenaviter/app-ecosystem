@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 from connection_hub.delegated_credentials.agent_capability_policy import (
     AGENT_CAPABILITY_AUTHORITY_PROPERTY,
+    AGENT_CAPABILITY_DEFAULTS_PROPERTY,
     AGENT_CAPABILITY_METADATA_PROPERTY,
     AGENT_CAPABILITY_METADATA_SCHEMA,
     AGENT_CAPABILITY_PROJECTION_PROPERTY,
@@ -47,6 +48,7 @@ def _member(parent: str, child: str) -> str:
 def descriptor_control_properties(
     *,
     authority: AgentCapabilityPolicy,
+    defaults: AgentCapabilityPolicy | None = None,
     metadata: Mapping[str, Any] | None = None,
     targets: Iterable[str] = (),
 ) -> dict[str, Any]:
@@ -59,6 +61,11 @@ def descriptor_control_properties(
         AGENT_CAPABILITY_AUTHORITY_PROPERTY: authority.to_property(),
         CONVERSATION_TARGETS_PROPERTY: raw_targets,
     }
+    if defaults is not None:
+        authority._same_resource(defaults)
+        properties[AGENT_CAPABILITY_DEFAULTS_PROPERTY] = defaults.intersection(
+            authority
+        ).to_property()
     normalized_targets = conversation_targets(properties)
     if raw_targets and not normalized_targets:
         raise AgentCapabilityPolicyError("agent_conversation_targets_invalid")
@@ -145,6 +152,7 @@ def resident_selection_properties(
     result = copy.deepcopy(dict(properties or {}))
     for name in (
         AGENT_CAPABILITY_AUTHORITY_PROPERTY,
+        AGENT_CAPABILITY_DEFAULTS_PROPERTY,
         AGENT_CAPABILITY_METADATA_PROPERTY,
         AGENT_CAPABILITY_PROJECTION_PROPERTY,
         AGENT_DESCRIPTOR_CONTROL_PROPERTY,
