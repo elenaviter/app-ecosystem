@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import os
-import stat
+import sys
+import threading
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -15,6 +16,9 @@ RELAY_LOG_FILENAME = "relay.stderr.log"
 # retaining several recent relay windows for diagnosis.
 RELAY_LOG_MAX_BYTES = 10 * 1024 * 1024
 RELAY_LOG_BACKUP_COUNT = 3
+RELAY_CRASH_LOG_FILENAME = "relay.crash.log"
+RELAY_CRASH_LOG_MAX_BYTES = 1024 * 1024
+RELAY_LOGGER_NAME = "project_board.relay"
 
 
 class UtcPerLineFormatter(logging.Formatter):
@@ -35,24 +39,41 @@ def relay_log_path(config_path: str | Path) -> Path:
     return Path(config_path).expanduser().resolve().parent / "logs" / RELAY_LOG_FILENAME
 
 
+def relay_crash_log_path(config_path: str | Path) -> Path:
+    return (
+        Path(config_path).expanduser().resolve().parent
+        / "logs"
+        / RELAY_CRASH_LOG_FILENAME
+    )
+
+
 def _backup_path(path: Path, index: int) -> Path:
     return path.with_name(f"{path.name}.{index}")
 
 
 def _trim_to_tail(path: Path, max_bytes: int) -> None:
-    current = path.stat()
-    if current.st_size <= max_bytes:
+    if path.stat().st_size <= max_bytes:
         return
-    temporary = path.with_name(f".{path.name}.trim.{os.getpid()}")
-    try:
-        with path.open("rb") as source:
-            source.seek(-max_bytes, os.SEEK_END)
-            tail = source.read(max_bytes)
-        temporary.write_bytes(tail)
-        os.chmod(temporary, stat.S_IMODE(current.st_mode))
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    # Preserve the inode: the supervisor has already opened relay.crash.log as
+    # stderr when relay startup reaches this function.
+    with path.open("r+b") as target:
+        target.seek(-max_bytes, os.SEEK_END)
+        tail = target.read(max_bytes)
+        target.seek(0)
+        target.write(tail)
+        target.truncate()
+
+
+def prepare_relay_crash_log(
+    path: Path,
+    *,
+    max_bytes: int = RELAY_CRASH_LOG_MAX_BYTES,
+) -> None:
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        _trim_to_tail(path, max_bytes)
 
 
 def prepare_relay_log(
@@ -118,13 +139,38 @@ def configure_relay_logging(
     path: Path | None = None
     if config_path is not None:
         path = relay_log_path(config_path)
+        prepare_relay_crash_log(relay_crash_log_path(config_path))
         handlers.append(rotating_relay_handler(path))
     if mirror_to_stderr or not handlers:
         stream = logging.StreamHandler()
         stream.setFormatter(UtcPerLineFormatter("%(message)s"))
         handlers.append(stream)
     logging.basicConfig(level=logging.INFO, handlers=handlers, force=True)
+    install_relay_exception_hooks()
     return path
+
+
+def _relay_sys_excepthook(exc_type, exc_value, exc_traceback) -> None:
+    logging.getLogger(RELAY_LOGGER_NAME).critical(
+        "Uncaught exception",
+        exc_info=(exc_type, exc_value, exc_traceback),
+    )
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
+
+
+def _relay_thread_excepthook(args: threading.ExceptHookArgs) -> None:
+    thread_name = args.thread.name if args.thread is not None else "unknown"
+    logging.getLogger(RELAY_LOGGER_NAME).critical(
+        "Uncaught exception in thread %s",
+        thread_name,
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+    threading.__excepthook__(args)
+
+
+def install_relay_exception_hooks() -> None:
+    sys.excepthook = _relay_sys_excepthook
+    threading.excepthook = _relay_thread_excepthook
 
 
 def relay_log_status(
@@ -143,6 +189,7 @@ def relay_log_status(
             files.append(
                 {"path": str(candidate), "size_bytes": candidate.stat().st_size}
             )
+    crash_path = path.with_name(RELAY_CRASH_LOG_FILENAME)
     return {
         "path": str(path),
         "size_bytes": path.stat().st_size if path.is_file() else 0,
@@ -151,16 +198,26 @@ def relay_log_status(
         "max_total_bytes": max_bytes * (backup_count + 1),
         "total_size_bytes": sum(int(item["size_bytes"]) for item in files),
         "files": files,
+        "crash": {
+            "path": str(crash_path),
+            "size_bytes": crash_path.stat().st_size if crash_path.is_file() else 0,
+            "max_bytes": RELAY_CRASH_LOG_MAX_BYTES,
+        },
     }
 
 
 __all__ = [
     "RELAY_LOG_BACKUP_COUNT",
+    "RELAY_CRASH_LOG_FILENAME",
+    "RELAY_CRASH_LOG_MAX_BYTES",
     "RELAY_LOG_FILENAME",
     "RELAY_LOG_MAX_BYTES",
     "UtcPerLineFormatter",
     "configure_relay_logging",
+    "install_relay_exception_hooks",
+    "prepare_relay_crash_log",
     "prepare_relay_log",
+    "relay_crash_log_path",
     "relay_log_path",
     "relay_log_status",
     "rotating_relay_handler",

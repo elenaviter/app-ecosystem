@@ -4,10 +4,13 @@ import logging
 import os
 import plistlib
 import subprocess
+import sys
 from pathlib import Path
 
 from project_board.client import entrypoint, relay_service
 from project_board.client.relay_logging import (
+    RELAY_CRASH_LOG_MAX_BYTES,
+    prepare_relay_crash_log,
     prepare_relay_log,
     relay_log_status,
     rotating_relay_handler,
@@ -69,15 +72,71 @@ def test_rotating_handler_caps_active_log_and_removes_oldest(tmp_path: Path) -> 
     assert not path.with_name(f"{path.name}.3").exists()
 
 
-def test_service_managers_do_not_hold_the_rotating_log_open(tmp_path: Path) -> None:
-    launchd = plistlib.loads(_service(tmp_path, system="Darwin").render())
-    systemd = _service(tmp_path, system="Linux").render().decode("utf-8")
+def test_service_managers_use_a_separate_crash_log(tmp_path: Path) -> None:
+    launchd_service = _service(tmp_path, system="Darwin")
+    systemd_service = _service(tmp_path, system="Linux")
+    launchd = plistlib.loads(launchd_service.render())
+    systemd = systemd_service.render().decode("utf-8")
 
     assert launchd["StandardOutPath"] == os.devnull
-    assert launchd["StandardErrorPath"] == os.devnull
+    assert launchd["StandardErrorPath"] == str(launchd_service.crash_log_path)
     assert "StandardOutput=null\n" in systemd
-    assert "StandardError=null\n" in systemd
+    assert (
+        f"StandardError=append:{systemd_service.crash_log_path}\n" in systemd
+    )
     assert "append:relay.stderr.log" not in systemd
+
+
+def test_crash_log_is_trimmed_in_place_and_reported(tmp_path: Path) -> None:
+    relay_path = tmp_path / "logs" / "relay.stderr.log"
+    crash_path = relay_path.with_name("relay.crash.log")
+    crash_path.parent.mkdir()
+    content = bytes(range(256)) * 8
+    crash_path.write_bytes(content)
+    inode = crash_path.stat().st_ino
+
+    prepare_relay_crash_log(crash_path, max_bytes=256)
+
+    assert crash_path.stat().st_ino == inode
+    assert crash_path.read_bytes() == content[-256:]
+    status = relay_log_status(relay_path)
+    assert status["crash"] == {
+        "path": str(crash_path),
+        "size_bytes": 256,
+        "max_bytes": RELAY_CRASH_LOG_MAX_BYTES,
+    }
+
+
+def test_uncaught_thread_exception_reaches_rotating_log(tmp_path: Path) -> None:
+    config = tmp_path / "relay.json"
+    script = f"""
+import threading
+from pathlib import Path
+from project_board.client.relay_logging import configure_relay_logging
+
+configure_relay_logging(Path({str(config)!r}), mirror_to_stderr=False)
+
+def fail():
+    raise RuntimeError("thread exploded")
+
+thread = threading.Thread(target=fail, name="relay-crash-test")
+thread.start()
+thread.join()
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    rendered = (tmp_path / "logs" / "relay.stderr.log").read_text(
+        encoding="utf-8"
+    )
+    assert "Uncaught exception in thread relay-crash-test" in rendered
+    assert "RuntimeError: thread exploded" in rendered
+    assert "RuntimeError: thread exploded" in result.stderr
 
 
 def test_restart_reloads_launchd_definition_before_kickstart(
@@ -97,7 +156,7 @@ def test_restart_reloads_launchd_definition_before_kickstart(
     result = service.restart()
 
     rendered = plistlib.loads(service.definition_path.read_bytes())
-    assert rendered["StandardErrorPath"] == os.devnull
+    assert rendered["StandardErrorPath"] == str(service.crash_log_path)
     assert [command[1] for command in calls] == [
         "print",
         "bootout",
