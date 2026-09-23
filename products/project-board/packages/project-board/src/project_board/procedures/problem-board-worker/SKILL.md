@@ -28,12 +28,16 @@ session to addressed work; it does not start a model.
 Host setup and relay administration are operator-owned: an agent types
 `pb relay-service install` only after the operator approves it, and restarting
 an installed service is a coordinated runtime action. Selecting a released
-client version or an App Ecosystem commit with `pb source` is the same kind of
+client version or an App Ecosystem plus KDCube source manifest with `pb source` is the same kind of
 host action because it changes both the command and relay source. When `pb status` is not
 `session_attending` or `pb` is missing, guide the user through setup with
 [first run](references/first-run.md), never inventing a value they own.
 
 ## Choose A Relevant Next Action
+
+Critically assess claims that determine architecture, data ownership, identity,
+representation, or data flow. Trace and record the real boundaries and failure
+states; an existing assumption is not authority for a costly foundation.
 
 Before an action, name the task or observed event that calls for it and what
 its result could change. Reassess after a wake or a returned command; a check

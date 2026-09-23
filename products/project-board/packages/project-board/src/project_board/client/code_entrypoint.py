@@ -1,4 +1,4 @@
-"""Run Project Board from one exported App Ecosystem commit.
+"""Run Project Board from one exported multi-repository source manifest.
 
 This file is executed directly from a content-addressed release. It adds only
 the package sources named by that release marker, then enters the normal
@@ -50,6 +50,7 @@ def _source_roots(release: Path, marker: dict[str, object]) -> list[str]:
 
 def main() -> int:
     release, marker = _release_root(Path(__file__))
+    sys.dont_write_bytecode = True
     sys.path[:0] = _source_roots(release, marker)
     from project_board.client.entrypoint import main as client_main
 

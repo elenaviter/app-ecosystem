@@ -101,10 +101,10 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
     assert "This section is the owning definition" in first_run
     assert "setup guides point here rather than restating the meanings" in first_run
     assert "`pb` is the console command in the `project-board` distribution" in first_run
-    assert "one dependency resolution over all five first-party package paths" in first_run
+    assert "one dependency resolution over all six first-party package paths" in first_run
     assert "scripts/install_from_source.py" in first_run
-    assert "the full commit, all five package trees" in first_run
-    assert "never becomes a runtime import path" in first_run
+    assert "the composite release ID, both full commits, all six package trees" in first_run
+    assert "never become runtime import paths" in first_run
     assert "run it after they approve" in first_run
     # A worker whose credential was refused is not attending (coordinator, 2026-09-21 10:41Z).
     assert "its channel is `pending_authorization`" in first_run
@@ -142,15 +142,15 @@ def test_source_selection_guidance_is_added_without_rewriting_collaboration() ->
     coordinator = _words(_read("references/coordinator.md"))
     collaboration = _words(_read("references/collaboration.md"))
 
-    assert "Selecting a released client version or an App Ecosystem commit with `pb source`" in skill
-    assert "clean export of an approved App Ecosystem commit" in first_run
+    assert "Selecting a released client version or an App Ecosystem plus KDCube source manifest with `pb source`" in skill
+    assert "clean exports of approved App Ecosystem and KDCube commits" in first_run
     assert "`pb source use-release --expect-version <version>`" in runtime
-    assert "`pb source use-code --repository <app-ecosystem> --ref <ref> --expect <full-commit>`" in runtime
+    assert "`pb source use-code` with both repository paths, refs, and full approved commits" in runtime
     assert "`client.pinned: false` with `source.mode: checkout`" in runtime
     assert "Cut Over A Host That Still Runs The Checkout Client" in runtime
     assert "only then fast-forward or remove the checkout implementation" in runtime
-    assert "the full commit, all five package trees" in runtime
-    assert "the full App Ecosystem commit" in coordinator
+    assert "the release ID, both full commits, all six package trees" in runtime
+    assert "the full App Ecosystem and KDCube commits" in coordinator
     assert "before fast-forwarding that checkout" in coordinator
     assert "one recorded source selection, not from any working tree" in collaboration
     assert "The integration ref is source history, not a runtime selection" in collaboration
@@ -177,6 +177,8 @@ def test_skill_carries_rules_not_stories() -> None:
     assert "Incidents go to the journal, where search finds them" in words
     assert "not into this skill, which is read every time" in words
     assert "carries the rule with one clause of reason" in words
+    assert "Critically assess claims that determine architecture, data ownership, identity, representation, or data flow" in words
+    assert "an existing assumption is not authority for a costly foundation" in words
 
 
 def test_authority_and_next_action_rules() -> None:

@@ -20,24 +20,42 @@ def _installer_module():
     return module
 
 
-def _source_export(module, root: Path) -> tuple[Path, ...]:
-    paths = tuple(root / relative for relative in module.PACKAGE_PATHS)
+def _source_exports(module, root: Path) -> tuple[Path, Path, tuple[Path, ...]]:
+    source_root = root / "app-ecosystem"
+    kdcube_source_root = root / "kdcube"
+    roots = {
+        module.APP_ECOSYSTEM_COMPONENT: source_root,
+        module.KDCUBE_COMPONENT: kdcube_source_root,
+    }
+    paths = tuple(
+        roots[component] / relative
+        for component in (
+            module.APP_ECOSYSTEM_COMPONENT,
+            module.KDCUBE_COMPONENT,
+        )
+        for relative in module.SOURCE_PATHS_BY_COMPONENT[component]
+    )
     for path in paths:
         path.mkdir(parents=True)
-    return paths
+    return source_root, kdcube_source_root, paths
 
 
 def test_source_installer_names_the_complete_first_party_package_family(tmp_path: Path):
     installer = _installer_module()
-    expected = _source_export(installer, tmp_path)
+    source_root, kdcube_source_root, expected = _source_exports(
+        installer, tmp_path
+    )
 
-    assert installer._first_party_packages(tmp_path) == expected
+    assert installer._first_party_packages(
+        source_root, kdcube_source_root
+    ) == expected
     assert [path.name for path in expected] == [
+        "project-board",
         "app-foundation",
         "service-foundation",
         "connection-hub",
         "connection-hub-cli",
-        "project-board",
+        "kdcube_cli",
     ]
 
 
@@ -46,8 +64,9 @@ def test_source_installer_resolves_all_first_party_packages_in_one_pip_call(
     monkeypatch: pytest.MonkeyPatch,
 ):
     installer = _installer_module()
-    source_root = tmp_path / "source"
-    packages = _source_export(installer, source_root)
+    source_root, kdcube_source_root, packages = _source_exports(
+        installer, tmp_path / "source"
+    )
     venv = tmp_path / "venv"
     python = venv / "bin" / "python"
     pb_command = venv / "bin" / "pb"
@@ -69,6 +88,7 @@ def test_source_installer_resolves_all_first_party_packages_in_one_pip_call(
 
     result = installer.install(
         source_root=source_root,
+        kdcube_source_root=kdcube_source_root,
         venv=venv,
         command_dir=tmp_path / "bin",
         base_python=Path("/usr/bin/python3"),

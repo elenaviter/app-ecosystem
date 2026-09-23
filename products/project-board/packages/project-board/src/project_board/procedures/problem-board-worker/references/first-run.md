@@ -49,31 +49,39 @@ restating the meanings.
 ## `pb` Is Not Installed
 
 `pb` is the console command in the `project-board` distribution. A team host
-installs its five-package client family from a clean export of an approved App
-Ecosystem commit. Ask for the repository path and full commit, then propose the
-source install and selector from [runtime actions](runtime-actions.md). The
-install is one dependency resolution over all five first-party package paths:
+installs its six-package client family from clean exports of approved App
+Ecosystem and KDCube commits. Ask for both repository paths and full commits,
+then propose the source install and selector from
+[runtime actions](runtime-actions.md). The install is one dependency resolution
+over all six first-party package paths:
 
 ```bash
 APP_REPOSITORY=<app-ecosystem>
 APP_COMMIT=<full-app-commit>
 APP_EXPORT=$(mktemp -d)
+KDCUBE_REPOSITORY=<kdcube>
+KDCUBE_COMMIT=<full-kdcube-commit>
+KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
+test "$(git -C "$KDCUBE_REPOSITORY" rev-parse "$KDCUBE_COMMIT^{commit}")" = "$KDCUBE_COMMIT"
 git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
+git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT" | tar -x -C "$KDCUBE_EXPORT"
 
 python3 \
   "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
-  --source-root "$APP_EXPORT"
+  --source-root "$APP_EXPORT" \
+  --kdcube-source-root "$KDCUBE_EXPORT"
 "$HOME/.local/bin/pb" procedure install --target codex --target claude-code
 ```
 
 Installing a command and a procedure changes the user's machine, so ask before
 either command. Use only the targets they run. The source installer creates the
-isolated client interpreter and guarded launcher, resolving all five
-first-party distributions in one `pip install` invocation. The repository is
-an input to the clean export and never becomes a runtime import path. After
-selection, `pb source status` reports the full commit, all five package trees,
-and the source loaded by the relay.
+isolated client interpreter and guarded launcher, resolving all six
+first-party distributions in one `pip install` invocation.
+The repositories are inputs to the clean exports and never become runtime
+import paths. After selection, `pb source status` reports the composite release
+ID, both full commits, all six package trees, and the source loaded by the
+relay.
 
 ## `machine_not_configured`
 
@@ -98,7 +106,9 @@ When `next.step` is `configure_target`:
    ```bash
    pb source use-code \
      --repository <app-ecosystem> --ref <full-app-commit> \
-     --expect <full-app-commit>
+     --expect <full-app-commit> \
+     --kdcube-repository <kdcube> --kdcube-ref <full-kdcube-commit> \
+     --expect-kdcube <full-kdcube-commit>
    pb source status
    ```
 

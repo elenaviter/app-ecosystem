@@ -8,16 +8,17 @@ from typing import Any, Mapping
 
 from ..contract.errors import DomainError
 from .io import utc_now
+from .source_composite import prepare_client_release
 from .relay_source import (
     CLIENT_SOURCE_PATHS,
     PROJECT_BOARD_CODE_ENTRYPOINT,
+    SELECTION_SCHEMA,
     activate_release,
     activation_lock,
     canonical_release_version,
     client_source_root,
     current_release,
     describe_source,
-    prepare_release,
     prune_releases,
     read_selection,
     released_selection,
@@ -25,6 +26,7 @@ from .relay_source import (
     snapshot_selection,
     write_selection,
 )
+from .source_manifest import component_records, normalise_components
 
 
 def installed_release_source() -> dict[str, Any]:
@@ -60,7 +62,7 @@ def effective_selection(
         return selected
     released = dict(release_source or installed_release_source())
     return {
-        "schema": "project-board.client-source-selection.v1",
+        "schema": SELECTION_SCHEMA,
         "mode": "released",
         "version": canonical_release_version(released.get("version")),
         "implicit": True,
@@ -79,6 +81,22 @@ def source_matches(observed: Mapping[str, Any], expected: Mapping[str, Any]) -> 
         except DomainError:
             return False
     if mode == "snapshot":
+        expected_release_id = str(expected.get("release_id") or "")
+        if expected_release_id:
+            if str(observed.get("release_id") or "") != expected_release_id:
+                return False
+            try:
+                observed_components = component_records(
+                    normalise_components(observed.get("components") or []),
+                    include_repository=False,
+                )
+                expected_components = component_records(
+                    normalise_components(expected.get("components") or []),
+                    include_repository=False,
+                )
+            except (TypeError, ValueError):
+                return False
+            return observed_components == expected_components
         return (
             str(observed.get("commit") or "") == str(expected.get("commit") or "")
             and dict(observed.get("subtrees") or {})
@@ -129,31 +147,27 @@ class ClientSourceController:
         repository: str | Path,
         ref: str,
         expect: str,
+        kdcube_repository: str | Path,
+        kdcube_ref: str,
+        expect_kdcube: str,
         wait_seconds: float,
     ) -> dict[str, Any]:
         repo = Path(repository).expanduser().resolve()
-        approved = str(expect or "").strip().lower()
-        if len(approved) != 40 or any(
-            char not in "0123456789abcdef" for char in approved
-        ):
-            raise DomainError(
-                "work_client_source_expected_commit_invalid",
-                "Code source selection requires the full approved 40-character commit.",
-                details={"expected": approved},
-            )
+        kdcube_repo = Path(kdcube_repository).expanduser().resolve()
         self._preflight_service()
         with activation_lock(self.root):
             previous = effective_selection(
                 self.root, release_source=self._release_source
             )
             previous_release = current_release(self.root)
-            release, evidence = prepare_release(
-                repository=repo,
-                ref=ref,
+            release, evidence = prepare_client_release(
+                app_ecosystem_repository=repo,
+                app_ecosystem_ref=ref,
+                expect_app_ecosystem=expect,
+                kdcube_repository=kdcube_repo,
+                kdcube_ref=kdcube_ref,
+                expect_kdcube=expect_kdcube,
                 root=self.root,
-                entrypoint_path=PROJECT_BOARD_CODE_ENTRYPOINT,
-                source_paths=CLIENT_SOURCE_PATHS,
-                expect=approved,
             )
             selected = write_selection(self.root, snapshot_selection(release))
             # ``selection.json`` is authoritative and atomic. The link is
@@ -163,8 +177,15 @@ class ClientSourceController:
                 "schema": "project-board.client-source-activation.v1",
                 "selected": selected,
                 "previous": previous,
+                "repositories": {
+                    "app_ecosystem": str(repo),
+                    "kdcube": str(kdcube_repo),
+                },
+                "checkouts": evidence,
+                # Compatibility fields name the App Ecosystem side of the
+                # composite source for older receipt readers.
                 "repository": str(repo),
-                "checkout": evidence,
+                "checkout": evidence["app_ecosystem"],
             }
             return self._restart_and_verify(
                 selected=selected,
@@ -212,7 +233,9 @@ class ClientSourceController:
         ):
             raise DomainError(
                 "work_client_source_service_definition_stale",
-                "The installed relay definition does not use the released Project Board bootstrap. Run pb relay-service install before changing source.",
+                "The installed relay definition does not use the released "
+                "Project Board bootstrap. Run pb relay-service install before "
+                "changing source.",
                 details={"definition": str(self.service.definition_path)},
             )
 
@@ -242,7 +265,8 @@ class ClientSourceController:
             rollback = self._restore_and_restart(previous, previous_release, wait_seconds)
             raise DomainError(
                 "work_client_source_activation_failed",
-                "The relay could not restart on the selected Project Board source; the previous source was restored.",
+                "The relay could not restart on the selected Project Board "
+                "source; the previous source was restored.",
                 details={
                     "selected": dict(selected),
                     "reason": str(getattr(exc, "code", "") or exc),
@@ -253,7 +277,8 @@ class ClientSourceController:
             rollback = self._restore_and_restart(previous, previous_release, wait_seconds)
             raise DomainError(
                 "work_client_source_activation_failed",
-                "The restarted relay did not report the selected Project Board source; the previous source was restored.",
+                "The restarted relay did not report the selected Project "
+                "Board source; the previous source was restored.",
                 details={
                     "selected": dict(selected),
                     "startup": startup,
@@ -261,9 +286,17 @@ class ClientSourceController:
                 },
             )
 
-        keep = [str(selected.get("commit") or "")]
+        keep = [
+            str(selected.get("release_id") or selected.get("commit") or "")
+        ]
         if previous.get("mode") == "snapshot":
-            keep.append(str(previous.get("commit") or ""))
+            keep.append(
+                str(
+                    previous.get("release_id")
+                    or previous.get("commit")
+                    or ""
+                )
+            )
         return {
             **receipt,
             "state": "activated",

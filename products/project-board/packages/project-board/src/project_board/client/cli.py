@@ -1309,15 +1309,37 @@ def build_parser() -> argparse.ArgumentParser:
     _host_config(command)
     command = source_commands.add_parser(
         "use-code",
-        help="Export one App Ecosystem commit, select it for pb and the relay, and restart the relay.",
+        help=(
+            "Export the approved App Ecosystem and KDCube commits as one "
+            "client source, select it for pb and the relay, and restart the relay."
+        ),
     )
     _host_config(command)
-    command.add_argument("--repository", required=True)
-    command.add_argument("--ref", required=True)
+    command.add_argument(
+        "--repository",
+        "--app-ecosystem-repository",
+        dest="repository",
+        required=True,
+    )
+    command.add_argument(
+        "--ref", "--app-ecosystem-ref", dest="ref", required=True
+    )
     command.add_argument(
         "--expect",
+        "--expect-app-ecosystem",
+        dest="expect",
         required=True,
-        help="The full approved commit; selection refuses when --ref resolves elsewhere.",
+        help=(
+            "The full approved App Ecosystem commit; selection refuses when "
+            "its ref resolves elsewhere."
+        ),
+    )
+    command.add_argument("--kdcube-repository", required=True)
+    command.add_argument("--kdcube-ref", required=True)
+    command.add_argument(
+        "--expect-kdcube",
+        required=True,
+        help="The full approved KDCube commit; selection refuses when its ref resolves elsewhere.",
     )
     command.add_argument("--wait-seconds", type=float, default=None)
     command = source_commands.add_parser(
@@ -3997,6 +4019,9 @@ def _source_command(args: Any) -> dict[str, Any]:
             repository=args.repository,
             ref=args.ref,
             expect=args.expect,
+            kdcube_repository=args.kdcube_repository,
+            kdcube_ref=args.kdcube_ref,
+            expect_kdcube=args.expect_kdcube,
             wait_seconds=wait_seconds,
         )
     if args.source_command == "use-release":

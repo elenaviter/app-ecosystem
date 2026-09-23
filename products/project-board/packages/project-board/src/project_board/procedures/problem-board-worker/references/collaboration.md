@@ -111,9 +111,9 @@ Rules of the shape:
 
 The Problem Board client and relay run from one recorded source selection, not
 from any working tree. `pb source use-release` selects an approved package
-version and `pb source use-code` selects an exact App Ecosystem commit for both
-command and relay. A direct checkout invocation is a visibly unpinned
-development process and never changes that host selection.
+version and `pb source use-code` selects exact App Ecosystem and KDCube commits
+as one release for both command and relay. A direct checkout invocation is a
+visibly unpinned development process and never changes that host selection.
 The integration ref is source history, not a runtime selection.
 
 A worktree cut for a review or a fix has no installed dependencies. Borrowing
@@ -383,7 +383,7 @@ they stand now. What every agent on dev-main does:
 | --- | --- | --- |
 | one working tree per agent | fable-pub in its workspace, three agents still in the shared checkouts until they make theirs | one workspace per agent, own clones |
 | branches and change requests | every item since 20:10Z, twelve change requests merged or open | from the first task |
-| pb runs from a pinned copy | selected package version or commit, reported by `pb source status`; the shared checkout is not a runtime | selected package version or commit, reported by `pb source status` |
+| pb runs from a pinned copy | selected package version or composite release, reported by `pb source status`; the shared checkout is not a runtime | selected package version or composite release, reported by `pb source status` |
 | coordinator merges and pushes | claude-main, on the host | claude-main, remote |
 | review record | board mail plus a pinned change request comment, one GitHub account for all | same |
 

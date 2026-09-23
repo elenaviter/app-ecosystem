@@ -84,15 +84,18 @@ def test_worker_procedure_owns_released_and_code_source_guidance() -> None:
     runtime_words = " ".join(runtime.split())
 
     assert 'git -C "$APP_REPOSITORY" archive "$APP_COMMIT"' in first_run
+    assert 'git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT"' in first_run
     assert "scripts/install_from_source.py" in first_run
-    assert "all five first-party distributions" in first_run_words
+    assert "all six first-party distributions" in first_run_words
     assert "one `pip install` invocation" in first_run_words
     assert "This section is the owning definition" in first_run
     assert "pb source use-release --expect-version <version>" in runtime
-    assert "pb source use-code --repository <app-ecosystem>" in runtime
+    assert "pb source use-code" in runtime
+    assert "--kdcube-repository" in runtime
     assert "scripts/install_from_source.py" in runtime
     assert '--source-root "$APP_EXPORT"' in runtime
-    assert "full commit and tree id of every exported package" in runtime_words
+    assert '--kdcube-source-root "$KDCUBE_EXPORT"' in runtime
+    assert "both full commits and the tree id of every exported package" in runtime_words
     assert "`client.pinned: false`" in runtime
     assert "does not rewrite the per-target source selector" in runtime_words
 

@@ -1,20 +1,21 @@
-"""A content-addressed client source: one commit, exported and selected once.
+"""A content-addressed client source exported and selected as one manifest.
 
 The relay LaunchAgent used to run ``tools/problem_board.py`` straight out of
 the shared checkout, so a restart loaded whatever the working tree held at
-that instant, including another worker's half-typed edit. Here the
-input is a commit. ``git archive`` reads the object store, so the state of
-the working tree cannot reach the export, and the exported files are
-verified blob by blob against ``git ls-tree`` before the release is named.
+that instant, including another worker's half-typed edit. Here the input is a
+manifest of full commits. ``git archive`` reads each object store, so the state of
+the working tree cannot reach the export, and the exported files from every
+repository are verified blob by blob against ``git ls-tree`` before the
+release is named.
 The atomic ``selection.json`` record is the authority shared by the command
 and relay. A ``current`` symlink is maintained only for readers predating that
 selector and never supplies an implicit client selection.
 
 Layout under the host's relay-source root::
 
-    releases/<commit>/<repo-relative paths>   the export, plus release.json
-    selection.json                            released version or code commit
-    current -> releases/<commit>              compatibility pointer
+    releases/<release-id>/<repo-relative paths>  export plus release.json
+    selection.json                               released version or manifest
+    current -> releases/<release-id>             compatibility pointer
 """
 
 from __future__ import annotations
@@ -35,13 +36,27 @@ from packaging.version import InvalidVersion, Version
 
 from ..contract.errors import DomainError
 from .io import atomic_write_json, exclusive_lock, read_json, utc_now
+from .source_manifest import (
+    APP_ECOSYSTEM_COMPONENT,
+    APP_ECOSYSTEM_SOURCE_PATHS,
+    CLIENT_SOURCE_PATHS,
+    KDCUBE_COMPONENT,
+    SourceComponent,
+    component_named,
+    component_records,
+    normalise_components,
+    release_id_for_components,
+    validate_release_id,
+)
 
-RELEASE_SCHEMA = "project-board.client-source-release.v2"
+RELEASE_SCHEMA = "project-board.client-source-release.v3"
+SINGLE_REPOSITORY_RELEASE_SCHEMA = "project-board.client-source-release.v2"
 LEGACY_RELEASE_SCHEMA = "problem-board.relay-source-release.v1"
 RELEASE_MARKER = "release.json"
 RELEASES_DIR = "releases"
 CURRENT_LINK = "current"
-SELECTION_SCHEMA = "project-board.client-source-selection.v1"
+SELECTION_SCHEMA = "project-board.client-source-selection.v2"
+LEGACY_SELECTION_SCHEMA = "project-board.client-source-selection.v1"
 SELECTION_FILE = "selection.json"
 SOURCE_ROOT_DIR = "client-source"
 ENTRYPOINT = "problem_board.py"
@@ -50,28 +65,21 @@ GIT_TIMEOUT_SECONDS = 120
 # repo-relative paths, so the marker is a few directories up from tools/.
 MARKER_SEARCH_DEPTH = 8
 
-PROJECT_BOARD_PACKAGE = "products/project-board/packages/project-board"
+PROJECT_BOARD_PACKAGE = APP_ECOSYSTEM_SOURCE_PATHS[0]
 PROJECT_BOARD_CODE_ENTRYPOINT = (
     f"{PROJECT_BOARD_PACKAGE}/src/project_board/client/code_entrypoint.py"
-)
-CLIENT_SOURCE_PATHS = (
-    PROJECT_BOARD_PACKAGE,
-    "packages/app-foundation",
-    "packages/service-foundation",
-    "products/connection-hub/packages/connection-hub",
-    "products/connection-hub/packages/connection-hub-cli",
 )
 
 
 @dataclass(frozen=True, slots=True)
 class RelaySourceRelease:
-    commit: str
+    release_id: str
     path: Path
     entrypoint_path: str
     source_paths: tuple[str, ...]
-    subtrees: dict[str, str]
-    repository: str
+    components: tuple[SourceComponent, ...]
     exported_at: str
+    schema: str = RELEASE_SCHEMA
     tools_path: str = ""
     app_path: str = ""
 
@@ -79,9 +87,47 @@ class RelaySourceRelease:
     def script(self) -> Path:
         return self.path / self.entrypoint_path
 
+    @property
+    def app_ecosystem(self) -> SourceComponent:
+        return component_named(self.components, APP_ECOSYSTEM_COMPONENT)
+
+    @property
+    def commit(self) -> str:
+        """Compatibility name for the App Ecosystem commit."""
+
+        return self.app_ecosystem.commit
+
+    @property
+    def subtrees(self) -> dict[str, str]:
+        """Compatibility name for the App Ecosystem package trees."""
+
+        return dict(self.app_ecosystem.subtrees)
+
+    @property
+    def repository(self) -> str:
+        """Compatibility name for the App Ecosystem repository."""
+
+        return self.app_ecosystem.repository
+
     def marker(self) -> dict[str, Any]:
+        if self.schema != RELEASE_SCHEMA:
+            return {
+                "schema": self.schema,
+                "commit": self.commit,
+                "entrypoint_path": self.entrypoint_path,
+                "source_paths": list(self.source_paths),
+                "tools_path": self.tools_path,
+                "app_path": self.app_path,
+                "subtrees": dict(self.subtrees),
+                "repository": self.repository,
+                "exported_at": self.exported_at,
+            }
         return {
             "schema": RELEASE_SCHEMA,
+            "release_id": self.release_id,
+            "components": component_records(self.components),
+            # These App Ecosystem fields keep status consumers readable while
+            # the composite fields remain the authority.
             "commit": self.commit,
             "entrypoint_path": self.entrypoint_path,
             "source_paths": list(self.source_paths),
@@ -301,9 +347,12 @@ def read_release(release_dir: Path) -> RelaySourceRelease | None:
     except DomainError:
         return None
     schema = str(marker.get("schema") or "")
-    if schema not in {RELEASE_SCHEMA, LEGACY_RELEASE_SCHEMA} or not marker.get("commit"):
+    if schema not in {
+        RELEASE_SCHEMA,
+        SINGLE_REPOSITORY_RELEASE_SCHEMA,
+        LEGACY_RELEASE_SCHEMA,
+    }:
         return None
-    subtrees = marker.get("subtrees")
     source_paths_raw = marker.get("source_paths")
     if isinstance(source_paths_raw, list):
         source_paths = tuple(str(path) for path in source_paths_raw if str(path))
@@ -319,15 +368,45 @@ def read_release(release_dir: Path) -> RelaySourceRelease | None:
     entrypoint_path = str(marker.get("entrypoint_path") or "")
     if not entrypoint_path and marker.get("tools_path"):
         entrypoint_path = str(Path(str(marker["tools_path"])) / ENTRYPOINT)
+    if schema == RELEASE_SCHEMA:
+        raw_components = marker.get("components")
+        if not isinstance(raw_components, list):
+            return None
+        try:
+            components = normalise_components(raw_components)
+            release_id = validate_release_id(marker.get("release_id"))
+        except (TypeError, ValueError):
+            return None
+        if release_id != release_id_for_components(components):
+            return None
+    else:
+        commit = str(marker.get("commit") or "").strip().lower()
+        subtrees_raw = marker.get("subtrees")
+        if not commit:
+            return None
+        subtrees = (
+            {str(k): str(v) for k, v in subtrees_raw.items()}
+            if isinstance(subtrees_raw, Mapping)
+            else {}
+        )
+        components = (
+            SourceComponent(
+                name=APP_ECOSYSTEM_COMPONENT,
+                commit=commit,
+                subtrees=subtrees,
+                repository=str(marker.get("repository") or ""),
+            ),
+        )
+        release_id = commit
     return RelaySourceRelease(
-        commit=str(marker["commit"]),
+        release_id=release_id,
         path=release_dir,
         entrypoint_path=entrypoint_path,
         source_paths=source_paths,
+        components=components,
+        schema=schema,
         tools_path=str(marker.get("tools_path") or ""),
         app_path=str(marker.get("app_path") or ""),
-        subtrees={str(k): str(v) for k, v in subtrees.items()} if isinstance(subtrees, Mapping) else {},
-        repository=str(marker.get("repository") or ""),
         exported_at=str(marker.get("exported_at") or ""),
     )
 
@@ -397,14 +476,21 @@ def export_release(
                 details={"commit": commit, "paths": mismatched[:20]},
             )
         release = RelaySourceRelease(
-            commit=commit,
+            release_id=commit,
             path=final,
             entrypoint_path=selected_entrypoint,
             source_paths=paths,
+            components=(
+                SourceComponent(
+                    name=APP_ECOSYSTEM_COMPONENT,
+                    commit=commit,
+                    subtrees=subtrees,
+                    repository=str(repository),
+                ),
+            ),
+            schema=SINGLE_REPOSITORY_RELEASE_SCHEMA,
             tools_path=paths[0],
             app_path=paths[1] if len(paths) > 1 else "",
-            subtrees=subtrees,
-            repository=str(repository),
             exported_at=utc_now(),
         )
         if not (stage / selected_entrypoint).is_file():
@@ -432,7 +518,12 @@ def current_release(root: Path) -> RelaySourceRelease | None:
     return read_release(target)
 
 
-def _selection_subtrees(value: Any, *, path: Path | None = None) -> dict[str, str]:
+def _selection_subtrees(
+    value: Any,
+    *,
+    path: Path | None = None,
+    required_paths: tuple[str, ...] = APP_ECOSYSTEM_SOURCE_PATHS,
+) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise DomainError(
             "work_client_source_selection_invalid",
@@ -440,7 +531,7 @@ def _selection_subtrees(value: Any, *, path: Path | None = None) -> dict[str, st
             details={"path": str(path)} if path is not None else {},
         )
     subtrees = {str(key): str(tree).lower() for key, tree in value.items()}
-    required = set(CLIENT_SOURCE_PATHS)
+    required = set(required_paths)
     invalid_ids = [
         key
         for key, tree in subtrees.items()
@@ -450,15 +541,88 @@ def _selection_subtrees(value: Any, *, path: Path | None = None) -> dict[str, st
     if set(subtrees) != required or invalid_ids:
         raise DomainError(
             "work_client_source_selection_invalid",
-            "A code Project Board source selection must name every client package tree from one commit.",
+            "A code Project Board source selection must name every package "
+            "tree owned by its repository commit.",
             details={
                 "path": str(path) if path is not None else "",
-                "required_paths": list(CLIENT_SOURCE_PATHS),
+                "required_paths": list(required_paths),
                 "actual_paths": sorted(subtrees),
                 "invalid_tree_ids": sorted(invalid_ids),
             },
         )
     return subtrees
+
+
+def _selection_components(
+    value: Any, *, path: Path | None = None
+) -> tuple[SourceComponent, ...]:
+    if not isinstance(value, list):
+        raise DomainError(
+            "work_client_source_selection_invalid",
+            "A code Project Board source selection requires its repository components.",
+            details={"path": str(path)} if path is not None else {},
+        )
+    try:
+        return normalise_components(value)
+    except (TypeError, ValueError) as exc:
+        raise DomainError(
+            "work_client_source_selection_invalid",
+            f"The Project Board client source components are invalid: {exc}.",
+            details={"path": str(path)} if path is not None else {},
+        ) from exc
+
+
+def _validated_composite_selection(
+    marker: dict[str, Any], *, path: Path | None = None
+) -> dict[str, Any]:
+    components = _selection_components(marker.get("components"), path=path)
+    try:
+        release_id = validate_release_id(marker.get("release_id"))
+    except ValueError as exc:
+        raise DomainError(
+            "work_client_source_selection_invalid",
+            f"The Project Board client source release id is invalid: {exc}.",
+            details={"path": str(path)} if path is not None else {},
+        ) from exc
+    calculated = release_id_for_components(components)
+    if release_id != calculated:
+        raise DomainError(
+            "work_client_source_selection_invalid",
+            "The Project Board client source release id does not match its components.",
+            details={
+                "path": str(path) if path is not None else "",
+                "recorded_release_id": release_id,
+                "calculated_release_id": calculated,
+            },
+        )
+    app_ecosystem = component_named(components, APP_ECOSYSTEM_COMPONENT)
+    compatibility_commit = str(marker.get("commit") or "").strip().lower()
+    if compatibility_commit and compatibility_commit != app_ecosystem.commit:
+        raise DomainError(
+            "work_client_source_selection_invalid",
+            "The compatibility commit differs from the App Ecosystem component.",
+            details={"path": str(path) if path is not None else ""},
+        )
+    compatibility_subtrees = marker.get("subtrees")
+    if compatibility_subtrees is not None:
+        validated_subtrees = _selection_subtrees(
+            compatibility_subtrees,
+            path=path,
+            required_paths=APP_ECOSYSTEM_SOURCE_PATHS,
+        )
+        if validated_subtrees != app_ecosystem.subtrees:
+            raise DomainError(
+                "work_client_source_selection_invalid",
+                "The compatibility package trees differ from the App Ecosystem component.",
+                details={"path": str(path) if path is not None else ""},
+            )
+    marker["release_id"] = release_id
+    marker["components"] = component_records(
+        components, include_repository=False
+    )
+    marker["commit"] = app_ecosystem.commit
+    marker["subtrees"] = dict(app_ecosystem.subtrees)
+    return marker
 
 
 def read_selection(root: Path) -> dict[str, Any]:
@@ -472,7 +636,8 @@ def read_selection(root: Path) -> dict[str, Any]:
     root = Path(root)
     marker = read_json(root / SELECTION_FILE, required=False)
     if marker:
-        if marker.get("schema") != SELECTION_SCHEMA:
+        schema = str(marker.get("schema") or "")
+        if schema not in {SELECTION_SCHEMA, LEGACY_SELECTION_SCHEMA}:
             raise DomainError(
                 "work_client_source_selection_invalid",
                 "The Project Board client source selection has an unsupported schema.",
@@ -483,6 +648,10 @@ def read_selection(root: Path) -> dict[str, Any]:
             marker["version"] = canonical_release_version(
                 marker.get("version"), path=root / SELECTION_FILE
             )
+        elif mode == "snapshot" and schema == SELECTION_SCHEMA:
+            marker = _validated_composite_selection(
+                dict(marker), path=root / SELECTION_FILE
+            )
         elif mode == "snapshot":
             commit = str(marker.get("commit") or "").strip().lower()
             if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
@@ -492,7 +661,9 @@ def read_selection(root: Path) -> dict[str, Any]:
                     details={"path": str(root / SELECTION_FILE)},
                 )
             marker["subtrees"] = _selection_subtrees(
-                marker.get("subtrees"), path=root / SELECTION_FILE
+                marker.get("subtrees"),
+                path=root / SELECTION_FILE,
+                required_paths=APP_ECOSYSTEM_SOURCE_PATHS,
             )
         else:
             raise DomainError(
@@ -510,19 +681,29 @@ def write_selection(root: Path, selection: Mapping[str, Any]) -> dict[str, Any]:
 
     root = Path(root)
     value = dict(selection)
-    value["schema"] = SELECTION_SCHEMA
     # Validate the exact shape before it becomes authoritative.
     if value.get("mode") == "released":
+        value["schema"] = SELECTION_SCHEMA
         value["version"] = canonical_release_version(value.get("version"))
     elif value.get("mode") == "snapshot":
-        commit = str(value.get("commit") or "").strip().lower()
-        if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
-            raise DomainError(
-                "work_client_source_selection_invalid",
-                "A code Project Board source selection requires a full commit.",
+        if value.get("components") is not None or value.get("release_id") is not None:
+            value["schema"] = SELECTION_SCHEMA
+            value = _validated_composite_selection(value)
+        else:
+            value["schema"] = LEGACY_SELECTION_SCHEMA
+            commit = str(value.get("commit") or "").strip().lower()
+            if len(commit) != 40 or any(
+                char not in "0123456789abcdef" for char in commit
+            ):
+                raise DomainError(
+                    "work_client_source_selection_invalid",
+                    "A legacy code Project Board source selection requires a full commit.",
+                )
+            value["commit"] = commit
+            value["subtrees"] = _selection_subtrees(
+                value.get("subtrees"),
+                required_paths=APP_ECOSYSTEM_SOURCE_PATHS,
             )
-        value["commit"] = commit
-        value["subtrees"] = _selection_subtrees(value.get("subtrees"))
     else:
         raise DomainError(
             "work_client_source_selection_invalid",
@@ -572,6 +753,10 @@ def snapshot_selection(
     value: dict[str, Any] = {
         "schema": SELECTION_SCHEMA,
         "mode": "snapshot",
+        "release_id": release.release_id,
+        "components": component_records(
+            release.components, include_repository=False
+        ),
         "commit": release.commit,
         "subtrees": _selection_subtrees(release.subtrees),
         "release_path": str(release.path),
@@ -590,36 +775,64 @@ def selected_release(root: Path, selection: Mapping[str, Any] | None = None) -> 
             "The selected Project Board client source is not a code snapshot.",
             details={"mode": str(selected.get("mode") or "")},
         )
-    commit = str(selected.get("commit") or "")
-    release = read_release(Path(root) / RELEASES_DIR / commit)
-    if release is None or release.commit != commit:
+    schema = str(selected.get("schema") or LEGACY_SELECTION_SCHEMA)
+    legacy = schema == LEGACY_SELECTION_SCHEMA
+    identity = str(
+        selected.get("commit") if legacy else selected.get("release_id") or ""
+    )
+    release = read_release(Path(root) / RELEASES_DIR / identity)
+    if release is None or release.release_id != identity:
         raise DomainError(
             "work_client_source_release_missing",
-            f"The selected Project Board code release {commit[:12]} is missing.",
-            details={"commit": commit, "root": str(root)},
+            f"The selected Project Board code release {identity[:12]} is missing.",
+            details={"release_id": identity, "root": str(root)},
         )
+    required_paths = (
+        APP_ECOSYSTEM_SOURCE_PATHS if legacy else CLIENT_SOURCE_PATHS
+    )
     if (
         release.entrypoint_path != PROJECT_BOARD_CODE_ENTRYPOINT
-        or release.source_paths != CLIENT_SOURCE_PATHS
+        or release.source_paths != required_paths
     ):
         raise DomainError(
             "work_client_source_release_mismatch",
-            f"The selected Project Board code release {commit[:12]} is not a complete client source.",
+            f"The selected Project Board code release {identity[:12]} is not "
+            "a complete client source.",
             details={
-                "commit": commit,
+                "release_id": identity,
                 "entrypoint_path": release.entrypoint_path,
                 "source_paths": list(release.source_paths),
                 "required_entrypoint_path": PROJECT_BOARD_CODE_ENTRYPOINT,
-                "required_source_paths": list(CLIENT_SOURCE_PATHS),
+                "required_source_paths": list(required_paths),
             },
         )
+    if not legacy:
+        expected_components = component_records(
+            _selection_components(selected.get("components")),
+            include_repository=False,
+        )
+        release_components = component_records(
+            release.components, include_repository=False
+        )
+        if release.schema != RELEASE_SCHEMA or expected_components != release_components:
+            raise DomainError(
+                "work_client_source_release_mismatch",
+                f"The selected Project Board code release {identity[:12]} "
+                "does not match its repository components.",
+                details={
+                    "release_id": identity,
+                    "selected_components": expected_components,
+                    "release_components": release_components,
+                },
+            )
     expected_subtrees = dict(selected.get("subtrees") or {})
     if expected_subtrees and expected_subtrees != release.subtrees:
         raise DomainError(
             "work_client_source_release_mismatch",
-            f"The selected Project Board code release {commit[:12]} does not match its recorded package trees.",
+            f"The selected Project Board code release {identity[:12]} does "
+            "not match its recorded package trees.",
             details={
-                "commit": commit,
+                "release_id": identity,
                 "selected_subtrees": expected_subtrees,
                 "release_subtrees": dict(release.subtrees),
             },
@@ -628,16 +841,16 @@ def selected_release(root: Path, selection: Mapping[str, Any] | None = None) -> 
 
 
 def activate_release(root: Path, release: RelaySourceRelease) -> str:
-    """Point ``current`` at the release atomically. Returns the previous commit or ''."""
+    """Point ``current`` at the release atomically. Returns the previous release id."""
 
     root = Path(root)
     previous = current_release(root)
     temporary = root / f".{CURRENT_LINK}.tmp-{os.getpid()}"
     if temporary.is_symlink() or temporary.exists():
         temporary.unlink()
-    os.symlink(os.path.join(RELEASES_DIR, release.commit), temporary)
+    os.symlink(os.path.join(RELEASES_DIR, release.release_id), temporary)
     os.replace(temporary, root / CURRENT_LINK)
-    return previous.commit if previous else ""
+    return previous.release_id if previous else ""
 
 
 def prune_releases(root: Path, keep: tuple[str, ...]) -> list[str]:
@@ -764,13 +977,19 @@ def describe_source(
     for _ in range(MARKER_SEARCH_DEPTH):
         release = read_release(probe)
         if release is not None:
-            return {
+            source: dict[str, Any] = {
                 "mode": "snapshot",
+                "release_id": release.release_id,
                 "commit": release.commit,
                 "subtrees": dict(release.subtrees),
                 "release_path": str(release.path),
                 "exported_at": release.exported_at,
             }
+            if release.schema == RELEASE_SCHEMA:
+                source["components"] = component_records(
+                    release.components, include_repository=False
+                )
+            return source
         if probe.parent == probe:
             break
         probe = probe.parent
@@ -812,10 +1031,24 @@ def describe_source(
 
 
 def source_line(source: Mapping[str, Any]) -> str:
-    """The start-line fragment: ``source=snapshot commit=<sha>`` or ``source=checkout head=<sha> dirty=<bool>``."""
+    """The concise source identity written by a client or relay process."""
 
     mode = str(source.get("mode") or "unknown")
     if mode == "snapshot":
+        commits: dict[str, str] = {}
+        raw_components = source.get("components")
+        if isinstance(raw_components, list):
+            for component in raw_components:
+                if isinstance(component, Mapping):
+                    commits[str(component.get("name") or "")] = str(
+                        component.get("commit") or "unknown"
+                    )
+        if commits:
+            return (
+                f"source=snapshot release={source.get('release_id') or 'unknown'} "
+                f"app_ecosystem={commits.get(APP_ECOSYSTEM_COMPONENT, 'unknown')} "
+                f"kdcube={commits.get(KDCUBE_COMPONENT, 'unknown')}"
+            )
         return f"source=snapshot commit={source.get('commit') or 'unknown'}"
     if mode == "checkout":
         return (
