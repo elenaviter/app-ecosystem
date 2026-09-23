@@ -15,9 +15,11 @@ from connection_hub.delegated_credentials.migration.model import (
 )
 from connection_hub.delegated_credentials.migration.apply import (
     AuthorityCutoverReceiptTarget,
+    AuthorityMigrationImportFailed,
     AuthorityMigrationSource,
     AuthorityMigrationTarget,
     apply_reviewed_migration,
+    rehearse_reviewed_migration,
 )
 from connection_hub.delegated_credentials.migration.artifact import (
     MigrationPreviewArtifactError,
@@ -49,6 +51,7 @@ __all__ = [
     "AUTHORITY_MIGRATION_PREVIEW_SCHEMA",
     "AUTHORITY_MIGRATION_SNAPSHOT_SCHEMA",
     "AuthorityMigrationInspection",
+    "AuthorityMigrationImportFailed",
     "AuthorityMigrationPreview",
     "AuthorityMigrationRecord",
     "AuthorityMigrationSnapshot",
@@ -70,6 +73,7 @@ __all__ = [
     "inspection_from_snapshot",
     "create_migration_preview",
     "read_migration_preview",
+    "rehearse_reviewed_migration",
     "write_migration_preview",
     "verify_migration_preview",
 ]

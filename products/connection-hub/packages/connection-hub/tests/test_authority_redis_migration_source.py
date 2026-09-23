@@ -105,7 +105,6 @@ def _records():
                 {
                     "client_id": "dcr-client",
                     "redirect_uris": ["https://client.example/callback"],
-                    "grant_types": ["authorization_code", "refresh_token"],
                     "token_endpoint_auth_method": "none",
                     "application_type": "native",
                     "metadata": {},
@@ -201,6 +200,10 @@ async def test_source_scans_every_durable_family_without_exposing_bearers() -> N
         record for record in snapshot.records if record.record_type == "oauth_client"
     )
     assert client.payload["migration_state"] == "active"
+    assert client.payload["record"]["grant_types"] == [
+        "authorization_code",
+        "refresh_token",
+    ]
     assert refresh.payload["migration_state"] == "active"
     assert inspection.source_summary["oauth_refresh_card_state"] == {
         "active": 1,

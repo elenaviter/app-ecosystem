@@ -36,6 +36,9 @@ from connection_hub.delegated_credentials.migration.redis_scanner import (
     ReadOnlyRedisMigrationScanner,
     decode_redis_json_object,
 )
+from connection_hub.delegated_credentials.oauth.client_records import (
+    canonical_oauth_client_record,
+)
 
 
 CONNECTION_HUB_MIGRATION_FAMILIES = (
@@ -95,7 +98,9 @@ class ConnectionHubRedisMigrationSource:
         for key in await self._keys(prefix + "*"):
             raw, expires_at_ms = await self._read(key, expiry_required=False)
             client_id = key.removeprefix(prefix)
-            payload = decode_redis_json_object(raw, key=key)
+            payload = canonical_oauth_client_record(
+                decode_redis_json_object(raw, key=key)
+            )
             if not client_id or str(payload.get("client_id") or "") != client_id:
                 raise DurableRedisRecordError(
                     "oauth_client_identity_mismatch",
