@@ -41,7 +41,12 @@ from .diagnostics import host_relay_diagnostics
 from .journals import JournalWorkspace, RepositoryMap, parse_source_repositories
 from .journal_operations import JournalIndexWorkflow
 from .plan_authority import require_plan_item
-from .prose_arguments import guard_inline_payload_prose, guard_inline_prose
+from .prose_arguments import (
+    guard_inline_payload_prose,
+    guard_inline_prose,
+    refuse_unresolved_payload_slots,
+    refuse_unresolved_slots,
+)
 from .commands import load_json
 from .relay_pacing import channel_reconnect_state
 from .coordinate_queue import (
@@ -1965,10 +1970,12 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
         raise ValueError("pass only one of --payload-file and --payload-json")
     if args.payload_file:
         payload = load_json(args.payload_file)
+        refuse_unresolved_payload_slots(payload, argument="--payload-file")
     elif args.payload_json:
         value = json.loads(args.payload_json)
         if isinstance(value, Mapping):
             guard_inline_payload_prose(value, argument="--payload-json", file_argument="--payload-file")
+            refuse_unresolved_payload_slots(value, argument="--payload-json")
         if not isinstance(value, dict):
             raise ValueError("--payload-json must be a JSON object")
         payload = value
@@ -2496,6 +2503,12 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
         raise DomainError("work_attachment_file_invalid", "The attachment path is not a file.")
     item = _worker_item(args)
     data = source.read_bytes()
+    # A text attachment is read by people too: a template slot left in it is
+    # the same defect as one in a mail body, and it is refused the same way.
+    try:
+        refuse_unresolved_slots(data.decode("utf-8"), argument="--file")
+    except UnicodeDecodeError:
+        pass
     slot_result = _reference_mapping_request(
         args,
         action="attachment.request_upload",
@@ -3746,6 +3759,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
             if args.body_file
             else args.body
         )
+        # A template slot left in a subject or body is a defect the reader
+        # would otherwise report back (2026-09-23, twenty of them).
+        refuse_unresolved_slots(args.subject, argument="--subject")
+        refuse_unresolved_slots(body, argument="--body-file" if args.body_file else "--body")
         resolution = field.resolve_mail_recipient(project_id, args.recipient)
         recipient = str(resolution["worker_name"])
         route = str(resolution["route"])
