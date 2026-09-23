@@ -851,10 +851,13 @@ appearing again as empty KDCube metadata groups.
 A linked hosted Agent Card stores the exact standard resources represented by
 its own positive selection, bounded by the current Control Card. Every
 synchronization reconciles those two views as one change: capability metadata
-and the descriptor-managed `resource_grants`, `resource_operations`, and
-`named_service_operations` describe the same choice. The reconciliation
-replaces only resources managed by that Control Card. User-connected MCP
-resources and account bindings remain on the Agent Card unchanged.
+and the `resource_grants`, `resource_operations`, and
+`named_service_operations` materialized under the current live Control Card
+describe the same choice. The reconciliation replaces only resources managed
+by that Control Card. User-connected MCP resources and account bindings remain
+on the Agent Card unchanged. The descriptor initializes and caps the Control
+Card; the Agent Card reconciles against the Control Card, not directly against
+the descriptor.
 
 An MCP server with individually declared tool capabilities stores the selected
 tools. A server exposed only as one capability selects the operations declared
