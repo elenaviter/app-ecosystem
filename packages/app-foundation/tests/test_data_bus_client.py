@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import inspect
+from typing import Any, Callable
 
 import pytest
 from socketio.exceptions import TimeoutError as SocketIOTimeoutError
@@ -13,7 +14,19 @@ from app_foundation.data_bus import (
     DataBusIngressRejected,
     DataBusOutcomeUnknown,
     FederatedDataBusClient,
+    HandshakeAttempt,
 )
+
+
+async def _resolve_auth(auth: Any) -> Any:
+    """What python-socketio does with ``auth`` before every namespace handshake
+    (its ``_get_real_value``): a callable is called, a coroutine function awaited."""
+
+    if not callable(auth):
+        return auth
+    if inspect.iscoroutinefunction(auth):
+        return await auth()
+    return auth()
 
 
 class _Socket:
@@ -27,6 +40,15 @@ class _Socket:
         self.calls: list[tuple[str, dict[str, Any], float]] = []
         self.connect_args: tuple[Any, ...] | None = None
         self.connect_kwargs: dict[str, Any] = {}
+        # The auth exactly as the client handed it over (a coroutine function),
+        # kept the way python-socketio keeps ``connection_auth`` for reconnects.
+        self.connect_auth: Any = None
+        self.connect_calls = 0
+        # Every auth payload a handshake presented, first connect included.
+        self.presented: list[dict[str, Any]] = []
+        # The server's answer to a presented payload: a refusal to hand to
+        # connect_error, or None to accept. None means accept everything.
+        self.refuse: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
         self.shutdown_calls = 0
 
     def on(self, event: str, handler: Any) -> None:
@@ -37,9 +59,29 @@ class _Socket:
 
     async def connect(self, *args: Any, **kwargs: Any) -> None:
         self.connect_args = args
-        self.connect_kwargs = dict(kwargs)
+        self.connect_calls += 1
+        self.connect_auth = kwargs.get("auth")
+        auth = await _resolve_auth(self.connect_auth)
+        self.connect_kwargs = {**kwargs, "auth": auth}
+        self.presented.append(dict(auth or {}))
         self.connected = True
         await self.handlers["connect"]()
+
+    async def reconnect(self) -> bool:
+        """One reconnect handshake, the way python-socketio runs it: the stored
+        auth is resolved again and presented, and the server either accepts
+        (connect) or refuses (connect_error). True when it connected."""
+
+        auth = await _resolve_auth(self.connect_auth)
+        self.presented.append(dict(auth or {}))
+        refusal = self.refuse(auth) if self.refuse is not None else None
+        if refusal is not None:
+            await self.handlers["connect_error"](refusal)
+            return False
+        self.namespace_sid = f"socketio-{len(self.presented)}"
+        self.connected = True
+        await self.handlers["connect"]()
+        return True
 
     async def disconnect(self) -> None:
         self.connected = False
@@ -571,3 +613,260 @@ async def test_a_refusal_from_an_earlier_attempt_does_not_leak_into_a_later_one(
 
     assert client.connected
     await client.close()
+
+
+# -- reconnect handshakes present the credential valid at reconnect time ------
+#
+# A relay's socket lived up to nine hours before a transport drop, and its
+# delegated bearer lives one hour. The Socket.IO client reconnected with the
+# handshake auth it captured at first connect, so the server refused the
+# expired bearer on every attempt (2239 refused reconnects against 30 that
+# worked, on one host) and the session only returned when the relay tore the
+# client down and opened a new one minutes later.
+
+_CARD_RESOURCE = (
+    "https://platform.example/api/integrations/bundles/demo-tenant/"
+    "demo-project/problem-board@1-0/public/mcp/problem_board"
+)
+
+
+def _card(bearer: str, *, bundle_id: str = "problem-board@1-0") -> DelegatedCardCredential:
+    return DelegatedCardCredential(
+        tenant="demo-tenant",
+        project="demo-project",
+        bundle_id=bundle_id,
+        resource=_CARD_RESOURCE,
+        bearer_token=bearer,
+    )
+
+
+def _refuses_expired(expired: set[str]) -> Callable[[dict[str, Any]], dict[str, Any] | None]:
+    """The server side of the handshake: a bearer in ``expired`` is refused the
+    way chat-ingress refuses one (``delegated bearer refused reason=token_expired``)."""
+
+    def refuse(auth: dict[str, Any]) -> dict[str, Any] | None:
+        if auth.get("delegated_bearer_token") in expired:
+            return {
+                "error_type": "invalid_bearer",
+                "status": 401,
+                "message": "delegated bearer refused reason=token_expired",
+            }
+        return None
+
+    return refuse
+
+
+def _bearer(payload: dict[str, Any]) -> str:
+    return str(payload.get("delegated_bearer_token"))
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_presents_the_credential_valid_at_reconnect_time(caplog) -> None:
+    socket = _Socket()
+    expired: set[str] = set()
+    socket.refuse = _refuses_expired(expired)
+    asked: list[HandshakeAttempt] = []
+
+    async def source(attempt: HandshakeAttempt) -> DelegatedCardCredential:
+        asked.append(attempt)
+        return _card("bearer-2")
+
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=_card("bearer-1"),
+        credential_source=source,
+        socket_factory=lambda: socket,
+    )
+    with caplog.at_level("INFO", logger="app_foundation.data_bus.client"):
+        await client.connect()
+        assert _bearer(socket.presented[0]) == "bearer-1", "the first handshake presents the given credential"
+        assert asked == [], "the source is not asked for the first handshake"
+
+        # The bearer lapses while the socket is up, then the transport drops.
+        expired.add("bearer-1")
+        await socket.handlers["disconnect"]("transport error")
+        assert not client.connected
+
+        assert await socket.reconnect() is True
+
+    assert client.connected
+    assert client.connection_generation == 2
+    assert _bearer(socket.presented[1]) == "bearer-2"
+    assert socket.connect_calls == 1, "the same client and socket carried on: no full reopen"
+    assert asked == [HandshakeAttempt(connection_generation=1, attempt=1, previous_refusal=None)]
+    assert client.credential.bearer_token == "bearer-2"
+    assert (
+        "event=handshake attempt=1 connection_generation=1 credential=resolved after_refusal=false"
+        in caplog.text
+    )
+    assert "event=reconnected connection_generation=2" in caplog.text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_without_a_source_the_reconnect_presents_the_captured_credential_and_is_refused() -> None:
+    # The failure this exists for, pinned: no source, the captured bearer again.
+    socket = _Socket()
+    expired: set[str] = set()
+    socket.refuse = _refuses_expired(expired)
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=_card("bearer-1"),
+        socket_factory=lambda: socket,
+    )
+    await client.connect()
+    expired.add("bearer-1")
+    await socket.handlers["disconnect"]("transport error")
+
+    assert await socket.reconnect() is False
+
+    assert not client.connected
+    assert _bearer(socket.presented[1]) == "bearer-1"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_reconnect_is_told_to_the_source_on_the_next_handshake() -> None:
+    socket = _Socket()
+    expired: set[str] = set()
+    socket.refuse = _refuses_expired(expired)
+    asked: list[HandshakeAttempt] = []
+    bearers = iter(["bearer-2", "bearer-3", "bearer-4"])
+
+    async def source(attempt: HandshakeAttempt) -> DelegatedCardCredential:
+        asked.append(attempt)
+        return _card(next(bearers))
+
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=_card("bearer-1"),
+        credential_source=source,
+        socket_factory=lambda: socket,
+    )
+    await client.connect()
+    # The server no longer holds the session behind bearer-2 either (a store
+    # restart): the first reconnect is refused, and the source learns it.
+    expired.update({"bearer-1", "bearer-2"})
+    await socket.handlers["disconnect"]("transport error")
+
+    assert await socket.reconnect() is False
+    assert await socket.reconnect() is True
+
+    assert [attempt.attempt for attempt in asked] == [1, 2]
+    assert asked[0].previous_refusal is None
+    assert asked[1] == HandshakeAttempt(
+        connection_generation=1,
+        attempt=2,
+        previous_refusal={
+            "message": "delegated bearer refused reason=token_expired",
+            "code": "invalid_bearer",
+            "status": 401,
+        },
+    )
+    assert client.connection_generation == 2
+
+    # A completed connection ends the episode: the next drop starts at
+    # attempt 1 with no refusal carried over.
+    await socket.handlers["disconnect"]("transport error")
+    assert await socket.reconnect() is True
+    assert asked[2] == HandshakeAttempt(connection_generation=2, attempt=1, previous_refusal=None)
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_source_leaves_the_reconnect_to_the_previous_credential(caplog) -> None:
+    # The token endpoint cannot be reached: the reconnect still happens, with
+    # the credential this side already holds, and the log names the fallback.
+    socket = _Socket()
+    socket.refuse = _refuses_expired(set())
+
+    async def source(attempt: HandshakeAttempt) -> DelegatedCardCredential:
+        raise RuntimeError("token endpoint unreachable")
+
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=_card("bearer-1"),
+        credential_source=source,
+        socket_factory=lambda: socket,
+    )
+    with caplog.at_level("INFO", logger="app_foundation.data_bus.client"):
+        await client.connect()
+        await socket.handlers["disconnect"]("transport error")
+        assert await socket.reconnect() is True
+
+    assert _bearer(socket.presented[1]) == "bearer-1"
+    assert "event=handshake_credential_unavailable attempt=1 connection_generation=1" in caplog.text
+    assert "credential=previous" in caplog.text
+    assert "token endpoint unreachable" in caplog.text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_source_cannot_move_the_session_to_another_bundle(caplog) -> None:
+    socket = _Socket()
+
+    async def source(attempt: HandshakeAttempt) -> DelegatedCardCredential:
+        return _card("bearer-2", bundle_id="other-app@1-0")
+
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=_card("bearer-1"),
+        credential_source=source,
+        socket_factory=lambda: socket,
+    )
+    with caplog.at_level("WARNING", logger="app_foundation.data_bus.client"):
+        await client.connect()
+        await socket.handlers["disconnect"]("transport error")
+        assert await socket.reconnect() is True
+
+    assert _bearer(socket.presented[1]) == "bearer-1"
+    assert client.credential.bundle_id == "problem-board@1-0"
+    assert "changed bundle_id for an open session" in caplog.text
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_wait_until_connected_waits_for_the_sockets_own_reconnect() -> None:
+    socket = _Socket()
+    client = await _client(socket)
+    await socket.handlers["disconnect"]("transport error")
+    assert not client.connected
+
+    assert await client.wait_until_connected(0.01) is False
+
+    async def reconnect_soon() -> None:
+        await asyncio.sleep(0.02)
+        await socket.reconnect()
+
+    task = asyncio.create_task(reconnect_soon())
+    assert await client.wait_until_connected(1.0) is True
+    await task
+    assert client.connection_generation == 2
+
+    await client.close()
+    assert await client.wait_until_connected(0.0) is False
+
+
+@pytest.mark.asyncio
+async def test_the_socket_receives_a_coroutine_function_as_auth() -> None:
+    # python-socketio resolves a callable auth before every namespace
+    # handshake and awaits a coroutine function (``_get_real_value``), which is
+    # what lets a reconnect present a different credential than the first
+    # connect did. A payload dict would be captured once and replayed.
+    socket = _Socket()
+    client = await _client(socket)
+
+    assert inspect.iscoroutinefunction(socket.connect_auth)
+    assert socket.connect_kwargs["auth"]["federated_token"] == "secret-token"
+    await client.close()
+
+
+def test_the_default_socket_reconnects_on_its_own_and_caps_the_delay_at_ten_seconds() -> None:
+    from app_foundation.data_bus.client import _default_socket_factory
+
+    socket = _default_socket_factory()
+
+    assert socket.reconnection is True
+    assert socket.reconnection_attempts == 0
+    assert socket.reconnection_delay == 1
+    assert socket.reconnection_delay_max == 10

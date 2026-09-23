@@ -3,18 +3,41 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from .credentials import DataBusCredential, DelegatedCardCredential
 
 
 SocketFactory = Callable[[], Any]
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class HandshakeAttempt:
+    """What the credential source is told before a reconnect handshake.
+
+    ``connection_generation`` counts the connections this client has completed,
+    so a reconnect sees at least 1. ``attempt`` counts the handshakes since the
+    connection was lost, from 1. ``previous_refusal`` is the server's answer to
+    the previous handshake of this episode (``code`` and ``message`` as
+    ``_refusal_payload`` shapes them), or None when that handshake failed
+    before the server answered, or when this is the episode's first.
+    """
+
+    connection_generation: int
+    attempt: int
+    previous_refusal: dict[str, Any] | None = None
+
+
+CredentialSource = Callable[
+    [HandshakeAttempt], "Awaitable[DataBusCredential] | DataBusCredential"
+]
 
 
 def _normalize_lifecycle_labels(
@@ -191,11 +214,16 @@ def _default_socket_factory() -> Any:
         raise RuntimeError(
             "Install app-foundation with the data-bus extra to use FederatedDataBusClient."
         ) from exc
+    # A dropped socket reconnects on its own. The delay doubles from one
+    # second and stops at ten: a channel whose runtime is up is expected back
+    # within ten seconds of a transport drop, and the relay that owns the
+    # session waits that long before it tears the client down and opens a new
+    # one (a full reopen costs a fresh credential and minutes of backoff).
     return socketio.AsyncClient(
         reconnection=True,
         reconnection_attempts=0,
         reconnection_delay=1,
-        reconnection_delay_max=30,
+        reconnection_delay_max=10,
         logger=False,
         engineio_logger=False,
     )
@@ -210,7 +238,20 @@ def _is_socketio_timeout(error: BaseException) -> bool:
 
 
 class FederatedDataBusClient:
-    """One bundle-scoped Socket.IO session with correlated terminal replies."""
+    """One bundle-scoped Socket.IO session with correlated terminal replies.
+
+    The first handshake presents ``credential``. When the socket drops, the
+    Socket.IO client reconnects on its own, and every reconnect handshake asks
+    ``credential_source`` for the credential that is valid at that moment. A
+    delegated bearer captured at the first connect has usually lapsed by the
+    time a long-lived socket drops, so presenting it again is refused as
+    expired on every attempt and the session only returns when its owner tears
+    the client down and opens a new one minutes later. The source gets a
+    :class:`HandshakeAttempt` naming the episode's attempt number and the
+    server's refusal of the previous attempt, so it can refresh on its own
+    clock, re-mint once after a refusal, and leave a second refusal to the
+    owner. Without a source, every handshake presents ``credential``.
+    """
 
     def __init__(
         self,
@@ -218,6 +259,7 @@ class FederatedDataBusClient:
         platform_url: str,
         credential: DataBusCredential | None = None,
         claim: DataBusClaim | None = None,
+        credential_source: CredentialSource | None = None,
         socket_factory: SocketFactory | None = None,
         ingress_timeout_seconds: float = 15.0,
         outcome_timeout_seconds: float = 60.0,
@@ -236,6 +278,14 @@ class FederatedDataBusClient:
         self.credential = resolved_credential
         # Kept for callers written against the original federated-only API.
         self.claim = resolved_credential
+        self._credential_source = credential_source
+        # Handshakes this client asked the socket to make, over its lifetime;
+        # the first presents the given credential, every later one is a
+        # reconnect and asks the source. The episode counters restart when a
+        # connection completes.
+        self._handshakes = 0
+        self._episode_attempt = 0
+        self._episode_refusal: dict[str, Any] | None = None
         self.socket = (socket_factory or _default_socket_factory)()
         self.ingress_timeout_seconds = max(0.1, float(ingress_timeout_seconds))
         self.outcome_timeout_seconds = max(0.1, float(outcome_timeout_seconds))
@@ -322,6 +372,8 @@ class FederatedDataBusClient:
         previous_socket_id = self._socket_id
         self._connection_generation += 1
         self._socket_id = self._current_socket_id()
+        self._episode_attempt = 0
+        self._episode_refusal = None
         self._connected.set()
         logger.info(
             "Data Bus socket lifecycle event=%s connection_generation=%d "
@@ -336,6 +388,7 @@ class FederatedDataBusClient:
 
     async def _on_connect_error(self, data: Any = None) -> None:
         self._connect_refusal = _refusal_payload(data)
+        self._episode_refusal = dict(self._connect_refusal)
         logger.warning(
             "Data Bus socket lifecycle event=%s attempted_generation=%d "
             "socket_id=%s current_generation=%d current_socket_id=%s "
@@ -443,11 +496,15 @@ class FederatedDataBusClient:
             )
         self._connect_refusal = None
         try:
+            # The auth is a coroutine function, not a payload: python-socketio
+            # resolves a callable once per namespace handshake, on this connect
+            # and on every reconnect it runs itself, so each handshake can
+            # present the credential that is valid at that moment.
             await self.socket.connect(
                 self.platform_url,
                 socketio_path="socket.io",
                 transports=["websocket", "polling"],
-                auth=self.credential.auth_payload(),
+                auth=self._handshake_auth,
             )
         except Exception as exc:
             refusal = self._connect_refusal
@@ -461,6 +518,98 @@ class FederatedDataBusClient:
                 details=refusal,
             ) from exc
         self._connected.set()
+
+    async def _handshake_auth(self) -> dict[str, Any]:
+        """The auth payload for one handshake, resolved when the transport is up.
+
+        The first handshake presents the credential this client was built
+        with. Every later one is a reconnect: it asks the credential source,
+        when there is one, for the credential valid now, and presents the
+        previous credential when the source fails, so a token endpoint that
+        cannot be reached does not also end the reconnect.
+        """
+
+        self._handshakes += 1
+        if self._handshakes == 1 or self._credential_source is None:
+            return self.credential.auth_payload()
+        self._episode_attempt += 1
+        attempt = HandshakeAttempt(
+            connection_generation=self._connection_generation,
+            attempt=self._episode_attempt,
+            previous_refusal=(
+                dict(self._episode_refusal) if self._episode_refusal else None
+            ),
+        )
+        presented = "resolved"
+        try:
+            resolved = self._credential_source(attempt)
+            if inspect.isawaitable(resolved):
+                resolved = await resolved
+            self._adopt_credential(resolved)
+        except Exception:  # noqa: BLE001 - the reconnect goes on with what it has
+            presented = "previous"
+            logger.warning(
+                "Data Bus socket lifecycle event=handshake_credential_unavailable "
+                "attempt=%d connection_generation=%d: presenting the previous "
+                "credential%s",
+                attempt.attempt,
+                attempt.connection_generation,
+                self._lifecycle_log_suffix(),
+                exc_info=True,
+            )
+        logger.info(
+            "Data Bus socket lifecycle event=handshake attempt=%d "
+            "connection_generation=%d credential=%s after_refusal=%s%s",
+            attempt.attempt,
+            attempt.connection_generation,
+            presented,
+            str(attempt.previous_refusal is not None).lower(),
+            self._lifecycle_log_suffix(),
+        )
+        return self.credential.auth_payload()
+
+    def _adopt_credential(self, resolved: Any) -> None:
+        """Make ``resolved`` the current credential, or refuse it.
+
+        The source may renew the secret. It may not move the session to
+        another tenant, project or bundle: that is a different session, and
+        a handshake that presented it would fail somewhere that does not name
+        the cause.
+        """
+
+        if not isinstance(resolved, DataBusCredential):
+            raise TypeError(
+                "the credential source returned "
+                f"{type(resolved).__name__}, not a Data Bus credential"
+            )
+        current = self.credential
+        for name in ("tenant", "project", "bundle_id"):
+            if getattr(resolved, name) != getattr(current, name):
+                raise ValueError(
+                    f"the credential source changed {name} for an open session"
+                )
+        self.credential = resolved
+        self.claim = resolved
+
+    async def wait_until_connected(self, timeout_seconds: float) -> bool:
+        """True when the socket is connected within ``timeout_seconds``.
+
+        A dropped socket reconnects on its own. An owner that would otherwise
+        tear this client down and open a new one waits here first, for the
+        bound it accepts, and keeps the session when the socket comes back.
+        """
+
+        if self.connected:
+            return True
+        if self._closed:
+            return False
+        try:
+            await asyncio.wait_for(
+                self._connected.wait(), timeout=max(0.0, float(timeout_seconds))
+            )
+        except asyncio.TimeoutError:
+            return False
+        return self.connected
 
     async def close(self) -> None:
         async with self._close_lock:
@@ -606,6 +755,7 @@ class FederatedDataBusClient:
 
 
 __all__ = [
+    "CredentialSource",
     "DataBusClaim",
     "DataBusCredential",
     "DataBusClientError",
@@ -615,4 +765,5 @@ __all__ = [
     "DataBusRemoteError",
     "DelegatedCardCredential",
     "FederatedDataBusClient",
+    "HandshakeAttempt",
 ]
