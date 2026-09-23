@@ -114,6 +114,14 @@ def require_applied_operation_outcome(
             details=details,
         )
 
+    if value.get("applied") is True:
+        # The receipt says the mutation applied. Its ``state`` is then the
+        # object's own state, not the outcome: an assignment report with
+        # state ``refused`` is a report that applied and set the assignment
+        # to refused (2026-09-23, W284: the worker saw ERROR
+        # work_operation_refused for a report the service had applied, and
+        # its identical retry was refused instead of shown as a replay).
+        return outcome
     if state not in REFUSED_OUTCOME_STATES and value.get("applied") is not False:
         return outcome
 

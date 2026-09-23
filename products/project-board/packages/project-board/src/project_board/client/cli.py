@@ -761,6 +761,26 @@ def build_parser() -> argparse.ArgumentParser:
     _agent_identity(command)
 
     command = worker_commands.add_parser(
+        "busy-until",
+        help=(
+            "State until when (UTC) this worker expects to finish what it is on, "
+            "in one line, so the board can show it and mark it overdue. Set it "
+            "after planning, set it again with the reason when it slips, clear "
+            "it with --clear when the work is done."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument(
+        "until",
+        nargs="?",
+        default="",
+        help="ISO-8601 UTC instant, for example 2026-09-23T21:30Z.",
+    )
+    command.add_argument("--note", default="", help="One line naming the work, required with a time.")
+    command.add_argument("--clear", action="store_true", help="Clear the estimate: the work is done.")
+
+    command = worker_commands.add_parser(
         "idle",
         help=(
             "Report that this session has run out of work, naming why. Silence "
@@ -3216,6 +3236,29 @@ def _plan_command(args: Any) -> dict[str, Any]:
     raise ValueError(f"unsupported plan command: {args.plan_command}")
 
 
+def _busy_until_payload(args: Any) -> dict[str, Any]:
+    """The worker.estimate payload for pb worker busy-until, or the refusal, before any request."""
+
+    if args.clear and (args.until or args.note):
+        raise DomainError(
+            "work_worker_estimate_arguments",
+            "--clear takes no time and no note.",
+        )
+    if not args.clear and not args.until:
+        raise DomainError(
+            "work_worker_estimate_arguments",
+            "Give the UTC time you expect to finish by, with --note, or --clear.",
+        )
+    if args.clear:
+        return {"busy_until": ""}
+    if not str(args.note or "").strip():
+        raise DomainError(
+            "work_worker_estimate_note_required",
+            "An estimate names the work in one line: pass --note.",
+        )
+    return {"busy_until": args.until, "note": _prose_from(args.note, None)}
+
+
 def _worker_command(args: Any) -> dict[str, Any]:
     if args.worker_command == "authorize":
         path = resolve_host_config_path(getattr(args, "config", None))
@@ -3523,6 +3566,25 @@ def _worker_command(args: Any) -> dict[str, Any]:
             "worker": identity.worker_name,
             "session": field.detach_worker_listener(identity.worker_name),
             "relay_channel": "close_then_disable_on_reconciliation",
+        }
+    if args.worker_command == "busy-until":
+        response = _reference_mapping_request(
+            args,
+            action="worker.estimate",
+            object_ref="work:worker:self",
+            payload=_busy_until_payload(args),
+        )
+        worker = response.get("object") if isinstance(response.get("object"), Mapping) else {}
+        return {
+            "worker": identity.worker_name,
+            "busy_until": str(worker.get("busy_until") or ""),
+            "busy_note": str(worker.get("busy_note") or ""),
+            "busy_set_at": str(worker.get("busy_set_at") or ""),
+            "rule": (
+                "Cleared: the board shows no estimate for this worker."
+                if args.clear
+                else "The board shows this until it passes or you set or clear it again."
+            ),
         }
     if args.worker_command == "idle":
         idle_project = parse_ref(args.project_ref).object_id
