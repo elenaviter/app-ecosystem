@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+from fnmatch import fnmatchcase
 from typing import Any, Mapping
 
 from connection_hub.agent_account_scope import (
@@ -22,6 +23,7 @@ from connection_hub.delegated_credentials.cards.model import (
     authority_is_credentialless,
 )
 from connection_hub.delegated_credentials.agent_capability_policy import (
+    AGENT_CAPABILITY_METADATA_PROPERTY,
     AGENT_CAPABILITY_PROJECTION_PROPERTY,
     AgentCapabilityPolicy,
     AgentCapabilityPolicyError,
@@ -63,6 +65,95 @@ class ControlCardMismatch(RuntimeError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def _string_values(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        values = (value,)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        values = value
+    else:
+        return ()
+    return tuple(
+        dict.fromkeys(
+            text
+            for item in values
+            for text in (str(item or "").strip(),)
+            if text
+        )
+    )
+
+
+def _positive_limit(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _active_resource_families(
+    control: CardAuthority,
+    projection: AgentCapabilityPolicy,
+) -> dict[str, dict[str, Any]]:
+    selected = set(projection.capabilities.get("resource_families", ()))
+    metadata = dict(control.properties or {}).get(
+        AGENT_CAPABILITY_METADATA_PROPERTY
+    )
+    if not selected or not isinstance(metadata, Mapping):
+        return {}
+    entries = metadata.get("entries")
+    entries = entries if isinstance(entries, Mapping) else {}
+    families = entries.get("resource_families")
+    if not isinstance(families, Mapping):
+        return {}
+    return {
+        family_id: dict(raw)
+        for family_id, raw in families.items()
+        if family_id in selected and isinstance(raw, Mapping)
+    }
+
+
+def _family_resource_authority(
+    card: CardAuthority,
+    families: Mapping[str, Mapping[str, Any]],
+    *,
+    exact_control_resources: set[str],
+) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    """Resolve exact caller resources through selected descriptor families."""
+
+    assignment: dict[str, tuple[str, Mapping[str, Any]]] = {}
+    for resource in sorted(card.resource_grants):
+        if resource in exact_control_resources:
+            continue
+        for family_id, family in sorted(families.items()):
+            patterns = _string_values(family.get("resource_patterns"))
+            if any(fnmatchcase(resource, pattern) for pattern in patterns):
+                assignment[resource] = (family_id, family)
+                break
+
+    counts: dict[str, int] = {}
+    for family_id, _family in assignment.values():
+        counts[family_id] = counts.get(family_id, 0) + 1
+    for family_id, family in families.items():
+        limit = _positive_limit(family.get("max_resources"))
+        if limit is not None and counts.get(family_id, 0) > limit:
+            raise ControlCardMismatch("agent_resource_family_resource_limit")
+
+    grants: dict[str, tuple[str, ...]] = {}
+    operations: dict[str, tuple[str, ...]] = {}
+    for resource, (_family_id, family) in assignment.items():
+        allowed = set(_string_values(family.get("allowed_tools")))
+        selected = tuple(card.resource_operations.get(resource, ()))
+        bounded = selected if "*" in allowed else tuple(
+            operation for operation in selected if operation in allowed
+        )
+        limit = _positive_limit(family.get("max_tools_per_resource"))
+        if limit is not None and len(set(bounded)) > limit:
+            raise ControlCardMismatch("agent_resource_family_tool_limit")
+        grants[resource] = tuple(card.resource_grants.get(resource, ()))
+        operations[resource] = tuple(sorted(set(bounded)))
+    return grants, operations
 
 
 def _intersect_values(left: tuple[str, ...], right: tuple[str, ...]) -> tuple[str, ...]:
@@ -308,6 +399,21 @@ def effective_card_authority(
         raise ControlCardMismatch(exc.reason) from exc
     if agent_descriptor is not None and mode != CONTROL_COMPOSITION_AND:
         raise ControlCardMismatch("agent_descriptor_control_requires_and")
+    try:
+        capability_properties = compose_agent_capability_properties(
+            card.properties,
+            control.properties,
+            mode=mode,
+        )
+        projection = (
+            AgentCapabilityPolicy.from_property(
+                capability_properties[AGENT_CAPABILITY_PROJECTION_PROPERTY]
+            )
+            if agent_descriptor is not None
+            else None
+        )
+    except AgentCapabilityPolicyError as exc:
+        raise ControlCardMismatch(exc.reason) from exc
     if mode == CONTROL_COMPOSITION_OR:
         resource_grants = {
             resource: _union_values(
@@ -342,6 +448,14 @@ def effective_card_authority(
             )
             for resource in resource_grants
         }
+        if projection is not None:
+            family_grants, family_operations = _family_resource_authority(
+                card,
+                _active_resource_families(control, projection),
+                exact_control_resources=set(control.resource_grants),
+            )
+            resource_grants.update(family_grants)
+            resource_operations.update(family_operations)
     properties = copy.deepcopy(
         {**dict(card.properties or {}), **dict(control.properties or {})}
     )
@@ -350,25 +464,13 @@ def effective_card_authority(
     properties[CONVERSATION_TARGETS_PROPERTY] = list(
         compose_conversation_targets(card.properties, control.properties, mode=mode)
     )
-    try:
-        capability_properties = compose_agent_capability_properties(
-            card.properties,
-            control.properties,
-            mode=mode,
+    properties.update(capability_properties)
+    if projection is not None:
+        # Conversation admission consumes this established Card property. For
+        # descriptor-controlled agents it is derived from the same projection.
+        properties[CONVERSATION_TARGETS_PROPERTY] = list(
+            projection.capabilities.get("conversation_targets", ())
         )
-        properties.update(capability_properties)
-        if agent_descriptor is not None:
-            projection = AgentCapabilityPolicy.from_property(
-                capability_properties[AGENT_CAPABILITY_PROJECTION_PROPERTY]
-            )
-            # Conversation admission consumes this established Card property.
-            # For descriptor-controlled agents it is a derived view of the
-            # same positive capability projection, never a second selection.
-            properties[CONVERSATION_TARGETS_PROPERTY] = list(
-                projection.capabilities.get("conversation_targets", ())
-            )
-    except AgentCapabilityPolicyError as exc:
-        raise ControlCardMismatch(exc.reason) from exc
     if APPLICATION_API_RESOURCE in resource_grants:
         card_has_resource = APPLICATION_API_RESOURCE in card.resource_grants
         control_has_resource = APPLICATION_API_RESOURCE in control.resource_grants

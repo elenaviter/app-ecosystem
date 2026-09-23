@@ -66,6 +66,43 @@ export async function getBundlesCatalog(): Promise<unknown> {
   return parsed;
 }
 
+/** Merge a descriptor-owned application props patch through the platform's
+ * authoritative store. This endpoint is restricted to platform administrators. */
+export async function mergeBundleProps(
+  bundleId: string,
+  props: Record<string, unknown>,
+): Promise<void> {
+  const target = new URL(
+    `${settings.getBaseUrl()}/admin/integrations/bundles/${encodeURIComponent(bundleId)}/props`,
+    window.location.origin,
+  );
+  const response = await fetch(target.toString(), {
+    method: 'POST',
+    credentials: 'include',
+    cache: 'no-store',
+    headers: settings.authHeaders({
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    }),
+    body: JSON.stringify({
+      tenant: settings.getTenant(),
+      project: settings.getProject(),
+      op: 'merge',
+      props,
+    }),
+  });
+  if (response.ok) return;
+  const body = await response.text();
+  let detail = body || response.statusText;
+  try {
+    const parsed = body ? JSON.parse(body) as Record<string, unknown> : {};
+    if (parsed.detail) detail = String(parsed.detail);
+  } catch {
+    // The response text remains the actionable error.
+  }
+  throw new Error(detail || `Application configuration could not be saved: ${response.status}`);
+}
+
 function apiUrl(route: 'operations' | 'public', operation: string): string {
   const tenant = encodeURIComponent(settings.getTenant());
   const project = encodeURIComponent(settings.getProject());

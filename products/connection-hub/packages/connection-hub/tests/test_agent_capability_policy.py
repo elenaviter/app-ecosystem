@@ -56,6 +56,7 @@ ALL_DEPLOYMENT_AGENTS = application_resource(
     agent="*",
 )
 PROVIDER_RESOURCE = "https://provider.example/mcp"
+REMOTE_MCP_RESOURCE = "urn:connection-hub:remote-mcp:mcp_user"
 
 
 def _policy(**categories: tuple[str, ...]) -> AgentCapabilityPolicy:
@@ -205,3 +206,71 @@ def test_descriptor_control_cannot_contribute_authority_with_or() -> None:
 
     with pytest.raises(ControlCardMismatch, match="requires_and"):
         effective_card_authority(caller, control)
+
+
+def test_selected_descriptor_family_preserves_exact_user_mcp_only_on_agent_card() -> None:
+    caller, control = _composition()
+    authority = AgentCapabilityPolicy.from_property(
+        control.properties[AGENT_CAPABILITY_AUTHORITY_PROPERTY]
+    )
+    selection = AgentCapabilityPolicy.from_property(
+        caller.properties[AGENT_CAPABILITY_SELECTION_PROPERTY]
+    )
+    control_properties = dict(control.properties)
+    control_properties[AGENT_CAPABILITY_AUTHORITY_PROPERTY] = _policy(
+        **{
+            **authority.capabilities,
+            "resource_families": ("user_external_mcp",),
+        }
+    ).to_property()
+    metadata = dict(control_properties[AGENT_CAPABILITY_METADATA_PROPERTY])
+    metadata["entries"] = {
+        **dict(metadata.get("entries") or {}),
+        "resource_families": {
+            "user_external_mcp": {
+                "title": "My MCP connectors",
+                "resource_patterns": ["urn:connection-hub:remote-mcp:*"],
+                "allowed_tools": ["*"],
+                "max_resources": 8,
+                "max_tools_per_resource": 64,
+            }
+        },
+    }
+    control_properties[AGENT_CAPABILITY_METADATA_PROPERTY] = metadata
+    control = materialize_control_snapshot(
+        dataclasses.replace(control, properties=control_properties),
+        basis_catalog_version=control.catalog_version,
+        origin="agent_descriptor",
+    )
+    caller_properties = dict(caller.properties)
+    caller_properties[AGENT_CAPABILITY_SELECTION_PROPERTY] = _policy(
+        **{
+            **selection.capabilities,
+            "resource_families": ("user_external_mcp",),
+        }
+    ).to_property()
+    caller = dataclasses.replace(
+        caller,
+        resource_grants={
+            **dict(caller.resource_grants),
+            REMOTE_MCP_RESOURCE: ("remote_mcp:use",),
+        },
+        resource_operations={
+            **dict(caller.resource_operations),
+            REMOTE_MCP_RESOURCE: ("search", "read"),
+        },
+        properties=caller_properties,
+    )
+
+    effective = effective_card_authority(caller, control)
+
+    assert REMOTE_MCP_RESOURCE not in control.resource_grants
+    assert effective.resource_grants[REMOTE_MCP_RESOURCE] == ("remote_mcp:use",)
+    assert effective.resource_operations[REMOTE_MCP_RESOURCE] == ("read", "search")
+
+    caller_properties[AGENT_CAPABILITY_SELECTION_PROPERTY] = selection.to_property()
+    without_family = effective_card_authority(
+        dataclasses.replace(caller, properties=caller_properties),
+        control,
+    )
+    assert REMOTE_MCP_RESOURCE not in without_family.resource_grants

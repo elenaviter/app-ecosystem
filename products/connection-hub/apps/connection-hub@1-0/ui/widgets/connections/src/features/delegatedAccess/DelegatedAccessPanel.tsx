@@ -2,7 +2,7 @@ import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState 
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
 import { CopyButton, DoorRef } from '../../components/CopyControls';
-import { operationUrl, publicMcpUrl } from '../../api/client';
+import { mergeBundleProps, operationUrl, publicMcpUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
 import {
@@ -10,13 +10,20 @@ import {
   useApplicationApiCatalog,
 } from './ApplicationApiCatalog';
 import { ConversationTargetPicker } from './ConversationTargetPicker';
-import { cardConversationTargets, withConversationTargets } from './conversationTargets';
 import {
+  CONVERSATION_TARGETS_PROPERTY,
+  cardConversationTargets,
+  withConversationTargets,
+} from './conversationTargets';
+import {
+  AGENT_CAPABILITY_DEFAULTS_PROPERTY,
   AGENT_CAPABILITY_SELECTION_PROPERTY,
   agentCapabilitySelectionFromMap,
   agentCapabilitySelectionMap,
   agentCapabilitySelectionProperty,
   cardAgentCapabilityAuthority,
+  cardAgentCapabilityDefaults,
+  cardAgentDescriptorTarget,
   cardAgentCapabilityMetadata,
   cardAgentCapabilitySelection,
   isAgentDescriptorControl,
@@ -29,6 +36,7 @@ import {
 } from './agentCardLifecycle';
 import {
   APPLICATION_API_RESOURCE,
+  APPLICATION_OPERATION_POLICY_PROPERTY,
   PLATFORM_ROLE_PREFIX,
   applicationOperationPropertiesForSelection,
   applicationOperationRolePolicy,
@@ -2188,7 +2196,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditCompositionMode(item.composition_mode === 'or' ? 'or' : 'and');
     setEditConversationTargets(cardConversationTargets(item.properties));
     setEditAgentCapabilities(agentCapabilitySelectionMap(
-      cardAgentCapabilitySelection(item.properties),
+      item.source === 'control' && isAgentDescriptorControl(item.properties)
+        ? cardAgentCapabilityDefaults(item.properties)
+        : cardAgentCapabilitySelection(item.properties),
     ));
     setEditAddedResources([]);
     setEditRemovedResources([]);
@@ -2983,6 +2993,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const focusedAdditions = Object.entries(splits).flatMap(([resource, split]) => (
       split.focused.map(({ operation, mode }) => ({ resource, operation, mode }))
     ));
+    const savedResourceOperations = Object.fromEntries(
+      Object.entries(splits).map(([resource, split]) => [resource, split.kept]),
+    );
     if (focusedAdditions.length && !item.client_id) {
       setEditActionError(
         `Could not add ${focusedAdditions[0].operation}: this card has no client identity for a focused grant. Your draft is still here.`,
@@ -3006,22 +3019,65 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           || capabilityControl?.properties,
         )
       : null;
-    const selectedProperties = capabilityAuthority ? {
-      ...baseProperties,
-      [AGENT_CAPABILITY_SELECTION_PROPERTY]: agentCapabilitySelectionProperty(
-        capabilityAuthority.resource,
-        editAgentCapabilities,
-      ),
-    } : baseProperties;
+    const descriptorAuthority = item.source === 'control'
+      && isAgentDescriptorControl(item.properties)
+      ? cardAgentCapabilityAuthority(item.properties)
+      : null;
+    const selectedProperties = capabilityAuthority
+      ? {
+          ...baseProperties,
+          [AGENT_CAPABILITY_SELECTION_PROPERTY]: agentCapabilitySelectionProperty(
+            capabilityAuthority.resource,
+            editAgentCapabilities,
+          ),
+        }
+      : descriptorAuthority
+        ? {
+            ...baseProperties,
+            [AGENT_CAPABILITY_DEFAULTS_PROPERTY]: agentCapabilitySelectionProperty(
+              descriptorAuthority.resource,
+              editAgentCapabilities,
+            ),
+          }
+        : baseProperties;
+    const descriptorTarget = descriptorAuthority
+      ? cardAgentDescriptorTarget(item.properties)
+      : null;
+    if (descriptorAuthority && !descriptorTarget) {
+      setEditActionError('Save was not applied: this Control Card has no exact application descriptor target.');
+      return;
+    }
+    if (descriptorTarget) {
+      const persistedProperties = Object.fromEntries(
+        [APPLICATION_OPERATION_POLICY_PROPERTY, CONVERSATION_TARGETS_PROPERTY]
+          .filter((name) => name in selectedProperties)
+          .map((name) => [name, selectedProperties[name]]),
+      );
+      try {
+        await mergeBundleProps(descriptorTarget.application, {
+          agent_capability_control_overrides: {
+            [descriptorTarget.agent]: [{
+              schema: 'kdcube.agent_capability_control_override.v1',
+              capability_defaults: selectedProperties[AGENT_CAPABILITY_DEFAULTS_PROPERTY],
+              resource_grants: routedKept,
+              resource_operations: savedResourceOperations,
+              named_service_operations: keptNamedServiceOperations,
+              properties: persistedProperties,
+            }],
+          },
+        });
+      } catch (error) {
+        setEditActionError(`Save was not applied to the application descriptor: ${String(error || 'request refused')}`);
+        return;
+      }
+    }
     let updated;
     try {
       updated = await dispatch(updateDelegatedAccess({
         accessId: item.access_id,
         label: editLabel.trim() || item.label || 'Automation access',
         resourceGrants: routedKept,
-        resourceOperations: Object.fromEntries(
-          Object.entries(splits).map(([resource, split]) => [resource, split.kept]),
-        ),
+        resourceOperations: savedResourceOperations,
         namedServiceOperations: Object.keys(offered).length
           ? (item.source === 'control'
               ? keptNamedServiceOperations
@@ -4820,6 +4876,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const descriptorCapabilityAuthority = descriptorCapabilityControl
       ? cardAgentCapabilityAuthority(record.properties)
       : null;
+    const descriptorCapabilityDefaults = descriptorCapabilityControl
+      ? cardAgentCapabilityDefaults(record.properties)
+      : null;
     const descriptorCapabilityMetadata = descriptorCapabilityControl
       ? cardAgentCapabilityMetadata(record.properties)
       : {};
@@ -5069,11 +5128,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               <AgentCapabilityPolicyView
                 title="KDCube administrator preset"
                 authority={descriptorCapabilityAuthority}
+                selection={agentCapabilitySelectionFromMap(
+                  descriptorCapabilityAuthority.resource,
+                  editAgentCapabilities,
+                ) || descriptorCapabilityDefaults}
                 metadata={descriptorCapabilityMetadata}
                 categories={KDCUBE_AGENT_CARD_CATEGORIES}
+                editable
+                onChange={setEditAgentCapabilities}
+                singleChoiceCategories={['models', 'instruction_profiles']}
               />
               <div className="notice" role="status">
-                The application and agent descriptor initializes this preset. Platform administrators may edit the live Control Card.
+                The application and agent descriptor initialize this preset. Platform administrators may edit its defaults within the descriptor ceiling.
               </div>
             </>
           ) : null}
@@ -5086,7 +5152,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             <button
               className="btn"
               type="button"
-              disabled={busy || problems.length > 0 || (residentCapabilityCard && !residentCapabilityAuthority)}
+              disabled={busy
+                || problems.length > 0
+                || (residentCapabilityCard && !residentCapabilityAuthority)
+                || (descriptorCapabilityControl && !descriptorCapabilityAuthority)}
               title={problemText || undefined}
               onClick={() => saveEdit(record)}
             >

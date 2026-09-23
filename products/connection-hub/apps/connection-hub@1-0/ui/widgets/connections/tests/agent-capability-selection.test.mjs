@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   AGENT_CAPABILITY_AUTHORITY_PROPERTY,
+  AGENT_CAPABILITY_DEFAULTS_PROPERTY,
   AGENT_CAPABILITY_METADATA_PROPERTY,
   AGENT_CAPABILITY_SELECTION_PROPERTY,
   AGENT_CAPABILITY_POLICY_SCHEMA,
@@ -11,8 +12,10 @@ import {
   AGENT_DESCRIPTOR_CONTROL_PROPERTY,
   AGENT_DESCRIPTOR_CONTROL_SCHEMA,
   cardAgentCapabilityAuthority,
+  cardAgentCapabilityDefaults,
   cardAgentCapabilityMetadata,
   cardAgentCapabilitySelection,
+  cardAgentDescriptorTarget,
   isAgentDescriptorControl,
 } from '../src/features/delegatedAccess/agentCapabilitySelection.ts'
 
@@ -101,6 +104,11 @@ test('the descriptor Control Card exposes its ceiling and presentation metadata'
         },
       },
     },
+    [AGENT_CAPABILITY_DEFAULTS_PROPERTY]: {
+      schema: AGENT_CAPABILITY_POLICY_SCHEMA,
+      resource: RESOURCE,
+      capabilities: { tools: ['web/search'] },
+    },
     [AGENT_DESCRIPTOR_CONTROL_PROPERTY]: {
       schema: AGENT_DESCRIPTOR_CONTROL_SCHEMA,
       resource: RESOURCE,
@@ -108,12 +116,17 @@ test('the descriptor Control Card exposes its ceiling and presentation metadata'
   }
 
   assert.equal(cardAgentCapabilityAuthority(properties)?.selectedCount, 1)
+  assert.equal(cardAgentCapabilityDefaults(properties)?.selectedCount, 1)
   assert.deepEqual(cardAgentCapabilityMetadata(properties), {
     tools: {
       'web/search': { title: 'Search', description: 'Search project records.' },
     },
   })
   assert.equal(isAgentDescriptorControl(properties), true)
+  assert.deepEqual(cardAgentDescriptorTarget(properties), {
+    application: 'problem-board@1-0',
+    agent: 'main',
+  })
 })
 
 test('the Card surface renders the property as an Agent capability base', () => {
@@ -140,8 +153,13 @@ test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
   assert.match(panel, /renderAccountScopePicker\(/)
   assert.match(panel, /updateDelegatedAccess\(\{/)
   assert.match(panel, /AGENT_CAPABILITY_SELECTION_PROPERTY/)
+  assert.match(panel, /AGENT_CAPABILITY_DEFAULTS_PROPERTY/)
   assert.match(panel, /const capabilityControl = item\.control_card;/)
-  assert.match(panel, /The application and agent descriptor initializes this preset\./)
+  assert.match(panel, /descriptor initialize this preset/)
+  assert.match(panel, /descriptorCapabilityDefaults/)
+  assert.match(panel, /title="KDCube administrator preset"[\s\S]*editable[\s\S]*singleChoiceCategories/)
+  assert.match(panel, /mergeBundleProps\(descriptorTarget\.application/)
+  assert.match(panel, /agent_capability_control_overrides/)
   assert.doesNotMatch(panel, /saveAgentCapabilityBase/)
   assert.doesNotMatch(panel, /specializedCapabilityCard/)
 })

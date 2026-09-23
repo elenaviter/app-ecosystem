@@ -13,6 +13,7 @@ from connection_hub.delegated_credentials.agent_capability_sync import (
     AGENT_CAPABILITY_CARD_LEASE_SECONDS,
 )
 from connection_hub.delegated_credentials.agent_capability_policy import (
+    AGENT_CAPABILITY_DEFAULTS_PROPERTY,
     AGENT_CAPABILITY_SELECTION_PROPERTY,
     AGENT_CAPABILITY_POLICY_SCHEMA,
     AGENT_DESCRIPTOR_CONTROL_PROPERTY,
@@ -61,6 +62,7 @@ RESOURCE = application_resource(
     agent=AGENT,
 )
 NAMED_RESOURCE = "https://example.test/mcp/named-services"
+REVIEW_RESOURCE = "https://example.test/mcp/review"
 
 
 class _Persistence:
@@ -147,8 +149,22 @@ def _policy_with_named_operations(*operations: str) -> dict:
     }
 
 
+def _policy_with_mcp_tools(*tools: str) -> dict:
+    return {
+        "schema": AGENT_CAPABILITY_POLICY_SCHEMA,
+        "resource": RESOURCE,
+        "capabilities": {
+            "mcp_servers": ["review"],
+            "mcp_tools": [f"review/{tool}" for tool in tools],
+        },
+    }
+
+
 def _service(
-    *, application_apis: bool = False, named_services: bool = False
+    *,
+    application_apis: bool = False,
+    named_services: bool = False,
+    review_mcp: bool = False,
 ) -> tuple[AutomationAccessService, _Persistence]:
     resources = []
     if application_apis:
@@ -174,12 +190,19 @@ def _service(
                         "slack": {
                             "tools": {
                                 "objects": {
+                                    "grants": ["named_services:use"],
                                     "operations": {
                                         "object.list": {
-                                            "grants": ["slack:read"],
+                                            "grants": [
+                                                "named_services:use",
+                                                "slack:read",
+                                            ],
                                         },
                                         "object.action.post_message": {
-                                            "grants": ["slack:post"],
+                                            "grants": [
+                                                "named_services:use",
+                                                "slack:post",
+                                            ],
                                         },
                                     }
                                 }
@@ -187,6 +210,24 @@ def _service(
                         }
                     }
                 },
+                "tools": [
+                    {
+                        "name": "named_services_call",
+                        "grants": ["named_services:use"],
+                    }
+                ],
+            }
+        )
+    if review_mcp:
+        resources.append(
+            {
+                "resource": REVIEW_RESOURCE,
+                "label": "Review MCP",
+                "grants": ["review:use"],
+                "tools": [
+                    {"name": "review_accept", "grants": ["review:use"]},
+                    {"name": "review_cancel", "grants": ["review:use"]},
+                ],
             }
         )
     grants = sorted(
@@ -630,6 +671,144 @@ async def test_agent_card_uses_standard_selected_authority_inside_control() -> N
     assert updated.named_service_operations.is_none
     assert RESOURCE in updated.resource_acceptance
     assert NAMED_RESOURCE not in updated.resource_acceptance
+
+
+@pytest.mark.asyncio
+async def test_descriptor_request_projects_named_services_into_both_cards() -> None:
+    service, persistence = _service(named_services=True)
+    authority = _policy_with_named_operations(
+        "object.list",
+        "object.action.post_message",
+    )
+    selected = _policy_with_named_operations("object.list")
+    descriptor_payload = {
+        "revision": "descriptor-r1",
+        "standard_authority": {
+            "resources": [],
+            "named_services": [
+                {"namespace": "slack", "operations": ["object"]},
+            ],
+            "resource_families": [],
+        },
+    }
+
+    result = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload=descriptor_payload,
+        capability_authority=authority,
+        capability_catalog=authority,
+        selected_capabilities=selected,
+    )
+
+    assert result["ok"] is True, result
+    control = persistence.records[result["control_card"]["access_id"]][0]
+    resident = persistence.records[result["card"]["access_id"]][0]
+    assert control.resource_grants == {
+        NAMED_RESOURCE: (
+            "named_services:use",
+            "slack:post",
+            "slack:read",
+        ),
+    }
+    assert control.resource_operations == {
+        NAMED_RESOURCE: ("named_services_call",),
+    }
+    assert control.named_service_operations.to_stored() == {
+        NAMED_RESOURCE: {
+            "slack": ["object.action.post_message", "object.list"],
+        },
+    }
+    assert resident.resource_grants == {
+        NAMED_RESOURCE: ("named_services:use", "slack:read"),
+    }
+    assert resident.resource_operations == {
+        NAMED_RESOURCE: ("named_services_call",),
+    }
+    assert resident.named_service_operations.to_stored() == {
+        NAMED_RESOURCE: {"slack": ["object.list"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_descriptor_mcp_selection_never_expands_sibling_tools_by_claim() -> None:
+    service, persistence = _service(review_mcp=True)
+    authority = _policy_with_mcp_tools("review_accept", "review_cancel")
+    selected = _policy_with_mcp_tools("review_accept")
+    descriptor_payload = {
+        "revision": "descriptor-r1",
+        "standard_authority": {
+            "resources": [{
+                "server_id": "review",
+                "resource": REVIEW_RESOURCE,
+                "grants": ["review:use"],
+                "operations": ["review_accept", "review_cancel"],
+            }],
+            "named_services": [],
+            "resource_families": [],
+        },
+    }
+
+    result = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload=descriptor_payload,
+        capability_authority=authority,
+        capability_catalog=authority,
+        selected_capabilities=selected,
+    )
+
+    assert result["ok"] is True, result
+    control = persistence.records[result["control_card"]["access_id"]][0]
+    resident = persistence.records[result["card"]["access_id"]][0]
+    assert control.resource_operations == {
+        REVIEW_RESOURCE: ("review_accept", "review_cancel"),
+    }
+    assert resident.resource_grants == {REVIEW_RESOURCE: ("review:use",)}
+    assert resident.resource_operations == {REVIEW_RESOURCE: ("review_accept",)}
+
+
+@pytest.mark.asyncio
+async def test_live_control_defaults_seed_a_recreated_agent_card() -> None:
+    service, persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old", "tool.new"),
+        catalog=("tool.old", "tool.new"),
+        selection=("tool.old",),
+    )
+    control_id = created["control_card"]["access_id"]
+    resident_id = created["card"]["access_id"]
+    control, handles = persistence.records[control_id]
+    control_properties = dict(control.properties)
+    control_properties[AGENT_CAPABILITY_DEFAULTS_PROPERTY] = _policy("tool.new")
+    persistence.records[control_id] = (
+        dataclasses.replace(
+            control,
+            card_revision=control.card_revision + 1,
+            properties=control_properties,
+        ),
+        handles,
+    )
+    del persistence.records[resident_id]
+
+    recreated = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old", "tool.new"),
+        catalog=("tool.old", "tool.new"),
+        selection=("tool.old",),
+    )
+
+    assert recreated["ok"] is True, recreated
+    assert recreated["control_changed"] is False
+    assert recreated["selection"]["capabilities"] == {"tools": ["tool.new"]}
+    assert recreated["projection"] == recreated["selection"]
 
 
 @pytest.mark.asyncio
