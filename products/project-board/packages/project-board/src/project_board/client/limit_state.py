@@ -347,6 +347,42 @@ def limit_state_at(state: Mapping[str, Any] | None, *, now: str) -> dict[str, An
     return current
 
 
+def session_with_limit_state(
+    session: Mapping[str, Any],
+    *,
+    runtime_kind: str,
+    runtime_session_id: str,
+    now: str,
+    sessions_root: Path | str | None = None,
+    recorded: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The listener session row with the runtime's own limit state on it.
+
+    Codex is read from its rollout on this host. Claude Code has no file of its
+    own, so its state is what ``pb worker limit-state`` recorded from the status
+    line or the ``StopFailure`` hook (``recorded``). A runtime that reports
+    nothing leaves the row without the field, which the board reads as "not
+    reported", never as "fine".
+    """
+
+    row = dict(session)
+    state: Mapping[str, Any] | None = None
+    kind = str(runtime_kind or "").strip().lower()
+    if kind == "codex":
+        try:
+            state = codex_limit_state(runtime_session_id, sessions_root=sessions_root)
+        except Exception:  # noqa: BLE001 - a rollout that cannot be read is no state, not a failed cycle
+            state = None
+    elif isinstance(recorded, Mapping) and recorded:
+        state = recorded
+    current = limit_state_at(state, now=now)
+    if current is not None:
+        row["limit_state"] = current
+    else:
+        row.pop("limit_state", None)
+    return row
+
+
 __all__ = [
     "CODEX_SESSIONS_ROOT",
     "KIND_OK",
@@ -364,5 +400,6 @@ __all__ = [
     "limit_state_from_claude_stop_failure",
     "limit_state_from_codex",
     "read_codex_rate_limits",
+    "session_with_limit_state",
     "unknown_state",
 ]

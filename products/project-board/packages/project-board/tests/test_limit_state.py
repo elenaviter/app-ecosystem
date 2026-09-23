@@ -112,3 +112,24 @@ def test_a_limit_clears_when_its_reset_time_has_passed():
     assert cleared["kind"] == "ok"
     assert cleared["cleared_at"] == "2026-09-23T21:00:00Z"
     assert limit_state_at(None, now="2026-09-23T21:00:00Z") is None
+
+
+def test_the_listener_row_carries_the_state_for_codex_and_the_recorded_one_for_claude_code(tmp_path):
+    from project_board.client.limit_state import session_with_limit_state
+
+    _rollout(tmp_path, limits=LIMITED)
+    listener = {"session_id": SESSION, "state": "listening", "presence": "listening"}
+    codex = session_with_limit_state(listener, runtime_kind="codex", runtime_session_id=SESSION, now="2026-09-21T16:00:00Z", sessions_root=tmp_path)
+    assert codex["limit_state"]["kind"] == "rate_limited"
+    assert codex["session_id"] == SESSION
+    # Past the reset, the same rollout reads ok, so the board clears it.
+    later = session_with_limit_state(listener, runtime_kind="codex", runtime_session_id=SESSION, now="2026-09-21T17:00:00Z", sessions_root=tmp_path)
+    assert later["limit_state"]["kind"] == "ok"
+    # No rollout on this host: the row has no field, which is "not reported".
+    absent = session_with_limit_state(listener, runtime_kind="codex", runtime_session_id="other", now="2026-09-21T16:00:00Z", sessions_root=tmp_path)
+    assert "limit_state" not in absent
+    # Claude Code has no file of its own: the recorded status-line state is used.
+    recorded = limit_state_from_claude_statusline({"rate_limits": {"five_hour": {"used_percentage": 100, "resets_at": 1790010000}}}, observed_at="2026-09-21T16:30:00Z")
+    claude = session_with_limit_state(listener, runtime_kind="claude-code", runtime_session_id="c", now="2026-09-21T16:40:00Z", recorded=recorded)
+    assert claude["limit_state"]["kind"] == "rate_limited" and claude["limit_state"]["reached"] == "five_hour"
+    assert "limit_state" not in session_with_limit_state(listener, runtime_kind="claude-code", runtime_session_id="c", now="2026-09-21T16:40:00Z")

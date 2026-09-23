@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 
 from .card_refusal import actionable_card_refusal
+from .limit_state import session_with_limit_state
 from ..contract.errors import DomainError
 from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
@@ -114,6 +115,9 @@ HEARTBEAT_SESSION_FIELDS = (
     "last_inbox_result_at",
     "last_mail_settled_at",
     "last_settled_message_ref",
+    # W26: the runtime's own usage-limit state, read on this host, so the
+    # board says "out of tokens, resets at" instead of reading silence.
+    "limit_state",
 )
 HEARTBEAT_SUBSCRIPTION_FIELDS = (
     "adapter",
@@ -2666,12 +2670,26 @@ class ProblemBoardHostRelayAdapter:
             )
         ), registration
 
+    def _listener_sessions(self) -> list[dict[str, Any]]:
+        """This session's listener row, carrying the runtime's own limit state (W26)."""
+
+        listener = self.field.worker_listener_session(self.config.worker_name)
+        if listener is None:
+            return []
+        return [
+            session_with_limit_state(
+                listener,
+                runtime_kind=self.config.runtime_kind,
+                runtime_session_id=self.config.runtime_session_id,
+                now=utc_now(),
+            )
+        ]
+
     async def poll_once(self) -> dict[str, Any]:
         registration = await self._ensure_registration()
         if registration is not None and registration["remote"].get("pool_status") == "limbo":
             return await self._limbo_result()
-        listener = self.field.worker_listener_session(self.config.worker_name)
-        agent_sessions = [listener] if listener is not None else []
+        agent_sessions = self._listener_sessions()
         return await self._poll_project_once(
             agent_sessions=agent_sessions,
             force_heartbeat=True,
@@ -2685,8 +2703,7 @@ class ProblemBoardHostRelayAdapter:
         )
         if registration is not None and registration["remote"].get("pool_status") == "limbo":
             return await self._limbo_result()
-        listener = self.field.worker_listener_session(self.config.worker_name)
-        sessions = [listener] if listener is not None else []
+        sessions = self._listener_sessions()
         discovery: dict[str, Any] = {}
         discovery_heartbeat_sent = False
         discovery_session_delta: list[dict[str, Any]] | None = None
