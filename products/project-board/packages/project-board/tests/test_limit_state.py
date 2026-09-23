@@ -1,0 +1,114 @@
+"""The limit state comes from the runtime's own record, never from silence (W26).
+
+The Codex shape is the one codex-cli 0.154 writes into its rollout files
+(checked on dev-main, 2026-09-23). The Claude Code shape is the status line
+JSON from code.claude.com/docs/en/statusline.
+"""
+
+from __future__ import annotations
+
+import json
+
+from project_board.client.limit_state import (
+    codex_limit_state,
+    codex_rollout_path,
+    limit_state_at,
+    limit_state_from_claude_statusline,
+    limit_state_from_claude_stop_failure,
+    limit_state_from_codex,
+    read_codex_rate_limits,
+)
+
+SESSION = "01a08da1-ee31-70a2-bf8d-8a08d55bdcf7"
+
+
+def _rollout(tmp_path, *, limits, session=SESSION, filler=0):
+    day = tmp_path / "2026" / "09" / "23"
+    day.mkdir(parents=True)
+    path = day / f"rollout-2026-09-23T19-00-00-{session}.jsonl"
+    lines = [
+        json.dumps({"timestamp": "2026-09-23T19:00:00.000Z", "type": "session_meta", "payload": {"id": session, "cli_version": "0.154.0"}}),
+    ]
+    # An older snapshot first, so the reader has to take the newest one.
+    lines.append(json.dumps({"timestamp": "2026-09-23T19:05:00.000Z", "type": "event_msg", "payload": {"type": "token_count", "info": {}, "rate_limits": {"primary": {"used_percent": 10.0, "window_minutes": 300, "resets_at": 1790000000}, "secondary": None, "rate_limit_reached_type": None}}}))
+    lines.extend(json.dumps({"timestamp": "2026-09-23T19:06:00.000Z", "type": "response_item", "payload": {"type": "message", "content": "x" * 200}}) for _ in range(filler))
+    lines.append(json.dumps({"timestamp": "2026-09-23T19:40:00.000Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {}}, "rate_limits": limits}}))
+    lines.append(json.dumps({"timestamp": "2026-09-23T19:41:00.000Z", "type": "event_msg", "payload": {"type": "agent_message", "message": "done"}}))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+LIMITED = {
+    "limit_id": "codex",
+    "primary": {"used_percent": 100.0, "window_minutes": 300, "resets_at": 1790010000},
+    "secondary": {"used_percent": 41.0, "window_minutes": 10080, "resets_at": 1790400000},
+    "credits": {"has_credits": False, "unlimited": False, "balance": "0"},
+    "plan_type": "pro",
+    "rate_limit_reached_type": "primary",
+}
+
+
+def test_the_newest_token_count_in_the_rollout_tail_is_the_state(tmp_path):
+    path = _rollout(tmp_path, limits=LIMITED, filler=3000)
+    assert codex_rollout_path(SESSION, sessions_root=tmp_path) == path
+    assert codex_rollout_path("not-a-session", sessions_root=tmp_path) is None
+    found = read_codex_rate_limits(path, tail_bytes=64 * 1024)
+    assert found is not None
+    timestamp, limits = found
+    assert timestamp == "2026-09-23T19:40:00.000Z"
+    assert limits["rate_limit_reached_type"] == "primary"
+    state = codex_limit_state(SESSION, sessions_root=tmp_path)
+    assert state["kind"] == "rate_limited"
+    assert state["reached"] == "primary"
+    assert state["resets_at"] == "2026-09-21T17:00:00Z"
+    assert state["observed_at"] == "2026-09-23T19:40:00Z"
+    assert state["source"] == "codex-rollout"
+    assert state["plan_type"] == "pro"
+    assert [w["name"] for w in state["windows"]] == ["primary", "secondary"]
+
+
+def test_a_window_under_its_limit_reads_ok_and_a_missing_rollout_reads_none(tmp_path):
+    fine = {"primary": {"used_percent": 33.0, "window_minutes": 10080, "resets_at": 1789435373}, "secondary": None, "rate_limit_reached_type": None, "plan_type": "pro"}
+    state = limit_state_from_codex(fine, observed_at="2026-09-10T23:55:25.266Z")
+    assert state["kind"] == "ok"
+    assert state["reached"] == ""
+    assert state["resets_at"] == ""
+    assert state["windows"][0]["resets_at"] == "2026-09-15T01:22:53Z"
+    assert state["observed_at"] == "2026-09-10T23:55:25Z"
+    assert codex_limit_state(SESSION, sessions_root=tmp_path) is None
+    assert limit_state_from_codex(None)["kind"] == "unknown"
+
+
+def test_a_window_at_one_hundred_percent_is_rate_limited_even_without_the_named_type():
+    state = limit_state_from_codex({"primary": {"used_percent": 100.0, "window_minutes": 300, "resets_at": 1790010000}, "secondary": {"used_percent": 5.0, "window_minutes": 10080, "resets_at": 1790400000}, "rate_limit_reached_type": None})
+    assert state["kind"] == "rate_limited"
+    assert state["reached"] == "primary"
+    assert state["resets_at"] == "2026-09-21T17:00:00Z"
+    spent = limit_state_from_codex({**LIMITED, "spend_control_reached": True, "rate_limit_reached_type": None})
+    assert spent["kind"] == "out_of_tokens"
+    assert spent["reached"] == "credits"
+
+
+def test_claude_code_status_line_and_stop_failure_read_the_same_way():
+    fine = limit_state_from_claude_statusline({"session_id": "s", "rate_limits": {"five_hour": {"used_percentage": 42, "resets_at": 1790010000}, "seven_day": {"used_percentage": 12, "resets_at": 1790400000}}}, observed_at="2026-09-23T20:00:00Z")
+    assert fine["kind"] == "ok"
+    assert [w["name"] for w in fine["windows"]] == ["five_hour", "seven_day"]
+    assert fine["windows"][0]["window_minutes"] == 300
+    hit = limit_state_from_claude_statusline({"rate_limits": {"five_hour": {"used_percentage": 100, "resets_at": 1790010000}}})
+    assert hit["kind"] == "rate_limited"
+    assert hit["reached"] == "five_hour"
+    assert hit["resets_at"] == "2026-09-21T17:00:00Z"
+    # Before the first API response there is no rate_limits object: unknown, not ok.
+    assert limit_state_from_claude_statusline({"session_id": "s"})["kind"] == "unknown"
+    stop = limit_state_from_claude_stop_failure({"error": "rate_limit"}, observed_at="2026-09-23T20:01:00Z")
+    assert stop["kind"] == "rate_limited" and stop["resets_at"] == ""
+    assert limit_state_from_claude_stop_failure({"error": "overloaded"})["kind"] == "unknown"
+
+
+def test_a_limit_clears_when_its_reset_time_has_passed():
+    state = {"kind": "rate_limited", "source": "codex-rollout", "windows": [], "reached": "primary", "resets_at": "2026-09-23T21:00:00Z", "observed_at": "2026-09-23T19:40:00Z"}
+    assert limit_state_at(state, now="2026-09-23T20:30:00Z")["kind"] == "rate_limited"
+    cleared = limit_state_at(state, now="2026-09-23T21:00:00Z")
+    assert cleared["kind"] == "ok"
+    assert cleared["cleared_at"] == "2026-09-23T21:00:00Z"
+    assert limit_state_at(None, now="2026-09-23T21:00:00Z") is None
