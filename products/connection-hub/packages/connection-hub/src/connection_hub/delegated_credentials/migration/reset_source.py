@@ -32,11 +32,13 @@ from connection_hub.delegated_credentials.migration.redis_source import (
 class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
     """Preserve live Card credential chains and count intentional resets.
 
-    A live Card credential is one authority unit: handle metadata, its access
-    binding, and, when present, the active refresh generation and dynamic
-    client. Copying only the Card row leaves a caller visible but unable to
-    authenticate or renew. Expired, revoked, orphaned, and unreferenced rows
-    remain reset policy.
+    A live Card credential is one authority unit: handle metadata plus either
+    its current access binding or its active refresh generation. A refresh
+    generation carries the client identity needed to rotate itself; a client
+    registration is preserved when present but is not a refresh prerequisite.
+    Copying only the Card row leaves a caller visible but unable to authenticate
+    or renew. Expired, revoked, orphaned, and unreferenced rows remain reset
+    policy.
     """
 
     async def _live_card_handles(
@@ -155,8 +157,10 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
                 record.payload.get("record", {}).get("registry_access_id") or ""
             )
             refresh_by_card.setdefault(access_id, set()).add(record.identity)
-        available_clients = {record.identity for record in clients}
         blockers: list[str] = []
+        current_access_cards = 0
+        current_refresh_cards = 0
+        refresh_recoverable_cards = 0
         for handle in handles:
             authority = live_authorities[handle.identity]
             held = live_credentials[handle.identity]
@@ -172,11 +176,22 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
             )
             card_access = access_by_card.get(authority.access_id, set())
             card_refresh = refresh_by_card.get(authority.access_id, set())
-            if access_digest and access_digest not in card_access:
+            access_is_current = bool(
+                access_digest and access_digest in card_access
+            )
+            refresh_is_current = bool(
+                refresh_digest and refresh_digest in card_refresh
+            )
+            current_access_cards += int(access_is_current)
+            current_refresh_cards += int(refresh_is_current)
+            refresh_recoverable_cards += int(
+                not access_is_current and refresh_is_current
+            )
+            if access_digest and not access_is_current and not refresh_is_current:
                 blockers.append(
                     f"live_card_access_binding_missing:{authority.access_id}"
                 )
-            if refresh_digest and refresh_digest not in card_refresh:
+            if refresh_digest and not refresh_is_current:
                 blockers.append(
                     f"live_card_refresh_generation_missing:{authority.access_id}"
                 )
@@ -190,8 +205,8 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
                 blockers.append(
                     f"live_card_oauth_chain_missing:{authority.access_id}"
                 )
-        for client_id in sorted(referenced_client_ids - available_clients):
-            blockers.append(f"live_card_oauth_client_missing:{client_id}")
+
+        available_clients = {record.identity for record in clients}
 
         reset_counts = {
             "admission_replay": len(
@@ -247,6 +262,12 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
                     "oauth_access": len(access),
                     "oauth_clients": len(clients),
                     "oauth_refresh": len(refresh),
+                    "card_handles_current_access": current_access_cards,
+                    "card_handles_current_refresh": current_refresh_cards,
+                    "card_handles_refresh_recoverable": refresh_recoverable_cards,
+                    "oauth_refresh_self_contained_clients": len(
+                        referenced_client_ids - available_clients
+                    ),
                     "resident_agent_card_handles": sum(
                         1
                         for authority in live_authorities.values()
