@@ -16,6 +16,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   resources: 'Resources',
   resource_operations: 'Resource operations',
   skills: 'Skills',
+  models: 'Models',
+  instruction_profiles: 'Instruction profiles',
   conversation_targets: 'Conversation targets',
   resource_families: 'Resource families',
   subagents: 'Helper agents',
@@ -98,7 +100,7 @@ export function cardAgentCapabilitySelection(
   return cardAgentCapabilityPolicy(properties, AGENT_CAPABILITY_SELECTION_PROPERTY);
 }
 
-/** Parse the descriptor-owned ceiling carried by its linked Control Card. */
+/** Parse the live administrator authority carried by the linked Control Card. */
 export function cardAgentCapabilityAuthority(
   properties: Record<string, unknown> | undefined,
 ): AgentCapabilitySelection | null {

@@ -128,6 +128,17 @@ function withToggle(
   );
 }
 
+function withSingleChoice(
+  selection: AgentCapabilitySelection | null,
+  category: string,
+  capability: string,
+): Record<string, string[]> {
+  return {
+    ...policyMap(selection),
+    [category]: [capability],
+  };
+}
+
 export function AgentCapabilityPolicyView({
   authority,
   selection = null,
@@ -135,6 +146,8 @@ export function AgentCapabilityPolicyView({
   editable = false,
   title,
   onChange,
+  categories,
+  singleChoiceCategories = [],
 }: {
   authority: AgentCapabilitySelection;
   selection?: AgentCapabilitySelection | null;
@@ -142,16 +155,40 @@ export function AgentCapabilityPolicyView({
   editable?: boolean;
   title: string;
   onChange?: (capabilities: Record<string, string[]>) => void;
+  categories?: string[];
+  singleChoiceCategories?: string[];
 }) {
+  const visibleCategories = categories ? new Set(categories) : null;
+  const singleChoices = new Set(singleChoiceCategories);
+  const visibleGroups = authority.groups.filter(
+    (group) => !visibleCategories || visibleCategories.has(group.category),
+  );
   const selected = policyMap(selection);
-  const selectedCount = authority.groups.reduce(
+  const selectedCount = visibleGroups.reduce(
     (total, group) => total + group.values.filter(
       (value) => (selected[group.category] || []).includes(value),
     ).length,
     0,
   );
-  const total = authority.groups.reduce((sum, group) => sum + group.values.length, 0);
+  const total = visibleGroups.reduce((sum, group) => sum + group.values.length, 0);
   const authorityByCategory = policyMap(authority);
+
+  const replaceVisible = (all: boolean) => {
+    const next = policyMap(selection);
+    visibleGroups.forEach((group) => {
+      if (!singleChoices.has(group.category)) {
+        next[group.category] = all ? [...group.values] : [];
+      } else if (all) {
+        const current = (next[group.category] || []).find((value) => (
+          group.values.includes(value)
+        ));
+        next[group.category] = current ? [current] : group.values.slice(0, 1);
+      } else {
+        next[group.category] = [];
+      }
+    });
+    onChange?.(next);
+  };
 
   const renderEntry = (
     category: string,
@@ -161,6 +198,7 @@ export function AgentCapabilityPolicyView({
     const entry = metadataEntry(metadata, category, capability);
     const label = displayLabel || entry?.title || fallbackLabel(capability);
     const checked = (selected[category] || []).includes(capability);
+    const singleChoice = singleChoices.has(category);
     const copy = (
       <span className="agent-capability-policy__entry-copy">
         <span>{label}</span>
@@ -174,15 +212,20 @@ export function AgentCapabilityPolicyView({
         title={capability}
       >
         <input
-          type="checkbox"
+          type={singleChoice ? 'radio' : 'checkbox'}
+          name={singleChoice ? `${authority.resource}:${category}` : undefined}
           checked={checked}
-          onChange={(event) => onChange?.(withToggle(
-            authority,
-            selection,
-            category,
-            capability,
-            event.target.checked,
-          ))}
+          onChange={(event) => onChange?.(
+            singleChoice
+              ? withSingleChoice(selection, category, capability)
+              : withToggle(
+                  authority,
+                  selection,
+                  category,
+                  capability,
+                  event.target.checked,
+                ),
+          )}
         />
         {copy}
       </label>
@@ -207,16 +250,14 @@ export function AgentCapabilityPolicyView({
             <button
               className="btn btn-ghost"
               type="button"
-              onClick={() => onChange?.(Object.fromEntries(
-                authority.groups.map((group) => [group.category, [...group.values]]),
-              ))}
+              onClick={() => replaceVisible(true)}
             >
               Select all
             </button>
             <button
               className="btn btn-ghost"
               type="button"
-              onClick={() => onChange?.({})}
+              onClick={() => replaceVisible(false)}
             >
               Clear
             </button>
@@ -225,6 +266,11 @@ export function AgentCapabilityPolicyView({
       </div>
       <div className="agent-capability-policy__groups">
         {CAPABILITY_FAMILIES.map((family) => {
+          if (
+            visibleCategories
+            && !visibleCategories.has(family.parentCategory)
+            && !visibleCategories.has(family.childCategory)
+          ) return null;
           const parents = authorityByCategory[family.parentCategory] || [];
           const children = authorityByCategory[family.childCategory] || [];
           if (!parents.length && !children.length) return null;
@@ -284,7 +330,7 @@ export function AgentCapabilityPolicyView({
             </fieldset>
           );
         })}
-        {authority.groups.filter((group) => !FAMILY_CATEGORIES.has(group.category)).map((group) => (
+        {visibleGroups.filter((group) => !FAMILY_CATEGORIES.has(group.category)).map((group) => (
           <fieldset key={group.category} className="agent-capability-policy__group">
             <legend>{group.label}</legend>
             <div className="agent-capability-policy__entries">

@@ -51,6 +51,18 @@ test('an Agent Card base names the selected task and its operations', () => {
   assert.deepEqual(parsed?.groups[0].values, ['task'])
 })
 
+test('model and instruction defaults retain their Card vocabulary', () => {
+  const parsed = cardAgentCapabilitySelection(selection({
+    models: ['anthropic/claude-sonnet-4-6'],
+    instruction_profiles: ['full'],
+  }))
+
+  assert.deepEqual(parsed?.groups.map(({ category, label }) => ({ category, label })), [
+    { category: 'models', label: 'Models' },
+    { category: 'instruction_profiles', label: 'Instruction profiles' },
+  ])
+})
+
 test('a cleared Agent Card base remains a valid named empty selection', () => {
   const parsed = cardAgentCapabilitySelection(selection({
     named_services: [],
@@ -115,21 +127,23 @@ test('the Card surface renders the property as an Agent capability base', () => 
   assert.match(panel, /capabilityBase \? null/)
 })
 
-test('resident and descriptor capability Cards use their dedicated workbench paths', () => {
+test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
   const panel = readFileSync(
     new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url),
     'utf8',
   )
-  const slice = readFileSync(
-    new URL('../src/features/delegatedAccess/delegatedAccessSlice.ts', import.meta.url),
-    'utf8',
-  )
 
-  assert.match(panel, /title="Starting capabilities for new conversations"/)
-  assert.match(panel, /title="Descriptor capability ceiling"/)
-  assert.match(panel, /saveAgentCapabilityBase/)
-  assert.match(panel, /descriptorCapabilityControl \? null/)
-  assert.match(slice, /selected_capabilities: selectedCapabilities/)
+  assert.match(panel, /title="KDCube agent defaults"/)
+  assert.match(panel, /title="KDCube administrator preset"/)
+  assert.match(panel, /renderCardComposition\(record, \{ editing: true \}\)/)
+  assert.match(panel, /renderEditResourceSections\(record, effectiveComposition\)/)
+  assert.match(panel, /renderAccountScopePicker\(/)
+  assert.match(panel, /updateDelegatedAccess\(\{/)
+  assert.match(panel, /AGENT_CAPABILITY_SELECTION_PROPERTY/)
+  assert.match(panel, /const capabilityControl = item\.control_card;/)
+  assert.match(panel, /The application and agent descriptor initializes this preset\./)
+  assert.doesNotMatch(panel, /saveAgentCapabilityBase/)
+  assert.doesNotMatch(panel, /specializedCapabilityCard/)
 })
 
 test('the capability editor groups child entries under their owning capability', () => {
@@ -144,4 +158,6 @@ test('the capability editor groups child entries under their owning capability',
   assert.match(view, /parentCategory: 'resources',[\s\S]*childCategory: 'resource_operations'/)
   assert.match(view, /agent-capability-policy__branch/)
   assert.match(view, /entry\?\.description \? <small>\{entry\.description\}<\/small>/)
+  assert.match(view, /type=\{singleChoice \? 'radio' : 'checkbox'\}/)
+  assert.match(view, /withSingleChoice\(selection, category, capability\)/)
 })
