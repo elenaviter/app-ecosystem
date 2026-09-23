@@ -185,8 +185,6 @@ const HELP_RESOURCE = 'One service or API on this access card. Expand it to revi
 const KDCUBE_AGENT_CARD_CATEGORIES = [
   'tool_groups',
   'tools',
-  'mcp_servers',
-  'mcp_tools',
   'skills',
   'models',
   'instruction_profiles',
@@ -3896,13 +3894,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     isNew: boolean,
     selectionParent = '',
     composition?: EffectiveCompositionView,
+    resourceFamilyRoot = false,
   ) => {
     const resourceOption = catalogRowFor(
       resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
     );
     const editedGrants = editKeptClaims(item, resource);
     const editableClaims = editableClaimsFor(item, resource);
-    const isSelectionRoute = Boolean(
+    const isSelectionRoute = resourceFamilyRoot || Boolean(
       resourceOption?.resource
       && editSelectionIndex.childrenByParent[resourceOption.resource]?.length,
     );
@@ -3946,7 +3945,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           resourceDiffState === 'removed' ? 'authority-diff-removed' : '',
         ].filter(Boolean).join(' ')}
         data-resource={resource}
-        open={editOpenResources[resource] ?? isNew}
+        open={editOpenResources[resource] ?? (isNew || resourceFamilyRoot)}
         onToggle={(event) => {
           if (event.target !== event.currentTarget) return;
           const open = event.currentTarget.open;
@@ -3960,7 +3959,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             ? resourceDiffState
             : undefined}
           controlLabel={controlLabel}
-          onRemove={selectedSelectionChild || (resourceDiffState === 'added' && !callerHasResource) ? undefined : () => {
+          onRemove={resourceFamilyRoot || selectedSelectionChild || (resourceDiffState === 'added' && !callerHasResource) ? undefined : () => {
             if (isNew) {
               setEditAddedResources((current) => current.filter((entry) => entry !== resource));
               dropEditResourceState(resource);
@@ -4319,10 +4318,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const ordinaryOffers = (item.resource_offers || []).filter(
       (offer) => offer.resource !== secretSelectorOption?.resource,
     );
+    const resourceFamilyRoots = new Set(item.resource_family_roots || []);
     const rawResourceKeys = Array.from(new Set([
       ...Object.keys(item.resource_grants || {}),
       ...editAddedResources,
       ...(composition?.mode === 'or' ? authorityResourceKeys(composition.control) : []),
+      ...resourceFamilyRoots,
     ]));
     const activeResourceKeys = rawResourceKeys.filter(
       (resource) => !editRemovedResources.includes(resource),
@@ -4347,7 +4348,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       Object.values(editSelectionIndex.childrenByParent).flat(),
     );
     const topLevelOffers = ordinaryOffers.filter(
-      (offer) => !childOfferResources.has(catalogRow(offer.resource)),
+      (offer) => !childOfferResources.has(catalogRow(offer.resource))
+        && !resourceFamilyRoots.has(offer.resource),
     );
     const renderResourceState = (resource: string, parent = '') => (
       editRemovedResources.includes(resource) ? (
@@ -4366,6 +4368,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         editAddedResources.includes(resource),
         parent,
         composition,
+        resourceFamilyRoots.has(resource),
       )
     );
     return (
@@ -4377,7 +4380,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             editSelectionIndex.childrenByParent[catalogRow(resource)]?.length,
           );
           const familyOpen = editOpenResources[resource]
-            ?? editAddedResources.includes(resource);
+            ?? (editAddedResources.includes(resource) || resourceFamilyRoots.has(resource));
           return (
             <section
               className={isSelectionFamily ? 'resource-selection-family' : 'resource-family'}

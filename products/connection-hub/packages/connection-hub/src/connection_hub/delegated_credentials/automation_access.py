@@ -21,6 +21,7 @@ from __future__ import annotations
 import dataclasses
 
 import copy
+from fnmatch import fnmatchcase
 import hashlib
 import json
 
@@ -86,6 +87,7 @@ from connection_hub.delegated_credentials.agent_capability_control import (
 )
 from connection_hub.delegated_credentials.agent_capability_policy import (
     AGENT_CAPABILITY_AUTHORITY_PROPERTY,
+    AGENT_CAPABILITY_METADATA_PROPERTY,
     AGENT_CAPABILITY_SELECTION_PROPERTY,
     AgentCapabilityPolicy,
     AgentCapabilityPolicyError,
@@ -635,6 +637,141 @@ def _record_is_credentialless(record: "AutomationAccessRecord") -> bool:
         and not record.delegate_subject
         and record.expires_at == 0
     )
+
+
+def _descriptor_serializable_resource_option(option: Mapping[str, Any]) -> bool:
+    """Whether a catalog row can round-trip through an app descriptor."""
+
+    resource = _clean(option.get("resource"))
+    if (
+        not resource
+        or resource == APPLICATION_API_RESOURCE
+        or _clean(option.get("kind")) != RESOURCE_KIND_CATALOG
+    ):
+        return False
+    named_services = option.get("named_services")
+    if isinstance(named_services, (list, tuple)) and named_services:
+        return True
+    lowered = resource.lower().rstrip("/")
+    return "/mcp/" in lowered or lowered.endswith("/mcp") or ":mcp:" in lowered
+
+
+def _descriptor_control_resource_options(
+    properties: Mapping[str, Any] | None,
+    options: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Catalog rows an administrator can persist on a descriptor Control Card."""
+
+    rows = [dict(option) for option in options]
+    try:
+        control = descriptor_control(properties)
+    except AgentCapabilityPolicyError:
+        return []
+    if control is None:
+        return rows
+    return [row for row in rows if _descriptor_serializable_resource_option(row)]
+
+
+def _resource_matches_any_pattern(resource: str, patterns: Iterable[Any]) -> bool:
+    return any(
+        fnmatchcase(resource, pattern)
+        for value in patterns
+        for pattern in (_clean(value),)
+        if pattern
+    )
+
+
+def _descriptor_agent_resource_options(
+    control_authority: Mapping[str, Any],
+    options: Iterable[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Exact Control resources and dynamic family rows offered to its Agent Card."""
+
+    rows = [dict(option) for option in options]
+    properties = control_authority.get("properties")
+    properties = properties if isinstance(properties, Mapping) else {}
+    try:
+        control = descriptor_control(properties)
+    except AgentCapabilityPolicyError:
+        return [], []
+    if control is None:
+        return rows, []
+
+    raw_grants = control_authority.get("resource_grants")
+    exact_resources = {
+        _clean(resource)
+        for resource in (raw_grants if isinstance(raw_grants, Mapping) else {})
+        if _clean(resource)
+    }
+    try:
+        authority = AgentCapabilityPolicy.from_property(
+            properties.get(AGENT_CAPABILITY_AUTHORITY_PROPERTY)
+        )
+    except AgentCapabilityPolicyError:
+        return [], []
+    family_ids = set(authority.capabilities.get("resource_families", ()))
+    metadata = properties.get(AGENT_CAPABILITY_METADATA_PROPERTY)
+    entries = metadata.get("entries") if isinstance(metadata, Mapping) else None
+    raw_families = entries.get("resource_families") if isinstance(entries, Mapping) else None
+    families = {
+        _clean(family_id): dict(raw)
+        for family_id, raw in (
+            raw_families.items() if isinstance(raw_families, Mapping) else ()
+        )
+        if _clean(family_id) in family_ids and isinstance(raw, Mapping)
+    }
+    family_patterns = [
+        pattern
+        for family in families.values()
+        for pattern in (
+            family.get("resource_patterns")
+            if isinstance(family.get("resource_patterns"), (list, tuple))
+            else ()
+        )
+    ]
+
+    def exact_control_row(row: Mapping[str, Any]) -> bool:
+        resource = _clean(row.get("resource"))
+        return bool(resource and resource != APPLICATION_API_RESOURCE) and (
+            resource in exact_resources
+            or any(fnmatchcase(exact, resource) for exact in exact_resources)
+        )
+
+    family_resources = {
+        _clean(row.get("resource"))
+        for row in rows
+        if _resource_matches_any_pattern(_clean(row.get("resource")), family_patterns)
+    }
+    remote_mcp_family = _resource_matches_any_pattern(
+        "urn:connection-hub:remote-mcp:descriptor-family-probe",
+        family_patterns,
+    )
+    roots: list[str] = []
+    for row in rows:
+        if not row.get("resource_selection"):
+            continue
+        selectable = {
+            _clean(resource)
+            for resource in row.get("selectable_resources", ())
+            if _clean(resource)
+        }
+        if selectable & family_resources or (
+            remote_mcp_family and "external_mcp:use" in row.get("grants", ())
+        ):
+            roots.append(_clean(row.get("resource")))
+
+    allowed = exact_resources | family_resources | set(roots)
+    return [
+        row
+        for row in rows
+        if (
+            _clean(row.get("resource")) != APPLICATION_API_RESOURCE
+            and (
+                _clean(row.get("resource")) in allowed
+                or exact_control_row(row)
+            )
+        )
+    ], roots
 
 
 def agent_grant_access_id(grantor_subject: str, client_id: str, resources: Iterable[str]) -> str:
@@ -2563,12 +2700,29 @@ class AutomationAccessService:
             entry_resource = self._entry_resource_for(record, config=listing_config)
             if entry_resource:
                 item["entry_resource"] = entry_resource
+            card_resource_options = resource_option_rows
+            if record.source == ACCESS_SOURCE_AGENT and record.control_card is not None:
+                control_authority = effective_control.get("control_authority")
+                if (
+                    effective_control.get("state") != CARD_STATE_ACTIVE
+                    or not isinstance(control_authority, Mapping)
+                ):
+                    card_resource_options = []
+                else:
+                    card_resource_options, family_roots = (
+                        _descriptor_agent_resource_options(
+                            control_authority,
+                            resource_option_rows,
+                        )
+                    )
+                    if family_roots:
+                        item["resource_family_roots"] = family_roots
             item["resource_offers"] = compatible_resource_offers(
                 card_resources=self._card_resource_keys(
                     record.resource_grants, config=listing_config
                 ),
                 card_identity_scope=record.identity_scope,
-                options=resource_option_rows,
+                options=card_resource_options,
                 platform_admin=platform_admin,
                 entry_resource=entry_resource,
                 reachable=(
@@ -4834,6 +4988,10 @@ class AutomationAccessService:
             )
             view["catalog_drift"] = drift.get(record.access_id, {})
             options = await self.resource_options(user)
+            options = _descriptor_control_resource_options(
+                record.properties,
+                options,
+            )
             view["resource_offers"] = compatible_resource_offers(
                 card_resources=self._card_resource_keys(record.resource_grants),
                 card_identity_scope=record.identity_scope,
