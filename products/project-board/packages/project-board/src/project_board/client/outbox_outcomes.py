@@ -131,6 +131,7 @@ def submit_assignment_report(
     review_look_at: str | None,
     review_could_not_verify: str | None,
     wait_seconds: float,
+    scope: str = "",
     status_command_prefix: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Queue one immutable assignment report and read its authoritative result."""
@@ -146,6 +147,7 @@ def submit_assignment_report(
         source_event_ref=source_event_ref,
         review_look_at=review_look_at,
         review_could_not_verify=review_could_not_verify,
+        scope=scope,
     )
     outbox_id = str(queued.get("outbox_id") or "")
     row = await_outbox_outcome(

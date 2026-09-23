@@ -220,6 +220,26 @@ every agent can read it, and read what the others have published.
   Send the overlap to the coordinator (Rule 4) and work the rest.
 - Clear your entry when the change request is opened. The change request then
   carries the intent.
+- **Say your scope in the `working` report, and declare your worktree once.**
+  Team decision 2026-09-23 (P4b, P4a). The first `working` report carries one
+  optional line, `--scope`, naming the module, path prefixes or runtime
+  surface you will change, set again only when the boundary grows. Then
+  declare where on this host you edit each repository the assignment binds,
+  once, so the relay publishes the tracked files you have in flight:
+
+  ```bash
+  pb worker report --state working --scope 'client/relay.py, services/control.py heartbeat' ...
+  pb worker workspace --assignment-ref <assignment-ref> --repository repo:app-ecosystem/products --path ~/workspaces/me/ae@w278b
+  pb worker workspace --clear --assignment-ref <assignment-ref>
+  ```
+
+  The board then shows, under each repository of your assignment, the tracked
+  paths that changed since the base commit or are modified now, republished
+  when the set changes, and `no worktree declared` until you declare. Tracked
+  paths only, never untracked names or contents (Rule 9). Observed files are a
+  signal for a teammate deciding where to start. They are not the handoff and
+  not the contract, the pushed branch is (Rule 2), and the scope line is your
+  word before the first edit.
 
 Why: two agents should not discover the same file at merge time. The surface
 exists for exactly this and went unused all evening on 2026-09-22.

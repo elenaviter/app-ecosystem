@@ -816,6 +816,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     command = worker_commands.add_parser(
+        "workspace",
+        help=(
+            "Declare where on this host you edit one repository for one assignment, so the "
+            "relay can publish the tracked files you have in flight (W278). Local only. "
+            "--list shows the declarations, --clear forgets them."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--assignment-ref", default="", help="The assignment (work:assignment:...) the worktree serves.")
+    command.add_argument("--repository", default="", help="The repository ref the assignment binds, for example repo:app-ecosystem/products.")
+    command.add_argument("--path", default="", help="The worktree directory on this host.")
+    command.add_argument("--clear", action="store_true", help="Forget the declaration(s) for --assignment-ref (and --repository when given).")
+    command.add_argument("--list", action="store_true", help="Show this session's declared worktrees.")
+
+    command = worker_commands.add_parser(
         "idle",
         help=(
             "Report that this session has run out of work, naming why. Silence "
@@ -953,6 +969,14 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--source-event-ref", required=True)
     command.add_argument("--review-look-at", help="How to check a completed result.")
     command.add_argument("--review-could-not-verify", help="Remaining gaps, or None explicitly.")
+    command.add_argument(
+        "--scope",
+        default="",
+        help=(
+            "One line naming the module, path prefixes or runtime surface this work will change. "
+            "Set it with the first working report, again only when the boundary grows (W278)."
+        ),
+    )
     command.add_argument(
         "--wait-seconds",
         type=float,
@@ -1140,6 +1164,14 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--source-event-ref", required=True)
     command.add_argument("--review-look-at", help="How to check a completed result.")
     command.add_argument("--review-could-not-verify", help="Remaining gaps, or None explicitly.")
+    command.add_argument(
+        "--scope",
+        default="",
+        help=(
+            "One line naming the module, path prefixes or runtime surface this work will change. "
+            "Set it with the first working report, again only when the boundary grows (W278)."
+        ),
+    )
     command.add_argument(
         "--wait-seconds",
         type=float,
@@ -3629,6 +3661,27 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 else "The board shows this until it passes or you set or clear it again."
             ),
         }
+    if args.worker_command == "workspace":
+        if args.list:
+            return {"worker": identity.worker_name, "workspaces": field.workspaces(identity.worker_name)}
+        if args.clear:
+            if not str(args.assignment_ref or "").strip():
+                raise ValueError("--clear needs --assignment-ref")
+            cleared = field.clear_workspace(
+                identity.worker_name,
+                assignment_ref=args.assignment_ref,
+                repository_ref=args.repository,
+            )
+            return {"worker": identity.worker_name, "cleared": cleared, "workspaces": field.workspaces(identity.worker_name)}
+        if not (str(args.assignment_ref or "").strip() and str(args.repository or "").strip() and str(args.path or "").strip()):
+            raise ValueError("declare a workspace with --assignment-ref, --repository and --path, or pass --list or --clear")
+        declared = field.declare_workspace(
+            identity.worker_name,
+            assignment_ref=args.assignment_ref,
+            repository_ref=args.repository,
+            path=args.path,
+        )
+        return {"worker": identity.worker_name, "declared": declared, "workspaces": field.workspaces(identity.worker_name)}
     if args.worker_command == "idle":
         idle_project = parse_ref(args.project_ref).object_id
         require_plan_item(
@@ -3892,6 +3945,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
             source_event_ref=args.source_event_ref,
             review_look_at=args.review_look_at,
             review_could_not_verify=args.review_could_not_verify,
+            scope=str(getattr(args, "scope", "") or ""),
             wait_seconds=args.wait_seconds,
             status_command_prefix=("pb", "worker", "outbox-status"),
         )

@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.11"
+    assert package["revision"] == "2026.09.23.12"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -287,6 +287,17 @@ def test_the_first_poll_s_adopted_practices_are_rule_text() -> None:
     assert "observed files in flight are tracked paths only" in collaboration
     assert "Rule 10. A runtime window speaks one channel that survives it" in collaboration
     assert "The all-clear on the board is the only resume signal" in collaboration
+
+
+def test_files_in_flight_and_the_scope_line_are_rule_text() -> None:
+    # W278 part B (P4a, P4b): the working report carries one scope line, the
+    # worker declares its worktree once, the board shows tracked paths only.
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "Say your scope in the `working` report, and declare your worktree once" in collaboration
+    assert "pb worker report --state working --scope" in collaboration
+    assert "pb worker workspace --assignment-ref <assignment-ref> --repository" in collaboration
+    assert "`no worktree declared` until you declare" in collaboration
+    assert "They are not the handoff and not the contract, the pushed branch is (Rule 2)" in collaboration
 
 
 def test_authority_and_next_action_rules() -> None:

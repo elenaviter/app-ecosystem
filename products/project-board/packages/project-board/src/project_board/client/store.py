@@ -3934,6 +3934,93 @@ class SharedFieldStore:
         recorded = worker.get("runtime_limit_state")
         return dict(recorded) if isinstance(recorded, Mapping) else {}
 
+    def declare_workspace(
+        self,
+        worker_name: str,
+        *,
+        assignment_ref: str,
+        repository_ref: str,
+        path: str,
+    ) -> dict[str, Any]:
+        """Where on this host the worker edits one repository for one assignment (W278 part B).
+
+        Local only, never sent. The relay reads the worktree here each cycle
+        and publishes the tracked paths that changed, so the board can say
+        which files this worker has in flight per repository. One row per
+        assignment and repository, replaced when declared again.
+        """
+
+        clean_assignment = bounded_text(assignment_ref, field="assignment_ref", maximum=1000, required=True)
+        clean_repository = bounded_text(repository_ref, field="repository_ref", maximum=512, required=True)
+        clean_path = str(Path(str(path or "")).expanduser().resolve())
+        if not Path(clean_path).is_dir():
+            raise DomainError(
+                "field_workspace_path_missing",
+                "The workspace path is not a directory on this host.",
+                status=400,
+                details={"path": clean_path},
+            )
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        row_path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(row_path)
+            rows = [
+                dict(item)
+                for item in (row.get("workspaces") or [])
+                if isinstance(item, Mapping)
+                and not (
+                    str(item.get("assignment_ref") or "") == clean_assignment
+                    and str(item.get("repository_ref") or "") == clean_repository
+                )
+            ]
+            declared = {
+                "assignment_ref": clean_assignment,
+                "repository_ref": clean_repository,
+                "path": clean_path,
+                "declared_at": utc_now(),
+            }
+            rows.append(declared)
+            row["workspaces"] = rows
+            atomic_write_json(row_path, row)
+            return declared
+
+    def clear_workspace(
+        self,
+        worker_name: str,
+        *,
+        assignment_ref: str,
+        repository_ref: str = "",
+    ) -> int:
+        """Forget the declared worktree(s) of one assignment, one repository or all."""
+
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        row_path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(row_path)
+            before = [dict(item) for item in (row.get("workspaces") or []) if isinstance(item, Mapping)]
+            kept = [
+                item
+                for item in before
+                if not (
+                    str(item.get("assignment_ref") or "") == str(assignment_ref or "")
+                    and (not repository_ref or str(item.get("repository_ref") or "") == str(repository_ref))
+                )
+            ]
+            row["workspaces"] = kept
+            atomic_write_json(row_path, row)
+            return len(before) - len(kept)
+
+    def workspaces(self, worker_name: str) -> list[dict[str, Any]]:
+        """The worktrees this worker declared on this host, or none."""
+
+        try:
+            worker = self.read_worker(worker_name)
+        except DomainError:
+            return []
+        return [dict(item) for item in (worker.get("workspaces") or []) if isinstance(item, Mapping)]
+
     def worker_idle_state(self, worker_name: str) -> dict[str, Any]:
         """Whether this agent is still out of work, without it having to say so twice.
 
@@ -8612,6 +8699,7 @@ class SharedFieldStore:
         source_event_ref: str,
         review_look_at: str | None = None,
         review_could_not_verify: str | None = None,
+        scope: str = "",
     ) -> dict[str, Any]:
         clean_project = component(project_id, field="project_id")
         clean_worker = component(worker_name, field="worker_name").lower()
@@ -8672,6 +8760,12 @@ class SharedFieldStore:
                 required=True,
             ),
         }
+        # P4b (W278): the worker's one line about where it will edit rides the
+        # report and stays on the assignment. Optional, so an older service that
+        # does not know it sees nothing new.
+        clean_scope = bounded_text(scope, field="scope", maximum=512)
+        if clean_scope:
+            payload["scope"] = clean_scope
         if review_supplied:
             payload["review"] = {
                 "look_at": bounded_text(
