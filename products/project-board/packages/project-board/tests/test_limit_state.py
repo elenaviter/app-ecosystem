@@ -185,3 +185,17 @@ def test_pb_worker_limit_state_records_what_claude_code_said_and_prints_one_line
     assert field.runtime_limit_state(identity.worker_name)["source"] == "claude-code-stop-failure"
     assert limit_state_line({"kind": "ok", "windows": [{"name": "five_hour", "used_percent": 42.0}]}) == "usage ok (five_hour 42%)"
     assert field.runtime_limit_state("nobody") == {}
+
+
+def test_a_wake_waits_for_the_reset_the_runtime_named_and_for_nothing_else():
+    from project_board.client.limit_state import wake_deferred_until
+
+    limited = {"kind": "rate_limited", "resets_at": "2026-09-23T21:40:00Z", "windows": [], "reached": "primary"}
+    assert wake_deferred_until(limited, now="2026-09-23T20:30:00Z") == "2026-09-23T21:40:00Z"
+    # Past the reset the wake goes, and a limit without a reset time never withholds mail.
+    assert wake_deferred_until(limited, now="2026-09-23T21:40:00Z") == ""
+    assert wake_deferred_until({"kind": "rate_limited", "resets_at": ""}, now="2026-09-23T20:30:00Z") == ""
+    assert wake_deferred_until({"kind": "ok", "resets_at": "2026-09-23T21:40:00Z"}, now="2026-09-23T20:30:00Z") == ""
+    assert wake_deferred_until(None, now="2026-09-23T20:30:00Z") == ""
+    spent = {"kind": "out_of_tokens", "resets_at": "2026-09-24T00:00:00Z"}
+    assert wake_deferred_until(spent, now="2026-09-23T20:30:00Z") == "2026-09-24T00:00:00Z"

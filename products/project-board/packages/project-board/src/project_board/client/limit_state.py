@@ -347,6 +347,22 @@ def limit_state_at(state: Mapping[str, Any] | None, *, now: str) -> dict[str, An
     return current
 
 
+def wake_deferred_until(state: Mapping[str, Any] | None, *, now: str) -> str:
+    """Until when a session wake waits, or empty when it does not wait.
+
+    A wake to an agent that is out of tokens or rate limited only piles up
+    turns it cannot take. It waits for the runtime's own reset time, and only
+    when the runtime named one: a limit without a reset time is not a reason to
+    withhold mail, because nobody could say when to stop withholding it.
+    """
+
+    current = limit_state_at(state, now=now)
+    if not current or current.get("kind") not in (KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS):
+        return ""
+    resets_at = str(current.get("resets_at") or "")
+    return resets_at if resets_at and resets_at > _utc(now) else ""
+
+
 def limit_state_line(state: Mapping[str, Any] | None) -> str:
     """One short line for a status bar: what the limit is and when it resets."""
 
@@ -427,4 +443,5 @@ __all__ = [
     "read_codex_rate_limits",
     "session_with_limit_state",
     "unknown_state",
+    "wake_deferred_until",
 ]
