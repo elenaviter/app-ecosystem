@@ -161,6 +161,8 @@ class _ProlongingGrantStore:
         self.bindings: dict[str, dict] = {}
         self.extended_refresh: list[tuple[str, int]] = []
         self.extended_grants: list[tuple[str, int]] = []
+        self.extended_cards: list[tuple[str, int]] = []
+        self.revoked_cards: list[str] = []
         self.refresh_alive = True
 
     async def bind_access_grant(self, token, operations, expires_in, **kwargs):
@@ -180,6 +182,16 @@ class _ProlongingGrantStore:
 
     async def extend_access_grant(self, token, ttl_seconds):
         self.extended_grants.append((token, int(ttl_seconds)))
+        return True
+
+    async def extend_card_credentials(self, access_id, ttl_seconds):
+        if not self.refresh_alive:
+            return False
+        self.extended_cards.append((access_id, int(ttl_seconds)))
+        return True
+
+    async def revoke_card_credentials(self, access_id):
+        self.revoked_cards.append(access_id)
         return True
 
 
@@ -215,6 +227,39 @@ async def test_prolonging_a_connected_app_extends_its_refresh_token_and_the_card
     # The client's handles are untouched: it keeps what it has.
     handles = harness.persistence.cards[access_id][1]
     assert (handles.refresh_token, handles.access_token) == ("rt-1", "at-1")
+
+
+@pytest.mark.asyncio
+async def test_prolong_and_revoke_address_durable_oauth_by_card_id(tmp_path):
+    from connection_hub.delegated_credentials.cards.model import CardCredentialHandles
+
+    harness = _Harness(tmp_path)
+    store = _ProlongingGrantStore()
+    harness.service._store = store
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    authority, _handles = harness.persistence.cards[access_id]
+    harness.persistence.cards[access_id] = (
+        dataclasses.replace(authority, source=ACCESS_SOURCE_OAUTH),
+        CardCredentialHandles(access_id=access_id),
+    )
+
+    prolonged = await harness.service.renew_access(
+        USER,
+        access_id=access_id,
+        mode="prolong",
+    )
+
+    assert prolonged["ok"] is True, prolonged
+    assert store.extended_cards == [(access_id, 3600)]
+    assert store.extended_refresh == []
+    assert store.extended_grants == []
+
+    revoked = await harness.service.revoke_access(USER, access_id=access_id)
+
+    assert revoked["ok"] is True, revoked
+    assert revoked["refresh_token_revoked"] is True
+    assert store.revoked_cards == [access_id]
 
 
 @pytest.mark.asyncio

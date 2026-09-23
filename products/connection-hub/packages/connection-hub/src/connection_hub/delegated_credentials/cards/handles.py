@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Live credential handles for a delegated card.
+"""Pre-cutover Redis credential handles for a delegated Card.
 
-These are the reusable secrets a card's lifecycle needs to revoke or replay:
-an agent's server-side bearer, an OAuth refresh/access handle, and the live
-session id. They are bounded by the card's authorization lifetime and are never
-part of durable card history, so a durable restore recovers authority only.
+This representation remains the explicit migration source and compatibility
+adapter. PostgreSQL deployments use minimized Card-handle metadata, OAuth
+bearer hashes in OAuth authority tables, and host secret custody for a resident
+agent bearer; they never write this raw JSON record.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from connection_hub.delegated_credentials.cards.store import (
 
 
 class DelegatedCardHandleStore:
-    """TTL-managed Redis storage for one card's live credential handles."""
+    """TTL-managed Redis source used before authority cutover."""
 
     def __init__(self, redis: Any, *, tenant: str, project: str) -> None:
         self._redis = redis

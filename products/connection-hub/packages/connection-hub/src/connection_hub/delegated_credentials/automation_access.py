@@ -7616,15 +7616,20 @@ class AutomationAccessService:
                     else "An agent's credential renews itself the next time the agent is granted from the chat."
                 ),
             }
-        extend_refresh = getattr(store, "extend_refresh_token", None)
-        if not record.refresh_token or extend_refresh is None:
-            return expired("Reconnect from the client.")
-        if not await extend_refresh(record.refresh_token, ttl):
-            return expired("Reconnect from the client.")
-        if record.access_token:
-            extend_grant = getattr(store, "extend_access_grant", None)
-            if extend_grant is not None:
-                await extend_grant(record.access_token, ttl)
+        if record.refresh_token:
+            extend_refresh = getattr(store, "extend_refresh_token", None)
+            if extend_refresh is None:
+                return expired("Reconnect from the client.")
+            if not await extend_refresh(record.refresh_token, ttl):
+                return expired("Reconnect from the client.")
+            if record.access_token:
+                extend_grant = getattr(store, "extend_access_grant", None)
+                if extend_grant is not None:
+                    await extend_grant(record.access_token, ttl)
+        else:
+            extend_card = getattr(store, "extend_card_credentials", None)
+            if extend_card is None or not await extend_card(record.access_id, ttl):
+                return expired("Reconnect from the client.")
 
         committed_revision = await self._committed_revision(
             record.access_id, grantor_subject=record.grantor_subject
@@ -7717,7 +7722,13 @@ class AutomationAccessService:
         # the current access-grant binding (managed guards reject the bearer
         # immediately).
         refresh_revoked = False
-        if record.refresh_token:
+        if record.source == ACCESS_SOURCE_OAUTH and not (
+            record.refresh_token or record.access_token
+        ):
+            revoke_card = getattr(self._store, "revoke_card_credentials", None)
+            if revoke_card is not None:
+                refresh_revoked = bool(await revoke_card(record.access_id))
+        elif record.refresh_token:
             refresh_revoked = bool(await self._store.revoke_refresh_token(record.refresh_token))
         if record.access_token:
             await self._store.revoke_access_grant(record.access_token)
