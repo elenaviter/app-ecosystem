@@ -40,7 +40,7 @@ from .host_config import HostRelayConfig, WorkerChannelConfig, set_worker_channe
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
-from .relay_admission import is_namespace_handshake_timeout
+from .relay_admission import is_namespace_handshake_timeout, is_runtime_unavailable
 from .session_delivery import (
     notify_agent_session,
     reconcile_agent_session_queue,
@@ -3456,14 +3456,38 @@ class ProblemBoardRelaySupervisor:
     def _record_channel_failure(
         self, pacing: RelayPacing, worker_name: str, error: BaseException
     ) -> float:
-        """Back a failed channel off, quickly when only the handshake timed out."""
+        """Back a failed channel off: quickly when only the handshake timed out
+        or the runtime is not there, with the doubling otherwise."""
 
         handshake = is_namespace_handshake_timeout(error)
         return pacing.record_failure(
             worker_name,
             HANDSHAKE_TIMEOUT_REASON if handshake else self._failure_code(error),
             handshake_timeout=handshake,
+            runtime_unavailable=not handshake and is_runtime_unavailable(error),
         )
+
+    @staticmethod
+    def _cycle_next_poll(
+        next_poll_seconds: Sequence[int],
+        failures: Sequence[BaseException],
+        pacing: RelayPacing,
+    ) -> int | None:
+        """The seconds until the next cycle, or None for the base interval.
+
+        The fastest attending channel sets the machine cycle. A failed channel
+        keeps the base interval so its reconnect is not delayed. A channel
+        waiting on the runtime pulls the cycle to its retry, whatever else
+        failed, so a runtime that came back is seen within seconds.
+        """
+
+        candidates: list[int] = []
+        if next_poll_seconds and not failures:
+            candidates.append(min(next_poll_seconds))
+        soonest = pacing.soonest_runtime_retry_seconds()
+        if soonest is not None:
+            candidates.append(max(1, math.ceil(soonest)))
+        return min(candidates) if candidates else None
 
     @staticmethod
     def _failure_code(error: BaseException) -> str:
@@ -4937,7 +4961,8 @@ class ProblemBoardRelaySupervisor:
                 continue
             if isinstance(result, BaseException):
                 pacing.observe(result)
-                permanent = not self._is_retryable(result)
+                # A runtime that is not there refused nothing: never permanent.
+                permanent = not self._is_retryable(result) and not is_runtime_unavailable(result)
                 pacing.record_pending_refusal(
                     channel.worker_name,
                     fingerprint=fingerprints[channel.worker_name],
@@ -5024,10 +5049,9 @@ class ProblemBoardRelaySupervisor:
             "workers": workers,
             "pacing": pacing.snapshot(),
         }
-        # The fastest attending channel sets the machine cycle. A failed channel
-        # keeps the base interval so its reconnect is not delayed.
-        if next_poll_seconds and not failures:
-            result["next_poll_seconds"] = min(next_poll_seconds)
+        hint = self._cycle_next_poll(next_poll_seconds, failures, pacing)
+        if hint is not None:
+            result["next_poll_seconds"] = hint
         return result
 
 __all__ = [

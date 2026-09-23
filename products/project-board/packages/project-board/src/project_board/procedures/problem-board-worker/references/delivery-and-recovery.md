@@ -230,9 +230,13 @@ channel, and a re-authorization for a transport fault changes nothing.
    server answered and the request reached the board.
 2. **Read this worker's relay state.** `pb status` and `pb worker inspect`
    give the channel state. The host's `relay-pacing.json` gives each
-   channel's backoff reason, attempt count and next attempt, and the host
-   quiet window. `pb relay-service status` shows whether the relay process
-   runs and how often it restarted.
+   channel's backoff reason, attempt count, schedule and next attempt, and
+   the host quiet window. A `runtime` schedule means the runtime was not
+   there at the last attempt (a rebuild, a stopped service): the relay
+   retries every ten seconds and one channel coming back clears the others.
+   A `backoff` schedule is a refusal or a load failure, doubling to thirty
+   minutes. `pb relay-service status` shows whether the relay process runs
+   and how often it restarted.
 3. **Read the relay log around the failure time for this worker.** Filter
    `logs/relay.stderr.log` by the session id and `event=`: the sequence
    `opening`, `opened` or `open_failed` with its exception shows what the

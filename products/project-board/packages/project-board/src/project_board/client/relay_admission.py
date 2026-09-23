@@ -68,6 +68,45 @@ def is_namespace_handshake_timeout(error: BaseException) -> bool:
     return timed_out
 
 
+# The discovery probe of the MCP endpoint (connection_hub_cli
+# authorization/discovery.py) found no runtime behind it: the endpoint
+# answered something other than 401 (during an outage the ingress answers 404
+# for a runtime that is not there, 2026-09-23 16:10 to 16:21 UTC, chat-proc
+# down after a rebuild), or could not be reached at all.
+RUNTIME_UNAVAILABLE_CODES = frozenset(
+    {"oauth_challenge_not_advertised", "oauth_mcp_endpoint_unreachable"}
+)
+
+
+def is_runtime_unavailable(error: BaseException) -> bool:
+    """True when the failure says the runtime is not there, not that it refused.
+
+    A refusal is the server's answer about this credential or this operation
+    and deserves the doubling backoff. The runtime being down is a state of
+    the world that ends when the deploy ends, and the channel should be back
+    seconds after it does. Two signatures say it, anywhere in the error's
+    chain: the ``oauth_challenge_not_advertised`` code (the endpoint answered
+    the discovery probe with something other than 401), and a connection the
+    runtime refused outright. A timeout, a 5xx and an unknown outcome are not
+    here on purpose: they are load and mid-flight failures, and the doubling
+    exists for them.
+    """
+
+    seen: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in seen and len(seen) < 8:
+        seen.append(current)
+        if is_admission_refusal(current):
+            return False
+        code = str(getattr(current, "code", "") or getattr(current, "reason", "") or "")
+        if code in RUNTIME_UNAVAILABLE_CODES:
+            return True
+        if isinstance(current, ConnectionRefusedError) or type(current).__name__ == "ConnectError":
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def refresh_was_refused(error: BaseException) -> bool:
     """True when the token endpoint answered the refresh with a refusal rather than an outage."""
 
