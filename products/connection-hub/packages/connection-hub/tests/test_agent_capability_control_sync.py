@@ -30,6 +30,7 @@ from connection_hub.delegated_credentials.application_operation_policy import (
 from connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
 )
+from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
     CardAuthority,
@@ -109,6 +110,8 @@ class _Persistence:
     ) -> None:
         if subject_hash_for(authority.grantor_subject) != subject_hash:
             raise AssertionError("wrong owner")
+        if authority.card_kind == CARD_KIND_AGENT and handles.empty:
+            raise AssertionError("agent card credential missing")
         current = self.records.get(authority.access_id)
         current_revision = current[0].card_revision if current is not None else 0
         if expected_revision != current_revision:
@@ -118,6 +121,27 @@ class _Persistence:
             )
         self.records[authority.access_id] = (authority, handles)
         self.persisted.append(authority.access_id)
+
+
+class _GrantStore:
+    def __init__(self) -> None:
+        self.bindings: list[dict] = []
+
+    async def bind_access_grant(
+        self,
+        access_token,
+        operations,
+        ttl_seconds,
+        **kwargs,
+    ) -> None:
+        self.bindings.append(
+            {
+                "access_token": access_token,
+                "operations": list(operations),
+                "ttl_seconds": ttl_seconds,
+                **kwargs,
+            }
+        )
 
 
 def _policy(*tools: str) -> dict:
@@ -269,11 +293,24 @@ def _service(
             return document
 
     persistence = _Persistence()
+    grant_store = _GrantStore()
+
+    async def _mint(_subject, _grants, **kwargs):
+        number = len(grant_store.bindings) + 1
+        return {
+            "access_token": f"resident-token-{number}",
+            "expires_in": kwargs["ttl_seconds"],
+            "session_id": f"resident-session-{number}",
+        }
+
     service = AutomationAccessService(
         redis=None,
         tenant=TENANT,
         project=PROJECT,
         config=oauth_delegated_config_from_connections(document.connections),
+        grant_store=grant_store,
+        authority=object(),
+        minter=_mint,
         catalog_resolver=_Resolver(),
         card_persistence=persistence,
     )
@@ -338,12 +375,15 @@ async def test_descriptor_sync_is_stable_and_new_capabilities_are_unselected() -
     assert len(persistence.persisted) == 2
     resident_id = created["card"]["access_id"]
     control_id = created["control_card"]["access_id"]
-    resident = persistence.records[resident_id][0]
+    resident, handles = persistence.records[resident_id]
     assert resident.control_card is not None
     assert resident.control_card.control_id == control_id
     assert resident.resource_acceptance[RESOURCE].kind == (
         AGENT_DESCRIPTOR_ACCEPTANCE_KIND
     )
+    assert handles.access_token == "resident-token-1"
+    assert len(service._store.bindings) == 1
+    assert service._store.bindings[0]["registry_access_id"] == resident_id
 
     replay = await _sync(
         service,
@@ -356,6 +396,7 @@ async def test_descriptor_sync_is_stable_and_new_capabilities_are_unselected() -
     assert replay["control_changed"] is False
     assert replay["card_changed"] is False
     assert len(persistence.persisted) == 2
+    assert len(service._store.bindings) == 1
 
     added = await _sync(
         service,
@@ -368,6 +409,40 @@ async def test_descriptor_sync_is_stable_and_new_capabilities_are_unselected() -
     assert added["card_changed"] is False
     assert added["states"]["tools"]["tool.future"] == (CAPABILITY_ALLOWED_UNSELECTED)
     assert added["projection"]["capabilities"] == {"tools": ["tool.old"]}
+    assert len(service._store.bindings) == 1
+
+
+@pytest.mark.asyncio
+async def test_sync_upgrades_a_live_legacy_agent_card_without_a_bearer() -> None:
+    service, persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+    access_id = created["card"]["access_id"]
+    authority, _handles = persistence.records[access_id]
+    persistence.records[access_id] = (
+        authority,
+        CardCredentialHandles(access_id=access_id),
+    )
+
+    repaired = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+    )
+
+    assert repaired["ok"] is True
+    assert repaired["card_changed"] is True
+    assert repaired["card"]["card_revision"] == authority.card_revision + 1
+    repaired_authority, repaired_handles = persistence.records[access_id]
+    assert repaired_authority.access_id == authority.access_id
+    assert repaired_handles.access_token == "resident-token-2"
+    assert len(service._store.bindings) == 2
 
 
 @pytest.mark.asyncio
@@ -423,7 +498,7 @@ async def test_expired_capability_lease_renews_the_same_card_and_selection(
     access_id = created["card"]["access_id"]
     first_revision = created["card"]["card_revision"]
     first_authority, first_handles = persistence.records[access_id]
-    assert first_handles.empty is True
+    assert first_handles.access_token == "resident-token-1"
     assert created["card"]["expires_at"] == (
         created_at + AGENT_CAPABILITY_CARD_LEASE_SECONDS
     )
@@ -448,7 +523,7 @@ async def test_expired_capability_lease_renews_the_same_card_and_selection(
     assert renewed["projection"]["capabilities"] == {"tools": ["tool.old"]}
     renewed_authority, renewed_handles = persistence.records[access_id]
     assert authority_is_usable(renewed_authority, renewed_at) is True
-    assert renewed_handles.empty is True
+    assert renewed_handles.access_token == "resident-token-2"
 
 
 @pytest.mark.asyncio

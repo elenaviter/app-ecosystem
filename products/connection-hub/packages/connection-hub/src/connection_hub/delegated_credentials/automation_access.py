@@ -3204,65 +3204,31 @@ class AutomationAccessService:
         ttl = _bounded_ttl(ttl_seconds)
         now = int(time.time())
         created_at = created_at_override or now
-        credential = build_delegated_client_credential(
-            grantor_subject=grantor_subject,
-            client_id=client_id,
-            scopes=selected_grants,
-            operations=selected_operations,
-            resource_operations=selected_resource_operations,
-            tenant=self._tenant,
-            project=self._project,
-            resource_grants=selected_resource_grants,
-            account_scope=selected_account_scope,
-            identity_scope=identity_scope,
-            expires_in=ttl,
-            issued_at=now,
-        )
-        minter = self._minter or mint_delegated_client_access_token
-        authority = self._authority
-        if authority is None:
-            if self._authority_factory is None:
-                raise RuntimeError("session authority is not configured")
-            authority = self._authority_factory(
-                tenant=self._tenant,
-                project=self._project,
-            )
-        minted = await minter(
-            grantor_subject,
-            selected_grants,
-            authority=authority,
-            client_id=client_id,
-            operations=selected_operations,
-            credential=credential.to_dict(),
-            ttl_seconds=ttl,
-        )
-        access_token = _clean(minted.get("access_token"))
-        expires_in = int(minted.get("expires_in") or ttl)
-        expires_at = now + expires_in
-        session_id = _clean(minted.get("session_id"))
-
         grantor_authority = _grantor_authority(
             user,
             grants=authority_grants,
             inventory=inventory,
         )
-        delegation_edges = list(grantor_authority.get("delegation_edges") or [])
-        await self._store.bind_access_grant(
-            access_token,
-            selected_operations,
-            expires_in,
-            credential=credential.to_dict(),
+        minted = await self._mint_card_credential(
+            user,
+            grantor_subject=grantor_subject,
+            client_id=client_id,
+            access_id=access_id,
+            grants=selected_grants,
+            operations=selected_operations,
+            resource_grants=selected_resource_grants,
             resource_operations=selected_resource_operations,
-            grantor_authority=grantor_authority,
-            delegation_edges=delegation_edges,
+            account_scope=selected_account_scope,
+            identity_scope=identity_scope,
             named_services=named_services,
-            # The card is the authority: this binding is a POINTER onto it, so
-            # the guard resolves the card live (grants, resource_grants,
-            # account_scope) and an edit applies to the reused agent bearer on
-            # its very next call — not only after a re-mint. Same mechanism
-            # OAuth clients use; makes card-authority universal.
-            registry_access_id=access_id,
+            ttl=ttl,
+            now=now,
+            grantor_authority=grantor_authority,
         )
+        access_token = _clean(minted.get("access_token"))
+        expires_in = int(minted.get("expires_in") or ttl)
+        expires_at = now + expires_in
+        session_id = _clean(minted.get("session_id"))
 
         record = AutomationAccessRecord(
             access_id=access_id,
@@ -4685,10 +4651,15 @@ class AutomationAccessService:
         named_services: Mapping[str, Any],
         ttl: int,
         now: int,
+        grantor_authority: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Mint and bind the reusable bearer of a card whose authority is
-        ``access_id``: the same credential build, mint, and pointer binding a
-        create performs, factored for the fold."""
+        """Mint and bind one reusable bearer to live Card authority.
+
+        Creation, resident-profile folding, renewal, and descriptor-synced
+        agents all use this path. The access binding stores a pointer to the
+        Card, so later Card revisions change the bearer's effective authority
+        without copying or reissuing the credential.
+        """
         credential = build_delegated_client_credential(
             grantor_subject=grantor_subject,
             client_id=client_id,
@@ -4722,17 +4693,34 @@ class AutomationAccessService:
             ttl_seconds=ttl,
         )
         access_token = _clean(minted.get("access_token"))
+        if not access_token:
+            raise RuntimeError("delegated_card_credential_missing")
         expires_in = int(minted.get("expires_in") or ttl)
-        inventory = await self._available_inventory(user, requested_grants=grants)
-        grantor_authority = _grantor_authority(user, grants=grants, inventory=inventory)
+        if grantor_authority is None:
+            inventory = await self._available_inventory(
+                user,
+                requested_grants=grants,
+            )
+            selected_grantor_authority = _grantor_authority(
+                user,
+                grants=grants,
+                inventory=inventory,
+            )
+        else:
+            selected_grantor_authority = copy.deepcopy(
+                dict(grantor_authority)
+            )
         await self._store.bind_access_grant(
             access_token,
             list(operations),
             expires_in,
             credential=credential.to_dict(),
+            resource_grants={k: list(v) for k, v in resource_grants.items()},
             resource_operations={k: list(v) for k, v in resource_operations.items()},
-            grantor_authority=grantor_authority,
-            delegation_edges=list(grantor_authority.get("delegation_edges") or []),
+            grantor_authority=selected_grantor_authority,
+            delegation_edges=list(
+                selected_grantor_authority.get("delegation_edges") or []
+            ),
             named_services=dict(named_services or {}),
             registry_access_id=access_id,
         )
@@ -7616,15 +7604,20 @@ class AutomationAccessService:
                     else "An agent's credential renews itself the next time the agent is granted from the chat."
                 ),
             }
-        extend_refresh = getattr(store, "extend_refresh_token", None)
-        if not record.refresh_token or extend_refresh is None:
-            return expired("Reconnect from the client.")
-        if not await extend_refresh(record.refresh_token, ttl):
-            return expired("Reconnect from the client.")
-        if record.access_token:
-            extend_grant = getattr(store, "extend_access_grant", None)
-            if extend_grant is not None:
-                await extend_grant(record.access_token, ttl)
+        if record.refresh_token:
+            extend_refresh = getattr(store, "extend_refresh_token", None)
+            if extend_refresh is None:
+                return expired("Reconnect from the client.")
+            if not await extend_refresh(record.refresh_token, ttl):
+                return expired("Reconnect from the client.")
+            if record.access_token:
+                extend_grant = getattr(store, "extend_access_grant", None)
+                if extend_grant is not None:
+                    await extend_grant(record.access_token, ttl)
+        else:
+            extend_card = getattr(store, "extend_card_credentials", None)
+            if extend_card is None or not await extend_card(record.access_id, ttl):
+                return expired("Reconnect from the client.")
 
         committed_revision = await self._committed_revision(
             record.access_id, grantor_subject=record.grantor_subject
@@ -7717,7 +7710,13 @@ class AutomationAccessService:
         # the current access-grant binding (managed guards reject the bearer
         # immediately).
         refresh_revoked = False
-        if record.refresh_token:
+        if record.source == ACCESS_SOURCE_OAUTH and not (
+            record.refresh_token or record.access_token
+        ):
+            revoke_card = getattr(self._store, "revoke_card_credentials", None)
+            if revoke_card is not None:
+                refresh_revoked = bool(await revoke_card(record.access_id))
+        elif record.refresh_token:
             refresh_revoked = bool(await self._store.revoke_refresh_token(record.refresh_token))
         if record.access_token:
             await self._store.revoke_access_grant(record.access_token)

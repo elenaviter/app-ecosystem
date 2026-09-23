@@ -28,8 +28,9 @@ from connection_hub.delegated_credentials.cache_settings import (
 from connection_hub.delegated_credentials.cards.cache import (
     DelegatedCardRuntimeCache,
 )
-from connection_hub.delegated_credentials.cards.handles import (
-    DelegatedCardHandleStore,
+from connection_hub.delegated_credentials.cards.credential_handles import (
+    CardCredentialHandleStore,
+    RedisCardCredentialHandleStore,
 )
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
@@ -97,6 +98,7 @@ class DurableCardPersistence:
         card_store: Any,
         mutation_lock: CardMutationLock,
         settings: DelegatedCacheSettings | None = None,
+        credential_handles: CardCredentialHandleStore | None = None,
     ) -> None:
         resolved = settings or DelegatedCacheSettings()
         cache = DelegatedCardRuntimeCache(redis, tenant=tenant, project=project)
@@ -107,7 +109,11 @@ class DurableCardPersistence:
             settings=resolved,
         )
         self._resolver = DelegatedCardResolver(cache=cache, store=card_store, settings=resolved)
-        self._handles = DelegatedCardHandleStore(redis, tenant=tenant, project=project)
+        self._handles = credential_handles or RedisCardCredentialHandleStore(
+            redis,
+            tenant=tenant,
+            project=project,
+        )
         self._store = card_store
 
     async def load(self, access_id: str, *, subject_hash: str) -> LoadedCard | None:
@@ -120,7 +126,14 @@ class DurableCardPersistence:
         # against the card itself rather than the path it was read from.
         if subject_hash_for(authority.grantor_subject) != str(subject_hash):
             return None
-        return authority, await self._handles.read(access_id)
+        try:
+            handles = await self._handles.read(authority)
+        except Exception as exc:
+            raise CardServingUnavailable(
+                "credential_handles_unavailable",
+                access_id=authority.access_id,
+            ) from exc
+        return authority, handles
 
     async def current_revision(self, access_id: str, *, subject_hash: str) -> int:
         return await self._cards.current_revision(
@@ -144,11 +157,9 @@ class DurableCardPersistence:
         )
         try:
             if authority_is_credentialless(authority):
-                await self._handles.remove(authority.access_id)
+                await self._handles.remove(authority)
             else:
-                await self._handles.write(
-                    handles, ttl_seconds=max(0, authority.expires_at - now)
-                )
+                await self._handles.write(authority, handles)
         except Exception as exc:
             # The revision is committed; the handles it references are not.
             raise CardServingUnavailable(
@@ -161,7 +172,7 @@ class DurableCardPersistence:
             access_id=authority.access_id,
             expected_revision=authority.card_revision,
         )
-        await self._handles.remove(authority.access_id)
+        await self._handles.remove(authority)
 
     async def list_active(
         self, *, subject_hash: str, now: int | None = None
@@ -179,8 +190,9 @@ class DurableCardPersistence:
 
     async def load_current(self, access_id: str, *, subject_hash: str) -> LoadedCard | None:
         """The durable current revision in any state, expired included, with
-        whatever credential handles still exist (their TTL ends with the
-        credential, so an expired card usually returns empty handles)."""
+        whatever credential handles still exist. An expired Card returns
+        empty handles; its durable authorization record remains available to
+        the owner for renewal or review."""
         try:
             current = await self._store.read_current_authority(
                 subject_hash=subject_hash, access_id=access_id
@@ -192,7 +204,11 @@ class DurableCardPersistence:
         _, authority = current
         if subject_hash_for(authority.grantor_subject) != str(subject_hash):
             return None
-        return authority, await self._handles.read(access_id)
+        try:
+            handles = await self._handles.read_current(authority)
+        except Exception as exc:
+            raise CardUnavailable("credential_handles_unreadable") from exc
+        return authority, handles
 
     async def list_current(self, *, subject_hash: str) -> list[CardAuthority]:
         """Every card the grantor still owns: active and expired, revoked

@@ -106,12 +106,62 @@ from connection_hub.delegated_credentials.resource_operations import (
 )
 
 
-# A descriptor-synchronized Agent Card carries capability selection, not a
-# bearer. Its expiry is an inactivity lease that bounds stale authority when an
-# application stops syncing. One week avoids access-token-scale churn while
-# keeping abandoned resident projections finite. The first agent message after
-# a lapse renews this same Card id and preserves its selection in a new revision.
+# A descriptor-synchronized Agent Card is the same portable caller Card used by
+# a demand-driven hosted or external agent. Its credential and Card share this
+# bounded lifetime. The first agent message after expiry reissues the credential
+# on the same Card id and preserves the user's selection in a new revision.
 AGENT_CAPABILITY_CARD_LEASE_SECONDS = 7 * 24 * 60 * 60
+
+
+async def _ensure_resident_card_credential(
+    service: Any,
+    user: Mapping[str, Any],
+    record: AutomationAccessRecord,
+    *,
+    now: int,
+) -> tuple[AutomationAccessRecord, bool]:
+    """Issue the resident Card's portable credential when it has none live."""
+
+    if record.access_token and record.expires_at > now:
+        return record, False
+    grants = sorted(
+        {
+            str(grant).strip()
+            for selected in record.resource_grants.values()
+            for grant in selected
+            if str(grant or "").strip()
+        }
+    )
+    minted = await service._mint_card_credential(
+        user,
+        grantor_subject=record.grantor_subject,
+        client_id=record.client_id,
+        access_id=record.access_id,
+        grants=grants,
+        operations=list(record.operations),
+        resource_grants=record.resource_grants,
+        resource_operations=record.resource_operations,
+        account_scope=record.account_scope,
+        identity_scope=record.identity_scope,
+        named_services=record.named_services,
+        ttl=AGENT_CAPABILITY_CARD_LEASE_SECONDS,
+        now=now,
+    )
+    access_token = _clean(minted.get("access_token"))
+    expires_in = int(
+        minted.get("expires_in") or AGENT_CAPABILITY_CARD_LEASE_SECONDS
+    )
+    return (
+        dataclasses.replace(
+            record,
+            access_token=access_token,
+            session_id=_clean(minted.get("session_id")),
+            expires_at=now + expires_in,
+            last_four=access_token[-4:],
+            last_issued_at=now,
+        ),
+        True,
+    )
 
 
 def _strings(value: Any) -> list[str]:
@@ -1209,13 +1259,28 @@ async def sync_agent_capability_control(
         resident = dataclasses.replace(existing_resident, **replacements)
         expected_resident_revision = existing_resident.card_revision
 
+    try:
+        resident, credential_issued = await _ensure_resident_card_credential(
+            service,
+            user,
+            resident,
+            now=now,
+        )
+    except Exception:
+        return {
+            "ok": False,
+            "error": "agent_capability_credential_not_issued",
+            "retryable": True,
+            "status": 503,
+        }
+
     resident_changed = True
     if existing_resident is not None:
         comparable = dataclasses.replace(
             card_authority_from_record(resident),
             card_revision=existing_resident.card_revision,
         )
-        resident_changed = (
+        resident_changed = credential_issued or (
             comparable.to_dict()
             != card_authority_from_record(existing_resident).to_dict()
         )
@@ -1434,7 +1499,21 @@ async def update_agent_capability_selection(
             selection=selected,
         ),
     )
-    if updated.properties == resident.properties and (
+    try:
+        updated, credential_issued = await _ensure_resident_card_credential(
+            service,
+            user,
+            updated,
+            now=int(time.time()),
+        )
+    except Exception:
+        return {
+            "ok": False,
+            "error": "agent_capability_credential_not_issued",
+            "retryable": True,
+            "status": 503,
+        }
+    if not credential_issued and updated.properties == resident.properties and (
         updated.catalog_version == resident.catalog_version
         and updated.resource_acceptance == resident.resource_acceptance
     ):

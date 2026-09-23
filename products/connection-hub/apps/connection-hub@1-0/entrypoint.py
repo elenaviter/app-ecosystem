@@ -76,6 +76,11 @@ from connection_hub.delegated_credentials.access_map import (
     build_delegated_access_map,
 )
 from connection_hub.delegated_credentials.admission import AdmissionConfig
+from connection_hub.delegated_credentials.authority_config import (
+    AUTHORITY_BACKEND_POSTGRESQL,
+    AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE,
+    DelegatedAuthorityConfig,
+)
 from connection_hub.delegated_credentials.consent_denial import (
     connection_hub_grant_url,
     connection_hub_invocation_policy_url,
@@ -197,6 +202,7 @@ from .surfaces.delegated_gateway import (
     describe_delegated_gateway_access,
 )
 from .surfaces.delegated_gateway_host import build_hosted_gateway_binding
+from .services.durable_authority import ConnectionHubDurableAuthority
 
 BUNDLE_ID = "connection-hub@1-0"
 ENTRYPOINT_NAME = "connection-hub"
@@ -741,21 +747,36 @@ def _authenticator_store(entrypoint: Any) -> AuthenticatorStore:
     )
 
 
-def _oauth_authority_store(entrypoint: Any) -> PostgresOAuthAuthorityStore:
-    existing = getattr(entrypoint, "_oauth_authority_store", None)
+def _delegated_authority_config(entrypoint: Any) -> DelegatedAuthorityConfig:
+    return DelegatedAuthorityConfig.from_connections(
+        _connections_config(entrypoint)
+    )
+
+
+def _durable_authority(entrypoint: Any) -> ConnectionHubDurableAuthority:
+    existing = getattr(entrypoint, "_durable_authority", None)
     if existing is not None:
         return existing
+    config = _delegated_authority_config(entrypoint)
+    if not config.uses_postgresql:
+        raise RuntimeError("PostgreSQL delegated authority is not selected")
     pg_pool = getattr(entrypoint, "pg_pool", None)
     if pg_pool is None:
-        raise RuntimeError("PostgreSQL OAuth authority is unavailable")
+        raise RuntimeError("PostgreSQL delegated authority is unavailable")
     tenant, project = _runtime_tenant_project(entrypoint)
-    store = PostgresOAuthAuthorityStore(
+    authority = ConnectionHubDurableAuthority.compose(
+        config=config,
         pg_pool=pg_pool,
         tenant=tenant,
         project=project,
+        settings=get_settings(),
     )
-    entrypoint._oauth_authority_store = store
-    return store
+    entrypoint._durable_authority = authority
+    return authority
+
+
+def _oauth_authority_store(entrypoint: Any) -> PostgresOAuthAuthorityStore:
+    return _durable_authority(entrypoint).oauth
 
 
 def _oauth_grant_store(entrypoint: Any) -> GrantStore:
@@ -766,10 +787,17 @@ def _oauth_grant_store(entrypoint: Any) -> GrantStore:
     if redis is None:
         raise RuntimeError("shared Redis is unavailable for OAuth handoffs")
     tenant, project = _runtime_tenant_project(entrypoint)
+    authority = None
+    config = _delegated_authority_config(entrypoint)
+    if config.uses_postgresql:
+        durable = _durable_authority(entrypoint)
+        durable.require_ready()
+        authority = durable.oauth
     store = GrantStore(
         redis,
         tenant,
         project,
+        authority_store=authority,
     )
     entrypoint._oauth_grant_store = store
     return store
@@ -941,13 +969,29 @@ def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
     if storage_root is None:
         return None
     tenant, project = _runtime_tenant_project(entrypoint)
+    credential_handles = None
+    config = _delegated_authority_config(entrypoint)
+    if config.uses_postgresql:
+        durable = _durable_authority(entrypoint)
+        durable.require_ready()
+        credential_handles = durable.card_handles
     return DurableCardPersistence(
         redis=redis,
         tenant=tenant,
         project=project,
         card_store=BundleStorageDelegatedCardStore(storage_root),
         settings=DelegatedCacheSettings.from_connections(_connections_config(entrypoint)),
+        credential_handles=credential_handles,
     )
+
+
+def _admission_replay_claims(entrypoint: Any) -> Any:
+    config = _delegated_authority_config(entrypoint)
+    if not config.uses_postgresql:
+        return None
+    durable = _durable_authority(entrypoint)
+    durable.require_ready()
+    return durable.admission_replay
 
 
 def _remote_mcp_service(entrypoint: Any) -> Any:
@@ -2449,12 +2493,24 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         pg_pool = self.pg_pool or kwargs.get("pg_pool")
         if pg_pool is not None:
             self.pg_pool = pg_pool
-            try:
-                await _oauth_authority_store(self).ensure_schema()
-            except Exception:
-                LOGGER.exception(
-                    "[connection-hub] on_bundle_load: failed to ensure OAuth authority schema"
+        authority_config = _delegated_authority_config(self)
+        if authority_config.backend == AUTHORITY_BACKEND_POSTGRESQL:
+            if pg_pool is None:
+                raise RuntimeError(
+                    "Connection Hub PostgreSQL authority requires pg_pool"
                 )
+            durable_authority = _durable_authority(self)
+            await durable_authority.prepare()
+            LOGGER.info(
+                "[connection-hub] durable authority activated generation_id=%s",
+                authority_config.generation_id,
+            )
+        elif authority_config.backend == AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE:
+            LOGGER.warning(
+                "[connection-hub] Redis is explicitly selected as the "
+                "pre-cutover migration source"
+            )
+        if pg_pool is not None:
             try:
                 await _authenticator_store(self).ensure_schema()
                 bootstrapped = await _bootstrap_descriptor_authenticators(self)
@@ -2571,6 +2627,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     "public_base_url": "",
                 },
                 "delegated_credentials": {
+                    "authority": {
+                        "backend": "redis-migration-source",
+                    },
                     "gateway": {
                         "requestable_discovery": {
                             "caller_types": ["resident"],
@@ -3320,6 +3379,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                         invocation_change_id=change_id,
                     )
                 ),
+                replay_claims=_admission_replay_claims(self),
             ),
             payload=_payload(data, **kwargs),
             request=request,

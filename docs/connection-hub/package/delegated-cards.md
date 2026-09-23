@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-09-22
+updated_at: 2026-09-23
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -77,13 +77,14 @@ over the same records, not another store or migration.
 | `source` | Represents | How it is created | Credential material retained in the card record |
 | --- | --- | --- | --- |
 | `manual` | A script, service, or external automation whose operator copies a bearer. | `delegated_access_create`. | The raw bearer is returned once and is not retained. The record keeps `session_id` and `last_four` for revocation and identification. |
-| `agent` | A hosted agent with deterministic identity `kdcube-agent:<app>:<agent>`. | Demand-driven consent, or descriptor synchronization for a resident agent whose Card selects from a Control Card. | A consented agent retains its reusable access token server-side. A descriptor-synchronized capability Card retains no bearer; it carries the user's selection and a bounded inactivity lease. Token material is never returned by list. |
+| `agent` | An agent with deterministic identity `kdcube-agent:<app>:<agent>`, usable from a hosted runtime or as an external MCP caller. | Demand-driven consent, or descriptor synchronization for a resident agent whose Card selects from a Control Card. | Every Agent Card retains its reusable access token server-side. The hosted runtime presents it for resident calls; an external instance presents the same Card credential over the network. List views expose non-secret metadata. |
 | `oauth` | An external OAuth/MCP client. | Automatically on initial token issuance and every refresh rotation. | Current access- and refresh-token handles are retained server-side so revoke can invalidate both. They are never returned by list. |
 | `control` | A reusable authorization rule linked to one or more caller Cards. | An owner-scoped `control_card_create`, normally initiated by the application that will link it. | None. It has no delegate, bearer, refresh token, session, or expiry. |
 
-An OAuth client and a hosted agent are both delegated callers. The source
-field records how their credential lifecycle is managed; it does not create a
-different authorization model.
+An OAuth client and an agent are both delegated callers. Hosted execution keeps
+the Agent Card credential under trusted runtime custody, while external
+execution places that Card credential with the client. The source field records
+how the credential lifecycle is managed under the same authorization model.
 
 A Control Card is the same Card aggregate without credential handles. It uses
 the same catalog choices, revisions, current pointer, drift calculation,

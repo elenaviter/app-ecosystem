@@ -22,6 +22,9 @@ from connection_hub.delegated_credentials.admission import (
     pairwise_service_subject,
     verify_admission_request,
 )
+from connection_hub.delegated_credentials.admission_replay import (
+    AdmissionReplayClaimStore,
+)
 from connection_hub.delegated_credentials.credential_view import DelegatedCredentialView
 from connection_hub.delegated_credentials.controls.attribution import (
     CARD_ROLE_CALLER,
@@ -74,6 +77,7 @@ class AdmissionHostContext:
     invocation_recovery_url_builder: InvocationRecoveryURLBuilder | None = None
     request_permit_recovery_url_builder: RequestPermitRecoveryURLBuilder | None = None
     operation_grant_url_builder: OperationGrantURLBuilder | None = None
+    replay_claims: AdmissionReplayClaimStore | None = None
 
 
 def _request_bearer(request: Any) -> str:
@@ -91,6 +95,22 @@ async def _claim_nonce(
     nonce: str,
     ttl_seconds: int,
 ) -> bool:
+    if context.replay_claims is not None:
+        claimed = await context.replay_claims.claim(
+            service_id=service_id,
+            nonce=nonce,
+            ttl_seconds=ttl_seconds,
+        )
+        try:
+            purge_expired = getattr(context.replay_claims, "purge_expired", None)
+            if purge_expired is not None:
+                await purge_expired(limit=32)
+        except Exception:
+            LOGGER.warning(
+                "admission replay cleanup is temporarily unavailable",
+                exc_info=True,
+            )
+        return claimed
     digest = hashlib.sha256(f"{service_id}\n{nonce}".encode("utf-8")).hexdigest()
     key = (
         f"connection-hub:admission:{context.tenant}:{context.project}:nonce:{digest}"

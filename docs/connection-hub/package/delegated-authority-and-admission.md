@@ -5,10 +5,11 @@ summary: "Delegated-card and invocation-policy decisions across transport-neutra
 status: current
 tags: ["arch", "security", "admission", "connection-hub", "delegated-access", "mcp", "rest", "named-services", "data-bus"]
 keywords: ["delegated authority", "managed surface guard", "delegated access card", "access_id", "active catalog", "resource grants", "resource operations", "application operations", "delegated role", "canonical service operation", "MCP tool grants", "connected account claims", "NamedServiceAdmission", "Data Bus relay"]
-updated_at: 2026-09-16
+updated_at: 2026-09-23
 see_also:
   - ../connection-hub-architecture.md
   - ./delegated-cards.md
+  - ./durable-authority-generations.md
   - ./delegated-secret-administration.md
   - ./oauth-delegated-credential-protocol.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -39,6 +40,9 @@ The focused documents remain the implementation references:
 - [Delegated Secret Administration](./delegated-secret-administration.md)
   owns secret-resource selectors, invocation policy, and the separate
   human-only descriptor export ceremony.
+- [Durable Authority Generations](./durable-authority-generations.md)
+  owns PostgreSQL authority storage, generation activation, and the reset
+  cutover contract.
 - [Authenticated MCP](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md)
   owns the full managed MCP configuration and connected-account consent chain.
 - [Platform MCP Over Connection Hub](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/mcp/platform-mcp-over-connection-hub-README.md)
@@ -76,8 +80,11 @@ provider-visible domain and diagnostic context.
 
 ## State That Feeds A Decision
 
-Two durable histories produce the current delegated decision. Redis is their
-serving projection:
+Two durable histories produce the current delegated decision. Bundle storage
+holds immutable catalog and Card documents; PostgreSQL holds credential,
+session, handle, and replay authority. Redis serves only rebuildable
+projections and retry-cost coordination after the PostgreSQL generation is
+activated:
 
 ```text
 OPERATOR DEPLOYMENT                                USER AUTHORITY
@@ -88,15 +95,20 @@ immutable catalog version + active.json           immutable card revision + curr
               |                                                |
               +--------- durable Connection Hub storage -------+
                                        |
-                              validated read-through
-                                       v
-                              Redis serving projections
-                              active catalog + live card
+                     +-----------------+-----------------+
+                     |                                   |
+                     v                                   v
+             PostgreSQL authority                validated read-through
+          credentials + sessions + replay                 |
+                                                         v
+                                               Redis serving projections
+                                               active catalog + live card
 ```
 
-The durable documents contain non-secret authority and provenance. Credential
-handles, provider tokens, refresh tokens, and reusable session secrets remain
-in their bounded credential/session stores. A Redis miss reads the committed
+The durable documents contain non-secret authority and provenance. PostgreSQL
+stores token hashes and credential/session relationships. A recoverable hosted
+Agent Card bearer lives in the deployment secret provider, with only its
+reference and fingerprint in PostgreSQL. A Redis miss reads the committed
 durable current document, validates it, and restores the serving projection.
 
 The same card/catalog state feeds three enforcement dimensions:
