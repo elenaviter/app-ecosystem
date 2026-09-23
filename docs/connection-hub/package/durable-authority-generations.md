@@ -29,7 +29,7 @@ after the descriptor selects an activated PostgreSQL generation.
 | --- | --- |
 | OAuth client registrations, refresh generations, and access-token bindings | PostgreSQL; bearer values are represented by hashes. |
 | Card-handle metadata and cleanup lifecycle | PostgreSQL. |
-| Hosted Agent Card bearer that the runtime must present again | Deployment secret provider; PostgreSQL stores its reference and fingerprint. |
+| Agent Card bearer retained for hosted reuse and network presentation | Deployment secret provider; PostgreSQL stores its reference and fingerprint. |
 | Delegated Card identity, revision, state, and expiry | Durable bundle storage. |
 | Admission replay claims | PostgreSQL. |
 | KDCube bundle users, authority versions, bundle sessions, and platform sessions | PostgreSQL after activation. Redis keeps generation-scoped, TTL-bound read projections. |
@@ -45,18 +45,21 @@ access, and secret-provider access.
 The supported existing-runtime cutover preserves every active, unexpired Card
 credential chain that is complete at preview time. One chain consists of the
 Card-handle row, its active access binding, active refresh generation when one
-exists, and the referenced dynamic OAuth client. A hosted Agent Card also
-preserves its bearer in the deployment secret provider. The preview verifies
-the durable Card identity, revision, state, expiry, and every chain link before
-the chain can be imported. A missing link is a named blocker; apply never turns
-an apparently live Card into a disconnected Card.
+exists, and the referenced dynamic OAuth client. An Agent Card instead requires
+its reusable bearer and active access binding; the bearer remains in the
+deployment secret provider for hosted reuse and can also be presented by that
+agent over the network. The preview verifies the durable Card identity,
+revision, state, expiry, and every required chain link before the chain can be
+imported. A missing link is a named blocker; apply never turns an apparently
+live Card into a disconnected Card.
 
 Records outside a complete live chain start clean in the new generation:
 
 | Source state | Result after activation |
 | --- | --- |
 | Browser and platform sessions | Users sign in once. Current roles, permissions, provider identity, and authority version are rebuilt by the login path. |
-| Active, unexpired Card with a complete OAuth chain | Card handle, access binding, active refresh generation, and referenced dynamic client survive. This covers hosted workers and external OAuth/MCP clients under the same rule. |
+| Active, unexpired Agent Card with a complete credential chain | Card handle, reusable bearer, and access binding survive. This covers the same agent running under hosted runtime custody or presenting its credential over the network. |
+| Active, unexpired OAuth Card with a complete credential chain | Card handle, access binding, active refresh generation, and referenced dynamic client survive. |
 | Pending Card without an issued credential | Remains pending. It authorizes when activated; there is no live credential to migrate. |
 | Expired, revoked, orphaned, or incomplete Card credential | Does not revive. An incomplete live chain blocks the preview; an expired or revoked credential is reset and must be issued again. |
 | OAuth records not owned by a preserved live Card chain | Existing access and refresh tokens fail closed; unreferenced dynamic clients are reset. |
@@ -78,7 +81,7 @@ count the decision for every record in these families.
 | `{tenant}:{project}:kdcube:oauth:client:*` | OAuth registration and client lookup | Persistent or registration expiry | Dynamic clients referenced by a preserved refresh chain migrate; all others reset. |
 | `{tenant}:{project}:kdcube:oauth:refresh:*` | OAuth token issue, rotation, refresh, and revoke | Refresh expiry | Active generations owned by preserved Cards migrate; expired, revoked, missing-Card, and unreferenced generations reset. |
 | `{tenant}:{project}:kdcube:oauth:agrant:*` | OAuth access issue and bearer validation | Access-token expiry | Active bindings owned by preserved Cards migrate; other bindings reset. |
-| `{tenant}:{project}:kdcube:delegated-access:card-handles:*` | Card credential issue, renewal, and presentation | Card credential expiry | Complete live Card handles migrate. Agent bearer material moves to the secret provider; PostgreSQL stores its reference and digest. |
+| `{tenant}:{project}:kdcube:delegated-access:card-handles:*` | Card credential issue, renewal, and presentation | Card credential expiry | Complete live Card handles migrate. Agent bearer material moves to the secret provider; PostgreSQL stores its reference and digest. A descriptor sync credentials a legacy live Agent Card before preview; any live Agent Card still missing its bearer blocks activation. |
 | `connection-hub:admission:{tenant}:{project}:nonce:*` | Admission claim and replay check | Claim expiry | Replay history resets by reviewed policy. |
 | `{tenant}:{project}:kdcube:delegated-access:automation:*` and `control-card:*` | Legacy Card projections | Record expiry or durable lifecycle | Counted as reset; current Card and control authority rebuild from durable bundle storage. |
 
