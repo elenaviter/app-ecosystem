@@ -2555,7 +2555,16 @@ class ProblemBoardHostRelayAdapter:
         assignment_files_delta, files_signature = self._assignment_files_delta(
             project_ref=project_ref, fresh=force_heartbeat
         )
-        heartbeat_sent = force_heartbeat or session_delta is not None or assignment_files_delta is not None or (
+        # A change in files in flight is worth a heartbeat of its own. An empty
+        # set that this process never published is not a change: without this,
+        # every rebuilt adapter of a worker with no declared worktree forced one
+        # extra heartbeat (30 in one push burst), a regression from W278 part B.
+        # The empty set still rides on the next heartbeat that goes anyway.
+        files_changed = assignment_files_delta is not None and (
+            bool(assignment_files_delta)
+            or project_ref in self._assignment_files_signatures
+        )
+        heartbeat_sent = force_heartbeat or session_delta is not None or files_changed or (
             self._project_heartbeat_wait(
                 project_ref=project_ref,
                 sessions=agent_sessions,
