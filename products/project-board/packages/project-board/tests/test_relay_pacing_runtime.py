@@ -35,6 +35,12 @@ def test_the_runtime_being_down_is_told_apart_from_a_refusal():
     unreachable = DomainError("oauth_mcp_endpoint_unreachable", "The MCP endpoint could not be reached for OAuth discovery.")
     assert is_runtime_unavailable(unreachable) is True
     assert is_runtime_unavailable(ConnectionRefusedError("connection refused")) is True
+    # 18:04 the same day: four channels opened together against a runtime
+    # still down. The first held the profile store lock through its hung
+    # refresh, the other three timed out on the lock and then waited on the
+    # doubling schedule for 3.5 minutes after the runtime was back.
+    locked = DomainError("oauth_profile_lock_timeout", "Timed out waiting for the OAuth profile lock.")
+    assert is_runtime_unavailable(locked) is True
     wrapped = RuntimeError("open failed")
     wrapped.__cause__ = _not_advertised()
     assert is_runtime_unavailable(wrapped) is True
