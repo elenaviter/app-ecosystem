@@ -401,6 +401,9 @@ def _render_worker_list(result: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+_RECEIPT_OUTCOMES = ("applied", "refused")
+
+
 def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
     lines = [f"operation: {result.get('operation')}"]
     obj = result.get("object")
@@ -418,6 +421,25 @@ def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
         lines.extend(_flatten(rest, prefix=""))
         other = {k: v for k, v in obj.items() if k != "item"}
         lines.extend(_flatten(other, prefix=""))
+        return lines
+    if isinstance(obj, Mapping) and obj.get("state") in _RECEIPT_OUTCOMES:
+        # A governed-mutation receipt. The outcome is the first line, and an
+        # empty error slot is not printed: a caller that reads `error = {}`
+        # beside `observed_revision` can mistake an applied receipt for a
+        # conflict and retry it under a fresh key, writing it again. `state`
+        # is the field that says applied or refused; a refusal carries its
+        # reason and details beside it. Other coordinate objects carry a
+        # `state` too (a binding is `bound`, a channel `exempt`), and those
+        # keep the flat form: the receipt treatment is keyed on the outcome
+        # vocabulary, not on the key name.
+        state = str(obj.get("state") or "")
+        lines.append(f"state: {state}{' (replayed)' if obj.get('replayed') else ''}")
+        rest = {
+            k: v
+            for k, v in obj.items()
+            if k not in ("state", "replayed") and not (k == "error" and not v)
+        }
+        lines.extend(_flatten(rest, prefix=""))
         return lines
     lines.extend(_flatten(obj, prefix=""))
     return lines
