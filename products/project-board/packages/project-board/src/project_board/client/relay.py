@@ -3683,6 +3683,13 @@ class ProblemBoardRelaySupervisor:
             session.channel_identity,
             session.replacement_epoch,
         )
+        # An open channel has no failure on record. The pacing record is
+        # otherwise removed only by the cycle's record_success after a
+        # completed poll, and until then pb status and the pb coordinate
+        # admission read it as "not open now" and refuse a channel that is
+        # open (W274: three minutes seven seconds after a relay restart on
+        # 2026-09-22, while the first cycle came round).
+        self._pacing.record_success(channel.worker_name)
         return session
 
     async def _drop_session(self, worker_name: str) -> None:
