@@ -20,6 +20,9 @@ from connection_hub.delegated_credentials.oauth.authority_store import (
     RefreshTokenReuseDetected,
     RefreshTokenState,
 )
+from connection_hub.delegated_credentials.oauth.clients import (
+    DYNAMIC_CLIENT_ID_PREFIX,
+)
 from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_grants,
     normalize_resource_operations,
@@ -533,7 +536,7 @@ class GrantStore:
         application_type: str = "native",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        client_id = "dcr-" + secrets.token_urlsafe(16)
+        client_id = DYNAMIC_CLIENT_ID_PREFIX + secrets.token_urlsafe(16)
         record = {
             "client_id": client_id,
             "redirect_uris": list(redirect_uris),

@@ -32,6 +32,7 @@ _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 CLIENT_REGISTRATION_PRE_REGISTERED = "pre_registered"
 CLIENT_REGISTRATION_DYNAMIC = "dynamic_client_registration"
 CLIENT_REGISTRATION_METADATA_DOCUMENT = "client_id_metadata_document"
+DYNAMIC_CLIENT_ID_PREFIX = "dcr-"
 
 MAX_PUBLIC_CLIENT_METADATA_KEYS = 64
 MAX_PUBLIC_CLIENT_METADATA_DEPTH = 3
@@ -68,6 +69,12 @@ _SECRET_METADATA_SUFFIXES = (
     "_secret",
     "_token",
 )
+
+
+def is_dynamic_client_id(client_id: str) -> bool:
+    """Whether an identity was minted by Connection Hub DCR."""
+
+    return str(client_id or "").startswith(DYNAMIC_CLIENT_ID_PREFIX)
 
 
 def _metadata_key_is_sensitive(key: str) -> bool:

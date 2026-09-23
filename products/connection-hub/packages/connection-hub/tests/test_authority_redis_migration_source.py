@@ -249,7 +249,8 @@ async def test_reset_source_preserves_the_complete_live_card_chain() -> None:
             "oauth_access": 1,
             "oauth_clients": 1,
             "oauth_refresh": 1,
-            "oauth_refresh_self_contained_clients": 0,
+            "oauth_refresh_metadata_url_clients": 0,
+            "oauth_refresh_pre_registered_clients": 0,
             "resident_agent_card_handles": 1,
         },
         "reset": {
@@ -365,7 +366,8 @@ async def test_reset_source_preserves_a_live_external_client_chain() -> None:
         "oauth_access": 1,
         "oauth_clients": 1,
         "oauth_refresh": 1,
-        "oauth_refresh_self_contained_clients": 0,
+        "oauth_refresh_metadata_url_clients": 0,
+        "oauth_refresh_pre_registered_clients": 0,
         "resident_agent_card_handles": 0,
     }
 
@@ -407,7 +409,8 @@ async def test_reset_source_preserves_a_card_recoverable_by_refresh() -> None:
         "oauth_access": 0,
         "oauth_clients": 1,
         "oauth_refresh": 1,
-        "oauth_refresh_self_contained_clients": 0,
+        "oauth_refresh_metadata_url_clients": 0,
+        "oauth_refresh_pre_registered_clients": 0,
         "resident_agent_card_handles": 1,
     }
 
@@ -473,9 +476,81 @@ async def test_reset_source_preserves_refresh_without_client_registration() -> N
         "oauth_access": 0,
         "oauth_clients": 0,
         "oauth_refresh": 1,
-        "oauth_refresh_self_contained_clients": 1,
+        "oauth_refresh_metadata_url_clients": 1,
+        "oauth_refresh_pre_registered_clients": 0,
         "resident_agent_card_handles": 0,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "client_id, expected_blockers",
+    [
+        (
+            "dcr-missing-registration",
+            ("live_card_oauth_client_missing:dcr-missing-registration",),
+        ),
+        ("descriptor-client", ()),
+    ],
+)
+async def test_reset_source_classifies_a_missing_client_registration(
+    client_id: str,
+    expected_blockers: tuple[str, ...],
+) -> None:
+    authority = CardAuthority(
+        access_id="connector-card-1",
+        client_id=client_id,
+        grantor_subject="user-1",
+        delegate_subject="external-client-1",
+        source="connector",
+        card_kind=CARD_KIND_CONNECTOR,
+        card_revision=1,
+        created_at=1_900_000_000,
+        expires_at=EXPIRY_MS // 1000,
+    )
+    refresh_token = "external-refresh"
+    records = {
+        f"{TENANT}:{PROJECT}:kdcube:oauth:refresh:{refresh_token}": (
+            json.dumps(
+                {
+                    "client_id": client_id,
+                    "sub": "user-1",
+                    "registry_access_id": authority.access_id,
+                    "card_kind": CARD_KIND_CONNECTOR,
+                }
+            ),
+            EXPIRY_MS,
+        ),
+        (
+            f"{TENANT}:{PROJECT}:kdcube:delegated-access:card-handles:"
+            f"{authority.access_id}"
+        ): (
+            json.dumps(
+                {
+                    "access_id": authority.access_id,
+                    "access_token": "expired-access",
+                    "refresh_token": refresh_token,
+                    "session_id": "external-session",
+                }
+            ),
+            EXPIRY_MS,
+        ),
+    }
+
+    inspection = await ConnectionHubRedisResetSource(
+        _Redis(records),
+        tenant=TENANT,
+        project=PROJECT,
+        card_authorities=_Cards(authority),
+    ).inspect(captured_at_ms=1_900_000_000_000)
+
+    assert inspection.blockers == expected_blockers
+    assert inspection.source_summary["preserved"][
+        "oauth_refresh_metadata_url_clients"
+    ] == 0
+    assert inspection.source_summary["preserved"][
+        "oauth_refresh_pre_registered_clients"
+    ] == int(client_id == "descriptor-client")
 
 
 @pytest.mark.asyncio

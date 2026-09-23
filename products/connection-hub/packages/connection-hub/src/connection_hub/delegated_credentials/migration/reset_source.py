@@ -27,6 +27,12 @@ from connection_hub.delegated_credentials.migration.redis_source import (
     CONNECTION_HUB_MIGRATION_FAMILIES,
     ConnectionHubRedisMigrationSource,
 )
+from connection_hub.delegated_credentials.oauth.client_metadata import (
+    is_client_metadata_id,
+)
+from connection_hub.delegated_credentials.oauth.clients import (
+    is_dynamic_client_id,
+)
 
 
 class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
@@ -207,6 +213,24 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
                 )
 
         available_clients = {record.identity for record in clients}
+        missing_client_ids = referenced_client_ids - available_clients
+        metadata_url_client_ids = {
+            client_id
+            for client_id in missing_client_ids
+            if is_client_metadata_id(client_id)
+        }
+        missing_dynamic_client_ids = {
+            client_id
+            for client_id in missing_client_ids
+            if is_dynamic_client_id(client_id)
+        }
+        pre_registered_client_ids = (
+            missing_client_ids
+            - metadata_url_client_ids
+            - missing_dynamic_client_ids
+        )
+        for client_id in sorted(missing_dynamic_client_ids):
+            blockers.append(f"live_card_oauth_client_missing:{client_id}")
 
         reset_counts = {
             "admission_replay": len(
@@ -265,8 +289,11 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
                     "card_handles_current_access": current_access_cards,
                     "card_handles_current_refresh": current_refresh_cards,
                     "card_handles_refresh_recoverable": refresh_recoverable_cards,
-                    "oauth_refresh_self_contained_clients": len(
-                        referenced_client_ids - available_clients
+                    "oauth_refresh_metadata_url_clients": len(
+                        metadata_url_client_ids
+                    ),
+                    "oauth_refresh_pre_registered_clients": len(
+                        pre_registered_client_ids
                     ),
                     "resident_agent_card_handles": sum(
                         1

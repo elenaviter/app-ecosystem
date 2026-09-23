@@ -63,9 +63,11 @@ hosted reuse and network presentation. The preview verifies the durable Card
 identity, revision, state, expiry, and at least one usable credential path
 before import. A Card with neither a current access binding nor a matching
 active refresh generation is a named blocker; apply never turns an apparently
-live Card into a disconnected Card. The preview separately counts current
-access paths, current refresh paths, refresh-recoverable Cards, and refresh
-client identities whose rotation is self-contained.
+live Card into a disconnected Card. A missing `dcr-*` registration is also a
+blocker because it breaks dynamic-client continuity; descriptor clients and
+HTTPS metadata clients have reconstructable registration authority. The
+preview separately counts current access paths, current refresh paths,
+refresh-recoverable Cards, metadata-URL clients, and pre-registered clients.
 
 Records outside a complete live chain start clean in the new generation:
 
