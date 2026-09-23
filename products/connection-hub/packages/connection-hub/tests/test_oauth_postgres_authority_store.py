@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import uuid
 from collections import deque
@@ -23,11 +24,11 @@ from connection_hub.delegated_credentials.oauth.authority_store import (
     RefreshTokenReuseDetected,
 )
 from connection_hub.delegated_credentials.oauth.store import GrantStore
-from connection_hub.delegated_credentials.oauth.migration import (
-    PostgresOAuthMigrationTarget,
-)
 from connection_hub.delegated_credentials.migration.model import (
     AuthorityMigrationRecord,
+)
+from connection_hub.delegated_credentials.oauth.migration import (
+    PostgresOAuthMigrationTarget,
 )
 
 
@@ -239,6 +240,53 @@ async def test_refresh_migration_is_insert_only_and_never_sends_bearer_to_sql() 
         for _kind, sql, _args, _depth in connection.calls
     )
     assert sum("ON CONFLICT" in sql for _kind, sql, _args, _depth in connection.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_client_migration_normalizes_legacy_missing_grant_types() -> None:
+    redirect_uris = ["http://127.0.0.1/callback"]
+    default_grant_types = ["authorization_code", "refresh_token"]
+    connection = _Connection(
+        rows=[
+            {
+                "tenant": "demo-tenant",
+                "project": "demo-project",
+                "redirect_uris": redirect_uris,
+                "grant_types": default_grant_types,
+                "token_endpoint_auth_method": "none",
+                "application_type": "native",
+                "metadata": {"kind": "legacy"},
+                "retired_at": None,
+                "expires_at_ms": None,
+            }
+        ]
+    )
+    target = PostgresOAuthMigrationTarget(_store(connection))
+
+    created = await target.import_record(
+        AuthorityMigrationRecord(
+            record_type="oauth_client",
+            identity="legacy-client",
+            families=("oauth_clients",),
+            payload={
+                "migration_state": "active",
+                "record": {
+                    "client_id": "legacy-client",
+                    "redirect_uris": redirect_uris,
+                    "token_endpoint_auth_method": "none",
+                    "application_type": "native",
+                    "metadata": {"kind": "legacy"},
+                },
+            },
+        )
+    )
+
+    assert created is True
+    assert default_grant_types in [
+        json.loads(argument)
+        for argument in _all_arguments(connection)
+        if isinstance(argument, str) and argument.startswith("[")
+    ]
 
 
 @pytest.mark.asyncio
@@ -571,6 +619,55 @@ async def test_client_extension_executes_against_real_postgres() -> None:
                 "client-1",
             )
         assert revision == 2
+    finally:
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_client_migration_is_idempotent_against_real_postgres() -> None:
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    store = PostgresOAuthAuthorityStore(
+        pg_pool=pool,
+        tenant=f"authority-test-{uuid.uuid4().hex}",
+        project="legacy-client-migration",
+    )
+    try:
+        await store.ensure_schema()
+        target = PostgresOAuthMigrationTarget(store)
+        record = AuthorityMigrationRecord(
+            record_type="oauth_client",
+            identity="legacy-client",
+            families=("oauth_clients",),
+            payload={
+                "migration_state": "active",
+                "record": {
+                    "client_id": "legacy-client",
+                    "redirect_uris": ["http://127.0.0.1/callback"],
+                    "token_endpoint_auth_method": "none",
+                    "application_type": "native",
+                    "metadata": {"kind": "legacy"},
+                },
+            },
+        )
+
+        assert await target.import_record(record) is True
+        assert await target.import_record(record) is False
+        assert await store.get_client_record("legacy-client", ttl_seconds=600) == {
+            "client_id": "legacy-client",
+            "redirect_uris": ["http://127.0.0.1/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "token_endpoint_auth_method": "none",
+            "application_type": "native",
+            "metadata": {"kind": "legacy"},
+        }
     finally:
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")

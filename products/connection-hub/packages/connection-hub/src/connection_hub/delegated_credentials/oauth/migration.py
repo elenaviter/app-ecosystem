@@ -36,12 +36,47 @@ class OAuthMigrationTargetConflict(RuntimeError):
     """A target identity already exists with different immutable content."""
 
 
+_OAUTH_CLIENT_RECORD_FIELDS = frozenset(
+    {
+        "application_type",
+        "client_id",
+        "grant_types",
+        "metadata",
+        "redirect_uris",
+        "token_endpoint_auth_method",
+    }
+)
+
+
 def _json_text(value: Mapping[str, Any]) -> str:
     return json.dumps(dict(value), sort_keys=True, separators=(",", ":"))
 
 
 def _status_created(status: str) -> bool:
     return str(status or "").strip().endswith(" 1")
+
+
+def _normalized_client_record(value: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(value or {})
+    unsupported = sorted(set(payload).difference(_OAUTH_CLIENT_RECORD_FIELDS))
+    if unsupported:
+        raise ValueError(
+            "OAuth client migration record contains unsupported fields: "
+            + ",".join(unsupported)
+        )
+    return {
+        "client_id": str(payload.get("client_id") or "").strip(),
+        "redirect_uris": list(payload.get("redirect_uris") or []),
+        "grant_types": list(
+            payload.get("grant_types")
+            or ("authorization_code", "refresh_token")
+        ),
+        "token_endpoint_auth_method": str(
+            payload.get("token_endpoint_auth_method") or "none"
+        ),
+        "application_type": str(payload.get("application_type") or "native"),
+        "metadata": dict(payload.get("metadata") or {}),
+    }
 
 
 class PostgresOAuthMigrationTarget:
@@ -79,7 +114,9 @@ class PostgresOAuthMigrationTarget:
         raise ValueError(f"unsupported OAuth migration record: {source.record_type}")
 
     async def _import_client(self, source: AuthorityMigrationRecord) -> bool:
-        payload = _json_object(source.payload.get("record"))
+        payload = _normalized_client_record(
+            _json_object(source.payload.get("record"))
+        )
         migration_state = str(
             source.payload.get("migration_state") or ""
         ).strip()
@@ -88,12 +125,6 @@ class PostgresOAuthMigrationTarget:
         client_id = str(payload.get("client_id") or "").strip()
         if client_id != source.identity:
             raise ValueError("OAuth client migration identity mismatch")
-        redirect_uris = list(payload.get("redirect_uris") or [])
-        grant_types = list(
-            payload.get("grant_types")
-            or ("authorization_code", "refresh_token")
-        )
-        metadata = dict(payload.get("metadata") or {})
         async with self._pool.acquire() as connection, connection.transaction():
             status = await connection.execute(
                 f"""
@@ -115,11 +146,11 @@ class PostgresOAuthMigrationTarget:
                 client_id,
                 self.tenant,
                 self.project,
-                json.dumps(redirect_uris),
-                json.dumps(grant_types),
-                str(payload.get("token_endpoint_auth_method") or "none"),
-                str(payload.get("application_type") or "native"),
-                json.dumps(metadata, sort_keys=True),
+                json.dumps(payload["redirect_uris"]),
+                json.dumps(payload["grant_types"]),
+                payload["token_endpoint_auth_method"],
+                payload["application_type"],
+                json.dumps(payload["metadata"], sort_keys=True),
                 source.expires_at_ms,
                 migration_state,
             )
