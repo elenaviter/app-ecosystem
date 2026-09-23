@@ -51,12 +51,12 @@ class _Cutovers(_PreparedStore):
 
     async def require_activated(
         self,
-        migration_id: str,
+        generation_id: str,
         *,
         required_families: tuple[str, ...],
     ) -> object:
         self._events.append(
-            ("require_activated", migration_id, required_families)
+            ("require_activated", generation_id, required_families)
         )
         if self._failure is not None:
             raise self._failure
@@ -66,7 +66,7 @@ class _Cutovers(_PreparedStore):
 def _authority(module, *, cutover_failure: Exception | None = None):
     events: list[object] = []
     authority = module.ConnectionHubDurableAuthority(
-        config=SimpleNamespace(migration_id="durable-authority-v1"),
+        config=SimpleNamespace(generation_id="durable-authority-v1"),
         oauth=_PreparedStore(events, "oauth"),
         card_handles=_CardHandles(events, "card_handles"),
         admission_replay=_ReplayClaims(events, "admission_replay"),

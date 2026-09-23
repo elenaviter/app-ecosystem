@@ -43,7 +43,7 @@ class DurableAuthorityConfigurationError(ValueError):
 @dataclass(frozen=True)
 class DurableAuthorityConfig:
     backend: str
-    migration_id: str = ""
+    generation_id: str = ""
 
     @property
     def uses_postgresql(self) -> bool:
@@ -64,19 +64,19 @@ class DurableAuthorityConfig:
             raise DurableAuthorityConfigurationError(
                 f"{path}.backend is invalid"
             )
-        migration_id = str(raw.get("migration_id") or "").strip()
-        if backend == AUTHORITY_BACKEND_POSTGRESQL and not migration_id:
+        generation_id = str(raw.get("generation_id") or "").strip()
+        if backend == AUTHORITY_BACKEND_POSTGRESQL and not generation_id:
             raise DurableAuthorityConfigurationError(
-                "PostgreSQL authority requires an activated migration_id"
+                "PostgreSQL authority requires an activated generation_id"
             )
         if (
             backend == AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE
-            and migration_id
+            and generation_id
         ):
             raise DurableAuthorityConfigurationError(
-                "Redis migration-source mode cannot claim an activated migration"
+                "Redis migration-source mode cannot claim an activated generation"
             )
-        return cls(backend=backend, migration_id=migration_id)
+        return cls(backend=backend, generation_id=generation_id)
 
     @classmethod
     def from_connections(

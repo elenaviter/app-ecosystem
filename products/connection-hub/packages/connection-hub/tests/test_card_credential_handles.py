@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import time
 from typing import Any
 
@@ -91,7 +92,9 @@ class _ResidentSecrets:
             card_revision=int(kwargs["card_revision"]),
             expires_at=int(kwargs["expires_at"]),
             resident_access_secret_ref="a" * 32,
-            resident_access_sha256="b" * 64,
+            resident_access_sha256=hashlib.sha256(
+                str(kwargs["bearer"]).encode("utf-8")
+            ).hexdigest(),
             session_id=str(kwargs["session_id"]),
             revision=int(kwargs["expected_revision"]) + 1,
         ).validated()
@@ -157,7 +160,9 @@ async def test_resident_bearer_uses_host_custody_and_exact_card_binding() -> Non
     assert resident.installs[0]["expected_revision"] == 0
     assert metadata.current is not None
     assert metadata.current.resident_access_secret_ref == "a" * 32
-    assert metadata.current.resident_access_sha256 == "b" * 64
+    assert metadata.current.resident_access_sha256 == hashlib.sha256(
+        b"resident-bearer"
+    ).hexdigest()
 
     moved = dataclasses.replace(authority, card_revision=authority.card_revision + 1)
     with pytest.raises(CardCredentialHandleUnavailable, match="revision_mismatch"):
@@ -188,6 +193,28 @@ async def test_oauth_bearers_are_not_copied_into_card_handle_metadata() -> None:
     assert metadata.current.resident_access_secret_ref == ""
     assert metadata.current.resident_access_sha256 == ""
     assert resident.installs == []
+
+
+@pytest.mark.asyncio
+async def test_migration_rerun_proves_exact_resident_secret_without_rewriting() -> None:
+    store, _metadata, resident = _store()
+    authority = _authority(card_kind=CARD_KIND_AGENT)
+    handles = CardCredentialHandles(
+        access_id=authority.access_id,
+        access_token="resident-bearer",
+        session_id="session-1",
+    )
+
+    assert await store.import_current(authority, handles)
+    assert not await store.import_current(authority, handles)
+    assert len(resident.installs) == 1
+
+    with pytest.raises(CardCredentialHandleUnavailable, match="target_conflict"):
+        await store.import_current(
+            authority,
+            dataclasses.replace(handles, access_token="different-bearer"),
+        )
+    assert len(resident.installs) == 1
 
 
 @pytest.mark.asyncio

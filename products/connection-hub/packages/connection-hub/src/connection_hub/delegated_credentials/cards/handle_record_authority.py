@@ -95,5 +95,19 @@ class PostgresCardHandleRecordAuthority:
         )
         return self.record(row)
 
+    async def list_active(self, *, now: int | None = None) -> list[CardHandleMetadata]:
+        moment = int(now if now is not None else time.time())
+        rows = await self.pool.fetch(
+            f"""
+            SELECT {CARD_HANDLE_COLUMNS}
+            FROM {self.schema}.{TABLE_CARD_HANDLE_METADATA}
+            WHERE state = 'active'
+              AND expires_at > to_timestamp($1)
+            ORDER BY access_id
+            """,
+            moment,
+        )
+        return [record for row in rows if (record := self.record(row)) is not None]
+
 
 __all__ = ["PostgresCardHandleRecordAuthority"]

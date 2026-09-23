@@ -116,10 +116,10 @@ bundles:
           # Long-lived clients, credentials, Card handles, and replay claims
           # are served only after this exact migration receipt exists in
           # PostgreSQL. Use redis-migration-source only while producing and
-          # reviewing the dry-run artifact; it carries no migration_id.
+          # reviewing the dry-run artifact; it carries no generation_id.
           authority:
             backend: postgresql
-            migration_id: durable-authority-v1
+            generation_id: durable-authority-v1
           gateway:
             requestable_discovery:
               caller_types: [resident]

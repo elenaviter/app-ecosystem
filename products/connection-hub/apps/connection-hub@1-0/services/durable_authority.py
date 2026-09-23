@@ -80,7 +80,7 @@ class ConnectionHubDurableAuthority:
         await self.admission_replay.ensure_schema()
         await self.cutovers.ensure_schema()
         await self.cutovers.require_activated(
-            self.config.migration_id,
+            self.config.generation_id,
             required_families=CONNECTION_HUB_AUTHORITY_FAMILIES,
         )
         await self.card_handles.reconcile_cleanup(limit=100)

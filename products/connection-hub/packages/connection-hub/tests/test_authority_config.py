@@ -20,14 +20,14 @@ def test_postgresql_authority_names_the_activated_migration() -> None:
         _connections(
             {
                 "backend": "postgresql",
-                "migration_id": "durable-authority-v1",
+                "generation_id": "durable-authority-v1",
             }
         )
     )
 
     assert config.backend == AUTHORITY_BACKEND_POSTGRESQL
     assert config.uses_postgresql is True
-    assert config.migration_id == "durable-authority-v1"
+    assert config.generation_id == "durable-authority-v1"
 
 
 def test_redis_is_named_only_as_an_unactivated_migration_source() -> None:
@@ -37,7 +37,7 @@ def test_redis_is_named_only_as_an_unactivated_migration_source() -> None:
 
     assert config.backend == AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE
     assert config.uses_postgresql is False
-    assert config.migration_id == ""
+    assert config.generation_id == ""
 
 
 def test_shared_parser_names_the_calling_descriptor_path() -> None:
@@ -60,7 +60,7 @@ def test_shared_parser_names_the_calling_descriptor_path() -> None:
         {"backend": "postgresql"},
         {
             "backend": "redis-migration-source",
-            "migration_id": "not-activated",
+            "generation_id": "not-activated",
         },
     ],
 )

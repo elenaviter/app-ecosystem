@@ -166,7 +166,7 @@ def test_oauth_grant_store_uses_the_prepared_postgresql_authority(monkeypatch):
                 "delegated_credentials": {
                     "authority": {
                         "backend": "postgresql",
-                        "migration_id": "durable-authority-v1",
+                        "generation_id": "durable-authority-v1",
                     }
                 }
             }
@@ -215,7 +215,7 @@ def test_entrypoint_registers_delegated_gateway_contract():
     }
     assert defaults["connections"]["delegated_credentials"]["authority"] == {
         "backend": "postgresql",
-        "migration_id": "durable-authority-v1",
+        "generation_id": "durable-authority-v1",
     }
     gateway_rows = [
         row

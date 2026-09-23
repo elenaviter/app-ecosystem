@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import time
 from typing import Any, Protocol
 
@@ -118,6 +120,28 @@ class PostgresCardCredentialHandleStore:
         await self._resident_secrets.cleanup_prepared_secrets(limit=limit)
         await self._resident_secrets.cleanup_retired_secrets(limit=limit)
         await self._resident_secrets.cleanup_terminal_secrets(limit=limit)
+
+    async def migration_metadata(
+        self,
+        *,
+        captured_at_ms: int,
+    ) -> list[CardHandleMetadata]:
+        """Active metadata included in one migration reconciliation snapshot."""
+
+        list_active = getattr(self._metadata, "list_active", None)
+        if list_active is None:
+            raise CardCredentialHandleUnavailable(
+                "card_handle_migration_inventory_unavailable"
+            )
+        return await list_active(now=max(0, int(captured_at_ms)) // 1000)
+
+    @classmethod
+    def validate_migration_binding(
+        cls,
+        authority: CardAuthority,
+        metadata: CardHandleMetadata,
+    ) -> None:
+        cls._validate_binding(authority, metadata)
 
     @staticmethod
     def _validate_binding(
@@ -240,6 +264,77 @@ class PostgresCardCredentialHandleStore:
                 "card_handle_metadata_commit_failed",
                 access_id=authority.access_id,
             ) from exc
+
+    async def import_current(
+        self,
+        authority: CardAuthority,
+        handles: CardCredentialHandles,
+    ) -> bool:
+        """Insert one current source record, or prove an exact prior import.
+
+        An exact rerun performs no metadata or host-secret write. Any existing
+        row with different Card binding, session, fingerprint, or bearer is a
+        migration conflict and remains untouched.
+        """
+
+        if handles.access_id != authority.access_id:
+            raise CardCredentialHandleUnavailable(
+                "card_handle_access_id_mismatch",
+                access_id=authority.access_id,
+            )
+        current = await self._metadata.read_current(authority.access_id)
+        if current is None:
+            await self.write(authority, handles)
+            current = await self._metadata.read_current(authority.access_id)
+            created = True
+        else:
+            created = False
+        if current is None:
+            raise CardCredentialHandleUnavailable(
+                "card_handle_migration_outcome_unknown",
+                access_id=authority.access_id,
+            )
+        if (
+            current.state != HANDLE_STATE_ACTIVE
+            or current.access_id != authority.access_id
+            or current.card_revision != authority.card_revision
+            or current.expires_at != authority.expires_at
+            or current.session_id != handles.session_id
+        ):
+            raise CardCredentialHandleUnavailable(
+                "card_handle_migration_target_conflict",
+                access_id=authority.access_id,
+            )
+        if authority.card_kind == CARD_KIND_AGENT:
+            fingerprint = hashlib.sha256(
+                handles.access_token.encode("utf-8")
+            ).hexdigest()
+            if (
+                not handles.access_token
+                or not current.resident_access_secret_ref
+                or not hmac.compare_digest(
+                    current.resident_access_sha256,
+                    fingerprint,
+                )
+            ):
+                raise CardCredentialHandleUnavailable(
+                    "card_handle_migration_target_conflict",
+                    access_id=authority.access_id,
+                )
+            resident_bearer = await self._resident_secrets.resolve(
+                authority.access_id
+            )
+            if not hmac.compare_digest(resident_bearer, handles.access_token):
+                raise CardCredentialHandleUnavailable(
+                    "card_handle_migration_target_conflict",
+                    access_id=authority.access_id,
+                )
+        elif current.resident_access_secret_ref or current.resident_access_sha256:
+            raise CardCredentialHandleUnavailable(
+                "card_handle_migration_target_conflict",
+                access_id=authority.access_id,
+            )
+        return created
 
     async def remove(self, authority: CardAuthority) -> None:
         try:

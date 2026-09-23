@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Durable activation receipt for Connection Hub authority migrations."""
+"""Durable activation receipt for Connection Hub authority generations."""
 
 from __future__ import annotations
 
@@ -31,16 +31,16 @@ _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class AuthorityCutoverRequired(RuntimeError):
-    """A runtime cannot use PostgreSQL before its reviewed migration exists."""
+    """A runtime cannot use PostgreSQL before its activation receipt exists."""
 
-    def __init__(self, reason: str, *, migration_id: str) -> None:
+    def __init__(self, reason: str, *, generation_id: str) -> None:
         self.reason = str(reason or "authority_cutover_required")
-        self.migration_id = str(migration_id or "")
-        super().__init__(f"{self.reason}: {self.migration_id or '<missing>'}")
+        self.generation_id = str(generation_id or "")
+        super().__init__(f"{self.reason}: {self.generation_id or '<missing>'}")
 
 
 class AuthorityCutoverConflict(RuntimeError):
-    """One migration id was presented with different immutable evidence."""
+    """One generation id was presented with different immutable evidence."""
 
 
 def authority_cutover_schema(*, tenant: str, project: str) -> str:
@@ -52,7 +52,7 @@ def authority_cutover_schema_sql(schema: str) -> str:
 CREATE SCHEMA IF NOT EXISTS {schema};
 
 CREATE TABLE IF NOT EXISTS {schema}.{TABLE_AUTHORITY_CUTOVERS} (
-    migration_id                 TEXT PRIMARY KEY,
+    generation_id                 TEXT PRIMARY KEY,
     activated_revision           BIGSERIAL UNIQUE,
     source_generation            CHAR(64) NOT NULL,
     target_generation            CHAR(64) NOT NULL,
@@ -99,7 +99,7 @@ def _validated_counts(value: Mapping[str, Any], *, field_name: str) -> dict[str,
 
 @dataclass(frozen=True)
 class AuthorityCutoverReceipt:
-    migration_id: str
+    generation_id: str
     source_generation: str
     target_generation: str
     source_counts: Mapping[str, int]
@@ -110,12 +110,12 @@ class AuthorityCutoverReceipt:
     applied_at: datetime | None = None
 
     def validated(self) -> "AuthorityCutoverReceipt":
-        migration_id = str(self.migration_id or "").strip()
+        generation_id = str(self.generation_id or "").strip()
         source_generation = str(self.source_generation or "").strip().lower()
         target_generation = str(self.target_generation or "").strip().lower()
         preview_sha256 = str(self.preview_sha256 or "").strip().lower()
-        if not _IDENTIFIER_PATTERN.fullmatch(migration_id):
-            raise ValueError("migration_id must be a bounded stable identifier")
+        if not _IDENTIFIER_PATTERN.fullmatch(generation_id):
+            raise ValueError("generation_id must be a bounded stable identifier")
         for name, value in (
             ("source_generation", source_generation),
             ("target_generation", target_generation),
@@ -139,7 +139,7 @@ class AuthorityCutoverReceipt:
         if activated_revision < 0:
             raise ValueError("activated_revision must be non-negative")
         return AuthorityCutoverReceipt(
-            migration_id=migration_id,
+            generation_id=generation_id,
             source_generation=source_generation,
             target_generation=target_generation,
             source_counts=source_counts,
@@ -157,14 +157,14 @@ class AuthorityCutoverReceipt:
         if missing:
             raise AuthorityCutoverRequired(
                 "authority_cutover_families_missing:" + ",".join(missing),
-                migration_id=self.migration_id,
+                generation_id=self.generation_id,
             )
 
 
 def _receipt_from_row(row: Mapping[str, Any]) -> AuthorityCutoverReceipt:
     value = dict(row)
     return AuthorityCutoverReceipt(
-        migration_id=str(value.get("migration_id") or ""),
+        generation_id=str(value.get("generation_id") or ""),
         source_generation=str(value.get("source_generation") or ""),
         target_generation=str(value.get("target_generation") or ""),
         source_counts=_json_object(value.get("source_counts")),
@@ -178,7 +178,7 @@ def _receipt_from_row(row: Mapping[str, Any]) -> AuthorityCutoverReceipt:
 
 def _immutable_evidence(receipt: AuthorityCutoverReceipt) -> tuple[Any, ...]:
     return (
-        receipt.migration_id,
+        receipt.generation_id,
         receipt.source_generation,
         receipt.target_generation,
         dict(receipt.source_counts),
@@ -189,7 +189,7 @@ def _immutable_evidence(receipt: AuthorityCutoverReceipt) -> tuple[Any, ...]:
 
 
 class PostgresAuthorityCutoverStore:
-    """Record and verify one immutable, idempotent migration activation."""
+    """Record and verify one immutable, idempotent generation activation."""
 
     def __init__(self, *, pg_pool: Any, tenant: str, project: str) -> None:
         if pg_pool is None:
@@ -215,16 +215,16 @@ class PostgresAuthorityCutoverStore:
             await connection.execute(
                 f"""
                 INSERT INTO {self.schema}.{TABLE_AUTHORITY_CUTOVERS} (
-                    migration_id, source_generation, target_generation,
+                    generation_id, source_generation, target_generation,
                     source_counts, target_counts, prerequisites, preview_sha256
                 ) VALUES (
                     $1, $2, $3,
                     ($4::text)::jsonb, ($5::text)::jsonb,
                     ($6::text)::jsonb, $7
                 )
-                ON CONFLICT (migration_id) DO NOTHING
+                ON CONFLICT (generation_id) DO NOTHING
                 """,
-                candidate.migration_id,
+                candidate.generation_id,
                 candidate.source_generation,
                 candidate.target_generation,
                 json.dumps(candidate.source_counts, sort_keys=True, separators=(",", ":")),
@@ -234,38 +234,38 @@ class PostgresAuthorityCutoverStore:
             )
             row = await connection.fetchrow(
                 f"""
-                SELECT migration_id, activated_revision,
+                SELECT generation_id, activated_revision,
                        source_generation, target_generation,
                        source_counts, target_counts, prerequisites,
                        preview_sha256, applied_at
                 FROM {self.schema}.{TABLE_AUTHORITY_CUTOVERS}
-                WHERE migration_id = $1
+                WHERE generation_id = $1
                 FOR UPDATE
                 """,
-                candidate.migration_id,
+                candidate.generation_id,
             )
             if row is None:
                 raise RuntimeError("authority_cutover_activation_outcome_unknown")
             activated = _receipt_from_row(row)
             if _immutable_evidence(activated) != _immutable_evidence(candidate):
                 raise AuthorityCutoverConflict(
-                    "authority_cutover_migration_id_already_has_different_evidence"
+                    "authority_cutover_generation_id_already_has_different_evidence"
                 )
             return activated
 
-    async def read(self, migration_id: str) -> AuthorityCutoverReceipt | None:
-        identifier = str(migration_id or "").strip()
+    async def read(self, generation_id: str) -> AuthorityCutoverReceipt | None:
+        identifier = str(generation_id or "").strip()
         if not identifier:
             return None
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 f"""
-                SELECT migration_id, activated_revision,
+                SELECT generation_id, activated_revision,
                        source_generation, target_generation,
                        source_counts, target_counts, prerequisites,
                        preview_sha256, applied_at
                 FROM {self.schema}.{TABLE_AUTHORITY_CUTOVERS}
-                WHERE migration_id = $1
+                WHERE generation_id = $1
                 """,
                 identifier,
             )
@@ -273,15 +273,15 @@ class PostgresAuthorityCutoverStore:
 
     async def require_activated(
         self,
-        migration_id: str,
+        generation_id: str,
         *,
         required_families: Sequence[str],
     ) -> AuthorityCutoverReceipt:
-        receipt = await self.read(migration_id)
+        receipt = await self.read(generation_id)
         if receipt is None:
             raise AuthorityCutoverRequired(
                 "authority_cutover_receipt_missing",
-                migration_id=migration_id,
+                generation_id=generation_id,
             )
         receipt.require_families(required_families)
         return receipt

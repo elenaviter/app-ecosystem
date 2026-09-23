@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from connection_hub.delegated_credentials.admission_replay import (
+    MIGRATED_DIGEST_ONLY_SERVICE_ID,
     TABLE_ADMISSION_REPLAY_CLAIMS,
     PostgresAdmissionReplayClaimStore,
     admission_nonce_digest,
@@ -17,8 +18,13 @@ from connection_hub.delegated_credentials.admission_replay import (
 
 
 class _Connection:
-    def __init__(self, values: list[Any] | None = None) -> None:
+    def __init__(
+        self,
+        values: list[Any] | None = None,
+        rows: list[Any] | None = None,
+    ) -> None:
         self.values = list(values or [])
+        self.rows = list(rows or [])
         self.calls: list[tuple[str, str, tuple[Any, ...]]] = []
         self.transaction_depth = 0
 
@@ -39,6 +45,11 @@ class _Connection:
         assert self.transaction_depth == 1
         self.calls.append(("fetchval", sql, args))
         return self.values.pop(0) if self.values else None
+
+    async def fetchrow(self, sql: str, *args: Any) -> Any:
+        assert self.transaction_depth == 1
+        self.calls.append(("fetchrow", sql, args))
+        return self.rows.pop(0) if self.rows else None
 
 
 class _Pool:
@@ -63,6 +74,7 @@ def test_admission_replay_schema_contains_only_digest_identity() -> None:
 
     assert "nonce_sha256" in sql
     assert "PRIMARY KEY (service_id, nonce_sha256)" in sql
+    assert "UNIQUE INDEX" in sql
     assert "nonce TEXT" not in sql
     assert "token" not in sql.lower()
 
@@ -103,6 +115,42 @@ async def test_claim_hashes_nonce_before_sql_and_reports_conflict() -> None:
         "project-a",
         100,
         600,
+    )
+    assert "ON CONFLICT (nonce_sha256)" in connection.calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_digest_only_import_is_insert_only_and_preserves_absolute_expiry() -> None:
+    digest = "a" * 64
+    expires_at_ms = 2_000_000_000_000
+    connection = _Connection(
+        rows=[
+            {
+                "service_id": MIGRATED_DIGEST_ONLY_SERVICE_ID,
+                "tenant": "tenant-a",
+                "project": "project-a",
+                "expires_at_ms": expires_at_ms,
+            }
+        ]
+    )
+
+    await _store(connection).import_digest(
+        nonce_sha256=digest,
+        expires_at_ms=expires_at_ms,
+    )
+
+    assert [kind for kind, _sql, _args in connection.calls] == [
+        "execute",
+        "fetchrow",
+    ]
+    assert "ON CONFLICT (nonce_sha256) DO NOTHING" in connection.calls[0][1]
+    assert "UPDATE" not in connection.calls[0][1]
+    assert connection.calls[0][2] == (
+        MIGRATED_DIGEST_ONLY_SERVICE_ID,
+        digest,
+        "tenant-a",
+        "project-a",
+        expires_at_ms,
     )
 
 

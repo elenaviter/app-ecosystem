@@ -28,7 +28,7 @@ def _receipt(*, target_generation: str = _TARGET) -> AuthorityCutoverReceipt:
         FAMILY_OAUTH_ACCESS: 1,
     }
     return AuthorityCutoverReceipt(
-        migration_id="authority-test-v1",
+        generation_id="authority-test-v1",
         source_generation=_SOURCE,
         target_generation=target_generation,
         source_counts=counts,
@@ -44,7 +44,7 @@ def test_cutover_receipt_requires_exact_reconciliation() -> None:
 
     with pytest.raises(ValueError, match="reconcile exactly"):
         AuthorityCutoverReceipt(
-            migration_id=receipt.migration_id,
+            generation_id=receipt.generation_id,
             source_generation=receipt.source_generation,
             target_generation=receipt.target_generation,
             source_counts={FAMILY_OAUTH_CLIENTS: 1},
@@ -57,7 +57,7 @@ def test_cutover_schema_has_immutable_activation_identity() -> None:
     sql = authority_cutover_schema_sql("kdcube_demo")
 
     assert "CREATE SCHEMA IF NOT EXISTS kdcube_demo" in sql
-    assert "migration_id                 TEXT PRIMARY KEY" in sql
+    assert "generation_id                 TEXT PRIMARY KEY" in sql
     assert "activated_revision           BIGSERIAL UNIQUE" in sql
     assert "prerequisites                JSONB NOT NULL" in sql
     assert "preview_sha256               CHAR(64) NOT NULL" in sql

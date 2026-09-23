@@ -2502,8 +2502,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             durable_authority = _durable_authority(self)
             await durable_authority.prepare()
             LOGGER.info(
-                "[connection-hub] durable authority activated migration_id=%s",
-                authority_config.migration_id,
+                "[connection-hub] durable authority activated generation_id=%s",
+                authority_config.generation_id,
             )
         elif authority_config.backend == AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE:
             LOGGER.warning(
@@ -2629,7 +2629,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 "delegated_credentials": {
                     "authority": {
                         "backend": "postgresql",
-                        "migration_id": "durable-authority-v1",
+                        "generation_id": "durable-authority-v1",
                     },
                     "gateway": {
                         "requestable_discovery": {

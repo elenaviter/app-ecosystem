@@ -18,6 +18,7 @@ from connection_hub.hub.authenticator_store import schema_for_scope
 
 
 TABLE_ADMISSION_REPLAY_CLAIMS = "connection_hub_admission_replay_claims"
+MIGRATED_DIGEST_ONLY_SERVICE_ID = "migration:digest-only-source"
 
 
 def admission_replay_schema(*, tenant: str, project: str) -> str:
@@ -43,6 +44,9 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_ADMISSION_REPLAY_CLAIMS} (
 
 CREATE INDEX IF NOT EXISTS connection_hub_admission_replay_expiry_idx
     ON {schema}.{TABLE_ADMISSION_REPLAY_CLAIMS} (expires_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS connection_hub_admission_replay_digest_idx
+    ON {schema}.{TABLE_ADMISSION_REPLAY_CLAIMS} (nonce_sha256);
 """
 
 
@@ -116,7 +120,7 @@ class PostgresAdmissionReplayClaimStore:
                         to_timestamp($5),
                         to_timestamp($5) + ($6 * interval '1 second')
                     )
-                    ON CONFLICT (service_id, nonce_sha256) DO NOTHING
+                    ON CONFLICT (nonce_sha256) DO NOTHING
                     RETURNING nonce_sha256
                     """,
                     service,
@@ -127,6 +131,91 @@ class PostgresAdmissionReplayClaimStore:
                     ttl,
                 )
         return claimed is not None
+
+    async def import_digest(
+        self,
+        *,
+        nonce_sha256: str,
+        expires_at_ms: int,
+    ) -> None:
+        """Import a Redis claim whose source retained only its digest.
+
+        The digest is the conflict authority for both migrated and newly
+        claimed rows. The source did not retain ``service_id``; the explicit
+        marker records that fact without weakening replay protection.
+        """
+
+        digest = str(nonce_sha256 or "").strip().lower()
+        if len(digest) != 64 or any(value not in "0123456789abcdef" for value in digest):
+            raise ValueError("admission replay digest must be a SHA-256 digest")
+        expiry_ms = int(expires_at_ms)
+        if expiry_ms <= int(time.time() * 1000):
+            raise ValueError("admission replay source claim already expired")
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(
+                    f"""
+                    INSERT INTO {self.schema}.{TABLE_ADMISSION_REPLAY_CLAIMS} (
+                        service_id, nonce_sha256, tenant, project,
+                        claimed_at, expires_at
+                    ) VALUES (
+                        $1, $2, $3, $4,
+                        LEAST(now(), to_timestamp($5::double precision / 1000.0)
+                            - interval '1 millisecond'),
+                        to_timestamp($5::double precision / 1000.0)
+                    )
+                    ON CONFLICT (nonce_sha256) DO NOTHING
+                    """,
+                    MIGRATED_DIGEST_ONLY_SERVICE_ID,
+                    digest,
+                    self.tenant,
+                    self.project,
+                    expiry_ms,
+                )
+                row = await connection.fetchrow(
+                    f"""
+                    SELECT service_id, tenant, project,
+                           floor(extract(epoch FROM expires_at) * 1000)::bigint
+                               AS expires_at_ms
+                    FROM {self.schema}.{TABLE_ADMISSION_REPLAY_CLAIMS}
+                    WHERE nonce_sha256 = $1
+                    FOR UPDATE
+                    """,
+                    digest,
+                )
+                value = dict(row) if row is not None else {}
+                if (
+                    str(value.get("tenant") or "") != self.tenant
+                    or str(value.get("project") or "") != self.project
+                    or int(value.get("expires_at_ms") or 0) != expiry_ms
+                    or str(value.get("service_id") or "")
+                    != MIGRATED_DIGEST_ONLY_SERVICE_ID
+                ):
+                    raise RuntimeError("admission_replay_migration_target_conflict")
+
+    async def migration_rows(
+        self,
+        *,
+        captured_at_ms: int,
+    ) -> list[dict[str, Any]]:
+        """Return active digest-only evidence for target reconciliation."""
+
+        captured = int(captured_at_ms)
+        if captured <= 0:
+            raise ValueError("migration capture time must be a Unix millisecond")
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                f"""
+                SELECT service_id, nonce_sha256,
+                       floor(extract(epoch FROM expires_at) * 1000)::bigint
+                           AS expires_at_ms
+                FROM {self.schema}.{TABLE_ADMISSION_REPLAY_CLAIMS}
+                WHERE expires_at > to_timestamp($1::double precision / 1000.0)
+                ORDER BY nonce_sha256
+                """,
+                captured,
+            )
+        return [dict(row) for row in rows]
 
     async def purge_expired(self, *, now: int | None = None, limit: int = 1000) -> int:
         """Remove a bounded batch after the proof validity window has ended."""
@@ -163,6 +252,7 @@ class PostgresAdmissionReplayClaimStore:
 
 __all__ = [
     "AdmissionReplayClaimStore",
+    "MIGRATED_DIGEST_ONLY_SERVICE_ID",
     "PostgresAdmissionReplayClaimStore",
     "TABLE_ADMISSION_REPLAY_CLAIMS",
     "admission_nonce_digest",

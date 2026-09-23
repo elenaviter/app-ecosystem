@@ -23,6 +23,12 @@ from connection_hub.delegated_credentials.oauth.authority_store import (
     RefreshTokenReuseDetected,
 )
 from connection_hub.delegated_credentials.oauth.store import GrantStore
+from connection_hub.delegated_credentials.oauth.migration import (
+    PostgresOAuthMigrationTarget,
+)
+from connection_hub.delegated_credentials.migration.model import (
+    AuthorityMigrationRecord,
+)
 
 
 class _Transaction:
@@ -172,6 +178,67 @@ async def test_create_refresh_hashes_the_bearer_and_uses_one_transaction(
     arguments = _all_arguments(connection)
     assert raw_token not in arguments
     assert hashlib.sha256(raw_token.encode()).hexdigest() in arguments
+
+
+@pytest.mark.asyncio
+async def test_refresh_migration_is_insert_only_and_never_sends_bearer_to_sql() -> None:
+    raw_token = "existing-refresh-bearer"
+    digest = hashlib.sha256(raw_token.encode()).hexdigest()
+    expires_at_ms = 2_000_000_000_000
+    record = {
+        "registry_access_id": "aut_card",
+        "card_kind": "automation",
+        "client_id": "dcr-client",
+        "sub": "user-1",
+        "identity_scope": "grantor",
+    }
+    connection = _Connection(
+        rows=[
+            {
+                "generation_id": f"ogen_migration_{digest}",
+                "family_id": f"ofam_migration_{digest}",
+                "record": record,
+                "generation_state": "active",
+                "generation_expires_at_ms": expires_at_ms,
+                "tenant": "demo-tenant",
+                "project": "demo-project",
+                "registry_access_id": "aut_card",
+                "card_kind": "automation",
+                "client_id": "dcr-client",
+                "subject": "user-1",
+                "identity_scope": "grantor",
+                "current_generation_id": f"ogen_migration_{digest}",
+                "family_state": "active",
+                "family_expires_at_ms": expires_at_ms,
+            }
+        ]
+    )
+    target = PostgresOAuthMigrationTarget(_store(connection))
+
+    await target.import_record(
+        AuthorityMigrationRecord(
+            record_type="oauth_refresh",
+            identity=digest,
+            families=("oauth_refresh_families",),
+            payload={
+                "bearer_sha256": digest,
+                "migration_state": "active",
+                "record": record,
+            },
+            secrets={"bearer": raw_token},
+            expires_at_ms=expires_at_ms,
+        )
+    )
+
+    arguments = _all_arguments(connection)
+    assert raw_token not in arguments
+    assert digest in arguments
+    assert all(
+        not sql.lstrip().startswith("UPDATE")
+        and "DO UPDATE" not in sql
+        for _kind, sql, _args, _depth in connection.calls
+    )
+    assert sum("ON CONFLICT" in sql for _kind, sql, _args, _depth in connection.calls) == 2
 
 
 @pytest.mark.asyncio

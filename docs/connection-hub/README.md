@@ -19,6 +19,7 @@ see_also:
   - ./testing/end-to-end-acceptance.md
   - ./package/extraction-architecture.md
   - ./package/delegated-mcp-gateway.md
+  - ./package/durable-authority-generations.md
   - ./package/delegated-secret-administration.md
   - ./frontend/README.md
   - ./service/README.md
@@ -83,6 +84,7 @@ The package contracts are:
 - [Protect KDCube management on macOS with user presence](macos-user-presence-helper.md)
 - [Connection Hub architecture and semantic requirements](connection-hub-architecture.md)
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
+- [Durable PostgreSQL authority generations](package/durable-authority-generations.md)
 - [Delegated secret administration](package/delegated-secret-administration.md)
 - [Aggregate delegated MCP gateway](package/delegated-mcp-gateway.md)
 - [Custom MCP connectors and governed invocation](custom-mcp-connector.md)
