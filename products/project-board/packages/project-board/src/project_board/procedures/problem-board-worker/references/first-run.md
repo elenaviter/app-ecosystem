@@ -232,16 +232,33 @@ user's Claude Code settings hand the state to the relay through
 ```json
 {
   "statusLine": {"type": "command", "command": "pb worker limit-state"},
-  "hooks": {"StopFailure": [{"matcher": "rate_limit", "hooks": [{"type": "command", "command": "pb worker limit-state --source stop-failure"}]}]}
+  "hooks": {"StopFailure": [{"matcher": "rate_limit|billing_error|account_on_hold|authentication_failed|oauth_org_not_allowed|overloaded|server_error", "hooks": [{"type": "command", "command": "pb worker limit-state --source stop-failure"}]}]}
 }
 ```
 
 The status line command receives Claude Code's JSON (`rate_limits.five_hour`
 and `seven_day`, each with `used_percentage` and `resets_at`) after every
-response, and the hook fires the moment a turn ends on a rate limit. A user
-who already has a status line command keeps it and pipes the same JSON into
-`pb worker limit-state` from it. The settings are the user's: propose the
-lines, and the user adds them.
+response. The hook fires the moment a turn ends on an error that stops the
+session, and the board names it:
+
+| Error | Card shows |
+| --- | --- |
+| `rate_limit` | rate limited |
+| `billing_error`, `account_on_hold` | out of tokens (the account is out of credits) |
+| any other | stopped, with the error's name |
+
+Why every error: on 2026-09-23 a worker ran out of credits and its card said
+nothing, because the hook matched `rate_limit` only.
+
+A user who already has a status line command keeps it and pipes the same JSON
+into `pb worker limit-state` from it. The settings are the user's: propose the
+lines, and the user adds them, with the full path to `pb` when the session's
+`PATH` may not include it.
+
+Verify on each host where a Claude Code worker runs: after the next response
+in the worker session, the status line shows `usage ok (...)` and the worker's
+card on the board shows a limit line. A card that says `limit not reported`
+means the settings are missing or `pb` did not run.
 
 ## What Stays The User's
 
