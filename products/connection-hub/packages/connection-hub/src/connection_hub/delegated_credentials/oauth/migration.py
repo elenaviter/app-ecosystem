@@ -30,22 +30,13 @@ from connection_hub.delegated_credentials.oauth.authority_store import (
     _json_object,
 )
 from connection_hub.delegated_credentials.oauth.bearers import bearer_sha256
+from connection_hub.delegated_credentials.oauth.client_records import (
+    canonical_oauth_client_record,
+)
 
 
 class OAuthMigrationTargetConflict(RuntimeError):
     """A target identity already exists with different immutable content."""
-
-
-_OAUTH_CLIENT_RECORD_FIELDS = frozenset(
-    {
-        "application_type",
-        "client_id",
-        "grant_types",
-        "metadata",
-        "redirect_uris",
-        "token_endpoint_auth_method",
-    }
-)
 
 
 def _json_text(value: Mapping[str, Any]) -> str:
@@ -54,29 +45,6 @@ def _json_text(value: Mapping[str, Any]) -> str:
 
 def _status_created(status: str) -> bool:
     return str(status or "").strip().endswith(" 1")
-
-
-def _normalized_client_record(value: Mapping[str, Any]) -> dict[str, Any]:
-    payload = dict(value or {})
-    unsupported = sorted(set(payload).difference(_OAUTH_CLIENT_RECORD_FIELDS))
-    if unsupported:
-        raise ValueError(
-            "OAuth client migration record contains unsupported fields: "
-            + ",".join(unsupported)
-        )
-    return {
-        "client_id": str(payload.get("client_id") or "").strip(),
-        "redirect_uris": list(payload.get("redirect_uris") or []),
-        "grant_types": list(
-            payload.get("grant_types")
-            or ("authorization_code", "refresh_token")
-        ),
-        "token_endpoint_auth_method": str(
-            payload.get("token_endpoint_auth_method") or "none"
-        ),
-        "application_type": str(payload.get("application_type") or "native"),
-        "metadata": dict(payload.get("metadata") or {}),
-    }
 
 
 class PostgresOAuthMigrationTarget:
@@ -114,7 +82,7 @@ class PostgresOAuthMigrationTarget:
         raise ValueError(f"unsupported OAuth migration record: {source.record_type}")
 
     async def _import_client(self, source: AuthorityMigrationRecord) -> bool:
-        payload = _normalized_client_record(
+        payload = canonical_oauth_client_record(
             _json_object(source.payload.get("record"))
         )
         migration_state = str(
