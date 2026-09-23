@@ -47,6 +47,7 @@ from ..contract.worker_identity import (
 )
 from .io import (
     atomic_write_json,
+    id_stem,
     bounded_text,
     component,
     content_hash,
@@ -82,6 +83,7 @@ from .mail_attachments import (
 )
 from .projection import build_projection
 from .plan_storage import BucketedPlanStore
+from .local_store import PartitionedStore, new_record_id
 from .outbox_layout import (
     OUTBOX_FOLDERS,
     OUTBOX_IN_FLIGHT_FOLDERS,
@@ -8084,8 +8086,13 @@ class SharedFieldStore:
         work_ref: str = "",
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        created = datetime.now(timezone.utc)
+        # A generated id carries its time and what happened, so the record's
+        # file is named by the id alone (W287).
         clean_event_id = (
-            component(event_id, field="event_id") if event_id else new_id("event")
+            component(event_id, field="event_id")
+            if event_id
+            else new_record_id(created, slug=id_stem(str(summary or kind), fallback="event"))
         )
         row = {
             "schema": FIELD_SCHEMA,
@@ -8096,11 +8103,13 @@ class SharedFieldStore:
             "summary": bounded_text(summary, field="summary", maximum=8000, required=True),
             "actor": bounded_text(actor, field="actor", maximum=512, required=True),
             "metadata": dict(metadata or {}),
-            "created_at": utc_now(),
+            "created_at": created.isoformat().replace("+00:00", "Z"),
         }
         row["event_ref"] = reference_for_record("event", row)
-        path = self._project_dir(project_id) / "events" / f"{clean_event_id}.json"
-        existing = read_json(path, required=False)
+        # A generated id is new by construction. Only a caller-chosen id can
+        # repeat, and only that case looks for an earlier record (W287: by the
+        # day id index, never by listing the history).
+        existing = self._find_event(project_id, clean_event_id, actor=row["actor"]) if event_id else None
         if existing:
             identity = {
                 "kind": row["kind"],
@@ -8116,7 +8125,14 @@ class SharedFieldStore:
                     details={"event_id": clean_event_id},
                 )
             return dict(existing)
-        atomic_write_json(path, row)
+        self._events(project_id).write(
+            row["actor"],
+            clean_event_id,
+            parse_utc(row["created_at"]),
+            row,
+            # The ref's own slug, e.g. "project-partitions-was-created".
+            slug=str(row["event_ref"]).rsplit(":", 1)[-1],
+        )
         return row
 
     def record_event(self, project_id: str, **kwargs: Any) -> dict[str, Any]:
@@ -8124,8 +8140,51 @@ class SharedFieldStore:
         self.read_project(clean_project)
         return self._record_event_unlocked(clean_project, **kwargs)
 
-    def list_events(self, project_id: str) -> list[dict[str, Any]]:
-        return json_records(self._project_dir(component(project_id, field="project_id")) / "events")
+    EVENT_RETENTION_DAYS = 30
+
+    def _events(self, project_id: str) -> PartitionedStore:
+        """Project events, partitioned by actor and hour (W287)."""
+
+        return PartitionedStore(
+            self._project_dir(component(project_id, field="project_id")) / "events",
+            store="events",
+        )
+
+    def _find_event(self, project_id: str, event_id: str, *, actor: str) -> dict[str, Any] | None:
+        legacy = self._project_dir(project_id) / "events" / f"{event_id}.json"
+        row = read_json(legacy, required=False)
+        if row:
+            return dict(row)
+        path = self._events(project_id).find(
+            event_id, agents=[actor], within_days=self.EVENT_RETENTION_DAYS
+        )
+        return dict(read_json(path)) if path is not None else None
+
+    def list_events(
+        self,
+        project_id: str,
+        *,
+        limit: int = 200,
+        work_ref: str = "",
+        op: str = "list",
+    ) -> list[dict[str, Any]]:
+        """The newest ``limit`` events, oldest first, reading the newest hours only.
+
+        Every caller wants the recent tail (the packet keeps 50, the
+        projection 25). Until W287 each call read every event file of the
+        project, 6,402 on dev-main, and sorted them by random id.
+        """
+
+        def wanted(row: Mapping[str, Any]) -> bool:
+            return not work_ref or row.get("work_ref") == work_ref
+
+        rows = self._events(project_id).newest(op=op, limit=limit, predicate=wanted)
+        legacy = self._project_dir(component(project_id, field="project_id")) / "events"
+        if any(legacy.glob("*.json")):
+            # Records from before the migration, until housekeeping moves them.
+            rows += newest_json_records(legacy, limit=limit, predicate=wanted)
+        rows.sort(key=lambda row: str(row.get("created_at") or ""))
+        return rows[-limit:]
 
     def acquire_scope_lease(
         self,
@@ -8240,14 +8299,21 @@ class SharedFieldStore:
         for row in json_records(self.control / "workers"):
             listener = listener_without_legacy_fields(row.get("listener"))
             note(str(row.get("worker_name") or ""), str(listener.get("last_inbox_check_at") or ""))
-        for row in self.list_events(project_id):
-            # An event names its worker as "actor". Reading worker_name here
-            # found nothing and every assignee looked silent, which is the same
-            # false confidence this item exists to remove.
-            note(
-                str(row.get("actor") or row.get("worker_name") or ""),
-                str(row.get("created_at") or ""),
-            )
+        # When each actor last recorded an event, from the newest file name in
+        # its newest hour folder: no event body is opened (W287, LS3).
+        events = self._events(project_id)
+        with events.reading("activity") as read:
+            for agent in events.agents():
+                latest_event = events.latest_stamp(agent, read=read)
+                if latest_event is not None:
+                    note(agent, latest_event.isoformat().replace("+00:00", "Z"))
+        legacy_events = self._project_dir(project_id) / "events"
+        if any(legacy_events.glob("*.json")):
+            for row in newest_json_records(legacy_events, limit=500):
+                note(
+                    str(row.get("actor") or row.get("worker_name") or ""),
+                    str(row.get("created_at") or ""),
+                )
         # Reports and service events reach the board through the outbox, so a
         # worker that queued one has demonstrably done something even before it
         # is delivered. Leaving these out made a worker look silent between
@@ -8383,11 +8449,9 @@ class SharedFieldStore:
             ),
             "team": self.read_project_team(clean_project),
             "journals": journal_receipts,
-            "events": [
-                row
-                for row in self.list_events(clean_project)
-                if not work_ref or row.get("work_ref") == work_ref
-            ][-50:],
+            "events": self.list_events(
+                clean_project, limit=50, work_ref=work_ref, op="delivery_context"
+            ),
         }
 
     def projection(self, project_id: str) -> dict[str, Any]:
@@ -8402,7 +8466,7 @@ class SharedFieldStore:
             project=project,
             graph=plan,
             workers=self.list_workers(),
-            events=self.list_events(project_id),
+            events=self.list_events(project_id, limit=25, op="projection"),
             contested=self.list_contested_calls(project_id),
         )
 
