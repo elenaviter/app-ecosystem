@@ -59,6 +59,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from .relay_admission import RUNTIME_UNAVAILABLE_CODES
+
 logger = logging.getLogger(__name__)
 
 PACING_FILENAME = "relay-pacing.json"
@@ -166,7 +168,18 @@ class RelayPacing:
         for name in permanent:
             self._state["pending"].pop(name, None)
             self._state["channels"].pop(name, None)
-        runtime = self._runtime_channels()
+        # Records of the runtime being down, on either schedule: the runtime
+        # schedule, or a doubling backoff whose reason is a runtime code, as a
+        # relay from before the runtime schedule wrote them during an outage.
+        # On 2026-09-23 such a record kept one Codex channel closed for five
+        # minutes after the rebuilt relay started, and its mail was not even
+        # pulled, so no wake could follow.
+        runtime = self._runtime_channels() + [
+            name
+            for name, record in self._state["channels"].items()
+            if record.get("schedule") != RUNTIME_SCHEDULE
+            and str(record.get("reason") or "") in RUNTIME_UNAVAILABLE_CODES
+        ]
         for name in runtime:
             self._state["channels"].pop(name, None)
         if permanent:

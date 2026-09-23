@@ -2830,6 +2830,46 @@ class ProblemBoardHostRelayAdapter:
         }
 
 
+# A wake whose outcome the relay does not yet know. Only while one of these
+# stands can a second submission hand the session two turns.
+WAKE_IN_DOUBT_STATES = frozenset({"attempting", "queued", "consumed"})
+
+
+def wake_withheld_by_reconciliation(
+    queue_reconciliation: Mapping[str, Any] | None,
+    subscription: Mapping[str, Any],
+) -> str:
+    """Why a fresh wake waits on a failed queue listing, or '' when it does not.
+
+    The listing exists to tell a new submission from a duplicate of an earlier
+    one whose acceptance timed out. That risk is real only while an earlier
+    wake is in doubt (attempting, queued, consumed, or any outstanding wake
+    id). With no such wake a failed listing says nothing about duplicates, and
+    waiting on it left Codex sessions without a wake for minutes on 2026-09-23
+    while nothing was logged. The wake goes out, and the failed listing is
+    logged beside it.
+    """
+
+    if queue_reconciliation is None or queue_reconciliation.get("reconciled"):
+        return ""
+    if str(subscription.get("outstanding_wake_id") or ""):
+        return "queue_reconciliation_failed_with_outstanding_wake"
+    if str(subscription.get("wake_delivery_state") or "") in WAKE_IN_DOUBT_STATES:
+        return "queue_reconciliation_failed_with_wake_in_doubt"
+    return ""
+
+
+def _reconciliation_detail(queue_reconciliation: Mapping[str, Any] | None) -> str:
+    if not queue_reconciliation:
+        return ""
+    return str(
+        queue_reconciliation.get("reason")
+        or queue_reconciliation.get("detail")
+        or queue_reconciliation.get("state")
+        or ""
+    )[:200]
+
+
 TRANSIENT_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 # Refusals about the card itself, which no amount of retrying can fix. A card
@@ -3098,6 +3138,27 @@ class ProblemBoardRelaySupervisor:
         )
         result.setdefault("event_kind", "queue.reconcile")
         result.setdefault("delivered", False)
+        # A pushed wake leaves a line. A Claude Code channel records an attempt
+        # every cycle by design (its session-owned watch is the path), so that
+        # case stays at debug and a Codex push or any delivery is information.
+        pushed_log = (
+            logger.info
+            if str(result.get("adapter") or "") == "codex-queue" or bool(result.get("delivered"))
+            else logger.debug
+        )
+        pushed_log(
+            "Problem Board wake pushed worker=%s wake_id=%s adapter=%s state=%s "
+            "delivered=%s reason=%s submission=%s retried=%s pending=%d",
+            channel.worker_name,
+            delivery_wake_id,
+            str(result.get("adapter") or "unknown"),
+            str(result.get("state") or "unknown"),
+            bool(result.get("delivered")),
+            str(result.get("reason") or ""),
+            str(result.get("queued_submission_id") or ""),
+            retried,
+            len(message_refs),
+        )
         try:
             field.record_worker_session_delivery(
                 channel.worker_name,
@@ -3261,17 +3322,35 @@ class ProblemBoardRelaySupervisor:
             return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
             return queue_reconciliation
-        if queue_reconciliation is not None and not queue_reconciliation.get(
-            "reconciled"
-        ):
-            # Until the native queue can be inspected, another submission could
-            # be a duplicate of an accepted-but-timed-out attempt.
-            return queue_reconciliation
         subscription = (
             dict(listener.get("subscription") or {})
             if isinstance(listener.get("subscription"), Mapping)
             else {}
         )
+        withheld = wake_withheld_by_reconciliation(queue_reconciliation, subscription)
+        if withheld:
+            # Every withheld wake is said out loud. On 2026-09-23 Codex
+            # sessions sat without a wake for minutes and the log had no line
+            # about it, so the cause could only be read from the queue database.
+            logger.warning(
+                "Problem Board wake withheld worker=%s reason=%s detail=%s "
+                "prior_wake=%s prior_state=%s pending=%d",
+                channel.worker_name,
+                withheld,
+                _reconciliation_detail(queue_reconciliation),
+                str(subscription.get("outstanding_wake_id") or ""),
+                str(subscription.get("wake_delivery_state") or ""),
+                len(pending_refs),
+            )
+            return queue_reconciliation
+        if queue_reconciliation is not None and not queue_reconciliation.get("reconciled"):
+            logger.warning(
+                "Problem Board wake proceeds although the queue listing failed "
+                "worker=%s detail=%s: no earlier wake is in doubt, so a duplicate "
+                "is not possible",
+                channel.worker_name,
+                _reconciliation_detail(queue_reconciliation),
+            )
         outstanding_wake_id = str(
             subscription.get("outstanding_wake_id") or ""
         )
@@ -3325,6 +3404,15 @@ class ProblemBoardRelaySupervisor:
                     retried=True,
                 )
             wake_state = str(subscription.get("wake_delivery_state") or "")
+            logger.info(
+                "Problem Board wake deduplicated worker=%s wake_id=%s state=%s "
+                "retry_at=%s pending=%d",
+                channel.worker_name,
+                outstanding_wake_id,
+                wake_state,
+                deadline,
+                len(pending_refs),
+            )
             return {
                 "adapter": str(subscription.get("adapter") or "unknown"),
                 "state": str(subscription.get("state") or "unknown"),
