@@ -153,7 +153,7 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
   assert.match(panel, /item\.source === 'control' \? 'credentialless'/)
   assert.match(panel, /aria-label="Control Card composition"/)
   assert.match(panel, /<Field label="Combines with linked cards" wide>/)
-  assert.match(panel, /<CopyButton value=\{record\.issuer_ref\} label="Copy project URI" \/>/)
+  assert.match(panel, /<CopyButton value=\{record\.issuer_ref\} label="Copy issuer reference" \/>/)
   assert.match(panel, /dispatch\(loadControlCard\(\{ controlId: cleanControlId \}\)\)\.unwrap\(\)/)
   assert.match(panel, /if \(result\.access\) switchEdit\(result\.access\)/)
   assert.doesNotMatch(panel, /<a href=\{binding\.manage_url\}/)

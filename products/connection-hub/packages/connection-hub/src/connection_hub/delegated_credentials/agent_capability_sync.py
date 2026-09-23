@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Synchronize descriptor-owned Control Cards for resident KDCube agents."""
+"""Materialize administrator Control Card presets from KDCube agent descriptors."""
 
 from __future__ import annotations
 
@@ -11,9 +11,11 @@ import time
 from typing import Any, Iterable, Mapping
 
 from connection_hub.delegated_credentials.agent_capability_control import (
+    AGENT_DESCRIPTOR_ACCEPTANCE_KIND,
     AGENT_DESCRIPTOR_ISSUER_KIND,
     descriptor_acceptance,
     descriptor_control_properties,
+    preserve_descriptor_acceptance,
     resident_selection_properties,
 )
 from connection_hub.delegated_credentials.agent_capability_policy import (
@@ -281,16 +283,19 @@ async def sync_agent_capability_control(
     resource_grants: Mapping[str, Any] | None = None,
     resource_operations: Mapping[str, Any] | None = None,
     named_service_operations: Mapping[str, Any] | str | None = None,
+    selected_resource_grants: Mapping[str, Any] | None = None,
+    selected_resource_operations: Mapping[str, Any] | None = None,
+    selected_named_service_operations: Mapping[str, Any] | str | None = None,
     properties: Mapping[str, Any] | None = None,
     issuer_label: str = "",
     manage_url: str = "",
 ) -> dict[str, Any]:
-    """Synchronize one resident agent's live descriptor ceiling.
+    """Materialize one descriptor as an administrator Control Card preset.
 
-    The descriptor Control Card and the resident participant Card have
-    stable ids. Descriptor changes revise only the former. The latter is
-    revised for first attachment or an explicit selection replacement, so
-    a newly published capability is offered but never selected implicitly.
+    The Control Card and per-user Agent Card have stable ids. A new descriptor
+    revision rematerializes the preset; repeated sync of the same revision
+    preserves administrator edits. The Agent Card changes only on first
+    attachment or explicit replacement, so new capabilities stay unselected.
     """
 
     grantor_subject = _subject_from_user(user)
@@ -369,6 +374,24 @@ async def sync_agent_capability_control(
             named_service_operations=named_service_operations,
             properties=descriptor_properties,
         )
+        selected_standard = None
+        if any(
+            value is not None
+            for value in (
+                selected_resource_grants,
+                selected_resource_operations,
+                selected_named_service_operations,
+            )
+        ):
+            selected_standard = await resolve_agent_descriptor_standard_authority(
+                service,
+                active=active,
+                owner_subject=grantor_subject,
+                resource_grants=selected_resource_grants or {},
+                resource_operations=selected_resource_operations,
+                named_service_operations=selected_named_service_operations,
+                properties=descriptor_properties,
+            )
     except CatalogUnavailable as exc:
         return {
             "ok": False,
@@ -379,6 +402,8 @@ async def sync_agent_capability_control(
         }
     if resolved.error is not None:
         return resolved.error
+    if selected_standard is not None and selected_standard.error is not None:
+        return selected_standard.error
 
     descriptor_evidence_payload = {
         "descriptor": copy.deepcopy(dict(descriptor_payload)),
@@ -440,82 +465,86 @@ async def sync_agent_capability_control(
         active,
         owner_subject=grantor_subject,
     )
-    control_acceptance = next_resource_acceptance(
-        resources=resolved.resource_grants,
-        row_for=lambda resource: service._configured_resource(
-            resource,
-            config=catalog_config,
-        ),
-        catalog_version=catalog_version,
-        selected_operations=resolved.resource_operations,
-        previous=(
-            existing_control.resource_acceptance
-            if existing_control is not None
-            else None
-        ),
-    )
-    control_acceptance[agent_resource] = descriptor_evidence
-    control_properties = reviewed_control_snapshot_properties(
-        resolved.properties,
-        basis_catalog_version=catalog_version,
-    )
     now = int(time.time())
-    control_revision = (
-        existing_control.card_revision + 1 if existing_control is not None else 1
+    existing_descriptor = (
+        dict(existing_control.resource_acceptance or {}).get(agent_resource)
+        if existing_control is not None
+        else None
     )
-    control_authority = CardAuthority(
-        access_id=control_id,
-        client_id=f"control-card:{AGENT_DESCRIPTOR_ISSUER_KIND}",
-        grantor_subject=grantor_subject,
-        delegate_subject="",
-        source=ACCESS_SOURCE_CONTROL,
-        card_kind=CARD_KIND_CONTROL,
-        label=_clean(issuer_label) or f"{application} / {agent_id}",
-        card_revision=control_revision,
-        catalog_version=catalog_version,
-        state=CARD_STATE_ACTIVE,
-        resource_grants={
-            resource: tuple(grants)
-            for resource, grants in resolved.resource_grants.items()
-        },
-        resource_operations={
-            resource: tuple(operations)
-            for resource, operations in resolved.resource_operations.items()
-        },
-        named_service_operations=resolved.named_service_operations,
-        named_services=copy.deepcopy(resolved.named_services),
-        account_scope={},
-        identity_scope=resolved.identity_scope or "grantor",
-        created_at=(existing_control.created_at if existing_control else now),
-        expires_at=0,
-        resource_acceptance=control_acceptance,
-        provenance=(
-            copy.deepcopy(dict(existing_control.provenance or {}))
-            if existing_control is not None
-            else {}
-        ),
-        issuer_ref=agent_resource,
-        issuer_kind=AGENT_DESCRIPTOR_ISSUER_KIND,
-        issuer_label=_clean(issuer_label),
-        manage_url=_clean(manage_url),
-        composition_mode=CONTROL_COMPOSITION_AND,
-        properties=control_properties,
+    descriptor_is_current = (
+        existing_descriptor is not None
+        and existing_descriptor.kind == AGENT_DESCRIPTOR_ACCEPTANCE_KIND
+        and existing_descriptor.revision == descriptor_revision
     )
-    snapshot_refusal = control_snapshot_refusal(control_authority)
-    if snapshot_refusal is not None:
-        return snapshot_refusal
-
-    control_changed = True
-    if existing_control is not None:
-        comparable = dataclasses.replace(
-            control_authority,
-            card_revision=existing_control.card_revision,
+    if descriptor_is_current:
+        control_authority = card_authority_from_record(existing_control)
+        control_changed = False
+    else:
+        control_changed = True
+        control_acceptance = next_resource_acceptance(
+            resources=resolved.resource_grants,
+            row_for=lambda resource: service._configured_resource(
+                resource,
+                config=catalog_config,
+            ),
+            catalog_version=catalog_version,
+            selected_operations=resolved.resource_operations,
+            previous=(
+                existing_control.resource_acceptance
+                if existing_control is not None
+                else None
+            ),
         )
-        control_changed = (
-            comparable.to_dict()
-            != card_authority_from_record(existing_control).to_dict()
+        control_acceptance[agent_resource] = descriptor_evidence
+        control_properties = reviewed_control_snapshot_properties(
+            resolved.properties,
+            basis_catalog_version=catalog_version,
         )
-    if control_changed:
+        control_authority = CardAuthority(
+            access_id=control_id,
+            client_id=f"control-card:{AGENT_DESCRIPTOR_ISSUER_KIND}",
+            grantor_subject=grantor_subject,
+            delegate_subject="",
+            source=ACCESS_SOURCE_CONTROL,
+            card_kind=CARD_KIND_CONTROL,
+            label=_clean(issuer_label) or f"{application} / {agent_id}",
+            card_revision=(
+                existing_control.card_revision + 1
+                if existing_control is not None
+                else 1
+            ),
+            catalog_version=catalog_version,
+            state=CARD_STATE_ACTIVE,
+            resource_grants={
+                resource: tuple(grants)
+                for resource, grants in resolved.resource_grants.items()
+            },
+            resource_operations={
+                resource: tuple(operations)
+                for resource, operations in resolved.resource_operations.items()
+            },
+            named_service_operations=resolved.named_service_operations,
+            named_services=copy.deepcopy(resolved.named_services),
+            account_scope={},
+            identity_scope=resolved.identity_scope or "grantor",
+            created_at=(existing_control.created_at if existing_control else now),
+            expires_at=0,
+            resource_acceptance=control_acceptance,
+            provenance=(
+                copy.deepcopy(dict(existing_control.provenance or {}))
+                if existing_control is not None
+                else {}
+            ),
+            issuer_ref=agent_resource,
+            issuer_kind=AGENT_DESCRIPTOR_ISSUER_KIND,
+            issuer_label=_clean(issuer_label),
+            manage_url=_clean(manage_url),
+            composition_mode=CONTROL_COMPOSITION_AND,
+            properties=control_properties,
+        )
+        snapshot_refusal = control_snapshot_refusal(control_authority)
+        if snapshot_refusal is not None:
+            return snapshot_refusal
         try:
             await service._persist_record(
                 record_from_card(control_authority),
@@ -535,8 +564,17 @@ async def sync_agent_capability_control(
                 "retryable": True,
                 "status": 503,
             }
-    else:
-        control_authority = card_authority_from_record(existing_control)
+
+    try:
+        authority = AgentCapabilityPolicy.from_property(
+            control_authority.properties[AGENT_CAPABILITY_AUTHORITY_PROPERTY]
+        )
+    except (KeyError, AgentCapabilityPolicyError) as exc:
+        return {
+            "ok": False,
+            "error": getattr(exc, "reason", "agent_capability_authority_missing"),
+            "status": 409,
+        }
 
     client_id = resident_client_id(application, agent_id)
     resident_id = stable_resident_access_id(grantor_subject, client_id)
@@ -625,7 +663,18 @@ async def sync_agent_capability_control(
             control_revision=control_authority.card_revision,
         )
     )
+    initial_standard = selected_standard or resolved
     if existing_resident is None:
+        resident_acceptance = next_resource_acceptance(
+            resources=initial_standard.resource_grants,
+            row_for=lambda resource: service._configured_resource(
+                resource,
+                config=catalog_config,
+            ),
+            catalog_version=catalog_version,
+            selected_operations=initial_standard.resource_operations,
+        )
+        resident_acceptance[agent_resource] = descriptor_evidence
         resident = AutomationAccessRecord(
             access_id=resident_id,
             label=_clean(issuer_label) or f"{application} / {agent_id}",
@@ -636,19 +685,25 @@ async def sync_agent_capability_control(
                 client_id=client_id,
             ),
             card_kind=CARD_KIND_AGENT,
-            operations=(),
-            resource_grants={},
-            resource_operations={},
-            named_service_operations=NamedServiceSelection.none(),
-            named_services={},
+            operations=tuple(initial_standard.operations),
+            resource_grants={
+                key: tuple(value)
+                for key, value in initial_standard.resource_grants.items()
+            },
+            resource_operations={
+                key: tuple(value)
+                for key, value in initial_standard.resource_operations.items()
+            },
+            named_service_operations=initial_standard.named_service_operations,
+            named_services=copy.deepcopy(initial_standard.named_services),
             account_scope={},
-            identity_scope="grantor",
+            identity_scope=initial_standard.identity_scope or "grantor",
             catalog_version=catalog_version,
             card_revision=1,
             created_at=now,
             expires_at=now + AGENT_CAPABILITY_CARD_LEASE_SECONDS,
             source=ACCESS_SOURCE_AGENT,
-            resource_acceptance={agent_resource: descriptor_evidence},
+            resource_acceptance=resident_acceptance,
             control_card=binding,
             properties=resident_selection_properties(
                 {},
@@ -658,29 +713,61 @@ async def sync_agent_capability_control(
         expected_resident_revision = 0
     else:
         acceptance = dict(existing_resident.resource_acceptance or {})
+        replace_standard = replace_selection and selected_standard is not None
+        if replace_standard:
+            acceptance = preserve_descriptor_acceptance(
+                acceptance,
+                next_resource_acceptance(
+                    resources=selected_standard.resource_grants,
+                    row_for=lambda resource: service._configured_resource(
+                        resource,
+                        config=catalog_config,
+                    ),
+                    catalog_version=catalog_version,
+                    selected_operations=selected_standard.resource_operations,
+                    previous=existing_resident.resource_acceptance,
+                ),
+            )
         if replace_selection or agent_resource not in acceptance:
             acceptance[agent_resource] = descriptor_evidence
-        resident = dataclasses.replace(
-            existing_resident,
-            card_revision=existing_resident.card_revision + 1,
-            catalog_version=(
+        replacements: dict[str, Any] = {
+            "card_revision": existing_resident.card_revision + 1,
+            "catalog_version": (
                 catalog_version
                 if replace_selection
                 else existing_resident.catalog_version
             ),
-            expires_at=(
+            "expires_at": (
                 now + AGENT_CAPABILITY_CARD_LEASE_SECONDS
                 if existing_resident.expires_at <= now
                 and not existing_resident.access_token
                 else existing_resident.expires_at
             ),
-            resource_acceptance=acceptance,
-            control_card=binding,
-            properties=resident_selection_properties(
+            "resource_acceptance": acceptance,
+            "control_card": binding,
+            "properties": resident_selection_properties(
                 existing_resident.properties,
                 selection=selected,
             ),
-        )
+        }
+        if replace_standard:
+            replacements.update(
+                operations=tuple(selected_standard.operations),
+                resource_grants={
+                    key: tuple(value)
+                    for key, value in selected_standard.resource_grants.items()
+                },
+                resource_operations={
+                    key: tuple(value)
+                    for key, value in selected_standard.resource_operations.items()
+                },
+                named_service_operations=(
+                    selected_standard.named_service_operations
+                ),
+                named_services=copy.deepcopy(selected_standard.named_services),
+                identity_scope=selected_standard.identity_scope or "grantor",
+            )
+        resident = dataclasses.replace(existing_resident, **replacements)
         expected_resident_revision = existing_resident.card_revision
 
     resident_changed = True

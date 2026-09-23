@@ -16,6 +16,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   resources: 'Resources',
   resource_operations: 'Resource operations',
   skills: 'Skills',
+  models: 'Models',
+  instruction_profiles: 'Instruction profiles',
   conversation_targets: 'Conversation targets',
   resource_families: 'Resource families',
   subagents: 'Helper agents',

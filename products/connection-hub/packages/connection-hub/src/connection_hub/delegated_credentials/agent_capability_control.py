@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 from typing import Any, Iterable, Mapping
+from urllib.parse import quote
 
 from connection_hub.delegated_credentials.agent_capability_policy import (
     AGENT_CAPABILITY_AUTHORITY_PROPERTY,
@@ -18,6 +19,7 @@ from connection_hub.delegated_credentials.agent_capability_policy import (
     AgentCapabilityPolicy,
     AgentCapabilityPolicyError,
     AgentDescriptorControl,
+    replace_visible_selection,
 )
 from connection_hub.delegated_credentials.catalog.descriptors import (
     ResourceAcceptance,
@@ -30,6 +32,16 @@ from connection_hub.delegated_credentials.conversation_target_policy import (
 
 AGENT_DESCRIPTOR_ISSUER_KIND = "kdcube_agent_descriptor"
 AGENT_DESCRIPTOR_ACCEPTANCE_KIND = "kdcube_agent_descriptor"
+
+NAMED_SERVICES_CATEGORY = "named_services"
+NAMED_SERVICE_OPERATIONS_CATEGORY = "named_service_operations"
+RESOURCES_CATEGORY = "resources"
+RESOURCE_OPERATIONS_CATEGORY = "resource_operations"
+CONVERSATION_TARGETS_CATEGORY = "conversation_targets"
+
+
+def _member(parent: str, child: str) -> str:
+    return f"{quote(parent, safe='-._~@')}/{quote(child, safe='-._~@')}"
 
 
 def descriptor_control_properties(
@@ -142,9 +154,90 @@ def resident_selection_properties(
     return result
 
 
+def align_resident_selection_to_card_authority(
+    *,
+    current: AgentCapabilityPolicy,
+    requested: AgentCapabilityPolicy,
+    authority: AgentCapabilityPolicy,
+    resource_grants: Mapping[str, Iterable[str]],
+    resource_operations: Mapping[str, Iterable[str]],
+    named_service_operations: Any,
+    targets: Iterable[str],
+) -> AgentCapabilityPolicy:
+    """Make standard Card selections and KDCube projection describe one choice."""
+
+    selected = replace_visible_selection(
+        current=current,
+        authority=authority,
+        requested=requested,
+    )
+    capabilities = {
+        category: set(values)
+        for category, values in selected.capabilities.items()
+    }
+
+    def replace_visible(category: str, values: Iterable[str]) -> None:
+        if category not in authority.capabilities:
+            return
+        ceiling = set(authority.capabilities.get(category, ()))
+        hidden = set(capabilities.get(category, ())) - ceiling
+        capabilities[category] = hidden | (set(values) & ceiling)
+
+    raw_named = named_service_operations
+    serializer = getattr(raw_named, "to_stored", None)
+    if callable(serializer):
+        raw_named = serializer()
+    if raw_named == "*":
+        replace_visible(
+            NAMED_SERVICES_CATEGORY,
+            authority.capabilities.get(NAMED_SERVICES_CATEGORY, ()),
+        )
+        replace_visible(
+            NAMED_SERVICE_OPERATIONS_CATEGORY,
+            authority.capabilities.get(NAMED_SERVICE_OPERATIONS_CATEGORY, ()),
+        )
+    else:
+        namespaces: set[str] = set()
+        operations: set[str] = set()
+        if isinstance(raw_named, Mapping):
+            for raw_namespaces in raw_named.values():
+                if not isinstance(raw_namespaces, Mapping):
+                    continue
+                for namespace, raw_operations in raw_namespaces.items():
+                    namespace = str(namespace or "").strip().lower().rstrip(":")
+                    if not namespace:
+                        continue
+                    namespaces.add(namespace)
+                    for operation in raw_operations or ():
+                        operation = str(operation or "").strip()
+                        if operation:
+                            operations.add(_member(namespace, operation))
+        replace_visible(NAMED_SERVICES_CATEGORY, namespaces)
+        replace_visible(NAMED_SERVICE_OPERATIONS_CATEGORY, operations)
+
+    replace_visible(RESOURCES_CATEGORY, resource_grants)
+    replace_visible(
+        RESOURCE_OPERATIONS_CATEGORY,
+        (
+            _member(str(resource), str(operation))
+            for resource, operations in resource_operations.items()
+            for operation in operations
+        ),
+    )
+    replace_visible(CONVERSATION_TARGETS_CATEGORY, targets)
+    return AgentCapabilityPolicy(
+        resource=authority.resource,
+        capabilities={
+            category: tuple(sorted(values))
+            for category, values in capabilities.items()
+        },
+    )
+
+
 __all__ = [
     "AGENT_DESCRIPTOR_ACCEPTANCE_KIND",
     "AGENT_DESCRIPTOR_ISSUER_KIND",
+    "align_resident_selection_to_card_authority",
     "descriptor_acceptance",
     "descriptor_control_properties",
     "preserve_descriptor_acceptance",

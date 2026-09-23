@@ -12,6 +12,7 @@ from connection_hub.delegated_credentials.agent_capability_sync import (
     AGENT_CAPABILITY_CARD_LEASE_SECONDS,
 )
 from connection_hub.delegated_credentials.agent_capability_policy import (
+    AGENT_CAPABILITY_SELECTION_PROPERTY,
     AGENT_CAPABILITY_POLICY_SCHEMA,
     CAPABILITY_ALLOWED_SELECTED,
     CAPABILITY_ALLOWED_UNSELECTED,
@@ -57,6 +58,7 @@ RESOURCE = application_resource(
     application=APPLICATION,
     agent=AGENT,
 )
+NAMED_RESOURCE = "https://example.test/mcp/named-services"
 
 
 class _Persistence:
@@ -130,22 +132,85 @@ def _policy_with_targets(*targets: str) -> dict:
     }
 
 
+def _policy_with_named_operations(*operations: str) -> dict:
+    return {
+        "schema": AGENT_CAPABILITY_POLICY_SCHEMA,
+        "resource": RESOURCE,
+        "capabilities": {
+            "named_services": ["slack"],
+            "named_service_operations": [
+                f"slack/{operation}" for operation in operations
+            ],
+        },
+    }
+
+
 def _service(
-    *, application_apis: bool = False
+    *, application_apis: bool = False, named_services: bool = False
 ) -> tuple[AutomationAccessService, _Persistence]:
-    resources = (
-        [
+    resources = []
+    if application_apis:
+        resources.append(
             {
                 "resource": "*",
                 "label": "Application APIs",
                 "grants": ["kdcube:role:super-admin"],
             }
-        ]
-        if application_apis
-        else []
+        )
+    if named_services:
+        resources.append(
+            {
+                "resource": NAMED_RESOURCE,
+                "label": "Named services",
+                "grants": [
+                    "named_services:use",
+                    "slack:read",
+                    "slack:post",
+                ],
+                "named_services": {
+                    "namespaces": {
+                        "slack": {
+                            "tools": {
+                                "objects": {
+                                    "operations": {
+                                        "object.list": {
+                                            "grants": ["slack:read"],
+                                        },
+                                        "object.action.post_message": {
+                                            "grants": ["slack:post"],
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            }
+        )
+    grants = sorted(
+        {
+            grant
+            for resource in resources
+            for grant in resource.get("grants", ())
+        }
     )
     document = CatalogDocument.build(
-        {"delegated_credentials": {"oauth": {"enabled": True, "resources": resources}}}
+        {
+            "delegated_credentials": {
+                "oauth": {
+                    "enabled": True,
+                    "capabilities": [
+                        {
+                            "grant": grant,
+                            "label": grant,
+                            "delegable_roles": ["kdcube:role:super-admin"],
+                        }
+                        for grant in grants
+                    ],
+                    "resources": resources,
+                }
+            }
+        }
     )
 
     class _Resolver:
@@ -483,7 +548,312 @@ async def test_descriptor_ceiling_does_not_require_the_user_to_hold_its_roles() 
         },
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     control = persistence.records[result["control_card"]["access_id"]][0]
     assert control.resource_grants == {"*": ("kdcube:role:registered",)}
     assert control.resource_operations == {"*": (operation,)}
+
+
+@pytest.mark.asyncio
+async def test_agent_card_uses_standard_selected_authority_inside_control() -> None:
+    service, persistence = _service(named_services=True)
+    control_operations = {
+        NAMED_RESOURCE: {
+            "slack": ["object.list", "object.action.post_message"],
+        }
+    }
+    selected_operations = {
+        NAMED_RESOURCE: {"slack": ["object.list"]},
+    }
+
+    result = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=_policy("tool.old"),
+        selected_capabilities=_policy("tool.old"),
+        resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        named_service_operations=control_operations,
+        selected_resource_grants={
+            NAMED_RESOURCE: ["named_services:use", "slack:read"],
+        },
+        selected_named_service_operations=selected_operations,
+    )
+
+    assert result["ok"] is True, result
+    control = persistence.records[result["control_card"]["access_id"]][0]
+    resident = persistence.records[result["card"]["access_id"]][0]
+    assert control.named_service_operations.to_stored() == control_operations
+    assert control.account_scope == {}
+    assert resident.resource_grants == {
+        NAMED_RESOURCE: ("named_services:use", "slack:read"),
+    }
+    assert resident.named_service_operations.to_stored() == selected_operations
+    assert resident.account_scope == {}
+    assert NAMED_RESOURCE in resident.resource_acceptance
+    assert RESOURCE in resident.resource_acceptance
+
+    narrowed = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=_policy("tool.old"),
+        selected_capabilities=_policy("tool.old"),
+        replace_selection=True,
+        resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        named_service_operations=control_operations,
+        selected_resource_grants={},
+        selected_named_service_operations={},
+    )
+
+    assert narrowed["card_changed"] is True
+    updated = persistence.records[result["card"]["access_id"]][0]
+    assert updated.resource_grants == {}
+    assert updated.named_service_operations.is_none
+    assert RESOURCE in updated.resource_acceptance
+    assert NAMED_RESOURCE not in updated.resource_acceptance
+
+
+@pytest.mark.asyncio
+async def test_standard_agent_card_edit_updates_the_runtime_projection() -> None:
+    service, persistence = _service(named_services=True)
+    operations = {
+        NAMED_RESOURCE: {
+            "slack": ["object.list", "object.action.post_message"],
+        }
+    }
+    policy = _policy_with_named_operations(
+        "object.list",
+        "object.action.post_message",
+    )
+    created = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=policy,
+        selected_capabilities=policy,
+        resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        named_service_operations=operations,
+        selected_resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        selected_named_service_operations=operations,
+    )
+    access_id = created["card"]["access_id"]
+
+    changed = await service.update_access(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
+        access_id=access_id,
+        resource_grants={
+            NAMED_RESOURCE: ["named_services:use", "slack:read"],
+        },
+        resource_operations={},
+        named_service_operations={
+            NAMED_RESOURCE: {"slack": ["object.list"]},
+        },
+        account_scope={},
+        expected_card_revision=created["card"]["card_revision"],
+        expected_catalog_version=created["card"]["catalog_version"],
+        properties=created["card"]["properties"],
+    )
+
+    assert changed["ok"] is True, changed
+    updated = persistence.records[access_id][0]
+    selection = updated.properties[AGENT_CAPABILITY_SELECTION_PROPERTY]
+    assert selection["capabilities"]["named_services"] == ["slack"]
+    assert selection["capabilities"]["named_service_operations"] == [
+        "slack/object.list"
+    ]
+    assert RESOURCE in updated.resource_acceptance
+
+
+@pytest.mark.asyncio
+async def test_only_an_administrator_may_edit_a_control_card() -> None:
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+
+    refused = await service.update_access(
+        {"user_id": OWNER, "roles": ["kdcube:role:registered"]},
+        access_id=created["control_card"]["access_id"],
+        resource_grants={},
+        expected_card_revision=created["control_card"]["card_revision"],
+    )
+
+    assert refused == {
+        "ok": False,
+        "error": "platform_admin_required",
+        "status": 403,
+    }
+
+
+@pytest.mark.asyncio
+async def test_same_descriptor_sync_preserves_the_administrator_preset() -> None:
+    service, persistence = _service(named_services=True)
+    descriptor_operations = {
+        NAMED_RESOURCE: {
+            "slack": ["object.list", "object.action.post_message"],
+        }
+    }
+    created = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=_policy_with_named_operations(
+            "object.list",
+            "object.action.post_message",
+        ),
+        resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        named_service_operations=descriptor_operations,
+    )
+    control_id = created["control_card"]["access_id"]
+
+    changed = await service.update_access(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
+        access_id=control_id,
+        resource_grants={
+            NAMED_RESOURCE: ["named_services:use", "slack:read"],
+        },
+        resource_operations={},
+        named_service_operations={
+            NAMED_RESOURCE: {"slack": ["object.list"]},
+        },
+        account_scope={},
+        expected_card_revision=created["control_card"]["card_revision"],
+        expected_catalog_version=created["control_card"]["catalog_version"],
+        composition_mode="and",
+        properties=created["control_card"]["properties"],
+    )
+    assert changed["ok"] is True, changed
+
+    replay = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=_policy_with_named_operations(
+            "object.list",
+            "object.action.post_message",
+        ),
+        resource_grants={
+            NAMED_RESOURCE: [
+                "named_services:use",
+                "slack:read",
+                "slack:post",
+            ]
+        },
+        named_service_operations=descriptor_operations,
+    )
+
+    assert replay["ok"] is True, replay
+    assert replay["control_changed"] is False
+    control = persistence.records[control_id][0]
+    assert control.resource_grants == {
+        NAMED_RESOURCE: ("named_services:use", "slack:read"),
+    }
+    assert control.named_service_operations.to_stored() == {
+        NAMED_RESOURCE: {"slack": ["object.list"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_descriptor_control_always_limits_the_agent_card() -> None:
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+
+    refused = await service.update_access(
+        {"user_id": OWNER, "roles": ["kdcube:role:super-admin"]},
+        access_id=created["control_card"]["access_id"],
+        resource_grants={},
+        expected_card_revision=created["control_card"]["card_revision"],
+        composition_mode="or",
+    )
+
+    assert refused == {
+        "ok": False,
+        "error": "agent_descriptor_control_requires_and",
+        "status": 400,
+    }
+
+
+@pytest.mark.asyncio
+async def test_metadata_only_agent_card_still_uses_the_standard_save() -> None:
+    service, persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old", "tool.new"),
+        catalog=("tool.old", "tool.new"),
+        selection=("tool.old",),
+    )
+    access_id = created["card"]["access_id"]
+    properties = dict(created["card"]["properties"])
+    properties[AGENT_CAPABILITY_SELECTION_PROPERTY] = _policy("tool.new")
+
+    changed = await service.update_access(
+        {"user_id": OWNER},
+        access_id=access_id,
+        resource_grants={},
+        resource_operations={},
+        named_service_operations={},
+        account_scope={},
+        expected_card_revision=created["card"]["card_revision"],
+        expected_catalog_version=created["card"]["catalog_version"],
+        properties=properties,
+    )
+
+    assert changed["ok"] is True, changed
+    updated = persistence.records[access_id][0]
+    assert updated.resource_grants == {}
+    assert updated.properties[AGENT_CAPABILITY_SELECTION_PROPERTY] == _policy(
+        "tool.new"
+    )
+    assert RESOURCE in updated.resource_acceptance

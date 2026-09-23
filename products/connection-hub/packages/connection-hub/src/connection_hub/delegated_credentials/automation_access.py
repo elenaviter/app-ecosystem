@@ -79,7 +79,16 @@ from connection_hub.delegated_credentials.application_operation_policy import (
     validate_application_operation_role_policy,
 )
 from connection_hub.delegated_credentials.agent_capability_control import (
+    align_resident_selection_to_card_authority,
     preserve_descriptor_acceptance,
+    resident_selection_properties,
+)
+from connection_hub.delegated_credentials.agent_capability_policy import (
+    AGENT_CAPABILITY_AUTHORITY_PROPERTY,
+    AGENT_CAPABILITY_SELECTION_PROPERTY,
+    AgentCapabilityPolicy,
+    AgentCapabilityPolicyError,
+    descriptor_control,
 )
 from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_operations,
@@ -3365,6 +3374,12 @@ class AutomationAccessService:
         selected_properties = copy.deepcopy(
             dict(existing.properties if properties is None else properties)
         )
+        capability_agent = (
+            existing.source == ACCESS_SOURCE_AGENT
+            and existing.card_kind == CARD_KIND_AGENT
+            and AGENT_CAPABILITY_SELECTION_PROPERTY
+            in dict(existing.properties or {})
+        )
         # Every decision below reads the registered catalog. Effective props are
         # an input to publication, not to a card write.
         catalog_config = await self._catalog_config(
@@ -3441,7 +3456,7 @@ class AutomationAccessService:
         )
 
         # Submitting nothing is a client error; pruning to nothing is a revoke.
-        if not any(selected_resource_grants.values()):
+        if not any(selected_resource_grants.values()) and not capability_agent:
             return ResolvedCardAuthority(error={
                 "ok": False, "error": "delegated_access_requires_resource_grants",
             })
@@ -3501,6 +3516,18 @@ class AutomationAccessService:
             active=active,
             config=catalog_config,
         )
+        if reconciled.empty and capability_agent:
+            return ResolvedCardAuthority(
+                resource_grants={},
+                resource_operations={},
+                operations=[],
+                named_service_operations=NamedServiceSelection.none(),
+                named_services={},
+                account_scope={},
+                identity_scope=existing.identity_scope or "grantor",
+                properties=selected_properties,
+                reconciled=reconciled,
+            )
         if reconciled.empty:
             return ResolvedCardAuthority(reconciled=reconciled, revoke=True)
         selected_resource_grants = reconciled.resource_grants
@@ -3789,6 +3816,12 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_not_found"}
         if existing.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_owned"}
+        if _record_is_credentialless(existing) and not _is_platform_admin(user):
+            return {
+                "ok": False,
+                "error": "platform_admin_required",
+                "status": 403,
+            }
         if _record_is_credentialless(existing):
             try:
                 existing = await self._ensure_control_snapshot(existing)
@@ -3816,6 +3849,19 @@ class AutomationAccessService:
             return {
                 "ok": False,
                 "error": "control_card_composition_mode_invalid",
+                "status": 400,
+            }
+        try:
+            descriptor_marker = descriptor_control(existing.properties)
+        except AgentCapabilityPolicyError as exc:
+            return {"ok": False, "error": exc.reason, "status": 409}
+        if (
+            descriptor_marker is not None
+            and selected_composition_mode != CONTROL_COMPOSITION_AND
+        ):
+            return {
+                "ok": False,
+                "error": "agent_descriptor_control_requires_and",
                 "status": 400,
             }
         # Every family edits here. The source records how the credential is
@@ -3924,6 +3970,71 @@ class AutomationAccessService:
         selected_operations = resolved.operations
         selected_account_scope = resolved.account_scope
         selected_properties = resolved.properties
+        if (
+            existing.source == ACCESS_SOURCE_AGENT
+            and existing.card_kind == CARD_KIND_AGENT
+            and existing.control_card is not None
+            and AGENT_CAPABILITY_SELECTION_PROPERTY
+            in dict(existing.properties or {})
+        ):
+            try:
+                loaded_control = await self._load_record_any_state(
+                    existing.control_card.control_id,
+                    grantor_subject=grantor_subject,
+                )
+            except CardUnavailable as exc:
+                return {
+                    "ok": False,
+                    "error": "control_card_unavailable",
+                    "reason": exc.reason,
+                    "retryable": True,
+                    "status": 503,
+                }
+            if loaded_control is None or loaded_control[1] != CARD_STATE_ACTIVE:
+                return {
+                    "ok": False,
+                    "error": "agent_capability_control_not_active",
+                    "status": 409,
+                }
+            control = loaded_control[0]
+            try:
+                authority = AgentCapabilityPolicy.from_property(
+                    dict(control.properties or {}).get(
+                        AGENT_CAPABILITY_AUTHORITY_PROPERTY
+                    )
+                )
+                current = AgentCapabilityPolicy.from_property(
+                    dict(existing.properties or {}).get(
+                        AGENT_CAPABILITY_SELECTION_PROPERTY
+                    )
+                )
+                requested_raw = dict(selected_properties or {}).get(
+                    AGENT_CAPABILITY_SELECTION_PROPERTY
+                )
+                requested = (
+                    AgentCapabilityPolicy.from_property(requested_raw)
+                    if requested_raw is not None
+                    else current
+                )
+                aligned = align_resident_selection_to_card_authority(
+                    current=current,
+                    requested=requested,
+                    authority=authority,
+                    resource_grants=selected_resource_grants,
+                    resource_operations=selected_resource_operations,
+                    named_service_operations=selected_named_service_operations,
+                    targets=conversation_targets(selected_properties),
+                )
+            except AgentCapabilityPolicyError as exc:
+                return {
+                    "ok": False,
+                    "error": exc.reason,
+                    "status": 400,
+                }
+            selected_properties = resident_selection_properties(
+                selected_properties,
+                selection=aligned,
+            )
         if _record_is_credentialless(existing):
             candidate = dataclasses.replace(
                 card_authority_from_record(existing),
@@ -3993,13 +4104,19 @@ class AutomationAccessService:
             refresh_token=existing.refresh_token,
             access_token=existing.access_token,
             last_issued_at=existing.last_issued_at,
-            resource_acceptance=next_resource_acceptance(
-                resources=selected_resource_grants,
-                row_for=lambda resource: self._configured_resource(resource, config=catalog_config),
-                catalog_version=catalog_version,
-                selected_operations=selected_resource_operations,
-                previous=existing.resource_acceptance,
-                accepted_operations=accepted_operations,
+            resource_acceptance=preserve_descriptor_acceptance(
+                existing.resource_acceptance,
+                next_resource_acceptance(
+                    resources=selected_resource_grants,
+                    row_for=lambda resource: self._configured_resource(
+                        resource,
+                        config=catalog_config,
+                    ),
+                    catalog_version=catalog_version,
+                    selected_operations=selected_resource_operations,
+                    previous=existing.resource_acceptance,
+                    accepted_operations=accepted_operations,
+                ),
             ),
             provenance=copy.deepcopy(dict(existing.provenance or {})),
             client_metadata=copy.deepcopy(dict(existing.client_metadata or {})),
@@ -4744,6 +4861,9 @@ class AutomationAccessService:
         resource_grants: Mapping[str, Any] | None = None,
         resource_operations: Mapping[str, Any] | None = None,
         named_service_operations: Mapping[str, Any] | str | None = None,
+        selected_resource_grants: Mapping[str, Any] | None = None,
+        selected_resource_operations: Mapping[str, Any] | None = None,
+        selected_named_service_operations: Mapping[str, Any] | str | None = None,
         properties: Mapping[str, Any] | None = None,
         issuer_label: str = "",
         manage_url: str = "",
@@ -4770,6 +4890,9 @@ class AutomationAccessService:
             resource_grants=resource_grants,
             resource_operations=resource_operations,
             named_service_operations=named_service_operations,
+            selected_resource_grants=selected_resource_grants,
+            selected_resource_operations=selected_resource_operations,
+            selected_named_service_operations=selected_named_service_operations,
             properties=properties,
             issuer_label=issuer_label,
             manage_url=manage_url,
