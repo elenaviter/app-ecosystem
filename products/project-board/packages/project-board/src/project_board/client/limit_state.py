@@ -347,6 +347,30 @@ def limit_state_at(state: Mapping[str, Any] | None, *, now: str) -> dict[str, An
     return current
 
 
+def limit_state_line(state: Mapping[str, Any] | None) -> str:
+    """One short line for a status bar: what the limit is and when it resets."""
+
+    if not isinstance(state, Mapping) or not state:
+        return "limit unknown"
+    kind = str(state.get("kind") or KIND_UNKNOWN)
+    resets = str(state.get("resets_at") or "")
+    when = f", resets {resets[11:16]}Z" if len(resets) >= 16 else ""
+    if kind == KIND_OUT_OF_TOKENS:
+        return "out of tokens" + when
+    if kind == KIND_RATE_LIMITED:
+        reached = str(state.get("reached") or "")
+        detail = " (" + reached + ")" if reached else ""
+        return "rate limited" + detail + when
+    if kind == KIND_OK:
+        windows = [
+            str(w.get("name")) + " " + str(int(w["used_percent"])) + "%"
+            for w in state.get("windows") or []
+            if isinstance(w, Mapping) and w.get("used_percent") is not None
+        ]
+        return "usage ok (" + ", ".join(windows) + ")" if windows else "usage ok"
+    return "limit unknown"
+
+
 def session_with_limit_state(
     session: Mapping[str, Any],
     *,
@@ -399,6 +423,7 @@ __all__ = [
     "limit_state_from_claude_statusline",
     "limit_state_from_claude_stop_failure",
     "limit_state_from_codex",
+    "limit_state_line",
     "read_codex_rate_limits",
     "session_with_limit_state",
     "unknown_state",

@@ -133,3 +133,55 @@ def test_the_listener_row_carries_the_state_for_codex_and_the_recorded_one_for_c
     claude = session_with_limit_state(listener, runtime_kind="claude-code", runtime_session_id="c", now="2026-09-21T16:40:00Z", recorded=recorded)
     assert claude["limit_state"]["kind"] == "rate_limited" and claude["limit_state"]["reached"] == "five_hour"
     assert "limit_state" not in session_with_limit_state(listener, runtime_kind="claude-code", runtime_session_id="c", now="2026-09-21T16:40:00Z")
+
+
+def test_pb_worker_limit_state_records_what_claude_code_said_and_prints_one_line(tmp_path, capsys):
+    import argparse
+    import io
+
+    from project_board.client import cli
+    from project_board.client.limit_state import limit_state_line, session_with_limit_state
+    from project_board.client.store import SharedFieldStore
+    from relay_helpers import make_host
+
+    host, identity, _channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.initialize(field_id="limit-state")
+    field.register_worker(
+        worker_name=identity.worker_name,
+        worker_identity=identity.worker_identity,
+        runtime_kind=identity.runtime_kind,
+        runtime_session_id=identity.runtime_session_id,
+        capabilities=[],
+        authority_label="connection-hub:test-profile",
+        control_plane_state="published",
+    )
+    args = argparse.Namespace(
+        config=str(host.path),
+        runtime_kind=identity.runtime_kind,
+        runtime_session_id=identity.runtime_session_id,
+        source="statusline",
+        payload_file="-",
+    )
+    payload = {"session_id": "s", "model": {"id": "m"}, "rate_limits": {"five_hour": {"used_percentage": 100, "resets_at": 1790010000}, "seven_day": {"used_percentage": 30, "resets_at": 1790400000}}}
+    assert cli._limit_state_command(args, stdin=io.StringIO(json.dumps(payload))) == 0
+    out = capsys.readouterr()
+    # One plain line for the status bar, no envelope.
+    assert out.out.strip() == "rate limited (five_hour), resets 17:00Z"
+    recorded = field.runtime_limit_state(identity.worker_name)
+    assert recorded["kind"] == "rate_limited" and recorded["source"] == "claude-code-statusline"
+    assert recorded["recorded_at"]
+    # The relay puts the recorded state on the listener row for a Claude Code worker.
+    row = session_with_limit_state({"session_id": "s"}, runtime_kind="claude-code", runtime_session_id="s", now="2026-09-21T16:00:00Z", recorded=recorded)
+    assert row["limit_state"]["reached"] == "five_hour"
+    # An unreadable payload never breaks the status line.
+    assert cli._limit_state_command(args, stdin=io.StringIO("not json")) == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == "limit unknown" and "payload unreadable" in out.err
+    # The stop-failure hook is the hit itself, without a reset time.
+    stop_args = argparse.Namespace(**{**vars(args), "source": "stop-failure"})
+    assert cli._limit_state_command(stop_args, stdin=io.StringIO(json.dumps({"error": "rate_limit"}))) == 0
+    assert capsys.readouterr().out.strip() == "rate limited (rate_limit)"
+    assert field.runtime_limit_state(identity.worker_name)["source"] == "claude-code-stop-failure"
+    assert limit_state_line({"kind": "ok", "windows": [{"name": "five_hour", "used_percent": 42.0}]}) == "usage ok (five_hour 42%)"
+    assert field.runtime_limit_state("nobody") == {}

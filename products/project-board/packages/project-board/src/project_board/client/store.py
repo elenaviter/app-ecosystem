@@ -3880,6 +3880,49 @@ class SharedFieldStore:
             atomic_write_json(path, row)
             return dict(row["idle"])
 
+    def record_runtime_limit_state(
+        self,
+        worker_name: str,
+        state: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """What the runtime itself said about its usage limit (W26).
+
+        Claude Code has no file the relay can read, so the runtime's own status
+        line command and StopFailure hook hand the state to ``pb worker
+        limit-state``, which records it here. The relay puts it on the listener
+        session at the next cycle. Codex needs none of this: its rollout file
+        is read directly.
+        """
+
+        if not isinstance(state, Mapping) or not state:
+            raise DomainError(
+                "field_limit_state_invalid",
+                "A limit state is an object with a kind.",
+                status=400,
+            )
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            row["runtime_limit_state"] = {
+                **{key: value for key, value in state.items() if key != "recorded_at"},
+                "recorded_at": utc_now(),
+            }
+            row["updated_at"] = utc_now()
+            atomic_write_json(path, row)
+            return dict(row["runtime_limit_state"])
+
+    def runtime_limit_state(self, worker_name: str) -> dict[str, Any]:
+        """The recorded runtime limit state, or empty when the runtime never said."""
+
+        try:
+            worker = self.read_worker(worker_name)
+        except DomainError:
+            return {}
+        recorded = worker.get("runtime_limit_state")
+        return dict(recorded) if isinstance(recorded, Mapping) else {}
+
     def worker_idle_state(self, worker_name: str) -> dict[str, Any]:
         """Whether this agent is still out of work, without it having to say so twice.
 

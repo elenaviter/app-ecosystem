@@ -2682,6 +2682,7 @@ class ProblemBoardHostRelayAdapter:
                 runtime_kind=self.config.runtime_kind,
                 runtime_session_id=self.config.runtime_session_id,
                 now=utc_now(),
+                recorded=self.field.runtime_limit_state(self.config.worker_name),
             )
         ]
 
