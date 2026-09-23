@@ -284,6 +284,9 @@ def limit_state_from_claude_statusline(
                 "resets_at": _utc(window.get("resets_at")),
             }
         )
+    if not windows:
+        # An empty object says nothing about any window: not reported, not fine.
+        return unknown_state(SOURCE_CLAUDE_STATUSLINE, observed_at=observed_at)
     exhausted = [
         window for window in windows
         if window["used_percent"] is not None and window["used_percent"] >= 100

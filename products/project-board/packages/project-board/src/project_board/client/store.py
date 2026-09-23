@@ -3903,13 +3903,24 @@ class SharedFieldStore:
         worker = self.read_worker(worker_name)
         clean_name = str(worker.get("worker_name") or "")
         path = self._worker_path(clean_name)
+        incoming = {key: value for key, value in state.items() if key != "recorded_at"}
+        now = utc_now()
         with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
             row = read_json(path)
-            row["runtime_limit_state"] = {
-                **{key: value for key, value in state.items() if key != "recorded_at"},
-                "recorded_at": utc_now(),
-            }
-            row["updated_at"] = utc_now()
+            current = row.get("runtime_limit_state")
+            current = dict(current) if isinstance(current, Mapping) else {}
+            # The status line re-runs on every update (debounced at 300 ms), so
+            # an unchanged state is written at most once a minute, and the
+            # worker's updated_at is never touched: this is a reading, not
+            # activity, and presence must not read it as one.
+            unchanged = all(
+                current.get(key) == incoming.get(key)
+                for key in ("kind", "reached", "resets_at", "windows", "source")
+            )
+            recorded_at = str(current.get("recorded_at") or "")
+            if unchanged and recorded_at and (_seconds_since(recorded_at) or 0) < 60:
+                return current
+            row["runtime_limit_state"] = {**incoming, "recorded_at": now}
             atomic_write_json(path, row)
             return dict(row["runtime_limit_state"])
 

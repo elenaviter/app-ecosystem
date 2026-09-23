@@ -56,6 +56,7 @@ from .outbox_outcomes import (
     submit_assignment_report,
 )
 from .quarantine import list_quarantine, read_quarantine, settle_quarantine
+from ..contract.worker_identity import WorkerSessionIdentity
 from .card_refusal import with_actionable_refusal
 from .limit_state import (
     limit_state_from_claude_statusline,
@@ -4488,15 +4489,48 @@ def _limit_state_command(args: argparse.Namespace, *, stdin: Any = None) -> int:
     else:
         state = limit_state_from_claude_statusline(payload, observed_at=observed_at)
     try:
-        identity = _identity(args)
-        config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
-        SharedFieldStore(config.field_root).record_runtime_limit_state(identity.worker_name, state)
+        identity = _limit_state_identity(args, payload)
+        if identity is not None:
+            config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
+            field = SharedFieldStore(config.field_root)
+            try:
+                field.read_worker(identity.worker_name)
+            except DomainError as exc:
+                if exc.code != "field_record_not_found":
+                    raise
+                # The settings are user-level, so every Claude Code session on
+                # the host runs this. A session that is not a worker gets its
+                # status line and nothing is recorded or said.
+                identity = None
+            if identity is not None:
+                field.record_runtime_limit_state(identity.worker_name, state)
     except DomainError as exc:
         print(f"limit state not recorded: {exc.code}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - the status line must never break on this
         print(f"limit state not recorded: {exc}", file=sys.stderr)
     print(limit_state_line(state))
     return 0
+
+
+def _limit_state_identity(
+    args: argparse.Namespace, payload: Mapping[str, Any]
+) -> WorkerSessionIdentity | None:
+    """Which session the limit state belongs to.
+
+    The settings line runs a bare ``pb worker limit-state``, so the identity
+    comes from the JSON Claude Code passes (``session_id``, runtime
+    ``claude-code``) unless the flags name one. No session id anywhere is not
+    an error: the status line still prints, nothing is recorded.
+    """
+
+    kind = str(getattr(args, "runtime_kind", "") or "").strip()
+    session = str(getattr(args, "runtime_session_id", "") or "").strip()
+    if kind or session:
+        return _identity(args)
+    payload_session = str(payload.get("session_id") or "").strip() if isinstance(payload, Mapping) else ""
+    if not payload_session:
+        return None
+    return WorkerSessionIdentity.create("claude-code", payload_session)
 
 
 def _channel_profile(args: argparse.Namespace) -> str:

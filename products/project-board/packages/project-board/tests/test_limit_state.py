@@ -199,3 +199,68 @@ def test_a_wake_waits_for_the_reset_the_runtime_named_and_for_nothing_else():
     assert wake_deferred_until(None, now="2026-09-23T20:30:00Z") == ""
     spent = {"kind": "out_of_tokens", "resets_at": "2026-09-24T00:00:00Z"}
     assert wake_deferred_until(spent, now="2026-09-23T20:30:00Z") == "2026-09-24T00:00:00Z"
+
+
+def test_limit_state_takes_its_identity_from_the_payload_and_is_silent_for_a_session_that_is_not_a_worker(tmp_path, capsys):
+    import argparse
+    import io
+    import json as _json
+
+    from project_board.client import cli
+    from project_board.client.store import SharedFieldStore
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+    from relay_helpers import make_host
+
+    host, _identity, _channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.initialize(field_id="limit-state-payload")
+    claude = WorkerSessionIdentity.create("claude-code", "0247bb87-0b0f-4009-aadb-e2df67c509fe")
+    field.register_worker(
+        worker_name=claude.worker_name, worker_identity=claude.worker_identity,
+        runtime_kind=claude.runtime_kind, runtime_session_id=claude.runtime_session_id,
+        capabilities=[], authority_label="connection-hub:test-profile", control_plane_state="published",
+    )
+    # The settings line runs bare: no flags, the session id is in the JSON.
+    bare = argparse.Namespace(config=str(host.path), runtime_kind="", runtime_session_id="", source="statusline", payload_file="-")
+    payload = {"session_id": claude.runtime_session_id, "rate_limits": {"five_hour": {"used_percentage": 100, "resets_at": 1790010000}}}
+    assert cli._limit_state_command(bare, stdin=io.StringIO(_json.dumps(payload))) == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == "rate limited (five_hour), resets 17:00Z" and out.err == ""
+    assert field.runtime_limit_state(claude.worker_name)["reached"] == "five_hour"
+    # Another Claude Code session on the host, not a worker: the line prints, nothing is recorded or said.
+    other = {"session_id": "11111111-2222-4333-8444-555555555555", "rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": 1790010000}}}
+    assert cli._limit_state_command(bare, stdin=io.StringIO(_json.dumps(other))) == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == "usage ok (five_hour 10%)" and out.err == ""
+    assert field.runtime_limit_state(WorkerSessionIdentity.create("claude-code", other["session_id"]).worker_name) == {}
+    # No session id anywhere: still one line, nothing said.
+    assert cli._limit_state_command(bare, stdin=io.StringIO(_json.dumps({"rate_limits": {}}))) == 0
+    out = capsys.readouterr()
+    assert out.out.strip() == "limit unknown" and out.err == ""
+
+
+def test_an_unchanged_limit_state_is_not_rewritten_and_never_counts_as_activity(tmp_path):
+    from project_board.client.io import read_json
+    from project_board.client.store import SharedFieldStore
+    from relay_helpers import make_host
+
+    host, identity, _channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.initialize(field_id="limit-state-unchanged")
+    field.register_worker(
+        worker_name=identity.worker_name, worker_identity=identity.worker_identity,
+        runtime_kind=identity.runtime_kind, runtime_session_id=identity.runtime_session_id,
+        capabilities=[], authority_label="connection-hub:test-profile", control_plane_state="published",
+    )
+    before = read_json(field._worker_path(identity.worker_name))
+    state = {"kind": "rate_limited", "source": "claude-code-statusline", "windows": [{"name": "five_hour", "used_percent": 100.0, "window_minutes": 300, "resets_at": "2026-09-21T17:00:00Z"}], "reached": "five_hour", "resets_at": "2026-09-21T17:00:00Z", "observed_at": "2026-09-21T16:00:00Z"}
+    first = field.record_runtime_limit_state(identity.worker_name, state)
+    # The status line re-runs every few hundred milliseconds with the same state.
+    second = field.record_runtime_limit_state(identity.worker_name, {**state, "observed_at": "2026-09-21T16:00:01Z"})
+    assert second["recorded_at"] == first["recorded_at"]
+    after = read_json(field._worker_path(identity.worker_name))
+    assert after.get("updated_at") == before.get("updated_at")
+    # A change is written at once.
+    changed = field.record_runtime_limit_state(identity.worker_name, {**state, "kind": "ok", "reached": "", "resets_at": ""})
+    assert changed["kind"] == "ok"
+    assert read_json(field._worker_path(identity.worker_name)).get("updated_at") == before.get("updated_at")
