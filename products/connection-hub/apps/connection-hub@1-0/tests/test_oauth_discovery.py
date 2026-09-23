@@ -94,12 +94,66 @@ async def test_connection_hub_discovery_advertises_enabled_client_registration_m
     payload = json.loads(response.body)
 
     assert response.status_code == 200
+    assert payload["issuer"] == (
+        "https://runtime.example.test/api/integrations/bundles/tenant-a/project-a/"
+        "connection-hub@1-0/public/oauth"
+    )
     assert payload["client_id_metadata_document_supported"] is True
     assert "registration_endpoint" not in payload
     assert payload["revocation_endpoint"] == (
         "https://runtime.example.test/api/integrations/bundles/tenant-a/project-a/"
         "connection-hub@1-0/public/oauth/revoke"
     )
+    assert payload["device_authorization_endpoint"] == (
+        "https://runtime.example.test/api/integrations/bundles/tenant-a/project-a/"
+        "connection-hub@1-0/public/oauth/device_authorization"
+    )
+
+
+@pytest.mark.asyncio
+async def test_connection_hub_dispatches_device_authorization_routes(monkeypatch):
+    module = _load_entrypoint_module()
+    entrypoint = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    entrypoint.bundle_props = {
+        "connections": {
+            "delegated_credentials": {"oauth": {"enabled": True}}
+        }
+    }
+    entrypoint.runtime_identity = lambda: {"tenant": "tenant-a", "project": "project-a"}
+    calls = []
+
+    async def _route(request):
+        calls.append(request.state.oauth_delegated_issuer)
+        return module.JSONResponse({"routed": True})
+
+    monkeypatch.setattr(module, "oauth_device_authorization", _route)
+    monkeypatch.setattr(module, "oauth_verify_device", _route)
+    monkeypatch.setattr(module, "oauth_device_complete", _route)
+
+    post_response = await entrypoint.oauth_post(
+        request=_request(method="POST"),
+        path_tail="device_authorization",
+    )
+    verify_response = await entrypoint.oauth_get(
+        request=_request(),
+        path_tail="device",
+    )
+    complete_response = await entrypoint.oauth_get(
+        request=_request(),
+        path_tail="device/complete",
+    )
+
+    assert json.loads(post_response.body) == {"routed": True}
+    assert json.loads(verify_response.body) == {"routed": True}
+    assert json.loads(complete_response.body) == {"routed": True}
+    assert calls == [
+        "https://runtime.example.test/api/integrations/bundles/tenant-a/project-a/"
+        "connection-hub@1-0/public/oauth",
+        "https://runtime.example.test/api/integrations/bundles/tenant-a/project-a/"
+        "connection-hub@1-0/public/oauth",
+        "https://runtime.example.test/api/integrations/bundles/tenant-a/project-a/"
+        "connection-hub@1-0/public/oauth",
+    ]
 
 
 @pytest.mark.asyncio
