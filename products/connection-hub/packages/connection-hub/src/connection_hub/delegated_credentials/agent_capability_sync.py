@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import logging
 import time
 from typing import Any, Iterable, Mapping
 from urllib.parse import unquote
@@ -104,6 +105,9 @@ from connection_hub.delegated_credentials.resource_operations import (
     operation_union,
     resolve_declared_resource_keys,
 )
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # A descriptor-synchronized Agent Card is the same portable caller Card used by
@@ -1266,7 +1270,12 @@ async def sync_agent_capability_control(
             resident,
             now=now,
         )
-    except Exception:
+    except Exception as exc:
+        _LOGGER.error(
+            "[agent-capability-sync] credential issuance failed card=%s operation=sync failure_type=%s",
+            resident.access_id,
+            type(exc).__name__,
+        )
         return {
             "ok": False,
             "error": "agent_capability_credential_not_issued",
@@ -1506,7 +1515,12 @@ async def update_agent_capability_selection(
             updated,
             now=int(time.time()),
         )
-    except Exception:
+    except Exception as exc:
+        _LOGGER.error(
+            "[agent-capability-sync] credential issuance failed card=%s operation=selection-update failure_type=%s",
+            updated.access_id,
+            type(exc).__name__,
+        )
         return {
             "ok": False,
             "error": "agent_capability_credential_not_issued",

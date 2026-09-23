@@ -585,6 +585,40 @@ async def test_sync_upgrades_a_live_legacy_agent_card_without_a_bearer() -> None
 
 
 @pytest.mark.asyncio
+async def test_sync_logs_credential_failure_without_persisting_tokenless_agent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, persistence = _service()
+
+    async def _fail_mint(*_args, **_kwargs):
+        raise RuntimeError("sensitive issuer detail")
+
+    service._minter = _fail_mint
+    with caplog.at_level("ERROR", logger=agent_capability_sync.__name__):
+        result = await _sync(
+            service,
+            revision="descriptor-r1",
+            authority=("tool.old",),
+            catalog=("tool.old",),
+            selection=("tool.old",),
+        )
+
+    assert result == {
+        "ok": False,
+        "error": "agent_capability_credential_not_issued",
+        "retryable": True,
+        "status": 503,
+    }
+    assert "credential issuance failed" in caplog.text
+    assert "failure_type=RuntimeError" in caplog.text
+    assert "sensitive issuer detail" not in caplog.text
+    assert all(
+        authority.card_kind != CARD_KIND_AGENT
+        for authority, _handles in persistence.records.values()
+    )
+
+
+@pytest.mark.asyncio
 async def test_agent_card_selection_update_is_revision_checked_and_ceiling_bounded() -> None:
     service, _persistence = _service()
     created = await _sync(
