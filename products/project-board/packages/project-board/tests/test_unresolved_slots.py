@@ -91,3 +91,20 @@ def test_pb_worker_send_refuses_a_body_or_subject_with_a_slot_before_anything_le
 def test_a_named_slot_with_spaces_is_a_slot():
     with pytest.raises(DomainError):
         refuse_unresolved_slots("vote: {{ decision }}", argument="--body")
+
+
+def test_slots_quoted_in_code_are_text_about_slots_and_pass():
+    # The coordinator's own review mail listed the twenty slots in a fenced
+    # block, and a mail may quote a GitHub Actions or Jinja template.
+    quoted = (
+        "The result still contains template slots:\n\n"
+        "```\n{{CUI_P2}} {{CUI_P4A}}\n{{DEC_P2}}\n```\n\n"
+        "and an action step uses `${{ secrets.TOKEN }}` inline. Fill them.\n"
+    )
+    assert refuse_unresolved_slots(quoted, argument="--body-file") == quoted
+    tilde = "~~~jinja\n{{ user.name }}\n~~~\nno slot outside\n"
+    assert refuse_unresolved_slots(tilde, argument="--body") == tilde
+    # A slot in prose next to a code block is still refused.
+    with pytest.raises(DomainError) as refused:
+        refuse_unresolved_slots("```\n{{IN_CODE}}\n```\nvote: {{DEC_P8}}\n", argument="--body")
+    assert refused.value.details["slots"] == ["{{DEC_P8}}"]

@@ -91,6 +91,14 @@ def require_single_line(
 # A slot has a name: {{CUI_P2}}, {{ decision }}. Braces around nothing, JSON
 # objects and a lone brace are not slots.
 UNRESOLVED_SLOT = re.compile(r"\{\{\s*[A-Za-z_][A-Za-z0-9_.:-]{0,79}\s*\}\}")
+FENCED_CODE = re.compile(r"(^|\n)(`{3,}|~{3,})[^\n]*\n.*?\n\2[ \t]*(?=\n|$)", re.S)
+INLINE_CODE = re.compile(r"`[^`\n]*`")
+
+
+def _without_code(value: str) -> str:
+    """The text with fenced blocks and inline code spans removed."""
+
+    return INLINE_CODE.sub(" ", FENCED_CODE.sub("\n", value))
 
 
 def refuse_unresolved_slots(value: Any, *, argument: str) -> Any:
@@ -105,7 +113,10 @@ def refuse_unresolved_slots(value: Any, *, argument: str) -> Any:
 
     if not isinstance(value, str):
         return value
-    found = UNRESOLVED_SLOT.findall(value)
+    # Code is quoted, not rendered: a fenced block that lists the slots a
+    # reviewer found, a GitHub Actions ${{ secrets.X }} or a Jinja example is
+    # text about slots and passes. Only prose is checked.
+    found = UNRESOLVED_SLOT.findall(_without_code(value))
     if not found:
         return value
     raise DomainError(
