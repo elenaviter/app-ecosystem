@@ -6,6 +6,12 @@ procedures still named about twenty repo:applications/... paths, dead on such
 a host. The rule: a document in another repository is named by its public
 address, a document in this repository by repo:app-ecosystem/<path>, and
 everything the skill opens at run time ships inside the installed package.
+
+Public means public. Later the same day the twenty references had become
+links into kdcube/applications, a private repository, so the reader of this
+public package was sent to pages they cannot open. A GitHub link is allowed
+only into a repository a reader of this repository can open; the pages the
+procedures needed moved into docs/project-board/ instead.
 """
 
 from __future__ import annotations
@@ -20,6 +26,12 @@ PROCEDURES_ROOT = PACKAGE_ROOT / "src" / "project_board" / "procedures"
 SKILL_ROOT = source_package_path()
 
 _LINK = re.compile(r"\]\(([^)\s]+)\)")
+_BARE_GITHUB = re.compile(r"(?<![(\]])https://github\.com/[^\s)>`\"']+")
+_GITHUB_REPOSITORY = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s#?]+)")
+
+# Repositories a reader of this repository can open. A link into any other
+# GitHub repository is refused; a template such as <owner>/<repo> is text.
+PUBLIC_REPOSITORIES = frozenset({"elenaviter/app-ecosystem", "kdcube/kdcube"})
 
 
 def _repository_root() -> Path:
@@ -36,6 +48,7 @@ def _targets(path: Path) -> list[str]:
 
     text = path.read_text(encoding="utf-8")
     targets = list(_LINK.findall(text))
+    targets.extend(_BARE_GITHUB.findall(text))
     if text.startswith("---\n"):
         end = text.find("\n---\n", 4)
         front = text[4:end] if end > 0 else ""
@@ -51,11 +64,25 @@ def _targets(path: Path) -> list[str]:
     return targets
 
 
+def _public_repository(url: str) -> str:
+    """'' for a link a reader of this repository can open, else why not."""
+
+    match = _GITHUB_REPOSITORY.match(url)
+    if match is None:
+        return ""
+    owner, repository = match.group(1), match.group(2).removesuffix(".git")
+    if "<" in owner or "<" in repository or "%" in owner or "%" in repository:
+        return ""  # a template the procedure asks the reader to fill in
+    if f"{owner}/{repository}" in PUBLIC_REPOSITORIES:
+        return ""
+    return f"links into {owner}/{repository}, which a reader of this repository cannot open"
+
+
 def _resolves(target: str, *, document: Path, repository_root: Path | None) -> str:
     """'' when the target resolves, else the reason it does not."""
 
     if target.startswith(("http://", "https://", "mailto:")):
-        return ""
+        return _public_repository(target)
     if target.startswith("#"):
         return ""
     if target.startswith("repo:"):
@@ -111,3 +138,18 @@ def test_the_installed_skill_resolves_every_link_inside_its_own_tree(tmp_path):
     # The source of the rule: the installed tree carries no path into another repository.
     for document in skill_root.rglob("*.md"):
         assert "](repo:applications/" not in document.read_text(encoding="utf-8")
+
+
+def test_a_link_into_a_private_repository_is_refused_and_a_template_is_not():
+    private = "https://github.com/kdcube/applications/blob/main/README.md"
+    assert _public_repository(private).startswith("links into kdcube/applications")
+    assert _public_repository("https://github.com/kdcube/kdcube/blob/main/README.md") == ""
+    assert _public_repository("https://github.com/elenaviter/app-ecosystem/settings/keys") == ""
+    assert _public_repository("https://github.com/<owner>/<repository>/settings/keys") == ""
+    assert _public_repository("https://github.com/%s/settings") == ""
+    assert _public_repository("https://example.org/anything") == ""
+    # Bare URLs count as well as Markdown links.
+    assert _BARE_GITHUB.findall("Page: https://github.com/kdcube/applications/settings/keys\n") == [
+        "https://github.com/kdcube/applications/settings/keys"
+    ]
+    assert _BARE_GITHUB.findall("[x](https://github.com/kdcube/kdcube/blob/main/a.md)") == []

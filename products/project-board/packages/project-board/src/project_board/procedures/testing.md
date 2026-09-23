@@ -5,12 +5,9 @@ summary: Defines offline package, provider, shared-field, knowledge, widget, des
 tags: [procedure, testing, bundle, problem-board]
 keywords: [pytest, bundle suite, typecheck, MCP, browser proof]
 see_also:
-  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/AGENTS.md
   - ./live-acceptance.md
-  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/docs/design/surface-map.md
-  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/docs/procedure-gaps.md
-  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/docs/topology-and-flows.md
-  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/docs/storage-and-retention.md
+  - repo:app-ecosystem/docs/project-board/topology-and-flows.md
+  - repo:app-ecosystem/docs/project-board/storage-and-retention.md
 ---
 
 # Test The Problem Board Bundle

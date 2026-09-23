@@ -1,0 +1,53 @@
+{
+  "schema": "problem-board.host-relay-config.v2",
+  "target": {
+    "id": "demo-runtime",
+    "endpoint": "https://runtime.example/api/integrations/bundles/tenant/project/problem-board@1-0/public/mcp/problem_board",
+    "tenant": "tenant",
+    "project": "project",
+    "bundle_id": "problem-board@1-0"
+  },
+  "field_root": "/absolute/path/to/client-runtime/problem-board/targets/demo-runtime/tenant__project/apps/problem-board@1-0/hosts/host-example/field",
+  "allowed_roots": [
+    "/absolute/path/to/checkouts"
+  ],
+  "connection_hub": {
+    "state_root": "/absolute/path/to/connection-hub-state"
+  },
+  "host": {
+    "id": "host-example",
+    "label": "Development workstation",
+    "kind": "local"
+  },
+  "relay": {
+    "id": "relay-host-example",
+    "reconcile_ceiling_seconds": 30
+  },
+  "receiver_policy": {
+    "allowed_control_kinds": [
+      "assign",
+      "journal.catalog",
+      "journal.read",
+      "mail",
+      "materialize",
+      "ping",
+      "project.report",
+      "replan",
+      "request",
+      "resume",
+      "stop"
+    ],
+    "allowed_peer_workers": [],
+    "max_control_bytes": 65536,
+    "allow_session_resume_view": true
+  },
+  "journal_workspace": {
+    "root": "/absolute/path/to/client-runtime/problem-board/targets/demo-runtime/tenant__project/apps/problem-board@1-0/hosts/host-example/journals",
+    "source_repositories": {
+      "journals": "/absolute/path/to/checkouts/user-journals",
+      "project": "/absolute/path/to/checkouts/project-source"
+    },
+    "create_missing_home": false
+  },
+  "workers": []
+}

@@ -5,12 +5,12 @@ summary: Walks a first-time operator from a running remote Problem Board through
 tags: [procedure, problem-board, setup, relay, worker]
 keywords: [first-time setup, host relay, Connection Hub, worker enrollment, inbox heartbeat]
 see_also:
-  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/README.md
+  - repo:app-ecosystem/products/project-board/packages/project-board/README.md
   - ./agent-worker.md
   - ./operator.md
   - ./live-acceptance.md
   - ./add-a-worker-host.md
-  - https://github.com/kdcube/applications/blob/main/playground/domain-solution/apps/problem-board@1-0/docs/topology-and-flows.md
+  - repo:app-ecosystem/docs/project-board/topology-and-flows.md
 ---
 
 # First-Time Problem Board Setup

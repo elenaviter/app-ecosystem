@@ -6,6 +6,9 @@ component:
 - [`connection-hub/`](connection-hub/README.md) — the Connection Hub Python
   package, KDCube application, authority architecture, integration recipes,
   and planned standalone host.
+- [`project-board/`](project-board/README.md) — the host, relay and worker
+  documentation that ships with the Project Board client, beside the
+  procedures in its package.
 - [`foundations/`](foundations/README.md) — extraction ownership, dependency
   direction, the neutral MCP client, and the generic host-relay runtime.
 - [Releases](releases.md) - version, product record, source tag, package
