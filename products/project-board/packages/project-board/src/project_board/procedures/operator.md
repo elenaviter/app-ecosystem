@@ -6,10 +6,10 @@ tags: [procedure, operator, relay, problem-board]
 keywords: [Connection Hub profile, host relay, worker session, receiver policy, OAuth reconnect, replace Card]
 see_also:
   - ./agent-worker.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/config/relay.template.json
+  - repo:app-ecosystem/docs/project-board/relay.template.json
   - ./live-acceptance.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/topology-and-flows.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/storage-and-retention.md
+  - repo:app-ecosystem/docs/project-board/topology-and-flows.md
+  - repo:app-ecosystem/docs/project-board/storage-and-retention.md
 ---
 
 # Operate Problem Board And Its Local Relay
@@ -59,9 +59,10 @@ waiting, and `project-board` owns the host protocol, local field, command,
 relay, and worker procedure. This app owns the server surfaces and imports the
 shared package contract.
 
-The exact KDCube refresh invocation remains owned by
-`repo:applications/kdcube-docs/procedures/repo-maintenance/kdcube/maintenance-notes.md`;
-host procedures point there instead of maintaining another copy.
+The exact KDCube refresh invocation is owned by
+[the maintainer rebuild procedure](repo:app-ecosystem/products/kdcube/procedures/maintainer-rebuild.md)
+in this repository. Host procedures point there instead of maintaining another
+copy.
 
 ## One Host, One Relay, Many Sessions
 
@@ -530,7 +531,7 @@ and session evidence for diagnosis.
 The project view presents one paged timeline for controls, owner inbox turns,
 and service events. Search and date, status, and worker filters run on the
 server. Each row exposes its artifact URI; owner-worker rows open the exact
-mailbox turn. [Storage and retention](repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/storage-and-retention.md) defines
+mailbox turn. [Storage and retention](repo:app-ecosystem/docs/project-board/storage-and-retention.md) defines
 how that projection and conversation history continue across long projects.
 
 Files travel with the same messages. In the Inbox thread, attach files to a

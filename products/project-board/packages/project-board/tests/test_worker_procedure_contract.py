@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.4"
+    assert package["revision"] == "2026.09.23.5"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -126,6 +126,14 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
     assert "setup guides point here rather than restating the meanings" in first_run
     assert "`pb` is the console command in the `project-board` distribution" in first_run
     assert "one dependency resolution over all six first-party package paths" in first_run
+    # Two install paths, both intended (operator, 2026-09-22): a team host from
+    # pinned source exports, a user of a published release from the package
+    # index. Neither reads a checkout at run time (W262).
+    assert "There are two ways to install it, and the operator names which applies" in first_run
+    assert "From the published package" in first_run
+    assert "pip install \"project-board==<version>\"" in first_run
+    assert "source use-release --expect-version <version>" in first_run
+    assert "Neither path reads a repository checkout at run time" in first_run
     assert "scripts/install_from_source.py" in first_run
     assert "the composite release ID, both full commits, all six package trees" in first_run
     assert "never become runtime import paths" in first_run

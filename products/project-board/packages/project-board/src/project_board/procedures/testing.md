@@ -5,19 +5,17 @@ summary: Defines offline package, provider, shared-field, knowledge, widget, des
 tags: [procedure, testing, bundle, problem-board]
 keywords: [pytest, bundle suite, typecheck, MCP, browser proof]
 see_also:
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/AGENTS.md
   - ./live-acceptance.md
-  - repo:applications/playground/domain-solution/docs/design/surface-map.md
-  - repo:applications/playground/domain-solution/docs/procedure-gaps.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/topology-and-flows.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/storage-and-retention.md
+  - repo:app-ecosystem/docs/project-board/topology-and-flows.md
+  - repo:app-ecosystem/docs/project-board/storage-and-retention.md
 ---
 
 # Test The Problem Board Bundle
 
-Before platform-backed tests, follow the KDCube platform-source testing
-procedure, choose one interpreter, and prove imported KDCube and Connection Hub
-origins. Provide this app path explicitly to the shared bundle suite.
+Before platform-backed tests, follow
+[the platform suite procedure](repo:app-ecosystem/products/kdcube/procedures/platform-suite.md),
+choose one interpreter, and prove imported KDCube and Connection Hub origins.
+Provide this app path explicitly to the shared bundle suite.
 
 Offline checks cover:
 

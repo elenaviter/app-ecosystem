@@ -5,7 +5,7 @@ summary: The coordinator's procedure for a project.report request: a capped delt
 tags: [procedure, problem-board, coordinator, project-report]
 keywords: [project.report, preview, publish, published, field_project_report_refused, intent_not_receipt, not-seen]
 see_also:
-  - ../../../docs/project-status-reports.md
+  - ./coordinator.md
 ---
 
 # Answer A Project Report Request

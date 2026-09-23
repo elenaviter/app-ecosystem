@@ -48,12 +48,24 @@ restating the meanings.
 
 ## `pb` Is Not Installed
 
-`pb` is the console command in the `project-board` distribution. A team host
-installs its six-package client family from clean exports of approved App
-Ecosystem and KDCube commits. Ask for both repository paths and full commits,
-then propose the source install and selector from
-[runtime actions](runtime-actions.md). The install is one dependency resolution
-over all six first-party package paths:
+`pb` is the console command in the `project-board` distribution. There are two
+ways to install it, and the operator names which applies to this machine:
+
+- **A team host** (a maintainer's machine, or a worker host of a team that
+  runs its own KDCube) installs the six-package client family from clean
+  exports of approved App Ecosystem and KDCube commits, and selects those
+  commits with `pb source use-code`. This is what the section below shows.
+- **A user of a published release** installs the approved `project-board`
+  version from the package index and selects it with `pb source use-release`.
+  This is the shorter path under "From the published package".
+
+Neither path reads a repository checkout at run time, and both end with
+`pb procedure install`, which puts this skill on the machine.
+
+For a team host, ask for both repository paths and full commits, then propose
+the source install and selector from [runtime actions](runtime-actions.md).
+The install is one dependency resolution over all six first-party package
+paths:
 
 ```bash
 APP_REPOSITORY=<app-ecosystem>
@@ -82,6 +94,24 @@ The repositories are inputs to the clean exports and never become runtime
 import paths. After selection, `pb source status` reports the composite release
 ID, both full commits, all six package trees, and the source loaded by the
 relay.
+
+### From the published package
+
+The `project-board` distribution is published to the package index, and the
+operator names the approved version. Propose, and run it after they approve:
+
+```bash
+python3 -m venv "$HOME/.local/share/project-board"
+"$HOME/.local/share/project-board/bin/python" -m pip install "project-board==<version>"
+"$HOME/.local/share/project-board/bin/pb" source use-release --expect-version <version>
+"$HOME/.local/share/project-board/bin/pb" procedure install --target codex --target claude-code
+```
+
+`pb source use-release` records the version the host runs and restarts the
+relay once one is installed, so ordinary commands refuse a mismatch between
+the installed package and the recorded selection. `pb source status` then
+names the version. The team host path and this one meet at `pb setup`, which
+the `machine_not_configured` section covers.
 
 ## `machine_not_configured`
 

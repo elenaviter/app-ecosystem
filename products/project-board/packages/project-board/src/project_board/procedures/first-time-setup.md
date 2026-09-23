@@ -5,12 +5,12 @@ summary: Walks a first-time operator from a running remote Problem Board through
 tags: [procedure, problem-board, setup, relay, worker]
 keywords: [first-time setup, host relay, Connection Hub, worker enrollment, inbox heartbeat]
 see_also:
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/README.md
+  - repo:app-ecosystem/products/project-board/packages/project-board/README.md
   - ./agent-worker.md
   - ./operator.md
   - ./live-acceptance.md
   - ./add-a-worker-host.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/topology-and-flows.md
+  - repo:app-ecosystem/docs/project-board/topology-and-flows.md
 ---
 
 # First-Time Problem Board Setup
@@ -118,6 +118,21 @@ dependencies. Use only the procedure targets present
 on the host. Installation, source selection, and procedure installation change
 the user's machine, so the operator approves them. The repository checkouts
 are never runtime import paths.
+
+A machine that joins a board as a user of a published release, rather than as
+a host of a team that builds from source, installs the approved
+`project-board` version from the package index and selects it instead:
+
+```bash
+python3 -m venv "$HOME/.local/share/project-board"
+"$HOME/.local/share/project-board/bin/python" -m pip install "project-board==<approved-version>"
+"$HOME/.local/share/project-board/bin/pb" source use-release --expect-version <approved-version>
+"$HOME/.local/share/project-board/bin/pb" procedure install --target codex --target claude-code
+```
+
+Both paths continue at section 3. The skill's
+[first run](problem-board-worker/references/first-run.md) reference owns the
+two paths' meanings and what `pb source status` reports after each.
 
 ## 3. Configure One Logical Host
 

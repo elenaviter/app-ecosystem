@@ -7,7 +7,7 @@ keywords: [worker host, tailnet, headless, deploy key, pinned client, systemd re
 see_also:
   - ./first-time-setup.md
   - ./operator.md
-  - repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/add-a-machine-README.md
+  - repo:app-ecosystem/docs/project-board/add-a-machine.md
 ---
 
 # Add A Worker Host
@@ -25,7 +25,7 @@ and every problem met there is either fixed or written below as a **Known gap**
 with its workaround and the work item that removes it.
 
 The short version a user follows, and what they hand their setup agent, is
-[add a machine](repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/add-a-machine-README.md).
+[add a machine](repo:app-ecosystem/docs/project-board/add-a-machine.md).
 
 ## Who does what
 
@@ -507,10 +507,12 @@ previous selector and source.
 
 The operator sheet from step 7 for the first machine (host `spark1`, user
 `lena`). Public keys only: the private halves stay in `~/.ssh` on spark1.
+Each page is that repository's deploy-key settings,
+`https://github.com/<owner>/<repository>/settings/keys`, which only its
+administrators can open.
 
 ### applications
 
-Page: https://github.com/kdcube/applications/settings/keys
 Title: spark1 agents
 Allow write access: yes
 Key:
@@ -519,7 +521,6 @@ Key:
 
 ### app-ecosystem
 
-Page: https://github.com/elenaviter/app-ecosystem/settings/keys
 Title: spark1 agents
 Allow write access: yes
 Key:
@@ -528,7 +529,6 @@ Key:
 
 ### kdcube-ai-app
 
-Page: https://github.com/kdcube/kdcube/settings/keys
 Title: spark1 agents
 Allow write access: yes
 Key:
