@@ -1,27 +1,16 @@
 product:
   id: connection-hub
-  ref: "2026.09.02.1410"
+  ref: "2026.09.23.0158"
   description: |
-    External MCP OAuth now supports clients created in a provider console in
-    addition to Client ID Metadata Documents and dynamic client registration.
-    This covers providers that require a pre-registered client id and secret.
-    Connection Hub shows the exact callback URI, accepts the provider client
-    through the authenticated owner operation, and keeps it with the connector
-    credential in server-side user-secret storage.
+    Resident Card bearer custody now records prepared secret intent, atomic
+    installation, rotation, retirement, and token-fenced cleanup obligations
+    in PostgreSQL. Cleanup claims survive process restarts and Redis loss, and
+    one row-then-reference lock order governs every credential transition.
 
-    Reconnect reuses a provisioned client without asking for its secret again.
-    Explicit replacement can supply another provisioned client or return to
-    automatic registration while preserving the connector resource. Discovery,
-    PKCE, state, issuer checks, token refresh, upstream revocation, delegated
-    tool filtering, descriptor drift checks, and Once or Always invocation
-    policy retain their existing boundaries.
-
-    The hosted application displays the exact Streamable HTTP proxy endpoint
-    beside a newly issued caller bearer. The local quick start now carries a
-    user from an empty KDCube runtime through external MCP connection, bounded
-    caller creation, external client configuration, live narrowing, Once, and
-    revocation. Maintained descriptors expose the governed proxy with
-    deployment-specific callback and outbound-network policy.
+    This snapshot also versions the Connection Hub host CLI as an explicit
+    release component. The CLI consumes this exact Connection Hub family and
+    the published KDCube CLI family used by its application-target operations,
+    so a clean package-index install resolves one reviewed dependency chain.
   documentation: docs/connection-hub
 
 components:
@@ -33,9 +22,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.09.02.1410"
+    version: "2026.09.23.0158"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
+    workflow: .github/workflows/publish-python-package.yml
+  cli_package:
+    distribution: connection-hub-cli
+    import_name: connection_hub_cli
+    path: products/connection-hub/packages/connection-hub-cli
+    version: "2026.09.23.0158"
+    version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.09.02.1410"
+  version: "2026.09.23.0158"

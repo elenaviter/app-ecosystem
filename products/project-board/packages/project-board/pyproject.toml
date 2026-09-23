@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-board"
-version = "2026.09.22.2241"
+version = "2026.09.23.0158"
 description = "The Project Board client: the pb command a machine runs to join a board, receive addressed work, and report on it, with the shared contract both sides speak."
 readme = "README.md"
 license = { text = "MIT" }
@@ -18,7 +18,7 @@ classifiers = [
 dependencies = [
     "aiohttp>=3.9,<4",
     "app-foundation[data-bus]>=2026.09.03.1835,<2027",
-    "connection-hub-cli>=2026.09.02.1705,<2027",
+    "connection-hub-cli>=2026.09.23.0158,<2027",
     "mcp==2.0.0",
     "packaging>=23,<27",
     "PyYAML>=6,<7",
@@ -44,6 +44,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 project_board = [
     "py.typed",
+    "procedure-revisions.json",
     "procedures/problem-board-worker/*.md",
     "procedures/problem-board-worker/*.json",
     "procedures/problem-board-worker/references/*.md",

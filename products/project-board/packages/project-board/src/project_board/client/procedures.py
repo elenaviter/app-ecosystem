@@ -35,6 +35,10 @@ def source_package_path() -> Path:
     return Path(__file__).resolve().parents[1] / "procedures" / PROCEDURE_ID
 
 
+def source_revision_ledger_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "procedure-revisions.json"
+
+
 def source_path() -> Path:
     return source_package_path() / "SKILL.md"
 

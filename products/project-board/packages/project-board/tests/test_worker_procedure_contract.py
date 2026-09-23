@@ -12,7 +12,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from project_board.client.procedures import source_package, source_package_path
+from project_board.client.procedures import (
+    source_package,
+    source_package_path,
+    source_revision_ledger_path,
+)
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +31,7 @@ def _words(text: str) -> str:
     return " ".join(text.split())
 
 
-REVISION_LEDGER = PACKAGE_ROOT / "procedure-revisions.json"
+REVISION_LEDGER = source_revision_ledger_path()
 
 
 def test_package_content_is_recorded_for_its_revision() -> None:

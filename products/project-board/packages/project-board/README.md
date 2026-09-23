@@ -5,7 +5,7 @@ The Project Board client: the `pb` command a machine runs to join a board.
 ## Install
 
 ```bash
-pipx install "project-board==2026.09.22.2241"
+pipx install "project-board==2026.09.23.0158"
 pb procedure install --target codex --target claude-code
 ```
 
@@ -33,7 +33,7 @@ Ordinary hosts run the installed release. After an approved package upgrade,
 make that exact version authoritative and restart the relay with:
 
 ```bash
-pb source use-release --expect-version 2026.09.22.2241
+pb source use-release --expect-version 2026.09.23.0158
 ```
 
 Maintainers can instead select one reviewed App Ecosystem commit:

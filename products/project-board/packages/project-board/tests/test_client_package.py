@@ -9,7 +9,11 @@ from pathlib import Path
 import project_board.client
 from project_board.client.entrypoint import _top_level_command
 from project_board.client.first_run import _client_source
-from project_board.client.procedures import source_package, source_package_path
+from project_board.client.procedures import (
+    source_package,
+    source_package_path,
+    source_revision_ledger_path,
+)
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -63,10 +67,10 @@ def test_worker_procedure_is_package_data_owned_by_project_board() -> None:
 def test_worker_procedure_revision_records_its_exact_content() -> None:
     package = source_package()
     ledger = json.loads(
-        (PACKAGE_ROOT / "procedure-revisions.json").read_text(encoding="utf-8")
+        source_revision_ledger_path().read_text(encoding="utf-8")
     )
 
-    assert package["revision"] == "2026.09.23.2"
+    assert package["revision"] == "2026.09.22.12"
     assert ledger[package["revision"]] == package["source_digest"]
 
 
