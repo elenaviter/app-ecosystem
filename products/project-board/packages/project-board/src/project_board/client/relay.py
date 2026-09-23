@@ -4112,6 +4112,43 @@ class ProblemBoardRelaySupervisor:
             )
         return retired
 
+    # How long a cycle waits for a dropped socket's own reconnect before it
+    # replaces the session. The Data Bus client reconnects on its own and each
+    # reconnect handshake presents the bearer valid at that moment, so a
+    # channel whose runtime is up is back within seconds. A replacement costs
+    # a fresh credential and the pacing backoff, minutes rather than seconds.
+    reconnect_grace_seconds = 10.0
+
+    async def _await_own_reconnect(
+        self, channel: WorkerChannelConfig, session: _ChannelSession
+    ) -> bool:
+        """True when the session's socket is connected, waiting for its own reconnect first."""
+
+        client = session.adapter.client
+        if getattr(client, "connected", True):
+            return True
+        wait = getattr(client, "wait_until_connected", None)
+        if not callable(wait):
+            return False
+        logger.info(
+            "Problem Board relay channel lifecycle event=awaiting_reconnect "
+            "worker_name=%s channel_identity=%s replacement_epoch=%d grace_seconds=%.0f",
+            channel.worker_name,
+            session.channel_identity,
+            session.replacement_epoch,
+            self.reconnect_grace_seconds,
+        )
+        connected = bool(await wait(self.reconnect_grace_seconds))
+        logger.info(
+            "Problem Board relay channel lifecycle event=%s worker_name=%s "
+            "channel_identity=%s replacement_epoch=%d",
+            "reconnect_observed" if connected else "reconnect_grace_expired",
+            channel.worker_name,
+            session.channel_identity,
+            session.replacement_epoch,
+        )
+        return connected
+
     async def _poll_channel(
         self, host: HostRelayConfig, channel: WorkerChannelConfig
     ) -> dict[str, Any]:
@@ -4175,6 +4212,11 @@ class ProblemBoardRelaySupervisor:
                     status=503,
                     details={"worker_name": channel.worker_name},
                 )
+        # A socket the client is reconnecting on its own is given its grace
+        # before anything is asked of it. When the grace expires the drain and
+        # the poll below fail as they always did, and the cycle records the
+        # failure and replaces the session.
+        await self._await_own_reconnect(channel, session)
         started = time.monotonic()
         try:
             coordinate = await self._drain_coordinate_for_worker(host, channel, session)
