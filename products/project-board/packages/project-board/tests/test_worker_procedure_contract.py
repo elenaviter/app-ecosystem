@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.7"
+    assert package["revision"] == "2026.09.23.8"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -183,6 +183,11 @@ def test_source_selection_guidance_is_added_without_rewriting_collaboration() ->
     assert "only then fast-forward or remove the checkout implementation" in runtime
     assert "the release ID, both full commits, all six package trees" in runtime
     assert "the full App Ecosystem and KDCube commits" in coordinator
+    # W278: the coordinator binds every repository at assignment time.
+    assert "one entry per repository the work touches" in coordinator
+    assert "Fill it when you assign, not later" in coordinator
+    assert "Work that touches no repository says so with an empty list" in coordinator
+    assert "repositories not declared" in coordinator
     assert "before fast-forwarding that checkout" in coordinator
     assert "one recorded source selection, not from any working tree" in collaboration
     assert "The integration ref is source history, not a runtime selection" in collaboration

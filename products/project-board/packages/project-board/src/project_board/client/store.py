@@ -328,6 +328,36 @@ OUTBOX_RETRY_BASE_SECONDS = 5
 OUTBOX_RETRY_MAX_SECONDS = 300
 SESSION_SCHEMA = "problem-board.local-worker-session.v1"
 ASSIGNMENT_SCHEMA = "problem-board.local-assignment.v1"
+
+
+def _assignment_sources(assignment: Mapping[str, Any], *, repository_ref: str) -> list[dict[str, str]]:
+    """The repository entries the notice binds, each normalized, or the scalar source as one entry."""
+
+    raw = assignment.get("sources")
+    entries: list[dict[str, str]] = []
+    for index, entry in enumerate(raw if isinstance(raw, list) else []):
+        if not isinstance(entry, Mapping):
+            continue
+        ref = str(entry.get("repository_ref") or "")
+        if not ref:
+            continue
+        entries.append(
+            {
+                "repository_ref": normalize_repository_ref(ref, field=f"sources[{index}].repository_ref"),
+                "base_commit": bounded_text(entry.get("base_commit"), field=f"sources[{index}].base_commit", maximum=64).lower(),
+                "branch": bounded_text(entry.get("branch"), field=f"sources[{index}].branch", maximum=512),
+            }
+        )
+    if not entries and repository_ref:
+        source = assignment.get("source") if isinstance(assignment.get("source"), Mapping) else {}
+        entries = [
+            {
+                "repository_ref": repository_ref,
+                "base_commit": bounded_text(source.get("base_commit"), field="source.base_commit", maximum=64).lower(),
+                "branch": bounded_text(source.get("branch"), field="source.branch", maximum=512),
+            }
+        ]
+    return entries
 ASSIGNMENT_RECONCILIATION_ISSUE_SCHEMA = (
     "problem-board.assignment-reconciliation.v2"
 )
@@ -1138,6 +1168,11 @@ class SharedFieldStore:
                     source.get("branch"), field="source.branch", maximum=512
                 ),
             },
+            # One assignment, several repositories (W278): the list is the
+            # binding, the scalar source mirrors its first entry. A notice
+            # from a service that predates the list carries only the scalar.
+            "sources": _assignment_sources(assignment, repository_ref=repository_ref),
+            "source_binding": str(assignment.get("source_binding") or "unspecified"),
             "state": "assigned",
             "received_at": utc_now(),
         }
