@@ -1873,6 +1873,47 @@ def _raise_if_channel_reconnecting(config_path: Any, worker_name: str) -> None:
         raise _channel_reconnecting_error(worker_name, reconnect)
 
 
+def _send_channel_reconnecting_error(
+    worker_name: str, reconnect: Mapping[str, Any], *, idempotency_key: str
+) -> DomainError:
+    return DomainError(
+        "work_send_channel_reconnecting",
+        (
+            "This worker's channel is not open: the relay is reconnecting it "
+            f"after {reconnect.get('reason') or 'a failure'} "
+            f"(attempt {reconnect.get('attempts') or 0}, next attempt "
+            f"{reconnect.get('next_attempt_at') or 'unknown'}). The message was "
+            "not delivered. Retry after that time with the same idempotency key: "
+            "a delivered message replays, a lost one goes through."
+        ),
+        status=503,
+        details={
+            "worker_name": worker_name,
+            "channel_state": "reconnecting",
+            "last_error": str(reconnect.get("reason") or ""),
+            "attempts": int(reconnect.get("attempts") or 0),
+            "retry_schedule": str(reconnect.get("schedule") or ""),
+            "next_attempt_at": str(reconnect.get("next_attempt_at") or ""),
+            "delivered": False,
+            "idempotency_key": str(idempotency_key or ""),
+        },
+    )
+
+
+def _raise_if_send_channel_reconnecting(
+    config_path: Any, worker_name: str, *, idempotency_key: str
+) -> None:
+    """Remote mail rides the worker's channel: a channel the relay is
+    reconnecting cannot carry it, and the sender hears so at once instead of
+    reading a queued message as a delivered one."""
+
+    reconnect = channel_reconnect_state(config_path, worker_name)
+    if reconnect is not None:
+        raise _send_channel_reconnecting_error(
+            worker_name, reconnect, idempotency_key=idempotency_key
+        )
+
+
 def _coordinate_command(args: Any) -> dict[str, Any]:
     """Call any canonical operation through this exact worker's Card channel."""
 
@@ -3693,6 +3734,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 reply_to=args.reply_to,
                 idempotency_key=args.idempotency_key,
             )
+        _raise_if_send_channel_reconnecting(
+            path, identity.worker_name, idempotency_key=args.idempotency_key
+        )
         return field.enqueue_remote_mail(
             project_id,
             sender=identity.worker_name,
@@ -4067,7 +4111,7 @@ async def _relay(args: Any) -> Any:
         channel_lifecycle_labels,
         transient_failure,
     )
-    from .relay_admission import open_with_one_refresh
+    from .relay_admission import open_with_one_refresh, reconnect_credential_source
     from .relay_failures import descriptor_limit_label, staged_failure
     from .relay_service import CLIENT_SOURCE_PATHS, STARTUP_RECORD_NAME
     from .relay_source import describe_source, source_line, write_startup_record
@@ -4126,26 +4170,22 @@ async def _relay(args: Any) -> Any:
             )
             platform_url = urlunsplit((endpoint.scheme, endpoint.netloc, "", "", ""))
 
-            async def open_bus(current_bearer: str) -> FederatedDataBusClient:
-                bus = FederatedDataBusClient(
-                    platform_url=platform_url,
-                    credential=DelegatedCardCredential(
-                        tenant=host_config.tenant,
-                        project=host_config.platform_project,
-                        bundle_id=bundle_id,
-                        resource=card_resource,
-                        bearer_token=current_bearer,
-                    ),
-                    lifecycle_labels=channel_lifecycle_labels(
-                        channel, replacement_epoch
-                    ),
+            def card_credential(current_bearer: str) -> DelegatedCardCredential:
+                return DelegatedCardCredential(
+                    tenant=host_config.tenant,
+                    project=host_config.platform_project,
+                    bundle_id=bundle_id,
+                    resource=card_resource,
+                    bearer_token=current_bearer,
                 )
-                try:
-                    await bus.connect()
-                except BaseException:
-                    await bus.close()
-                    raise
-                return bus
+
+            async def current_bearer() -> str:
+                return await resolve_profile_bearer(
+                    profile_name=channel.profile,
+                    profiles=services.profiles,
+                    credentials=services.credentials,
+                    oauth_sessions=services.oauth_profile_sessions,
+                )
 
             # A refused admission with an OAuth-backed profile re-mints the
             # session once through the card (relay_admission). A static bearer
@@ -4159,6 +4199,30 @@ async def _relay(args: Any) -> Any:
 
                 async def refresh_bearer() -> str:
                     return await sessions.refresh_access_token(channel.profile)
+
+            async def open_bus(bearer_now: str) -> FederatedDataBusClient:
+                bus = FederatedDataBusClient(
+                    platform_url=platform_url,
+                    credential=card_credential(bearer_now),
+                    # The socket reconnects on its own after a transport drop,
+                    # and each reconnect handshake presents the bearer valid at
+                    # that moment, not the one captured here (relay_admission).
+                    credential_source=reconnect_credential_source(
+                        resolve_bearer=current_bearer,
+                        refresh_bearer=refresh_bearer,
+                        credential=card_credential,
+                        profile=channel.profile,
+                    ),
+                    lifecycle_labels=channel_lifecycle_labels(
+                        channel, replacement_epoch
+                    ),
+                )
+                try:
+                    await bus.connect()
+                except BaseException:
+                    await bus.close()
+                    raise
+                return bus
 
             started = time.monotonic()
             try:

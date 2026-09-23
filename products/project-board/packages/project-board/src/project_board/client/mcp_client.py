@@ -208,6 +208,14 @@ class ProblemBoardDataBusClient:
     def connected(self) -> bool:
         return self.client.connected
 
+    async def wait_until_connected(self, timeout_seconds: float) -> bool:
+        """Wait for the socket's own reconnect, up to ``timeout_seconds``."""
+
+        wait = getattr(self.client, "wait_until_connected", None)
+        if callable(wait):
+            return bool(await wait(timeout_seconds))
+        return bool(self.connected)
+
     @staticmethod
     def _fingerprint(
         *, object_ref: str, action: str, payload: Mapping[str, Any]

@@ -177,3 +177,51 @@ async def open_with_one_refresh(
                     getattr(second, "code", "") or "unnamed",
                 )
             raise
+
+
+def reconnect_credential_source(
+    *,
+    resolve_bearer: Callable[[], Awaitable[str]],
+    refresh_bearer: Optional[Callable[[], Awaitable[str]]],
+    credential: Callable[[str], Any],
+    profile: str,
+) -> Callable[[Any], Awaitable[Any]]:
+    """The credential a reconnect handshake presents: the one valid at that moment.
+
+    The Data Bus client reconnects on its own after a transport drop and asks
+    this source before every reconnect handshake. The bearer the socket
+    captured at first connect is not presented again: a delegated bearer lives
+    one hour and a socket lived up to nine, so that bearer was refused as
+    expired on every attempt and the channel only returned through the cycle's
+    full reopen, minutes later.
+
+    ``resolve_bearer`` is the profile's current bearer, refreshed on this side's
+    clock when it is about to lapse (``resolve_profile_bearer``). When the
+    server refused the previous handshake of this episode and the profile can
+    refresh, ``refresh_bearer`` re-mints once through the card, the same
+    one-refresh policy ``open_with_one_refresh`` applies to a first open. A
+    second refusal in the same episode presents the clock's bearer again and
+    leaves the classification to the cycle. ``credential`` builds the
+    credential the client presents from a bearer.
+    """
+
+    refreshed_for: dict[str, int] = {}
+
+    async def source(attempt: Any) -> Any:
+        generation = int(getattr(attempt, "connection_generation", 0) or 0)
+        previous_refusal = getattr(attempt, "previous_refusal", None)
+        if (
+            previous_refusal is not None
+            and refresh_bearer is not None
+            and refreshed_for.get("generation") != generation
+        ):
+            refreshed_for["generation"] = generation
+            logger.warning(
+                "[relay.admission] reconnect refused profile=%s code=%s: refreshing the Card session once",
+                profile,
+                str((previous_refusal or {}).get("code") or "") or "unnamed",
+            )
+            return credential(await refresh_bearer())
+        return credential(await resolve_bearer())
+
+    return source
