@@ -49,23 +49,33 @@ access, and secret-provider access.
 ## Reviewed cutover policy
 
 The supported existing-runtime cutover preserves every active, unexpired Card
-credential chain that is complete at preview time. One chain consists of the
-Card-handle row, its active access binding, active refresh generation when one
-exists, and the referenced dynamic OAuth client. An Agent Card instead requires
-its reusable bearer and active access binding; the bearer remains in the
-deployment secret provider for hosted reuse and can also be presented by that
-agent over the network. The preview verifies the durable Card identity,
-revision, state, expiry, and every required chain link before the chain can be
-imported. A missing link is a named blocker; apply never turns an apparently
-live Card into a disconnected Card.
+credential chain that is usable at preview time. One chain consists of the
+Card-handle row plus either its current access binding or its matching active
+refresh generation. An active refresh generation is a complete recovery path:
+it carries the client identity and rotates into the next access binding without
+reading a client-registration row. A referenced dynamic OAuth registration is
+also preserved when it exists. Descriptor clients and HTTPS client-metadata
+documents are resolved from their authoritative configuration on the next
+authorization.
+
+An Agent Card keeps its reusable bearer in the deployment secret provider for
+hosted reuse and network presentation. The preview verifies the durable Card
+identity, revision, state, expiry, and at least one usable credential path
+before import. A Card with neither a current access binding nor a matching
+active refresh generation is a named blocker; apply never turns an apparently
+live Card into a disconnected Card. A missing `dcr-*` registration is also a
+blocker because it breaks dynamic-client continuity; descriptor clients and
+HTTPS metadata clients have reconstructable registration authority. The
+preview separately counts current access paths, current refresh paths,
+refresh-recoverable Cards, metadata-URL clients, and pre-registered clients.
 
 Records outside a complete live chain start clean in the new generation:
 
 | Source state | Result after activation |
 | --- | --- |
 | Browser and platform sessions | Users sign in once. Current roles, permissions, provider identity, and authority version are rebuilt by the login path. |
-| Active, unexpired Agent Card with a complete credential chain | Card handle, reusable bearer, and access binding survive. This covers the same agent running under hosted runtime custody or presenting its credential over the network. |
-| Active, unexpired OAuth Card with a complete credential chain | Card handle, access binding, active refresh generation, and referenced dynamic client survive. |
+| Active, unexpired Agent Card with a usable credential chain | Card handle and reusable bearer survive with its current access binding or active refresh generation. This covers the same agent running under hosted runtime custody or presenting its credential over the network. |
+| Active, unexpired OAuth Card with a usable credential chain | Card handle and every live access or refresh record survive. A referenced dynamic registration survives when present; refresh rotation remains valid without that registration row. |
 | Pending Card without an issued credential | Remains pending. It authorizes when activated; there is no live credential to migrate. |
 | Expired, revoked, orphaned, or incomplete Card credential | Does not revive. An incomplete live chain blocks the preview; an expired or revoked credential is reset and must be issued again. |
 | OAuth records not owned by a preserved live Card chain | Existing access and refresh tokens fail closed; unreferenced dynamic clients are reset. |
@@ -84,7 +94,7 @@ count the decision for every record in these families.
 
 | Redis family | Writer and reader | Lifetime | Cutover classification |
 | --- | --- | --- | --- |
-| `{tenant}:{project}:kdcube:oauth:client:*` | OAuth registration and client lookup | Persistent or registration expiry | Dynamic clients referenced by a preserved refresh chain migrate; all others reset. |
+| `{tenant}:{project}:kdcube:oauth:client:*` | OAuth registration and client lookup | Persistent or registration expiry | Existing dynamic clients referenced by a preserved refresh chain migrate; all others reset. Descriptor and client-metadata-document clients are reconstructed by their normal resolver. |
 | `{tenant}:{project}:kdcube:oauth:refresh:*` | OAuth token issue, rotation, refresh, and revoke | Refresh expiry | Active generations owned by preserved Cards migrate; expired, revoked, missing-Card, and unreferenced generations reset. |
 | `{tenant}:{project}:kdcube:oauth:agrant:*` | OAuth access issue and bearer validation | Access-token expiry | Active bindings owned by preserved Cards migrate; other bindings reset. |
 | `{tenant}:{project}:kdcube:delegated-access:card-handles:*` | Card credential issue, renewal, and presentation | Card credential expiry | Complete live Card handles migrate. Agent bearer material moves to the secret provider; PostgreSQL stores its reference and digest. A descriptor sync credentials a legacy live Agent Card before preview; any live Agent Card still missing its bearer blocks activation. |
