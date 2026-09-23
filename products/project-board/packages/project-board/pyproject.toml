@@ -4,17 +4,35 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-board"
-version = "2026.09.22.2100"
+version = "2026.09.23.0158"
 description = "The Project Board client: the pb command a machine runs to join a board, receive addressed work, and report on it, with the shared contract both sides speak."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Elena Viter" }]
 requires-python = ">=3.10"
 classifiers = [
-    "Development Status :: 1 - Planning",
+    "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
 ]
+dependencies = [
+    "aiohttp>=3.9,<4",
+    "app-foundation[data-bus]>=2026.09.03.1835,<2027",
+    "connection-hub-cli>=2026.09.23.0158,<2027",
+    "mcp==2.0.0",
+    "packaging>=23,<27",
+    "PyYAML>=6,<7",
+    "service-foundation>=2026.09.03.1835,<2027",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8,<10",
+    "pytest-asyncio>=0.23,<2",
+]
+
+[project.scripts]
+pb = "project_board.client.entrypoint:main"
 
 [project.urls]
 Homepage = "https://github.com/elenaviter/app-ecosystem"
@@ -24,4 +42,14 @@ Repository = "https://github.com/elenaviter/app-ecosystem"
 where = ["src"]
 
 [tool.setuptools.package-data]
-project_board = ["py.typed"]
+project_board = [
+    "py.typed",
+    "procedure-revisions.json",
+    "procedures/*.md",
+    "procedures/problem-board-worker/*.md",
+    "procedures/problem-board-worker/*.json",
+    "procedures/problem-board-worker/references/*.md",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

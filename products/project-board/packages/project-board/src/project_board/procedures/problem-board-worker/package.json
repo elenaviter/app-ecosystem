@@ -1,0 +1,18 @@
+{
+  "schema": "problem-board.procedure-source.v1",
+  "package_id": "problem-board-worker",
+  "revision": "2026.09.22.13",
+  "entrypoint": "SKILL.md",
+  "references": [
+    "references/identity-and-authorization.md",
+    "references/delivery-and-recovery.md",
+    "references/claude-code-wake.md",
+    "references/project-report.md",
+    "references/runtime-actions.md",
+    "references/coordinator.md",
+    "references/test-window.md",
+    "references/first-run.md",
+    "references/shared-runtime-state.md",
+    "references/collaboration.md"
+  ]
+}

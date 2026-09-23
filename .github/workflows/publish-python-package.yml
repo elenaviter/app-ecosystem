@@ -136,7 +136,7 @@ jobs:
           IMPORT_NAME: ${{ steps.package.outputs.import_name }}
           EXPECTED_VERSION: ${{ steps.package.outputs.version }}
         run: |
-          if [ "$PACKAGE_NAME" = "connection-hub" ] || [ "$PACKAGE_NAME" = "connection-hub-cli" ]; then
+          if [ "$PACKAGE_NAME" = "connection-hub" ] || [ "$PACKAGE_NAME" = "connection-hub-cli" ] || [ "$PACKAGE_NAME" = "project-board" ]; then
             python -m pip install -e "${PACKAGE_PATH}[test]"
             python -m pytest "${PACKAGE_PATH}/tests"
           else

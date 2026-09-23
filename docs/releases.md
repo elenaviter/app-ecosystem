@@ -19,6 +19,7 @@ release.
 | `harness-foundation` | `packages/harness-foundation` | `pyproject.toml` and `harness_foundation.__version__` | `packages/harness-foundation/release.yaml` when released | `publish-python-package.yml` |
 | `capabilities-foundation` | `packages/capabilities-foundation` | `pyproject.toml` and `capabilities_foundation.__version__` | `packages/capabilities-foundation/release.yaml` | `publish-python-package.yml` |
 | `economics-foundation` | `packages/economics-foundation` | `pyproject.toml` and `economics_foundation.__version__` | `packages/economics-foundation/release.yaml` | `publish-python-package.yml` |
+| `project-board` | `products/project-board/packages/project-board` | `pyproject.toml` and `project_board.__version__` | `products/project-board/packages/project-board/release.yaml` | `publish-python-package.yml` |
 
 ## Version and tag contract
 
@@ -49,6 +50,9 @@ For each piece selected for release:
    `products/connection-hub/packages/connection-hub/tests`;
    `connection-hub-cli` runs
    `products/connection-hub/packages/connection-hub-cli/tests`;
+   `project-board` runs
+   `products/project-board/packages/project-board/tests` and a clean-wheel
+   command, procedure-data, source-selection, and relay-bootstrap smoke;
    planning-marker foundations run install, import, and version smoke checks.
 4. Build the wheel and source distribution with `python -m build`.
 5. Run `python -m twine check` on every artifact.
