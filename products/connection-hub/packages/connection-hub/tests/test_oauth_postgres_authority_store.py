@@ -9,7 +9,10 @@ from typing import Any
 import pytest
 
 from connection_hub.delegated_credentials.oauth.authority_schema import (
+    TABLE_ACCESS_BINDINGS,
     TABLE_CLIENTS,
+    TABLE_FAMILIES,
+    TABLE_REFRESH_GENERATIONS,
     oauth_authority_schema_sql,
 )
 from connection_hub.delegated_credentials.devices.authority_schema import (
@@ -36,8 +39,14 @@ class _Transaction:
 
 
 class _Connection:
-    def __init__(self, *, rows: list[dict[str, Any] | None] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        rows: list[dict[str, Any] | None] | None = None,
+        row_sets: list[list[dict[str, Any]]] | None = None,
+    ) -> None:
         self.rows = deque(rows or [])
+        self.row_sets = deque(row_sets or [])
         self.calls: list[tuple[str, str, tuple[Any, ...], int]] = []
         self.transaction_depth = 0
         self.transaction_enters = 0
@@ -53,6 +62,10 @@ class _Connection:
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         self.calls.append(("fetchrow", sql, args, self.transaction_depth))
         return self.rows.popleft() if self.rows else None
+
+    async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        self.calls.append(("fetch", sql, args, self.transaction_depth))
+        return self.row_sets.popleft() if self.row_sets else []
 
 
 class _Acquire:
@@ -322,6 +335,7 @@ async def test_client_lookup_extends_only_in_second_half_of_ttl() -> None:
             {
                 "client_id": "client-1",
                 "redirect_uris": ["http://127.0.0.1/callback"],
+                "grant_types": ["authorization_code", "refresh_token"],
                 "token_endpoint_auth_method": "none",
                 "application_type": "native",
                 "metadata": {},
@@ -336,6 +350,7 @@ async def test_client_lookup_extends_only_in_second_half_of_ttl() -> None:
 
     assert record is not None
     assert record["client_id"] == "client-1"
+    assert record["grant_types"] == ["authorization_code", "refresh_token"]
     assert len(connection.calls) == 1
     kind, sql, arguments, depth = connection.calls[0]
     assert kind == "fetchrow"
@@ -345,6 +360,44 @@ async def test_client_lookup_extends_only_in_second_half_of_ttl() -> None:
     assert "FROM candidate" in sql
     assert "last_used_at" not in sql
     assert "updated_at" not in sql
+
+
+@pytest.mark.asyncio
+async def test_card_lifecycle_uses_stable_id_in_one_transaction() -> None:
+    connection = _Connection(row_sets=[[{"family_id": "ofam_1"}]])
+    store = _store(connection)
+
+    extended = await store.extend_card_credentials("aut_card", 900)
+
+    assert extended is True
+    assert connection.transaction_enters == 1
+    assert connection.transaction_exits == 1
+    assert [kind for kind, _sql, _args, _depth in connection.calls] == [
+        "fetch",
+        "execute",
+        "execute",
+        "execute",
+    ]
+    assert all(depth == 1 for _kind, _sql, _args, depth in connection.calls)
+    assert all("refresh-bearer" not in args for _kind, _sql, args, _depth in connection.calls)
+    assert connection.calls[0][2] == ("aut_card",)
+
+
+@pytest.mark.asyncio
+async def test_card_revocation_reaches_refresh_and_access_rows_transactionally() -> None:
+    connection = _Connection(row_sets=[[{"family_id": "ofam_1"}]])
+    store = _store(connection)
+
+    revoked = await store.revoke_card_credentials("aut_card")
+
+    assert revoked is True
+    assert connection.transaction_enters == 1
+    assert connection.transaction_exits == 1
+    sql = "\n".join(call[1] for call in connection.calls)
+    assert "connection_hub_oauth_refresh_generations" in sql
+    assert "connection_hub_oauth_credential_families" in sql
+    assert "connection_hub_oauth_access_bindings" in sql
+    assert all(depth == 1 for _kind, _sql, _args, depth in connection.calls)
 
 
 @pytest.mark.asyncio
@@ -422,6 +475,7 @@ async def test_client_extension_executes_against_real_postgres() -> None:
         record = {
             "client_id": "client-1",
             "redirect_uris": ["http://127.0.0.1/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
             "token_endpoint_auth_method": "none",
             "application_type": "native",
             "metadata": {},
@@ -450,6 +504,78 @@ async def test_client_extension_executes_against_real_postgres() -> None:
                 "client-1",
             )
         assert revision == 2
+    finally:
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_card_credential_lifecycle_executes_against_real_postgres() -> None:
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    store = PostgresOAuthAuthorityStore(
+        pg_pool=pool,
+        tenant=f"w253-test-{uuid.uuid4().hex}",
+        project="card-credential-lifecycle",
+    )
+    try:
+        await store.ensure_schema()
+        await store.create_refresh_token(
+            {
+                "registry_access_id": "aut_card",
+                "card_kind": "automation",
+                "client_id": "client-1",
+                "sub": "user-1",
+            },
+            ttl_seconds=600,
+        )
+        await store.bind_access_grant(
+            "access-bearer",
+            {"registry_access_id": "aut_card", "operations": ["search"]},
+            ttl_seconds=600,
+        )
+
+        assert await store.extend_card_credentials("aut_card", 900) is True
+        assert await store.revoke_card_credentials("aut_card") is True
+
+        async with pool.acquire() as connection:
+            family_state = await connection.fetchval(
+                f"""
+                SELECT state
+                FROM {store.schema}.{TABLE_FAMILIES}
+                WHERE registry_access_id = $1
+                """,
+                "aut_card",
+            )
+            refresh_state = await connection.fetchval(
+                f"""
+                SELECT generation.state
+                FROM {store.schema}.{TABLE_REFRESH_GENERATIONS} AS generation
+                JOIN {store.schema}.{TABLE_FAMILIES} AS family
+                  ON family.family_id = generation.family_id
+                WHERE family.registry_access_id = $1
+                """,
+                "aut_card",
+            )
+            access_state = await connection.fetchval(
+                f"""
+                SELECT state
+                FROM {store.schema}.{TABLE_ACCESS_BINDINGS}
+                WHERE registry_access_id = $1
+                """,
+                "aut_card",
+            )
+        assert (family_state, refresh_state, access_state) == (
+            "revoked",
+            "revoked",
+            "revoked",
+        )
     finally:
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")

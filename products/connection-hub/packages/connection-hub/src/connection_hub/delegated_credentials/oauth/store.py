@@ -885,6 +885,37 @@ class GrantStore:
             )
         )
 
+    async def extend_card_credentials(
+        self,
+        registry_access_id: str,
+        ttl_seconds: int,
+    ) -> bool:
+        if self._authority_store is None:
+            raise GrantStoreUnavailable(
+                "card_credentials.extend.authority_not_configured"
+            )
+        return bool(
+            await self._authority_call(
+                "card_credentials.extend",
+                "extend_card_credentials",
+                str(registry_access_id or "").strip(),
+                max(1, int(ttl_seconds)),
+            )
+        )
+
+    async def revoke_card_credentials(self, registry_access_id: str) -> bool:
+        if self._authority_store is None:
+            raise GrantStoreUnavailable(
+                "card_credentials.revoke.authority_not_configured"
+            )
+        return bool(
+            await self._authority_call(
+                "card_credentials.revoke",
+                "revoke_card_credentials",
+                str(registry_access_id or "").strip(),
+            )
+        )
+
     async def get_access_grant_record(self, access_token: str) -> Optional[Dict[str, Any]]:
         """Grant metadata bound to ``access_token`` (None if no grant record)."""
         if self._authority_store is not None:

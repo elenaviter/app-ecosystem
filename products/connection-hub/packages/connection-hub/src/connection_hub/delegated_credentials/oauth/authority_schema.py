@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from connection_hub.delegated_credentials.authority_cutover import (
+    TABLE_AUTHORITY_CUTOVERS,
+    authority_cutover_schema_sql,
+)
 from connection_hub.hub.authenticator_store import schema_for_scope
 
 TABLE_CLIENTS = "connection_hub_oauth_clients"
 TABLE_FAMILIES = "connection_hub_oauth_credential_families"
 TABLE_REFRESH_GENERATIONS = "connection_hub_oauth_refresh_generations"
 TABLE_ACCESS_BINDINGS = "connection_hub_oauth_access_bindings"
-TABLE_CUTOVERS = "connection_hub_authority_cutovers"
+# Compatibility alias for callers that imported the original OAuth-local name.
+TABLE_CUTOVERS = TABLE_AUTHORITY_CUTOVERS
 
 
 def oauth_authority_schema(*, tenant: str, project: str) -> str:
@@ -29,6 +34,8 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_CLIENTS} (
     tenant                       TEXT NOT NULL,
     project                      TEXT NOT NULL,
     redirect_uris                JSONB NOT NULL,
+    grant_types                  JSONB NOT NULL
+                                 DEFAULT '["authorization_code","refresh_token"]'::jsonb,
     token_endpoint_auth_method   TEXT NOT NULL DEFAULT 'none',
     application_type             TEXT NOT NULL DEFAULT 'native',
     metadata                     JSONB NOT NULL DEFAULT '{{}}'::jsonb,
@@ -43,6 +50,10 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_CLIENTS} (
 CREATE INDEX IF NOT EXISTS connection_hub_oauth_clients_live_idx
     ON {schema}.{TABLE_CLIENTS} (expires_at)
     WHERE retired_at IS NULL;
+
+ALTER TABLE {schema}.{TABLE_CLIENTS}
+    ADD COLUMN IF NOT EXISTS grant_types JSONB NOT NULL
+    DEFAULT '["authorization_code","refresh_token"]'::jsonb;
 
 CREATE TABLE IF NOT EXISTS {schema}.{TABLE_FAMILIES} (
     family_id                    TEXT PRIMARY KEY,
@@ -117,14 +128,4 @@ CREATE INDEX IF NOT EXISTS connection_hub_oauth_access_expiry_idx
     ON {schema}.{TABLE_ACCESS_BINDINGS} (expires_at)
     WHERE state = 'active';
 
-CREATE TABLE IF NOT EXISTS {schema}.{TABLE_CUTOVERS} (
-    migration_id                 TEXT PRIMARY KEY,
-    activated_revision           BIGSERIAL UNIQUE,
-    source_generation            TEXT NOT NULL,
-    target_generation            TEXT NOT NULL,
-    source_counts                JSONB NOT NULL,
-    target_counts                JSONB NOT NULL,
-    preview_sha256               CHAR(64) NOT NULL,
-    applied_at                   TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
+""" + authority_cutover_schema_sql(schema)
