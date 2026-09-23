@@ -607,6 +607,34 @@ async def resolve_agent_descriptor_standard_authority(
     )
 
 
+_SINGLE_CHOICE_DEFAULT_CATEGORIES = ("models", "instruction_profiles")
+
+
+def _fill_missing_single_choice_defaults(
+    current: AgentCapabilityPolicy,
+    defaults: AgentCapabilityPolicy,
+) -> AgentCapabilityPolicy:
+    """Inherit a missing singleton default without replacing a user choice."""
+
+    if current.resource != defaults.resource:
+        raise AgentCapabilityPolicyError("agent_capability_resource_mismatch")
+    capabilities = dict(current.capabilities)
+    for category in _SINGLE_CHOICE_DEFAULT_CATEGORIES:
+        if capabilities.get(category):
+            continue
+        values = defaults.capabilities.get(category, ())
+        if len(values) > 1:
+            raise AgentCapabilityPolicyError(
+                "agent_capability_single_choice_default_invalid"
+            )
+        if values:
+            capabilities[category] = values
+    return AgentCapabilityPolicy(
+        resource=current.resource,
+        capabilities=capabilities,
+    )
+
+
 async def sync_agent_capability_control(
     service: Any,
     user: Mapping[str, Any],
@@ -682,9 +710,17 @@ async def sync_agent_capability_control(
             and requested_selection.resource != agent_resource
         ):
             raise AgentCapabilityPolicyError("agent_capability_resource_mismatch")
+        raw_descriptor_defaults = descriptor_payload.get("capability_defaults")
+        control_defaults = (
+            AgentCapabilityPolicy.from_property(raw_descriptor_defaults)
+            if isinstance(raw_descriptor_defaults, Mapping)
+            else requested_selection
+        )
+        if control_defaults is not None and control_defaults.resource != agent_resource:
+            raise AgentCapabilityPolicyError("agent_capability_resource_mismatch")
         descriptor_properties = descriptor_control_properties(
             authority=authority,
-            defaults=requested_selection,
+            defaults=control_defaults,
             metadata=capability_metadata,
             targets=conversation_target_resources,
         )
@@ -1043,7 +1079,10 @@ async def sync_agent_capability_control(
                 requested=requested_selection,
             )
         else:
-            selected = current_selection
+            selected = _fill_missing_single_choice_defaults(
+                current_selection,
+                defaults,
+            )
     except AgentCapabilityPolicyError as exc:
         return {"ok": False, "error": exc.reason, "status": 400}
 

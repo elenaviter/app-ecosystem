@@ -128,6 +128,14 @@ def _policy(*tools: str) -> dict:
     }
 
 
+def _policy_with_capabilities(**capabilities: list[str]) -> dict:
+    return {
+        "schema": AGENT_CAPABILITY_POLICY_SCHEMA,
+        "resource": RESOURCE,
+        "capabilities": capabilities,
+    }
+
+
 def _policy_with_targets(*targets: str) -> dict:
     return {
         "schema": AGENT_CAPABILITY_POLICY_SCHEMA,
@@ -809,6 +817,67 @@ async def test_live_control_defaults_seed_a_recreated_agent_card() -> None:
     assert recreated["control_changed"] is False
     assert recreated["selection"]["capabilities"] == {"tools": ["tool.new"]}
     assert recreated["projection"] == recreated["selection"]
+
+
+@pytest.mark.asyncio
+async def test_new_control_revision_fills_only_missing_single_choice_defaults() -> None:
+    service, _persistence = _service()
+    authority = _policy_with_capabilities(
+        tools=["tool.default"],
+        models=["anthropic/haiku", "anthropic/sonnet"],
+        instruction_profiles=["extra-lite", "full"],
+    )
+    created = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r1",
+        descriptor_payload={"revision": "descriptor-r1"},
+        capability_authority=authority,
+        capability_catalog=authority,
+        selected_capabilities=_policy_with_capabilities(
+            tools=[],
+            models=["anthropic/haiku"],
+        ),
+    )
+    assert created["ok"] is True, created
+
+    changed = await service.sync_agent_capability_control(
+        {"user_id": OWNER},
+        application=APPLICATION,
+        agent_id=AGENT,
+        descriptor_revision="descriptor-r2",
+        descriptor_payload={
+            "revision": "descriptor-r2",
+            "capability_defaults": _policy_with_capabilities(
+                tools=["tool.default"],
+                models=["anthropic/sonnet"],
+                instruction_profiles=["extra-lite"],
+            ),
+        },
+        capability_authority=authority,
+        capability_catalog=authority,
+        selected_capabilities=_policy_with_capabilities(
+            tools=[],
+            models=["anthropic/haiku"],
+        ),
+    )
+
+    assert changed["ok"] is True, changed
+    control = _persistence.records[changed["control_card"]["access_id"]][0]
+    assert control.properties[AGENT_CAPABILITY_DEFAULTS_PROPERTY][
+        "capabilities"
+    ] == {
+        "instruction_profiles": ["extra-lite"],
+        "models": ["anthropic/sonnet"],
+        "tools": ["tool.default"],
+    }
+    assert changed["selection"]["capabilities"] == {
+        "instruction_profiles": ["extra-lite"],
+        "models": ["anthropic/haiku"],
+        "tools": [],
+    }
+    assert changed["projection"] == changed["selection"]
 
 
 @pytest.mark.asyncio
