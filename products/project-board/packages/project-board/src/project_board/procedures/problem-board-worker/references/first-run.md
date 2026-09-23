@@ -205,6 +205,22 @@ project. Say which server (target label and endpoint), which project, and
 which worker this session is, in one or two sentences, and stop. The rest of
 this skill takes over from here.
 
+## A Claude Code Worker Session Asks Through The Board
+
+A Claude Code session that works on the board starts without the interactive
+prompt tool, so every question for the operator goes through the board
+(collaboration Rule 11):
+
+```bash
+claude --disallowedTools AskUserQuestion
+claude --resume <session-uuid> --disallowedTools AskUserQuestion
+```
+
+The flag applies to that one session, and the user's other Claude Code
+sessions keep their prompts. A session that is already running picks it up on
+its next start. The user starts the session: propose the command, and the user
+runs it.
+
 ## Claude Code Says When It Is Out Of Tokens
 
 The board shows each worker's usage limit as the runtime itself reports it,

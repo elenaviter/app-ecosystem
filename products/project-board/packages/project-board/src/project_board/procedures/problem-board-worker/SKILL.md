@@ -416,9 +416,9 @@ Mail to the operator takes one of these kinds and nothing else:
     question   blocked   decision   delivery_failed
     progress   reply     update     result
 
-`progress` and `update` carry ordinary movement. `blocked` and `question` reach
-her attention because she is the only one who can clear them. Anything else is
-refused with `work_mail_kind_invalid`, which names the set.
+`progress` and `update` carry ordinary movement. `question`, `decision`, `blocked`
+also reach her Telegram. Ask for her input this way, never in a terminal prompt
+(collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`.
 
 ## Runtime Actions And Test Windows
 

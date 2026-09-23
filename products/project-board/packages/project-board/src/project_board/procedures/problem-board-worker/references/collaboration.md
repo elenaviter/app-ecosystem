@@ -569,6 +569,32 @@ result came through one, and a worker on another machine could not read it
 (P14, four yes votes). The test-window reference owns the pause procedure
 itself, this rule owns what the window says to the team.
 
+## Rule 11. The operator is asked on the board, and on Telegram when it is urgent
+
+When you need the operator's input (a choice, an approval, a fact only she
+has), send it as mail to `operator` in the project conversation:
+
+- the question
+- the options, each with what it costs
+- your recommendation
+- what you do while you wait
+
+When it is urgent, send it as `question`, `decision` or `blocked`. These kinds
+also reach her Telegram, and her reply arrives as a correlated message you
+answer like any other.
+
+A Claude Code worker session runs without an interactive prompt tool. It is
+started with `--disallowedTools AskUserQuestion` (first-run reference), so the
+board mail is the one way a question reaches her.
+
+Why: the operator is not watching every worker's terminal. A dialog that
+waits in one session holds that worker still, and she learns about it only if
+she happens to look at that screen. On 2026-09-23 a coordinator asked her an
+approval question in a terminal dialog. Her ruling: "in PB the agents cannot
+be sure the operator is looking into their terminals. and if there are inputs
+needed, the agent must send this in project chat to operator, or if urgent
+then also in telegram."
+
 ## From this moment: round 2 on dev-main, 2026-09-22 22:20Z
 
 Round 1 ran four hours under rules that did not exist when it started, and

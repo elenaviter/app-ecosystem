@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.12"
+    assert package["revision"] == "2026.09.23.13"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -779,3 +779,20 @@ def test_testing_procedure_runs_the_packaged_dependency_preflight_before_the_sui
     assert script.is_file()
     assert "project_board/procedures/dependency_preflight.py" in testing
     assert "$PB/procedures/dependency_preflight.py" not in testing
+
+
+def test_operator_input_goes_through_the_board_not_a_terminal_prompt() -> None:
+    # Operator, 2026-09-23: "in PB the agents cannot be sure the operator is
+    # looking into their terminals. and if there are inputs needed, the agent
+    # must send this in project chat to operator, or if urgent then also in
+    # telegram." The skill points at the rule, the collaboration reference
+    # carries it, and first-run names the launch flag.
+    skill = _words(_read("SKILL.md"))
+    assert "Ask for her input this way, never in a terminal prompt (collaboration Rule 11)" in skill
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "Rule 11. The operator is asked on the board, and on Telegram when it is urgent" in collaboration
+    assert "send it as mail to `operator` in the project conversation" in collaboration
+    assert "send it as `question`, `decision` or `blocked`" in collaboration
+    first_run = _words(_read("references/first-run.md"))
+    assert "claude --disallowedTools AskUserQuestion" in first_run
+    assert "claude --resume <session-uuid> --disallowedTools AskUserQuestion" in first_run
