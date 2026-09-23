@@ -9,6 +9,7 @@ updated_at: 2026-09-23
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
+  - ../testing/end-to-end-acceptance.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
 ---
@@ -70,9 +71,11 @@ stored card selection                 current deployment catalogs
 All four families use `AutomationAccessRecord`, the same immutable revision
 format, and the same lifecycle implementation. Their purpose and credential
 retention differ. The three caller families appear in the central **Delegated
-by KDCube** list. A Control Card is currently opened by exact id from the
-application that gave it its control role; a future central listing is a view
-over the same records, not another store or migration.
+by KDCube** list. A Control Card is opened by exact id from the application
+that gave it its control role; a future central listing is a view over the same
+records, not another store or migration. A descriptor-controlled agent's
+Control Card is an administrator surface. That access boundary is independent
+of an ordinary user's right to edit their own Agent Card.
 
 | `source` | Represents | How it is created | Credential material retained in the card record |
 | --- | --- | --- | --- |
@@ -89,8 +92,11 @@ how the credential lifecycle is managed under the same authorization model.
 A Control Card is the same Card aggregate without credential handles. It uses
 the same catalog choices, revisions, current pointer, drift calculation,
 editor, update path, and revoke lifecycle. Connection Hub owns it physically
-and durably. The issuing application stores only its Card reference and any
-observed revision, state, catalog, composition, or synchronization facts.
+and durably. A descriptor-controlled agent gives the Card an exact application
+and agent target. The application synchronizes the descriptor projection;
+Connection Hub stores the Card and, for an administrator edit, writes the
+reviewed change through the target application's descriptor-owned
+configuration.
 
 ### Credential delivery and resource reach
 
@@ -817,30 +823,48 @@ agent attempts a governed operation
 A descriptor-controlled resident agent uses the same stable profile Card ID
 with a different credential contract. Descriptor synchronization creates a
 Card whose `kdcube.agent_capability_selection` property stores the user's
-starting selection and whose linked Control Card stores the descriptor-owned
-ceiling. This Card carries no bearer or refresh token. Its seven-day
-`expires_at` is an inactivity lease chosen for the capability projection, not
-an access-token lifetime. Every agent message synchronizes before projecting
-tools. While the Card remains current, an unchanged sync writes nothing. After
-the lease lapses, the Card grants nothing; the next message writes a renewed
-revision under the same `access_id`, preserves the selected capability base,
-and only then projects tools. The owner therefore keeps one legible Card and
-selection across revisions without abandoned authority remaining live forever.
+positive default selection and whose linked Control Card stores the
+descriptor-owned ceiling and administrator defaults. This Card carries no
+bearer or refresh token. Its seven-day `expires_at` is an inactivity lease
+chosen for the capability projection, not an access-token lifetime. Every
+agent message synchronizes before projecting tools. While the Card remains
+current, an unchanged sync writes nothing. After the lease lapses, the Card
+grants nothing; the next message writes a renewed revision under the same
+`access_id`, preserves the selected capability base, and only then projects
+tools. The owner therefore keeps one legible Card and selection across
+revisions without abandoned authority remaining live forever.
 
-When no resident selection exists, the application supplies the descriptor
-default as the first positive Agent Card selection. Once the Card exists,
-ordinary descriptor synchronization preserves that selection: a capability
-added to the descriptor appears inside the Control Card ceiling but remains
-outside the resident Card until the user selects it. Connection Hub edits this
-base through a dedicated revision-checked selection update, bounded by the
-current linked Control Card. Values outside that ceiling cannot be added.
+Connection Hub persists the Control and Agent Cards, their revisions, links,
+leases, and positive selections. KDCube owns the synchronization-field
+semantics, default-fill rules, conversation projection, live intersection, and
+descriptor write path; see
+[Agent Capability Control And Selection](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md).
 
-The owner-facing surfaces preserve the distinction. The resident Agent Card
-is the editable starting selection. Its descriptor Control Card is a read-only
-view of the synchronized ceiling and its labels and descriptions, rather than
-an empty generic resource editor. A capability picker can open the resident
-Card directly with `tab=delegated_by_kdcube&access_id=<resident-card-id>`; the
-Connection Hub surface resolves and edits that exact Card.
+The Card read model applies that contract to the resource picker. A
+descriptor-backed Control Card offers only named-service and MCP catalog rows
+that the host can serialize back into the descriptor. It omits global aggregate
+choices such as **All platform and application APIs**, management-only rows,
+and user-owned connector instances. Managed named-service and MCP permissions,
+tools, and actions remain in the standard Card resource sections rather than
+appearing again as empty KDCube metadata groups.
+
+A linked hosted Agent Card offers the exact standard resources selected by its
+Control Card. A permitted user-owned resource family also contributes a
+discovery container such as **My MCP connectors** and the owner's matching
+exact connector resources. The container is not itself submitted as Card
+authority. Connected accounts and connector credentials remain owned by the
+user's Agent Card. Only a platform administrator may read or mutate the
+descriptor Control Card; direct access by an ordinary user is denied without
+returning its authority payload.
+
+For an administrator save, Connection Hub submits the revision-checked live
+Control Card update only after the KDCube host write succeeds, so the Card
+cannot report a descriptor write-through that did not persist. The linked
+KDCube capability document owns the descriptor field and write path.
+
+A capability picker can open the resident Card directly with
+`tab=delegated_by_kdcube&access_id=<resident-card-id>`; the Connection Hub
+surface resolves and edits that exact Card.
 
 The capability editor preserves the descriptor's hierarchy. Tool groups own
 their tools, MCP servers own their tools, named services own their operations,
@@ -1146,6 +1170,17 @@ derives conventional admission properties, including
 `kdcube.conversation_targets`, from that effective projection. Those properties
 are transport views for established guards, not additional selections and not
 independent sources of authority.
+
+The current Control Card is resolved at the governed operation boundary, so a
+removed capability stops contributing authority to old and new conversations
+without a Card re-mint. KDCube owns the retained-selection, restoration,
+default, and conversation-layer semantics; see
+[Agent Capability Control And Selection](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/user-settings/capabilities-README.md).
+
+The complete human acceptance sequence, including a real Slack side effect,
+administrator write-through, non-administrator denial, existing-conversation
+revocation and restart durability, is in
+[Connection Hub And Governed MCP End-To-End Acceptance](../testing/end-to-end-acceptance.md#resident-agent-control-card-agent-card-and-conversation-projection).
 
 ```text
 presented credential

@@ -1,11 +1,11 @@
 ---
 id: connection-hub/testing/end-to-end-acceptance
 title: "Connection Hub And Governed MCP End-To-End Acceptance"
-summary: "Human-runnable acceptance procedure for delegated cards, invocation policy, external MCP proxying, direct protected-service admission, connected accounts, revocation, durability, and native-OAuth or bridged desktop clients."
+summary: "Human-runnable acceptance for resident-agent capability Cards, delegated MCP, direct protected-service admission, native or bridged OAuth clients, revocation, and durability."
 status: current
-tags: ["testing", "connection-hub", "delegated-access", "mcp", "proxy", "admission", "invocation-policy", "consent", "claude-code"]
-keywords: ["Connection Hub acceptance", "delegated card test", "allow once", "allow always", "external MCP proxy", "delegated MCP gateway", "one resident card", "multi-resource card", "direct admission", "descriptor drift", "live consent", "operation-only consent", "resource_operations", "named services MCP", "Claude Code OAuth", "revocation test"]
-updated_at: 2026-09-04
+tags: ["testing", "connection-hub", "delegated-access", "control-card", "agent-card", "conversation-selection", "mcp", "proxy", "admission", "invocation-policy", "consent", "claude-code"]
+keywords: ["Connection Hub acceptance", "agent capability Control Card", "Agent Card defaults", "conversation override", "live descriptor ceiling", "delegated card test", "allow once", "allow always", "external MCP proxy", "delegated MCP gateway", "one resident card", "multi-resource card", "direct admission", "descriptor drift", "live consent", "operation-only consent", "resource_operations", "named services MCP", "Claude Code OAuth", "revocation test"]
+updated_at: 2026-09-23
 see_also:
   - ../connection-hub-architecture.md
   - ../macos-user-presence-helper.md
@@ -23,6 +23,10 @@ with an agent, and every step is explicit enough to automate later.
 
 The procedure covers:
 
+- a descriptor-controlled resident agent whose administrator Control Card,
+  user Agent Card defaults, and per-conversation choices remain separate;
+- live descriptor revocation across conversations created under older Control
+  revisions;
 - a resident KDCube agent using a managed MCP or native named-service tool;
 - one stable resident-agent card projecting multiple compatible resources
   through one aggregate delegated MCP Gateway;
@@ -154,6 +158,214 @@ new Python package into an already built runtime image.
 
 Expected result: the card is current, the active catalog has no unresolved
 drift for the tested capability, and the account selection is unambiguous.
+
+## Resident Agent Control Card, Agent Card, And Conversation Projection
+
+This phase proves the complete hosted-agent configuration chain:
+
+```text
+application descriptor
+  administrator capability ceiling and defaults
+            |
+            v
+descriptor Control Card
+  current live ceiling, administrator-owned
+            |
+            v
+user Agent Card
+  that user's defaults inside the ceiling
+            |
+            v
+new conversation selection
+  independent choices copied at creation
+            |
+            v
+effective operation = current Control ceiling AND conversation selection
+```
+
+The last line is the security invariant. Agent Card defaults and conversation
+choices are positive selections, not durable authority. A later descriptor
+removal denies the next operation in conversations created before the removal.
+
+### Fixture
+
+Use one hosted application agent, one platform administrator, and two ordinary
+users. Give each ordinary user a separate disposable Slack connection and use
+a test channel such as `#agent-capability-e2e`. Connect a deterministic custom
+MCP for User A, such as an echo tool returning a fixed marker. Configure the
+agent descriptor with:
+
+- two models and an explicit default model;
+- two instruction profiles and an explicit default profile;
+- at least two skills and one native tool;
+- named services, the knowledge MCP, and the custom-MCP resource family;
+- Slack read and `post_message`, with `post_message` initially selected.
+
+Record the descriptor revision, Control Card id/revision, both Agent Card
+ids/revisions, conversation ids, and every unique Slack marker. Do not record
+credentials, authorization codes, cookies, or tokens.
+
+### First Control and Agent Card materialization
+
+1. Apply the descriptor and refresh a runtime that contains the source under
+   test.
+2. As the administrator, open the Control Card before making a UI edit.
+3. Confirm its selected model, instruction, skills and tools match the
+   descriptor defaults on this first open.
+4. Confirm the full Card editor contains the descriptor-selected named-service
+   and knowledge-MCP resources, with their service permissions, tools, and
+   service actions, plus models, instructions, skills, native tools, resource
+   families, helper-agent settings, and bounded metadata.
+5. Open **Add to this card**. Confirm it contains only descriptor-serializable
+   named-service and MCP resources. It must not contain **All platform and
+   application APIs**, management-only resources, or User A's connector
+   instances. Confirm the knowledge MCP is not repeated as a generic
+   zero-tool KDCube metadata row.
+6. Reopen it and confirm the same stable card id is used.
+7. Open User A's Agent Card. Confirm its initially selected standard resources
+   exactly equal the Control Card's selected named-service and managed-MCP
+   resources, and that the same model, instruction, skill, native-tool,
+   resource-family, and helper-agent defaults are selected.
+8. Open **Add to this card** on the Agent Card. Confirm it offers only those
+   exact Control resources. Because the custom-MCP resource family is enabled,
+   confirm **My MCP connectors** appears as a discovery container and User A's
+   matching connector appears beneath it by default. The container itself must
+   not be saved as resource authority. Confirm User A's connected Slack account
+   remains present in the same Card experience.
+
+Expected result: neither Card first opens with blank defaults or a reduced
+specialized view. Every value offered inside the ceiling is mutable. Unrelated
+global catalog resources are not offered. A saved value removed by a later
+Control revision remains visible as unavailable provenance and cannot execute.
+
+### Administrator boundary
+
+1. Sign in as User A and confirm the descriptor Control Card is absent from
+   ordinary navigation and lists.
+2. Request its known URL or card id directly, then attempt a direct update.
+3. Open User A's Agent Card.
+4. As User B, request User A's Agent Card directly.
+
+Expected result: Control read/update and cross-user Agent Card access are
+denied without returning their authority payloads. Each ordinary user may edit
+only their own Agent Card. The platform administrator may edit the exact
+descriptor Control Card.
+
+### Picker size and authority states
+
+1. Open the capability picker from the full Agent Card and from chat.
+2. Expand it, scroll every section, collapse it, and reopen it.
+3. Repeat at a narrow viewport.
+4. Inspect one selected row and one available but unselected row. After the
+   later descriptor-removal phase, inspect one retained selection that is now
+   outside the Control ceiling.
+
+Expected result: the expanded picker uses the available viewport rather than
+the launcher's dimensions; every section remains reachable. Selected and
+unselected rows inside the ceiling are mutable. Only the row outside the
+ceiling is immutable. A provenance badge never locks a permitted row.
+
+### Agent defaults and conversation-local choices
+
+1. Create Conversation A1 while User A's Agent Card has the descriptor
+   defaults. Send one message and record the effective model, instruction and
+   capability selection.
+2. Edit the Agent Card: choose the second model and instruction, deselect one
+   skill, and deselect Slack `post_message`. Save.
+3. Return to A1 and send another message.
+4. Create Conversation A2 and send its first message.
+5. In A1's chat picker, change the model/instruction and one capability. Save,
+   then send the next message.
+6. Reopen A2 and the Agent Card.
+
+Expected result: A1 retains its starting choices until A1 itself is edited.
+A2 starts from the newly saved Agent Card defaults. The A1 picker edit applies
+from A1's next message and changes neither A2 nor the Agent Card. User B is
+unchanged throughout.
+
+### Concrete Slack allow case
+
+1. In a conversation whose selection includes Slack `post_message`, ask the
+   agent to post exactly `CAP-E2E-<UTC timestamp>-ALLOW` to the disposable
+   channel.
+2. Verify one and only one message appears under the intended connected user.
+3. Save its permalink and the operation/audit evidence.
+
+Expected result: the picker, exposed tool catalog, selected account and
+operation guard agree on one permitted side effect.
+
+### Descriptor to Control synchronization
+
+1. Change the source descriptor's default model, instruction, one selected
+   skill and one allowed service operation.
+2. Apply/reload it and reopen the Control Card before editing the Card.
+3. Inspect existing Agent Cards, then create a fresh Agent Card for a new user.
+
+Expected result: descriptor/default changes advance the Control descriptor
+revision and appear on first open. A fresh Agent Card receives the new
+defaults. A synchronization fills a singleton model or instruction from the
+current default only while that selection holds no value, and it never
+overwrites a chosen value. An explicit Agent Card selection replacement does
+not fill during that replacement; a later synchronization fills a singleton
+left empty. Removed authority is unavailable to every Card and conversation.
+
+### Control Card to descriptor write-through
+
+1. As administrator, edit the Control Card's default model, instruction,
+   selected skills/tools, Slack action allowance and custom-MCP allowance.
+2. Save. Confirm the administrator-only bundle-properties request succeeds
+   before the Card revision changes; a forced host-write refusal must leave the
+   Card revision and descriptor unchanged.
+3. Inspect the active authoritative application descriptor and confirm the
+   exact agent entry under
+   `agent_capability_control_overrides` contains the reviewed defaults,
+   resource operations and named-service operations.
+4. Restart/reload the runtime, reopen the Control Card, and create a fresh
+   user's Agent Card and conversation.
+
+Expected result: success means the descriptor write completed, not only a Card
+or Redis write. The Control Card retains the edit after restart/refresh, and
+the fresh Agent Card/conversation receives the saved defaults.
+
+### Latest descriptor revokes old conversations
+
+1. Keep A1 open with Slack `post_message` and the custom MCP selected.
+2. In A2, explicitly deselect Slack `post_message` and the custom MCP, save,
+   and confirm both are absent from A2's positive selection.
+3. Remove Slack posting and the custom-MCP resource family from the current
+   descriptor. Keep Slack read allowed.
+4. Apply/reload and wait for the Control revision to advance.
+5. Do not reissue either Card and do not create another conversation.
+6. Ask A1 to post `CAP-E2E-<UTC timestamp>-DENY` and invoke the custom MCP.
+7. Attempt the same operations through the direct governed boundary, then
+   perform a Slack read.
+
+Expected result: the old conversation cannot post and cannot invoke the custom
+MCP; no provider side effect occurs. A forged/direct invocation is denied too.
+Slack read still works. The saved older selections may remain visible as
+missing/outside the Control Card, but they contribute no effective authority.
+
+### Restoring capability respects the preserved user choice
+
+1. Restore Slack posting and custom-MCP allowance in the descriptor and
+   apply/reload.
+2. Reopen A1, A2 and the Agent Card.
+3. In A1, where those capabilities were selected before removal, retry Slack
+   posting with a new marker and invoke the custom MCP.
+4. In A2, retry both operations without selecting them.
+
+Expected result: the preserved A1 choices become effective again and exactly
+one Slack message succeeds. The scope whose stored selection omitted them
+remains off. Restoration neither loses an affirmative user choice nor grows a
+selection that did not contain it.
+
+### Evidence and pass rule
+
+Capture descriptor diffs, Card revisions, conversation ids, screenshots for
+both roles, Slack permalinks for allowed actions, structured denials for
+revoked actions, and runtime revision evidence. The phase passes only when the
+real Slack/custom-MCP boundaries match the UI and all behavior survives a
+runtime reload. Unit tests or screenshots alone do not pass this phase.
 
 ## Phase 2: Exact Operation-Only Live Consent
 
