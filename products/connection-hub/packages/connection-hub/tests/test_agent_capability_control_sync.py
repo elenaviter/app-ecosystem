@@ -13,8 +13,11 @@ from connection_hub.delegated_credentials.agent_capability_sync import (
     AGENT_CAPABILITY_CARD_LEASE_SECONDS,
 )
 from connection_hub.delegated_credentials.agent_capability_policy import (
+    AGENT_CAPABILITY_AUTHORITY_PROPERTY,
     AGENT_CAPABILITY_DEFAULTS_PROPERTY,
+    AGENT_CAPABILITY_METADATA_PROPERTY,
     AGENT_CAPABILITY_SELECTION_PROPERTY,
+    AGENT_CAPABILITY_METADATA_SCHEMA,
     AGENT_CAPABILITY_POLICY_SCHEMA,
     AGENT_DESCRIPTOR_CONTROL_PROPERTY,
     CAPABILITY_ALLOWED_SELECTED,
@@ -29,6 +32,8 @@ from connection_hub.delegated_credentials.application_operation_policy import (
 )
 from connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
+    _descriptor_agent_resource_options,
+    _descriptor_control_resource_options,
 )
 from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT
 from connection_hub.delegated_credentials.cards.model import (
@@ -64,6 +69,9 @@ RESOURCE = application_resource(
 )
 NAMED_RESOURCE = "https://example.test/mcp/named-services"
 REVIEW_RESOURCE = "https://example.test/mcp/review"
+OTHER_MCP_RESOURCE = "https://example.test/mcp/unselected"
+REMOTE_MCP_ROOT = "*/api/integrations/bundles/*/*/connection-hub@1-0/public/mcp/remote_mcp_proxy*"
+REMOTE_MCP_RESOURCE = "urn:connection-hub:remote-mcp:mcp_0123456789abcdef01234567"
 
 
 class _Persistence:
@@ -346,6 +354,137 @@ async def _sync(
         ),
         issuer_label="Problem Board worker",
     )
+
+
+@pytest.mark.asyncio
+async def test_descriptor_control_offers_only_descriptor_serializable_services() -> None:
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+    properties = created["control_card"]["properties"]
+    options = [
+        {"resource": "*", "kind": "catalog", "label": "All platform and application APIs"},
+        {"resource": "urn:kdcube:management:deployment:*:*", "kind": "catalog", "label": "Deployment"},
+        {"resource": NAMED_RESOURCE, "kind": "catalog", "named_services": [{"namespace": "slack"}]},
+        {"resource": REVIEW_RESOURCE, "kind": "catalog"},
+        {"resource": REMOTE_MCP_ROOT, "kind": "catalog", "resource_selection": True},
+        {"resource": REMOTE_MCP_RESOURCE, "kind": "remote_mcp"},
+    ]
+
+    offered = _descriptor_control_resource_options(properties, options)
+
+    assert [row["resource"] for row in offered] == [
+        NAMED_RESOURCE,
+        REVIEW_RESOURCE,
+        REMOTE_MCP_ROOT,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_descriptor_agent_offers_exact_control_resources_and_allowed_user_mcp() -> None:
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+    control = dict(created["control_card"])
+    properties = dict(control["properties"])
+    properties[AGENT_CAPABILITY_AUTHORITY_PROPERTY] = _policy_with_capabilities(
+        resource_families=["user_external_mcp"],
+    )
+    properties[AGENT_CAPABILITY_METADATA_PROPERTY] = {
+        "schema": AGENT_CAPABILITY_METADATA_SCHEMA,
+        "resource": RESOURCE,
+        "entries": {
+            "resource_families": {
+                "user_external_mcp": {
+                    "title": "My MCP connectors",
+                    "resource_patterns": ["urn:connection-hub:remote-mcp:*"],
+                }
+            }
+        },
+    }
+    control["properties"] = properties
+    control["resource_grants"] = {
+        NAMED_RESOURCE: ["named_services:use"],
+        REVIEW_RESOURCE: ["review:use"],
+    }
+    options = [
+        {"resource": "*", "kind": "catalog"},
+        {"resource": NAMED_RESOURCE, "kind": "catalog"},
+        {"resource": REVIEW_RESOURCE, "kind": "catalog"},
+        {"resource": OTHER_MCP_RESOURCE, "kind": "catalog"},
+        {
+            "resource": REMOTE_MCP_ROOT,
+            "kind": "catalog",
+            "grants": ["external_mcp:use"],
+            "resource_selection": True,
+            "selectable_resources": [REMOTE_MCP_RESOURCE],
+        },
+        {"resource": REMOTE_MCP_RESOURCE, "kind": "remote_mcp"},
+    ]
+
+    offered, roots = _descriptor_agent_resource_options(control, options)
+
+    assert [row["resource"] for row in offered] == [
+        NAMED_RESOURCE,
+        REVIEW_RESOURCE,
+        REMOTE_MCP_ROOT,
+        REMOTE_MCP_RESOURCE,
+    ]
+    assert roots == [REMOTE_MCP_ROOT]
+
+
+@pytest.mark.asyncio
+async def test_descriptor_agent_does_not_offer_catalog_wildcard_wider_than_control() -> None:
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+    exact = application_resource(
+        tenant=TENANT,
+        project=PROJECT,
+        application="one",
+        agent="api",
+    )
+    wildcard = application_resource(
+        tenant=TENANT,
+        project=PROJECT,
+        application="*",
+        agent="*",
+    )
+    other = application_resource(
+        tenant=TENANT,
+        project=PROJECT,
+        application="two",
+        agent="api",
+    )
+    control = dict(created["control_card"])
+    control["resource_grants"] = {exact: ["application:use"]}
+
+    offered, roots = _descriptor_agent_resource_options(
+        control,
+        [
+            {"resource": wildcard, "kind": "catalog"},
+            {"resource": exact, "kind": "catalog"},
+            {"resource": other, "kind": "catalog"},
+        ],
+    )
+
+    assert [row["resource"] for row in offered] == [exact]
+    assert roots == []
 
 
 @pytest.mark.asyncio
