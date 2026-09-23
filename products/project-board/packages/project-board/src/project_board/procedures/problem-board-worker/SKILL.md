@@ -35,10 +35,6 @@ host action because it changes both the command and relay source. When `pb statu
 
 ## Choose A Relevant Next Action
 
-Critically assess claims that determine architecture, data ownership, identity,
-representation, or data flow. Trace and record the real boundaries and failure
-states; an existing assumption is not authority for a costly foundation.
-
 Before an action, name the task or observed event that calls for it and what
 its result could change. Reassess after a wake or a returned command; a check
 that was useful once is not automatically useful again.
@@ -98,9 +94,8 @@ wakes and held leases still require prompt receive, handling, and settlement.
 7. Receive once immediately (`pb worker receive`), because mail that arrived
    before the route was attached is otherwise hidden.
 
-Read [identity and authorization](references/identity-and-authorization.md)
-when enrollment, a Card, a profile, project attendance, or revocation is in
-question.
+Read [identity and authorization](references/identity-and-authorization.md) when
+enrollment, a Card, a profile, project attendance, or revocation is in question.
 
 ## Read pb Output With `--format brief`, Never With Your Own Parser
 
@@ -112,13 +107,15 @@ question or request the correlated `send`) printed complete with the refs and
 this session's runtime flags. `pb render --file <path>` renders saved output
 the same way.
 
-Do not write a JSON reader for `pb` output: hand-written readers exited
-silently on unexpected shapes and truncated copied refs. Brief output cannot be
-silent. An error envelope renders as `ERROR`, and text that is not an envelope
-renders as `UNREADABLE` followed by the text itself, exit code 2. A ref is
-copied as a whole line or obtained from a rendered command, never assembled,
-never taken from a wrapped fragment, and never composed from a key and a
-title: `project.plan.item` prints the `identity_ref` to copy.
+A governed mutation's receipt names its outcome in `state`: `applied` or
+`refused`. `ERROR <code>` is not a receipt, and its code decides the retry
+([brief-output](references/brief-output.md)): unclaimed or refused before
+any write is known, outcome unknown repeats under the same `idempotency_key`.
+
+Do not write a JSON reader for `pb` output: a non-envelope renders as
+`UNREADABLE` followed by the text itself, exit code 2. A ref is copied as a
+whole line or obtained from a rendered command, never assembled, never composed
+from a key and a title: `project.plan.item` prints the `identity_ref` to copy.
 
 ## Receive Addressed Input
 
@@ -223,13 +220,9 @@ correlated conversation first.
 An assignment arrives as one inbox notice of kind `assign` from
 `control-plane`. It is work to begin, not a notification to acknowledge. Every
 value in it comes from the durable assignment row, not from prose:
-
-| field | where it comes from | what it is for |
-| --- | --- | --- |
-| `payload.work_ref` | the assignment's `identity_ref`, the stable form of the plan node | which item you were given; read it with `project.plan.item` |
-| `payload.assignment_ref` | created by `assignment.assign` when the work was routed | the row you report against |
-| `payload.ownership_version` | the assignment row's `ownership_version` | the fence your report must match |
-| `payload.expected_reaction` | constant `begin_work` | says this is work, not information |
+`payload.work_ref`, `payload.assignment_ref`, `payload.ownership_version` and
+`payload.expected_reaction` (`begin_work`), each with its source and use in
+[ownership](references/identity-and-authorization.md).
 
 **Ownership version** counts on the assignment row, not on the item: 1 when
 first routed, plus one on every move of ownership (re-issue, reassignment,
@@ -304,13 +297,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   sequence and the conclusion, which is what the reader came for.
 - Plan item edits use the canonical operation, with the item `work_ref`, its
   `expected_revision`, and the requested `changes` in the payload:
-
-  ```bash
-  pb coordinate plan.item.update \
-    --object-ref <project-ref> \
-    --payload-file <update.json>
-  ```
-
+  `pb coordinate plan.item.update --object-ref <project-ref> --payload-file <update.json>`.
 - Keep the runtime-selected notification path live until detach: Codex, the
   relay-owned native queue with `--wake-id` preserved on receive; Claude Code,
   exactly one session-owned `pb worker watch` that the guard replaces on a
@@ -345,7 +332,9 @@ move status ([ownership](references/identity-and-authorization.md)).
   `work:journal:<created-at>:<entry-id>:<semantic-name>` `entry_ref` (semantic
   name at most 64 characters of `a-z0-9-`, else `journal_entry_ref_invalid`)
   and this exact `project_ref`; `title`, `summary`, `keywords`, `see_also`,
-  status and attribution make retrieval better.
+  status and attribution make retrieval better. The filename stamp and
+  `<created-at>` both name `recorded_at` in UTC (`date -u`, never `date`, a test
+  enforces it): [collaboration](references/collaboration.md), finding ten.
 - After writing the file, run `pb worker journal-index --project-ref ... --repository-journal-ref ...`; it indexes the existing file without rewriting it and returns its index, validation, and receipt steps.
   After interruption, inspect with `pb worker journal-index-status --project-ref ... --operation-id ...`, then run `pb worker journal-index-resume --operation-id ...` for the first incomplete step. Status is observation only: it does not rebuild, enqueue, or repair. Do not rerun the original command to guess what happened.
   For a pre-ledger validation use `journal-index-status --project-ref ... --outbox-id ... --repository-journal-ref ...`; it distinguishes an accepted plan revision from an absent receipt.
@@ -366,47 +355,50 @@ revised one rehearsal round at a time. What every worker does, from it:
   and on a machine where the shared checkout is also the live `pb` runtime an
   edit there is live for every worker at once.
 - **Work on a branch, exchange through a change request.** Branch
-  `work/<wN>-<short-slug>` from the pushed integration ref (`origin/main`),
-  push it yourself (the operator's ruling of 2026-09-22), and open a change
-  request against `main` when the work is ready for review. Commit each
-  coherent piece as you finish it. Put the link on the item and in your
-  report. The coordinator merges after approval and pushes the integration
-  ref. Deploying stays the operator's. A branch is closed by its merge, a
-  later push is a new change request, and you delete your own branch when it
-  merges or you abandon it.
+  `work/<wN>-<short-slug>` from the pushed integration ref (`origin/main`), push
+  it yourself (the operator's ruling of 2026-09-22), and open a change request
+  against `main` when the work is ready for review. Commit each coherent piece
+  as you finish it. Put the link on the item and in your report. The coordinator
+  merges after approval and pushes the integration ref. Deploying stays the
+  operator's. A branch is closed by its merge, a later push is a new change
+  request, and you delete your own branch when it merges or you abandon it.
 - **Publish your intent before the first edit** on the shared-write dashboard
   (`kind=source_in_flight`, the item key, the repository paths you will
   touch), read the list first, and send an overlap to the coordinator rather
   than settling it with the other agent. The dashboard grants nothing and
   blocks nothing. Clear your dashboard entry when the change request is open.
-  TTL is recovery for an abandoned entry, not the completion path.
-  ```bash
-  pb coordinate workspace.shared_write.list --object-ref <project-ref> --payload-json '{}'
-  pb coordinate workspace.shared_write.publish --object-ref <project-ref> --payload-json '{"kind":"source_in_flight","summary":"W123: what changes and why it matters","targets":["repo:applications/<path>"],"ttl_seconds":14400}'
-  pb coordinate workspace.shared_write.clear --object-ref <project-ref> --payload-json '{}'
-  ```
+  TTL is recovery for an abandoned entry, not the completion path. Operations:
+  `workspace.shared_write.list`, `workspace.shared_write.publish`,
+  `workspace.shared_write.clear`, invoked and shaped as in [collaboration](references/collaboration.md), Rule 3.
 - **Before you ask for a review:** `git merge-base --is-ancestor origin/main
   <head>` (every integration push moves the base under every open change
   request), rebase with `--force-with-lease` on your own branch when it fails,
   run the suites on the head you name and state the counts, show that a
-  regression written for a finding fails without the fix, and list every
-  place the rule you changed is enforced. Nothing non-public in a public
-  repository's branch, commits, description or comments. Approval is a board
-  mail naming the head, quoted on the change request: GitHub sees one account
-  for all agents and refuses its own author.
+  regression written for a finding fails without the fix, and list every place
+  the rule you changed is enforced. A claim about what a host installs is
+  settled by installing it into a fresh environment at the named commit, not
+  by reading a `pyproject`. Nothing non-public in a public repository's
+  branch, commits, description or comments. Approval is a board mail naming the
+  head, quoted on the change request: GitHub sees one account for all agents
+  and refuses its own author.
+- **As reviewer or merger, compare your count with the author's** and ask
+  about the difference: a skip names its missing input, and a suite that skips
+  what the change touches is green about everything except the change. Your
+  approval states the files the change request lists and the files you read,
+  and the inputs of each suite run (interpreter, dependencies, overlays,
+  variables), so the counts can be compared at all.
 - **Reporting an item complete means its change request is merged** into the
-  integration ref, with its documentation: when behaviour a doc describes
+  integration ref, and the report names the merge commit after you fetched
+  and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor
+  runs it on their own clone. A journal entry that says landed names that
+  merge commit and is written after it is fetched, never from the intention
+  to merge. With its documentation: when behaviour a doc describes
   changes, the doc changes in the same item, because undocumented behaviour is
   how a diagnosis goes wrong. One home per concept, one-line pointers
   elsewhere, no links to gitignored paths.
-- **Landing an approved change into a shared checkout** (the interim where
-  agents still share one): take a bounded turn for a shared Git operation,
-  announced on the dashboard. Copy to `.landing` names in one pass, move in
-  one pass, verify with `cmp`, run both suites live. Prepare and verify in a
-  private index (`GIT_INDEX_FILE`), commit by explicit path, then refresh the
-  shared index with `env -u GIT_INDEX_FILE git read-tree HEAD`, or the next
-  ordinary commit by anyone records a reversal. Never `git add -A`, never
-  `git stash`.
+- **Landing an approved change into a shared checkout** (no coordinator, no
+  elected integrator) follows the Interim steps in
+  [collaboration](references/collaboration.md). Never `git add -A`, never `git stash`.
 
 ## Keep The Operator Informed, And Name The Kind
 
@@ -432,10 +424,8 @@ host agree, then the coordinator on that host restarts it, or on a host without
 one the agents pick one of themselves. For a reload or refresh, ask the
 coordinator, naming what you need live and by which tree the change is in:
 another worker may hold an uncommitted patch that a reload would stage and run.
-A client-source selection includes that host-local restart and follows the
-same agreement.
-A direct checkout invocation is a development process and must remain visibly
-unpinned; it never changes the host selector. A container-local patch is not an action this team has. Before any runtime
+A client-source selection is one of these actions ([runtime-actions](references/runtime-actions.md), Client Source
+Selection). A container-local patch is not an action this team has. Before any runtime
 action, read [runtime-actions](references/runtime-actions.md), and for a test
 window [test-window](references/test-window.md). A coordinator about to accept,
 route, reload or refresh follows [coordinator](references/coordinator.md).
@@ -492,7 +482,9 @@ pass; headings alone give a well-shaped status that is still wrong.
 
 For identity, authority, storage, canonical representation, ordering, paging,
 durability, retention, and data-flow decisions, separate operator requirements,
-existing contracts, assumptions, and new choices. Test cardinality, concurrency,
+existing contracts, assumptions, and new choices, and trace the real boundaries
+and failure states: an existing assumption is not authority for a costly
+foundation. Test cardinality, concurrency,
 failure recovery, observability, security boundaries, migration cost, and
 whether every valid state remains representable without loss. A count that
 cannot be traversed, a cursorless truncated result, or a canonical row that
@@ -523,6 +515,6 @@ needed, and not into this skill, which is read every time.
 The coordinator names one researcher for a question and tells the other workers
 who owns it; others continue their assigned work. The researcher returns concise
 findings with a `repo:<alias>/<path>` link per source plus line or symbol
-detail. Receivers assess them before building on them and ask the researcher
-for targeted verification of an uncertain fact. A second investigation starts
-only when the coordinator or operator names a specific reason.
+detail. Receivers assess them before building on them and ask the researcher for
+targeted verification of an uncertain fact. A second investigation starts only
+when the coordinator or operator names a specific reason.

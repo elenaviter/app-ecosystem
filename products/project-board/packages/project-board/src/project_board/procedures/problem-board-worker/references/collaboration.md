@@ -219,6 +219,10 @@ every agent can read it, and read what the others have published.
 Why: two agents should not discover the same file at merge time. The surface
 exists for exactly this and went unused all evening on 2026-09-22.
 
+The three operations, with a real publish payload (`kind`, a `summary` that
+starts with the item key, `targets` as repository paths, a `ttl_seconds` that
+is recovery for an abandoned entry and not the completion path):
+
 ```bash
 pb coordinate workspace.shared_write.list --object-ref <project-ref> --payload-json '{}'
 pb coordinate workspace.shared_write.publish --object-ref <project-ref> --payload-json '{"kind":"source_in_flight","summary":"W245: review.return keeps the owner (store, dialog save, review-lifecycle doc)","targets":["repo:applications/playground/domain-solution/apps/problem-board@1-0/services/store.py","repo:applications/playground/domain-solution/apps/problem-board@1-0/services/work_item_edit.py"],"ttl_seconds":14400}'
@@ -250,7 +254,12 @@ this twice on 2026-09-22 and both times the work kept moving.
 ## Rule 5. The merge gate
 
 The coordinator merges a change request when all of these hold, and refuses
-it naming the one that does not:
+it naming the one that does not. A gate names what a reader does to satisfy
+it, with a pointer to the means, or it is not a gate yet: gate 3's merger
+clause and finding ten's stamp rule were both written without the thing that
+makes them followable, and only the rule got reviewed (round 2, finding
+fifteen). A verification that ends by running the suite it just made runnable
+is a verification. One that stops at printing JSON is a report.
 
 1. **Approved** by the named reviewer, and the reviewer is not its author.
    The approval is a board mail naming the head, quoted on the change request
@@ -259,7 +268,19 @@ it naming the one that does not:
    refuses the approval as the author's own (round 1, finding five). The
    change request is the diff surface, the board is the review record. If
    the team grows, a GitHub identity per agent is the target, a cost the
-   operator decides.
+   operator decides. When the merger has reviewed the change request itself
+   and merges, it tells every other reviewer it invited at that moment, so
+   nobody spends a turn reviewing something already landed (round 2,
+   finding eight).
+   The approval states two counts and reconciles them: the files the change
+   request lists and the files the reviewer read, the way the skill reads
+   `item_count` against `items[]` for mail. A truncated listing never means
+   the omitted files do not exist. Why: on 2026-09-23 a delta listing was cut
+   to four of five files at bf25ed1 and the approval covered an unread file
+   (round 2, finding fourteen). It also states the inputs of every suite run
+   it cites (the interpreter, the dependencies its environment holds, the
+   overlays, any database or variable a test needs), so two counts from two
+   environments can be compared at all (finding seventeen).
 2. **Base current:** rebased or merged onto the current integration ref, so
    the tested tree is the tree that lands. The author checks this before
    asking for a review (`git merge-base --is-ancestor origin/main <head>`)
@@ -280,6 +301,32 @@ it naming the one that does not:
    A suite that never puts two entry points in one test proves nothing
    about their interaction (round 1, finding seven: the side-server drain
    guard was tested side against side, and the cycle path bypassed it).
+   The counts are what the tool said, not what the shell returned: the
+   report carries pytest's own summary line verbatim for each suite, from
+   the run at that head, and the author checks pytest's exit status, never
+   a pipeline's. Why: on 2026-09-23 a chain read `grep`'s status over a
+   failing pytest and pushed 4a8f487b as green (round 2, finding twelve).
+   The merger's counterpart: a reported count is a claim about evidence, so
+   the merger runs the suites on the exact head before merging. The command,
+   its interpreter and the source overlays it needs are written once, in the
+   application's `procedures/testing.md`, section Run The Package Suite. Do
+   not rediscover them: a bare interpreter or the relay's fails on imports
+   that read like regressions and are not. That section keeps checkout
+   variables, not machine paths, so it reads the same on every host: fill
+   them from your own machine. A placeholder is not a missing value.
+   The second counterpart, for reviewer and merger alike: compare your count
+   with the author's and ask about the difference. A skipped test names its
+   missing input, and a suite that skips what the change touches is green
+   about everything except the thing under review. Why: on 2026-09-23 the
+   merger's 663 against the author's 667 at 0518f213 were the four PostgreSQL
+   tests covering the change, skipping on an unset DSN (round 2, finding
+   seventeen). When the change adds a dependency, one of the runs comes from
+   an environment holding only what the packages declare: a venv with more
+   than the declared set hides a missing declaration, one with exactly it
+   does not. Before any run, the dependency preflight in
+   `procedures/testing.md` names the first declared dependency the
+   interpreter lacks in one sentence, because a missing one surfaces as
+   collection errors that look nothing like the cause.
 4. **Runtime import path stated and proven** when the change alters what a
    deployed runtime imports (a moved module, a renamed package, a new
    dependency): the change request says how the runtime gets it (which install
@@ -292,6 +339,12 @@ it naming the one that does not:
    the release, confirm the source mode, restart) runs before the
    fast-forward, on every host, and the change request shows it did (round
    2, finding three).
+   A claim about what a host installs, or what a dependency closure contains,
+   is settled by installing it into a fresh environment at the named commit.
+   Reading a `pyproject.toml` forms the claim and does not settle it, and
+   "installs from X only" without a run is a hypothesis. Why: the environment
+   you already have is the one that hides the answer, the closure sits on
+   `PYTHONPATH` as paths you stop seeing (round 2, finding thirteen).
 5. **Every place that enforces the rule is listed and checked.** A change that
    fixes a rule names each place the rule is enforced (server, client, other
    operations, docs) and says what was done at each. Why: W245's rule sat in
@@ -302,6 +355,17 @@ it naming the one that does not:
    concept, no link to a gitignored path.
 7. **Nothing that should not be public** in the branch, the commits, the
    description or the comments, for a public repository.
+8. **A skill change fits by moving, not by compressing.** `SKILL.md` holds
+   fewer than 520 newlines, enforced by `test_skill_carries_rules_not_stories`.
+   Why: every worker session loads the skill into context, so the operator
+   ruled on 2026-09-18 that it carries rules with one clause of reason and
+   nothing else (revision 2026.09.18.8 took it from 874 to 498 lines). What
+   follows: content that does not fit moves to a reference opened by one
+   trigger line in the skill, and existing prose is not tightened to make
+   room. Tightening reads as free and is not: the small facts go first, and
+   they were the expensive ones to learn (finding eleven). New prose is
+   wrapped like its neighbours, so the count is honest. The reviewer diffs
+   the skill for facts that left, not only for lines that arrived.
 
 After the merge the coordinator names the merged ref on the item. A runtime
 action releases that ref, never a working tree (see
@@ -319,8 +383,16 @@ it, what you touched (Rule 3), and what you are waiting on.
 - When you wait on a review or a decision, say so on the item, with the
   correlation you wait for, instead of waiting silently.
 - Report `completed` only when the change request is merged, or when the item
-  says otherwise, with the merged ref and the evidence you ran. Each report
-  cites as its source event the event that prompted it: the assignment notice
+  says otherwise, with the merged ref and the evidence you ran. The report
+  names a commit and the integration ref that contains it, the merge commit
+  on the pushed `main`, and you have fetched and run `git merge-base
+  --is-ancestor <commit> origin/main` first, not before the merge and not
+  from memory. The acceptor runs the same command on their own clone before
+  accepting, because the report is a claim and the clone is the evidence. A
+  journal entry that says landed names that merge commit and is written
+  after it is fetched, never from the intention to merge (finding eighteen:
+  three reviewed commits journaled as landed sat in no branch for two days).
+  Each report cites as its source event the event that prompted it: the assignment notice
   for the first, and for a later one the later mail that carried the news,
   the merge notice for a completion when earlier progress reports spent the
   assignment notice (W267, 2026-09-22 22:17Z). A source event is spent once.
@@ -368,10 +440,17 @@ they stand now. What every agent on dev-main does:
    the operator is not an exception: the announcement says so and runs
    anyway, which is still an announcement. The cost of a silent action
    lands on the agents who learn of it from their own broken channel
-   (round 2, finding six).
+   (round 2, finding six). After merging a journal change request it
+   fast-forwards the shared checkouts, since the index reads them (finding
+   nine).
 8. **Acceptance is the behaviour observed live**, not the suites on the
    branch: the coordinator verifies the way the operator would, after the
-   runtime action that makes the merge live.
+   runtime action that makes the merge live. It is checked line by line
+   against the item's acceptance text, and a merge is evidence for the lines
+   it touches, never for the item (finding sixteen). Before accepting, the
+   coordinator fetches and runs `git merge-base --is-ancestor <commit>
+   origin/main` on its own clone for the commit the report names: the report
+   is a claim and the clone is the evidence (finding eighteen).
 9. **Keep your visible state true**, and **every collision, block, stale
    read or rule that did not fit gets a Round 2 entry** in the log below,
    written by whoever saw it, as it happened. Mail fable-pub or note it on
@@ -387,9 +466,15 @@ they stand now. What every agent on dev-main does:
 | coordinator merges and pushes | claude-main, on the host | claude-main, remote |
 | review record | board mail plus a pinned change request comment, one GitHub account for all | same |
 
-Nobody lands by hand any more on dev-main. The landing steps in the worker
-skill remain for a machine with neither a coordinator nor an elected
-integrator.
+Nobody lands by hand any more on dev-main. On a machine with neither a
+coordinator nor an elected integrator, landing an approved change into a
+shared checkout goes like this, and the skill points here: take a bounded
+turn for a shared Git operation, announced on the dashboard, copy to
+`.landing` names in one pass, move in one pass, verify with `cmp`, run both
+suites live. Prepare and verify in a private index (`GIT_INDEX_FILE`), commit
+by explicit path, then refresh the shared index with
+`env -u GIT_INDEX_FILE git read-tree HEAD`, or the next ordinary commit by
+anyone records a reversal. Never `git add -A`, never `git stash`.
 
 ## Rehearsal log
 
@@ -589,7 +674,198 @@ works from its own tree. Entries are added as they happen.
   first cycle after the restart completed at 00:00:32Z. Three minutes seven
   seconds of an open channel refused on a stale record, in the `pb` process
   before any request reaches the relay's side server (W267 cannot help
-  there). A code defect, filed as its own item by the coordinator, to land
-  identically in the app's relay and the W255 package copy. The procedure
-  point it confirms: two views of one channel must not disagree, and the
-  refusing view must be the live one.
+  there). A code defect, filed as W274 and fixed the same night (change
+  request #17, merged 48035dcf), landing identically in the app's relay and
+  the W255 package copy. The procedure point it confirms: two views of one
+  channel must not disagree, and the refusing view must be the live one.
+- **00:20Z, finding eight: who reviewed a change request must be visible
+  without asking** (recorded by claude-main). Twice in one hour a review
+  request reached a second reviewer after the coordinator had reviewed and
+  merged the change request itself (KDCube #260 and #263). Nothing was
+  wrong: gate 1 was met by the coordinator as the non-author. The second
+  read still found two paragraphs the first had not, so it earned its
+  place, but the turn spent finding out the merge had happened was
+  avoidable. Rule 5 gate 1 gains the merger's duty: when the merger is
+  also the reviewer, it tells every other invited reviewer at the moment of
+  merging. The reviewer of record lives only in the verdict mail and a
+  hand-written comment today. A place on the item is the target.
+- **01:05Z, finding nine: a merged journal entry cannot be indexed until the
+  shared checkout is fast-forwarded.** `pb worker journal-index` resolves a
+  `repo:` reference against the shared checkout, by design: the journal home
+  is the repository binding, and a worker's own tree can be ahead, behind or
+  on a branch nobody merged. After #18 merged, the index refused with
+  `journal_entry_not_found` until claude-main fast-forwarded the checkout.
+  Round 2 point 7 gains the step: after merging a journal change request the
+  coordinator fast-forwards the shared checkouts before the author indexes.
+- **01:35Z, finding ten: the journal stamp rule was right, unenforced, and
+  decayed within a day.** The journal directory is read in filename order and
+  the filename stamp is the address other records cite. On 2026-09-12 every
+  entry's filename stamp `YYYY.MM.DD.HHMMSS` equalled `recorded_at` in UTC,
+  about thirty entries. From 2026-09-13 the stamps were local time, two hours
+  ahead, in about 110 entries by every worker over ten days, and nothing
+  noticed until a UTC entry written on 2026-09-23 sorted above entries written
+  after it (change request #18). The census that followed found a drift, not
+  a convention, and found the `entry_ref` stamp UTC throughout, with two
+  exceptions from 2026-09-15 that are named in the test and closed. Ruling by
+  claude-main at 01:36Z: UTC stays the rule (hosts in different zones, a DST
+  change, filename order), enforced from 2026-09-23T00:00:00Z by
+  `tests/test_journal_filename_stamp.py` (change request #22) for the filename
+  stamp and for every entry's `entry_ref` stamp, with the rule and its reason
+  in the failure message. Merged filenames before the cutoff are addresses and
+  keep their names, a correction goes inside the entry. The feature journals
+  under `kdcube-docs/journal` (1394 entries, a four-digit local stamp and a
+  zoned `Date:` line, no `recorded_at`) are another convention and out of
+  scope until the operator says otherwise. The lesson under it: before
+  enforcing a rule read off a handful of neighbours, census the directory.
+  The four corrections written into merged entries that night answered a
+  rule nobody had checked was the practice.
+- **01:55Z, finding eleven: a budget met by compression traded facts for
+  lines** (recorded from claude-main's review of #21). The skill absorbed
+  W276 three times by tightening prose to hold 519 newlines, and the third
+  time it cost content: `--format brief` "anywhere on the line", "for a
+  question or request the correlated `send`", `pb render` rendering saved
+  output "the same way", the collaboration procedure's name and "one
+  rehearsal round at a time" in the sentence that introduces it, "on a
+  machine where the shared checkout is also the live `pb` runtime an edit
+  there is live for every worker at once", and "GitHub sees one account for
+  all agents" as the reason approval lives in mail. Meanwhile the new
+  journal-stamp sentence ran unwrapped past every other line's width, so the
+  budget was met by old prose while new prose was not held to the shape.
+  Every fact is restored, the receipt, error and ref detail moved to
+  `references/brief-output.md` behind one trigger line, the contract test
+  pins the restored facts, and gate 8 names the rule. The budget itself was
+  never undeclared: the test carried it with its reason since 2026-09-18.
+  What was missing was the rule that follows from it, written where a
+  reviser reads.
+- **02:06Z, finding twelve: a reported count was a claim about evidence,
+  and the two were indistinguishable to the merger.** Fixing finding eleven,
+  the author's command chain ran the contract suite, filtered its output
+  through `grep | tail`, and took that pipeline's exit status as the gate.
+  pytest had failed on `never composed from a key and a title`, the very
+  class gate 8 is about, a fact leaving under compression. The chain
+  committed, pushed 4a8f487b and mailed "contract 19 passed, suite 1221
+  passed" to the reviewer and the merger, who was about to merge on it. The
+  author caught it in the same output a minute later and said so before
+  anyone merged. Two halves. The author's: gate 3 now says the counts are
+  what the tool said, pytest's summary line verbatim from the run at that
+  head, with pytest's exit status checked and never a pipeline's. The
+  merger's, taken by claude-main: a reported count is not verification, so
+  the merger runs the suites on the exact head before every merge in this
+  repository. The rule under both: the thing that checks must be the thing
+  that reports.
+- **02:20Z, finding thirteen: two kinds of evidence were treated as one,
+  and the reading won over the measurement.** Closing W255, fable-pub read
+  project-board's direct dependencies and wrote that the worker host is one
+  repository. codex-ui installed the package into a clean environment at the
+  named commit and got `kdcube-cli` unresolvable from `connection-hub-cli`,
+  which declares it and imports it in twelve modules. claude-main propagated
+  the reading over the measurement, and codex-ui dropped working
+  composite-selector code on it. The rule, in gate 4: a claim about what a
+  host installs, or what a closure contains, is settled by installing it
+  into a fresh environment at the named commit. Reading a `pyproject` forms
+  the claim, it does not settle it, because the environment you already
+  have is the one that hides the answer.
+- **02:57Z, finding fourteen: a truncated listing hid a changed file from an
+  approval.** Approving app-ecosystem #12 at bf25ed1, fable-pub's delta
+  listing was cut to four of five files by a `tail`, and the approval covered
+  a file nobody had read. The reviewer noticed after approving and said so on
+  the change request and by mail. Gate 1 now carries what the skill already
+  says for mail: two counts, the files the change request lists and the
+  files the reviewer read, both stated in the approval, and truncation never
+  means the omitted do not exist.
+- **03:40Z, note: `source_mismatch` is exercised only through the fake.**
+  W255's `await_source` classifies a startup record naming another release
+  as `source_mismatch` and rolls back, and no test feeds it a real startup
+  record with a different `release_id` after the restart. One test to add in
+  the package, not a condition on the heads.
+- **03:43Z, incident: a bare rebuild took the published connection-hub.**
+  `kdcube refresh --build` without `--maintainer-local-python-package` for
+  every first-party package installed the published connection-hub, which
+  has no `server_side_login`. chat-ingress and chat-processor died, the web
+  proxy answered 502, and every relay channel reported
+  `oauth_challenge_not_advertised` for thirteen minutes while four agents
+  read a gateway error as a missing OAuth challenge. Keepers: the rebuild
+  command is the documented maintainer one (the maintainer rebuild procedure, `repo:app-ecosystem/products/kdcube/procedures/maintainer-rebuild.md`), and
+  exit 0 plus "every container started" is not verification, verify against
+  the containers and an unauthenticated probe of the endpoint. connection-hub
+  discovery reports any non-401 as a missing challenge and has to report a
+  gateway error as one (codex-ui, after). The shared applications checkout
+  was dirty at the time (`source.dirty true` at f74c3a99): someone had edited
+  the live runtime tree.
+- **03:56Z, note: the wake path is not the channel.** `pb worker inspect`
+  reported `wake delivery failed` while the channel was active. A reader who
+  sees it during a channel problem will take the two for one thing, as four
+  readers took a 502 for a missing challenge. Understand the wake path's own
+  failure before it becomes its own incident. Also: `relay.stderr.log` on
+  dev-main was 800 MB and unrotated.
+- **04:03Z, finding fifteen: a gate that names no action is a report.**
+  `PROBLEM_BOARD_HOST_PYTHON` was set by nobody but a reader of one
+  paragraph, so two installed-host checks in W255 were documentation. The
+  check belongs at the moment the interpreter exists: the add-a-worker-host
+  procedure ends its install step by running `testing.md`'s post-install
+  suite with the variable at the venv the installer wrote, and the
+  coordinator records pytest's line on each cutover. Under Rule 5's intro
+  since this revision: a new gate names what a reader does to satisfy it,
+  with a pointer to the means, or it is not a gate yet. A verification that
+  ends by running the suite it just made runnable is a verification. One
+  that stops at printing JSON is a report. Gate 3's merger clause and
+  finding ten's stamp rule were both written without the thing that makes
+  them followable, and only the rule got reviewed.
+- **05:20Z, note: three at-most-once answers, consistent once the unit was
+  named.** W276: the unit is the write, repeating is safe under the same key.
+  W257: the unit is the issuance of a bearer, the store enforces
+  at-most-once. W247: the unit is the acknowledged delivery, not the fetch,
+  so a device-bound ciphertext may be fetched again until the device
+  acknowledges, every fetch recorded and shown on the Card. The axis that
+  predicts the answer rather than describing it: whether the repeated thing
+  can be used by someone else (a bearer can, a JWE bound to the fetcher's
+  key cannot, an idempotent write yields the same receipt). A decision of
+  this kind names the residual it accepts (W247: a device key compromised
+  before delivery, identical under either rule, detected at different
+  moments) as well as what it protects.
+- **06:05Z, finding sixteen: an item was accepted on a merge that covered
+  one of its five acceptance lines.** W253 was accepted on "merged through
+  the full gate" when the merge covered acceptance[5] only. Lines three and
+  four were unmet and the code said so in a test name,
+  `test_oauth_grant_store_stays_on_redis_before_migration_cutover`. codex-ui
+  found it reading the artifact, claude-main reopened the item. Round 2
+  point 8 now says acceptance is checked line by line against the item's
+  acceptance text, and a merge is evidence for the lines it touches, never
+  for the item.
+- **06:26Z, finding seventeen: a suite that skips what the change touches
+  is green about everything except the thing under review.** Merging
+  app-ecosystem #13, claude-main's count at 0518f213 was 663 passed, 21
+  skipped, against the reviewer's 667 passed, 17 skipped from a fresh
+  environment. The four were the PostgreSQL authority tests, the exact
+  tests covering the change, skipping on `CONNECTION_HUB_TEST_POSTGRES_DSN`
+  unset. claude-main ran them against a throwaway database, 14 passed, and
+  dropped it. The fix is a habit rather than a tool: the reviewer compares
+  their count with the author's and asks about the difference, and the
+  approval states its inputs so the two counts are comparable at all (gates
+  1 and 3). The same night the dev-main chat-processor venv lacked
+  `jwcrypto`, declared by connection-hub, so sixteen modules failed to
+  collect with errors that looked nothing like the cause: `testing.md` named
+  an interpreter and six overlays and checked nothing about what the
+  overlays declare. It now carries a dependency preflight, and its first run
+  named two more declared dependencies that venv lacked, `readchar` and
+  `json5`, one import away from the same failure. A check imports what the
+  code imports: the first check of the `jwcrypto` install asked for
+  `jwcrypto.__version__`, which that package does not define, and would have
+  reported a good install as broken.
+- **06:29Z, finding eighteen: a journal entry saying work landed is not
+  evidence that it landed.** Three reviewed W253 commits (25226d04f,
+  10eac3d4a, f8f081954), journaled on 2026-09-22 as landed, were in no
+  branch and absent from `origin/main`, held only by the reflog, one `git
+  gc` from gone. codex-ui's audit found it, claude-main verified it,
+  preserved them as local tags on dev-main and told the operator, and
+  fable-pub confirmed from a third clone that the installed procedure asked
+  only the base-current direction of `is-ancestor` and nothing about where a
+  completed report's commit has to be. The same failure two days earlier:
+  claude-main accepted W253 on a report naming add1940 without running one
+  command on its own clone. Two sides and a journal clause, in Rule 6 and
+  round 2 point 8: a completed report names a commit and the integration
+  ref that contains it, the reporter having fetched and run `git merge-base
+  --is-ancestor <commit> origin/main`, the acceptor running it on their own
+  clone before accepting, and a journal entry that says landed names the
+  merge commit on the integration ref and is written after that commit is
+  fetched, never from the intention to merge.

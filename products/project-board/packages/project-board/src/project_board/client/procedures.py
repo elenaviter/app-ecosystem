@@ -850,8 +850,54 @@ def verify_agent_procedure(
     ]
 
 
+def _revision_key(revision: str) -> tuple[int, ...] | None:
+    """Order two package revisions when both are dotted integers, else None."""
+    parts = str(revision or "").strip().split(".")
+    if not parts or not all(part.isdigit() for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def _reject_downgrade(
+    requested: Sequence[tuple[str, Path, Mapping[str, Any]]],
+    package: Mapping[str, Any],
+) -> None:
+    """A package older than the installed revision is a named refusal.
+
+    Why: a host cutover installs from whatever the package carries. If the
+    package lags the installed revision, every session on the host loses the
+    rules it already runs under, and the install reports success. The
+    operator's cutover on 2026-09-23 would have put 2026.09.22.13 over
+    2026.09.23.1 on both runtimes this way.
+    """
+    package_key = _revision_key(str(package.get("revision") or ""))
+    if package_key is None:
+        return
+    for _, destination, before in requested:
+        installed_revision = str(before.get("installed_revision") or "").strip()
+        installed_key = _revision_key(installed_revision)
+        if installed_key is None or installed_key <= package_key:
+            continue
+        raise DomainError(
+            "work_agent_procedure_downgrade",
+            "The installed worker procedure is newer than the package: "
+            f"installed {installed_revision}, package {package['revision']}. "
+            "Install the newer package, or pass --allow-downgrade on purpose.",
+            status=409,
+            details={
+                "path": str(destination),
+                "installed_revision": installed_revision,
+                "package_revision": str(package["revision"]),
+            },
+        )
+
+
 def install_agent_procedure(
-    targets: Sequence[str], *, home: str | Path | None = None, force: bool = False
+    targets: Sequence[str],
+    *,
+    home: str | Path | None = None,
+    force: bool = False,
+    allow_downgrade: bool = False,
 ) -> list[dict[str, Any]]:
     root = _home_path(home)
     package = _read_source_package()
@@ -889,7 +935,10 @@ def install_agent_procedure(
             )
 
     reject_unsafe_paths()
-    reject_conflict(inspect_all())
+    first = inspect_all()
+    reject_conflict(first)
+    if not allow_downgrade:
+        _reject_downgrade(first, package)
     installed: list[dict[str, Any]] = []
     with ExitStack() as locks:
         for _, destination in sorted(destinations, key=lambda item: str(item[1])):
@@ -899,6 +948,8 @@ def install_agent_procedure(
         reject_unsafe_paths()
         requested = inspect_all()
         reject_conflict(requested)
+        if not allow_downgrade:
+            _reject_downgrade(requested, package)
         for target, destination, before in requested:
             if before["state"] == "current":
                 # Already current: nothing to write, and the generations an

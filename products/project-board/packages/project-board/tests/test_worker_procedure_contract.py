@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.22.13"
+    assert package["revision"] == "2026.09.23.2"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -99,6 +99,7 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
         "references/first-run.md",
         "references/shared-runtime-state.md",
         "references/collaboration.md",
+        "references/brief-output.md",
     }
     for reference in references:
         assert (PROCEDURE_ROOT / reference).is_file(), reference
@@ -179,10 +180,20 @@ def test_source_selection_guidance_is_added_without_rewriting_collaboration() ->
     assert "The integration ref is source history, not a runtime selection" in collaboration
 
 
+    assert skill.count("\n") < 530, "the skill is condensed knowledge; grow a reference, not the skill"
+
+
 def test_skill_carries_rules_not_stories() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)
-    assert skill.count("\n") < 530, "the skill is condensed knowledge; grow a reference, not the skill"
+    assert skill.count("\n") < 520, (
+        "SKILL.md is loaded into every worker session's context, so it holds fewer "
+        "than 520 newlines of rules with one clause of reason each (operator ruling, "
+        "2026-09-18). Content that does not fit moves to a reference behind one "
+        "trigger line. Do not tighten existing prose to make room: that traded facts "
+        "for lines three times in round 2 (collaboration.md, Rule 5 gate 8, finding "
+        "eleven)."
+    )
     # Incident narratives belong in journals, found by search, not in text the
     # model reads every turn.
     for story_marker in (
@@ -200,7 +211,9 @@ def test_skill_carries_rules_not_stories() -> None:
     assert "Incidents go to the journal, where search finds them" in words
     assert "not into this skill, which is read every time" in words
     assert "carries the rule with one clause of reason" in words
-    assert "Critically assess claims that determine architecture, data ownership, identity, representation, or data flow" in words
+    # 2026.09.23.2 merged the foundation-claims paragraph into Review Foundations,
+    # where the same duty already lived, instead of stating it twice.
+    assert "trace the real boundaries and failure states" in words
     assert "an existing assumption is not authority for a costly foundation" in words
 
 
@@ -427,18 +440,59 @@ def test_repository_sharing_rules() -> None:
     assert "when behaviour a doc describes changes, the doc changes in the same item" in words
     assert "because undocumented behaviour is how a diagnosis goes wrong" in words
     assert "One home per concept, one-line pointers elsewhere, no links to gitignored paths" in words
-    # Landing into a shared checkout stays the interim on a machine that still shares one.
-    assert "take a bounded turn for a shared Git operation" in words
-    assert "Prepare and verify in a private index" in words
-    assert "GIT_INDEX_FILE" in skill
+    # Landing into a shared checkout stays the interim on a machine that still
+    # shares one. Its steps moved to the collaboration reference's Interim
+    # section in 2026.09.23.1 (gate 8: content moves, prose is not compressed);
+    # the skill keeps the trigger line and the two never-commands.
+    collaboration = _read("references/collaboration.md")
+    collaboration_words = _words(collaboration)
+    assert "follows the Interim steps in [collaboration](references/collaboration.md)" in words
+    assert "take a bounded turn for a shared Git operation" in collaboration_words
+    assert "Prepare and verify in a private index" in collaboration_words
+    assert "GIT_INDEX_FILE" in collaboration
     # The refresh must run outside the private index (two stale shared indexes, 2026-09-21 00:31Z).
-    assert "env -u GIT_INDEX_FILE git read-tree HEAD" in skill
+    assert "env -u GIT_INDEX_FILE git read-tree HEAD" in collaboration
     assert "Never `git add -A`, never `git stash`" in words
+    assert "Never `git add -A`, never `git stash`" in collaboration_words
+    # 2026.09.23.1: containment both ways, count comparison, fresh-environment claims.
+    assert "compare your count with the author's" in words
+    assert "a suite that skips what the change touches is green about everything except the change" in words
+    assert "the files the change request lists and the files you read" in words
+    assert "git merge-base --is-ancestor <commit> origin/main" in words
+    assert "The acceptor runs it on their own clone" in words
+    assert "A journal entry that says landed names that merge commit and is written after it is fetched" in words
+    assert "settled by installing it into a fresh environment at the named commit" in words
     # Retired with the ruling: pushing a work branch is the author's act.
     assert "Pushing is the operator's decision" not in words
     assert "Being able to push is not being allowed to" not in words
 
 
+def test_collaboration_reference_carries_the_round_two_gate_clauses() -> None:
+    # Revision 2026.09.23.1, from round 2 findings thirteen to eighteen: what a
+    # reviewer, merger, acceptor and reporter each do, with the case behind it.
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "A gate names what a reader does to satisfy it, with a pointer to the means, or it is not a gate yet" in collaboration
+    assert "The approval states two counts and reconciles them" in collaboration
+    assert "compare your count with the author's and ask about the difference" in collaboration
+    assert "settled by installing it into a fresh environment at the named commit" in collaboration
+    assert "checked line by line against the item's acceptance text" in collaboration
+    assert "the report is a claim and the clone is the evidence" in collaboration
+    assert "a journal entry saying work landed is not evidence that it landed" in collaboration
+    assert "dependency preflight in `procedures/testing.md`" in collaboration
+    for finding in (
+        "finding thirteen",
+        "finding fourteen",
+        "finding fifteen",
+        "finding sixteen",
+        "finding seventeen",
+        "finding eighteen",
+    ):
+        assert finding in collaboration, finding
+
+
+# The dependency preflight and the application's testing procedure live with the
+# application's own suite. The package's testing procedure and its test arrive
+# with revision 2026.09.23.3 (W255 acceptance, the package's procedures folder).
 def test_operator_runtime_and_conduct_rules() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)
@@ -566,3 +620,33 @@ def test_route_points_only_at_what_the_worker_can_read() -> None:
     assert "belongs in the item" in coordinator
     assert "Never send a local filesystem path as the carrier" in coordinator
     assert "field_attachments_operator_only" in coordinator
+
+
+def test_skill_keeps_the_small_facts_that_compression_removed() -> None:
+    # Round 2, finding eleven: three repacks to hold the line budget removed
+    # these facts one clause at a time. Each is pinned so the budget is met by
+    # moving content to a reference, never by tightening prose.
+    words = _words(_read("SKILL.md"))
+    for fact in (
+        "accepts `--format brief` anywhere on the line",
+        "and for a question or request the correlated `send`",
+        "renders saved output the same way",
+        "the collaboration procedure, [collaboration](references/collaboration.md), revised one rehearsal round at a time",
+        "on a machine where the shared checkout is also the live `pb` runtime an edit there is live for every worker at once",
+        "GitHub sees one account for all agents and refuses its own author",
+        "`ERROR <code>` is not a receipt, and its code decides the retry",
+        "unclaimed or refused before any write is known, outcome unknown repeats under the same `idempotency_key`",
+    ):
+        assert fact in words, fact
+    # The reference carries what the skill only names, and the three error
+    # classes by code (codex-ui, review of #21: not every ERROR is outcome unknown).
+    brief = _words(_read("references/brief-output.md"))
+    assert "The recovery is the same request under the same `idempotency_key`" in brief
+    assert "A fresh key is a second write" in brief
+    assert "`work_coordinate_relay_unavailable`, after the client has checked that no claim happened" in brief
+    assert "The outcome is known, nothing applied" in brief
+    assert "`work_coordinate_outcome_unknown` names this class on the `pb coordinate` path" in brief
+    assert "refused before any write, on its shape or its admission" in brief
+    assert "a code it does not know is treated as outcome unknown" in brief
+    assert "`observed_revision` is in every receipt, applied or refused" in brief
+    assert "never taken from a wrapped fragment, and never composed from a key and a title" in brief
