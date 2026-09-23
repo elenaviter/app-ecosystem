@@ -75,6 +75,16 @@ missing":
 
 ## Attendance, Assignment, And Revocation
 
+An assignment notice (kind `assign`, from `control-plane`) carries these
+fields, every one from the durable assignment row and none from prose:
+
+| field | where it comes from | what it is for |
+| --- | --- | --- |
+| `payload.work_ref` | the assignment's `identity_ref`, the stable form of the plan node | which item you were given; read it with `project.plan.item` |
+| `payload.assignment_ref` | created by `assignment.assign` when the work was routed | the row you report against |
+| `payload.ownership_version` | the assignment row's `ownership_version` | the fence your report must match |
+| `payload.expected_reaction` | constant `begin_work` | says this is work, not information |
+
 A worker has direct owner conversation independently of projects. It attends
 zero or one current project. Attendance adds project mail and bounded project
 context; it does not create an assignment. An assignment has its own ref and

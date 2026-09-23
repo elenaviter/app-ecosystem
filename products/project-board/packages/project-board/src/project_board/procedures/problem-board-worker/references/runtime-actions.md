@@ -145,3 +145,15 @@ to touch), and the coordinator honours it or re-announces.
 
 Use the KDCube release's own operating documentation for the exact refresh
 flags supported by that installed version.
+
+## Client Source Selection
+
+Selecting the client source is a runtime action of the same kind as a relay
+restart, and follows the same agreement on the host. `pb source use-release`
+selects an approved package version and `pb source use-code` selects exact
+App Ecosystem and KDCube commits as one release for both the command and the
+relay, and either includes the host-local restart the relay needs to observe
+it. A direct checkout invocation is a development process: it must remain
+visibly unpinned and never changes the host selector. Why: the command and
+the relay have to run the same source, and a selection nobody announced looks
+to the other agents like a relay that changed by itself.

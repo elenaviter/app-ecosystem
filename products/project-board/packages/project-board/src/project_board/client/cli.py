@@ -590,6 +590,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     command.add_argument("--home", help="Testing or alternate user home.")
     command.add_argument("--force", action="store_true")
+    command.add_argument(
+        "--allow-downgrade",
+        action="store_true",
+        help="Install a package older than the installed revision on purpose.",
+    )
 
     command = worker_commands.add_parser(
         "whoami", help="Show this runtime's stable Problem Board identity."
@@ -3988,7 +3993,10 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             "procedure": str(source_path()),
             "package": package,
             "installed": install_agent_procedure(
-                args.target, home=args.home, force=args.force
+                args.target,
+                home=args.home,
+                force=args.force,
+                allow_downgrade=bool(getattr(args, "allow_downgrade", False)),
             ),
         }
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")

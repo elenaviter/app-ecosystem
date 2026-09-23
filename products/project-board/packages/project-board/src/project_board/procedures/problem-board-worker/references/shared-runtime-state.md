@@ -17,6 +17,12 @@ them in your own work, and treat a violation you find in review as a blocker.
 
 Redis holds only projections that can be rebuilt from a durable source, and
 state whose loss costs a retry (a lock, a one-time pointer, a rate window).
+Disposable temporary state stays in Redis and needs no escalation: a pending
+device login, a one-time pointer, a short approval window. Only durable state
+escalates, a standing login, a refresh family, a grant, custody, anything
+whose loss locks someone out. The operator, 2026-09-23, on a device approval
+store: "it is a temp thing, it is disposable, I do not need it in Postgres,
+like any other thing like this."
 Durable facts go to the durable store (Postgres, or the component's durable
 file store). Secrets and one-time secret material go to the secrets manager.
 Why: a Redis loss or snapshot restore must never lose or revive a fact.
