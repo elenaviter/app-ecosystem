@@ -157,8 +157,12 @@ channel after a failure, so it cannot reach the board right now.
 `session.connection` names the last error, the attempt count and the next
 attempt time, and `next.step` is `wait_for_reconnect`. Say that in one
 sentence and wait: the relay retries on its own. An accepted connection whose
-handshake timed out is retried within seconds (up to a minute). Other failures
-keep the normal backoff, up to thirty minutes. Until then `pb coordinate`
+handshake timed out is retried within seconds (up to a minute). A runtime
+that is not there (`oauth_challenge_not_advertised`,
+`oauth_mcp_endpoint_unreachable`, a refused connection) is retried every ten
+seconds for fifteen minutes, then once a minute, and a relay restart retries
+it at once. Other failures keep the normal backoff, up to thirty minutes.
+Until then `pb coordinate`
 refuses at once with `work_coordinate_channel_reconnecting`. Why: a worker
 that cannot reach the board should learn that at once, not after a 90-second
 deadline behind "the relay did not claim the operation".

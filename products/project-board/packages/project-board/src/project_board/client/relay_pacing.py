@@ -7,7 +7,7 @@ GET and a token POST. That exhausted the gateway's anonymous hourly bucket
 it, and the operator's own ``pb worker authorize`` shared the exhausted
 bucket, so the one action that could repair the channels was refused.
 
-Three rules, all enforced here:
+Four rules, all enforced here:
 
     host        a 429 (or a 503 naming Retry-After) quiets every call to the
                 gateway from this relay until the named time passes
@@ -21,6 +21,18 @@ Three rules, all enforced here:
                 handshake times out under load after relay restarts, and
                 the doubling pushed the next attempt more than 20 minutes out
                 while the worker could not reach the board.
+    runtime     a failure that says the runtime is not there (the MCP
+                endpoint answering 404, a connection refused, a 502 or 504)
+                is a state of the world, not a refusal. The channel retries
+                after 5 s, then every 10 s for fifteen minutes from the
+                streak's first failure, then once a minute, never the
+                doubling, and those attempts do not count toward it. Why: on
+                2026-09-23 five such failures across an eleven-minute rebuild
+                grew the backoff to ten minutes past recovery, and a relay
+                restart kept it, since the schedule is on disk. A relay start
+                forgets these records, and one channel opening after such a
+                failure clears every other channel's record, because the
+                runtime that answered one answers all.
     pending     a channel waiting for authorization is retried at once when
                 its local profile changes (what ``pb worker authorize`` does),
                 otherwise after its backoff; a permanent refusal waits the
@@ -29,7 +41,8 @@ Three rules, all enforced here:
 
 State is kept next to the host config, so a relay restart inside a rate-limit
 window does not start hammering again. A relay start forgets permanent
-refusals, so restarting the relay retries every pending channel once. To
+refusals and runtime records, so restarting the relay retries every pending
+channel once and every channel that was waiting on the runtime at once. To
 clear everything, including the host quiet window, stop the relay and delete
 ``relay-pacing.json`` beside the host config. The state holds no secret: times,
 counts, reason codes, and a fingerprint of non-secret profile fields.
@@ -56,6 +69,14 @@ HANDSHAKE_RETRY_BASE_SECONDS = 5.0
 HANDSHAKE_RETRY_CAP_SECONDS = 60.0
 HANDSHAKE_RETRY_LIMIT = 6
 HANDSHAKE_TIMEOUT_REASON = "data_bus_namespace_timeout"
+# The runtime is not there: retried soon, for as long as an outage plausibly
+# lasts, then once a minute so a runtime that is misdeployed for good costs
+# sixty probes an hour per channel and never the gateway's bucket.
+RUNTIME_RETRY_BASE_SECONDS = 5.0
+RUNTIME_RETRY_CAP_SECONDS = 10.0
+RUNTIME_RETRY_WINDOW_SECONDS = 15 * 60.0
+RUNTIME_RETRY_LONG_SECONDS = 60.0
+RUNTIME_SCHEDULE = "runtime"
 # A 429 that names no wait still means the bucket is spent.
 HOST_QUIET_DEFAULT_SECONDS = 60.0
 # The gateway's own window is an hour. A longer Retry-After (a wrong value, or
@@ -114,7 +135,7 @@ class RelayPacing:
         self._state: dict[str, Any] = {"host_quiet_until": 0.0, "channels": {}, "pending": {}}
         self._load()
         if forget_permanent:
-            self._forget_permanent_refusals()
+            self._forget_on_start()
 
     # -- persistence ----------------------------------------------------------
 
@@ -133,21 +154,27 @@ class RelayPacing:
                 if isinstance(value, Mapping):
                     self._state[key] = {str(k): dict(v) for k, v in value.items() if isinstance(v, Mapping)}
 
-    def _forget_permanent_refusals(self) -> None:
-        """A relay start retries permanently refused channels once: the fix may
-        have been made on the server while the relay was down."""
+    def _forget_on_start(self) -> None:
+        """A relay start retries permanently refused channels once, since the
+        fix may have been made on the server while the relay was down, and
+        retries every channel that was waiting on the runtime at once, since
+        the relay is usually restarted because the runtime came back."""
 
-        names = [
+        permanent = [
             name for name, record in self._state["pending"].items() if record.get("permanent")
         ]
-        for name in names:
+        for name in permanent:
             self._state["pending"].pop(name, None)
             self._state["channels"].pop(name, None)
-        if names:
+        runtime = self._runtime_channels()
+        for name in runtime:
+            self._state["channels"].pop(name, None)
+        if permanent:
             self._state["host_quiet_until"] = min(
                 float(self._state["host_quiet_until"]),
                 self._clock() + HOST_QUIET_CAP_SECONDS,
             )
+        if permanent or runtime:
             self._save()
 
     def _save(self) -> None:
@@ -189,51 +216,111 @@ class RelayPacing:
         record = self._state["channels"].get(name)
         return record is None or float(record.get("next_at") or 0.0) <= self._clock()
 
-    def record_failure(self, name: str, reason: str, *, handshake_timeout: bool = False) -> float:
+    def record_failure(
+        self,
+        name: str,
+        reason: str,
+        *,
+        handshake_timeout: bool = False,
+        runtime_unavailable: bool = False,
+    ) -> float:
         """Back ``name`` off after a transient failure; return the delay.
 
         ``handshake_timeout`` marks an accepted connection whose namespace
         handshake timed out. It retries on the short schedule until
         ``HANDSHAKE_RETRY_LIMIT`` such attempts, then on the normal one.
+        ``runtime_unavailable`` marks a runtime that is not there. It retries
+        on the runtime schedule for as long as the streak lasts, and its
+        attempts never feed the doubling.
         """
 
+        now = self._clock()
         record = self._state["channels"].setdefault(name, {"attempts": 0})
         attempts = int(record.get("attempts") or 0) + 1
         quick = int(record.get("handshake_attempts") or 0)
-        if handshake_timeout and quick < HANDSHAKE_RETRY_LIMIT:
+        runtime_attempts = int(record.get("runtime_attempts") or 0)
+        runtime_since = record.get("runtime_since")
+        if runtime_unavailable:
+            runtime_attempts += 1
+            if not isinstance(runtime_since, (int, float)) or record.get("schedule") != RUNTIME_SCHEDULE:
+                runtime_since = now
+            if now - float(runtime_since) < RUNTIME_RETRY_WINDOW_SECONDS:
+                delay = min(
+                    RUNTIME_RETRY_CAP_SECONDS,
+                    RUNTIME_RETRY_BASE_SECONDS * (2 ** (runtime_attempts - 1)),
+                )
+            else:
+                delay = RUNTIME_RETRY_LONG_SECONDS
+            schedule = RUNTIME_SCHEDULE
+        elif handshake_timeout and quick < HANDSHAKE_RETRY_LIMIT:
             quick += 1
             delay = min(
                 HANDSHAKE_RETRY_CAP_SECONDS,
                 HANDSHAKE_RETRY_BASE_SECONDS * (2 ** (quick - 1)),
             )
             schedule = "handshake"
+            runtime_since = None
         else:
             # Only normal attempts count toward the doubling, so a channel
-            # leaving the short handshake retries starts again at one minute
-            # instead of jumping to the cap.
-            normal = max(1, attempts - quick)
+            # leaving the short handshake or runtime retries starts again at
+            # one minute instead of jumping to the cap.
+            normal = max(1, attempts - quick - runtime_attempts)
             delay = min(
                 CHANNEL_BACKOFF_CAP_SECONDS,
                 CHANNEL_BACKOFF_BASE_SECONDS * (2 ** (normal - 1)),
             )
             schedule = "backoff"
-        delay *= 0.5 + 0.5 * float(self._rng())
+            runtime_since = None
+        if schedule != RUNTIME_SCHEDULE:
+            delay *= 0.5 + 0.5 * float(self._rng())
         record.update(
             attempts=attempts,
             handshake_attempts=quick,
-            next_at=self._clock() + delay,
+            runtime_attempts=runtime_attempts,
+            next_at=now + delay,
             reason=str(reason),
             schedule=schedule,
-            failed_at=self._clock(),
+            failed_at=now,
         )
+        if runtime_since is None:
+            record.pop("runtime_since", None)
+        else:
+            record["runtime_since"] = float(runtime_since)
         self._save()
         return delay
 
     def record_success(self, name: str) -> None:
-        changed = self._state["channels"].pop(name, None) is not None
+        """Forget ``name``'s failures. A channel that was waiting on the
+        runtime clears every other channel waiting on it too: the runtime that
+        answered this one answers them."""
+
+        record = self._state["channels"].pop(name, None)
+        changed = record is not None
         changed = (self._state["pending"].pop(name, None) is not None) or changed
+        if record is not None and record.get("schedule") == RUNTIME_SCHEDULE:
+            for other in self._runtime_channels():
+                self._state["channels"].pop(other, None)
+                changed = True
         if changed:
             self._save()
+
+    def _runtime_channels(self) -> list[str]:
+        return [
+            name
+            for name, record in self._state["channels"].items()
+            if record.get("schedule") == RUNTIME_SCHEDULE
+        ]
+
+    def soonest_runtime_retry_seconds(self) -> float | None:
+        """Seconds until the next retry of a channel waiting on the runtime,
+        or None when no channel is. The cycle shortens itself to this."""
+
+        now = self._clock()
+        waits = [
+            max(0.0, float(self._state["channels"][name].get("next_at") or 0.0) - now)
+            for name in self._runtime_channels()
+        ]
+        return min(waits) if waits else None
 
     # -- pending authorization -------------------------------------------------
 
@@ -351,6 +438,11 @@ __all__ = [
     "CHANNEL_BACKOFF_CAP_SECONDS",
     "HOST_QUIET_DEFAULT_SECONDS",
     "PACING_FILENAME",
+    "RUNTIME_RETRY_BASE_SECONDS",
+    "RUNTIME_RETRY_CAP_SECONDS",
+    "RUNTIME_RETRY_LONG_SECONDS",
+    "RUNTIME_RETRY_WINDOW_SECONDS",
+    "RUNTIME_SCHEDULE",
     "RelayPacing",
     "rate_limit_wait",
 ]
