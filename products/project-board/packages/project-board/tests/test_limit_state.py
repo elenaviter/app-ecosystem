@@ -102,7 +102,8 @@ def test_claude_code_status_line_and_stop_failure_read_the_same_way():
     assert limit_state_from_claude_statusline({"session_id": "s"})["kind"] == "unknown"
     stop = limit_state_from_claude_stop_failure({"error": "rate_limit"}, observed_at="2026-09-23T20:01:00Z")
     assert stop["kind"] == "rate_limited" and stop["resets_at"] == ""
-    assert limit_state_from_claude_stop_failure({"error": "overloaded"})["kind"] == "unknown"
+    # Named, never collapsed to unknown (W26 acceptance 9).
+    assert limit_state_from_claude_stop_failure({"error": "overloaded"})["kind"] == "stopped"
 
 
 def test_a_limit_clears_when_its_reset_time_has_passed():
@@ -264,3 +265,44 @@ def test_an_unchanged_limit_state_is_not_rewritten_and_never_counts_as_activity(
     changed = field.record_runtime_limit_state(identity.worker_name, {**state, "kind": "ok", "reached": "", "resets_at": ""})
     assert changed["kind"] == "ok"
     assert read_json(field._worker_path(identity.worker_name)).get("updated_at") == before.get("updated_at")
+
+
+def test_every_stop_failure_error_is_named_and_credits_read_as_out_of_tokens():
+    """W26 acceptance 9 and 10: out of credits is reported, nothing collapses to unknown.
+
+    Operator, 2026-09-23 23:05Z: fable-pub was out of credits and the board
+    did not say so, because only ``rate_limit`` was mapped.
+    """
+
+    from project_board.client.limit_state import STOP_FAILURE_ERRORS, limit_state_line
+
+    kinds = {
+        error: limit_state_from_claude_stop_failure({"error": error}, observed_at="2026-09-23T23:05:00Z")
+        for error in STOP_FAILURE_ERRORS
+    }
+    assert {error: state["kind"] for error, state in kinds.items()} == {
+        "rate_limit": "rate_limited",
+        "billing_error": "out_of_tokens",
+        "account_on_hold": "out_of_tokens",
+        "authentication_failed": "stopped",
+        "oauth_org_not_allowed": "stopped",
+        "overloaded": "stopped",
+        "server_error": "stopped",
+    }
+    assert all(state["reached"] == error for error, state in kinds.items())
+    assert limit_state_line(kinds["billing_error"]) == "out of tokens (billing_error)"
+    assert limit_state_line(kinds["authentication_failed"]) == "stopped (authentication_failed)"
+    # An error Claude Code adds later still arrives under its own name.
+    assert limit_state_from_claude_stop_failure({"error": "quota_exceeded"})["kind"] == "stopped"
+    # Only a payload with no usable error name is unknown.
+    assert limit_state_from_claude_stop_failure({})["kind"] == "unknown"
+    assert limit_state_from_claude_stop_failure({"error": "Not A Name!"})["kind"] == "unknown"
+
+
+def test_the_procedure_settings_snippet_matches_every_mapped_error():
+    from project_board.client.limit_state import STOP_FAILURE_ERRORS
+    from project_board.client.procedures import source_package_path
+
+    first_run = (source_package_path() / "references" / "first-run.md").read_text(encoding="utf-8")
+    matcher = "|".join(STOP_FAILURE_ERRORS)
+    assert f'"matcher": "{matcher}"' in first_run
