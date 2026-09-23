@@ -23,6 +23,12 @@ This makes backend selection explicit and durable. Restoring an older Redis
 snapshot cannot change current OAuth, Card-handle, replay, or session authority
 after the descriptor selects an activated PostgreSQL generation.
 
+An existing runtime with no authority backend selector remains on
+`redis-migration-source`. An absent authority node, an empty authority mapping,
+and a blank normalized backend all select that source mode with no generation.
+An explicit backend value is validated, and PostgreSQL requires the activated
+generation identifier from its receipt.
+
 ## Storage ownership
 
 | State | Authoritative storage |

@@ -57,9 +57,14 @@ class DurableAuthorityConfig:
         field_path: str = "authority",
     ) -> "DurableAuthorityConfig":
         path = str(field_path or "authority").strip() or "authority"
+        if raw is None:
+            raw = {}
         if not isinstance(raw, Mapping):
             raise DurableAuthorityConfigurationError(f"{path} is required")
-        backend = str(raw.get("backend") or "").strip().lower()
+        backend = (
+            str(raw.get("backend") or "").strip().lower()
+            or AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE
+        )
         if backend not in AUTHORITY_BACKENDS:
             raise DurableAuthorityConfigurationError(
                 f"{path}.backend is invalid"

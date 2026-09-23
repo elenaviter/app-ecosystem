@@ -40,6 +40,26 @@ def test_redis_is_named_only_as_an_unactivated_migration_source() -> None:
     assert config.generation_id == ""
 
 
+@pytest.mark.parametrize(
+    "connections",
+    [
+        {},
+        {"delegated_credentials": {}},
+        _connections(None),
+        _connections({}),
+        _connections({"backend": ""}),
+    ],
+)
+def test_absent_backend_keeps_the_redis_migration_source(
+    connections: dict,
+) -> None:
+    config = DelegatedAuthorityConfig.from_connections(connections)
+
+    assert config.backend == AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE
+    assert config.uses_postgresql is False
+    assert config.generation_id == ""
+
+
 def test_shared_parser_names_the_calling_descriptor_path() -> None:
     with pytest.raises(
         DelegatedAuthorityConfigurationError,
@@ -54,9 +74,9 @@ def test_shared_parser_names_the_calling_descriptor_path() -> None:
 @pytest.mark.parametrize(
     "authority",
     [
-        None,
-        {},
+        "redis-migration-source",
         {"backend": "redis"},
+        {"generation_id": "not-activated"},
         {"backend": "postgresql"},
         {
             "backend": "redis-migration-source",
