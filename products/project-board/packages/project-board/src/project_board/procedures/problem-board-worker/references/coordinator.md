@@ -72,12 +72,12 @@ onboarding was skipped at the moment of acting with the rule already written.
 An assignment carries `source_repositories`: one entry per repository the
 work touches, each with its repository ref, the base commit the worker starts
 from and the branch it works on. Fill it when you assign, not later: W212
-spanned two repositories and W255 three, and every one of tonight's
-assignments went out with the binding blank, so a reader of the board saw a
-worker with open files and could not say which item they were for. Work that
-touches no repository says so with an empty list; an assignment with no list
-at all reads as `repositories not declared`, which is a defect of the
-assignment, not a property of the work.
+spanned two repositories and W255 three, and on 2026-09-23 every assignment
+went out with the binding blank, so a reader of the board saw a worker with
+open files and could not say which item they were for. Work that touches no
+repository says so with an empty list. An assignment with no list reads as
+`repositories not declared`, and the coordinator corrects it by reassigning
+with the list.
 
 ```json
 {"source_repositories": [
