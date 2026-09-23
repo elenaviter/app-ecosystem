@@ -48,20 +48,32 @@ restating the meanings.
 
 ## `pb` Is Not Installed
 
-`pb` is the console command in the released `project-board` distribution.
-Ask which exact version the operator approved for this host, then propose:
+`pb` is the console command in the `project-board` distribution. A team host
+installs its five-package client family from a clean export of an approved App
+Ecosystem commit. Ask for the repository path and full commit, then propose the
+source install and selector from [runtime actions](runtime-actions.md). The
+install is one dependency resolution over all five first-party package paths:
 
 ```bash
-pipx install "project-board==<approved-version>"
-pb procedure install --target codex --target claude-code
+APP_REPOSITORY=<app-ecosystem>
+APP_COMMIT=<full-app-commit>
+APP_EXPORT=$(mktemp -d)
+test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
+git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
+
+python3 \
+  "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
+  --source-root "$APP_EXPORT"
+"$HOME/.local/bin/pb" procedure install --target codex --target claude-code
 ```
 
 Installing a command and a procedure changes the user's machine, so ask before
-either command. Use only the targets they run. If `pipx` is unavailable, say
-that it is the required isolated application installer and let the user choose
-how to install it; do not replace this with a checkout launcher or an editable
-install. After installation, `pb status` reports the released package version
-as the pinned client source.
+either command. Use only the targets they run. The source installer creates the
+isolated client interpreter and guarded launcher, resolving all five
+first-party distributions in one `pip install` invocation. The repository is
+an input to the clean export and never becomes a runtime import path. After
+selection, `pb source status` reports the full commit, all five package trees,
+and the source loaded by the relay.
 
 ## `machine_not_configured`
 
@@ -80,6 +92,15 @@ When `next.step` is `configure_target`:
    `--allow-root` values.
 4. Show the one `pb setup` command with their values and run it after they
    approve.
+5. Select the same reviewed source that provided the bootstrap, now that the
+   target configuration exists:
+
+   ```bash
+   pb source use-code \
+     --repository <app-ecosystem> --ref <full-app-commit> \
+     --expect <full-app-commit>
+   pb source status
+   ```
 
 When `next.step` is `install_relay`: say that the relay runs in the background
 for this user account and starts with the machine. Propose

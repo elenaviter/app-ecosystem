@@ -2,16 +2,33 @@
 
 The Project Board client: the `pb` command a machine runs to join a board.
 
-## Install
+## Install from reviewed source
 
 ```bash
-pipx install "project-board==2026.09.23.0158"
-pb procedure install --target codex --target claude-code
+APP_REPOSITORY=/path/to/app-ecosystem
+APP_COMMIT=<approved-full-commit>
+APP_EXPORT=$(mktemp -d)
+test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
+git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
+
+python3 \
+  "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
+  --source-root "$APP_EXPORT"
+"$HOME/.local/bin/pb" procedure install --target codex --target claude-code
+
+# After pb setup creates the target configuration:
+"$HOME/.local/bin/pb" source use-code \
+  --repository "$APP_REPOSITORY" \
+  --ref "$APP_COMMIT" \
+  --expect "$APP_COMMIT"
 ```
 
-The exact version is the host's default pinned source. `pb status` reports the
-version used by the current command and the source reported by the supervised
-relay.
+The source installer creates the isolated client environment and guarded user
+launcher. Its one `pip install` invocation resolves all five first-party
+distributions from the clean export; only third-party dependencies come from
+package indexes. The checkout is never an import path. `pb source status`
+reports the selected App Ecosystem commit, every selected package tree, and the
+source reported by the supervised relay.
 
 ## Package contents
 
@@ -27,16 +44,17 @@ relay.
 The server side stays in its own repository and depends on this package for
 the contract.
 
-## Released and code sources
+## Select host source
 
-Ordinary hosts run the installed release. After an approved package upgrade,
-make that exact version authoritative and restart the relay with:
+A published distribution remains a supported independent source. After an
+approved package upgrade, make that exact version authoritative and restart
+the relay with:
 
 ```bash
 pb source use-release --expect-version 2026.09.23.0158
 ```
 
-Maintainers can instead select one reviewed App Ecosystem commit:
+The source deployment selects one reviewed App Ecosystem commit:
 
 ```bash
 pb source use-code \
@@ -45,10 +63,10 @@ pb source use-code \
   --expect <full-40-character-commit>
 ```
 
-The code release is exported from Git objects, verified blob by blob, and
+The code release is exported from Git objects and verified blob by blob. It
 contains `project-board`, `app-foundation`, `service-foundation`,
-`connection-hub`, and `connection-hub-cli` from the same commit. The selector
-is shared by the `pb` bootstrap and relay; an installed relay is restarted and
+`connection-hub`, and `connection-hub-cli` from that commit. The selector is
+shared by the `pb` bootstrap and relay; an installed relay is restarted and
 must report that source before the selection succeeds. A failed start restores
 the previous selector.
 
@@ -56,8 +74,9 @@ Running `python -m project_board.client.entrypoint` with checkout package paths
 on `PYTHONPATH` is an explicit development process. It does not change the
 host selector, and `pb status` reports that process as unpinned checkout code.
 
-## Why it is published
+## Why it is packaged
 
-A machine that runs agents installs a released client and upgrades it, rather
-than receiving a copy of somebody's checkout. That also makes the client's
-version a fact a deployment can check.
+A machine that runs agents installs one package family and selects one durable
+source manifest. Commands and the relay therefore load the same reviewed
+implementation, while the commit and package-tree identities give deployment
+and status checks precise facts to compare.

@@ -21,7 +21,7 @@ live that has never executed.
 | Descriptor content (`bundles.yaml`) | `bundle config apply` or `bundle reload <bundle-id>` | `refresh`, which preserves `$WORKDIR/config` |
 | An app under `apps/` | a bundle reload | nothing further |
 | A released Problem Board host client | install the exact approved `project-board` version, then run `pb source use-release --expect-version <version>`; the source action records the version and restarts the relay when it is installed | upgrading the package alone, because the recorded version remains unchanged and ordinary commands refuse the mismatch |
-| A committed Problem Board client under development | `pb source use-code --repository <app-ecosystem> --ref <ref> --expect <full-commit>`; it exports `project-board`, both foundations, `connection-hub`, and `connection-hub-cli` from that one commit, atomically selects it for the command and relay, restarts the installed relay, and accepts only the new process's matching startup record | an editable install, a live-checkout launcher, or selecting only the relay |
+| A committed Problem Board client under development | install the five first-party distributions together from a clean export, then run `pb source use-code --repository <app-ecosystem> --ref <ref> --expect <full-commit>`; it exports the same five packages from that commit, atomically selects them for the command and relay, restarts the installed relay, and accepts only the new process's matching startup record | five independent installs, an editable install, a live-checkout launcher, or selecting only the relay |
 | The already selected Problem Board relay source | `pb relay-service restart`. A relay restart is host-local and reloads the recorded source without advancing it | a bundle reload; a restart cannot select a newer checkout or package version |
 | The worker procedure package inside `project-board` | `pb procedure install`, run by the coordinator on the host after the selected release or code commit carries the new revision | editing package source, which installed sessions never read |
 
@@ -48,27 +48,53 @@ approved moving the host's pinned source to a reviewed commit.
 
 `pb source status` separates three facts: the released bootstrap installed on
 the host, the exact selected version or commit, and the source reported by the
-running relay. A code selector names a full commit and the tree id of every
+running relay. A code selector names the full commit and tree id of every
 exported package. A running relay observes a new selector only when restarted;
 the source command performs that restart and rolls the selector back when the
 new process does not report the expected source.
 
 ## Cut Over A Host That Still Runs The Checkout Client
 
-The package must exist in the relay interpreter before a shared checkout stops
-providing `pb`. Read `program_arguments[0]` from `pb relay-service status`; it
-is the relay interpreter. Then, before fast-forwarding the old checkout:
+The package family must exist in the relay interpreter before a shared checkout
+stops providing `pb`. Read `program_arguments[0]` from `pb relay-service
+status`; it is the relay interpreter. Prepare a clean export from the approved
+App Ecosystem commit, then install every first-party distribution in one
+resolution:
 
-1. install the exact approved `project-board` release with that interpreter;
-2. invoke `project_board.client.entrypoint source use-release` with that same
-   interpreter and `--expect-version <version>`;
-3. verify `source.mode: released`, the exact version, and the restarted relay's
-   matching startup record with the same interpreter's `source status`;
+```bash
+APP_REPOSITORY=<app-ecosystem>
+APP_COMMIT=<approved-full-commit>
+APP_EXPORT=$(mktemp -d)
+test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
+git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
+
+PB_VENV=$(dirname "$(dirname "<relay-python>")")
+python3 \
+  "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
+  --source-root "$APP_EXPORT" \
+  --venv "$PB_VENV"
+"<relay-python>" -c 'import json; from project_board.client.relay_source import installed_release_source; print(json.dumps(installed_release_source(), sort_keys=True))'
+"<relay-python>" -m project_board.client.entrypoint source use-code \
+  --repository "$APP_REPOSITORY" --ref "$APP_COMMIT" \
+  --expect "$APP_COMMIT"
+"<relay-python>" -m project_board.client.entrypoint source status
+```
+
+Before fast-forwarding the old checkout:
+
+1. verify that the installed-source line reports `mode: released` and the
+   expected package version;
+2. verify `source.mode: snapshot`, the full commit, all five package trees, and
+   the restarted relay's matching startup record with the same interpreter's
+   `source status`;
+3. verify that the guarded user launcher created by the source installer enters
+   that same environment, then install and verify the worker procedure from the
+   selected snapshot;
 4. only then fast-forward or remove the checkout implementation.
 
-`use-release` performs the coordinated relay restart. Running the fast-forward
-first is an outage: the checkout entry point imports a package the relay
-interpreter does not yet have.
+`use-code` performs the coordinated relay restart. The fast-forward follows
+the successful source verification so the command remains available
+throughout the cutover.
 
 ## Relay Restart Is Host-Local
 
