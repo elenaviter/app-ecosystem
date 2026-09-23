@@ -214,8 +214,7 @@ def test_entrypoint_registers_delegated_gateway_contract():
         "requestable_discovery": {"caller_types": ["resident"]}
     }
     assert defaults["connections"]["delegated_credentials"]["authority"] == {
-        "backend": "postgresql",
-        "generation_id": "durable-authority-v1",
+        "backend": "redis-migration-source",
     }
     gateway_rows = [
         row

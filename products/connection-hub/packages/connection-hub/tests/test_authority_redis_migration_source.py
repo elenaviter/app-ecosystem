@@ -97,7 +97,7 @@ def _authority() -> CardAuthority:
 
 def _records():
     refresh = "refresh-secret"
-    access_digest = hashlib.sha256(b"access-secret").hexdigest()
+    access_digest = hashlib.sha256(b"resident-secret").hexdigest()
     admission_digest = hashlib.sha256(b"service\nnonce").hexdigest()
     return {
         f"{TENANT}:{PROJECT}:kdcube:oauth:client:dcr-client": (
@@ -125,7 +125,12 @@ def _records():
             EXPIRY_MS,
         ),
         f"{TENANT}:{PROJECT}:kdcube:oauth:agrant:{access_digest}": (
-            json.dumps({"operations": ["read"]}),
+            json.dumps(
+                {
+                    "operations": ["read"],
+                    "registry_access_id": "agent-card-1",
+                }
+            ),
             EXPIRY_MS,
         ),
         f"{TENANT}:{PROJECT}:kdcube:delegated-access:card-handles:agent-card-1": (
@@ -189,6 +194,9 @@ async def test_source_scans_every_durable_family_without_exposing_bearers() -> N
         "access_id": "agent-card-1",
         "session_id": "session-1",
     }
+    assert card.payload["resident_access_sha256"] == hashlib.sha256(
+        b"resident-secret"
+    ).hexdigest()
     client = next(
         record for record in snapshot.records if record.record_type == "oauth_client"
     )
@@ -208,7 +216,7 @@ async def test_source_scans_every_durable_family_without_exposing_bearers() -> N
 
 
 @pytest.mark.asyncio
-async def test_reset_source_preserves_only_resident_card_credentials() -> None:
+async def test_reset_source_preserves_the_complete_live_card_chain() -> None:
     redis = _Redis(_records())
     inspection = await ConnectionHubRedisResetSource(
         redis,
@@ -220,29 +228,49 @@ async def test_reset_source_preserves_only_resident_card_credentials() -> None:
     assert inspection.snapshot.counts == {
         FAMILY_ADMISSION_REPLAY: 0,
         FAMILY_CARD_HANDLES: 1,
-        FAMILY_OAUTH_ACCESS: 0,
-        FAMILY_OAUTH_CLIENTS: 0,
-        FAMILY_OAUTH_REFRESH: 0,
+        FAMILY_OAUTH_ACCESS: 1,
+        FAMILY_OAUTH_CLIENTS: 1,
+        FAMILY_OAUTH_REFRESH: 1,
         FAMILY_RESIDENT_CARD_SECRETS: 1,
     }
     assert [record.record_type for record in inspection.snapshot.records] == [
-        "card_handles"
+        "oauth_client",
+        "oauth_refresh",
+        "oauth_access",
+        "card_handles",
     ]
     assert inspection.source_summary == {
-        "preserved": {"resident_agent_card_handles": 1},
+        "preserved": {
+            "card_handles": 1,
+            "card_handles_agent": 1,
+            "oauth_access": 1,
+            "oauth_clients": 1,
+            "oauth_refresh": 1,
+            "resident_agent_card_handles": 1,
+        },
         "reset": {
             "admission_replay": 1,
             "legacy_automation_cards": 0,
             "legacy_control_cards": 0,
-            "oauth_access": 1,
-            "oauth_clients": 1,
-            "oauth_refresh": 1,
+            "oauth_access": 0,
+            "oauth_clients": 0,
+            "oauth_refresh": 0,
+        },
+        "oauth_refresh_card_state": {
+            "active": 1,
+            "expired": 0,
+            "missing": 0,
+            "revoked": 0,
         },
     }
-    assert redis.eval_calls == [
-        f"{TENANT}:{PROJECT}:kdcube:delegated-access:"
-        "card-handles:agent-card-1"
-    ]
+    assert set(redis.eval_calls) == set(_records()) - {
+        next(
+            key
+            for key in _records()
+            if ":admission:" in key
+        )
+    }
+    assert inspection.blockers == ()
     preview = build_migration_preview(
         inspection,
         generation_id="durable-authority-reset-v1",
@@ -251,6 +279,116 @@ async def test_reset_source_preserves_only_resident_card_credentials() -> None:
     encoded = json.dumps(preview.to_dict(), sort_keys=True)
     assert "refresh-secret" not in encoded
     assert "resident-secret" not in encoded
+
+
+@pytest.mark.asyncio
+async def test_reset_source_preserves_a_live_external_client_chain() -> None:
+    authority = CardAuthority(
+        access_id="connector-card-1",
+        client_id="external-mcp-client",
+        grantor_subject="user-1",
+        delegate_subject="external-client-1",
+        source="connector",
+        card_kind=CARD_KIND_CONNECTOR,
+        card_revision=1,
+        created_at=1_900_000_000,
+        expires_at=EXPIRY_MS // 1000,
+    )
+    access_token = "external-access"
+    refresh_token = "external-refresh"
+    records = {
+        f"{TENANT}:{PROJECT}:kdcube:oauth:client:external-mcp-client": (
+            json.dumps(
+                {
+                    "client_id": "external-mcp-client",
+                    "redirect_uris": ["https://client.example/callback"],
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "token_endpoint_auth_method": "none",
+                    "application_type": "native",
+                    "metadata": {},
+                }
+            ),
+            EXPIRY_MS,
+        ),
+        f"{TENANT}:{PROJECT}:kdcube:oauth:refresh:{refresh_token}": (
+            json.dumps(
+                {
+                    "client_id": "external-mcp-client",
+                    "sub": "user-1",
+                    "registry_access_id": authority.access_id,
+                    "card_kind": CARD_KIND_CONNECTOR,
+                }
+            ),
+            EXPIRY_MS,
+        ),
+        (
+            f"{TENANT}:{PROJECT}:kdcube:oauth:agrant:"
+            f"{hashlib.sha256(access_token.encode()).hexdigest()}"
+        ): (
+            json.dumps({"registry_access_id": authority.access_id}),
+            EXPIRY_MS,
+        ),
+        (
+            f"{TENANT}:{PROJECT}:kdcube:delegated-access:card-handles:"
+            f"{authority.access_id}"
+        ): (
+            json.dumps(
+                {
+                    "access_id": authority.access_id,
+                    "access_token": access_token,
+                    "refresh_token": refresh_token,
+                    "session_id": "external-session",
+                }
+            ),
+            EXPIRY_MS,
+        ),
+    }
+
+    inspection = await ConnectionHubRedisResetSource(
+        _Redis(records),
+        tenant=TENANT,
+        project=PROJECT,
+        card_authorities=_Cards(authority),
+    ).inspect(captured_at_ms=1_900_000_000_000)
+
+    assert inspection.blockers == ()
+    assert inspection.source_summary["preserved"] == {
+        "card_handles": 1,
+        "card_handles_connector": 1,
+        "oauth_access": 1,
+        "oauth_clients": 1,
+        "oauth_refresh": 1,
+        "resident_agent_card_handles": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_reset_source_blocks_when_handle_bearers_do_not_match_oauth_chain() -> None:
+    records = _records()
+    handle_key = next(key for key in records if ":card-handles:" in key)
+    records[handle_key] = (
+        json.dumps(
+            {
+                "access_id": "agent-card-1",
+                "access_token": "different-resident-secret",
+                "refresh_token": "different-refresh-secret",
+                "session_id": "session-1",
+            }
+        ),
+        EXPIRY_MS,
+    )
+
+    inspection = await ConnectionHubRedisResetSource(
+        _Redis(records),
+        tenant=TENANT,
+        project=PROJECT,
+        card_authorities=_Cards(_authority()),
+    ).inspect(captured_at_ms=1_900_000_000_000)
+
+    assert inspection.blockers == (
+        "live_card_access_binding_missing:agent-card-1",
+        "live_card_refresh_generation_missing:agent-card-1",
+    )
 
 
 @pytest.mark.asyncio
@@ -266,6 +404,7 @@ async def test_reset_source_does_not_read_discarded_handle_payloads() -> None:
         card_revision=1,
         created_at=1_900_000_000,
         expires_at=EXPIRY_MS // 1000,
+        state=CARD_STATE_REVOKED,
     )
     revoked_agent = CardAuthority(
         access_id="revoked-agent-card-1",
@@ -322,7 +461,7 @@ async def test_reset_source_does_not_read_discarded_handle_payloads() -> None:
     assert redis.eval_calls == [prefix + agent.access_id]
     assert inspection.source_summary["reset"] == {
         "admission_replay": 0,
-        "card_handles_connector": 1,
+        "card_handles_connector_revoked": 1,
         "card_handles_agent_expired": 1,
         "card_handles_agent_revoked": 1,
         "card_handles_orphaned": 1,

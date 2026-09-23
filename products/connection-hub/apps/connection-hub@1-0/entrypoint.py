@@ -2628,8 +2628,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 },
                 "delegated_credentials": {
                     "authority": {
-                        "backend": "postgresql",
-                        "generation_id": "durable-authority-v1",
+                        "backend": "redis-migration-source",
                     },
                     "gateway": {
                         "requestable_discovery": {

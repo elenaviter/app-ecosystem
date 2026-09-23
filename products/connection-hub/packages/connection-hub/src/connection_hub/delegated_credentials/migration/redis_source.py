@@ -214,7 +214,7 @@ class ConnectionHubRedisMigrationSource:
         key: str,
         access_id: str,
         authority: CardAuthority,
-    ) -> AuthorityMigrationRecord:
+    ) -> tuple[AuthorityMigrationRecord, CardCredentialHandles]:
         if authority.access_id != access_id:
             raise DurableRedisRecordError(
                 "card_handle_authority_identity_mismatch",
@@ -249,20 +249,23 @@ class ConnectionHubRedisMigrationSource:
                 handles.access_token.encode("utf-8")
             ).hexdigest()
             secrets["resident_bearer"] = handles.access_token
-        return AuthorityMigrationRecord(
-            record_type="card_handles",
-            identity=access_id,
-            families=families,
-            payload={
-                "authority": authority.to_dict(),
-                "handles": {
-                    "access_id": handles.access_id,
-                    "session_id": handles.session_id,
+        return (
+            AuthorityMigrationRecord(
+                record_type="card_handles",
+                identity=access_id,
+                families=families,
+                payload={
+                    "authority": authority.to_dict(),
+                    "handles": {
+                        "access_id": handles.access_id,
+                        "session_id": handles.session_id,
+                    },
+                    "resident_access_sha256": resident_access_sha256,
                 },
-                "resident_access_sha256": resident_access_sha256,
-            },
-            expires_at_ms=authority_expiry_ms,
-            secrets=secrets,
+                expires_at_ms=authority_expiry_ms,
+                secrets=secrets,
+            ),
+            handles,
         )
 
     async def _card_handles(self) -> list[AuthorityMigrationRecord]:
@@ -279,13 +282,12 @@ class ConnectionHubRedisMigrationSource:
                     "card_handle_authority_missing",
                     key=key,
                 )
-            records.append(
-                await self._read_card_handle_record(
-                    key=key,
-                    access_id=access_id,
-                    authority=authority,
-                )
+            record, _ = await self._read_card_handle_record(
+                key=key,
+                access_id=access_id,
+                authority=authority,
             )
+            records.append(record)
         return records
 
     async def _admission_replay(self) -> list[AuthorityMigrationRecord]:

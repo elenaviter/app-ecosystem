@@ -113,13 +113,11 @@ bundles:
             # Empty -> derived from the request host at runtime.
           public_base_url: "https://<PUBLIC_HOST>"
         delegated_credentials:
-          # Long-lived clients, credentials, Card handles, and replay claims
-          # are served only after this exact migration receipt exists in
-          # PostgreSQL. Use redis-migration-source only while producing and
-          # reviewing the dry-run artifact; it carries no generation_id.
+          # The source stays selected until a reviewed cutover writes its
+          # activation receipt. After apply, select postgresql and add the
+          # exact generation_id returned by that receipt.
           authority:
-            backend: postgresql
-            generation_id: durable-authority-v1
+            backend: redis-migration-source
           gateway:
             requestable_discovery:
               caller_types: [resident]

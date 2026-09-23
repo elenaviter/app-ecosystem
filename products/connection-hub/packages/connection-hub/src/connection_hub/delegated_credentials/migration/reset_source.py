@@ -5,10 +5,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 
 from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT
-from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE
+from connection_hub.delegated_credentials.cards.model import (
+    CARD_STATE_ACTIVE,
+    CardAuthority,
+    CardCredentialHandles,
+    authority_is_credentialless,
+)
 from connection_hub.delegated_credentials.migration.model import (
     AuthorityMigrationInspection,
     AuthorityMigrationRecord,
@@ -24,24 +30,32 @@ from connection_hub.delegated_credentials.migration.redis_source import (
 
 
 class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
-    """Preserve hosted Agent credentials and count reconstructable resets.
+    """Preserve live Card credential chains and count intentional resets.
 
-    Sessions, OAuth grants, dynamic registrations, replay claims, and
-    non-agent handle rows are rebuilt after activation. A hosted Agent Card
-    bearer is a non-reconstructable host credential, so that record is copied
-    with its durable Card binding.
+    A live Card credential is one authority unit: handle metadata, its access
+    binding, and, when present, the active refresh generation and dynamic
+    client. Copying only the Card row leaves a caller visible but unable to
+    authenticate or renew. Expired, revoked, orphaned, and unreferenced rows
+    remain reset policy.
     """
 
-    async def _resident_card_handles(
+    async def _live_card_handles(
         self,
         *,
         captured_at_ms: int,
-    ) -> tuple[list[AuthorityMigrationRecord], dict[str, int]]:
+    ) -> tuple[
+        list[AuthorityMigrationRecord],
+        dict[str, CardAuthority],
+        dict[str, CardCredentialHandles],
+        dict[str, int],
+    ]:
         prefix = (
             f"{self._tenant}:{self._project}:kdcube:delegated-access:"
             "card-handles:"
         )
-        resident: list[AuthorityMigrationRecord] = []
+        live: list[AuthorityMigrationRecord] = []
+        authorities: dict[str, CardAuthority] = {}
+        credentials: dict[str, CardCredentialHandles] = {}
         reset_counts: dict[str, int] = {}
         for key in await self._keys(prefix + "*"):
             access_id = key.removeprefix(prefix)
@@ -59,7 +73,7 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
                     "card_handle_authority_identity_mismatch",
                     key=key,
                 )
-            if authority.card_kind != CARD_KIND_AGENT:
+            if authority_is_credentialless(authority):
                 reset_counts[authority.card_kind] = (
                     reset_counts.get(authority.card_kind, 0) + 1
                 )
@@ -72,14 +86,15 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
                 bucket = f"{authority.card_kind}_expired"
                 reset_counts[bucket] = reset_counts.get(bucket, 0) + 1
                 continue
-            resident.append(
-                await self._read_card_handle_record(
-                    key=key,
-                    access_id=access_id,
-                    authority=authority,
-                )
+            record, handles = await self._read_card_handle_record(
+                key=key,
+                access_id=access_id,
+                authority=authority,
             )
-        return resident, reset_counts
+            live.append(record)
+            authorities[access_id] = authority
+            credentials[access_id] = handles
+        return live, authorities, credentials, reset_counts
 
     async def inspect(
         self,
@@ -91,9 +106,92 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
             if captured_at_ms is not None
             else time.time_ns() // 1_000_000
         )
-        resident_handles, reset_handle_counts = await self._resident_card_handles(
+        handles, live_authorities, live_credentials, reset_handle_counts = (
+            await self._live_card_handles(captured_at_ms=captured)
+        )
+        live_access_ids = set(live_authorities)
+
+        all_refresh, refresh_classifications = await self._oauth_refresh_records(
             captured_at_ms=captured,
         )
+        refresh = [
+            record
+            for record in all_refresh
+            if record.payload.get("migration_state") == "active"
+            and str(record.payload.get("record", {}).get("registry_access_id") or "")
+            in live_access_ids
+        ]
+        referenced_client_ids = {
+            str(record.payload.get("record", {}).get("client_id") or "").strip()
+            for record in refresh
+        }
+        referenced_client_ids.discard("")
+        all_clients = await self._oauth_clients(
+            referenced_client_ids=referenced_client_ids,
+        )
+        clients = [
+            record
+            for record in all_clients
+            if record.identity in referenced_client_ids
+            and record.payload.get("migration_state") == "active"
+        ]
+        all_access = await self._oauth_access()
+        access = [
+            record
+            for record in all_access
+            if str(record.payload.get("record", {}).get("registry_access_id") or "")
+            in live_access_ids
+        ]
+
+        access_by_card: dict[str, set[str]] = {}
+        for record in access:
+            access_id = str(
+                record.payload.get("record", {}).get("registry_access_id") or ""
+            )
+            access_by_card.setdefault(access_id, set()).add(record.identity)
+        refresh_by_card: dict[str, set[str]] = {}
+        for record in refresh:
+            access_id = str(
+                record.payload.get("record", {}).get("registry_access_id") or ""
+            )
+            refresh_by_card.setdefault(access_id, set()).add(record.identity)
+        available_clients = {record.identity for record in clients}
+        blockers: list[str] = []
+        for handle in handles:
+            authority = live_authorities[handle.identity]
+            held = live_credentials[handle.identity]
+            access_digest = (
+                hashlib.sha256(held.access_token.encode("utf-8")).hexdigest()
+                if held.access_token
+                else ""
+            )
+            refresh_digest = (
+                hashlib.sha256(held.refresh_token.encode("utf-8")).hexdigest()
+                if held.refresh_token
+                else ""
+            )
+            card_access = access_by_card.get(authority.access_id, set())
+            card_refresh = refresh_by_card.get(authority.access_id, set())
+            if access_digest and access_digest not in card_access:
+                blockers.append(
+                    f"live_card_access_binding_missing:{authority.access_id}"
+                )
+            if refresh_digest and refresh_digest not in card_refresh:
+                blockers.append(
+                    f"live_card_refresh_generation_missing:{authority.access_id}"
+                )
+            if authority.card_kind == CARD_KIND_AGENT and not access_digest:
+                blockers.append(
+                    f"live_card_resident_bearer_missing:{authority.access_id}"
+                )
+            elif not access_digest and not refresh_digest and not (
+                card_access or card_refresh
+            ):
+                blockers.append(
+                    f"live_card_oauth_chain_missing:{authority.access_id}"
+                )
+        for client_id in sorted(referenced_client_ids - available_clients):
+            blockers.append(f"live_card_oauth_client_missing:{client_id}")
 
         reset_counts = {
             "admission_replay": len(
@@ -114,21 +212,9 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
                     "delegated-access:control-card:*"
                 )
             ),
-            "oauth_access": len(
-                await self._keys(
-                    f"{self._tenant}:{self._project}:kdcube:oauth:agrant:*"
-                )
-            ),
-            "oauth_clients": len(
-                await self._keys(
-                    f"{self._tenant}:{self._project}:kdcube:oauth:client:*"
-                )
-            ),
-            "oauth_refresh": len(
-                await self._keys(
-                    f"{self._tenant}:{self._project}:kdcube:oauth:refresh:*"
-                )
-            ),
+            "oauth_access": len(all_access) - len(access),
+            "oauth_clients": len(all_clients) - len(clients),
+            "oauth_refresh": len(all_refresh) - len(refresh),
         }
         for card_kind, count in reset_handle_counts.items():
             reset_counts[f"card_handles_{card_kind}"] = count
@@ -136,7 +222,7 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
         snapshot = AuthorityMigrationSnapshot(
             tenant=self._tenant,
             project=self._project,
-            records=resident_handles,
+            records=[*clients, *refresh, *access, *handles],
             declared_families=CONNECTION_HUB_MIGRATION_FAMILIES,
             captured_at_ms=captured,
         ).validated()
@@ -144,10 +230,33 @@ class ConnectionHubRedisResetSource(ConnectionHubRedisMigrationSource):
             snapshot=snapshot,
             source_summary={
                 "preserved": {
-                    "resident_agent_card_handles": len(resident_handles),
+                    "card_handles": len(handles),
+                    **{
+                        f"card_handles_{card_kind}": sum(
+                            1
+                            for authority in live_authorities.values()
+                            if authority.card_kind == card_kind
+                        )
+                        for card_kind in sorted(
+                            {
+                                authority.card_kind
+                                for authority in live_authorities.values()
+                            }
+                        )
+                    },
+                    "oauth_access": len(access),
+                    "oauth_clients": len(clients),
+                    "oauth_refresh": len(refresh),
+                    "resident_agent_card_handles": sum(
+                        1
+                        for authority in live_authorities.values()
+                        if authority.card_kind == CARD_KIND_AGENT
+                    ),
                 },
                 "reset": reset_counts,
+                "oauth_refresh_card_state": refresh_classifications,
             },
+            blockers=blockers,
         ).validated()
 
 
