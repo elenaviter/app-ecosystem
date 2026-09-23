@@ -3880,6 +3880,60 @@ class SharedFieldStore:
             atomic_write_json(path, row)
             return dict(row["idle"])
 
+    def record_runtime_limit_state(
+        self,
+        worker_name: str,
+        state: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """What the runtime itself said about its usage limit (W26).
+
+        Claude Code has no file the relay can read, so the runtime's own status
+        line command and StopFailure hook hand the state to ``pb worker
+        limit-state``, which records it here. The relay puts it on the listener
+        session at the next cycle. Codex needs none of this: its rollout file
+        is read directly.
+        """
+
+        if not isinstance(state, Mapping) or not state:
+            raise DomainError(
+                "field_limit_state_invalid",
+                "A limit state is an object with a kind.",
+                status=400,
+            )
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        path = self._worker_path(clean_name)
+        incoming = {key: value for key, value in state.items() if key != "recorded_at"}
+        now = utc_now()
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            current = row.get("runtime_limit_state")
+            current = dict(current) if isinstance(current, Mapping) else {}
+            # The status line re-runs on every update (debounced at 300 ms), so
+            # an unchanged state is written at most once a minute, and the
+            # worker's updated_at is never touched: this is a reading, not
+            # activity, and presence must not read it as one.
+            unchanged = all(
+                current.get(key) == incoming.get(key)
+                for key in ("kind", "reached", "resets_at", "windows", "source")
+            )
+            recorded_at = str(current.get("recorded_at") or "")
+            if unchanged and recorded_at and (_seconds_since(recorded_at) or 0) < 60:
+                return current
+            row["runtime_limit_state"] = {**incoming, "recorded_at": now}
+            atomic_write_json(path, row)
+            return dict(row["runtime_limit_state"])
+
+    def runtime_limit_state(self, worker_name: str) -> dict[str, Any]:
+        """The recorded runtime limit state, or empty when the runtime never said."""
+
+        try:
+            worker = self.read_worker(worker_name)
+        except DomainError:
+            return {}
+        recorded = worker.get("runtime_limit_state")
+        return dict(recorded) if isinstance(recorded, Mapping) else {}
+
     def worker_idle_state(self, worker_name: str) -> dict[str, Any]:
         """Whether this agent is still out of work, without it having to say so twice.
 

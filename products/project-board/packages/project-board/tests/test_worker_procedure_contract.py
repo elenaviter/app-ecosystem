@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.9"
+    assert package["revision"] == "2026.09.23.10"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -142,6 +142,12 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
     assert "its channel is `pending_authorization`" in first_run
     assert "ask before proposing `pb relay-service start`. Do not reinstall it" in first_run
     assert "This state means the channel works (`active`) and the worker attends a project" in first_run
+    # W26: Claude Code reports its own usage limit through two settings lines the user adds.
+    assert "Claude Code Says When It Is Out Of Tokens" in first_run
+    assert "never inferred from silence" in first_run
+    assert '"statusLine": {"type": "command", "command": "pb worker limit-state"}' in first_run
+    assert "pb worker limit-state --source stop-failure" in first_run
+    assert "The settings are the user's: propose the lines, and the user adds them" in first_run
 
 
 def test_package_preserves_the_application_revision_chain() -> None:

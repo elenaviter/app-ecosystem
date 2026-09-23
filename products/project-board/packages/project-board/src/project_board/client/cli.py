@@ -61,7 +61,13 @@ from .outbox_outcomes import (
     submit_assignment_report,
 )
 from .quarantine import list_quarantine, read_quarantine, settle_quarantine
+from ..contract.worker_identity import WorkerSessionIdentity
 from .card_refusal import with_actionable_refusal
+from .limit_state import (
+    limit_state_from_claude_statusline,
+    limit_state_from_claude_stop_failure,
+    limit_state_line,
+)
 from .render import (
     FORMATS,
     FORMAT_BRIEF,
@@ -785,6 +791,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     command.add_argument("--note", default="", help="One line naming the work, required with a time.")
     command.add_argument("--clear", action="store_true", help="Clear the estimate: the work is done.")
+
+    command = worker_commands.add_parser(
+        "limit-state",
+        help=(
+            "Record what the coding-agent runtime itself says about its usage "
+            "limit (W26). Claude Code runs this as its statusLine command and as "
+            "its StopFailure hook for rate_limit: the JSON arrives on stdin, the "
+            "state is recorded for the relay, and one status line is printed."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument(
+        "--source",
+        default="statusline",
+        choices=("statusline", "stop-failure"),
+        help="Which Claude Code surface is calling: the status line (default) or the StopFailure hook.",
+    )
+    command.add_argument(
+        "--payload-file",
+        default="-",
+        help="The JSON Claude Code passed, a file or - for stdin (default).",
+    )
 
     command = worker_commands.add_parser(
         "idle",
@@ -4454,6 +4483,73 @@ def _render_command(args: argparse.Namespace) -> int:
     return code
 
 
+def _limit_state_command(args: argparse.Namespace, *, stdin: Any = None) -> int:
+    """Record the runtime's own limit state and print one status line (W26).
+
+    Claude Code shows this command's stdout as the status line, so the output
+    is one short line and never an envelope, and a failure to record never
+    breaks the status line: it is said on stderr and the exit code stays 0.
+    """
+
+    raw = ""
+    try:
+        source = sys.stdin if stdin is None else stdin
+        raw = source.read() if str(args.payload_file or "-") == "-" else Path(args.payload_file).read_text(encoding="utf-8")
+        payload = json.loads(raw) if raw.strip() else {}
+    except (OSError, ValueError) as exc:
+        print(f"limit state not recorded: payload unreadable ({exc})", file=sys.stderr)
+        print("limit unknown")
+        return 0
+    observed_at = utc_now()
+    if args.source == "stop-failure":
+        state = limit_state_from_claude_stop_failure(payload, observed_at=observed_at)
+    else:
+        state = limit_state_from_claude_statusline(payload, observed_at=observed_at)
+    try:
+        identity = _limit_state_identity(args, payload)
+        if identity is not None:
+            config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
+            field = SharedFieldStore(config.field_root)
+            try:
+                field.read_worker(identity.worker_name)
+            except DomainError as exc:
+                if exc.code != "field_record_not_found":
+                    raise
+                # The settings are user-level, so every Claude Code session on
+                # the host runs this. A session that is not a worker gets its
+                # status line and nothing is recorded or said.
+                identity = None
+            if identity is not None:
+                field.record_runtime_limit_state(identity.worker_name, state)
+    except DomainError as exc:
+        print(f"limit state not recorded: {exc.code}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - the status line must never break on this
+        print(f"limit state not recorded: {exc}", file=sys.stderr)
+    print(limit_state_line(state))
+    return 0
+
+
+def _limit_state_identity(
+    args: argparse.Namespace, payload: Mapping[str, Any]
+) -> WorkerSessionIdentity | None:
+    """Which session the limit state belongs to.
+
+    The settings line runs a bare ``pb worker limit-state``, so the identity
+    comes from the JSON Claude Code passes (``session_id``, runtime
+    ``claude-code``) unless the flags name one. No session id anywhere is not
+    an error: the status line still prints, nothing is recorded.
+    """
+
+    kind = str(getattr(args, "runtime_kind", "") or "").strip()
+    session = str(getattr(args, "runtime_session_id", "") or "").strip()
+    if kind or session:
+        return _identity(args)
+    payload_session = str(payload.get("session_id") or "").strip() if isinstance(payload, Mapping) else ""
+    if not payload_session:
+        return None
+    return WorkerSessionIdentity.create("claude-code", payload_session)
+
+
 def _channel_profile(args: argparse.Namespace) -> str:
     """This session's worker channel profile, or empty when no channel is known.
 
@@ -4483,6 +4579,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(cleaned_argv)
     if args.command == "render":
         return _render_command(args)
+    if args.command == "worker" and getattr(args, "worker_command", "") == "limit-state":
+        # One plain line, because Claude Code shows it as the status line.
+        return _limit_state_command(args)
     worker_flags = worker_flags_from_argv(cleaned_argv)
     try:
         # Inline prose is one line or a file, before any command runs, so the

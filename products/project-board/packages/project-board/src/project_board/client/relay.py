@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 
 from .card_refusal import actionable_card_refusal
+from .limit_state import session_with_limit_state, wake_deferred_until
 from ..contract.errors import DomainError
 from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
@@ -114,6 +115,9 @@ HEARTBEAT_SESSION_FIELDS = (
     "last_inbox_result_at",
     "last_mail_settled_at",
     "last_settled_message_ref",
+    # W26: the runtime's own usage-limit state, read on this host, so the
+    # board says "out of tokens, resets at" instead of reading silence.
+    "limit_state",
 )
 HEARTBEAT_SUBSCRIPTION_FIELDS = (
     "adapter",
@@ -2666,12 +2670,27 @@ class ProblemBoardHostRelayAdapter:
             )
         ), registration
 
+    def _listener_sessions(self) -> list[dict[str, Any]]:
+        """This session's listener row, carrying the runtime's own limit state (W26)."""
+
+        listener = self.field.worker_listener_session(self.config.worker_name)
+        if listener is None:
+            return []
+        return [
+            session_with_limit_state(
+                listener,
+                runtime_kind=self.config.runtime_kind,
+                runtime_session_id=self.config.runtime_session_id,
+                now=utc_now(),
+                recorded=self.field.runtime_limit_state(self.config.worker_name),
+            )
+        ]
+
     async def poll_once(self) -> dict[str, Any]:
         registration = await self._ensure_registration()
         if registration is not None and registration["remote"].get("pool_status") == "limbo":
             return await self._limbo_result()
-        listener = self.field.worker_listener_session(self.config.worker_name)
-        agent_sessions = [listener] if listener is not None else []
+        agent_sessions = self._listener_sessions()
         return await self._poll_project_once(
             agent_sessions=agent_sessions,
             force_heartbeat=True,
@@ -2685,8 +2704,7 @@ class ProblemBoardHostRelayAdapter:
         )
         if registration is not None and registration["remote"].get("pool_status") == "limbo":
             return await self._limbo_result()
-        listener = self.field.worker_listener_session(self.config.worker_name)
-        sessions = [listener] if listener is not None else []
+        sessions = self._listener_sessions()
         discovery: dict[str, Any] = {}
         discovery_heartbeat_sent = False
         discovery_session_delta: list[dict[str, Any]] | None = None
@@ -3017,6 +3035,9 @@ class ProblemBoardRelaySupervisor:
         # generation resets for the lifetime of the relay process.
         self._replacement_epochs: dict[str, int] = {}
         self._queue_reconciled_workers: set[str] = set()
+        # W26: per worker, the reset time a deferred wake was last logged for,
+        # so a limit is said once per reset and not once per cycle.
+        self._limit_wake_deferrals: dict[str, str] = {}
         self._listener_signature_cache: dict[
             str, tuple[tuple[int, int, int] | None, tuple]
         ] = {}
@@ -3323,6 +3344,38 @@ class ProblemBoardRelaySupervisor:
             return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
             return queue_reconciliation
+        # W26: a wake to an agent the runtime says is out of tokens or rate
+        # limited only piles up turns it cannot take. It waits for the reset
+        # the runtime named, said once per reset in the log, and the mail
+        # stays pending for the wake that follows the reset.
+        now = utc_now()
+        deferred_until = wake_deferred_until(
+            session_with_limit_state(
+                listener,
+                runtime_kind=channel.runtime_kind,
+                runtime_session_id=channel.runtime_session_id,
+                now=now,
+                recorded=field.runtime_limit_state(channel.worker_name),
+            ).get("limit_state"),
+            now=now,
+        )
+        if deferred_until:
+            if self._limit_wake_deferrals.get(channel.worker_name) != deferred_until:
+                self._limit_wake_deferrals[channel.worker_name] = deferred_until
+                logger.warning(
+                    "Problem Board wake deferred worker=%s reason=agent_rate_limited "
+                    "until=%s pending=%d",
+                    channel.worker_name,
+                    deferred_until,
+                    len(pending_refs),
+                )
+            return {
+                **(queue_reconciliation or {}),
+                "wake_deferred": True,
+                "wake_deferred_until": deferred_until,
+                "reason": "agent_rate_limited",
+            }
+        self._limit_wake_deferrals.pop(channel.worker_name, None)
         subscription = (
             dict(listener.get("subscription") or {})
             if isinstance(listener.get("subscription"), Mapping)
