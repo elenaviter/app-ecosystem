@@ -36,12 +36,12 @@ CONNECTION_HUB_AUTHORITY_FAMILIES = (
 )
 
 
-class DelegatedAuthorityConfigurationError(ValueError):
+class DurableAuthorityConfigurationError(ValueError):
     """The descriptor does not select one complete authority generation."""
 
 
 @dataclass(frozen=True)
-class DelegatedAuthorityConfig:
+class DurableAuthorityConfig:
     backend: str
     migration_id: str = ""
 
@@ -50,35 +50,51 @@ class DelegatedAuthorityConfig:
         return self.backend == AUTHORITY_BACKEND_POSTGRESQL
 
     @classmethod
-    def from_connections(
+    def from_mapping(
         cls,
-        connections: Mapping[str, Any],
-    ) -> "DelegatedAuthorityConfig":
-        delegated = connections.get("delegated_credentials")
-        delegated_node = delegated if isinstance(delegated, Mapping) else {}
-        raw = delegated_node.get("authority")
+        raw: Mapping[str, Any] | None,
+        *,
+        field_path: str = "authority",
+    ) -> "DurableAuthorityConfig":
+        path = str(field_path or "authority").strip() or "authority"
         if not isinstance(raw, Mapping):
-            raise DelegatedAuthorityConfigurationError(
-                "connections.delegated_credentials.authority is required"
-            )
+            raise DurableAuthorityConfigurationError(f"{path} is required")
         backend = str(raw.get("backend") or "").strip().lower()
         if backend not in AUTHORITY_BACKENDS:
-            raise DelegatedAuthorityConfigurationError(
-                "connections.delegated_credentials.authority.backend is invalid"
+            raise DurableAuthorityConfigurationError(
+                f"{path}.backend is invalid"
             )
         migration_id = str(raw.get("migration_id") or "").strip()
         if backend == AUTHORITY_BACKEND_POSTGRESQL and not migration_id:
-            raise DelegatedAuthorityConfigurationError(
+            raise DurableAuthorityConfigurationError(
                 "PostgreSQL authority requires an activated migration_id"
             )
         if (
             backend == AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE
             and migration_id
         ):
-            raise DelegatedAuthorityConfigurationError(
+            raise DurableAuthorityConfigurationError(
                 "Redis migration-source mode cannot claim an activated migration"
             )
         return cls(backend=backend, migration_id=migration_id)
+
+    @classmethod
+    def from_connections(
+        cls,
+        connections: Mapping[str, Any],
+    ) -> "DurableAuthorityConfig":
+        delegated = connections.get("delegated_credentials")
+        delegated_node = delegated if isinstance(delegated, Mapping) else {}
+        return cls.from_mapping(
+            delegated_node.get("authority"),
+            field_path="connections.delegated_credentials.authority",
+        )
+
+
+# Compatibility names retain the app-facing vocabulary while the shared
+# parser is also used by platform session authority configuration.
+DelegatedAuthorityConfig = DurableAuthorityConfig
+DelegatedAuthorityConfigurationError = DurableAuthorityConfigurationError
 
 
 __all__ = [
@@ -88,4 +104,6 @@ __all__ = [
     "CONNECTION_HUB_AUTHORITY_FAMILIES",
     "DelegatedAuthorityConfig",
     "DelegatedAuthorityConfigurationError",
+    "DurableAuthorityConfig",
+    "DurableAuthorityConfigurationError",
 ]

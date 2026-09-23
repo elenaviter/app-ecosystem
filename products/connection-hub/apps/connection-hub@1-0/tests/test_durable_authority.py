@@ -66,7 +66,7 @@ class _Cutovers(_PreparedStore):
 def _authority(module, *, cutover_failure: Exception | None = None):
     events: list[object] = []
     authority = module.ConnectionHubDurableAuthority(
-        config=SimpleNamespace(migration_id="w253-durable-authority-v1"),
+        config=SimpleNamespace(migration_id="durable-authority-v1"),
         oauth=_PreparedStore(events, "oauth"),
         card_handles=_CardHandles(events, "card_handles"),
         admission_replay=_ReplayClaims(events, "admission_replay"),
@@ -90,7 +90,7 @@ async def test_prepare_requires_the_exact_complete_cutover_before_cleanup() -> N
         ("schema", "cutovers"),
         (
             "require_activated",
-            "w253-durable-authority-v1",
+            "durable-authority-v1",
             CONNECTION_HUB_AUTHORITY_FAMILIES,
         ),
         ("card_cleanup", 100),

@@ -119,7 +119,7 @@ bundles:
           # reviewing the dry-run artifact; it carries no migration_id.
           authority:
             backend: postgresql
-            migration_id: w253-durable-authority-v1
+            migration_id: durable-authority-v1
           gateway:
             requestable_discovery:
               caller_types: [resident]

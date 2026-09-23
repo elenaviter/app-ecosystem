@@ -28,7 +28,7 @@ def _receipt(*, target_generation: str = _TARGET) -> AuthorityCutoverReceipt:
         FAMILY_OAUTH_ACCESS: 1,
     }
     return AuthorityCutoverReceipt(
-        migration_id="w253-test-v1",
+        migration_id="authority-test-v1",
         source_generation=_SOURCE,
         target_generation=target_generation,
         source_counts=counts,
@@ -74,7 +74,7 @@ async def test_cutover_activation_is_idempotent_and_conflict_checked_in_postgres
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
     store = PostgresAuthorityCutoverStore(
         pg_pool=pool,
-        tenant=f"w253-cutover-{uuid.uuid4().hex}",
+        tenant=f"authority-cutover-{uuid.uuid4().hex}",
         project="authority-receipt",
     )
     try:
@@ -88,7 +88,7 @@ async def test_cutover_activation_is_idempotent_and_conflict_checked_in_postgres
             "w251_card_identity": "reviewed-post-state"
         }
         required = await store.require_activated(
-            "w253-test-v1",
+            "authority-test-v1",
             required_families=(
                 FAMILY_OAUTH_CLIENTS,
                 FAMILY_OAUTH_REFRESH,
@@ -99,7 +99,7 @@ async def test_cutover_activation_is_idempotent_and_conflict_checked_in_postgres
 
         with pytest.raises(AuthorityCutoverRequired, match="families_missing"):
             await store.require_activated(
-                "w253-test-v1",
+                "authority-test-v1",
                 required_families=("bundle_sessions",),
             )
         with pytest.raises(AuthorityCutoverConflict):

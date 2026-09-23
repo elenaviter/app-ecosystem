@@ -128,7 +128,7 @@ async def test_admission_replay_contract_against_real_postgres() -> None:
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
     store = PostgresAdmissionReplayClaimStore(
         pg_pool=pool,
-        tenant=f"w253-test-{uuid.uuid4().hex}",
+        tenant=f"authority-test-{uuid.uuid4().hex}",
         project="admission-replay",
     )
     try:

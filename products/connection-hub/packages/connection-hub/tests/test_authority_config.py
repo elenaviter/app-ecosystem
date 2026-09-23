@@ -7,6 +7,7 @@ from connection_hub.delegated_credentials.authority_config import (
     AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE,
     DelegatedAuthorityConfig,
     DelegatedAuthorityConfigurationError,
+    DurableAuthorityConfig,
 )
 
 
@@ -19,14 +20,14 @@ def test_postgresql_authority_names_the_activated_migration() -> None:
         _connections(
             {
                 "backend": "postgresql",
-                "migration_id": "w253-durable-authority-v1",
+                "migration_id": "durable-authority-v1",
             }
         )
     )
 
     assert config.backend == AUTHORITY_BACKEND_POSTGRESQL
     assert config.uses_postgresql is True
-    assert config.migration_id == "w253-durable-authority-v1"
+    assert config.migration_id == "durable-authority-v1"
 
 
 def test_redis_is_named_only_as_an_unactivated_migration_source() -> None:
@@ -37,6 +38,17 @@ def test_redis_is_named_only_as_an_unactivated_migration_source() -> None:
     assert config.backend == AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE
     assert config.uses_postgresql is False
     assert config.migration_id == ""
+
+
+def test_shared_parser_names_the_calling_descriptor_path() -> None:
+    with pytest.raises(
+        DelegatedAuthorityConfigurationError,
+        match=r"auth\.sessions\.authority\.backend is invalid",
+    ):
+        DurableAuthorityConfig.from_mapping(
+            {"backend": "redis"},
+            field_path="auth.sessions.authority",
+        )
 
 
 @pytest.mark.parametrize(

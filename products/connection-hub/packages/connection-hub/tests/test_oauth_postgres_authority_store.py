@@ -467,7 +467,7 @@ async def test_client_extension_executes_against_real_postgres() -> None:
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
     store = PostgresOAuthAuthorityStore(
         pg_pool=pool,
-        tenant=f"w253-test-{uuid.uuid4().hex}",
+        tenant=f"authority-test-{uuid.uuid4().hex}",
         project="oauth-authority",
     )
     try:
@@ -521,7 +521,7 @@ async def test_card_credential_lifecycle_executes_against_real_postgres() -> Non
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
     store = PostgresOAuthAuthorityStore(
         pg_pool=pool,
-        tenant=f"w253-test-{uuid.uuid4().hex}",
+        tenant=f"authority-test-{uuid.uuid4().hex}",
         project="card-credential-lifecycle",
     )
     try:

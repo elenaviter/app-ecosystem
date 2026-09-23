@@ -2629,7 +2629,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 "delegated_credentials": {
                     "authority": {
                         "backend": "postgresql",
-                        "migration_id": "w253-durable-authority-v1",
+                        "migration_id": "durable-authority-v1",
                     },
                     "gateway": {
                         "requestable_discovery": {
