@@ -382,6 +382,16 @@ class GrantStore:
     def refresh_ttl(self) -> int:
         return self._refresh_ttl
 
+    @property
+    def profile_devices(self) -> Any:
+        """Return the durable profile-device authority for host adapters."""
+
+        authority = self._authority_store
+        profile_devices = getattr(authority, "profile_devices", None)
+        if profile_devices is None:
+            raise GrantStoreUnavailable("profile_devices.authority_not_configured")
+        return profile_devices
+
     # ------------------------------ consent CSRF ------------------------------
 
     async def create_csrf_token(

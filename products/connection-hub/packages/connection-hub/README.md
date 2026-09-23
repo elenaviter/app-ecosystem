@@ -65,7 +65,7 @@ registration, or a provider-console client, server-side token storage,
 serialized refresh, and upstream revocation. The existing transport protocol
 remains compatible for direct-credential hosts.
 
-## Device proof and encrypted delivery primitives
+## Device proof, encrypted delivery, and durable authority
 
 Hosts and clients use one product-owned wire implementation from
 `connection_hub.delegated_credentials.devices`. It generates exportable P-256
@@ -87,11 +87,22 @@ decryption requires the exact protected delivery bindings supplied by the
 caller. Algorithms are fixed by the API and malformed P-256 points are
 rejected before signature verification or decryption.
 
-This module owns cryptographic validation and wire formats. The integrating
-host owns nonce issuance, replay reservation, device enrollment, durable
-family and attempt metadata, bounded package custody, token rotation, and
-revocation ordering. The private key remains in the client host's native
-credential store.
+The same package owns the reusable authority behind those wire contracts.
+`PostgresProfileDeviceAuthority` records profile devices, their credential
+families, recovery attempts, and short-lived device-encrypted packages in one
+PostgreSQL transaction boundary. Package fetches return the same ciphertext
+until the device acknowledges delivery, record each fetch, and clear the
+ciphertext on every terminal transition. Token plaintext and delivery nonces
+are never stored in PostgreSQL. `RedisDeviceProofState` keeps only run-fenced,
+one-use nonce and replay state whose loss costs a retry.
+
+The integrating host verifies each request proof before invoking a consuming
+authority transition, supplies the current immutable Card revision, and owns
+HTTP policy, PostgreSQL/Redis lifecycle, and native credential custody. The
+private key and decrypted token set remain in the client host's native
+credential store. Importing the authority does not activate a runtime or
+migrate an existing store; host composition and migration are explicit
+operations.
 
 ## Flow 1: a guarded service registers itself and admits calls
 

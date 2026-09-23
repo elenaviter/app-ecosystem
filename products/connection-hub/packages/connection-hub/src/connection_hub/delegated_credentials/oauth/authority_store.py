@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import secrets
 import uuid
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
+from connection_hub.delegated_credentials.devices.authority import (
+    PostgresProfileDeviceAuthority,
+)
+from connection_hub.delegated_credentials.devices.authority_schema import (
+    profile_device_authority_schema_sql,
+)
 from connection_hub.delegated_credentials.oauth.authority_schema import (
     TABLE_ACCESS_BINDINGS,
     TABLE_CLIENTS,
@@ -15,12 +20,7 @@ from connection_hub.delegated_credentials.oauth.authority_schema import (
     oauth_authority_schema,
     oauth_authority_schema_sql,
 )
-
-
-def bearer_sha256(value: str) -> str:
-    """Return the non-recoverable identity of a high-entropy bearer."""
-
-    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+from connection_hub.delegated_credentials.oauth.bearers import bearer_sha256
 
 
 def _json_object(value: Any) -> dict[str, Any]:
@@ -134,10 +134,20 @@ class PostgresOAuthAuthorityStore:
             tenant=self.tenant,
             project=self.project,
         )
+        self.profile_devices = PostgresProfileDeviceAuthority(
+            pg_pool=self._pool,
+            schema=self.schema,
+            tenant=self.tenant,
+            project=self.project,
+        )
 
     async def ensure_schema(self) -> None:
         async with self._pool.acquire() as connection:
-            await connection.execute(oauth_authority_schema_sql(self.schema))
+            async with connection.transaction():
+                await connection.execute(oauth_authority_schema_sql(self.schema))
+                await connection.execute(
+                    profile_device_authority_schema_sql(self.schema)
+                )
 
     async def _revoke_refresh_family(
         self,
