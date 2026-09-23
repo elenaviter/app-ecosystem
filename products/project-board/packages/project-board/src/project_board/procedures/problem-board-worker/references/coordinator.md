@@ -54,6 +54,39 @@ onboarding was skipped at the moment of acting with the rule already written.
 4. Tell the released worker, with the reason, in a correlated message. Then
    route the item again or leave it for the plan.
 
+## Check a silent worker, do not wait for it
+
+When a reply you are waiting for is overdue (a `ready`, a change request
+head, a result), check the worker's state yourself. Do this after about ten
+minutes, or at once when a window or a merge waits on that one worker:
+
+1. **The wake:** the relay log's `Problem Board wake pushed` and
+   `wake deduplicated` lines for that worker name the wake id and since when
+   it is queued.
+2. **For Codex, the native queue:** a row for the session's thread in
+   `~/.codex/queue_1.sqlite` `queued_items` is a wake the session has not
+   taken yet, with its age in `created_at_ms`. Codex takes a queued wake
+   only when its current turn ends, so a row older than a few minutes means
+   the session is in a long turn or is not running.
+3. **Its board state:** `pb worker list` (heartbeat) and its assignments
+   (latest report, estimate).
+
+Then act on what you found:
+
+- Re-send a request that never reached the worker.
+- Tell a worker in a long turn what is waiting on it, so it answers at its
+  next boundary.
+- Tell the operator in the project conversation when only she can act (the
+  session is closed, or it needs input at its terminal), naming the worker,
+  what it holds, and since when.
+
+Why: a worker that is mid-turn, idle but not woken, or closed looks the same
+from the coordinator's inbox, and silence is not progress. On 2026-09-23 a
+Codex worker's wake sat queued for 41 minutes during one long turn, and a
+window waited on another idle worker until the operator noticed. Her ruling:
+"you every time are calm while the workers might be idle for a long time and
+you even do not check their status."
+
 ## Route
 
 1. Need, then discussion with the candidates, then decision, then route. A
