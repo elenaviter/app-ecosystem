@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.13"
+    assert package["revision"] == "2026.09.23.14"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -796,3 +796,13 @@ def test_operator_input_goes_through_the_board_not_a_terminal_prompt() -> None:
     first_run = _words(_read("references/first-run.md"))
     assert "claude --disallowedTools AskUserQuestion" in first_run
     assert "claude --resume <session-uuid> --disallowedTools AskUserQuestion" in first_run
+
+
+def test_coordinator_checks_a_silent_worker_instead_of_waiting() -> None:
+    # Operator, 2026-09-23: "you every time are calm while the workers might
+    # be idle for a long time and you even do not check their status."
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "Check a silent worker, do not wait for it" in coordinator
+    assert "`~/.codex/queue_1.sqlite` `queued_items`" in coordinator
+    assert "Codex takes a queued wake only when its current turn ends" in coordinator
+    assert "silence is not progress" in coordinator
