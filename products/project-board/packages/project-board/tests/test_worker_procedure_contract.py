@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.8"
+    assert package["revision"] == "2026.09.23.9"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -228,6 +228,26 @@ def test_skill_carries_rules_not_stories() -> None:
     # where the same duty already lived, instead of stating it twice.
     assert "trace the real boundaries and failure states" in words
     assert "an existing assumption is not authority for a costly foundation" in words
+
+
+def test_team_decision_rule_is_in_rounds() -> None:
+    # W262, operator 2026-09-23: a question about how the team collaborates is
+    # decided in rounds, ideas alone first, and the result with the votes table
+    # reaches every member. The skill points at the rule, the reference carries it.
+    skill = _words(_read("SKILL.md"))
+    assert "decided in rounds, ideas alone first" in skill
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "Rule 7. A question about how the team collaborates is decided in rounds" in collaboration
+    assert "only the questions: no candidate practices, no coordinator input" in collaboration
+    assert "The proposer writes its own answer before any other arrives" in collaboration
+    assert "sends every member every idea, attributed, in the words it came in" in collaboration
+    assert "amend or change their position" in collaboration
+    assert "one row per candidate practice, one column per member" in collaboration
+    assert "`pending` for a member who has not answered and never a guess" in collaboration
+    assert "Split votes stay `open` for the operator" in collaboration
+    assert "The result goes to the operator and to every member" in collaboration
+    assert "as a note on the item the question belongs to" in collaboration
+    assert "The note is the record" in collaboration
 
 
 def test_authority_and_next_action_rules() -> None:
