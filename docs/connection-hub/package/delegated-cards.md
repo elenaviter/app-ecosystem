@@ -848,14 +848,27 @@ and user-owned connector instances. Managed named-service and MCP permissions,
 tools, and actions remain in the standard Card resource sections rather than
 appearing again as empty KDCube metadata groups.
 
-A linked hosted Agent Card offers the exact standard resources selected by its
-Control Card. A permitted user-owned resource family also contributes a
-discovery container such as **My MCP connectors** and the owner's matching
-exact connector resources. The container is not itself submitted as Card
-authority. Connected accounts and connector credentials remain owned by the
-user's Agent Card. Only a platform administrator may read or mutate the
-descriptor Control Card; direct access by an ordinary user is denied without
-returning its authority payload.
+A linked hosted Agent Card stores the exact standard resources represented by
+its own positive selection, bounded by the current Control Card. Every
+synchronization reconciles those two views as one change: capability metadata
+and the descriptor-managed `resource_grants`, `resource_operations`, and
+`named_service_operations` describe the same choice. The reconciliation
+replaces only resources managed by that Control Card. User-connected MCP
+resources and account bindings remain on the Agent Card unchanged.
+
+An MCP server with individually declared tool capabilities stores the selected
+tools. A server exposed only as one capability selects the operations declared
+for that server; it does not become an empty resource merely because no child
+tool rows exist in the capability policy. In both forms, the live Control Card
+is intersected before the Agent Card is written.
+
+A permitted user-owned resource family also contributes a discovery container
+such as **My MCP connectors** and the owner's matching exact connector
+resources. The container is not itself submitted as Card authority. Connected
+accounts and connector credentials remain owned by the user's Agent Card. Only
+a platform administrator may read or mutate the descriptor Control Card;
+direct access by an ordinary user is denied without returning its authority
+payload.
 
 For an administrator save, Connection Hub submits the revision-checked live
 Control Card update only after the KDCube host write succeeds, so the Card
