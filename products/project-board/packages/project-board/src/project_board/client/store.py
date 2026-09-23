@@ -2591,7 +2591,14 @@ class SharedFieldStore:
                     )
                 ),
             }
+            # Start from the row as it is and overwrite only what registration
+            # owns. Anything a worker declared about itself (worktrees, the
+            # limit state its runtime reported, whatever comes next) survives
+            # the relay's per-cycle registration by construction. On
+            # 2026-09-23 a rebuilt row dropped a worktree declared minutes
+            # earlier, and the board never saw a file in flight.
             record = {
+                **(dict(existing) if isinstance(existing, Mapping) else {}),
                 "schema": FIELD_SCHEMA,
                 "worker_name": clean_name,
                 "worker_alias": alias,
