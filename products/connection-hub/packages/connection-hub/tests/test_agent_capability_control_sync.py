@@ -407,6 +407,50 @@ async def test_descriptor_agent_offers_exact_control_resources_and_allowed_user_
 
 
 @pytest.mark.asyncio
+async def test_descriptor_agent_does_not_offer_catalog_wildcard_wider_than_control() -> None:
+    service, _persistence = _service()
+    created = await _sync(
+        service,
+        revision="descriptor-r1",
+        authority=("tool.old",),
+        catalog=("tool.old",),
+        selection=("tool.old",),
+    )
+    exact = application_resource(
+        tenant=TENANT,
+        project=PROJECT,
+        application="one",
+        agent="api",
+    )
+    wildcard = application_resource(
+        tenant=TENANT,
+        project=PROJECT,
+        application="*",
+        agent="*",
+    )
+    other = application_resource(
+        tenant=TENANT,
+        project=PROJECT,
+        application="two",
+        agent="api",
+    )
+    control = dict(created["control_card"])
+    control["resource_grants"] = {exact: ["application:use"]}
+
+    offered, roots = _descriptor_agent_resource_options(
+        control,
+        [
+            {"resource": wildcard, "kind": "catalog"},
+            {"resource": exact, "kind": "catalog"},
+            {"resource": other, "kind": "catalog"},
+        ],
+    )
+
+    assert [row["resource"] for row in offered] == [exact]
+    assert roots == []
+
+
+@pytest.mark.asyncio
 async def test_descriptor_sync_is_stable_and_new_capabilities_are_unselected() -> None:
     service, persistence = _service()
 

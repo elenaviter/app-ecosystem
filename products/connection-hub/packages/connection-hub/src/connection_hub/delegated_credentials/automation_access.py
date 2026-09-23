@@ -734,7 +734,7 @@ def _descriptor_agent_resource_options(
         resource = _clean(row.get("resource"))
         return bool(resource and resource != APPLICATION_API_RESOURCE) and (
             resource in exact_resources
-            or any(fnmatchcase(exact, resource) for exact in exact_resources)
+            or any(fnmatchcase(resource, grant) for grant in exact_resources)
         )
 
     family_resources = {
