@@ -68,6 +68,29 @@ class _Redis:
         return True
 
 
+class _ReplayClaims:
+    def __init__(self) -> None:
+        self.claimed: set[tuple[str, str]] = set()
+        self.purge_limits: list[int] = []
+
+    async def claim(self, *, service_id, nonce, ttl_seconds, now=None):
+        del ttl_seconds, now
+        identity = (service_id, nonce)
+        if identity in self.claimed:
+            return False
+        self.claimed.add(identity)
+        return True
+
+    async def purge_expired(self, *, limit):
+        self.purge_limits.append(int(limit))
+        return 0
+
+
+class _UnavailableRedis:
+    async def set(self, *args, **kwargs):
+        raise AssertionError(f"Redis replay path must not be used: {args}, {kwargs}")
+
+
 @asynccontextmanager
 async def _lock(**_kwargs):
     yield {}
@@ -574,6 +597,42 @@ async def test_direct_admission_rejects_a_replayed_service_proof(monkeypatch):
     assert first.status_code == 200
     assert second.status_code == 409
     assert json.loads(second.body)["error"]["code"] == "admission_request_replayed"
+
+
+@pytest.mark.asyncio
+async def test_direct_admission_uses_injected_durable_replay_claims(monkeypatch):
+    module = _load_entrypoint_module()
+    surface = sys.modules[module.handle_delegated_admission.__module__]
+
+    async def _evaluate(**kwargs):
+        del kwargs
+        return _allowed_result()
+
+    monkeypatch.setattr(surface, "evaluate_delegated_rest_admission", _evaluate)
+    replay_claims = _ReplayClaims()
+    context = module.AdmissionHostContext(
+        connections=_connections(),
+        redis=_UnavailableRedis(),
+        tenant="tenant-a",
+        project="project-a",
+        resolve_secret=_secret,
+        bind_delegated_request=lambda request: None,
+        replay_claims=replay_claims,
+    )
+    payload = {"resource": RESOURCE, "operation": "customers.search"}
+    request = _request(payload)
+
+    first = await module.handle_delegated_admission(
+        context=context, payload=payload, request=request
+    )
+    second = await module.handle_delegated_admission(
+        context=context, payload=payload, request=request
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert replay_claims.claimed == {("crm-api", "nonce-1234567890abcd")}
+    assert replay_claims.purge_limits == [32, 32]
 
 
 @pytest.mark.asyncio

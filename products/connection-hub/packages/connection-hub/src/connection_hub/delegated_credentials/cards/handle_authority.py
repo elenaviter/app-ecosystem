@@ -96,6 +96,9 @@ class PostgresCardHandleMetadataStore:
     ) -> CardHandleMetadata | None:
         return await self._records.read_active(access_id, now=now)
 
+    async def list_active(self, *, now: int | None = None) -> list[CardHandleMetadata]:
+        return await self._records.list_active(now=now)
+
     async def put(
         self,
         metadata: CardHandleMetadata,

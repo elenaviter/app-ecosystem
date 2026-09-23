@@ -232,6 +232,36 @@ class BundleStorageDelegatedCardStore:
         names = await list_child_names(self.grantor_path(subject_hash))
         return [name for name in names if _ACCESS_ID_PATTERN.match(name)]
 
+    async def list_grantor_hashes(self) -> list[str]:
+        names = await list_child_names(self._root / GRANTORS_DIRNAME)
+        return [name for name in names if _SUBJECT_HASH_PATTERN.match(name)]
+
+    async def find_current_authority(self, access_id: str) -> CardAuthority | None:
+        """Find one Card by stable id across the durable grantor partitions.
+
+        A Card id is globally stable. More than one matching partition is
+        durable corruption and must stop migration rather than pick a winner.
+        """
+
+        identifier = validated_access_id(access_id)
+        found: list[CardAuthority] = []
+        for subject_hash in await self.list_grantor_hashes():
+            if identifier not in await self.list_card_ids(subject_hash=subject_hash):
+                continue
+            loaded = await self.read_current_authority(
+                subject_hash=subject_hash,
+                access_id=identifier,
+            )
+            if loaded is None:
+                continue
+            _pointer, authority = loaded
+            if subject_hash_for(authority.grantor_subject) != subject_hash:
+                raise CardStorageError("card_grantor_partition_mismatch")
+            found.append(authority)
+        if len(found) > 1:
+            raise CardStorageError("card_access_id_not_unique")
+        return found[0] if found else None
+
     async def list_revision_names(self, *, subject_hash: str, access_id: str) -> list[str]:
         path = self.card_path(subject_hash=subject_hash, access_id=access_id) / REVISIONS_DIRNAME
         names = await list_child_names(path)

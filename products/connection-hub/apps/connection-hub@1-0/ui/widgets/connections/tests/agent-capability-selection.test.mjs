@@ -162,6 +162,11 @@ test('Agent Cards use the ordinary Card workbench plus KDCube metadata', () => {
   assert.match(panel, /agent_capability_control_overrides/)
   assert.doesNotMatch(panel, /saveAgentCapabilityBase/)
   assert.doesNotMatch(panel, /specializedCapabilityCard/)
+
+  const categoryStart = panel.indexOf('const KDCUBE_AGENT_CARD_CATEGORIES')
+  const categoryEnd = panel.indexOf('];', categoryStart)
+  const cardCategories = panel.slice(categoryStart, categoryEnd)
+  assert.doesNotMatch(cardCategories, /mcp_servers|mcp_tools/)
 })
 
 test('the capability editor groups child entries under their owning capability', () => {

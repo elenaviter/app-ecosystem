@@ -270,6 +270,9 @@ export interface DelegatedAccessRecord {
   /** Owner-visible delegable resources that may join this card, and why the
    *  others may not. */
   resource_offers?: DelegatedResourceOffer[];
+  /** Non-authority catalog routes that expose dynamic resources allowed by
+   *  the linked descriptor Control Card, such as the user's MCP connectors. */
+  resource_family_roots?: string[];
   /** OAuth cards only: the protected resource through which authorization
    *  began. It governs reach for single-resource clients and remains origin
    *  metadata for multi-resource clients. */

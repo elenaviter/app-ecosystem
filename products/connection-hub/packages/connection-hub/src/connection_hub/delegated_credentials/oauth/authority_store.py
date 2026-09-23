@@ -115,6 +115,12 @@ class OAuthAuthorityStore(Protocol):
 
     async def revoke_access_grant(self, access_token: str) -> bool: ...
 
+    async def extend_card_credentials(
+        self, registry_access_id: str, ttl_seconds: int
+    ) -> bool: ...
+
+    async def revoke_card_credentials(self, registry_access_id: str) -> bool: ...
+
 
 class PostgresOAuthAuthorityStore:
     """Transactional PostgreSQL authority for OAuth clients and credentials.
@@ -501,26 +507,33 @@ class PostgresOAuthAuthorityStore:
         ttl_seconds: int,
     ) -> dict[str, Any]:
         payload = dict(record)
+        payload["redirect_uris"] = list(payload.get("redirect_uris") or [])
+        payload["grant_types"] = list(
+            payload.get("grant_types")
+            or ("authorization_code", "refresh_token")
+        )
+        payload["metadata"] = dict(payload.get("metadata") or {})
         async with self._pool.acquire() as connection:
             await connection.execute(
                 f"""
                 INSERT INTO {self.schema}.{TABLE_CLIENTS} (
-                    client_id, tenant, project, redirect_uris,
+                    client_id, tenant, project, redirect_uris, grant_types,
                     token_endpoint_auth_method, application_type, metadata,
                     expires_at
                 ) VALUES (
-                    $1, $2, $3, ($4::text)::jsonb,
-                    $5, $6, ($7::text)::jsonb,
-                    now() + ($8 * interval '1 second')
+                    $1, $2, $3, ($4::text)::jsonb, ($5::text)::jsonb,
+                    $6, $7, ($8::text)::jsonb,
+                    now() + ($9 * interval '1 second')
                 )
                 """,
                 str(payload.get("client_id") or "").strip(),
                 self.tenant,
                 self.project,
-                json.dumps(list(payload.get("redirect_uris") or [])),
+                json.dumps(payload["redirect_uris"]),
+                json.dumps(payload["grant_types"]),
                 str(payload.get("token_endpoint_auth_method") or "none"),
                 str(payload.get("application_type") or "native"),
-                json.dumps(dict(payload.get("metadata") or {}), sort_keys=True),
+                json.dumps(payload["metadata"], sort_keys=True),
                 max(1, int(ttl_seconds)),
             )
         return payload
@@ -539,6 +552,7 @@ class PostgresOAuthAuthorityStore:
                 f"""
                 WITH candidate AS (
                     SELECT client_id, redirect_uris,
+                           grant_types,
                            token_endpoint_auth_method,
                            application_type, metadata, expires_at
                     FROM {self.schema}.{TABLE_CLIENTS}
@@ -557,16 +571,19 @@ class PostgresOAuthAuthorityStore:
                       )
                     RETURNING oauth_client.client_id,
                               oauth_client.redirect_uris,
+                              oauth_client.grant_types,
                               oauth_client.token_endpoint_auth_method,
                               oauth_client.application_type,
                               oauth_client.metadata
                 )
                 SELECT client_id, redirect_uris,
+                       grant_types,
                        token_endpoint_auth_method,
                        application_type, metadata
                 FROM extended
                 UNION ALL
                 SELECT client_id, redirect_uris,
+                       grant_types,
                        token_endpoint_auth_method,
                        application_type, metadata
                 FROM candidate
@@ -582,6 +599,7 @@ class PostgresOAuthAuthorityStore:
         return {
             "client_id": str(raw.get("client_id") or ""),
             "redirect_uris": _json_array(raw.get("redirect_uris")),
+            "grant_types": _json_array(raw.get("grant_types")),
             "token_endpoint_auth_method": str(
                 raw.get("token_endpoint_auth_method") or "none"
             ),
@@ -690,3 +708,131 @@ class PostgresOAuthAuthorityStore:
                 bearer_sha256(token),
             )
         return status != "UPDATE 0"
+
+    async def extend_card_credentials(
+        self,
+        registry_access_id: str,
+        ttl_seconds: int,
+    ) -> bool:
+        """Extend every live OAuth credential owned by one stable Card id."""
+
+        access_id = str(registry_access_id or "").strip()
+        if not access_id:
+            return False
+        seconds = max(1, int(ttl_seconds))
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                rows = await connection.fetch(
+                    f"""
+                    SELECT family.family_id
+                    FROM {self.schema}.{TABLE_FAMILIES} AS family
+                    JOIN {self.schema}.{TABLE_REFRESH_GENERATIONS} AS generation
+                      ON generation.generation_id = family.current_generation_id
+                    WHERE family.registry_access_id = $1
+                      AND family.state = 'active'
+                      AND family.expires_at > now()
+                      AND generation.state = 'active'
+                      AND generation.expires_at > now()
+                    ORDER BY family.family_id
+                    FOR UPDATE OF family, generation
+                    """,
+                    access_id,
+                )
+                family_ids = [str(dict(row).get("family_id") or "") for row in rows]
+                family_ids = [value for value in family_ids if value]
+                if not family_ids:
+                    return False
+                await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_REFRESH_GENERATIONS}
+                    SET expires_at = now() + ($2 * interval '1 second'),
+                        revision = revision + 1
+                    WHERE family_id = ANY($1::text[])
+                      AND state = 'active'
+                      AND expires_at > now()
+                    """,
+                    family_ids,
+                    seconds,
+                )
+                await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_FAMILIES}
+                    SET expires_at = now() + ($2 * interval '1 second'),
+                        revision = revision + 1,
+                        updated_at = now()
+                    WHERE family_id = ANY($1::text[])
+                      AND state = 'active'
+                    """,
+                    family_ids,
+                    seconds,
+                )
+                await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_ACCESS_BINDINGS}
+                    SET expires_at = now() + ($2 * interval '1 second'),
+                        revision = revision + 1,
+                        updated_at = now()
+                    WHERE registry_access_id = $1
+                      AND state = 'active'
+                      AND expires_at > now()
+                    """,
+                    access_id,
+                    seconds,
+                )
+        return True
+
+    async def revoke_card_credentials(self, registry_access_id: str) -> bool:
+        """Revoke every OAuth credential owned by one stable Card id."""
+
+        access_id = str(registry_access_id or "").strip()
+        if not access_id:
+            return False
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                rows = await connection.fetch(
+                    f"""
+                    SELECT family_id
+                    FROM {self.schema}.{TABLE_FAMILIES}
+                    WHERE registry_access_id = $1 AND state = 'active'
+                    ORDER BY family_id
+                    FOR UPDATE
+                    """,
+                    access_id,
+                )
+                family_ids = [str(dict(row).get("family_id") or "") for row in rows]
+                family_ids = [value for value in family_ids if value]
+                if family_ids:
+                    await connection.execute(
+                        f"""
+                        UPDATE {self.schema}.{TABLE_REFRESH_GENERATIONS}
+                        SET state = 'revoked',
+                            revision = revision + 1,
+                            revoked_at = now()
+                        WHERE family_id = ANY($1::text[])
+                          AND state = 'active'
+                        """,
+                        family_ids,
+                    )
+                    await connection.execute(
+                        f"""
+                        UPDATE {self.schema}.{TABLE_FAMILIES}
+                        SET state = 'revoked',
+                            revision = revision + 1,
+                            updated_at = now()
+                        WHERE family_id = ANY($1::text[])
+                          AND state = 'active'
+                        """,
+                        family_ids,
+                    )
+                access_status = await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_ACCESS_BINDINGS}
+                    SET state = 'revoked',
+                        revision = revision + 1,
+                        revoked_at = now(),
+                        updated_at = now()
+                    WHERE registry_access_id = $1 AND state = 'active'
+                    """,
+                    access_id,
+                )
+        return bool(family_ids) or access_status != "UPDATE 0"

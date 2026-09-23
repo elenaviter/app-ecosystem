@@ -4,7 +4,7 @@ title: "Server-side login: one platform session for every surface"
 summary: "The host-neutral server-side login package: one HttpOnly cookie, a server-held identity result, sliding renewal, OIDC and Google authenticator adapters, and the protocols a host implements."
 status: "active"
 tags: ["connection-hub", "package", "server-side-login", "oidc", "cognito", "google", "session", "bff"]
-updated_at: 2026-09-11
+updated_at: 2026-09-23
 see_also:
   - "./delegated-authority-and-admission.md"
   - "./oauth-delegated-credential-protocol.md"
@@ -41,7 +41,7 @@ Everything a host owns is injected through protocols:
 
 | Protocol | The host supplies |
 | --- | --- |
-| `SessionBackend` | `login_or_register(identity, expires_at)`, `validate(token, now)`, `touch(session_id, expires_at, now)`, `logout(token)`: sessions and the platform user record behind them (KDCube: its Redis session registry and user records). |
+| `SessionBackend` | `login_or_register(identity, expires_at)`, `validate(token, now)`, `touch(session_id, expires_at, now)`, `logout(token)`: sessions and the platform user record behind them (KDCube: PostgreSQL authority with a generation-scoped, fenced Redis projection). |
 | `LoginAttemptStore` | `put(attempt)`, `take(state)`: one-time login attempts; `take` returns an attempt at most once. |
 | `UpstreamIdentity` | The host-neutral protocol name for an authenticator adapter: `begin(attempt) -> redirect url`, `complete(params, attempt) -> VerifiedIdentity`, `logout_url()`. |
 | `CookiePolicy` | Names and attributes of the session cookie, the login-attempt cookie, and the return cookie that carries the destination across the identity provider's sign-out. `StandardCookiePolicy` is the default. |
