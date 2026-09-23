@@ -341,24 +341,27 @@ class OAuthProfileSessionService:
             return OAuthProfileAuthorizationResult(profile=committed, probe=probe)
 
     async def access_token(self, profile_name: str) -> str:
-        self._prepare_lock(self._transaction_lock)
-        lock = AsyncFileLock(str(self._transaction_lock), timeout=10, mode=0o600)
-        try:
-            async with lock:
-                self._secure_lock(self._transaction_lock)
-                profile = self._require_oauth_profile(profile_name)
-                token = self._load_token(profile)
-                if token.is_expiring(leeway_seconds=60):
-                    replacement = await self._refresh(profile, token)
-                    replacement = self._token_for_profile(profile, replacement)
-                    self._replace_token(profile, token, replacement)
-                    token = replacement
+        """The profile's current access token, refreshed first when it is expiring.
+
+        The store lock is held only to read and to write. The refresh itself,
+        a network round trip to the token endpoint, runs outside it under a
+        lock of this profile's own, so one profile's refresh hanging on an
+        absent server never makes another profile's read wait (2026-09-23:
+        four channels opened together against a runtime still down, the
+        first held the store lock through its hung refresh and the other
+        three timed out on it). Two callers of the same profile still refresh
+        once: the second finds the replacement when it re-reads.
+        """
+
+        profile, token = await self._read_token(profile_name)
+        if not token.is_expiring(leeway_seconds=60):
+            return token.access_token
+        async with self._refresh_slot(profile_name):
+            profile, token = await self._read_token(profile_name)
+            if not token.is_expiring(leeway_seconds=60):
                 return token.access_token
-        except Timeout:
-            raise AuthorizationError(
-                "oauth_profile_lock_timeout",
-                "Timed out waiting for the OAuth profile lock.",
-            ) from None
+            replacement = await self._refresh(profile, token)
+            return await self._commit_refreshed_token(profile, replacement)
 
     async def refresh_access_token(self, profile_name: str) -> str:
         """Mint a new access token now, whatever the local expiry says.
@@ -372,21 +375,76 @@ class OAuthProfileSessionService:
         refresh is then the card's answer and not a stale session's.
         """
 
-        self._prepare_lock(self._transaction_lock)
-        lock = AsyncFileLock(str(self._transaction_lock), timeout=10, mode=0o600)
+        async with self._refresh_slot(profile_name):
+            profile, token = await self._read_token(profile_name)
+            replacement = await self._refresh(profile, token)
+            return await self._commit_refreshed_token(profile, replacement)
+
+    async def _read_token(self, profile_name: str) -> tuple[CallerProfile, OAuthTokenSet]:
+        """The profile record and its stored token, read under the store lock."""
+
+        async with self._transaction(self._transaction_lock):
+            profile = self._require_oauth_profile(profile_name)
+            return profile, self._load_token(profile)
+
+    async def _commit_refreshed_token(
+        self,
+        profile: CallerProfile,
+        replacement: OAuthTokenSet,
+    ) -> str:
+        """Store a refreshed token under the store lock and return its access token.
+
+        The profile is read again under the lock: a browser authorization or
+        a reconnect that completed while the refresh was in flight has
+        replaced the credential, and the newer one wins over a refresh of the
+        old one.
+        """
+
+        async with self._transaction(self._transaction_lock):
+            current = self._require_oauth_profile(profile.name)
+            if (
+                current.credential_ref != profile.credential_ref
+                or current.access_id != profile.access_id
+            ):
+                return self._load_token(current).access_token
+            previous = self._credentials.get(current.credential_ref)
+            replacement = self._token_for_profile(current, replacement)
+            self._replace_token(current, previous, replacement)
+            return replacement.access_token
+
+    @asynccontextmanager
+    async def _transaction(self, lock_path: Path):
+        """The store-wide lock, for a read or a write of profile state, never for I/O."""
+
+        self._prepare_lock(lock_path)
+        lock = AsyncFileLock(str(lock_path), timeout=10, mode=0o600)
         try:
             async with lock:
-                self._secure_lock(self._transaction_lock)
-                profile = self._require_oauth_profile(profile_name)
-                token = self._load_token(profile)
-                replacement = await self._refresh(profile, token)
-                replacement = self._token_for_profile(profile, replacement)
-                self._replace_token(profile, token, replacement)
-                return replacement.access_token
+                self._secure_lock(lock_path)
+                yield
         except Timeout:
             raise AuthorizationError(
                 "oauth_profile_lock_timeout",
                 "Timed out waiting for the OAuth profile lock.",
+            ) from None
+
+    @asynccontextmanager
+    async def _refresh_slot(self, profile_name: str):
+        """One refresh at a time per profile, so two callers refresh once."""
+
+        lock_path = self._profiles.path.with_suffix(
+            f"{self._profiles.path.suffix}.{profile_name}.oauth.refresh.lock"
+        )
+        self._prepare_lock(lock_path)
+        lock = AsyncFileLock(str(lock_path), timeout=10, mode=0o600)
+        try:
+            async with lock:
+                self._secure_lock(lock_path)
+                yield
+        except Timeout:
+            raise AuthorizationError(
+                "oauth_profile_lock_timeout",
+                "Timed out waiting for this profile's OAuth refresh lock.",
             ) from None
 
     async def probe(self, profile_name: str) -> ProbeResult:
@@ -572,26 +630,17 @@ class OAuthProfileSessionService:
         replacement: OAuthTokenSet,
         replacement_metadata: ProfileOAuthMetadata,
     ) -> CallerProfile:
-        self._prepare_lock(self._transaction_lock)
-        lock = AsyncFileLock(str(self._transaction_lock), timeout=10, mode=0o600)
-        try:
-            async with lock:
-                self._secure_lock(self._transaction_lock)
-                current = self._require_oauth_profile(expected.name)
-                self._require_same_reconnect_binding(expected, current)
-                previous = self._credentials.get(current.credential_ref)
-                self._replace_token(
-                    current,
-                    previous,
-                    replacement,
-                    oauth=replacement_metadata,
-                )
-                return self._require_oauth_profile(current.name)
-        except Timeout:
-            raise AuthorizationError(
-                "oauth_profile_lock_timeout",
-                "Timed out waiting for the OAuth profile lock.",
-            ) from None
+        async with self._transaction(self._transaction_lock):
+            current = self._require_oauth_profile(expected.name)
+            self._require_same_reconnect_binding(expected, current)
+            previous = self._credentials.get(current.credential_ref)
+            self._replace_token(
+                current,
+                previous,
+                replacement,
+                oauth=replacement_metadata,
+            )
+            return self._require_oauth_profile(current.name)
 
     @staticmethod
     def _require_same_reconnect_binding(

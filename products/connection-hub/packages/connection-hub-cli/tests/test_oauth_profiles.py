@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import httpx2
 import pytest
+from filelock import AsyncFileLock
 from connection_hub.delegated_credentials.cards.identity import (
     CARD_KIND_AUTOMATION,
     CARD_KIND_CONNECTOR,
@@ -1009,3 +1010,93 @@ async def test_a_blank_default_scope_does_not_produce_an_empty_request() -> None
     result = await discovery.discover(ENDPOINT, default_scope="   ")
 
     assert result.scope == " ".join(DEPLOYMENT_SCOPES)
+
+
+class _HangingOAuth(_OAuth):
+    """A token endpoint that answers one profile's refresh only when released.
+
+    2026-09-23 18:04: the relay opened four channels against a runtime still
+    down. The first held the store-wide profile lock through a refresh that
+    hung on the absent endpoint, and the other three timed out on that lock
+    after ten seconds although their own tokens were readable.
+    """
+
+    def __init__(self, *, hang_for: str) -> None:
+        super().__init__()
+        self.hang_for = hang_for
+        self.release = asyncio.Event()
+        self.hanging = asyncio.Event()
+
+    async def refresh(self, **kwargs):
+        if kwargs.get("refresh_token") == self.hang_for:
+            self.refresh_calls += 1
+            self.refresh_kwargs.append(dict(kwargs))
+            self.hanging.set()
+            await self.release.wait()
+            return self.replacement
+        return await super().refresh(**kwargs)
+
+
+def _second_profile(name: str, access_id: str, credential_ref: str) -> CallerProfile:
+    return CallerProfile.create_oauth(
+        name=name,
+        endpoint=ENDPOINT,
+        access_id=access_id,
+        oauth=_metadata(),
+        credential_ref=credential_ref,
+        now="2026-09-04T00:00:00+00:00",
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_profiles_hung_refresh_blocks_no_other_profile(tmp_path) -> None:
+    oauth = _HangingOAuth(hang_for="refresh-secret")
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    stuck = _profile()
+    current = _second_profile("current", "access-current", "b" * 32)
+    expiring = _second_profile("expiring", "access-expiring", "c" * 32)
+    for record in (stuck, current, expiring):
+        profiles.add(record)
+    credentials.put(stuck.credential_ref, _token(expires_at=1))
+    credentials.put(current.credential_ref, replace(_token("current-access", "current-refresh"), access_id="access-current"))
+    credentials.put(expiring.credential_ref, replace(_token("old-access", "expiring-refresh", expires_at=1), access_id="access-expiring"))
+    oauth.replacement = replace(oauth.replacement, access_id=None)
+
+    stuck_read = asyncio.create_task(service.access_token(stuck.name))
+    await asyncio.wait_for(oauth.hanging.wait(), 1.0)
+
+    # Another profile's current token is read at once: the store lock is not
+    # held while the first profile's refresh waits on the network.
+    assert await asyncio.wait_for(service.access_token(current.name), 1.0) == "current-access"
+    # And another profile's own refresh proceeds, under its own refresh slot.
+    assert await asyncio.wait_for(service.access_token(expiring.name), 1.0) == "refreshed-access"
+    assert credentials.values[expiring.credential_ref].access_id == "access-expiring"
+    # The store-wide lock itself is free while the refresh is in flight.
+    probe = AsyncFileLock(str(service._transaction_lock), timeout=0.2)
+    async with probe:
+        pass
+
+    assert not stuck_read.done()
+    oauth.release.set()
+    assert await asyncio.wait_for(stuck_read, 1.0) == "refreshed-access"
+    assert credentials.values[stuck.credential_ref].access_id == "access-agent"
+
+
+@pytest.mark.asyncio
+async def test_a_second_caller_of_the_hung_profile_waits_and_refreshes_once(tmp_path) -> None:
+    oauth = _HangingOAuth(hang_for="refresh-secret")
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    profile = _profile()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, _token(expires_at=1))
+
+    first = asyncio.create_task(service.access_token(profile.name))
+    await asyncio.wait_for(oauth.hanging.wait(), 1.0)
+    second = asyncio.create_task(service.access_token(profile.name))
+    await asyncio.sleep(0.05)
+    assert not second.done(), "the same profile's second caller waits for the one refresh"
+
+    oauth.release.set()
+    assert await asyncio.wait_for(first, 1.0) == "refreshed-access"
+    assert await asyncio.wait_for(second, 1.0) == "refreshed-access"
+    assert oauth.refresh_calls == 1

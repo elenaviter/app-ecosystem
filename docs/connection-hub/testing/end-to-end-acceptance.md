@@ -877,8 +877,9 @@ desktop. WSL without a reachable Secret Service daemon is recorded separately.
 5. Repeat the minimal grant, live narrowing, regrant, and next-call revocation
    sequence through the still-running bridge.
 6. Force the OAuth access token into refresh leeway. The next connection must
-   refresh under the profile lock, retain the same `access_id`, and keep the
-   complete token set in the native store.
+   refresh under that profile's refresh lock, retain the same `access_id`, and
+   keep the complete token set in the native store. A second profile's token
+   read during that refresh returns at once.
 7. Disconnect the profile and confirm server revocation precedes local
    credential removal:
 

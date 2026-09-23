@@ -273,10 +273,15 @@ CLI management sessions    tech.kdcube.connection-hub.oauth-session
 
 ## Refresh, Status, And Recovery
 
-The bridge checks an OAuth token before each new remote connection. Expiring
-tokens refresh under the profile transaction lock. Access and refresh token
-rotation replaces one complete native-store value; the profile keeps the same
-`access_id`. A refresh failure preserves both the profile metadata and prior
+The bridge checks an OAuth token before each new remote connection. An
+expiring token refreshes under that profile's own refresh lock, so two callers
+of one profile refresh once, while the store-wide profile lock is held only to
+read and to write the token, never across the request to the token endpoint:
+one profile's refresh hanging on an unreachable server does not make another
+profile's read wait. Access and refresh token rotation replaces one complete
+native-store value; the profile keeps the same `access_id`. A credential
+replaced by a browser authorization or a reconnect while a refresh was in
+flight wins over that refresh. A refresh failure preserves both the profile metadata and prior
 token record so the matching server card can still be identified and revoked.
 
 OAuth metadata failures report the request method, public metadata URL, HTTP
