@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.10"
+    assert package["revision"] == "2026.09.23.11"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -254,6 +254,39 @@ def test_team_decision_rule_is_in_rounds() -> None:
     assert "The result goes to the operator and to every member" in collaboration
     assert "as a note on the item the question belongs to" in collaboration
     assert "The note is the record" in collaboration
+
+
+def test_the_first_poll_s_adopted_practices_are_rule_text() -> None:
+    # 2026-09-23 team consultation, thirteen adopted rows. The rule text lives
+    # where each concept already lived: pushes in rule 2, visible state in
+    # rule 6, the estimate in its subsection, and three new rules for handoff,
+    # safe publication and runtime windows. The skill points at the new rules.
+    skill = _words(_read("SKILL.md"))
+    assert "Handoff is an ownership decision the coordinator takes (rule 8)" in skill
+    assert "what you publish is safe to publish (rule 9)" in skill
+    assert "a runtime window speaks one channel that survives it (rule 10)" in skill
+    collaboration = _words(_read("references/collaboration.md"))
+    # P1
+    assert "Push at every coherent checkpoint" in collaboration
+    assert "Local-only work is never a handoff" in collaboration
+    # P11, P5, P2 in rule 6
+    assert "the actor or event that clears it" in collaboration
+    assert "Publish at transitions, not on a clock" in collaboration
+    assert "names what was preflighted before the point of no return" in collaboration
+    assert "A resume record on the item" in collaboration
+    assert "It does not repeat the branch, base, latest commit or change request" in collaboration
+    # P8 and the operator's P8+ decision
+    assert "The estimate is coarse and it is enough" in collaboration
+    assert "there is no confidence value beside it" in collaboration
+    assert "marks an overdue estimate apart from a blocked state" in collaboration
+    # P12, P13, P14
+    assert "Rule 8. Handoff is an ownership decision, not a note" in collaboration
+    assert "the coordinator decides: wait for the reset, or reassign" in collaboration
+    assert "the predecessor cannot report or mutate under the old version" in collaboration
+    assert "Rule 9. What is published is safe to publish" in collaboration
+    assert "observed files in flight are tracked paths only" in collaboration
+    assert "Rule 10. A runtime window speaks one channel that survives it" in collaboration
+    assert "The all-clear on the board is the only resume signal" in collaboration
 
 
 def test_authority_and_next_action_rules() -> None:

@@ -343,7 +343,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   says until when you expect to finish and what you are on. Set it again with the reason when it
   slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and
   marks it overdue once the time has passed ([collaboration](references/collaboration.md), rule 6).
-- How the team collaborates is decided in rounds, ideas alone first, then read all, then talk, then a votes table to everyone ([collaboration](references/collaboration.md), rule 7).
+- How the team collaborates is decided in rounds, ideas alone first, then read all, then talk, then a votes table to everyone (rule 7). Handoff is an ownership decision the coordinator takes (rule 8), what you publish is safe to publish (rule 9), a runtime window speaks one channel that survives it (rule 10): all in [collaboration](references/collaboration.md).
 - When assigned work transitions to no work remaining, say so once with `pb worker idle`. When
   this exact session stops participating, run `pb worker detach`.
 
