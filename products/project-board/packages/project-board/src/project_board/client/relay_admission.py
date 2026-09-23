@@ -74,7 +74,18 @@ def is_namespace_handshake_timeout(error: BaseException) -> bool:
 # for a runtime that is not there, 2026-09-23 16:10 to 16:21 UTC, chat-proc
 # down after a rebuild), or could not be reached at all.
 RUNTIME_UNAVAILABLE_CODES = frozenset(
-    {"oauth_challenge_not_advertised", "oauth_mcp_endpoint_unreachable"}
+    {
+        "oauth_challenge_not_advertised",
+        "oauth_mcp_endpoint_unreachable",
+        # The profile store lock is held across the token refresh. When the
+        # runtime is down, the first channel to open holds it through a hung
+        # refresh and every sibling times out on the lock after ten seconds:
+        # the same absent runtime, seen from one step behind (2026-09-23
+        # 18:04, three of four channels waited 3.5 minutes on the doubling
+        # schedule after the runtime was back). A sibling holding the lock
+        # for any other reason is also over within seconds, never a refusal.
+        "oauth_profile_lock_timeout",
+    }
 )
 
 
@@ -87,7 +98,9 @@ def is_runtime_unavailable(error: BaseException) -> bool:
     seconds after it does. Two signatures say it, anywhere in the error's
     chain: the ``oauth_challenge_not_advertised`` code (the endpoint answered
     the discovery probe with something other than 401), and a connection the
-    runtime refused outright. A timeout, a 5xx and an unknown outcome are not
+    runtime refused outright; a timeout on the profile store lock counts with
+    them, because the lock is held across a refresh that hangs only while the
+    runtime is absent. A timeout, a 5xx and an unknown outcome are not
     here on purpose: they are load and mid-flight failures, and the doubling
     exists for them.
     """
