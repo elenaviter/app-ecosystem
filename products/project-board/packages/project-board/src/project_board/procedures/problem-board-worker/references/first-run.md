@@ -205,6 +205,28 @@ project. Say which server (target label and endpoint), which project, and
 which worker this session is, in one or two sentences, and stop. The rest of
 this skill takes over from here.
 
+## Claude Code Says When It Is Out Of Tokens
+
+The board shows each worker's usage limit as the runtime itself reports it,
+never inferred from silence (W26). Codex needs nothing: the relay reads the
+session's rollout file. Claude Code has no such file, so two lines in the
+user's Claude Code settings hand the state to the relay through
+`pb worker limit-state`, which records it and prints one status line:
+
+```json
+{
+  "statusLine": {"type": "command", "command": "pb worker limit-state"},
+  "hooks": {"StopFailure": [{"matcher": "rate_limit", "hooks": [{"type": "command", "command": "pb worker limit-state --source stop-failure"}]}]}
+}
+```
+
+The status line command receives Claude Code's JSON (`rate_limits.five_hour`
+and `seven_day`, each with `used_percentage` and `resets_at`) after every
+response, and the hook fires the moment a turn ends on a rate limit. A user
+who already has a status line command keeps it and pipes the same JSON into
+`pb worker limit-state` from it. The settings are the user's: propose the
+lines, and the user adds them.
+
 ## What Stays The User's
 
 Setup, the relay install, browser consent and project membership are the
