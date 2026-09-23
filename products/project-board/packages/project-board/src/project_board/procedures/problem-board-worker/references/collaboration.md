@@ -134,6 +134,13 @@ exchanged as a change request against the integration ref.
   current integration ref. The item key first, so a branch names its work.
 - **Push your own branch.** Operator ruling 2026-09-22: agents may push their
   own work branches and open change requests.
+- **Push at every coherent checkpoint.** A checkpoint is a recoverable state
+  with its next step explicit, not every command and not every passing
+  test. A WIP commit is a checkpoint when it says so and names what still
+  fails. Local-only work is never a handoff: a worker on another machine can
+  read a pushed branch and nothing else. Team decision 2026-09-23 (P1, four
+  yes votes): every other visibility rule depends on this one. A WIP push to
+  a public repository gets the same check as a final one (Rule 9).
 - **A branch belongs to the agent that pushed it.** The author deletes it when
   its change request merges, and deletes it themselves when they abandon it,
   so nobody else has to notice a stale branch. The coordinator deletes
@@ -379,7 +386,26 @@ it, what you touched (Rule 3), and what you are waiting on.
   name once it exists.
 - Put the change request link on the item when you open it.
 - When you wait on a review or a decision, say so on the item, with the
-  correlation you wait for, instead of waiting silently.
+  correlation you wait for and the actor or event that clears it, instead of
+  waiting silently. A blocker that names no one is a status label and cannot
+  drive anyone's next decision (P11, 2026-09-23).
+- **Publish at transitions, not on a clock.** Claim, checkpoint pushed,
+  blocked, review opened, merged, handoff: each is one statement. A heartbeat
+  that repeats an unchanged state is prose nobody reads. Before a disruptive
+  operation (an apply, a migration, a runtime window) the transition also
+  names what was preflighted before the point of no return, because that is
+  the fact a remote worker cannot check afterwards (P5, 2026-09-23, from the
+  W253 apply whose schema defect surfaced only after the writers stopped).
+- **A resume record on the item.** At each coherent checkpoint and at a
+  handoff, one note on the item carries what nothing else holds: the
+  decisions taken with their refs, the assumptions rejected, the tests run
+  with the command and interpreter, the next concrete step, the blockers
+  with who clears them, and what is unverified. It does not repeat the
+  branch, base, latest commit or change request, which the assignment and the
+  `working` report carry, and it is rewritten at checkpoints, not after every
+  command. A successor reads it before its first edit (Rule 8). Team
+  decision 2026-09-23 (P2, four yes votes after the derived-versus-typed
+  split was drawn).
 - Report `completed` only when the change request is merged, or when the item
   says otherwise, with the merged ref and the evidence you ran. The report
   names a commit and the integration ref that contains it, the merge commit
@@ -426,6 +452,14 @@ worker is not watching its own clock. Clear it when the work is done, so an
 idle worker shows no stale promise. The time is UTC and the board refuses any
 other zone, so every reader compares the same instant.
 
+The estimate is coarse and it is enough. Nontrivial work gets one after
+planning, a brief action gets none, and no value pretends to a precision the
+worker cannot justify: the operator decided on 2026-09-23 that there is no
+confidence value beside it, the time, the note, its age and the reason for a
+slip say what a reader needs. The board shows the age and marks an overdue
+estimate apart from a blocked state, because stale and blocked call for
+different actions (P8, four yes votes).
+
 ## Rule 7. A question about how the team collaborates is decided in rounds
 
 When the team has to choose how it collaborates or stays visible (a practice,
@@ -465,6 +499,55 @@ have, and a result everyone saw being made is one everyone follows. The
 operator's words, 2026-09-23: "make the polls and think together, and then
 show me and everyone the thoughts of everyone", and "first everyone makes the
 idea and then they can read all ideas and then talk again".
+
+## Rule 8. Handoff is an ownership decision, not a note
+
+Work moves from one worker to another only by a new ownership version on the
+assignment, and the coordinator issues it. Three things start a handoff: the
+predecessor publishes a checkpoint (Rule 2) and says it is done or cannot
+continue, the relay reports the predecessor out of tokens or rate limited
+(W26, the runtime's own word, never inferred from silence), or the estimate is
+overdue with no pushed checkpoint since it was set. In each case the
+coordinator decides: wait for the reset, or reassign. It does not happen by
+itself, because a limited or silent worker may still hold uncommitted state
+that a reassignment would orphan.
+
+The successor accepts the checkpoint by taking the new ownership version and
+reads the resume record (Rule 6) before its first edit. From that moment the
+predecessor cannot report or mutate under the old version: the board refuses
+a stale version (`work_assignment_version_conflict`), which is the fence that
+keeps two workers from both believing they own the item. A predecessor that
+comes back after its reset reads the item first, like anyone else.
+
+Why: two members proposed this independently on 2026-09-23 (an atomic
+ownership handoff, and a handoff as a decision with an owner), and all four
+adopted the merged form (P12). The ownership version already existed as the
+fence for reports. This gives it a trigger and a decider.
+
+## Rule 9. What is published is safe to publish
+
+Everything a worker publishes for another reader (a status, a resume record,
+a handoff, observed paths, a WIP push) carries stable refs, hashes and
+redacted evidence, and never a secret, a bearer credential, the name of an
+untracked file, machine-private data, or the name of a person or organization
+we work with. A WIP push to a public repository (kdcube-ai-app,
+app-ecosystem) gets the same check as a final push, and observed files in
+flight are tracked paths only. Why: visibility that leaks is worse than none,
+and the checks that exist for a final change request (Rule 2) were never
+meant to be skipped by pushing earlier (P13, 2026-09-23, four yes votes).
+
+## Rule 10. A runtime window speaks one channel that survives it
+
+While the platform is down for an apply or a migration, the board is
+unreachable, so nothing said during the window reaches a worker on another
+machine. The announcement before the window therefore names each step's owner,
+the rollback trigger, and the point after which nothing is expected from
+remote workers. The all-clear on the board is the only resume signal, and
+every result produced during the window is posted to the board after it. A
+file on the host that ran the window is not a channel: on 2026-09-23 the apply
+result came through one, and a worker on another machine could not read it
+(P14, four yes votes). The test-window reference owns the pause procedure
+itself, this rule owns what the window says to the team.
 
 ## From this moment: round 2 on dev-main, 2026-09-22 22:20Z
 
