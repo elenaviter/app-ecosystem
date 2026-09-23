@@ -70,7 +70,7 @@ def test_worker_procedure_revision_records_its_exact_content() -> None:
         source_revision_ledger_path().read_text(encoding="utf-8")
     )
 
-    assert package["revision"] == "2026.09.22.12"
+    assert package["revision"] == "2026.09.22.13"
     assert ledger[package["revision"]] == package["source_digest"]
 
 

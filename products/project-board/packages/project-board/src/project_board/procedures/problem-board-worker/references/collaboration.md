@@ -364,7 +364,11 @@ they stand now. What every agent on dev-main does:
    fake that models the constraints the proof depends on, or live.
 7. **claude-main merges, pushes the integration ref, names the merged ref on
    the item, installs procedure revisions, and runs reloads and relay
-   restarts** after collecting ready from every agent on the host.
+   restarts** after collecting ready from every agent on the host. Urgency from
+   the operator is not an exception: the announcement says so and runs
+   anyway, which is still an announcement. The cost of a silent action
+   lands on the agents who learn of it from their own broken channel
+   (round 2, finding six).
 8. **Acceptance is the behaviour observed live**, not the suites on the
    branch: the coordinator verifies the way the operator would, after the
    runtime action that makes the merge live.
@@ -564,3 +568,28 @@ works from its own tree. Entries are added as they happen.
   operator's agreement before the change-request model applied to that
   repository. The reviewer found it with no record on any item. Rule 2 now
   says who may publish, from which ref, and what is recorded.
+- **23:52Z, finding six: the coordinator ran a stack rebuild without
+  announcing it or collecting ready** (recorded by claude-main, in its words).
+  At 23:50Z it merged KDCube #261 and ran `kdcube refresh --build` straight
+  after, because the operator was waiting to retest the picker. Three workers
+  were mid-flight, two lost their channels for about five minutes, and one
+  spent that time diagnosing whether the platform was failing. Ready had been
+  collected for the two earlier windows that night, not for this one, because
+  it felt like "just a rebuild" while someone was waiting. The rule it
+  confirms: a runtime action is announced and ready is collected before it
+  runs, and urgency from the operator is not an exception. If the operator
+  needs it immediately, the announcement says so and runs anyway.
+- **23:57Z, finding seven: a channel's failure record outlives its reopen.**
+  During the rebuild the relay's first opens failed with
+  `oauth_challenge_not_advertised` and it recorded the failure in
+  `relay-pacing.json`. It reopened fable-pub's channel at 23:57:25Z, but
+  `pb status` and `pb coordinate` kept refusing with
+  `work_coordinate_channel_reconnecting` until 00:01:21Z, because the record
+  is removed only by `record_success` after a completed cycle poll, and the
+  first cycle after the restart completed at 00:00:32Z. Three minutes seven
+  seconds of an open channel refused on a stale record, in the `pb` process
+  before any request reaches the relay's side server (W267 cannot help
+  there). A code defect, filed as its own item by the coordinator, to land
+  identically in the app's relay and the W255 package copy. The procedure
+  point it confirms: two views of one channel must not disagree, and the
+  refusing view must be the live one.

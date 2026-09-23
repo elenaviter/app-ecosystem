@@ -62,7 +62,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.22.12"
+    assert package["revision"] == "2026.09.22.13"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -120,6 +120,7 @@ def test_package_preserves_the_application_revision_chain() -> None:
         "2026.09.22.9",
         "2026.09.22.10",
         "2026.09.22.11",
+        "2026.09.22.12",
     )} == {
         "2026.09.22.5": "7780045d697a87850c8f0726960dd9b4d09b17afec431cee7b78200ef6a684be",
         "2026.09.22.6": "2127819a70989cc25a073b5fbf3a516ea2b4344ccf231727dba74eb73f1c9c66",
@@ -128,6 +129,7 @@ def test_package_preserves_the_application_revision_chain() -> None:
         "2026.09.22.9": "41bbcb76a230d7073cbca4dd09a1a8320afc1640bb1a9ab984c61b138e92484e",
         "2026.09.22.10": "3eaf24b787db4b0b4295352bfd1e2234d44ef3e235baba9b9aa6250a0f1128c3",
         "2026.09.22.11": "cfada6d4d51411e45330b4300d812295b54292d67a9eaa3744abe1c40b775e2e",
+        "2026.09.22.12": "3e9c8e1fb4ecd6c3a35ac0eaa08afd417a2f89d5672f67d03f49bf8aef69092f",
     }
 
 
