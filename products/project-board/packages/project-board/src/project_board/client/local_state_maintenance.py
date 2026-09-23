@@ -57,15 +57,22 @@ def run_local_state_maintenance(field: Any, *, now: datetime | None = None) -> d
 
     current = now or datetime.now(timezone.utc)
     summary: dict[str, Any] = {"legacy_receipts": {}, "retention": None}
+    summary["flat_events"] = {}
     for project_id in _project_ids(field):
         summary["legacy_receipts"][project_id] = cleanup_legacy_receipts(field, project_id)
+        summary["flat_events"][project_id] = migrate_flat_events(field, project_id)
     state_path = field.control / MAINTENANCE_STATE
     state = dict(read_json(state_path, required=False) or {})
     last = parse_utc(str(state.get("retention_ran_at") or "")) if state.get("retention_ran_at") else None
     if last is None or (current - last).total_seconds() >= RETENTION_INTERVAL_SECONDS:
+        event_cutoff = current - timedelta(days=int(field.EVENT_RETENTION_DAYS))
         retention: dict[str, Any] = {
             "receipts": {
                 project_id: apply_receipt_retention(field, project_id, now=current)
+                for project_id in _project_ids(field)
+            },
+            "events": {
+                project_id: field._events(project_id).expire(cutoff=event_cutoff)
                 for project_id in _project_ids(field)
             },
             "outbox": apply_outbox_retention(field, now=current),
@@ -147,6 +154,56 @@ def cleanup_legacy_receipts(
             values["deferred"], values["unreadable"], elapsed,
         )
     return {"state": state, "claimed_remaining": remaining, "agents": {k: dict(v) for k, v in counts.items()}}
+
+
+def migrate_flat_events(
+    field: Any,
+    project_id: str,
+    *,
+    batch_size: int = LEGACY_BATCH_SIZE,
+) -> dict[str, Any]:
+    """Move pre-W287 flat ``events/<id>.json`` files into agent and hour folders.
+
+    Each file moves under the project lock, so an event written meanwhile and
+    a moved one never share a path. Counts per agent go to the log.
+    """
+
+    legacy = field._project_dir(project_id) / "events"
+    if not legacy.is_dir():
+        return {"state": "absent"}
+    events = field._events(project_id)
+    started = time.monotonic()
+    moved: dict[str, int] = defaultdict(int)
+    while True:
+        batch: list[str] = []
+        with os.scandir(legacy) as entries:
+            for entry in entries:
+                if entry.name.endswith(".json") and entry.is_file(follow_symlinks=False):
+                    batch.append(entry.name)
+                    if len(batch) >= batch_size:
+                        break
+        if not batch:
+            break
+        with exclusive_lock(field._project_lock(project_id)):
+            for name in batch:
+                path = legacy / name
+                row = read_json(path, required=False)
+                if not row:
+                    path.unlink(missing_ok=True)
+                    continue
+                actor = str(row.get("actor") or row.get("worker_name") or "-")
+                event_id = str(row.get("event_id") or name[:-5])
+                try:
+                    created = parse_utc(str(row.get("created_at") or ""))
+                except (DomainError, TypeError, ValueError):
+                    created = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                events.write(actor, event_id, created, row, slug=str(row.get("event_ref") or row.get("kind") or "").rsplit(":", 1)[-1])
+                path.unlink()
+                moved[actor.strip().lower()] += 1
+    elapsed = int((time.monotonic() - started) * 1000)
+    for agent, count in sorted(moved.items()):
+        logger.info("relay store migrated worker=%s store=events moved=%d ms=%d", agent, count, elapsed)
+    return {"state": "complete", "moved": dict(moved)}
 
 
 def apply_outbox_retention(field: Any, *, now: datetime | None = None) -> dict[str, int]:
@@ -280,5 +337,6 @@ __all__ = [
     "RETENTION_INTERVAL_SECONDS",
     "apply_outbox_retention",
     "cleanup_legacy_receipts",
+    "migrate_flat_events",
     "run_local_state_maintenance",
 ]

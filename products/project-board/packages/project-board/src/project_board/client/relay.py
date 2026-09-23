@@ -63,6 +63,7 @@ from .relay_failures import (
     staged_failure,
 )
 from .local_state_maintenance import run_local_state_maintenance
+from .local_store import last_read_summaries
 from .store import WAKE_OVERDUE_GRACE_SECONDS, SharedFieldStore, _seconds_since
 
 
@@ -599,6 +600,7 @@ class ProblemBoardHostRelayAdapter:
         # W278 part B: per project, the signature of the files in flight last
         # published, so an unchanged set rides no heartbeat.
         self._assignment_files_signatures: dict[str, str] = {}
+        self._store_reads_signatures: dict[str, str] = {}
         self._worktree_observer = WorktreeObserverCache()
         # Child adapters are rebuilt for attended projects every cycle. Share
         # this map with them so each discovery/project scope sends a full
@@ -647,6 +649,23 @@ class ProblemBoardHostRelayAdapter:
         if self._session_report_signatures.get(project_ref) == signature:
             return None, signature
         return projected, signature
+
+    def _store_reads_delta(self, *, project_ref: str) -> tuple[dict[str, Any] | None, str]:
+        """The last read of each local store by this worker, when it changed (W287).
+
+        What range of which store the relay last read, per agent, so the board
+        can show it. It never forces a heartbeat: it rides on the next one.
+        """
+
+        summaries = last_read_summaries(self.config.worker_name)
+        stable = {
+            store: {key: value for key, value in summary.items() if key not in {"ms", "at"}}
+            for store, summary in summaries.items()
+        }
+        signature = content_hash(stable)
+        if not summaries or self._store_reads_signatures.get(project_ref) == signature:
+            return None, signature
+        return summaries, signature
 
     def _assignment_files_delta(
         self, *, project_ref: str, fresh: bool = False
@@ -2555,6 +2574,9 @@ class ProblemBoardHostRelayAdapter:
         assignment_files_delta, files_signature = self._assignment_files_delta(
             project_ref=project_ref, fresh=force_heartbeat
         )
+        store_reads_delta, store_reads_signature = self._store_reads_delta(
+            project_ref=project_ref
+        )
         # A change in files in flight is worth a heartbeat of its own. An empty
         # set that this process never published is not a change: without this,
         # every rebuilt adapter of a worker with no declared worktree forced one
@@ -2585,6 +2607,8 @@ class ProblemBoardHostRelayAdapter:
                 heartbeat_payload["agent_sessions"] = session_delta
             if assignment_files_delta is not None:
                 heartbeat_payload["assignment_files"] = assignment_files_delta
+            if store_reads_delta is not None:
+                heartbeat_payload["store_reads"] = store_reads_delta
             try:
                 heartbeat_response = await self.client.action(
                     object_ref="work:worker:self",
@@ -2623,6 +2647,8 @@ class ProblemBoardHostRelayAdapter:
                 signature=session_signature,
             )
             self._assignment_files_signatures[project_ref] = files_signature
+            if store_reads_delta is not None:
+                self._store_reads_signatures[project_ref] = store_reads_signature
             heartbeat_result = _object_result(heartbeat_response)
             self._record_attendance_observation(heartbeat_result)
             journal_workspace = self._reconcile_journal_binding(heartbeat_result)
