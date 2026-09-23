@@ -14,6 +14,7 @@ from typing import Any, Sequence
 from ..contract.errors import DomainError
 from .diagnostics import host_relay_diagnostics
 from .host_config import HostRelayConfig
+from .relay_logging import relay_log_status
 from .relay_source import (
     CLIENT_SOURCE_PATHS,
     client_source_root,
@@ -249,8 +250,10 @@ class RelayService:
                     "RunAtLoad": True,
                     "KeepAlive": True,
                     "WorkingDirectory": str(self.config_path.parent),
-                    "StandardOutPath": str(self.stdout_path),
-                    "StandardErrorPath": str(self.stderr_path),
+                    # The relay owns its bounded log. The supervisor must not
+                    # retain another descriptor to that file across rollover.
+                    "StandardOutPath": os.devnull,
+                    "StandardErrorPath": os.devnull,
                     "ProcessType": "Background",
                     "SoftResourceLimits": {"NumberOfFiles": RELAY_FILE_DESCRIPTOR_LIMIT},
                 },
@@ -268,8 +271,8 @@ class RelayService:
             "Restart=always\n"
             "RestartSec=5\n"
             f"LimitNOFILE={RELAY_FILE_DESCRIPTOR_LIMIT}\n"
-            f"StandardOutput=append:{_systemd_value(str(self.stdout_path))}\n"
-            f"StandardError=append:{_systemd_value(str(self.stderr_path))}\n\n"
+            "StandardOutput=null\n"
+            "StandardError=null\n\n"
             "[Install]\n"
             "WantedBy=default.target\n"
         ).encode("utf-8")
@@ -343,6 +346,7 @@ class RelayService:
                     "already_running": True,
                     "command_output": "",
                 }
+            self._write_definition()
             _run(
                 [
                     "launchctl",
@@ -353,6 +357,8 @@ class RelayService:
             )
             result = _run(["launchctl", "kickstart", self._launchd_target()])
         else:
+            self._write_definition()
+            _run(["systemctl", "--user", "daemon-reload"])
             result = _run(["systemctl", "--user", "start", self.service_id])
         return {
             **self.status(),
@@ -385,10 +391,22 @@ class RelayService:
             if current.returncode != 0:
                 started = self.start()
                 return {**started, "restarted": False}
+            self._write_definition()
+            _run(["launchctl", "bootout", self._launchd_target()], check=False)
+            _run(
+                [
+                    "launchctl",
+                    "bootstrap",
+                    f"gui/{os.getuid()}",
+                    str(self.definition_path),
+                ]
+            )
             result = _run(
                 ["launchctl", "kickstart", "-k", self._launchd_target()]
             )
         else:
+            self._write_definition()
+            _run(["systemctl", "--user", "daemon-reload"])
             result = _run(["systemctl", "--user", "restart", self.service_id])
         return {
             **self.status(),
@@ -509,8 +527,9 @@ class RelayService:
             "source_selection_error": selection_error,
             "bootstrap_source": bootstrap_source,
             "startup_record": read_startup_record(self.startup_record_path),
-            "stdout": str(self.stdout_path),
-            "stderr": str(self.stderr_path),
+            "stdout": os.devnull,
+            "stderr": os.devnull,
+            "log": relay_log_status(self.stderr_path),
             "manager_status": process.stdout.strip(),
             "manager_error": process.stderr.strip(),
             "relay_diagnostics": host_relay_diagnostics(config),

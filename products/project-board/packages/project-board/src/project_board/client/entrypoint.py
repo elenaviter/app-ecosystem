@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping
 
@@ -17,23 +15,12 @@ from project_board.client.relay_source import (
     describe_source,
     selected_release,
 )
+from project_board.client.relay_logging import (
+    configure_relay_logging as configure_relay_file_logging,
+)
 from project_board.client.render import render_envelope
 from project_board.client.source_control import effective_selection, source_matches
 from project_board.contract.errors import DomainError
-
-
-class _UtcPerLineFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        rendered = super().format(record)
-        timestamp = (
-            datetime.fromtimestamp(record.created, timezone.utc)
-            .isoformat(timespec="milliseconds")
-            .replace("+00:00", "Z")
-        )
-        prefix = f"{timestamp} {record.levelname} {record.name}: "
-        return "\n".join(
-            f"{prefix}{line}" for line in (rendered.splitlines() or [""])
-        )
 
 
 def _top_level_command(argv: list[str]) -> str:
@@ -51,10 +38,11 @@ def _top_level_command(argv: list[str]) -> str:
     return ""
 
 
-def _configure_relay_logging() -> None:
-    handler = logging.StreamHandler()
-    handler.setFormatter(_UtcPerLineFormatter("%(message)s"))
-    logging.basicConfig(level=logging.INFO, handlers=[handler], force=True)
+def _configure_relay_logging(config_path: Path | None) -> None:
+    configure_relay_file_logging(
+        config_path,
+        mirror_to_stderr=bool(getattr(sys.stderr, "isatty", lambda: False)()),
+    )
 
 
 def _config_argument(argv: list[str]) -> Path | None:
@@ -136,15 +124,19 @@ def _render_startup_error(error: DomainError, argv: list[str]) -> int:
 
 def main() -> int:
     argv = sys.argv[1:]
+    relay_command = _top_level_command(argv) == "relay"
+    config_path = _config_argument(argv) if relay_command else None
+    if relay_command:
+        # Configure before source dispatch so bootstrap failures and the first
+        # selected-source line use the same bounded host log.
+        _configure_relay_logging(config_path)
     try:
-        selected = _selected_command(argv)
+        selected = _selected_command(argv, config_path=config_path)
     except DomainError as exc:
         return _render_startup_error(exc, argv)
     if selected is not None:
         os.execv(selected[0], list(selected))
         return 1
-    if _top_level_command(argv) == "relay":
-        _configure_relay_logging()
     return int(cli.main())
 
 
