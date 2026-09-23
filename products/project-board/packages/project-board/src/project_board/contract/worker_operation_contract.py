@@ -183,7 +183,7 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "grants": ("work:coordinate",),
     },
     "assignment.assign": {
-        "description": "Assign work with an ownership version and source boundary.",
+        "description": "Assign work with an ownership version and the repositories it touches, one entry each.",
         "grants": ("work:coordinate",),
     },
     "assignment.return": {

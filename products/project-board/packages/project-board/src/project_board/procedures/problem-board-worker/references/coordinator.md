@@ -67,6 +67,25 @@ onboarding was skipped at the moment of acting with the rule already written.
 4. Search the plan before filing. A finding that already has an item gets a
    note on that item.
 
+### Bind every repository the work touches when you assign
+
+An assignment carries `source_repositories`: one entry per repository the
+work touches, each with its repository ref, the base commit the worker starts
+from and the branch it works on. Fill it when you assign, not later: W212
+spanned two repositories and W255 three, and every one of tonight's
+assignments went out with the binding blank, so a reader of the board saw a
+worker with open files and could not say which item they were for. Work that
+touches no repository says so with an empty list; an assignment with no list
+at all reads as `repositories not declared`, which is a defect of the
+assignment, not a property of the work.
+
+```json
+{"source_repositories": [
+  {"repository_ref": "repo:kdcube-ai-app/app", "base_commit": "947238921", "branch": "work/w212-picker"},
+  {"repository_ref": "repo:app-ecosystem/products", "base_commit": "83f6d21ab", "branch": "work/w212-cards"}
+]}
+```
+
 ## Put what a worker must read where that worker can read it
 
 A route that points at something the assigned worker cannot open is not a
