@@ -270,6 +270,29 @@ in the worker session, the status line shows `usage ok (...)` and the worker's
 card on the board shows a limit line. A card that says `limit not reported`
 means the settings are missing or `pb` did not run.
 
+## A Claude Code Worker's Turn Ends With Its Watch Running
+
+The watch that lets board mail wake a Claude Code session ends after 30
+minutes, and re-arming it is the session's job. On 2026-09-18 two workers
+skipped it and were silent for hours. A Stop hook checks at the end of every
+turn (W182), in the same `hooks` object as the StopFailure hook above:
+
+```json
+{
+  "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "pb worker stop-guard"}]}]}
+}
+```
+
+When the session is an attending worker and no `pb worker watch` runs for it,
+the hook blocks the stop once and names the exact commands that re-arm the
+watch. Every other Claude Code session on the host, a detached worker, a stop
+that already followed a block, and any failure inside the hook end normally.
+The settings are the user's: propose the lines, and the user adds them, with
+the full path to `pb` when the session's `PATH` may not include it.
+
+Verify once per host: stop the watch in a worker session and end a turn. The
+turn continues with the hook's re-arm message.
+
 ## What Stays The User's
 
 Setup, the relay install, browser consent and project membership are the

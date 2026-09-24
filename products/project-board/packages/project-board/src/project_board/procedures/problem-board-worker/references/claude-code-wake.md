@@ -82,6 +82,21 @@ Guard prompt, with `<id>` this session's runtime session id:
 Scheduled prompts expire after seven days, so a session that runs longer
 re-creates the guard. Stop the guard and the watch before `pb worker detach`.
 
+## The Stop hook
+
+The guard and the end notice both depend on the model acting on them, and on
+2026-09-18 two workers did not. The Stop hook does not: at the end of every
+turn, `pb worker stop-guard` checks whether this worker's watch is running
+(the watch records its process when it starts, and the hook checks that the
+process is alive and is a watch). When none runs, the hook blocks the stop
+once and names the exact Monitor command and the receive that follows. A
+missed re-arm then costs one turn, whichever turn comes next: the end
+notice's, a guard fire's, or the user's. A session that no turn reaches
+stays out of reach, and the relay's `worker.notification_path` event shows
+it on the worker card. A detached or retired worker, any other session on
+the host, and a failure inside the hook end normally. The settings lines are
+in [first-run](first-run.md), and they are the user's to add.
+
 ## What the board shows
 
 The watch heartbeat is what advances `last_inbox_check_at`. In
