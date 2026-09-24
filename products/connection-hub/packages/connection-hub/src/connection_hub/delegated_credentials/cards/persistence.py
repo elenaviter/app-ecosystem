@@ -7,7 +7,8 @@ Composing durable card storage belongs to whoever owns the storage root, so
 policy code receives this contract instead of building the pieces itself.
 
     load          committed authority and its live handles, or None when the
-                  card is absent, expired, or revoked
+                  card is absent, expired, or revoked; credentialless cards
+                  return an empty handle set
     current_revision
                   the committed revision whatever its state, 0 with no durable
                   history — the expected_revision a write must pass
@@ -139,6 +140,8 @@ class DurableCardPersistence:
         # against the card itself rather than the path it was read from.
         if subject_hash_for(authority.grantor_subject) != str(subject_hash):
             return None
+        if authority_is_credentialless(authority):
+            return authority, CardCredentialHandles(access_id=authority.access_id)
         try:
             handles = await self._handles.read(authority)
         except Exception as exc:
@@ -217,6 +220,8 @@ class DurableCardPersistence:
         _, authority = current
         if subject_hash_for(authority.grantor_subject) != str(subject_hash):
             return None
+        if authority_is_credentialless(authority):
+            return authority, CardCredentialHandles(access_id=authority.access_id)
         try:
             handles = await self._handles.read_current(authority)
         except Exception as exc:
