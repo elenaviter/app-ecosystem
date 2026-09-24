@@ -131,9 +131,17 @@ cleanup of the pre-W287 flat receipt directory) runs in a thread beside the
 relay cycle on its own schedule, and records in the field when retention last
 ran.
 
-The outbox files a settled row by its outcome: `sent/` when the service
-accepted it or ignored it, `refused/` when it refused it. Settled rows are
-removed 30 days after they settled.
+The outbox lives per project and agent, under
+`projects/<project>/outbox/<agent>/`: rows in flight in `pending/` and
+`leased/`, their attachment files in `attachments/<outbox_id>/`, and each
+settled row in the hour it was created, named
+`<created>_<outbox_id>__<state>-<kind>.json`, so the outcome (`sent`,
+`ignored`, `refused`) reads from the name. A row that belongs to no project
+lives under `unscoped/outbox/<agent>/`. A claim reads only rows in flight, and a
+lookup by id never lists the settled history. Settled rows and attachment
+folders are removed 30 days after the row was created, per agent. Rows from
+before this layout are moved into it once by housekeeping, and are found by id
+in the old flat folders until then.
 
 ## Owner And Worker Conversation
 
