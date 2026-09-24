@@ -105,7 +105,7 @@ def test_a_relay_start_forgets_the_channels_that_waited_on_the_runtime(tmp_path)
     pacing = relay_pacing.RelayPacing(path, clock=clock, rng=lambda: 1.0)
     for _ in range(5):
         pacing.record_failure("down", "oauth_challenge_not_advertised", runtime_unavailable=True)
-    pacing.record_failure("refused", "delegated_card_refresh_refused")
+    pacing.record_failure("refused", "delegated_card_refresh_refused", credential=True)
     assert pacing.channel_due("down") is False and pacing.channel_due("refused") is False
 
     # Same process, no restart: the schedule stands, as it must across cycles.
@@ -124,7 +124,7 @@ def test_one_channel_back_clears_every_channel_that_waited_on_the_runtime():
     pacing = relay_pacing.RelayPacing(None, clock=clock, rng=lambda: 1.0)
     for name in ("a", "b", "c"):
         pacing.record_failure(name, "oauth_challenge_not_advertised", runtime_unavailable=True)
-    pacing.record_failure("refused", "delegated_card_refresh_refused")
+    pacing.record_failure("refused", "delegated_card_refresh_refused", credential=True)
 
     pacing.record_success("a")
 

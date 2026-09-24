@@ -13,6 +13,8 @@ import json
 import logging
 from pathlib import Path
 
+from project_board.client.credential_refusal import credential_refused
+from project_board.contract.errors import DomainError
 from project_board.client.relay_pacing import (
     CHANNEL_BACKOFF_BASE_SECONDS,
     PACING_FILENAME,
@@ -77,7 +79,11 @@ def test_a_revoked_credential_stays_parked_across_restarts_until_it_is_authorize
     clock = Clock()
     pacing = _pacing(path, clock)
     pacing.record_pending_refusal(
-        "codex-ui", fingerprint="card-a|session-1", permanent=True, reason="oauth_token_request_failed"
+        "codex-ui",
+        fingerprint="card-a|session-1",
+        permanent=True,
+        reason="oauth_token_request_failed",
+        credential=True,
     )
     assert pacing.pending_due("codex-ui", "card-a|session-1") is False
 
@@ -113,7 +119,7 @@ def test_a_credential_refused_channel_and_a_rate_limited_host_keep_their_backoff
     path = tmp_path / PACING_FILENAME
     clock = Clock()
     pacing = _pacing(path, clock)
-    pacing.record_failure("refused", "delegated_card_refresh_refused")
+    pacing.record_failure("refused", "delegated_card_refresh_refused", credential=True)
     restarted = _pacing(path, clock, start=True)
     assert restarted.channel_due("refused") is False
     assert restarted.restart_decisions["refused"] == {
@@ -134,3 +140,86 @@ def test_a_credential_refused_channel_and_a_rate_limited_host_keep_their_backoff
         "decision": "kept_backoff",
         "reason": "host_rate_limited",
     }
+
+
+def test_a_token_endpoint_that_was_down_is_attempted_at_restart_under_the_same_code(tmp_path):
+    """claude-main's review of #65: at 01:32Z a 503 ("token withheld: delegated
+    card conflict") and the later 400 invalid_grant shared one code. Only the
+    second is the credential's answer."""
+
+    path = tmp_path / PACING_FILENAME
+    clock = Clock()
+    pacing = _pacing(path, clock)
+    down = DomainError(
+        "oauth_token_request_failed",
+        "token withheld: delegated card conflict",
+        status=503,
+        details={"status": 503},
+    )
+    dead = DomainError(
+        "oauth_token_request_failed",
+        "The refresh token was revoked.",
+        status=400,
+        details={"status": 400, "oauth_error": "invalid_grant"},
+    )
+    assert credential_refused(down) is False
+    assert credential_refused(dead) is True
+    for name, error in (("worker-down", down), ("worker-dead", dead)):
+        pacing.record_pending_refusal(
+            name,
+            fingerprint=f"card-{name}",
+            permanent=True,
+            reason="oauth_token_request_failed",
+            credential=credential_refused(error),
+        )
+
+    restarted = _pacing(path, clock, start=True)
+
+    assert restarted.restart_decisions["worker-down"]["decision"] == "attempted"
+    assert restarted.pending_due("worker-down", "card-worker-down") is True
+    assert restarted.restart_decisions["worker-dead"]["decision"] == "parked_permanent"
+    assert restarted.pending_due("worker-dead", "card-worker-dead") is False
+
+
+def test_the_credential_predicate_reads_wrapped_errors_and_revoked_cards():
+    dead = DomainError(
+        "oauth_token_request_failed", "revoked", details={"oauth_error": "invalid_grant"}
+    )
+    try:
+        try:
+            raise dead
+        except DomainError as inner:
+            raise RuntimeError("channel failed") from inner
+    except RuntimeError as outer:
+        wrapped = outer
+    assert credential_refused(wrapped) is True
+    assert credential_refused(DomainError("delegated_card_revoked", "revoked")) is True
+    assert credential_refused(DomainError("delegated_card_refresh_refused", "refused")) is True
+    assert credential_refused(DomainError("data_bus_connect_refused", "refused")) is False
+
+
+def test_a_record_written_before_the_flag_existed_is_attempted_once(tmp_path):
+    path = tmp_path / PACING_FILENAME
+    clock = Clock()
+    path.write_text(
+        json.dumps(
+            {
+                "host_quiet_until": 0,
+                "channels": {"codex-ui": {"attempts": 0, "next_at": clock.now + 1800, "reason": "oauth_token_request_failed"}},
+                "pending": {
+                    "codex-ui": {
+                        "fingerprint": "card-a",
+                        "permanent": True,
+                        "reason": "oauth_token_request_failed",
+                        "refused_at": clock.now,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restarted = _pacing(path, clock, start=True)
+
+    assert restarted.restart_decisions["codex-ui"]["decision"] == "attempted"
+    assert restarted.pending_due("codex-ui", "card-a") is True

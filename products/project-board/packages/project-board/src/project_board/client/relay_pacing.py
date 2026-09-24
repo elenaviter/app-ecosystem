@@ -56,11 +56,16 @@ and logs the decision (``relay pacing restart ... decision=``):
                       restart does not lift, so every channel keeps its time,
                       or a channel backing off from a credential refusal keeps
                       its schedule, since the credential's answer is the same
-    parked_permanent  a credential the server refused (a revoked refresh
-                      family, a revoked or unknown Card) stays parked until its
-                      profile fingerprint changes, which is what
-                      ``pb worker authorize`` does. A restart never retries a
-                      credential known to be dead.
+    parked_permanent  a credential the server refused (``invalid_grant`` from
+                      a revoked refresh family, a revoked or unknown Card)
+                      stays parked until its profile fingerprint changes,
+                      which is what ``pb worker authorize`` does. A restart
+                      never retries a credential known to be dead.
+
+The relay records ``credential`` with each refusal from the error itself
+(``credential_refusal.credential_refused``), never from the reason code: the
+same code covers a token endpoint that answered ``invalid_grant`` and one that
+was down. A record without the flag, written before it existed, is attempted.
 
 To clear everything, including the host quiet window, stop the relay and delete
 ``relay-pacing.json`` beside the host config. The state holds no secret: times,
@@ -98,16 +103,6 @@ RUNTIME_RETRY_CAP_SECONDS = 10.0
 RUNTIME_RETRY_WINDOW_SECONDS = 15 * 60.0
 RUNTIME_RETRY_LONG_SECONDS = 60.0
 RUNTIME_SCHEDULE = "runtime"
-# The server refused the credential itself: only a new authorization, which
-# changes the profile fingerprint, can change that answer.
-CREDENTIAL_REFUSAL_REASONS = frozenset(
-    {
-        "oauth_token_request_failed",
-        "delegated_card_refresh_refused",
-        "delegated_card_revoked",
-        "delegated_card_not_found",
-    }
-)
 RESTART_ATTEMPTED = "attempted"
 RESTART_KEPT_BACKOFF = "kept_backoff"
 RESTART_PARKED_PERMANENT = "parked_permanent"
@@ -129,13 +124,6 @@ def _error_chain(error: BaseException) -> list[BaseException]:
         chain.append(current)
         current = current.__cause__ or current.__context__
     return chain
-
-
-def credential_refusal(reason: str) -> bool:
-    """Whether a refusal reason says the credential itself is dead."""
-
-    text = str(reason or "")
-    return any(code in text for code in CREDENTIAL_REFUSAL_REASONS)
 
 
 def rate_limit_wait(error: BaseException) -> float | None:
@@ -211,7 +199,7 @@ class RelayPacing:
             if not record.get("permanent"):
                 continue
             reason = str(record.get("reason") or "")
-            if credential_refusal(reason):
+            if record.get("credential") is True:
                 decisions[name] = (RESTART_PARKED_PERMANENT, reason)
                 continue
             # The fix may have been made on the server while the relay was down.
@@ -242,7 +230,7 @@ class RelayPacing:
             if quiet:
                 decisions[name] = (RESTART_KEPT_BACKOFF, "host_rate_limited")
                 continue
-            if credential_refusal(reason):
+            if record.get("credential") is True:
                 # The credential's own answer: a restart does not change it.
                 decisions[name] = (RESTART_KEPT_BACKOFF, reason)
                 continue
@@ -317,6 +305,7 @@ class RelayPacing:
         *,
         handshake_timeout: bool = False,
         runtime_unavailable: bool = False,
+        credential: bool = False,
     ) -> float:
         """Back ``name`` off after a transient failure; return the delay.
 
@@ -375,6 +364,7 @@ class RelayPacing:
             reason=str(reason),
             schedule=schedule,
             failed_at=now,
+            credential=bool(credential),
         )
         if runtime_since is None:
             record.pop("runtime_since", None)
@@ -431,12 +421,19 @@ class RelayPacing:
         return self.channel_due(name)
 
     def record_pending_refusal(
-        self, name: str, *, fingerprint: str, permanent: bool, reason: str
+        self,
+        name: str,
+        *,
+        fingerprint: str,
+        permanent: bool,
+        reason: str,
+        credential: bool = False,
     ) -> None:
         self._state["pending"][name] = {
             "fingerprint": str(fingerprint),
             "permanent": bool(permanent),
             "reason": str(reason),
+            "credential": bool(credential),
             "refused_at": self._clock(),
         }
         if permanent:
@@ -463,7 +460,7 @@ class RelayPacing:
                 "reason": str(record.get("reason") or ""),
                 "retry": (
                     "after pb worker authorize: the server refused this credential"
-                    if record.get("permanent") and credential_refusal(str(record.get("reason") or ""))
+                    if record.get("permanent") and record.get("credential") is True
                     else "after pb worker authorize, a relay restart, or in 30 minutes"
                     if record.get("permanent")
                     else "after pb worker authorize, or at the channel's next attempt"
@@ -526,8 +523,6 @@ def channel_reconnect_state(
 
 __all__ = [
     "channel_reconnect_state",
-    "credential_refusal",
-    "CREDENTIAL_REFUSAL_REASONS",
     "RESTART_ATTEMPTED",
     "RESTART_KEPT_BACKOFF",
     "RESTART_PARKED_PERMANENT",

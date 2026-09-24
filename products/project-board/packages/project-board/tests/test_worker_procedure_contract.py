@@ -825,5 +825,7 @@ def test_first_run_states_what_a_relay_restart_does_with_each_refusal():
     section = text[text.index("## `session_reconnecting`"):text.index("## `session_attending`")]
     assert "`data_bus_connect_refused`) once at once" in section
     assert "never a faster one" in section
-    assert "`oauth_token_request_failed`" in section and "stays parked across restarts" in section
+    assert "`oauth_token_request_failed` answered with `invalid_grant`" in section
+    assert "stays parked across restarts" in section
+    assert "token endpoint that was down (a 5xx) is tried at once" in section
     assert "`attempted`, `kept_backoff` or `parked_permanent`" in section
