@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.1"
+    assert package["revision"] == "2026.09.24.2"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -829,3 +829,24 @@ def test_first_run_states_what_a_relay_restart_does_with_each_refusal():
     assert "stays parked across restarts" in section
     assert "token endpoint that was down (a 5xx) is tried at once" in section
     assert "`attempted`, `kept_backoff` or `parked_permanent`" in section
+
+
+def test_every_activation_is_addressed_to_the_approved_commit_and_its_receipt_is_checked():
+    """W202: the shared checkout can change between the preflight and the
+    staging, so the activation names a commit and the coordinator compares the
+    receipt with the approved candidate before it verifies anything else."""
+
+    coordinator = (PROCEDURE_ROOT / "references" / "coordinator.md").read_text(encoding="utf-8")
+    actions = (PROCEDURE_ROOT / "references" / "runtime-actions.md").read_text(encoding="utf-8")
+
+    assert "Every activation is addressed to a commit" in coordinator
+    assert "whatever it holds at that instant. The\nlist is what makes that survivable" not in coordinator
+    assert "the approved commit per tree" in coordinator
+    assert "`kdcube bundle reload <bundle-id> --commit <sha> --expect\n   <sha>`" in coordinator
+    assert "**check\n   the receipt against the approved candidate**" in coordinator
+    assert "A receipt that names another commit is a failed\n   activation: report it as failed, with both commits" in coordinator
+    assert coordinator.index("the receipt against the approved candidate") < coordinator.index("5. **Verify the deployed artifact, never the commit.**")
+    # The preflight stays, as evidence and explicitly not the guarantee.
+    assert "neither is the\n   guarantee" in coordinator
+    assert "| An app under `apps/` | `kdcube bundle reload <bundle-id> --commit <approved-sha> --expect <approved-sha>`" in actions
+    assert "a reload without `--commit`, which stages whatever the checkout holds at that instant" in actions
