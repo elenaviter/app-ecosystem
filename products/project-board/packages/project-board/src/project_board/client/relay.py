@@ -2627,6 +2627,46 @@ class ProblemBoardHostRelayAdapter:
             "next_poll_seconds": self.config.idle_reconcile_ceiling_seconds,
         }
 
+    def _materialize_attended_project(self, heartbeat: Mapping[str, Any]) -> bool:
+        """Write the local record of a project this worker attends, from the board's heartbeat (W304 finding 39).
+
+        The board answers every heartbeat of an attended project with the
+        project row. The relay wrote the local record from it only when the
+        worker also held an assignment, so an agent linked to a project with
+        no work yet (claude-ops on spark1, 2026-09-24) had no record, and every
+        receive failed. Mail for the project waits on the board until this
+        record exists, then arrives on the next pull.
+        """
+
+        project_id = self.config.project_id
+        if self.field._project_path(project_id).exists():
+            return False
+        project = (
+            dict(heartbeat.get("assignment_project"))
+            if isinstance(heartbeat.get("assignment_project"), Mapping)
+            else {}
+        )
+        if not project:
+            return False
+        title = str(project.get("title") or project_id)
+        try:
+            self.field.create_project(
+                project_id=project_id,
+                title=title,
+                goal=str(project.get("goal") or title),
+                owner="control-plane",
+            )
+        except DomainError as exc:
+            if exc.code != "field_project_exists":
+                raise
+            return False
+        logger.info(
+            "Problem Board project written on this host project=%s worker=%s",
+            f"work:project:{project_id}",
+            self.config.worker_name,
+        )
+        return True
+
     def _reconcile_assignments(
         self, heartbeat: Mapping[str, Any]
     ) -> tuple[int, list[dict[str, Any]]]:
@@ -2639,18 +2679,7 @@ class ProblemBoardHostRelayAdapter:
         if not self.field._project_path(project_id).exists():
             if not assignments:
                 return 0, []
-            project = (
-                dict(heartbeat.get("assignment_project"))
-                if isinstance(heartbeat.get("assignment_project"), Mapping)
-                else {}
-            )
-            title = str(project.get("title") or project_id)
-            self.field.create_project(
-                project_id=project_id,
-                title=title,
-                goal=title,
-                owner="control-plane",
-            )
+            self._materialize_attended_project(heartbeat)
         created = 0
         active_refs: list[str] = []
         issues: list[dict[str, Any]] = []
@@ -2901,6 +2930,7 @@ class ProblemBoardHostRelayAdapter:
                 self._store_reads_signatures[project_ref] = store_reads_signature
             heartbeat_result = _object_result(heartbeat_response)
             self._record_attendance_observation(heartbeat_result)
+            self._materialize_attended_project(heartbeat_result)
             journal_workspace = self._reconcile_journal_binding(heartbeat_result)
             # The team travels with every project heartbeat so a worker can
             # address a teammate from its packet without asking the control plane.
