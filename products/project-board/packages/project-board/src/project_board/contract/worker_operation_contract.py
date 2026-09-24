@@ -15,6 +15,10 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "description": "Set the owner's portable Git-backed journal home.",
         "grants": ("work:coordinate",),
     },
+    "project.set_repositories": {
+        "description": "Set the project's revisioned repository preset.",
+        "grants": ("work:coordinate",),
+    },
     "project.plan.index": {
         "description": (
             "Open any generation-pinned plan page directly in authored order, "
@@ -357,6 +361,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
     "work.project": (
         "project.register",
         "project.set_journal_home",
+        "project.set_repositories",
         "project.plan.index",
         "project.plan.item",
         "project.plan.resolve",
