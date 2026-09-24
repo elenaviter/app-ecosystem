@@ -62,7 +62,7 @@ new host
     ├── .local/bin/pb                  guarded project-board launcher
     ├── .kdcube/client-runtime/tools/problem-board-venv/   isolated bootstrap
     ├── .kdcube/          (700)        selectors, snapshots, relay state, logs, mailboxes
-    ├── src/app-ecosystem, src/kdcube-ai-app   public clones the client is built from, read only
+    ├── src/app-ecosystem, src/kdcube          public clones the client is built from, read only
     ├── .ssh/deploy_<repo>{,.pub}      one deploy key per repository
     ├── .config/systemd/user/kdcube-problem-board-relay-*.service
     └── workspaces/       (700)
@@ -114,7 +114,7 @@ The repository table, used by steps 2, 7 and 8:
 |---|---|---|---|
 | `applications` | `kdcube/applications` | yes | Problem Board and the other apps |
 | `app-ecosystem` | `elenaviter/app-ecosystem` | no | Connection Hub and foundation packages |
-| `kdcube-ai-app` | `kdcube/kdcube` | no | KDCube platform and SDK |
+| `kdcube` | `kdcube/kdcube` | no | KDCube platform and SDK |
 
 ## 1. Give the host agent access to the host
 
@@ -165,8 +165,8 @@ own clones in step 8.
 ```bash
 mkdir -p ~/src
 [ -d ~/src/app-ecosystem ] || git clone -q https://github.com/elenaviter/app-ecosystem.git ~/src/app-ecosystem
-[ -d ~/src/kdcube-ai-app ] || git clone -q https://github.com/kdcube/kdcube.git ~/src/kdcube-ai-app
-git -C ~/src/app-ecosystem fetch -q origin && git -C ~/src/kdcube-ai-app fetch -q origin
+[ -d ~/src/kdcube ] || git clone -q https://github.com/kdcube/kdcube.git ~/src/kdcube
+git -C ~/src/app-ecosystem fetch -q origin && git -C ~/src/kdcube fetch -q origin
 ```
 
 Then it installs the client family from clean exports of the exact App
@@ -176,7 +176,7 @@ Ecosystem and KDCube commits approved by the operator:
 APP_REPOSITORY=/home/<user>/src/app-ecosystem
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=/home/<user>/src/kdcube-ai-app
+KDCUBE_REPOSITORY=/home/<user>/src/kdcube
 KDCUBE_COMMIT=<approved-full-commit>
 KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
@@ -216,7 +216,7 @@ pb source use-code \
   --repository /home/<user>/src/app-ecosystem \
   --ref <approved-full-commit> \
   --expect <approved-full-commit> \
-  --kdcube-repository /home/<user>/src/kdcube-ai-app \
+  --kdcube-repository /home/<user>/src/kdcube \
   --kdcube-ref <approved-full-kdcube-commit> \
   --expect-kdcube <approved-full-kdcube-commit>
 pb source status
@@ -594,7 +594,7 @@ it identifies the environment the installer must update:
 APP_REPOSITORY=/home/<user>/src/app-ecosystem
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=/home/<user>/src/kdcube-ai-app
+KDCUBE_REPOSITORY=/home/<user>/src/kdcube
 KDCUBE_COMMIT=<approved-full-commit>
 KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
@@ -670,7 +670,7 @@ Key:
 
     ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAzcyOq6rmbwmcldadYYQ52Qf2zvmlislDzmQ/DOFjGk spark1 deploy key: app-ecosystem
 
-### kdcube-ai-app
+### kdcube
 
 Title: spark1 agents
 Allow write access: yes
