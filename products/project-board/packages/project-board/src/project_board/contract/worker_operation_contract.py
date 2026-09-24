@@ -100,6 +100,29 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:review",),
     },
+    # People on a project (W260 phase 2): holding these on the caller's
+    # project Card is what makes a person, or an agent, an admin of it.
+    "project.people.invite": {
+        "description": (
+            "Invite an existing KDCube user to the project by email and decide "
+            "what their project Card holds."
+        ),
+        "grants": ("work:admin",),
+    },
+    "project.people.set_role": {
+        "description": (
+            "Apply a role preset (admin or member) to a person on the project, "
+            "which sets the operations their project Card holds."
+        ),
+        "grants": ("work:admin",),
+    },
+    "project.people.card.update": {
+        "description": (
+            "Decide the operations one person's project Card holds; the Card "
+            "follows at that person's next request."
+        ),
+        "grants": ("work:admin",),
+    },
     "plan.item.update": {
         "description": "Update one plan item under its current revision; new attachment refs must be staged uploads.",
         "grants": ("work:coordinate",),
@@ -345,6 +368,9 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "plan.item.create",
         "plan.item.update",
         "work.status.set",
+        "project.people.invite",
+        "project.people.set_role",
+        "project.people.card.update",
         "review.accept",
         "review.return",
         "review.cancel",
