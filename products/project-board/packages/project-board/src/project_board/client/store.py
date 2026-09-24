@@ -5228,6 +5228,12 @@ class SharedFieldStore:
             return self.control / "workers" / clean_worker / "mail"
         return self._project_dir(project_id) / "mail" / clean_worker
 
+    def _mail_control_pointer(self, project_id: str, worker_name: str, command_ref: str) -> Path:
+        """Which message a delivered control became, keyed by its command ref."""
+
+        token = content_hash({"command_ref": str(command_ref or "")})
+        return self._mail_root(project_id, worker_name) / "by-control" / f"{token}.json"
+
     def _mail_lock(self, project_id: str, worker_name: str) -> Path:
         if not str(project_id or "").strip():
             return self._mail_root("", worker_name) / ".mail.lock"
@@ -5658,6 +5664,21 @@ class SharedFieldStore:
                     clean_project, clean_recipient
                 ) / f"{message_id}.json"
             atomic_write_json(destination, envelope)
+            command_ref = str(clean_payload.get("command_ref") or "")
+            if command_ref:
+                # A discard names the control, not the message: this pointer
+                # answers it with one read instead of a mailbox scan (W287, LS3).
+                atomic_write_json(
+                    self._mail_control_pointer(clean_project, clean_recipient, command_ref),
+                    {
+                        "schema": "problem-board.mail-control-pointer.v1",
+                        "command_ref": command_ref,
+                        "message_id": message_id,
+                        "message_ref": envelope["message_ref"],
+                        "recipient": clean_recipient,
+                        "created_at": now,
+                    },
+                )
             result = {
                 "message_id": message_id,
                 "message_ref": envelope["message_ref"],
@@ -7082,7 +7103,23 @@ class SharedFieldStore:
             found: tuple[str, Path, dict[str, Any]] | None = None
             with exclusive_lock(self._mail_lock(project_id, clean_worker)):
                 self._recover_expired_mail(project_id, clean_worker)
-                for state in ("inbox", "leased", "processed", "ignored"):
+                if not message_id:
+                    pointer = read_json(
+                        self._mail_control_pointer(project_id, clean_worker, command_ref),
+                        required=False,
+                    )
+                    if pointer and str(pointer.get("command_ref") or "") == command_ref:
+                        message_id = str(pointer.get("message_id") or "")
+                # By id, every state is one read. Without one (a control
+                # delivered before the pointer existed), only the states in
+                # flight are listed: a processed message was already received,
+                # and `received_hint` says so (W287, LS3).
+                states = (
+                    ("inbox", "leased", "processed", "ignored")
+                    if message_id
+                    else ("inbox", "leased", "ignored")
+                )
+                for state in states:
                     folder = (
                         self._mail_ignored_root(project_id, clean_worker)
                         if state == "ignored"
