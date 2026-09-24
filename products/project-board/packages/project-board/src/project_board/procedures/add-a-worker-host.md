@@ -106,6 +106,7 @@ before anything changes:
 | agent names | `claude-ops@spark1`, `claude-app@spark1` | display names on the board. The board addresses a worker by a stable generated name. |
 | coding agent account | the account whose subscription the agents use | step 5 logs in with it. Every session of that Linux user shares it. |
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
+| `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 
 The repository table, used by steps 2, 7 and 8:
 
@@ -143,6 +144,7 @@ whoami; uname -srm; head -2 /etc/os-release
 python3 --version; git --version
 echo "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS"   # both set
 sudo -n true && echo sudo-ok
+command -v tmux || echo "tmux missing: ask the machine's admin to install it (apt install tmux, or dnf install tmux)"
 getent passwd | awk -F: '$3>=1000 && $3<60000 {print $1}'   # other users on the machine
 stat -c '%A %G %n' ~                                         # who can read the home directory
 ```
@@ -405,7 +407,7 @@ Runs on: the host.
 **Host agent**, one detached `tmux` session per agent, named after the agent and
 started from its direct login (step 1) so the session has the user-session
 environment. The session reads and writes its workspace and the user's `pb`
-state, and does not stop to ask for each command, because nobody watches it:
+state, and does not stop to ask for each command, because nobody approves each command:
 
 ```bash
 tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/workspaces/<workspace> && \
@@ -414,7 +416,7 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/workspa
     --disallowedTools AskUserQuestion; exec bash'"
 ```
 
-- **tmux, not screen.** Claude Code draws with UTF-8 box characters and turns
+- **tmux carries Claude Code's display and mouse.** Claude Code draws with UTF-8 box characters and turns
   on mouse reporting. In a `screen` session started without UTF-8, the operator
   who attaches sees `?` for every box character, and each mouse movement arrives
   in the agent's input box as text (`94;29M97;29M...`). tmux carries both, and
