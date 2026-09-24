@@ -60,6 +60,10 @@ if [ -d "$dest/.git" ]; then
     echo "$ALIAS at $dest points at $origin, the project declares $URL" >&2
     exit 3
   fi
+  if [ -n "$(git -C "$dest" status --porcelain)" ]; then
+    echo "$ALIAS at $dest has uncommitted changes on $(git -C "$dest" branch --show-current)" >&2
+    exit 4
+  fi
   git -C "$dest" fetch --prune origin
 else
   git clone --quiet "$URL" "$dest"
@@ -84,8 +88,14 @@ project card changed the alias, or the folder holds another repository. Do not
 repoint or replace it. Tell the operator the alias, both URLs and the folder,
 and go on with the rest.
 
-A checkout or fast-forward that fails (local changes, a history that has
-diverged) is never forced. Leave that folder as it is and tell the coordinator
+A folder with uncommitted changes, new files not yet added included, stops
+there (exit 4), on the branch it is on, because a checkout would carry that
+work to another branch. Commit or put
+the work aside yourself first, or tell the coordinator the alias if it is not
+yours.
+
+A checkout or fast-forward that fails (a history that has diverged) is never
+forced. Leave that folder as it is and tell the coordinator
 which alias and why.
 
 ## 3. Report what you cannot reach
