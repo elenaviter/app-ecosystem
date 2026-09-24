@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-09-23
+updated_at: 2026-09-24
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -976,14 +976,49 @@ so a renderer that cannot tell a held operation from a newly offered one cannot
 offer an informed choice: it would present an empty picker whose quiet
 submission removes the whole grant.
 
-The initial state has two explicit sources. A first consent starts from the
-resources and operations covered by the client's requested OAuth grants, so an
-unchanged approval creates the Card the client asked for; the operator can
-uncheck any part before approving. A re-consent starts from the exact current
-Card, including a Card intentionally narrowed to zero operations, and lists new
-catalog operations separately and unchecked. The screen states the requested
-OAuth grants once in its request summary instead of maintaining a second,
-read-only authority list beside the editable one.
+#### Descriptor-owned authorization profiles
+
+A resource can declare named first-consent proposals under
+`authorization_profiles`. Each profile has a request-only OAuth `scope`, a
+human label, and either an explicit operation list or `operations: ["*"]`.
+The declaration lives beside the resource's operation catalog:
+
+```yaml
+authorization_profiles:
+  worker:
+    scope: work:profile:worker
+    label: Problem Board worker
+    operations: [worker.publish, worker.heartbeat]
+  coordinator:
+    scope: work:profile:coordinator
+    label: Problem Board coordinator
+    operations: ["*"]
+```
+
+The profile scope selects a proposal; it is not Card authority. Connection Hub
+expands the profile against that resource's active operation catalog, derives
+the operations' real grants, and checks those rows in the editable consent.
+The operator may narrow that proposal. A submitted resource, operation, or
+grant outside the requested profile is refused, even if a client constructs
+the submission without using the consent UI. The resulting Card stores only
+the selected catalog operations and their real grants, never the profile
+scope.
+
+An explicit operation list is stable when the catalog grows: a new operation
+does not enter that profile until the descriptor names it. `operations: ["*"]`
+means the resource's whole active operation catalog, so new operations enter
+that proposal when the descriptor is published. In both cases the active
+catalog remains the runtime ceiling.
+
+The initial selection source is explicit. A first consent with an
+authorization profile starts from that profile. A first consent without one
+starts from the resources and operations covered by the client's requested
+OAuth grants. A re-consent starts from the exact current Card, including a Card
+intentionally narrowed to zero operations, and lists new catalog operations
+separately and unchecked. Reconnect therefore keeps the existing Card; a
+client applies a profile again only when it requests a replacement Card. The
+screen states the requested role or grants once in its request summary instead
+of maintaining a second, read-only authority list beside the editable one.
 
 Provider-account bindings are a different decision and remain default-closed.
 Neither a requested service grant nor a preselected operation chooses one of

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -74,6 +75,32 @@ def test_worker_authorize_parses_device_mode():
     assert args.device is True
     assert args.no_open is False
     assert args.callback_port is None
+    assert args.coordinator is False
+
+
+def test_worker_authorize_parses_coordinator_mode():
+    args = cli.build_parser().parse_args(
+        ["worker", "authorize", "spark1-worker", "--coordinator"]
+    )
+
+    assert args.profile == "spark1-worker"
+    assert args.coordinator is True
+
+
+def test_worker_command_forwards_coordinator_mode(monkeypatch, tmp_path):
+    authorize = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(cli, "authorize_worker_profile", authorize)
+    monkeypatch.setattr(
+        cli,
+        "resolve_host_config_path",
+        lambda _path: Path(tmp_path / "host.json"),
+    )
+    args = cli.build_parser().parse_args(
+        ["worker", "authorize", "spark1-worker", "--coordinator"]
+    )
+
+    assert cli._worker_command(args) == {"ok": True}  # noqa: SLF001
+    assert authorize.await_args.kwargs["coordinator"] is True
 
 
 @pytest.mark.parametrize("options", [{"no_open": True}, {"callback_port": 8765}])
@@ -130,7 +157,39 @@ async def test_new_profile_passes_device_mode_to_connection_hub(monkeypatch, tmp
     assert kwargs["device_presenter"] is authorization._device_authorization_presenter  # noqa: SLF001
     assert "callback_port" not in kwargs
     assert "browser_opener" not in kwargs
+    assert kwargs["scope"] == authorization.WORKER_AUTHORIZATION_PROFILE_SCOPE
+    assert "default_scope" not in kwargs
+    assert "Problem Board worker" in kwargs["client_name"]
+    assert kwargs["client_metadata"]["kdcube_credential_use"] == "multi_resource"
+    assert kwargs["client_metadata"]["kdcube_authorization_profile"] == "worker"
     assert response["profile"]["access_id"] == "access-one"
+
+
+@pytest.mark.asyncio
+async def test_new_coordinator_profile_requests_only_the_coordinator_marker(
+    monkeypatch,
+    tmp_path,
+):
+    result = SimpleNamespace(profile=_profile(), probe=_probe())
+    oauth = SimpleNamespace(authorize=AsyncMock(return_value=result))
+    _install_services(
+        monkeypatch,
+        tmp_path,
+        oauth=oauth,
+        profile_service=SimpleNamespace(),
+    )
+
+    await authorization.authorize_worker_profile(
+        "host.json",
+        profile_name="spark1-worker",
+        coordinator=True,
+    )
+
+    kwargs = oauth.authorize.await_args.kwargs
+    assert kwargs["scope"] == authorization.COORDINATOR_AUTHORIZATION_PROFILE_SCOPE
+    assert authorization.WORKER_AUTHORIZATION_PROFILE_SCOPE not in kwargs["scope"]
+    assert "Problem Board coordinator" in kwargs["client_name"]
+    assert kwargs["client_metadata"]["kdcube_authorization_profile"] == "coordinator"
 
 
 @pytest.mark.asyncio
@@ -156,6 +215,7 @@ async def test_reconnect_passes_device_mode_and_keeps_the_same_card(monkeypatch,
         "host.json",
         profile_name="spark1-worker",
         device=True,
+        coordinator=True,
     )
 
     kwargs = oauth.reconnect.await_args.kwargs
@@ -163,3 +223,37 @@ async def test_reconnect_passes_device_mode_and_keeps_the_same_card(monkeypatch,
     assert kwargs["device_presenter"] is authorization._device_authorization_presenter  # noqa: SLF001
     assert response["profile"]["access_id"] == existing.access_id
     assert response["card_preserved"] is True
+
+
+@pytest.mark.asyncio
+async def test_replace_card_applies_the_selected_profile(monkeypatch, tmp_path):
+    existing = _profile()
+    replacement = _profile(access_id="access-two")
+    oauth = SimpleNamespace(
+        authorize=AsyncMock(
+            return_value=SimpleNamespace(profile=replacement, probe=_probe())
+        )
+    )
+    profile_service = SimpleNamespace(disconnect=AsyncMock(return_value=None))
+    _install_services(
+        monkeypatch,
+        tmp_path,
+        existing=existing,
+        oauth=oauth,
+        profile_service=profile_service,
+    )
+
+    response = await authorization.authorize_worker_profile(
+        "host.json",
+        profile_name="spark1-worker",
+        replace_card=True,
+        coordinator=True,
+    )
+
+    profile_service.disconnect.assert_awaited_once_with("spark1-worker")
+    assert (
+        oauth.authorize.await_args.kwargs["scope"]
+        == authorization.COORDINATOR_AUTHORIZATION_PROFILE_SCOPE
+    )
+    assert response["profile"]["access_id"] == "access-two"
+    assert response["previous_access_id"] == "access-one"

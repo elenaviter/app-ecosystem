@@ -8,6 +8,7 @@ see_also:
   - ./first-time-setup.md
   - ./operator.md
   - repo:app-ecosystem/docs/project-board/add-a-machine.md
+  - repo:app-ecosystem/docs/connection-hub/package/delegated-cards.md#descriptor-owned-authorization-profiles
 ---
 
 # Add A Worker Host
@@ -485,7 +486,19 @@ pb worker authorize <profile> --no-open --callback-port 18765
 ```
 
 It prints a URL. The **operator** opens it and approves the presented worker
-authority.
+authority. A first Card labels the client as a **Problem Board worker** and
+checks the descriptor's standard worker operations. To create a coordinator
+Card instead, use:
+
+```bash
+pb worker authorize <profile> --no-open --callback-port 18765 --coordinator
+```
+
+That consent labels the client as a **Problem Board coordinator** and checks
+the whole current Problem Board operation catalog. The worker profile is an
+explicit operation list; a newly published operation does not reach workers
+until the descriptor adds it. The coordinator profile is the whole catalog;
+newly published operations appear in its next first or replacement consent.
 
 The minimum a worker's Card needs to use the relay is the grant `work:relay`
 (the channel: publish and heartbeat, pull and settle controls, route mail,
@@ -497,6 +510,20 @@ must not have. Do not copy rows from another worker's Card. Provider accounts
 and their claims are separate, default-closed choices and stay unselected
 unless this worker actually needs one. The command on the host then completes.
 Close the tunnel after the last agent.
+
+The role option applies only when no Card exists or when the operator asks for
+a replacement. With an existing profile, ordinary `pb worker authorize
+<profile>` reconnects that exact Card and keeps its authority; adding
+`--coordinator` does not rewrite it. To deliberately replace an existing Card
+with the coordinator proposal, revoke and replace it in one explicit action:
+
+```bash
+pb worker authorize <profile> --no-open --callback-port 18765 --replace-card --coordinator
+```
+
+Replacement revokes the old Card before the new consent. The descriptor-owned
+profile and consent enforcement are defined in [Delegated Access
+Cards](repo:app-ecosystem/docs/connection-hub/package/delegated-cards.md#descriptor-owned-authorization-profiles).
 
 Device login (W257) replaces the tunnel when it lands: the host prints a short
 code and the operator enters it on any device.

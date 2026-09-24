@@ -147,10 +147,23 @@ def platform_edge_grants_for_scopes(
             continue
         seen.add(grant)
         cap = caps.get(grant)
+        profile = cfg.authorization_profile(grant)
         out.append((
             grant,
-            cap.label if cap is not None else grant,
-            cap.description if cap is not None else "",
+            (
+                cap.label
+                if cap is not None
+                else profile.label
+                if profile is not None
+                else grant
+            ),
+            (
+                cap.description
+                if cap is not None
+                else profile.description
+                if profile is not None
+                else ""
+            ),
         ))
     return out
 
@@ -213,10 +226,17 @@ def resource_selection_rows(
             if governing is not None and governing.resource == selector
             else candidate
         )
+        profiled_tools = cfg.authorization_profile_tools(
+            list(allowed),
+            resource=candidate.resource,
+        )
+        candidate_tools = (
+            profiled_tools if profiled_tools is not None else presented.tools
+        )
         operations: list[dict[str, Any]] = []
-        for tool in presented.tools:
+        for tool in candidate_tools:
             grants = tuple(tool.grants or presented.grants)
-            if grants and not set(grants).issubset(allowed):
+            if profiled_tools is None and grants and not set(grants).issubset(allowed):
                 continue
             operations.append(
                 {
@@ -229,14 +249,23 @@ def resource_selection_rows(
             )
         if not operations:
             continue
-        resource_grants = tuple(presented.grants) or tuple(
+        operation_grants = tuple(
             dict.fromkeys(
                 grant
                 for operation in operations
                 for grant in operation["grants"]
             )
         )
-        if resource_grants and not set(resource_grants).issubset(allowed):
+        resource_grants = (
+            operation_grants
+            if profiled_tools is not None
+            else tuple(presented.grants) or operation_grants
+        )
+        if (
+            profiled_tools is None
+            and resource_grants
+            and not set(resource_grants).issubset(allowed)
+        ):
             continue
         label = presented.label or selector
         rows.append(
@@ -424,18 +453,36 @@ def requested_card_selection(
             if str(row.resource or "").strip()
         )
 
+    profile_request = cfg.authorization_profile_requested(list(requested))
     resource_grants: dict[str, list[str]] = {}
     resource_operations: dict[str, list[str]] = {}
     named_service_operations: dict[str, dict[str, list[str]]] = {}
     for selector, row in candidates:
-        supported = set(cfg.supported_scopes(row.resource))
-        selected_grants = [grant for grant in requested if grant in supported]
-        if not selector or not selected_grants:
-            continue
+        profiled_tools = cfg.authorization_profile_tools(
+            list(requested),
+            resource=row.resource,
+        )
+        if profile_request:
+            if not selector or not profiled_tools:
+                continue
+            selected_grants = list(
+                dict.fromkeys(
+                    grant
+                    for tool in profiled_tools
+                    for grant in (tool.grants or row.grants)
+                )
+            )
+            selected_tools = profiled_tools
+        else:
+            supported = set(cfg.resource_grants(row.resource))
+            selected_grants = [grant for grant in requested if grant in supported]
+            if not selector or not selected_grants:
+                continue
+            selected_tools = cfg.tools_for_scopes(requested, resource=row.resource)
         resource_grants[selector] = selected_grants
         resource_operations[selector] = [
             tool.name
-            for tool in cfg.tools_for_scopes(requested, resource=row.resource)
+            for tool in selected_tools
         ]
         for operation in named_service_selection_rows(
             requested,

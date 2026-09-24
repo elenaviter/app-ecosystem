@@ -6,30 +6,36 @@ from pathlib import Path
 from typing import Any
 
 from ..contract.errors import DomainError
-from ..contract.worker_operation_contract import (
-    PROBLEM_BOARD_OPERATIONS,
-    required_grants_for_operation,
-)
 from .credential_refusal import RECONNECT_CODES, requires_browser_reconnect as _requires_browser_reconnect
 from .host_config import HostRelayConfig, WorkerChannelConfig
 
 
 PROFILE_METADATA_ABSENT = "profile_metadata_absent"
 PROFILE_METADATA_PRESENT = "relay_observation_pending"
+WORKER_AUTHORIZATION_PROFILE_SCOPE = "work:profile:worker"
+COORDINATOR_AUTHORIZATION_PROFILE_SCOPE = "work:profile:coordinator"
 
 
-def _worker_client_name(channel: WorkerChannelConfig) -> str:
+def _worker_client_name(
+    channel: WorkerChannelConfig,
+    *,
+    coordinator: bool = False,
+) -> str:
     identity = channel.worker_identity
     if channel.worker_alias:
         identity = (
             f"{channel.runtime_kind}:{channel.worker_alias}:"
             f"{channel.runtime_session_id}"
         )
-    return f"Connection Hub CLI · problem_board · {identity}"
+    role = "coordinator" if coordinator else "worker"
+    return f"Connection Hub CLI · Problem Board {role} · {identity}"
 
 
 def _worker_client_metadata(
-    config: HostRelayConfig, channel: WorkerChannelConfig
+    config: HostRelayConfig,
+    channel: WorkerChannelConfig,
+    *,
+    coordinator: bool = False,
 ) -> dict[str, str]:
     """Public correlation facts asserted by this enrolled worker.
 
@@ -49,6 +55,9 @@ def _worker_client_metadata(
         "kdcube_agent_session_id": channel.runtime_session_id,
         "kdcube_worker_id": channel.worker_name,
         "kdcube_worker_alias": channel.worker_alias,
+        "kdcube_authorization_profile": (
+            "coordinator" if coordinator else "worker"
+        ),
     }
 
 
@@ -299,29 +308,20 @@ async def _recover_sibling_profile(
 
 
 
-def worker_scope_request() -> str:
-    """The claims this app's own operations need, and not one more.
+def worker_scope_request(*, coordinator: bool = False) -> str:
+    """Request one descriptor-owned Problem Board authorization profile.
 
-    A deployment advertises the union of every app installed on it. When the
-    401 challenge carries no scope, Connection Hub CLI falls back to that whole
-    advertised set, so a coding-agent worker authorized by our documented
-    procedure was being issued a card carrying claims for services it never
-    calls: posting to LinkedIn, deleting press content, posting to Slack.
-
-    Two things are wrong with that. The operator approving the consent cannot
-    tell which claims the agent actually requires, so the screen stops being a
-    decision and becomes a formality. And a card is a standing capability, so
-    an over-broad one is a standing risk that nothing later narrows.
-
-    Derived from the operation contract rather than written down, because a
-    hand-kept list is exactly the kind of declaration that drifts out of step
-    with what the app really does and is never noticed until it matters.
+    The scope selects a named operation proposal from the live delegated
+    catalog. The profile is expanded and capped by Connection Hub during first
+    consent; it is not persisted into the Card, so an in-place reconnect keeps
+    using the exact existing Card.
     """
 
-    grants: set[str] = set()
-    for operation in PROBLEM_BOARD_OPERATIONS:
-        grants |= set(required_grants_for_operation(operation))
-    return " ".join(sorted(grants))
+    return (
+        COORDINATOR_AUTHORIZATION_PROFILE_SCOPE
+        if coordinator
+        else WORKER_AUTHORIZATION_PROFILE_SCOPE
+    )
 
 
 async def authorize_worker_profile(
@@ -333,6 +333,7 @@ async def authorize_worker_profile(
     callback_port: int | None = None,
     device: bool = False,
     replace_card: bool = False,
+    coordinator: bool = False,
 ) -> dict[str, Any]:
     """Authorize one enrolled channel from the user's interactive desktop."""
 
@@ -361,8 +362,9 @@ async def authorize_worker_profile(
         else StatePaths.default()
     )
     services = build_services(paths=paths)
+    role = "coordinator" if coordinator else "worker"
     sys.stderr.write(
-        "Authorizing Problem Board worker "
+        f"Authorizing Problem Board {role} "
         f"{channel.worker_alias or channel.worker_name} "
         f"({channel.runtime_kind}:{channel.runtime_session_id}) for "
         f"{config.target_id}.\n"
@@ -514,14 +516,19 @@ async def authorize_worker_profile(
         result = await oauth.authorize(
             name=profile_name,
             endpoint=config.endpoint,
-            # Ask for this app's own claims. Passing nothing here is what
-            # made the CLI fall back to every scope the deployment
-            # advertises. This is the weaker of the two scope inputs on
-            # purpose: a server challenge still wins, because the server
-            # naming what it needs is more specific than our declaration.
-            default_scope=worker_scope_request(),
-            client_name=_worker_client_name(channel),
-            client_metadata=_worker_client_metadata(config, channel),
+            # This explicit request chooses the descriptor profile. A generic
+            # protected-resource challenge cannot widen a worker into the
+            # coordinator operation set.
+            scope=worker_scope_request(coordinator=coordinator),
+            client_name=_worker_client_name(
+                channel,
+                coordinator=coordinator,
+            ),
+            client_metadata=_worker_client_metadata(
+                config,
+                channel,
+                coordinator=coordinator,
+            ),
             timeout_seconds=max(30.0, min(float(wait_seconds), 1800.0)),
             **options,
         )
@@ -604,8 +611,10 @@ def authorization_observation(error: BaseException) -> dict[str, Any]:
 
 
 __all__ = [
+    "COORDINATOR_AUTHORIZATION_PROFILE_SCOPE",
     "PROFILE_METADATA_ABSENT",
     "PROFILE_METADATA_PRESENT",
+    "WORKER_AUTHORIZATION_PROFILE_SCOPE",
     "authorization_command",
     "authorization_observation",
     "authorize_worker_profile",

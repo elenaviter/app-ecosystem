@@ -73,6 +73,17 @@ class OAuthDelegatedToolConfig:
 
 
 @dataclass(frozen=True)
+class OAuthDelegatedAuthorizationProfileConfig:
+    """One descriptor-owned operation proposal selected by an OAuth scope."""
+
+    name: str
+    scope: str
+    label: str
+    description: str = ""
+    operations: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class OAuthDelegatedAccountRequirement:
     """One provider account a door claim is backed by, for the consent page.
 
@@ -109,6 +120,7 @@ class OAuthDelegatedResourceConfig:
     admin_only: bool = False
     resource_selection: bool = False
     selector_type: str = ""
+    authorization_profiles: tuple[OAuthDelegatedAuthorizationProfileConfig, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -229,7 +241,9 @@ class OAuthDelegatedClientConfig:
                 return fallback
         return None
 
-    def supported_scopes(self, resource: str | None = None) -> tuple[str, ...]:
+    def resource_grants(self, resource: str | None = None) -> tuple[str, ...]:
+        """Real grants a Card may hold for one resource."""
+
         resource_cfg = self.resource_config(resource)
         if resource_cfg:
             grants = resource_cfg.grants or _ordered_union(
@@ -238,6 +252,99 @@ class OAuthDelegatedClientConfig:
             if grants:
                 return grants
         return tuple(item.grant for item in self.capabilities)
+
+    def supported_scopes(self, resource: str | None = None) -> tuple[str, ...]:
+        """OAuth request scopes, including request-only profile selectors."""
+
+        resource_cfg = self.resource_config(resource)
+        grants = self.resource_grants(resource)
+        if resource_cfg is None:
+            if str(resource or "").strip():
+                return grants
+            return _ordered_union(
+                [
+                    *grants,
+                    *(
+                        profile.scope
+                        for item in self.resources
+                        for profile in item.authorization_profiles
+                    ),
+                ]
+            )
+        return _ordered_union(
+            [
+                *grants,
+                *(profile.scope for profile in resource_cfg.authorization_profiles),
+            ]
+        )
+
+    def authorization_profile_scopes(self) -> frozenset[str]:
+        return frozenset(
+            profile.scope
+            for resource in self.resources
+            for profile in resource.authorization_profiles
+        )
+
+    def authorization_profile(
+        self,
+        scope: str,
+    ) -> OAuthDelegatedAuthorizationProfileConfig | None:
+        requested = str(scope or "").strip()
+        for resource in self.resources:
+            for profile in resource.authorization_profiles:
+                if profile.scope == requested:
+                    return profile
+        return None
+
+    def authorization_profiles_for_scopes(
+        self,
+        scopes: tuple[str, ...] | list[str],
+        *,
+        resource: str | None,
+    ) -> tuple[OAuthDelegatedAuthorizationProfileConfig, ...]:
+        resource_cfg = self.resource_config(resource)
+        if resource_cfg is None:
+            return ()
+        requested = {str(scope).strip() for scope in scopes if str(scope).strip()}
+        return tuple(
+            profile
+            for profile in resource_cfg.authorization_profiles
+            if profile.scope in requested
+        )
+
+    def authorization_profile_requested(
+        self,
+        scopes: tuple[str, ...] | list[str],
+    ) -> bool:
+        requested = {str(scope).strip() for scope in scopes if str(scope).strip()}
+        return bool(requested & self.authorization_profile_scopes())
+
+    def authorization_profile_tools(
+        self,
+        scopes: tuple[str, ...] | list[str],
+        *,
+        resource: str | None,
+    ) -> tuple[OAuthDelegatedToolConfig, ...] | None:
+        """Resolve a requested profile, or ``None`` for a grant-only request.
+
+        An empty tuple means a profile scope was requested but does not belong
+        to this resource. That distinction keeps a whole-card profile from
+        proposing operations on unrelated catalog resources.
+        """
+
+        if not self.authorization_profile_requested(scopes):
+            return None
+        resource_cfg = self.resource_config(resource)
+        profiles = self.authorization_profiles_for_scopes(scopes, resource=resource)
+        if resource_cfg is None or not profiles:
+            return ()
+        selected: set[str] = set()
+        for profile in profiles:
+            if "*" in profile.operations:
+                selected.update(tool.name for tool in resource_cfg.tools)
+            else:
+                selected.update(profile.operations)
+        return tuple(tool for tool in resource_cfg.tools if tool.name in selected)
 
     def tools_for_resource(self, resource: str | None = None) -> tuple[OAuthDelegatedToolConfig, ...]:
         resource_cfg = self.resource_config(resource)
@@ -263,6 +370,9 @@ class OAuthDelegatedClientConfig:
         *,
         resource: str | None = None,
     ) -> tuple[OAuthDelegatedToolConfig, ...]:
+        profiled = self.authorization_profile_tools(scopes, resource=resource)
+        if profiled is not None:
+            return profiled
         allowed_grants = set(str(scope) for scope in (scopes or ()) if str(scope).strip())
         seen: dict[str, OAuthDelegatedToolConfig] = {}
         for tool in self.tools_for_resource(resource):
@@ -427,6 +537,39 @@ def _parse_account_requirements(raw: Any) -> tuple[OAuthDelegatedAccountRequirem
     return tuple(out)
 
 
+def _parse_authorization_profiles(
+    raw: Any,
+) -> tuple[OAuthDelegatedAuthorizationProfileConfig, ...]:
+    if isinstance(raw, Mapping):
+        rows = [
+            {"name": name, **(value if isinstance(value, Mapping) else {})}
+            for name, value in raw.items()
+        ]
+    elif isinstance(raw, (list, tuple)):
+        rows = list(raw)
+    else:
+        rows = []
+    out: list[OAuthDelegatedAuthorizationProfileConfig] = []
+    for item in rows:
+        if not isinstance(item, Mapping):
+            continue
+        name = _coerce_str(item.get("name") or item.get("id"))
+        scope = _coerce_str(item.get("scope") or item.get("grant"))
+        if not name or not scope:
+            continue
+        operations = _coerce_string_tuple(item.get("operations"))
+        out.append(
+            OAuthDelegatedAuthorizationProfileConfig(
+                name=name,
+                scope=scope,
+                label=_coerce_str(item.get("label")) or name,
+                description=_coerce_str(item.get("description")) or "",
+                operations=operations,
+            )
+        )
+    return tuple(out)
+
+
 def _nested_named_service_grants(raw: Any) -> tuple[str, ...]:
     grants: list[str] = []
     catalog = NamedServiceBoundaryCatalog(raw if isinstance(raw, Mapping) else {})
@@ -505,6 +648,10 @@ def _parse_resources(raw: Any) -> tuple[OAuthDelegatedResourceConfig, ...]:
                     item.get("selector_type") or item.get("selectorType")
                 )
                 or "",
+                authorization_profiles=_parse_authorization_profiles(
+                    item.get("authorization_profiles")
+                    or item.get("authorizationProfiles")
+                ),
             )
         )
     return tuple(out)
@@ -677,6 +824,7 @@ __all__ = [
     "DEFAULT_DCR_REDIRECT_URIS",
     "DEFAULT_PUBLIC_CLIENT_GRANT_TYPES",
     "OAuthDelegatedAccountRequirement",
+    "OAuthDelegatedAuthorizationProfileConfig",
     "OAuthDelegatedCapabilityConfig",
     "OAuthDelegatedClientConfig",
     "OAuthDelegatedClientMetadataDocumentsConfig",
