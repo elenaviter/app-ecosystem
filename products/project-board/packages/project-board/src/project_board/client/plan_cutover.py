@@ -26,7 +26,7 @@ from .io import (
     read_json,
     utc_now,
 )
-from .outbox_layout import OUTBOX_TERMINAL_FOLDERS
+from .outbox_store import OutboxStore
 from .plan_storage import BucketedPlanStore, PLAN_STORAGE_BUCKETED
 
 
@@ -547,14 +547,10 @@ def _assignment_outcomes(
         str(row.get("assignment_ref") or ""): dict(row)
         for row in field.list_assignments(project_id)
     }
-    root = field.control / "outbox"
+    outbox = OutboxStore(field.control)
     candidates: list[dict[str, Any]] = []
-    with exclusive_lock(root / ".outbox.lock"):
-        for path in sorted(
-            path
-            for folder in OUTBOX_TERMINAL_FOLDERS
-            for path in (root / folder).glob("*.json")
-        ):
+    with exclusive_lock(outbox.lock):
+        for path in outbox.settled_paths(project_ref=project_ref, op="plan_cutover"):
             row = read_json(path)
             if (
                 row.get("kind") != "assignment.report"
@@ -774,15 +770,15 @@ def prepare_local_plan_cutover(field: Any, project_id: str) -> PreparedLocalPlan
 def _cutover_outbox_state(
     field: Any, project_ref: str
 ) -> tuple[dict[str, dict[str, int]], list[str]]:
-    root = field.control / "outbox"
+    outbox = OutboxStore(field.control)
     counts = {
         "plan.nodes.publish": {"pending_count": 0, "leased_count": 0},
         "assignment.report": {"pending_count": 0, "leased_count": 0},
     }
     busy: list[str] = []
-    with exclusive_lock(root / ".outbox.lock"):
+    with exclusive_lock(outbox.lock):
         for state in ("pending", "leased"):
-            for path in sorted((root / state).glob("*.json")):
+            for path in outbox.in_flight(state, project_ref=project_ref):
                 row = read_json(path)
                 kind = str(row.get("kind") or "")
                 if kind not in counts or row.get("project_ref") != project_ref:
@@ -1011,13 +1007,13 @@ def _cutover_receipt_path(field: Any, project_id: str, cutover_id: str) -> Path:
 def _redact_plan_outbox_unlocked(
     field: Any, *, project_ref: str, cutover_receipt: str
 ) -> int:
-    root = field.control / "outbox"
+    outbox = OutboxStore(field.control)
     now = utc_now()
     redacted = 0
-    with exclusive_lock(root / ".outbox.lock"):
+    with exclusive_lock(outbox.lock):
         busy: list[str] = []
         for state in ("pending", "leased"):
-            for path in sorted((root / state).glob("*.json")):
+            for path in outbox.in_flight(state, project_ref=project_ref):
                 row = read_json(path)
                 if (
                     row.get("kind") == "plan.nodes.publish"
@@ -1031,11 +1027,7 @@ def _redact_plan_outbox_unlocked(
                 status=409,
                 details={"outbox_ids": busy},
             )
-        for path in sorted(
-            path
-            for folder in OUTBOX_TERMINAL_FOLDERS
-            for path in (root / folder).glob("*.json")
-        ):
+        for path in list(outbox.settled_paths(project_ref=project_ref, op="plan_cutover")):
             row = read_json(path)
             if (
                 row.get("kind") != "plan.nodes.publish"

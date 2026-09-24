@@ -188,3 +188,14 @@ def test_a_generated_event_id_carries_its_time_and_what_happened(field, monkeypa
     # Found from the id alone: no day index is read.
     (path.parent.parent / local_store.IDS_FILE).unlink()
     assert field._events("project-one").find(event_id, agents=["codex-api"], within_days=30) == path
+
+
+def test_an_unreadable_flat_event_is_kept_aside_not_deleted(field):
+    legacy = field._project_dir("project-one") / "events"
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / "event_broken.json").write_text("{not json")
+
+    maintenance.migrate_flat_events(field, "project-one")
+
+    assert not (legacy / "event_broken.json").exists()
+    assert (legacy / ".legacy-unreadable" / "events" / "event_broken.json").read_text() == "{not json"
