@@ -3045,7 +3045,7 @@ class AutomationAccessService:
             cfg = cfg_by_resource.get(resource_value)
             if cfg is None:
                 continue
-            allowed_for_resource = set(catalog_config.supported_scopes(resource_value))
+            allowed_for_resource = set(catalog_config.resource_grants(resource_value))
             disallowed = [
                 grant
                 for grant in grants_for_resource
@@ -3247,7 +3247,7 @@ class AutomationAccessService:
                         grants=_effective_named_service_grants(
                             selected_resource_grants.get(resource_value, []),
                             account_scope=selected_account_scope,
-                            required=catalog_config.supported_scopes(resource_value),
+                            required=catalog_config.resource_grants(resource_value),
                         ),
                     )
                 except ValueError as exc:
@@ -3368,7 +3368,7 @@ class AutomationAccessService:
                 resource_grants=selected_resource_grants,
                 resource_operations=selected_resource_operations,
                 delegable_roles=inventory.grant_names(),
-                allowed_roles=catalog_config.supported_scopes(
+                allowed_roles=catalog_config.resource_grants(
                     APPLICATION_API_RESOURCE
                 ),
             )
@@ -3751,7 +3751,7 @@ class AutomationAccessService:
                 resource_grants=selected_resource_grants,
                 resource_operations=selected_resource_operations,
                 delegable_roles=inventory.grant_names(),
-                allowed_roles=catalog_config.supported_scopes(
+                allowed_roles=catalog_config.resource_grants(
                     APPLICATION_API_RESOURCE
                 ),
             )
@@ -3821,7 +3821,7 @@ class AutomationAccessService:
             cfg = cfg_by_resource.get(resource_value)
             if cfg is None:
                 continue
-            allowed_for_resource = set(catalog_config.supported_scopes(resource_value))
+            allowed_for_resource = set(catalog_config.resource_grants(resource_value))
             disallowed = [
                 grant
                 for grant in grants_for_resource
@@ -3882,7 +3882,7 @@ class AutomationAccessService:
                     grants=_effective_named_service_grants(
                         selected_resource_grants.get(resource_value, []),
                         account_scope=selected_account_scope,
-                        required=catalog_config.supported_scopes(resource_value),
+                        required=catalog_config.resource_grants(resource_value),
                     ),
                 )
             except ValueError as exc:
@@ -6621,6 +6621,62 @@ class AutomationAccessService:
             selected,
         )
         requested = _as_list(requested_grants)
+        if existing is None and catalog_config.authorization_profile_requested(requested):
+            submitted_operations = normalize_resource_operations(
+                resource_operations
+            )
+            submitted_operations, _rewritten_operations = (
+                resolve_declared_resource_keys(
+                    catalog_config,
+                    submitted_operations,
+                )
+            )
+            for resource in sorted(set(selected) | set(submitted_operations)):
+                allowed_tools = catalog_config.authorization_profile_tools(
+                    requested,
+                    resource=resource,
+                )
+                if not allowed_tools:
+                    return {
+                        "ok": False,
+                        "error": "oauth_authorization_profile_resource_exceeded",
+                        "status": 400,
+                        "resource": resource,
+                    }
+                allowed_operations = {tool.name for tool in allowed_tools}
+                outside_operations = sorted(
+                    set(submitted_operations.get(resource, ()))
+                    - allowed_operations
+                )
+                if outside_operations:
+                    return {
+                        "ok": False,
+                        "error": "oauth_authorization_profile_operations_exceeded",
+                        "status": 400,
+                        "resource": resource,
+                        "operations": outside_operations,
+                    }
+                resource_config = catalog_config.resource_config(resource)
+                resource_default_grants = (
+                    resource_config.grants if resource_config is not None else ()
+                )
+                allowed_grants = {
+                    grant
+                    for tool in allowed_tools
+                    for grant in (tool.grants or resource_default_grants)
+                }
+                outside_grants = sorted(
+                    set(selected.get(resource, ())) - allowed_grants
+                )
+                if outside_grants:
+                    return {
+                        "ok": False,
+                        "error": "oauth_authorization_profile_grants_exceeded",
+                        "status": 400,
+                        "resource": resource,
+                        "grants": outside_grants,
+                    }
+            resource_operations = submitted_operations
         if entry:
             allowed = self._oauth_allowed_resources(
                 entry_resource=entry,

@@ -19,6 +19,7 @@ import pytest
 from connection_hub.delegated_credentials.automation_access import (
     RESIDENT_MIGRATION_CONFLICT,
     ACCESS_SOURCE_AGENT,
+    ACCESS_SOURCE_OAUTH,
     AutomationAccessService,
     agent_grant_access_id,
 )
@@ -27,7 +28,9 @@ from connection_hub.delegated_credentials.application_operation_policy import (
 )
 from connection_hub.delegated_credentials.cards.identity import (
     CARD_KIND_AGENT,
+    CARD_KIND_CONNECTOR,
     ResidentCallerProfile,
+    stable_connector_access_id,
     stable_resident_access_id,
 )
 from connection_hub.delegated_credentials.cards.model import (
@@ -185,6 +188,24 @@ def _connections_with_named_services():
             },
         }
     )
+    return connections
+
+
+def _connections_with_authorization_profiles():
+    connections = _connections()
+    memories = connections["delegated_credentials"]["oauth"]["resources"][0]
+    memories["authorization_profiles"] = {
+        "worker": {
+            "scope": "work:profile:worker",
+            "label": "Worker",
+            "operations": ["search"],
+        },
+        "coordinator": {
+            "scope": "work:profile:coordinator",
+            "label": "Coordinator",
+            "operations": ["*"],
+        },
+    }
     return connections
 
 
@@ -1187,3 +1208,155 @@ async def test_oauth_consent_editor_refuses_a_first_connector_without_an_entry_r
     )
 
     assert resolved == {"ok": False, "error": "oauth_consent_identity_incomplete"}
+
+
+@pytest.mark.asyncio
+async def test_oauth_profile_marker_resolves_to_real_card_authority(tmp_path):
+    h = _Harness(tmp_path, connections=_connections_with_authorization_profiles())
+
+    resolved = await h.service.resolve_oauth_consent_authority(
+        USER,
+        client_id="worker-client",
+        entry_resource=MEMORIES,
+        requested_grants=["work:profile:worker"],
+        client_metadata={},
+        resource_grants={MEMORIES: ["memories:read"]},
+        resource_operations={MEMORIES: ["search"]},
+        named_service_operations={},
+        account_scope={},
+        expected_card_revision=0,
+        expected_catalog_version=h.catalog.active.version,
+    )
+
+    assert resolved["ok"], resolved
+    assert resolved["resource_grants"] == {MEMORIES: ["memories:read"]}
+    assert resolved["resource_operations"] == {MEMORIES: ["search"]}
+    assert "work:profile:worker" not in resolved["resource_grants"][MEMORIES]
+
+
+@pytest.mark.asyncio
+async def test_oauth_worker_profile_cannot_submit_a_coordinator_operation(tmp_path):
+    h = _Harness(tmp_path, connections=_connections_with_authorization_profiles())
+
+    resolved = await h.service.resolve_oauth_consent_authority(
+        USER,
+        client_id="worker-client",
+        entry_resource=MEMORIES,
+        requested_grants=["work:profile:worker"],
+        client_metadata={},
+        resource_grants={MEMORIES: ["memories:write"]},
+        resource_operations={MEMORIES: ["write"]},
+        named_service_operations={},
+        account_scope={},
+        expected_card_revision=0,
+        expected_catalog_version=h.catalog.active.version,
+    )
+
+    assert resolved == {
+        "ok": False,
+        "error": "oauth_authorization_profile_operations_exceeded",
+        "status": 400,
+        "resource": MEMORIES,
+        "operations": ["write"],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("resource_grants", "resource_operations", "expected"),
+    [
+        (
+            {TASKS: ["tasks:use"]},
+            {TASKS: ["search"]},
+            {
+                "ok": False,
+                "error": "oauth_authorization_profile_resource_exceeded",
+                "status": 400,
+                "resource": TASKS,
+            },
+        ),
+        (
+            {MEMORIES: ["memories:write"]},
+            {MEMORIES: ["search"]},
+            {
+                "ok": False,
+                "error": "oauth_authorization_profile_grants_exceeded",
+                "status": 400,
+                "resource": MEMORIES,
+                "grants": ["memories:write"],
+            },
+        ),
+    ],
+)
+async def test_oauth_worker_profile_cannot_add_resources_or_grants(
+    tmp_path,
+    resource_grants,
+    resource_operations,
+    expected,
+):
+    h = _Harness(tmp_path, connections=_connections_with_authorization_profiles())
+
+    resolved = await h.service.resolve_oauth_consent_authority(
+        USER,
+        client_id="worker-client",
+        entry_resource=MEMORIES,
+        requested_grants=["work:profile:worker"],
+        client_metadata={},
+        resource_grants=resource_grants,
+        resource_operations=resource_operations,
+        named_service_operations={},
+        account_scope={},
+        expected_card_revision=0,
+        expected_catalog_version=h.catalog.active.version,
+    )
+
+    assert resolved == expected
+
+
+@pytest.mark.asyncio
+async def test_oauth_profile_does_not_reapply_to_an_existing_card(tmp_path):
+    h = _Harness(tmp_path, connections=_connections_with_authorization_profiles())
+    client_id = "worker-client"
+    access_id = stable_connector_access_id(GRANTOR, client_id, MEMORIES)
+    h.persistence.seed(
+        CardAuthority(
+            access_id=access_id,
+            client_id=client_id,
+            grantor_subject=GRANTOR,
+            delegate_subject=f"integration:{client_id}:{GRANTOR}",
+            source=ACCESS_SOURCE_OAUTH,
+            card_kind=CARD_KIND_CONNECTOR,
+            card_revision=1,
+            catalog_version=h.catalog.active.version,
+            resource_grants={
+                MEMORIES: ("memories:read", "memories:write"),
+            },
+            resource_operations={MEMORIES: ("search", "write")},
+            named_service_operations=NamedServiceSelection.none(),
+            entry_resource=MEMORIES,
+            created_at=int(time.time()) - 60,
+            expires_at=int(time.time()) + 3600,
+        )
+    )
+
+    resolved = await h.service.resolve_oauth_consent_authority(
+        USER,
+        client_id=client_id,
+        entry_resource=MEMORIES,
+        requested_grants=["work:profile:worker"],
+        client_metadata={},
+        resource_grants={
+            MEMORIES: ["memories:read", "memories:write"],
+        },
+        resource_operations={MEMORIES: ["search", "write"]},
+        named_service_operations={},
+        account_scope={},
+        expected_card_revision=1,
+        expected_catalog_version=h.catalog.active.version,
+    )
+
+    assert resolved["ok"], resolved
+    assert resolved["access_id"] == access_id
+    assert resolved["resource_operations"] == {
+        MEMORIES: ["search", "write"],
+    }

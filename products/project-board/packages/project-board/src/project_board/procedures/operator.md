@@ -228,11 +228,17 @@ For an existing OAuth profile whose token is missing, refused, or no longer
 refreshable, the same command runs browser reconnect with the profile's
 recorded OAuth client. It accepts only the recorded Card id and reports
 `Reconnected Card <id> (grants kept)`. The operator can deliberately revoke
-that Card and register a new one with:
+that Card and register a new standard worker Card with:
 
 ```bash
 pb worker authorize <profile> --replace-card
 ```
+
+Use `--coordinator` with a first or replacement authorization to propose the
+whole Problem Board operation catalog. It does not change an existing Card
+during an ordinary reconnect. The descriptor-owned profile and narrowing
+rules are defined in [Delegated Access
+Cards](repo:app-ecosystem/docs/connection-hub/package/delegated-cards.md#descriptor-owned-authorization-profiles).
 
 That destructive path reports both ids as `Replaced Card <old> with <new>`.
 An outage or transient transport failure does not select either browser path.

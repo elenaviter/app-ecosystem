@@ -78,3 +78,75 @@ def test_resource_can_enable_owner_resource_selection_for_oauth_consent():
     assert resource is not None
     assert resource.resource_selection is True
     assert resource.selector_type == "kdcube_secret"
+
+
+def test_resource_authorization_profiles_expand_against_its_operation_catalog():
+    resource_url = "https://runtime.example.test/mcp/problem-board"
+    config = oauth_delegated_config_from_connections(
+        {
+            "delegated_credentials": {
+                "oauth": {
+                    "enabled": True,
+                    "capabilities": [
+                        {"grant": "work:relay", "label": "Relay"},
+                        {"grant": "work:coordinate", "label": "Coordinate"},
+                    ],
+                    "resources": [
+                        {
+                            "resource": resource_url,
+                            "tools": {
+                                "worker.publish": {"grants": ["work:relay"]},
+                                "assignment.assign": {"grants": ["work:coordinate"]},
+                            },
+                            "authorization_profiles": {
+                                "worker": {
+                                    "scope": "work:profile:worker",
+                                    "label": "Problem Board worker",
+                                    "operations": ["worker.publish"],
+                                },
+                                "coordinator": {
+                                    "scope": "work:profile:coordinator",
+                                    "label": "Problem Board coordinator",
+                                    "operations": ["*"],
+                                },
+                            },
+                        }
+                    ],
+                }
+            }
+        }
+    )
+
+    assert config.supported_scopes(resource_url) == (
+        "work:relay",
+        "work:coordinate",
+        "work:profile:worker",
+        "work:profile:coordinator",
+    )
+    assert config.supported_scopes() == (
+        "work:relay",
+        "work:coordinate",
+        "work:profile:worker",
+        "work:profile:coordinator",
+    )
+    assert config.resource_grants(resource_url) == (
+        "work:relay",
+        "work:coordinate",
+    )
+    assert config.authorization_profile("work:profile:worker").label == (
+        "Problem Board worker"
+    )
+    assert [
+        tool.name
+        for tool in config.tools_for_scopes(
+            ["work:profile:worker"],
+            resource=resource_url,
+        )
+    ] == ["worker.publish"]
+    assert [
+        tool.name
+        for tool in config.tools_for_scopes(
+            ["work:profile:coordinator"],
+            resource=resource_url,
+        )
+    ] == ["worker.publish", "assignment.assign"]

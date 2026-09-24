@@ -651,6 +651,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Revoke the recorded Card and authorize a new one.",
     )
+    command.add_argument(
+        "--coordinator",
+        action="store_true",
+        help=(
+            "Request the descriptor's coordinator profile for a first or "
+            "replacement Card."
+        ),
+    )
 
     command = worker_commands.add_parser(
         "receive", help="Receive and lease this worker's available direct and project mail."
@@ -3357,6 +3365,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 callback_port=args.callback_port,
                 device=args.device,
                 replace_card=args.replace_card,
+                coordinator=args.coordinator,
             )
         )
     if args.worker_command == "list":

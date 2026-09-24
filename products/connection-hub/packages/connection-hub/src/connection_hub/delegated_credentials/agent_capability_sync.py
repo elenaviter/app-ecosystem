@@ -589,7 +589,7 @@ def _descriptor_standard_maps(
         selected_grants = set(_strings(raw.get("grants")))
         for operation in selected_operations:
             selected_grants.update(offered_tools[operation].grants or ())
-        allowed_grants = set(catalog_config.supported_scopes(resource_key))
+        allowed_grants = set(catalog_config.resource_grants(resource_key))
         if not selected_grants.issubset(allowed_grants):
             raise ValueError(f"delegated resource grants invalid for {resource_key!r}")
         if selected_grants:
@@ -778,7 +778,7 @@ async def resolve_agent_descriptor_standard_authority(
                     APPLICATION_API_RESOURCE,
                     (),
                 ),
-                allowed_roles=catalog_config.supported_scopes(APPLICATION_API_RESOURCE),
+                allowed_roles=catalog_config.resource_grants(APPLICATION_API_RESOURCE),
             )
     except ApplicationOperationPolicyError as exc:
         return ResolvedCardAuthority(error=_application_policy_refusal(exc))
