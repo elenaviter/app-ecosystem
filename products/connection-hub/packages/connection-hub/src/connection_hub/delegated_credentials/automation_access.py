@@ -5629,6 +5629,7 @@ class AutomationAccessService:
         label: str = "",
         manage_url: str = "",
         migration: bool = False,
+        project_creation: bool = False,
     ) -> dict[str, Any]:
         """Create the project-owned Card that narrows one person's access."""
 
@@ -5652,6 +5653,7 @@ class AutomationAccessService:
             label=label,
             manage_url=manage_url,
             migration=migration,
+            project_creation=project_creation,
         )
 
     async def project_person_control_update(

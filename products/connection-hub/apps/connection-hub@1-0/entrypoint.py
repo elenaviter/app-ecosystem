@@ -4160,6 +4160,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             label=str(payload.get("label") or "").strip(),
             manage_url=str(payload.get("manage_url") or "").strip(),
             migration=payload.get("migration") is True,
+            project_creation=payload.get("project_creation") is True,
         )
 
     @api(

@@ -1438,13 +1438,20 @@ the canonical membership record.
 
 Creating a new per-person Control Card also creates a stable project identity
 edge and a durable, credential-free My Card in the person's Card partition.
-The My Card starts with an empty positive selection. The edge marker records
-stable project, person, Control Card, and My Card coordinates; authorization
-resolves both current Card revisions from durable storage instead of trusting
-the marker's initial revisions. Repeating create repairs a missing companion
-My Card without creating another identity. Deployments that already have
-per-person Control Cards migrate their prior positive selections explicitly;
-new-card initialization uses its declared empty selection.
+The edge marker records stable project, person, Control Card, and My Card
+coordinates; authorization resolves both current Card revisions from durable
+storage instead of trusting the marker's initial revisions. Repeating create
+repairs a missing companion My Card without creating another identity.
+
+An ordinary new person starts with an empty positive selection. Two explicit
+project lifecycle origins may seed that untouched My Card once: `migration`
+preserves an existing person's prior selection during cutover, and
+`project_creation` establishes the new project's creator with the project's
+full administrator selection. The create request may declare one origin. It is
+recorded immutably on the Control Card, and the seed marker records which origin
+was consumed. The seed reconciles against the active catalog and intersects
+every selection dimension with the current Control Card before committing.
+Changing either request after the first seed is a conflict.
 
 Revocation ends the edge by revoking the person's My Card before revoking the
 project-held Control Card. A retry completes either partially applied step;

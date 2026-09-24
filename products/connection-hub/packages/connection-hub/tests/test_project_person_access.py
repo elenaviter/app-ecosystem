@@ -41,6 +41,8 @@ from connection_hub.delegated_credentials.project_authorization import (
 from connection_hub.delegated_credentials.project_person_access import (
     PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE,
     PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA,
+    PROJECT_PERSON_CONTROL_PROJECT_CREATION_PROVENANCE,
+    PROJECT_PERSON_CONTROL_PROJECT_CREATION_SCHEMA,
     PROJECT_PERSON_MY_CARD_SEED_PROVENANCE,
     ProjectPersonControlLifecycle,
 )
@@ -256,6 +258,7 @@ async def _create(
     actor: str = ADMIN,
     request_id: str = "request-create",
     migration: bool = False,
+    project_creation: bool = False,
 ):
     return await lifecycle.create(
         actor_subject=actor,
@@ -264,6 +267,7 @@ async def _create(
         request_id=request_id,
         label="Quickstart member",
         migration=migration,
+        project_creation=project_creation,
     )
 
 
@@ -319,6 +323,7 @@ async def test_create_is_project_held_target_named_and_audited() -> None:
     assert stored.grantor_subject != TARGET
     assert stored.properties[PROJECT_PERSON_CONTROL_PROPERTY]["target_subject"] == TARGET
     assert PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE not in stored.provenance
+    assert PROJECT_PERSON_CONTROL_PROJECT_CREATION_PROVENANCE not in stored.provenance
     assert my_card_state == CARD_STATE_ACTIVE
     assert my_card.grantor_subject == TARGET
     assert my_card.delegate_subject == TARGET
@@ -576,11 +581,60 @@ async def test_seed_my_card_is_control_capped_one_shot_and_exactly_replayable() 
     assert stored.control_card == before.control_card
     assert marker["control_id"] == control.access_id
     assert marker["control_revision"] == control.card_revision
+    assert marker["origin"] == "migration"
     assert control_marker["schema"] == PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA
     assert control_marker["actor_subject"] == ADMIN
     assert control_marker["request_id"] == "request-create"
     assert port.requests[-3].operation == PROJECT_PERSON_MY_CARD_SEED
     assert len(host.update_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_project_creator_seed_uses_distinct_immutable_origin() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle, project_creation=True)
+    control = _select_control(host)
+
+    result = await lifecycle.seed_my_card(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-project-creator-seed",
+        resource_grants={RESOURCE: [GRANT]},
+        resource_operations={RESOURCE: [OPERATION]},
+    )
+
+    origin = control.provenance[PROJECT_PERSON_CONTROL_PROJECT_CREATION_PROVENANCE]
+    assert result["ok"] is True
+    assert result["seeded"] is True
+    assert result["seed"]["origin"] == "project_creation"
+    assert origin == {
+        "schema": PROJECT_PERSON_CONTROL_PROJECT_CREATION_SCHEMA,
+        "actor_subject": ADMIN,
+        "request_id": "request-create",
+        "created_at": origin["created_at"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_control_create_refuses_two_seed_origins_before_authorization() -> None:
+    host = _Host()
+    port = _Port()
+
+    result = await _create(
+        _lifecycle(host, port),
+        migration=True,
+        project_creation=True,
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "project_person_control_seed_origin_conflict",
+        "status": 400,
+    }
+    assert port.requests == []
+    assert host.records == {}
 
 
 @pytest.mark.asyncio

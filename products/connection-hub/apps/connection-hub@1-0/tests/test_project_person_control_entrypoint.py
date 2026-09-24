@@ -164,7 +164,11 @@ async def test_operations_use_authenticated_actor_and_host_request_id(entrypoint
     results.append(
         await entrypoint.module.ConnectionHubEntrypoint.project_person_control_create(
             entrypoint.instance,
-            data={**forged, "label": "Quickstart member", "migration": True},
+            data={
+                **forged,
+                "label": "Quickstart member",
+                "project_creation": True,
+            },
             request=request,
         )
     )
@@ -238,7 +242,8 @@ async def test_operations_use_authenticated_actor_and_host_request_id(entrypoint
             assert call["target_subject"] == "platform-user-2"
             assert call["request_id"] == "host-request-7"
             if operation == "create":
-                assert call["migration"] is True
+                assert call["migration"] is False
+                assert call["project_creation"] is True
             if operation == "seed":
                 assert call["resource_grants"] == {
                     "https://board.example.test/mcp": ["work:review"]
