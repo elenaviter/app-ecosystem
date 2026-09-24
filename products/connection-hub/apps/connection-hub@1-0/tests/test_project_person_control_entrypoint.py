@@ -15,12 +15,17 @@ from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationRequest,
 )
 
+from kdcube_ai_app.apps.chat.proc.rest.integrations import integrations
+from kdcube_ai_app.apps.chat.sdk.infra import (
+    bundle_operations as bundle_operation_runtime,
+)
+from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
+    BundleOperationCall,
+    call_bundle_operation,
+    make_local_bundle_operation_caller,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import (
     load_dynamic_module_for_path,
-)
-from kdcube_ai_app.apps.chat.proc.rest.integrations import integrations
-from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
-    call_bundle_operation,
 )
 from kdcube_ai_app.infra.plugin.bundle_loader import api
 
@@ -51,9 +56,17 @@ class _Service:
         self.calls.append(("revoke", {"user": user, **kwargs}))
         return {"ok": True}
 
+    async def project_person_my_card_seed(self, user, **kwargs):
+        self.calls.append(("seed", {"user": user, **kwargs}))
+        return {"ok": True, "seeded": True}
+
     async def project_operation_authorize(self, user, **kwargs):
         self.calls.append(("authorize", {"user": user, **kwargs}))
-        return {"allowed": True, "reason": "project_operation_allowed"}
+        return {
+            "ok": True,
+            "allowed": True,
+            "reason": "project_operation_allowed",
+        }
 
 
 @pytest.fixture()
@@ -86,6 +99,7 @@ def test_operations_are_declared_as_csrf_protected_posts() -> None:
             "project_person_control_create",
             "project_person_control_update",
             "project_person_control_revoke",
+            "project_person_my_card_seed",
         )
     }
 
@@ -139,46 +153,76 @@ async def test_operations_use_authenticated_actor_and_host_request_id(entrypoint
         "request_id": "forged-request",
     }
 
-    await entrypoint.module.ConnectionHubEntrypoint.project_person_control_get(
-        entrypoint.instance,
-        data=forged,
-        request=request,
+    results = []
+    results.append(
+        await entrypoint.module.ConnectionHubEntrypoint.project_person_control_get(
+            entrypoint.instance,
+            data=forged,
+            request=request,
+        )
     )
-    await entrypoint.module.ConnectionHubEntrypoint.project_person_control_create(
-        entrypoint.instance,
-        data={**forged, "label": "Quickstart member"},
-        request=request,
+    results.append(
+        await entrypoint.module.ConnectionHubEntrypoint.project_person_control_create(
+            entrypoint.instance,
+            data={**forged, "label": "Quickstart member", "migration": True},
+            request=request,
+        )
     )
-    await entrypoint.module.ConnectionHubEntrypoint.project_person_control_update(
-        entrypoint.instance,
-        data={
-            **forged,
-            "label": "Narrowed member",
-            "expected_card_revision": 1,
-        },
-        request=request,
+    results.append(
+        await entrypoint.module.ConnectionHubEntrypoint.project_person_control_update(
+            entrypoint.instance,
+            data={
+                **forged,
+                "label": "Narrowed member",
+                "expected_card_revision": 1,
+            },
+            request=request,
+        )
     )
-    await entrypoint.module.ConnectionHubEntrypoint.project_person_control_revoke(
-        entrypoint.instance,
-        data=forged,
-        request=request,
+    results.append(
+        await entrypoint.module.ConnectionHubEntrypoint.project_person_control_revoke(
+            entrypoint.instance,
+            data=forged,
+            request=request,
+        )
     )
-    await entrypoint.module.ConnectionHubEntrypoint.project_operation_authorize(
-        entrypoint.instance,
-        data={
-            **forged,
-            "resource": "https://board.example.test/mcp",
-            "operation": "review.accept",
-            "required_grants": ["work:review"],
-        },
-        request=request,
+    results.append(
+        await entrypoint.module.ConnectionHubEntrypoint.project_person_my_card_seed(
+            entrypoint.instance,
+            data={
+                **forged,
+                "resource_grants": {
+                    "https://board.example.test/mcp": ["work:review"],
+                },
+                "resource_operations": {
+                    "https://board.example.test/mcp": ["review.accept"],
+                },
+                "named_service_operations": {},
+                "account_scope": {},
+            },
+            request=request,
+        )
+    )
+    results.append(
+        await entrypoint.module.ConnectionHubEntrypoint.project_operation_authorize(
+            entrypoint.instance,
+            data={
+                **forged,
+                "resource": "https://board.example.test/mcp",
+                "operation": "review.accept",
+                "required_grants": ["work:review"],
+            },
+            request=request,
+        )
     )
 
+    assert all(result.get("ok") is True for result in results)
     assert [call[0] for call in entrypoint.service.calls] == [
         "get",
         "create",
         "update",
         "revoke",
+        "seed",
         "authorize",
     ]
     for operation, call in entrypoint.service.calls:
@@ -193,6 +237,15 @@ async def test_operations_use_authenticated_actor_and_host_request_id(entrypoint
         else:
             assert call["target_subject"] == "platform-user-2"
             assert call["request_id"] == "host-request-7"
+            if operation == "create":
+                assert call["migration"] is True
+            if operation == "seed":
+                assert call["resource_grants"] == {
+                    "https://board.example.test/mcp": ["work:review"]
+                }
+                assert call["resource_operations"] == {
+                    "https://board.example.test/mcp": ["review.accept"]
+                }
 
 
 @pytest.mark.asyncio
@@ -554,6 +607,7 @@ async def test_project_authorization_runs_through_request_bound_bundle_operation
 
     decision = result["authorize_review"]["project_operation_authorize"]
     assert decision == {
+        "ok": True,
         "allowed": True,
         "reason": "project_operation_allowed",
     }
@@ -561,6 +615,54 @@ async def test_project_authorization_runs_through_request_bound_bundle_operation
     assert operation == "authorize"
     assert call["user"] == {"user_id": "platform-user-7"}
     assert "person_subject" not in call
+
+
+@pytest.mark.asyncio
+async def test_project_authorization_local_caller_returns_raw_evaluation_envelope(
+    entrypoint,
+    monkeypatch,
+) -> None:
+    request = SimpleNamespace(
+        state=SimpleNamespace(request_id="local-request-1"),
+        scope={},
+    )
+
+    async def _invoke_local(call, **_kwargs):
+        return await entrypoint.module.ConnectionHubEntrypoint.project_operation_authorize(
+            entrypoint.instance,
+            data=call.data,
+            request=request,
+        )
+
+    monkeypatch.setattr(
+        bundle_operation_runtime,
+        "invoke_local_bundle_operation",
+        _invoke_local,
+    )
+    caller = make_local_bundle_operation_caller(
+        redis=object(),
+        pg_pool=None,
+        comm_context=SimpleNamespace(),
+    )
+
+    result = await caller(
+        BundleOperationCall(
+            bundle_id="connection-hub@1-0",
+            operation="project_operation_authorize",
+            data={
+                "project_ref": "work:project:quickstart",
+                "resource": "https://board.example.test/mcp",
+                "operation": "review.accept",
+                "required_grants": ["work:review"],
+            },
+        )
+    )
+
+    assert result == {
+        "ok": True,
+        "allowed": True,
+        "reason": "project_operation_allowed",
+    }
 
 
 @pytest.mark.asyncio

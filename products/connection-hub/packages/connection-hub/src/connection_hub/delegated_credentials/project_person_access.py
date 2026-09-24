@@ -10,12 +10,15 @@ import dataclasses
 import time
 from typing import Any, Callable, Iterable, Mapping
 
+from connection_hub.agent_account_scope import normalize_account_scope
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
     CARD_STATE_REVOKED,
     CONTROL_COMPOSITION_AND,
     CardAuthority,
     CardRecordError,
+    NamedServiceSelection,
+    authority_is_credentialless,
 )
 from connection_hub.delegated_credentials.cards.resolver import CardUnavailable
 from connection_hub.delegated_credentials.cards.service import (
@@ -25,9 +28,14 @@ from connection_hub.delegated_credentials.cards.service import (
     replace_state,
 )
 from connection_hub.delegated_credentials.catalog.descriptors import (
+    canonical_digest,
     next_resource_acceptance,
 )
 from connection_hub.delegated_credentials.catalog.resolver import CatalogUnavailable
+from connection_hub.delegated_credentials.controls.effective import (
+    ControlCardMismatch,
+    intersect_card_authority_selection,
+)
 from connection_hub.delegated_credentials.controls.model import (
     ControlCardError,
     new_credentialless_card,
@@ -41,6 +49,7 @@ from connection_hub.delegated_credentials.controls.project_person import (
     bind_project_person_control,
 )
 from connection_hub.delegated_credentials.controls.snapshot import (
+    control_snapshot_is_exact,
     materialize_control_snapshot,
 )
 from connection_hub.delegated_credentials.project_authorization import (
@@ -48,6 +57,7 @@ from connection_hub.delegated_credentials.project_authorization import (
     PROJECT_PERSON_CONTROL_READ,
     PROJECT_PERSON_CONTROL_REVOKE,
     PROJECT_PERSON_CONTROL_UPDATE,
+    PROJECT_PERSON_MY_CARD_SEED,
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
     ProjectAuthorizationPort,
@@ -58,14 +68,63 @@ from connection_hub.delegated_credentials.project_identity_authorization import 
     ProjectOperationRequest,
 )
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
+    PROJECT_PERSON_MY_CARD_ISSUER_KIND,
     ProjectIdentityLifecycle,
     ProjectIdentityLifecycleError,
     ProjectIdentityLifecycleResult,
+    ProjectPersonCardIdentity,
+)
+from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource_grants,
+    normalize_resource_operations,
 )
 
 
 AuthorityFromRecord = Callable[[Any], CardAuthority]
 RecordFromAuthority = Callable[[CardAuthority], Any]
+
+PROJECT_PERSON_MY_CARD_SEED_PROVENANCE = "project_person_my_card_seed"
+PROJECT_PERSON_MY_CARD_SEED_SCHEMA = "connection_hub.project_person_my_card_seed.v1"
+PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE = "project_person_control_migration"
+PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA = (
+    "connection_hub.project_person_control_migration.v1"
+)
+
+
+def _seed_request(
+    *,
+    project_ref: str,
+    target_subject: str,
+    resource_grants: Mapping[str, Any],
+    resource_operations: Mapping[str, Any],
+    named_service_operations: Mapping[str, Any] | str,
+    account_scope: Mapping[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    normalized = {
+        "project_ref": str(project_ref or "").strip(),
+        "target_subject": str(target_subject or "").strip(),
+        "resource_grants": normalize_resource_grants(resource_grants),
+        "resource_operations": normalize_resource_operations(resource_operations),
+        "named_service_operations": NamedServiceSelection.from_stored(
+            named_service_operations,
+            present=True,
+        ).to_stored(),
+        "account_scope": normalize_account_scope(account_scope),
+    }
+    return canonical_digest(normalized), normalized
+
+
+def _my_card_untouched(authority: CardAuthority) -> bool:
+    return bool(
+        authority.card_revision == 1
+        and not authority.operations
+        and not authority.resource_grants
+        and not authority.resource_operations
+        and authority.named_service_operations.is_none
+        and not authority.named_services
+        and not authority.account_scope
+        and not authority.resource_acceptance
+    )
 
 
 def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
@@ -348,6 +407,7 @@ class ProjectPersonControlLifecycle:
         composition_mode: str = CONTROL_COMPOSITION_AND,
         label: str = "",
         manage_url: str = "",
+        migration: bool = False,
     ) -> dict[str, Any]:
         authorized = await self._authorize(
             actor_subject=actor_subject,
@@ -515,6 +575,23 @@ class ProjectPersonControlLifecycle:
                     audit=audit,
                 )
             )
+            if migration:
+                migration_marker = {
+                    "schema": PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA,
+                    "actor_subject": request.actor_subject,
+                    "request_id": request.request_id,
+                    "created_at": audit.occurred_at,
+                }
+                provenance = copy.deepcopy(dict(record.provenance or {}))
+                provenance[PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE] = (
+                    migration_marker
+                )
+                record = self._record_from_authority(
+                    dataclasses.replace(
+                        self._authority_from_record(record),
+                        provenance=provenance,
+                    )
+                )
             await self._host._persist_record(record, expected_revision=0)
             project_identity = await self._project_identities.ensure(record)
         except CatalogUnavailable as exc:
@@ -800,6 +877,246 @@ class ProjectPersonControlLifecycle:
             "audit": audit.to_dict(),
         }
 
+    async def seed_my_card(
+        self,
+        *,
+        actor_subject: str,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+        resource_grants: Mapping[str, Any],
+        resource_operations: Mapping[str, Any],
+        named_service_operations: Mapping[str, Any] | str | None = None,
+        account_scope: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Seed one untouched My Card during the project-person migration."""
+
+        authorized = await self._authorize(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            operation=PROJECT_PERSON_MY_CARD_SEED,
+            request_id=request_id,
+        )
+        if isinstance(authorized, dict):
+            return authorized
+        request, decision = authorized
+        try:
+            request_digest, normalized = _seed_request(
+                project_ref=project_ref,
+                target_subject=target_subject,
+                resource_grants=resource_grants,
+                resource_operations=resource_operations,
+                named_service_operations=named_service_operations or {},
+                account_scope=account_scope or {},
+            )
+        except (CardRecordError, ValueError) as exc:
+            return {
+                "ok": False,
+                "error": getattr(exc, "reason", "project_person_my_card_seed_invalid"),
+                "status": 400,
+            }
+        try:
+            resolution = await self._project_identities.resolve(
+                project_ref=project_ref,
+                person_subject=target_subject,
+            )
+        except (
+            CardUnavailable,
+            CardServingUnavailable,
+            CardConflict,
+            CardCommitFailed,
+            ProjectIdentityLifecycleError,
+        ) as exc:
+            return self._identity_failure(exc)
+
+        control = resolution.control_card.authority
+        my_card = resolution.my_card.authority
+        if resolution.edge is None or control is None or my_card is None:
+            return {
+                "ok": False,
+                "error": "project_identity_edge_missing",
+                "status": 409,
+            }
+        if control.state != CARD_STATE_ACTIVE:
+            return {
+                "ok": False,
+                "error": "project_person_control_not_active",
+                "status": 409,
+            }
+        if (
+            not authority_is_credentialless(control)
+            or control.composition_mode != CONTROL_COMPOSITION_AND
+            or not control_snapshot_is_exact(control)
+        ):
+            return {
+                "ok": False,
+                "error": "project_person_control_invalid",
+                "status": 409,
+            }
+        migration_marker = dict(control.provenance or {}).get(
+            PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE
+        )
+        if migration_marker is None:
+            return {
+                "ok": False,
+                "error": "project_person_my_card_seed_not_migrated",
+                "status": 409,
+            }
+        if (
+            not isinstance(migration_marker, Mapping)
+            or migration_marker.get("schema")
+            != PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA
+        ):
+            return {
+                "ok": False,
+                "error": "project_person_control_migration_marker_invalid",
+                "status": 409,
+            }
+        if my_card.state != CARD_STATE_ACTIVE:
+            return {
+                "ok": False,
+                "error": "project_identity_my_card_not_active",
+                "status": 409,
+            }
+        if my_card.issuer_kind != PROJECT_PERSON_MY_CARD_ISSUER_KIND:
+            return {
+                "ok": False,
+                "error": "project_identity_my_card_issuer_mismatch",
+                "status": 409,
+            }
+
+        marker = dict(my_card.provenance or {}).get(
+            PROJECT_PERSON_MY_CARD_SEED_PROVENANCE
+        )
+        if marker is not None:
+            if (
+                not isinstance(marker, Mapping)
+                or marker.get("schema") != PROJECT_PERSON_MY_CARD_SEED_SCHEMA
+            ):
+                return {
+                    "ok": False,
+                    "error": "project_person_my_card_seed_marker_invalid",
+                    "status": 409,
+                }
+            if marker.get("request_digest") != request_digest:
+                return {
+                    "ok": False,
+                    "error": "project_person_my_card_seed_conflict",
+                    "status": 409,
+                }
+            return {
+                "ok": True,
+                "seeded": False,
+                "my_card": self._record_from_authority(my_card).to_public_dict(),
+                "authority": my_card.to_dict(),
+                "project_identity_edge": resolution.edge.to_dict(),
+                "seed": copy.deepcopy(dict(marker)),
+            }
+        if not _my_card_untouched(my_card):
+            return {
+                "ok": False,
+                "error": "project_person_my_card_already_managed",
+                "status": 409,
+            }
+
+        seed_marker = {
+            "schema": PROJECT_PERSON_MY_CARD_SEED_SCHEMA,
+            "project_ref": project_ref,
+            "target_subject": target_subject,
+            "actor_subject": request.actor_subject,
+            "request_id": request.request_id,
+            "request_digest": request_digest,
+            "control_id": control.access_id,
+            "control_revision": control.card_revision,
+            "seeded_at": int(time.time()),
+        }
+
+        def _cap_and_stamp(_before: Any, candidate: Any) -> Any:
+            candidate_authority = self._authority_from_record(candidate)
+            capped = intersect_card_authority_selection(
+                candidate_authority,
+                control,
+            )
+            provenance = copy.deepcopy(dict(candidate_authority.provenance or {}))
+            provenance[PROJECT_PERSON_MY_CARD_SEED_PROVENANCE] = seed_marker
+            return self._record_from_authority(
+                dataclasses.replace(
+                    candidate_authority,
+                    operations=capped.operations,
+                    resource_grants=capped.resource_grants,
+                    resource_operations=capped.resource_operations,
+                    named_service_operations=capped.named_service_operations,
+                    named_services=capped.named_services,
+                    account_scope=capped.account_scope,
+                    resource_acceptance={
+                        resource: acceptance
+                        for resource, acceptance in (
+                            candidate_authority.resource_acceptance.items()
+                        )
+                        if resource in capped.resource_grants
+                    },
+                    provenance=provenance,
+                )
+            )
+
+        identity = ProjectPersonCardIdentity.build(
+            project_ref=project_ref,
+            person_subject=target_subject,
+        )
+        try:
+            updated = await self._host.update_access(
+                {"user_id": target_subject, "roles": [], "permissions": []},
+                access_id=identity.my_card_id,
+                resource_grants=normalized["resource_grants"],
+                resource_operations=normalized["resource_operations"],
+                named_service_operations=normalized["named_service_operations"],
+                account_scope=normalized["account_scope"],
+                expected_card_revision=1,
+                properties=my_card.properties,
+                _delegable_grants=decision.delegable_grants,
+                _platform_admin=decision.platform_admin,
+                _record_transform=_cap_and_stamp,
+                _notification_subject=target_subject,
+            )
+        except ControlCardMismatch as exc:
+            return {"ok": False, "error": exc.reason, "status": 409}
+        if updated.get("ok") is not True:
+            return updated
+        try:
+            current = await self._project_identities.resolve(
+                project_ref=project_ref,
+                person_subject=target_subject,
+            )
+        except (
+            CardUnavailable,
+            CardServingUnavailable,
+            CardConflict,
+            CardCommitFailed,
+            ProjectIdentityLifecycleError,
+        ) as exc:
+            return self._identity_failure(exc)
+        current_my_card = current.my_card.authority
+        if current.edge is None or current_my_card is None:
+            return {
+                "ok": False,
+                "error": "project_identity_edge_missing",
+                "status": 409,
+            }
+        result = {
+            "ok": True,
+            "seeded": True,
+            "my_card": self._record_from_authority(
+                current_my_card
+            ).to_public_dict(),
+            "authority": current_my_card.to_dict(),
+            "project_identity_edge": current.edge.to_dict(),
+            "seed": copy.deepcopy(seed_marker),
+        }
+        if updated.get("pruned") is not None:
+            result["pruned"] = updated["pruned"]
+        return result
+
     async def authorize_operation(
         self,
         request: ProjectOperationRequest,
@@ -810,5 +1127,9 @@ class ProjectPersonControlLifecycle:
 
 
 __all__ = [
+    "PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE",
+    "PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA",
+    "PROJECT_PERSON_MY_CARD_SEED_PROVENANCE",
+    "PROJECT_PERSON_MY_CARD_SEED_SCHEMA",
     "ProjectPersonControlLifecycle",
 ]

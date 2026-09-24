@@ -5628,6 +5628,7 @@ class AutomationAccessService:
         composition_mode: str = CONTROL_COMPOSITION_AND,
         label: str = "",
         manage_url: str = "",
+        migration: bool = False,
     ) -> dict[str, Any]:
         """Create the project-owned Card that narrows one person's access."""
 
@@ -5650,6 +5651,7 @@ class AutomationAccessService:
             composition_mode=composition_mode,
             label=label,
             manage_url=manage_url,
+            migration=migration,
         )
 
     async def project_person_control_update(
@@ -5718,6 +5720,37 @@ class AutomationAccessService:
             request_id=request_id,
         )
 
+    async def project_person_my_card_seed(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+        resource_grants: Mapping[str, Any],
+        resource_operations: Mapping[str, Any],
+        named_service_operations: Mapping[str, Any] | str | None = None,
+        account_scope: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Seed an existing person's untouched My Card under project policy."""
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_person_controls.seed_my_card(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            request_id=request_id,
+            resource_grants=resource_grants,
+            resource_operations=resource_operations,
+            named_service_operations=named_service_operations,
+            account_scope=account_scope,
+        )
+
     async def project_operation_authorize(
         self,
         user: Mapping[str, Any],
@@ -5762,7 +5795,7 @@ class AutomationAccessService:
                 "retryable": True,
                 "status": 503,
             }
-        return decision.to_dict()
+        return {"ok": True, **decision.to_dict()}
 
     async def control_card_basis(
         self,
