@@ -37,7 +37,7 @@ host action because it changes both the command and relay source. When `pb statu
 
 Before an action, name the task or observed event that calls for it and what
 its result could change. Reassess after a wake or a returned command; a check
-that was useful once is not automatically useful again. Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --project-ref <project> --query <subject>` for the journal, then read what they return.
+that was useful once is not automatically useful again. Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` when you attend several), then read what they return.
 
 For a repeated status query or retry, name the pending operation or receipt, use
 a bounded attempt count, and stop when another repetition cannot inform the next
@@ -338,7 +338,7 @@ move status ([ownership](references/identity-and-authorization.md)).
 - After writing the file, run `pb worker journal-index --project-ref ... --repository-journal-ref ...`; it indexes the existing file without rewriting it and returns its index, validation, and receipt steps.
   After interruption, inspect with `pb worker journal-index-status --project-ref ... --operation-id ...`, then run `pb worker journal-index-resume --operation-id ...` for the first incomplete step. Status is observation only: it does not rebuild, enqueue, or repair. Do not rerun the original command to guess what happened.
   For a pre-ledger validation use `journal-index-status --project-ref ... --outbox-id ... --repository-journal-ref ...`; it distinguishes an accepted plan revision from an absent receipt.
-  Search with `pb worker journal-search --project-ref ... --query ...`; legacy files remain searchable under a path-derived identity and status names compatibility issues.
+  Search with `pb worker journal-search --query ...` (`--project-ref ...` when attending several projects); legacy files remain searchable under a path-derived identity and status names compatibility issues.
 - Your estimate is visible state. After planning, `pb worker busy-until <UTC> --note <one line>`
   says until when you expect to finish and what you are on. Set it again with the reason when it
   slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and
