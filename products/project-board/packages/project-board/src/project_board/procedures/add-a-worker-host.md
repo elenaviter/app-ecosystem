@@ -106,7 +106,6 @@ before anything changes:
 | agent names | `claude-ops@spark1`, `claude-app@spark1` | display names on the board. The board addresses a worker by a stable generated name. |
 | runtime per agent | `claude-code` for both, or `codex` for one | chosen per agent. One host can run Claude Code and Codex agents side by side, each in its own workspace. |
 | account per runtime | the Claude account for Claude Code agents, the OpenAI account for Codex agents | step 5 logs each runtime in once. Every agent of that runtime under the same Linux user shares its login and its usage. |
-| Codex sandbox, per Codex agent | sandboxed or unsandboxed (step 9) | sandboxed limits writes to the agent's workspace, its clones' `.git`, and `~/.kdcube`, and never asks. Unsandboxed writes anywhere the user can. |
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 
@@ -430,38 +429,10 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/workspa
   interactive question nobody watches: a worker asks the operator by board mail,
   which reaches them wherever they are.
 
-A Codex agent runs in one of two modes, chosen per agent in step 0. Both start
-in the agent's own tmux session, like the Claude Code command above, and resume
-with `codex resume <session-id>` in place of `codex` and the same flags.
-
-**Unsandboxed.** The agent writes anywhere the Linux user can, and the model may
-ask before a risky step:
-
-```bash
-codex -C ~/workspaces/<workspace> -s danger-full-access -a on-request --search
-```
-
-**Sandboxed.** The agent writes only inside its workspace and the paths named
-below, has network access, and never stops to ask, which suits a host nobody
-watches. Each clone's `.git` is protected by the sandbox unless it is listed, so
-the agent can commit and push only in the clones listed here:
-
-```bash
-codex -C ~/workspaces/<workspace> \
-  -a never \
-  -s workspace-write \
-  -c sandbox_workspace_write.network_access=true \
-  -c 'sandbox_workspace_write.writable_roots=[
-    "/home/<user>/workspaces/<workspace>/applications/.git",
-    "/home/<user>/workspaces/<workspace>/app-ecosystem/.git",
-    "/home/<user>/workspaces/<workspace>/kdcube/.git"
-  ]' \
-  --add-dir ~/.kdcube
-```
-
-List one `.git` per clone in the step 0 repository table. `~/.kdcube` holds the
-`pb` state and mailboxes, so the agent needs it in both modes. A Codex worker is
-woken by the relay through its native queue, so it needs no `pb worker watch`.
+A Codex agent starts in its own tmux session the same way, with `codex` in
+place of `claude`. Which sandbox and approval flags a Codex worker should use is
+being settled in W307, which records the two forms in use today. A Codex worker
+is woken by the relay through its native queue, so it needs no `pb worker watch`.
 
 The first start in bypass mode shows a one-time warning. Accepting it is the
 **operator's** decision. The host agent then selects **Yes, I accept** and
