@@ -79,6 +79,7 @@ def run_local_state_maintenance(field: Any, *, now: datetime | None = None) -> d
                 for project_id in _project_ids(field)
             },
             "outbox": apply_outbox_retention(field, now=current),
+            "keyed": expire_keyed_stores(field, now=current),
         }
         state.update(
             schema=MAINTENANCE_STATE_SCHEMA,
@@ -359,6 +360,104 @@ def migrate_flat_outbox(field: Any, *, batch_size: int = LEGACY_BATCH_SIZE) -> d
     return {"moved": dict(moved), "unreadable": dict(unreadable)}
 
 
+# Stores read only by key (a message id, a content hash, a lease id), never
+# listed: they cost no cycle time (LS3), so what they need is a bound (LS2).
+# Age is the file's modification time, so no record is opened.
+KEYED_STORE_RETENTION_DAYS = 30
+JOURNAL_RECEIPT_RETENTION_DAYS = 90
+_MAILBOX_SKIP = {"reconciliation-receipts", "ignored", "undeliverable"}
+
+
+def keyed_stores(field: Any) -> list[tuple[str, str, Path, int]]:
+    """``(store, agent, directory, retention_days)`` for every keyed store."""
+
+    control = field.control
+    found: list[tuple[str, str, Path, int]] = []
+    workers = control / "workers"
+    for worker in sorted(workers.glob("*")) if workers.is_dir() else ():
+        if worker.is_dir():
+            found.append(("handled", worker.name, worker / "handled", KEYED_STORE_RETENTION_DAYS))
+            found.append(("idempotency-mail", worker.name, worker / "idempotency" / "mail", KEYED_STORE_RETENTION_DAYS))
+    responses = control / "operator-responses"
+    for worker in sorted(responses.glob("*")) if responses.is_dir() else ():
+        if worker.is_dir():
+            found.append(("operator-responses", worker.name, worker, KEYED_STORE_RETENTION_DAYS))
+    projects = control / "projects"
+    for project in sorted(projects.glob("*")) if projects.is_dir() else ():
+        if not (project / "project.json").is_file():
+            continue
+        for kind in ("mail", "assignment-report", "project-report"):
+            found.append((f"idempotency-{kind}", "-", project / "idempotency" / kind, KEYED_STORE_RETENTION_DAYS))
+        mail = project / "mail"
+        for mailbox in sorted(mail.glob("*")) if mail.is_dir() else ():
+            if mailbox.is_dir() and mailbox.name not in _MAILBOX_SKIP:
+                found.append(("mail-processed", mailbox.name, mailbox / "processed", KEYED_STORE_RETENTION_DAYS))
+        undeliverable = mail / "undeliverable"
+        for address in sorted(undeliverable.glob("*")) if undeliverable.is_dir() else ():
+            if address.is_dir():
+                found.append(("mail-undeliverable", address.name, address, KEYED_STORE_RETENTION_DAYS))
+        found.append(("scope-leases-settled", "-", project / "scope-leases" / "settled", KEYED_STORE_RETENTION_DAYS))
+        found.append(("journal-receipts", "-", project / "journals", JOURNAL_RECEIPT_RETENTION_DAYS))
+    found.append(("journal-index-operations", "-", control / "operations" / "journal-index", KEYED_STORE_RETENTION_DAYS))
+    return found
+
+
+def expire_keyed_stores(field: Any, *, now: datetime | None = None) -> dict[str, int]:
+    """Remove keyed records older than their store's retention, by file age.
+
+    A lock file of a journal-index operation goes only once its operation
+    record is gone, so a lock never disappears under a running operation.
+    """
+
+    current = now or datetime.now(timezone.utc)
+    totals: dict[str, int] = defaultdict(int)
+    for store, agent, directory, days in keyed_stores(field):
+        if not directory.is_dir():
+            continue
+        cutoff = (current - timedelta(days=days)).timestamp()
+        started = time.monotonic()
+        examined = removed = 0
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".json") or not entry.is_file(follow_symlinks=False):
+                    continue
+                examined += 1
+                try:
+                    if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                        os.unlink(entry.path)
+                        removed += 1
+                except FileNotFoundError:
+                    continue
+        if store == "journal-index-operations":
+            removed += _expire_orphan_locks(directory / "locks", cutoff)
+        totals[store] += removed
+        if removed:
+            logger.info(
+                "relay store read worker=%s store=%s op=retention range=..%s partitions=1 records=%d ms=%d removed=%d",
+                agent, store, (current - timedelta(days=days)).strftime("%Y-%m-%dT%H"), examined,
+                int((time.monotonic() - started) * 1000), removed,
+            )
+    return dict(totals)
+
+
+def _expire_orphan_locks(directory: Path, cutoff: float) -> int:
+    removed = 0
+    if not directory.is_dir():
+        return removed
+    for lock in sorted(directory.iterdir()):
+        try:
+            if lock.stat().st_mtime >= cutoff:
+                continue
+        except FileNotFoundError:
+            continue
+        # <operation>.lock and <operation>.execute.lock both belong to <operation>.json.
+        operation = directory.parent / f"{lock.name.split('.', 1)[0]}.json"
+        if not operation.exists():
+            lock.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
 def _handle_legacy_receipt(
     field: Any,
     project_id: str,
@@ -469,6 +568,8 @@ __all__ = [
     "RETENTION_INTERVAL_SECONDS",
     "apply_outbox_retention",
     "cleanup_legacy_receipts",
+    "expire_keyed_stores",
+    "keyed_stores",
     "migrate_flat_outbox",
     "migrate_flat_events",
     "run_local_state_maintenance",
