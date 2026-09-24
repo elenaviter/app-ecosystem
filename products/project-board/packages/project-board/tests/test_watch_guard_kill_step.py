@@ -87,3 +87,31 @@ def test_a_single_watch_is_never_ended():
     finally:
         only.kill()
         shell.kill()
+
+
+def _ps_holding_the_pattern(tmp_path, session_id: str) -> subprocess.Popen:
+    # On Linux, `ps -p $(pgrep ...)` lists the child that has just become
+    # that `ps`, with the pattern in its command line and younger than every
+    # watch (W304 finding 43). A link to bash named ps plays it portably: its
+    # command reads as ps. (A copy of a system binary is killed on macOS.)
+    stand_in = tmp_path / "ps"
+    stand_in.symlink_to(shutil.which("bash"))
+    return subprocess.Popen([str(stand_in), "-c", "sleep 60; true", f"worker watch.*{session_id}"])
+
+
+def test_the_ps_listing_the_matches_is_never_the_one_kept(tmp_path):
+    session = f"guard-{uuid.uuid4()}"
+    older = _watch(session)
+    time.sleep(1.1)
+    newer = _watch(session)
+    time.sleep(1.1)
+    ps_like = _ps_holding_the_pattern(tmp_path, session)
+    try:
+        _run_in_wrapper(_kill_step(session))
+        time.sleep(0.3)
+        assert older.poll() is not None
+        assert newer.poll() is None
+    finally:
+        for process in (older, newer, ps_like):
+            if process.poll() is None:
+                process.kill()
