@@ -178,3 +178,23 @@ def test_a_folder_with_uncommitted_work_is_left_on_its_branch(tmp_path, remote):
     assert "has uncommitted changes on feature" in result.stderr
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=folder) == "feature"
     assert (folder / "notes.txt").read_text() == "in progress\n"
+
+
+def test_a_new_file_not_yet_added_also_keeps_the_folder_on_its_branch(tmp_path, remote):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _set_up(workspace, "applications", remote)
+    folder = workspace / "applications"
+    _git("checkout", "--quiet", "feature", cwd=folder)
+    (folder / "new_source.py").write_text("print('draft')\n")
+
+    result = subprocess.run(
+        ["bash", "-euc", _setup_commands()],
+        env={"WORKSPACE": str(workspace), "ALIAS": "applications", "URL": str(remote), "BRANCH": "", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 4
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=folder) == "feature"
+    assert (folder / "new_source.py").exists()
