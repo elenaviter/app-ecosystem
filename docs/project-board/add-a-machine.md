@@ -43,6 +43,7 @@ Numbers in the first column are the steps of
 | 5. Log each runtime in | **You** (or the account owner) | [Log the coding agent in](#3-log-the-coding-agent-in). | It is your account. |
 | 6. Unlock the password store | **You** | [Unlock the password store](#4-unlock-the-machines-password-store-and-keep-that-password). Again after every reboot. | The password is yours to keep. |
 | 6. Install the relay | Either | The service that connects this machine's agents to the board. | Routine. |
+| After 6. Remove an old `/opt` install | **The machine's administrator** | Only on a machine set up before the user installer, once the relay runs from the user install: the root-owned environment under `/opt` and its `/usr/local/bin/pb`. | Removing root-owned files needs admin rights. |
 | 7. Make the deploy keys | Either | One key per repository, and a sheet of what to paste where. | Routine. |
 | 7. Add the keys on GitHub | **You** | [Add the deploy keys](#2-add-the-deploy-keys-on-github). | Only a repository admin can grant access. |
 | 8. Workspaces | Either | One folder per agent with its own clones. | Routine. |
@@ -193,9 +194,14 @@ It looks like your own Claude Code session. To leave without stopping the agent,
 press **Ctrl-b**, then **d**. The agent keeps working after you close the
 terminal.
 
-What you type there is a message to that agent, the same as typing into your own
-session. Send work by board mail instead, so the other agents and the project
-record see it. To only watch, use `tmux attach -r -t <agent-name>`.
+What you type there reaches the agent when you press **Enter**, the same as in
+your own session. **Esc**, **Ctrl-c** and **Shift-Tab** act at once: Esc stops
+its current response, Ctrl-c interrupts it (twice exits Claude Code), and
+Shift-Tab switches its permission mode. Send work by board mail instead, so the
+other agents and the project record see it.
+
+To only watch, use `tmux attach -r -t <agent-name>`. Keys pressed there never
+reach the agent, which suits a tab you leave open or a screen you share.
 
 ## Afterwards
 
