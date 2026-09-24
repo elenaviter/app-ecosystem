@@ -190,9 +190,13 @@ def migrate_flat_events(
         with exclusive_lock(field._project_lock(project_id)):
             for name in batch:
                 path = legacy / name
-                row = read_json(path, required=False)
+                if not path.exists():
+                    continue
+                row = _readable(path)
                 if not row:
-                    path.unlink(missing_ok=True)
+                    # Kept for a person, never deleted unread (review on W287 2b).
+                    _quarantine(path, legacy / LEGACY_UNREADABLE)
+                    moved["-unreadable"] += 1
                     continue
                 actor = str(row.get("actor") or row.get("worker_name") or "-")
                 event_id = str(row.get("event_id") or name[:-5])
@@ -304,8 +308,10 @@ def migrate_flat_outbox(field: Any, *, batch_size: int = LEGACY_BATCH_SIZE) -> d
 
     outbox = OutboxStore(field.control)
     root = outbox.legacy_root
+    unreadable_root = root / LEGACY_UNREADABLE
     started = time.monotonic()
     moved: dict[str, int] = defaultdict(int)
+    unreadable: dict[str, int] = defaultdict(int)
     for folder in ("pending", "leased", "sent", "refused"):
         directory = root / folder
         while directory.is_dir():
@@ -316,23 +322,41 @@ def migrate_flat_outbox(field: Any, *, batch_size: int = LEGACY_BATCH_SIZE) -> d
                 ][:batch_size]
             if not batch:
                 break
+            progressed = 0
             with exclusive_lock(outbox.lock):
                 for name in batch:
                     path = directory / name
-                    row = read_json(path, required=False)
-                    if not row or not row.get("outbox_id"):
+                    if not path.exists():
+                        continue
+                    row = _readable(path)
+                    if not row.get("outbox_id"):
+                        _quarantine(path, unreadable_root)
+                        unreadable[str(row.get("worker_name") or "-").lower()] += 1
+                        progressed += 1
                         continue
                     if folder in ("pending", "leased"):
                         outbox.move_in_flight(path, row, folder)
                     else:
                         outbox.settle(path, row)
                     moved[str(row.get("worker_name") or "-").lower()] += 1
+                    progressed += 1
+            if not progressed:
+                # Nothing moved: another relay took these, or they cannot move.
+                # Stop rather than rescan the same names forever.
+                logger.warning(
+                    "relay store migration stalled store=outbox folder=%s batch=%d: no row moved",
+                    folder, len(batch),
+                )
+                break
             if len(batch) < batch_size:
                 break
     elapsed = int((time.monotonic() - started) * 1000)
-    for agent, count in sorted(moved.items()):
-        logger.info("relay store migrated worker=%s store=outbox moved=%d ms=%d", agent, count, elapsed)
-    return {"moved": dict(moved)}
+    for agent in sorted(set(moved) | set(unreadable)):
+        logger.info(
+            "relay store migrated worker=%s store=outbox moved=%d unreadable=%d ms=%d",
+            agent, moved.get(agent, 0), unreadable.get(agent, 0), elapsed,
+        )
+    return {"moved": dict(moved), "unreadable": dict(unreadable)}
 
 
 def _handle_legacy_receipt(
@@ -341,7 +365,7 @@ def _handle_legacy_receipt(
     path: Path,
     counts: dict[str, dict[str, int]],
 ) -> None:
-    record = read_json(path, required=False)
+    record = _readable(path)
     try:
         receipt = normalize_receipt((record or {}).get("receipt") or {})
     except (DomainError, ValueError, TypeError, KeyError):
@@ -407,6 +431,27 @@ def _record_progress(
     if state == "complete":
         progress["completed_at"] = utc_now()
     atomic_write_json(path, progress)
+
+
+def _readable(path: Path) -> dict[str, Any]:
+    """A record, or ``{}`` when the file is gone, empty or not valid JSON."""
+
+    try:
+        return dict(read_json(path, required=False) or {})
+    except DomainError:
+        return {}
+
+
+def _quarantine(path: Path, root: Path) -> None:
+    """Move a record a migration cannot read out of its way, kept for a person.
+
+    Leaving it in place would make every later batch meet it again: with a
+    batch's worth of them the migration never ends (review on W287 2b).
+    """
+
+    target = root / path.parent.name
+    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.replace(path, target / path.name)
 
 
 def _project_ids(field: Any) -> list[str]:

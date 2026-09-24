@@ -109,7 +109,7 @@ def test_flat_rows_from_before_2b_move_into_the_layout_with_their_lease(field):
 
     result = maintenance.migrate_flat_outbox(field)
 
-    assert result == {"moved": {WORKER: 4}}
+    assert result == {"moved": {WORKER: 4}, "unreadable": {}}
     assert not list(flat.glob("*/*.json"))
     agent = field.control / "projects" / PROJECT / "outbox" / WORKER
     assert json.loads((agent / "leased" / "outbox_flat_leased.json").read_text())["lease"]["relay_id"] == "relay-01"
@@ -152,3 +152,26 @@ def test_refused_mail_is_listed_and_found_for_replay_from_the_layout(field):
     assert [item["outbox_id"] for item in listed["items"]] == [queued["outbox_id"]]
     found = OutboxStore(field.control).find(queued["outbox_id"], worker_name=WORKER)
     assert found is not None and found[1] == "refused"
+
+
+def test_unreadable_flat_rows_are_quarantined_and_the_migration_ends(field):
+    """Review on 2b: a skipped row left in place made every batch the same, forever."""
+
+    flat = field.control / "outbox" / "sent"
+    flat.mkdir(parents=True, exist_ok=True)
+    batch = 3
+    for index in range(batch + 5):
+        (flat / f"bad_{index:02d}.json").write_text("{not json" if index % 2 else json.dumps({"kind": "no-id"}))
+    for index in range(2):
+        (flat / f"outbox_good_{index}.json").write_text(json.dumps({
+            "outbox_id": f"outbox_good_{index}", "kind": "mail.route", "worker_name": WORKER,
+            "project_ref": PROJECT_REF, "state": "sent", "created_at": "2026-09-22T08:00:00Z",
+        }))
+
+    result = maintenance.migrate_flat_outbox(field, batch_size=batch)
+
+    assert result["moved"] == {WORKER: 2}
+    assert sum(result["unreadable"].values()) == batch + 5
+    assert not list(flat.glob("*.json"))
+    assert len(list((field.control / "outbox" / ".legacy-unreadable" / "sent").glob("*.json"))) == batch + 5
+    assert field.read_outbox_record("outbox_good_1")["state"] == "sent"
