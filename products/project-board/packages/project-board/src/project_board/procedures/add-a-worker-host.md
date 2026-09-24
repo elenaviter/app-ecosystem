@@ -50,8 +50,8 @@ Everything else the host agent does over its own SSH session. The operator's
 own terminal on the host is needed only for the password in step 6.
 
 The machine's administrator installs `tmux` (step 0) and, on a host set up
-before the user installer, removes the old root-owned `/opt` install (step 2).
-Both need `sudo`.
+before the user installer, removes the old root-owned `/opt` install once the
+relay service runs from the user install (after step 6). Both need `sudo`.
 
 **Every operator step states, in the step, why a person is required and what it
 commits them to afterwards.** An operator step exists because of an identity or
@@ -205,10 +205,11 @@ users.
 
 A host set up before this installer may still hold a root-owned environment
 under `/opt`, with a launcher in `/usr/local/bin`. The agent user cannot update
-it. Install for the user as above, and once the relay service is installed from
-this user install (step 6), the old environment is unused. Removing the `/opt`
-environment and its `/usr/local/bin/pb` launcher needs `sudo`, so the machine's
-administrator does it.
+it. Install for the user as above. The relay service still runs the old
+environment until it is installed again from this user install in step 6, so
+the old environment stays in place until then. After step 6 it is unused, and
+the machine's administrator removes the `/opt` environment and its
+`/usr/local/bin/pb` launcher, which needs `sudo`.
 
 ## 3. Configure `pb` for the user that runs the agents
 
@@ -358,6 +359,10 @@ systemd-analyze --user verify ~/.config/systemd/user/kdcube-problem-board-relay-
 The first machine found a unit `pb` wrote with a quoted path, which systemd
 refuses. A selected client source without that fix must be advanced through
 step 13 first.
+
+On a host that still holds the old root-owned `/opt` install (step 2), the
+relay now runs from the user install, so the machine's administrator removes
+that install here.
 
 ## 7. Give the host access to exactly the approved repositories
 
