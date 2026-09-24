@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.3"
+    assert package["revision"] == "2026.09.24.4"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -861,8 +861,11 @@ def test_an_app_activation_writes_its_commit_where_a_restart_reads_it():
 
     step = coordinator[coordinator.index("4. **Execute**"):coordinator.index("5. **Verify the deployed artifact")]
     assert "set `activation.commit: <sha>`" in step
-    assert "`kdcube bundle config apply`, then reload at the same sha" in step
-    assert "(`durable: false`)" in step and "silently undoes the\n   activation" in step
+    assert "then reload at the same sha. The proc reads that staged file" in step
+    assert "config apply" not in step, "window 13: apply copies descriptors in, a staged edit needs none"
+    assert "a reload without `--commit` re-activates the pinned commit, never\n   the tree" in step
+    assert "guards the entry the day the\n   pin is removed" in step
+    assert "(`durable: false`)" in step and "silently undoes the activation" in step
     assert step.index("activation.commit") < step.index("**check")
-    assert "`activation.commit: <approved-sha>` on the app's entry in the staged descriptor, `kdcube bundle config apply`, then `kdcube bundle reload" in actions
+    assert "`activation.commit: <approved-sha>` on the app's entry in the staged descriptor (the proc reads it on reload and restart), then `kdcube bundle reload" in actions
     assert "a reload at a commit the descriptor does not name, which a restart undoes" in actions
