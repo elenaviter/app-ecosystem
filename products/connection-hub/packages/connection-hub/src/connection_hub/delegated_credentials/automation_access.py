@@ -2013,10 +2013,21 @@ class AutomationAccessService:
             expected_revision=expected_revision,
         )
 
-    async def _forget_record(self, record: AutomationAccessRecord) -> None:
+    async def _forget_record(
+        self,
+        record: AutomationAccessRecord,
+        *,
+        revoked_record: AutomationAccessRecord | None = None,
+    ) -> None:
+        authority = card_authority_from_record(record)
+        subject_hash = _subject_key(record.grantor_subject)
+        if revoked_record is None:
+            await self._cards().forget(authority, subject_hash=subject_hash)
+            return
         await self._cards().forget(
-            card_authority_from_record(record),
-            subject_hash=_subject_key(record.grantor_subject),
+            authority,
+            subject_hash=subject_hash,
+            revoked_authority=card_authority_from_record(revoked_record),
         )
 
     async def _list_active_records(
@@ -5668,6 +5679,29 @@ class AutomationAccessService:
             expected_card_revision=expected_card_revision,
             expected_catalog_version=expected_catalog_version,
             accepted_operations=accepted_operations,
+        )
+
+    async def project_person_control_revoke(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Revoke one project-held per-person Card after host policy."""
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_person_controls.revoke(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            request_id=request_id,
         )
 
     async def control_card_basis(

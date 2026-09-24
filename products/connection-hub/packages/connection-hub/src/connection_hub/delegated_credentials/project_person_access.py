@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
+    CARD_STATE_REVOKED,
     CONTROL_COMPOSITION_AND,
     CardAuthority,
     CardRecordError,
@@ -21,6 +22,7 @@ from connection_hub.delegated_credentials.cards.service import (
     CardCommitFailed,
     CardConflict,
     CardServingUnavailable,
+    replace_state,
 )
 from connection_hub.delegated_credentials.catalog.descriptors import (
     next_resource_acceptance,
@@ -44,6 +46,7 @@ from connection_hub.delegated_credentials.controls.snapshot import (
 from connection_hub.delegated_credentials.project_authorization import (
     PROJECT_PERSON_CONTROL_CREATE,
     PROJECT_PERSON_CONTROL_READ,
+    PROJECT_PERSON_CONTROL_REVOKE,
     PROJECT_PERSON_CONTROL_UPDATE,
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
@@ -93,7 +96,10 @@ class ProjectPersonControlLifecycle:
         request_id: str,
     ) -> tuple[ProjectAuthorizationRequest, ProjectAuthorizationDecision] | dict[str, Any]:
         if (
-            operation == PROJECT_PERSON_CONTROL_UPDATE
+            operation in {
+                PROJECT_PERSON_CONTROL_UPDATE,
+                PROJECT_PERSON_CONTROL_REVOKE,
+            }
             and str(actor_subject or "").strip() == str(target_subject or "").strip()
         ):
             return {
@@ -305,6 +311,15 @@ class ProjectPersonControlLifecycle:
         if isinstance(authorized, dict):
             return authorized
         request, decision = authorized
+        selected_composition_mode = (
+            str(composition_mode or "").strip().lower() or CONTROL_COMPOSITION_AND
+        )
+        if selected_composition_mode != CONTROL_COMPOSITION_AND:
+            return {
+                "ok": False,
+                "error": "project_person_control_requires_and",
+                "status": 400,
+            }
         identity = ProjectPersonControlIdentity.build(
             project_ref=project_ref,
             target_subject=target_subject,
@@ -342,7 +357,7 @@ class ProjectPersonControlLifecycle:
                     issuer_label=label or target_subject,
                     manage_url=manage_url,
                     properties=properties,
-                    composition_mode=composition_mode,
+                    composition_mode=selected_composition_mode,
                     now=int(time.time()),
                 ),
                 identity=identity,
@@ -505,6 +520,15 @@ class ProjectPersonControlLifecycle:
         if isinstance(authorized, dict):
             return authorized
         request, decision = authorized
+        if (
+            composition_mode is not None
+            and str(composition_mode).strip().lower() != CONTROL_COMPOSITION_AND
+        ):
+            return {
+                "ok": False,
+                "error": "project_person_control_requires_and",
+                "status": 400,
+            }
         identity = ProjectPersonControlIdentity.build(
             project_ref=project_ref,
             target_subject=target_subject,
@@ -571,11 +595,7 @@ class ProjectPersonControlLifecycle:
                 properties=(
                     properties if properties is not None else existing.properties
                 ),
-                composition_mode=(
-                    composition_mode
-                    if composition_mode is not None
-                    else existing.composition_mode
-                ),
+                composition_mode=CONTROL_COMPOSITION_AND,
                 label=label,
                 expected_card_revision=expected_card_revision,
                 expected_catalog_version=expected_catalog_version,
@@ -594,6 +614,106 @@ class ProjectPersonControlLifecycle:
         if updated.get("pruned") is not None:
             result["pruned"] = updated["pruned"]
         return result
+
+    async def revoke(
+        self,
+        *,
+        actor_subject: str,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Revoke one project-held Card through the durable Card lifecycle."""
+
+        authorized = await self._authorize(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            operation=PROJECT_PERSON_CONTROL_REVOKE,
+            request_id=request_id,
+        )
+        if isinstance(authorized, dict):
+            return authorized
+        request, _decision = authorized
+        identity = ProjectPersonControlIdentity.build(
+            project_ref=project_ref,
+            target_subject=target_subject,
+        )
+        loaded = await self._load(identity)
+        if isinstance(loaded, dict):
+            if loaded.get("error") == "project_person_control_not_found":
+                return {"ok": True, "removed": False}
+            return loaded
+        existing, state = loaded
+        before = self._authority_from_record(existing)
+        if state == CARD_STATE_REVOKED:
+            return {
+                "ok": True,
+                "removed": False,
+                "control_id": identity.control_id,
+                "project_person_control": identity.to_property(),
+                "audit": copy.deepcopy(
+                    dict(before.provenance or {}).get(
+                        PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE,
+                        {},
+                    )
+                ),
+            }
+        if state != CARD_STATE_ACTIVE:
+            return {
+                "ok": False,
+                "error": "project_person_control_not_active",
+                "status": 409,
+            }
+        try:
+            revoked = bind_project_person_control(
+                replace_state(before, CARD_STATE_REVOKED),
+                identity=identity,
+            )
+            audit = ProjectPersonControlAudit.build(
+                action="revoked",
+                actor_subject=request.actor_subject,
+                identity=identity,
+                request_id=request.request_id,
+                occurred_at=int(time.time()),
+                before=before,
+                after=revoked,
+            )
+            revoked_record = self._record_from_authority(
+                bind_project_person_control(
+                    revoked,
+                    identity=identity,
+                    audit=audit,
+                )
+            )
+            await self._host._forget_record(
+                existing,
+                revoked_record=revoked_record,
+            )
+        except ProjectPersonControlError as exc:
+            return {"ok": False, "error": exc.reason, "status": 400}
+        except CardServingUnavailable as exc:
+            return _serving_state_unavailable(exc)
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            return {
+                "ok": False,
+                "error": "project_person_control_not_committed",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 503,
+            }
+        await self._host.notify_change(
+            identity.target_subject,
+            action="project_person_control_revoked",
+            access_id=identity.control_id,
+        )
+        return {
+            "ok": True,
+            "removed": True,
+            "control_id": identity.control_id,
+            "project_person_control": identity.to_property(),
+            "audit": audit.to_dict(),
+        }
 
 
 __all__ = [

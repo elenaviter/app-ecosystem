@@ -1341,37 +1341,49 @@ id is deterministic from project plus target. The target person is therefore
 an explicit subject of the rule, not the Card's owner and not a storage key.
 
 The lifecycle is exposed through `project_person_control_create`,
-`project_person_control_get`, and `project_person_control_update`. Connection
-Hub takes the actor from the authenticated platform session. The request's
-project and target identify the Card being managed; they grant nothing. Every
-operation asks an injected async `ProjectAuthorizationPort` for a decision
-bound to that exact actor, project, target, operation, and host request id. A
-missing port, a missing policy answer, a malformed or mismatched decision, and
-a named denial all fail closed. Connection Hub never reads an application's
-membership store or infers project authority from platform roles.
+`project_person_control_get`, `project_person_control_update`, and
+`project_person_control_revoke`. Connection Hub takes the actor from the
+authenticated platform session. The request's project and target identify the
+Card being managed; they grant nothing. Every operation asks an injected async
+`ProjectAuthorizationPort` for a decision bound to that exact actor, project,
+target, operation, and host request id. A missing port, a missing policy answer,
+a malformed or mismatched decision, and a named denial all fail closed.
+Connection Hub never reads an application's membership store or infers project
+authority from platform roles.
 
 The standard Card editor opens this lifecycle when its deep link carries the
 Card's `control_card_id` together with `project_ref` and `target_subject`.
 Those coordinates survive the standalone-site iframe boundary. The editor
-loads and saves through the project-person operations while every ordinary
-Card continues to use its owner-scoped operations.
+loads, saves, and revokes through the project-person operations while every
+ordinary Card continues to use its owner-scoped operations.
+
+A project-held per-person Control Card always composes by **AND**. Effective
+access is the intersection of the project catalog, this project Control Card,
+and the person's own Card; a union would make the project boundary unable to
+narrow authority. The project-person backend rejects any other composition
+mode, the public operation schema admits only `and`, and the editor renders
+the mode as a fixed rule instead of an editable choice.
 
 Creation uses that same port. A project creator receives bootstrap authority
 only when the project application's canonical membership lifecycle returns it;
 there is no caller-authored `creator`, `admin`, application, or role flag.
-Updates have an additional invariant: the target person cannot update her own
-project-held Card, even if a policy adapter accidentally returns allow. The
-project policy decision also supplies the exact delegable grant ceiling used by
-the catalog-aware Card editor, so an administrator cannot save a capability
-outside the project's decision.
+Updates and revocation have an additional invariant: the target person cannot
+mutate her own project-held Card, even if a policy adapter accidentally returns
+allow. The project policy decision also supplies the exact delegable grant
+ceiling used by the catalog-aware Card editor, so an administrator cannot save
+a capability outside the project's decision. Another administrator manages an
+administrator's own Control Card; a sole project creator remains at the
+bootstrap ceiling selected by the project policy.
 
-Every successful create or update stamps the immutable Card revision with
-`connection_hub.project_person_control.audit.v1` evidence: authenticated actor,
-project, target, host request id, UTC time, before and after revision, and the
-exact changed authorization fields. The current revision exposes its evidence
-to the administrator; durable revision history retains the evidence for every
-earlier edit. A save that changes no authorization field is refused rather than
-creating an empty audit event.
+Every successful create, update, or revocation stamps the immutable Card
+revision with `connection_hub.project_person_control.audit.v1` evidence:
+authenticated actor, project, target, host request id, UTC time, before and
+after revision, and the exact changed authorization fields. The current
+revision exposes its evidence to the administrator; durable revision history
+retains the evidence for every earlier edit. A save that changes no
+authorization field is refused rather than creating an empty audit event.
+Revocation records the active-to-revoked state change in the revoked durable
+revision itself, then removes live authority.
 
 ### Legacy Control Card freeze
 

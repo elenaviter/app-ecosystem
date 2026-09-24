@@ -149,6 +149,7 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
   assert.match(slice, /focusedCard\?: DelegatedAccessRecord/)
   assert.match(slice, /projectPerson \? 'project_person_control_get' : 'control_card_get'/)
   assert.match(slice, /projectPersonControl \? 'project_person_control_update' : 'delegated_access_update'/)
+  assert.match(slice, /projectPersonControl \? 'project_person_control_revoke' : 'delegated_access_revoke'/)
   assert.match(slice, /state\.focusedCard = action\.payload\.access/)
   assert.doesNotMatch(slice, /state\.items\.push\(action\.payload\.access\)/)
 
@@ -166,6 +167,9 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
   assert.doesNotMatch(panel, /<a href=\{binding\.manage_url\}/)
   assert.match(panel, /Revoke/)
   assert.match(panel, /compositionMode: item\.source === 'control'/)
+  assert.match(panel, /projectPersonControl \? 'and' : editCompositionMode/)
+  assert.match(panel, /descriptorCapabilityControl \|\| projectPersonControl/)
+  assert.match(panel, /The project Card limits the target person\\'s linked authority\./)
   assert.match(panel, /item\.source === 'control'[\s\S]*?keptNamedServiceOperations/)
   assert.match(panel, /Exact catalog snapshot/)
   assert.match(panel, /Historical snapshot needs review/)

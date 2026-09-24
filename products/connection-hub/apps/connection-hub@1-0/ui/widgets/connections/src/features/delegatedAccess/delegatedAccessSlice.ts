@@ -313,13 +313,27 @@ export const updateAgentCapabilitySelection = createAsyncThunk<
 
 export const revokeDelegatedAccess = createAsyncThunk<
   DelegatedAccessRevokeResult,
-  { accessId: string },
+  {
+    accessId: string;
+    projectPersonControl?: {
+      projectRef: string;
+      targetSubject: string;
+    };
+  },
   { rejectValue: string }
 >(
   'delegatedAccess/revoke',
-  async ({ accessId }, { rejectWithValue }) => {
+  async ({ accessId, projectPersonControl }, { rejectWithValue }) => {
     try {
-      const res = await postOp<DelegatedAccessRevokeResult>('delegated_access_revoke', { access_id: accessId });
+      const res = await postOp<DelegatedAccessRevokeResult>(
+        projectPersonControl ? 'project_person_control_revoke' : 'delegated_access_revoke',
+        projectPersonControl
+          ? {
+              project_ref: projectPersonControl.projectRef,
+              target_subject: projectPersonControl.targetSubject,
+            }
+          : { access_id: accessId },
+      );
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to revoke delegated access'));
       return res || {};
     } catch (e) {

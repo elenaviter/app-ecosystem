@@ -34,6 +34,10 @@ class _Service:
         self.calls.append(("update", {"user": user, **kwargs}))
         return {"ok": True}
 
+    async def project_person_control_revoke(self, user, **kwargs):
+        self.calls.append(("revoke", {"user": user, **kwargs}))
+        return {"ok": True}
+
 
 @pytest.fixture()
 def entrypoint(monkeypatch):
@@ -64,6 +68,7 @@ def test_operations_are_declared_as_csrf_protected_posts() -> None:
             "project_person_control_get",
             "project_person_control_create",
             "project_person_control_update",
+            "project_person_control_revoke",
         )
     }
 
@@ -104,11 +109,17 @@ async def test_operations_use_authenticated_actor_and_host_request_id(entrypoint
         },
         request=request,
     )
+    await entrypoint.module.ConnectionHubEntrypoint.project_person_control_revoke(
+        entrypoint.instance,
+        data=forged,
+        request=request,
+    )
 
     assert [call[0] for call in entrypoint.service.calls] == [
         "get",
         "create",
         "update",
+        "revoke",
     ]
     for _operation, call in entrypoint.service.calls:
         assert call["user"] == {"user_id": "authenticated-admin"}
@@ -129,3 +140,64 @@ async def test_project_authorization_port_accepts_async_host_factory() -> None:
     entrypoint = SimpleNamespace(project_authorization_port_factory=_factory)
 
     assert await module._project_authorization_port(entrypoint) is port
+
+
+@pytest.mark.asyncio
+async def test_raising_port_factory_isolated_to_project_person_operations(
+    monkeypatch,
+) -> None:
+    module = _entrypoint_module()
+
+    class _EmptyCards:
+        async def load_current(self, access_id, *, subject_hash):
+            del access_id, subject_hash
+            return None
+
+    async def _factory():
+        raise RuntimeError("policy host unavailable")
+
+    async def _card_persistence(*_args):
+        return _EmptyCards()
+
+    async def _grant_store(_entrypoint):
+        return object()
+
+    monkeypatch.setattr(
+        module,
+        "_runtime_tenant_project",
+        lambda _entrypoint: ("demo-tenant", "demo-project"),
+    )
+    monkeypatch.setattr(
+        module,
+        "_delegated_authority_config",
+        lambda _entrypoint: SimpleNamespace(backend="redis-migration-source"),
+    )
+    monkeypatch.setattr(module, "_delegated_catalog_resolver", lambda *_args: object())
+    monkeypatch.setattr(module, "_delegated_card_persistence", _card_persistence)
+    monkeypatch.setattr(module, "_oauth_grant_store", _grant_store)
+    monkeypatch.setattr(module, "_invocation_policy_service", lambda _entrypoint: None)
+
+    service = await module._automation_access_service_for(
+        SimpleNamespace(
+            redis=object(),
+            project_authorization_port_factory=_factory,
+        ),
+        SimpleNamespace(),
+    )
+
+    assert await service.revoke_access(
+        {"user_id": "card-owner"},
+        access_id="missing-card",
+    ) == {"ok": True, "removed": False}
+    assert await service.project_person_control_get(
+        {"user_id": "project-admin"},
+        project_ref="work:project:quickstart",
+        target_subject="platform-user-2",
+        request_id="request-port-failure",
+    ) == {
+        "ok": False,
+        "error": "project_person_control_authorization_unavailable",
+        "reason": "authorization_port_not_configured",
+        "retryable": True,
+        "status": 503,
+    }

@@ -236,6 +236,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "project_person_control_get",
     "project_person_control_create",
     "project_person_control_update",
+    "project_person_control_revoke",
     "control_card_attach",
     "control_card_detach",
     "control_card_revoke",
@@ -1280,14 +1281,21 @@ def _expected_remote_mcp_revision(payload: Mapping[str, Any]) -> int:
 async def _project_authorization_port(entrypoint: Any) -> Any | None:
     """Resolve the host-composed project policy port without owning policy."""
 
-    port = getattr(entrypoint, "project_authorization_port", None)
-    if port is None:
-        factory = getattr(entrypoint, "project_authorization_port_factory", None)
-        if callable(factory):
-            port = factory()
-    if inspect.isawaitable(port):
-        port = await port
-    return port
+    try:
+        port = getattr(entrypoint, "project_authorization_port", None)
+        if port is None:
+            factory = getattr(entrypoint, "project_authorization_port_factory", None)
+            if callable(factory):
+                port = factory()
+        if inspect.isawaitable(port):
+            port = await port
+        return port
+    except Exception:  # noqa: BLE001 - the host policy adapter is optional
+        LOGGER.exception(
+            "[connection-hub.project-person-control] "
+            "project authorization port construction failed"
+        )
+        return None
 
 
 async def _automation_access_service_for(
@@ -2604,6 +2612,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_person_control_get": {"visibility": {"user_types": []}},
                             "project_person_control_create": {"visibility": {"user_types": []}},
                             "project_person_control_update": {"visibility": {"user_types": []}},
+                            "project_person_control_revoke": {"visibility": {"user_types": []}},
                             "control_card_attach": {"visibility": {"user_types": []}},
                             "control_card_detach": {"visibility": {"user_types": []}},
                             "control_card_revoke": {"visibility": {"user_types": []}},
@@ -4211,6 +4220,37 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 if "accepted_operations" in payload
                 else None
             ),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_control_revoke",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_control_revoke"),
+    )
+    async def project_person_control_revoke(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Revoke the project-owned Control Card for one named person."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_person_control_revoke(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            target_subject=str(payload.get("target_subject") or "").strip(),
+            request_id=_audit_request_id(request),
         )
 
     @api(

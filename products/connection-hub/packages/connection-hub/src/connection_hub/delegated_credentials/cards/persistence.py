@@ -74,7 +74,13 @@ class CardPersistence(Protocol):
         expected_revision: int,
     ) -> None: ...
 
-    async def forget(self, authority: CardAuthority, *, subject_hash: str) -> None: ...
+    async def forget(
+        self,
+        authority: CardAuthority,
+        *,
+        subject_hash: str,
+        revoked_authority: CardAuthority | None = None,
+    ) -> None: ...
 
     async def list_active(
         self, *, subject_hash: str, now: int | None = None
@@ -182,11 +188,18 @@ class DurableCardPersistence:
                 "credential_handles_unavailable", access_id=authority.access_id
             ) from exc
 
-    async def forget(self, authority: CardAuthority, *, subject_hash: str) -> None:
+    async def forget(
+        self,
+        authority: CardAuthority,
+        *,
+        subject_hash: str,
+        revoked_authority: CardAuthority | None = None,
+    ) -> None:
         await self._cards.revoke(
             subject_hash=subject_hash,
             access_id=authority.access_id,
             expected_revision=authority.card_revision,
+            revoked_authority=revoked_authority,
         )
         await self._handles.remove(authority)
 

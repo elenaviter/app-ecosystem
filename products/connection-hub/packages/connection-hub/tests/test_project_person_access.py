@@ -12,6 +12,8 @@ import pytest
 
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
+    CARD_STATE_REVOKED,
+    CONTROL_COMPOSITION_OR,
     CardAuthority,
 )
 from connection_hub.delegated_credentials.controls.project_person import (
@@ -21,6 +23,7 @@ from connection_hub.delegated_credentials.controls.project_person import (
 )
 from connection_hub.delegated_credentials.project_authorization import (
     PROJECT_PERSON_CONTROL_CREATE,
+    PROJECT_PERSON_CONTROL_REVOKE,
     ProjectAuthorizationDecision,
 )
 from connection_hub.delegated_credentials.project_person_access import (
@@ -73,9 +76,16 @@ class _Host:
         self.records: dict[tuple[str, str], tuple[_Record, str]] = {}
         self.notifications: list[tuple[str, str]] = []
         self.update_calls: list[dict[str, Any]] = []
+        self.forget_calls: list[tuple[_Record, _Record]] = []
 
     async def _load_record_any_state(self, access_id, *, grantor_subject):
         return self.records.get((grantor_subject, access_id))
+
+    async def _load_record(self, access_id, *, grantor_subject):
+        loaded = self.records.get((grantor_subject, access_id))
+        if loaded is None or loaded[1] != CARD_STATE_ACTIVE:
+            return None
+        return loaded[0]
 
     async def _ensure_control_snapshot(self, record):
         return record
@@ -154,6 +164,12 @@ class _Host:
             access=updated.to_public_dict(),
         )
         return {"ok": True, "access": updated.to_public_dict(), "pruned": {}}
+
+    async def _forget_record(self, record, *, revoked_record):
+        self.forget_calls.append((record, revoked_record))
+        key = (record.grantor_subject, record.access_id)
+        assert self.records[key][0] is record
+        self.records[key] = (revoked_record, revoked_record.state)
 
 
 def _lifecycle(host: _Host, port: Any) -> ProjectPersonControlLifecycle:
@@ -235,6 +251,27 @@ async def test_create_is_project_held_target_named_and_audited() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_refuses_union_composition_before_storage() -> None:
+    host = _Host()
+
+    result = await _lifecycle(host, _Port()).create(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-create-or",
+        composition_mode=CONTROL_COMPOSITION_OR,
+        label="Quickstart member",
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "project_person_control_requires_and",
+        "status": 400,
+    }
+    assert host.records == {}
+
+
+@pytest.mark.asyncio
 async def test_target_cannot_widen_its_project_card() -> None:
     host = _Host()
     await _create(_lifecycle(host, _Port()))
@@ -256,6 +293,30 @@ async def test_target_cannot_widen_its_project_card() -> None:
     }
     assert host.update_calls == []
     assert permissive_port.requests == []
+
+
+@pytest.mark.asyncio
+async def test_update_refuses_union_composition_before_write() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle)
+    host.update_calls.clear()
+
+    result = await lifecycle.update(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-update-or",
+        composition_mode=CONTROL_COMPOSITION_OR,
+        expected_card_revision=1,
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "project_person_control_requires_and",
+        "status": 400,
+    }
+    assert host.update_calls == []
 
 
 @pytest.mark.asyncio
@@ -341,3 +402,63 @@ async def test_named_service_only_create_still_resolves_the_decision_ceiling() -
         "work:admin",
         "work:review",
     )
+
+
+@pytest.mark.asyncio
+async def test_admin_revoke_is_audited_and_removes_live_authority() -> None:
+    host = _Host()
+    port = _Port()
+    lifecycle = _lifecycle(host, port)
+    await _create(lifecycle)
+    host.notifications.clear()
+
+    result = await lifecycle.revoke(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-revoke",
+    )
+
+    identity = ProjectPersonControlIdentity.build(
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+    )
+    stored, state = host.records[(identity.project_subject, identity.control_id)]
+    audit = stored.provenance[PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE]
+    assert result["ok"] is True
+    assert result["removed"] is True
+    assert state == CARD_STATE_REVOKED
+    assert audit["action"] == "revoked"
+    assert audit["actor_subject"] == ADMIN
+    assert audit["request_id"] == "request-revoke"
+    assert audit["changes"] == {
+        "state": {"before": "active", "after": "revoked"},
+    }
+    assert port.requests[-1].operation == PROJECT_PERSON_CONTROL_REVOKE
+    assert host.notifications == [(TARGET, "project_person_control_revoked")]
+    assert await host._load_record(
+        identity.control_id,
+        grantor_subject=identity.project_subject,
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_target_cannot_revoke_its_project_card() -> None:
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    port = _Port()
+
+    result = await _lifecycle(host, port).revoke(
+        actor_subject=TARGET,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-target-revoke",
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "project_person_control_target_write_denied",
+        "status": 403,
+    }
+    assert host.forget_calls == []
+    assert port.requests == []

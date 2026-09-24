@@ -21,6 +21,7 @@ same revision.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import pathlib
 import time
@@ -191,6 +192,7 @@ class DelegatedCardService:
         subject_hash: str,
         access_id: str,
         expected_revision: int,
+        revoked_authority: CardAuthority | None = None,
     ) -> CardCurrentPointer | None:
         """Commit a revoked revision before any credential cleanup.
 
@@ -217,6 +219,16 @@ class DelegatedCardService:
                     raise CardConflict(
                         "card_revision_moved", current_revision=authority.card_revision
                     )
+                default_revoked = replace_state(authority, CARD_STATE_REVOKED)
+                revoked = revoked_authority or default_revoked
+                if (
+                    dataclasses.replace(
+                        revoked,
+                        provenance=default_revoked.provenance,
+                    )
+                    != default_revoked
+                ):
+                    raise CardConflict("revoked_authority_invalid")
 
                 await self._reconcile(
                     access_id=access_id, current=current, moment=int(time.time())
@@ -226,7 +238,6 @@ class DelegatedCardService:
                     mutation_id=mutation_id,
                     expected_revision=expected_revision,
                 )
-                revoked = replace_state(authority, CARD_STATE_REVOKED)
                 pointer = await self._commit_durable(
                     authority=revoked, subject_hash=subject_hash, mutation_id=mutation_id
                 )

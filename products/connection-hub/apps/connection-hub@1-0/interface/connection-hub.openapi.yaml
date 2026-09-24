@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Connection Hub App Interface
-  version: 0.3.1
+  version: 0.3.2
   description: |
     Interface contract for connection-hub@1-0.
 
@@ -379,6 +379,31 @@ paths:
       responses:
         "200":
           description: Updated Card and immutable revision audit, or a structured denial.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_revoke:
+    post:
+      tags: [Delegated Access]
+      summary: Revoke one project-held Control Card for a target person.
+      description: >
+        Commits an audited revoked revision under the same exact project
+        authorization decision. The target person cannot revoke her own Card,
+        and the revoked Card stops resolving as live authority before the
+        operation returns.
+      operationId: project_person_control_revoke
+      x-kdcube-result-alias: project_person_control_revoke
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectPersonControlIdentityEnvelope"
+      responses:
+        "200":
+          description: Revocation audit and removal state, or a structured denial.
 
   /bundles/{tenant}/{project}/{bundle_id}/operations/delegated_invocation_policy_set:
     post:
@@ -1229,7 +1254,11 @@ components:
         properties:
           type: object
           additionalProperties: true
-        composition_mode: { type: string, enum: [and, or] }
+        composition_mode:
+          type: string
+          enum: [and]
+          default: and
+          description: Project-held per-person Control Cards always narrow linked authority by intersection.
         label: { type: string }
     ProjectPersonControlCreateEnvelope:
       allOf:
