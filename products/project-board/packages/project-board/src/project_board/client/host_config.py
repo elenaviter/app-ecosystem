@@ -34,6 +34,14 @@ DEFAULT_CONTROL_KINDS = (
     "stop",
 )
 
+# Which teammates may mail the agents on a new host. The board already lets
+# only a worker that shares a project address another, so this is the host
+# owner's second gate. Empty refuses every peer until the owner opts in
+# (`pb host configure --allow-peer-worker <name>` or "*"), which on
+# 2026-09-24 left a new agent unable to receive its coordinator's mail
+# (W304 finding 38). The default for new hosts is the operator's decision.
+DEFAULT_ALLOWED_PEER_WORKERS: tuple[str, ...] = ()
+
 
 def _required(value: Any, field: str) -> str:
     text = str(value or "").strip()
@@ -601,7 +609,7 @@ def initialize_host_config(
         },
         "receiver_policy": {
             "allowed_control_kinds": list(DEFAULT_CONTROL_KINDS),
-            "allowed_peer_workers": [],
+            "allowed_peer_workers": list(DEFAULT_ALLOWED_PEER_WORKERS),
             "max_control_bytes": 65536,
             "allow_session_resume_view": True,
         },
