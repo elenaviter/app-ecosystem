@@ -118,7 +118,14 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
     for step in ("`configure_target`", "`install_relay`", "`enroll_session`", "`authorize_profile`", "`attend_project`"):
         assert step in first_run, step
     assert "preserve the returned profile and append `--device`" in first_run
-    assert "append `--device`, never callback flags" in skill
+    assert "append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`" in skill
+    # W305, 2026-09-24: the skill once said "never callback flags" while the
+    # host procedure kept the tunnel as its only recovery from a failed device
+    # login, so an agent following the skill would refuse that recovery.
+    assert "never callback flags" not in skill
+    host = _words((OPERATIONAL_PROCEDURE_ROOT / "add-a-worker-host.md").read_text(encoding="utf-8"))
+    assert "pb worker authorize <profile> --device" in host
+    assert "runs the same command with `--no-open --callback-port 18765` in place of `--device`" in host
     assert "the credential goes to the native store" in skill
     # The package owns the setup coordinate meanings and source install path.
     assert "What The Setup Coordinates Mean" in first_run
