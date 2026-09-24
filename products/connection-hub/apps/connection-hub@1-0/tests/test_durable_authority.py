@@ -63,14 +63,30 @@ class _Cutovers(_PreparedStore):
         return object()
 
 
+class _OAuthGrants:
+    def __init__(
+        self,
+        events: list[object],
+        *,
+        failure: Exception | None = None,
+    ) -> None:
+        self.authority_store = _PreparedStore(events, "oauth")
+        self.cutover_store = _Cutovers(events, failure=failure)
+
+    async def ensure_ready(self) -> None:
+        await self.cutover_store.require_activated(
+            "durable-authority-v1",
+            required_families=CONNECTION_HUB_AUTHORITY_FAMILIES,
+        )
+
+
 def _authority(module, *, cutover_failure: Exception | None = None):
     events: list[object] = []
     authority = module.ConnectionHubDurableAuthority(
         config=SimpleNamespace(generation_id="durable-authority-v1"),
-        oauth=_PreparedStore(events, "oauth"),
+        oauth_grants=_OAuthGrants(events, failure=cutover_failure),
         card_handles=_CardHandles(events, "card_handles"),
         admission_replay=_ReplayClaims(events, "admission_replay"),
-        cutovers=_Cutovers(events, failure=cutover_failure),
     )
     return authority, events
 

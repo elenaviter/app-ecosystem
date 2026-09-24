@@ -144,7 +144,14 @@ async def test_fresh_postgresql_entrypoint_serves_discovery_and_access_list(
     async def _ensure_ready():
         readiness_checks.append("checked")
 
-    durable = SimpleNamespace(oauth=object(), ensure_ready=_ensure_ready)
+    async def _resolve_grant_store():
+        await _ensure_ready()
+        return object()
+
+    durable = SimpleNamespace(
+        oauth_grants=SimpleNamespace(resolve=_resolve_grant_store),
+        ensure_ready=_ensure_ready,
+    )
 
     class _AccessService:
         async def list_access(self, user):
@@ -189,7 +196,14 @@ async def test_fresh_postgresql_entrypoint_refuses_without_activation_receipt(
     async def _ensure_ready():
         raise RuntimeError("authority_cutover_receipt_missing")
 
-    durable = SimpleNamespace(oauth=object(), ensure_ready=_ensure_ready)
+    async def _resolve_grant_store():
+        await _ensure_ready()
+        return object()
+
+    durable = SimpleNamespace(
+        oauth_grants=SimpleNamespace(resolve=_resolve_grant_store),
+        ensure_ready=_ensure_ready,
+    )
 
     async def _access_service_for(_entrypoint, _config):
         return object()

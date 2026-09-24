@@ -25,6 +25,10 @@ from typing import Any, Protocol
 from connection_hub.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
 )
+from connection_hub.delegated_credentials.authority_config import (
+    AUTHORITY_BACKEND_POSTGRESQL,
+    AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE,
+)
 from connection_hub.delegated_credentials.cards.cache import (
     DelegatedCardRuntimeCache,
 )
@@ -99,6 +103,7 @@ class DurableCardPersistence:
         mutation_lock: CardMutationLock,
         settings: DelegatedCacheSettings | None = None,
         credential_handles: CardCredentialHandleStore | None = None,
+        authority_backend: str = AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE,
     ) -> None:
         resolved = settings or DelegatedCacheSettings()
         cache = DelegatedCardRuntimeCache(redis, tenant=tenant, project=project)
@@ -109,6 +114,14 @@ class DurableCardPersistence:
             settings=resolved,
         )
         self._resolver = DelegatedCardResolver(cache=cache, store=card_store, settings=resolved)
+        selected_backend = str(authority_backend or "").strip().lower()
+        if (
+            credential_handles is None
+            and selected_backend == AUTHORITY_BACKEND_POSTGRESQL
+        ):
+            raise CardServingUnavailable(
+                "selected_authority.credential_handles_not_bound"
+            )
         self._handles = credential_handles or RedisCardCredentialHandleStore(
             redis,
             tenant=tenant,
