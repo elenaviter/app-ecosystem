@@ -203,6 +203,15 @@ class PartitionedStore:
 
     @contextmanager
     def reading(self, op: str) -> Iterator[ReadRecord]:
+        """Record what one read opens, then log it per agent.
+
+        A read that walks partitions (a listing, retention, recovery) logs at
+        INFO: its range is what the operator asked to see. A lookup by id opens
+        one folder by construction and runs once per record a caller touches;
+        on 2026-09-24 the legacy cleanup made 50,000 of them in an hour and
+        each wrote an INFO line, flooding the rotating relay log. Lookups log
+        at DEBUG, and their last summary still reaches the heartbeat.
+        """
         record = ReadRecord(store=self.store, op=op)
         started = time.monotonic()
         try:
@@ -223,7 +232,8 @@ class PartitionedStore:
                 }
                 with _LAST_READS_LOCK:
                     _LAST_READS[(agent, self.store)] = summary
-                logger.info(
+                logger.log(
+                    logging.DEBUG if op == "lookup" else logging.INFO,
                     "relay store read worker=%s store=%s op=%s range=%s partitions=%d records=%d ms=%d",
                     agent, self.store, op, span, summary["partitions"], summary["records"], elapsed,
                 )

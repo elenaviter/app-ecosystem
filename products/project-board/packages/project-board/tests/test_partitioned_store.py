@@ -199,3 +199,17 @@ def test_an_unreadable_flat_event_is_kept_aside_not_deleted(field):
 
     assert not (legacy / "event_broken.json").exists()
     assert (legacy / ".legacy-unreadable" / "events" / "event_broken.json").read_text() == "{not json"
+
+
+def test_a_lookup_by_id_logs_at_debug_and_a_listing_at_info(tmp_path, caplog):
+    """A lookup runs once per record touched; at INFO it flooded the relay log (2026-09-24)."""
+
+    store = _store(tmp_path)
+    with caplog.at_level(logging.INFO, logger=local_store.__name__):
+        store.find("event_b", agents=["codex-api"], within_days=36500)
+        store.newest(op="list", limit=1)
+    ops = [r.getMessage().split(" op=")[1].split(" ")[0] for r in caplog.records if r.getMessage().startswith("relay store read")]
+    assert "lookup" not in ops and ops.count("list") == 1
+    # The lookup still reaches the heartbeat summary.
+    store.find("event_a", agents=["codex-api"], within_days=36500)
+    assert last_read_summaries("codex-api")["events"]["op"] == "lookup"
