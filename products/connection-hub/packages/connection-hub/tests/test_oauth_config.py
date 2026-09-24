@@ -150,3 +150,46 @@ def test_resource_authorization_profiles_expand_against_its_operation_catalog():
             resource=resource_url,
         )
     ] == ["worker.publish", "assignment.assign"]
+
+
+def test_a_whole_card_row_takes_the_profile_operations_of_every_resource():
+    """W272, 2026-09-24: a whole-card consent keys its grants under `*`, and
+    `pb worker authorize --replace-card` was refused on save with
+    `oauth_authorization_profile_resource_exceeded` for resource `*`."""
+
+    config = oauth_delegated_config_from_connections(
+        {
+            "delegated_credentials": {
+                "oauth": {
+                    "enabled": True,
+                    "capabilities": [
+                        {"grant": "work:relay", "label": "Relay"},
+                        {"grant": "work:coordinate", "label": "Coordinate"},
+                    ],
+                    "resources": [
+                        {
+                            "resource": "https://runtime.example.test/mcp/problem-board",
+                            "tools": {
+                                "worker.publish": {"grants": ["work:relay"]},
+                                "assignment.assign": {"grants": ["work:coordinate"]},
+                            },
+                            "authorization_profiles": {
+                                "worker": {
+                                    "scope": "work:profile:worker",
+                                    "label": "Problem Board worker",
+                                    "operations": ["worker.publish"],
+                                },
+                            },
+                        }
+                    ],
+                }
+            }
+        }
+    )
+    for key in ("*", ""):
+        tools = config.authorization_profile_tools(["work:profile:worker"], resource=key)
+        assert [tool.name for tool in tools] == ["worker.publish"]
+    # A named resource that is not in the catalog still gets nothing.
+    assert config.authorization_profile_tools(
+        ["work:profile:worker"], resource="https://elsewhere.example/mcp"
+    ) == ()

@@ -335,6 +335,22 @@ class OAuthDelegatedClientConfig:
         if not self.authorization_profile_requested(scopes):
             return None
         resource_cfg = self.resource_config(resource)
+        if resource_cfg is None and str(resource or "").strip() in ("", "*"):
+            # The whole-card row: a profile's operations on every resource that
+            # declares it, the same union the authorize route checks (W272).
+            requested = {str(scope).strip() for scope in scopes if str(scope).strip()}
+            union: list[OAuthDelegatedToolConfig] = []
+            for item in self.resources:
+                names: set[str] = set()
+                for profile in item.authorization_profiles:
+                    if profile.scope not in requested:
+                        continue
+                    if "*" in profile.operations:
+                        names.update(tool.name for tool in item.tools)
+                    else:
+                        names.update(profile.operations)
+                union.extend(tool for tool in item.tools if tool.name in names)
+            return tuple(union)
         profiles = self.authorization_profiles_for_scopes(scopes, resource=resource)
         if resource_cfg is None or not profiles:
             return ()
