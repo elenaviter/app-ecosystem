@@ -167,20 +167,23 @@ def test_a_whole_card_row_takes_the_profile_operations_of_every_resource():
                         {"grant": "work:coordinate", "label": "Coordinate"},
                     ],
                     "resources": [
+                        # The live catalog also declares an all-resource row.
+                        {"resource": "*", "grants": ["platform:use"]},
                         {
                             "resource": "https://runtime.example.test/mcp/problem-board",
                             "tools": {
                                 "worker.publish": {"grants": ["work:relay"]},
+                                "worker.heartbeat": {},
                                 "assignment.assign": {"grants": ["work:coordinate"]},
                             },
                             "authorization_profiles": {
                                 "worker": {
                                     "scope": "work:profile:worker",
                                     "label": "Problem Board worker",
-                                    "operations": ["worker.publish"],
+                                    "operations": ["worker.publish", "worker.heartbeat"],
                                 },
                             },
-                        }
+                        },
                     ],
                 }
             }
@@ -188,7 +191,11 @@ def test_a_whole_card_row_takes_the_profile_operations_of_every_resource():
     )
     for key in ("*", ""):
         tools = config.authorization_profile_tools(["work:profile:worker"], resource=key)
-        assert [tool.name for tool in tools] == ["worker.publish"]
+        assert [tool.name for tool in tools] == ["worker.publish", "worker.heartbeat"]
+        grants = {tool.name: tool.grants for tool in tools}
+        # A tool without grants takes its own resource's grants, never the
+        # all-resource row's platform:use.
+        assert "platform:use" not in grants["worker.heartbeat"]
     # A named resource that is not in the catalog still gets nothing.
     assert config.authorization_profile_tools(
         ["work:profile:worker"], resource="https://elsewhere.example/mcp"
