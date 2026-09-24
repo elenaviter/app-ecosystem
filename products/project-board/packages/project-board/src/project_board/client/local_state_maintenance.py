@@ -378,6 +378,9 @@ def keyed_stores(field: Any) -> list[tuple[str, str, Path, int]]:
         if worker.is_dir():
             found.append(("handled", worker.name, worker / "handled", KEYED_STORE_RETENTION_DAYS))
             found.append(("idempotency-mail", worker.name, worker / "idempotency" / "mail", KEYED_STORE_RETENTION_DAYS))
+            # Mail sent outside any project lives under the worker.
+            found.append(("mail-processed", worker.name, worker / "mail" / "processed", KEYED_STORE_RETENTION_DAYS))
+            found.append(("mail-by-control", worker.name, worker / "mail" / "by-control", KEYED_STORE_RETENTION_DAYS))
     responses = control / "operator-responses"
     for worker in sorted(responses.glob("*")) if responses.is_dir() else ():
         if worker.is_dir():
@@ -392,6 +395,7 @@ def keyed_stores(field: Any) -> list[tuple[str, str, Path, int]]:
         for mailbox in sorted(mail.glob("*")) if mail.is_dir() else ():
             if mailbox.is_dir() and mailbox.name not in _MAILBOX_SKIP:
                 found.append(("mail-processed", mailbox.name, mailbox / "processed", KEYED_STORE_RETENTION_DAYS))
+                found.append(("mail-by-control", mailbox.name, mailbox / "by-control", KEYED_STORE_RETENTION_DAYS))
         undeliverable = mail / "undeliverable"
         for address in sorted(undeliverable.glob("*")) if undeliverable.is_dir() else ():
             if address.is_dir():
