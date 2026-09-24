@@ -17,9 +17,9 @@ live that has never executed.
 | --- | --- | --- |
 | Platform or SDK Python (`kdcube_ai_app/...`), including server-rendered OAuth consent pages | `kdcube refresh --path "$REPO" --build` | bare `refresh --build`, which rebuilds the old staged copy; restarting containers |
 | Every `app-ecosystem` distribution the images import (read the list from the runtime's requirements files, `requirements-chat*.txt`, and what they declare, never from memory) | the same refresh, with every such distribution staged in the SAME build through `--maintainer-local-python-package DIST=SOURCE`, as [the maintainer rebuild procedure](repo:app-ecosystem/products/kdcube/procedures/maintainer-rebuild.md) shows | rebuilding without the selector, which keeps the published version |
-| Widget `src/` | the same refresh, or a bundle reload for the widget's bundle; the pipeline builds `dist/`, and the reload returns before that build finishes | editing `src/` alone, building widgets by hand, or reading the reload receipt as the widget being live |
+| Widget `src/` | the same refresh, or `kdcube bundle reload <bundle-id> --commit <approved-sha> --expect <approved-sha>` for the widget's bundle; the pipeline builds `dist/`, and the reload returns before that build finishes | editing `src/` alone, building widgets by hand, or reading the reload receipt as the widget being live |
 | Descriptor content (`bundles.yaml`) | `bundle config apply` or `bundle reload <bundle-id>` | `refresh`, which preserves `$WORKDIR/config` |
-| An app under `apps/` | a bundle reload | nothing further |
+| An app under `apps/` | `kdcube bundle reload <bundle-id> --commit <approved-sha> --expect <approved-sha>`: the proc loads that commit's subtree from the repository's object store as a verified snapshot, and the receipt's `Loaded:` lines name the commit | a reload without `--commit`, which stages whatever the checkout holds at that instant |
 | A released Problem Board host client | install the exact approved `project-board` version, then run `pb source use-release --expect-version <version>`; the source action records the version and restarts the relay when it is installed | upgrading the package alone, because the recorded version remains unchanged and ordinary commands refuse the mismatch |
 | A committed Problem Board client under development | install the six first-party distributions together from clean App Ecosystem and KDCube exports, then run `pb source use-code` with both repository paths, refs, and full approved commits; it exports those six packages as one composite release, atomically selects them for the command and relay, restarts the installed relay, and accepts only the new process's matching startup record | independent installs, an editable install, a live-checkout launcher, or selecting only one repository or the relay |
 | The already selected Problem Board relay source | `pb relay-service restart`. A relay restart is host-local and reloads the recorded source without advancing it | a bundle reload; a restart cannot select a newer checkout or package version |
@@ -132,13 +132,16 @@ source is correct and nothing about what is running, and a commit hash says
 what was asked for and nothing about what was staged. Ask the running process
 for a symbol or behaviour the change introduced: the relay's first stamped
 line plus `pb source status`, `dist/` inside the container after the widget
-build, `pb procedure verify` for the package. A bundle reload reports how many modules it evicted;
+build, `pb procedure verify` for the package. A reload at a commit prints `Loaded:` lines naming the
+commit it loaded and exits nonzero when that commit is not the pin: compare it with the approved
+candidate before anything else. A bundle reload reports how many modules it evicted;
 that count is about the bundle and says nothing about platform packages, so a
 reload never applies a change to one of them.
 
-**Ask what it released.** An action stages the working tree at that instant,
-so the commits it made live are the ones on that tree since the last action,
-not only yours. Name the commit you need live when you ask, and after the
+**Ask what it released.** An action addressed to a commit releases that
+commit, so the commits it made live are the ones between the last activated
+commit and this one, not only yours. A reload without a commit stages the
+working tree at that instant, whatever it holds. Name the commit you need live when you ask, and after the
 action the coordinator says the range that loaded; a `ready` may carry a
 constraint (a commit it must be at or after, a window, a file you are about
 to touch), and the coordinator honours it or re-announces.

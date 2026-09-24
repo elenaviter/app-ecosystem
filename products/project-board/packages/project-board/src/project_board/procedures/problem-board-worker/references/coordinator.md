@@ -158,8 +158,12 @@ was the right rule applied to the wrong case.
 
 ## Reload, refresh, restart
 
-The action stages the working tree, whatever it holds at that instant. The
-list is what makes that survivable until an activation takes a commit.
+Every activation is addressed to a commit: a bundle reload with
+`--commit <sha> --expect <sha>`, a refresh from clean exports of named commits,
+a client switch with `pb source use-code --expect`. The list below decides which
+commit that is and proves it is the one that loaded. A reload without a commit
+stages the working tree at that instant, whatever it holds, so it serves only a
+descriptor-only change.
 
 1. **Read the dashboard first**, and act on each row. The row says what a
    worker is about to change and `git status` says what has changed. A
@@ -175,7 +179,9 @@ list is what makes that survivable until an activation takes a commit.
    me and a `reload` row says please stage me, and a coordinator that
    treats every row as a hold is blocked by the request asking it to
    proceed.
-2. **Announce** the action, the tree, and what it releases (a worker may
+2. **Announce** the action, the tree, the approved commit per tree (full
+   sha: that commit, not the tree, is what the action loads), and what it
+   releases (a worker may
    have published the activation it asks for as a `reload` row with
    targets `bundle:<id>` and `procedure:<package>@<revision>`, so the
    others see a reload coming, and which revision, before the mail): the commits since
@@ -201,7 +207,15 @@ list is what makes that survivable until an activation takes a commit.
    and cannot run. Identical blocks sit under different bundle ids in that
    file, so edit the live descriptor by locating the bundle id, never by the
    first match of a block.
-4. **Execute** the action `runtime-actions.md` names for the tree. A bundle
+4. **Execute** the action `runtime-actions.md` names for the tree, at the
+   announced commit: `kdcube bundle reload <bundle-id> --commit <sha> --expect
+   <sha>`, `kdcube refresh --build` from exports of the announced commits,
+   `pb source use-code` with `--expect` and `--expect-kdcube`. Then **check
+   the receipt against the approved candidate**: the reload's `Loaded:`
+   commit, the relay's first stamped line (`source=snapshot`,
+   `app_ecosystem=<sha>`), and the commits the refresh exported each equal
+   the announced commit. A receipt that names another commit is a failed
+   activation: report it as failed, with both commits, and stop there. A bundle
    reload returns before the widget build finishes, and a widget has three
    states after a reload: build pending, no build because the signature was
    unchanged and the artifact is already current, and no build because it
