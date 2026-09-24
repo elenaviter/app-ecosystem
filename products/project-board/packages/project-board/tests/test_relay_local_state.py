@@ -20,6 +20,7 @@ import pytest
 
 from project_board.client import local_state_maintenance as maintenance
 from project_board.client import reconciliation_receipts as receipts
+from project_board.client.outbox_store import OutboxStore, state_of_name
 from project_board.client.reconciliation_publication import OUTBOX_KIND
 from project_board.client.store import SharedFieldStore
 from project_board.contract.mailbox_reconciliation_contract import (
@@ -68,13 +69,20 @@ def _receipt(*, receipt_id: str, started_at: str = "2026-09-23T20:00:00Z", archi
 
 
 def _publication_rows(field: SharedFieldStore) -> dict[str, list[dict]]:
-    rows: dict[str, list[dict]] = {}
-    for folder in ("pending", "leased", "sent", "refused"):
-        directory = field.control / "outbox" / folder
-        rows[folder] = [
-            row for row in (json.loads(p.read_text()) for p in sorted(directory.glob("*.json")))
-            if row.get("kind") == OUTBOX_KIND
-        ] if directory.is_dir() else []
+    """Publication rows by where they are: in flight per agent, or settled by state."""
+
+    outbox = OutboxStore(field.control)
+    rows: dict[str, list[dict]] = {"pending": [], "leased": [], "sent": [], "refused": []}
+    for folder in ("pending", "leased"):
+        for path in outbox.in_flight(folder):
+            row = json.loads(path.read_text())
+            if row.get("kind") == OUTBOX_KIND:
+                rows[folder].append(row)
+    for path in outbox.settled_paths(project_ref=f"work:project:{PROJECT}", op="test"):
+        row = json.loads(path.read_text())
+        state = state_of_name(path.name) or str(row.get("state") or "")
+        if row.get("kind") == OUTBOX_KIND:
+            rows["refused" if state == "refused" else "sent"].append(row)
     return rows
 
 
@@ -171,7 +179,8 @@ def test_settled_outbox_rows_expire_and_rows_in_flight_never_do(field):
 
     removed = maintenance.apply_outbox_retention(field)
 
-    assert removed == {"sent": 1, "refused": 1}
+    # Rows from before 2b in the flat folders expire by modification time.
+    assert removed["flat"] == 2
     assert sorted(p.name for p in root.rglob("*.json")) == ["fresh-sent.json", "old-pending.json"]
 
 
