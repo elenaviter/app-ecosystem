@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.5"
+    assert package["revision"] == "2026.09.24.6"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -195,6 +195,8 @@ def test_source_selection_guidance_is_added_without_rewriting_collaboration() ->
     assert "Work that touches no repository says so with an empty list" in coordinator
     assert "repositories not declared" in coordinator
     assert "before fast-forwarding that checkout" in coordinator
+    # W33 (#69), 2026-09-24: a widget-only PR broke contract tests that read widget source.
+    assert "the app's Python suite runs on `main` with the change merged, widget-only changes included" in coordinator
     assert "one recorded source selection, not from any working tree" in collaboration
     assert "The integration ref is source history, not a runtime selection" in collaboration
 
