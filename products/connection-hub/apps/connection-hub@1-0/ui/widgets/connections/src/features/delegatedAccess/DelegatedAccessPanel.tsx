@@ -130,7 +130,7 @@ import type {
   DelegatedInvocationPolicy,
   DelegatedToKdcubeAccount,
 } from '../../api/types';
-import { CardRuntimeIdentityFields } from './CardRuntimeIdentity';
+import { CardRuntimeIdentityFields, RuntimeIdentityFields } from './CardRuntimeIdentity';
 import {
   clearIssuedDelegatedAccess,
   createDelegatedAccess,
@@ -710,6 +710,12 @@ function OAuthCardRequest({ draft }: { draft: OAuthConsentDraft }) {
             <dd><a href={draft.client.client_uri} target="_blank" rel="noreferrer">{draft.client.client_uri}</a></dd>
           </>
         ) : null}
+        <RuntimeIdentityFields
+          clientMetadata={draft.client.client_metadata}
+          owner={draft.grantor.label || draft.grantor.subject}
+          ownerTitle={draft.grantor.subject}
+          layout="facts"
+        />
         <dt>{multiResource ? 'Authorization route' : 'Entry service'}</dt>
         <dd>
           <strong>{draft.entry_door.label || 'Service endpoint'}</strong>
