@@ -109,6 +109,10 @@ LOCAL_JOURNAL_MAPPING_CODES = frozenset(
 # Attendance adapters are rebuilt every cycle, so the once-per-gap log line
 # is remembered at module scope, keyed by relay, project, and code.
 _reported_journal_gaps: set[tuple[str, str, str]] = set()
+# W304 D13: one event when a project's journal becomes unavailable on this
+# machine, one when it is back. The incident lives in a durable record in the
+# field store, so a restart never repeats or loses either event.
+JOURNAL_NOTICE_KIND = "worker.journal"
 
 # The remote worker-session row is a presence projection, not a replica of the
 # host's delivery ledger. Twenty control refs are enough to reconcile recently
@@ -569,7 +573,9 @@ class RelayConfig:
             return None
         return JournalWorkspace(
             self.journal_workspace_root,
-            RepositoryMap.from_mapping(dict(self.source_repositories)),
+            # A checkout that is not on this machine is reported per project
+            # when a journal needs it, and never keeps a channel closed (W304 D13).
+            RepositoryMap.from_mapping(dict(self.source_repositories), require_existing=False),
         )
 
 
@@ -1014,6 +1020,145 @@ class ProblemBoardHostRelayAdapter:
         )
         return failure
 
+    def _journal_notice_event(self, *, key: str, summary: str, metadata: Mapping[str, Any]) -> bool:
+        try:
+            self.field.enqueue_service_event(
+                str(self.config.project_id),
+                worker_name=self.config.worker_name,
+                kind=JOURNAL_NOTICE_KIND,
+                summary=summary,
+                source_event_ref=f"relay:{key}",
+                metadata=dict(metadata),
+                idempotency_key=key,
+            )
+            return True
+        except DomainError:
+            # The project is not materialized here yet: the next cycle tries again.
+            return False
+
+    def _journal_record(self, project_ref: str) -> dict[str, Any]:
+        try:
+            return dict(self.field.journal_incident_record(self.config.worker_name, project_ref) or {})
+        except DomainError:
+            return {}
+
+    def _write_journal_record(self, project_ref: str, record: Mapping[str, Any] | None) -> bool:
+        try:
+            self.field.write_journal_incident_record(self.config.worker_name, project_ref, record)
+            return True
+        except DomainError:
+            logger.debug("Could not write the journal incident record.", exc_info=True)
+            return False
+
+    def _journal_open_key(self, record: Mapping[str, Any]) -> str:
+        return f"journal:{self.config.worker_name}:{record.get('project_ref')}:{record.get('since')}"
+
+    def _journal_close_key(self, record: Mapping[str, Any]) -> str:
+        return f"{self._journal_open_key(record)}:restored"
+
+    def _queue_journal_open(self, record: Mapping[str, Any]) -> bool:
+        metadata = {
+            "notice": "journal",
+            "state": "unavailable",
+            "project_ref": str(record.get("project_ref") or ""),
+            "repository": str(record.get("repository") or ""),
+            "path": str(record.get("path") or ""),
+            "error_code": str(record.get("error_code") or ""),
+            "since": str(record.get("since") or ""),
+            "runtime_kind": self.config.runtime_kind,
+            "runtime_session_id": self.config.runtime_session_id,
+            "worker_alias": self.config.worker_alias or "",
+            "reported_by": "relay",
+        }
+        return self._journal_notice_event(
+            key=self._journal_open_key(record), summary=str(record.get("message") or ""), metadata=metadata
+        )
+
+    def _queue_journal_close(self, record: Mapping[str, Any]) -> bool:
+        metadata = {
+            "notice": "journal",
+            "state": "available",
+            "project_ref": str(record.get("project_ref") or ""),
+            "since": str(record.get("since") or ""),
+            "restored_at": str(record.get("closed_at") or ""),
+            "reported_by": "relay",
+        }
+        return self._journal_notice_event(
+            key=self._journal_close_key(record),
+            summary=f"journal available again for {record.get('project_ref')}",
+            metadata=metadata,
+        )
+
+    def _report_journal_incident(self, project_ref: str, gap: Mapping[str, Any] | None) -> None:
+        """Report a project's journal being unavailable once, and its return once (W304 D13).
+
+        The same record and phases as the notification-path incident: the
+        record is written before the first event (the intent is the gate), each
+        event's phase moves from pending to enqueued, a phase lost after an
+        enqueue is repaired from the outbox receipt, and a relay rebuilt or
+        restarted in the middle resumes from the record it finds. So the card
+        is told once that the journal is unavailable and once that it is back.
+        """
+
+        record = self._journal_record(project_ref)
+        if record and record.get("close_note") == "pending":
+            if self._note_exists(self._journal_close_key(record)) or self._queue_journal_close(record):
+                self._write_journal_record(project_ref, None)
+                record = {}
+            else:
+                return
+        if gap is not None:
+            same = (
+                record
+                and record.get("error_code") == gap["error_code"]
+                and record.get("path", "") == gap.get("path", "")
+            )
+            if same:
+                if record.get("open_note") == "enqueued":
+                    return
+                if self._note_exists(self._journal_open_key(record)) or self._queue_journal_open(record):
+                    record["open_note"] = "enqueued"
+                    self._write_journal_record(project_ref, record)
+                return
+            if record:
+                # A different gap replaced the one on record: close the old one if it was ever told.
+                if record.get("open_note") == "enqueued" or self._note_exists(self._journal_open_key(record)):
+                    record["closed_at"] = utc_now()
+                    if not self._queue_journal_close(record):
+                        record["close_note"] = "pending"
+                        self._write_journal_record(project_ref, record)
+                        return
+                self._write_journal_record(project_ref, None)
+            record = {
+                "project_ref": project_ref,
+                "since": utc_now(),
+                "repository": str(gap.get("repository") or ""),
+                "path": str(gap.get("path") or ""),
+                "error_code": str(gap["error_code"]),
+                "message": str(gap["message"]),
+                "open_note": "pending",
+            }
+            if not self._write_journal_record(project_ref, record):
+                return
+            if self._queue_journal_open(record):
+                record["open_note"] = "enqueued"
+                self._write_journal_record(project_ref, record)
+            return
+        if not record:
+            return
+        told = record.get("open_note") == "enqueued" or self._note_exists(self._journal_open_key(record))
+        if not told:
+            # Back before anyone was told: nothing to close.
+            self._write_journal_record(project_ref, None)
+            return
+        record["open_note"] = "enqueued"
+        record["closed_at"] = record.get("closed_at") or utc_now()
+        record["close_note"] = "pending"
+        if not self._write_journal_record(project_ref, record):
+            return
+        if self._queue_journal_close(record):
+            self._write_journal_record(project_ref, None)
+
     def _reconcile_journal_binding(self, heartbeat: Mapping[str, Any]) -> dict[str, Any]:
         if self.journal_workspace is None:
             return {"state": "disabled"}
@@ -1031,13 +1176,22 @@ class ProblemBoardHostRelayAdapter:
             if exc.code not in LOCAL_JOURNAL_MAPPING_CODES:
                 raise
             details = dict(exc.details or {})
+            repository = str(details.get("repository") or details.get("alias") or "")
+            path = str(details.get("path") or "")
             gap = {
                 "state": "unmapped",
                 "project_ref": project_ref,
                 "journal_home_ref": str(binding.get("journal_home_ref") or ""),
                 "error_code": exc.code,
                 "error_summary": str(exc),
-                "repository": str(details.get("repository") or details.get("alias") or ""),
+                "repository": repository,
+                "path": path,
+                # One sentence for the worker and the operator (W304 D13).
+                "message": (
+                    f"journal unavailable for {project_ref}: {repository} not found at {path}"
+                    if path
+                    else f"journal unavailable for {project_ref}: {exc}"
+                ),
                 "mapped_repositories": sorted(self.journal_workspace.repositories.roots),
             }
             self._journal_mapping_gap = gap
@@ -1045,17 +1199,17 @@ class ProblemBoardHostRelayAdapter:
             if key not in _reported_journal_gaps:
                 _reported_journal_gaps.add(key)
                 logger.warning(
-                    "Problem Board journal ref not mapped on this host project=%s "
-                    "ref=%s code=%s repository=%s mapped=%s; controls still flow, "
-                    "journal views refuse until `pb host configure --set-source-repo` "
-                    "maps it or the project binding names a mapped alias",
-                    project_ref,
-                    gap["journal_home_ref"],
+                    "Problem Board %s (code=%s ref=%s mapped=%s); controls still flow, "
+                    "journal views refuse until the checkout exists or "
+                    "`pb host configure --set-source-repo` maps it",
+                    gap["message"],
                     exc.code,
-                    gap["repository"],
+                    gap["journal_home_ref"],
                     ",".join(gap["mapped_repositories"]) or "-",
                 )
+            self._report_journal_incident(project_ref, gap)
             return gap
+        self._report_journal_incident(project_ref, None)
         self._journal_mapping_gap = None
         _reported_journal_gaps.difference_update(
             {key for key in _reported_journal_gaps if key[:2] == (self.config.relay_id, project_ref)}
