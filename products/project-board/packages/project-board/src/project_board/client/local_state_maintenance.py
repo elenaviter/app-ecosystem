@@ -378,6 +378,7 @@ def keyed_stores(field: Any) -> list[tuple[str, str, Path, int]]:
         if worker.is_dir():
             found.append(("handled", worker.name, worker / "handled", KEYED_STORE_RETENTION_DAYS))
             found.append(("idempotency-mail", worker.name, worker / "idempotency" / "mail", KEYED_STORE_RETENTION_DAYS))
+            found.append(("idempotency-events", worker.name, worker / "idempotency" / "events", KEYED_STORE_RETENTION_DAYS))
             # Mail sent outside any project lives under the worker.
             found.append(("mail-processed", worker.name, worker / "mail" / "processed", KEYED_STORE_RETENTION_DAYS))
             found.append(("mail-by-control", worker.name, worker / "mail" / "by-control", KEYED_STORE_RETENTION_DAYS))

@@ -3701,20 +3701,26 @@ def _worker_command(args: Any) -> dict[str, Any]:
         # that stops appearing is indistinguishable from one that cannot be
         # heard, and the coordinator usually finds out neither way.
         #
-        # The operator inbox lives on the board, not in this machine's field, so
-        # this is remote mail. Sending it locally looked for a worker record
-        # named operator and failed with field_record_not_found on the first
-        # real use of this command.
-        notice = field.enqueue_remote_mail(
+        # It is a project event, not mail (operator ruling, 2026-09-23, W182):
+        # a notice a `pb` state command writes is a fact about the worker, not
+        # a message from it, and it carries its facts so the board can show it.
+        reason = args.reason.replace("_", " ")
+        last = args.work_ref or "nothing recorded"
+        notice = field.enqueue_service_event(
             parse_ref(args.project_ref).object_id,
-            sender=identity.worker_name,
-            recipient="operator",
-            kind="update",
-            subject=f"Out of work: {args.reason.replace('_', ' ')}",
-            body=(
-                f"{args.summary}\n\nLast worked on: {args.work_ref or 'nothing recorded'}"
-            ),
+            worker_name=identity.worker_name,
+            kind="worker.idle",
+            summary=f"Out of work: {reason}. {args.summary} Last worked on: {last}.",
+            source_event_ref=f"idle:{identity.worker_name}:{declared['since']}",
             work_ref=args.work_ref,
+            metadata={
+                "notice": "idle",
+                "idle_reason": args.reason,
+                "since": declared["since"],
+                "summary": args.summary,
+                "last_work_ref": args.work_ref or "",
+                "reported_by": "pb worker idle",
+            },
             idempotency_key=f"idle:{identity.worker_name}:{declared['since']}",
         )
         return {"worker": identity.worker_name, "idle": declared, "notice": notice}

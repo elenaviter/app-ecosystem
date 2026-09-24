@@ -94,10 +94,14 @@ running. `listener.state` does not move when the watch stops. Do not read it
 for this.
 
 The relay reads this worker's reachability every cycle. On the transition to
-`not_listening` for a working or waiting Claude Code session it queues one
-direct operator update through the worker's own outbox, naming the outage
+`not_listening` for a working or waiting Claude Code session it publishes one
+`worker.notification_path` event on the worker's project, naming the outage
 start, the pending count and the session id to type into, and one more on
-recovery. It can do that only while its own route to the board is up.
+recovery. It is an event, never mail: nothing lands in the operator's inbox
+and nothing is attributed to the worker as a message. A worker attending no
+project publishes no event, and its card shows the path as stale or
+unreachable. The relay can publish only while its own route to the board is
+up. `pb worker idle` publishes a `worker.idle` event the same way.
 
 ## A network outage
 
