@@ -3780,11 +3780,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
             },
         }
     if args.worker_command == "context":
-        workspace = JournalWorkspace(
-            config.journal_workspace_root,
-            RepositoryMap.from_mapping(dict(config.source_repositories)),
-        )
-        return workspace.context(args.project_ref)
+        return _worker_project_context(config, field, str(args.project_ref))
     project_ref = str(getattr(args, "project_ref", "") or "").strip()
     parsed_project = parse_ref(project_ref) if project_ref else None
     if parsed_project is not None and parsed_project.kind != "project":
@@ -4188,6 +4184,62 @@ def _worker_command(args: Any) -> dict[str, Any]:
             repository_journal_ref=args.repository_journal_ref,
         )
     raise ValueError(f"unsupported worker command: {args.worker_command}")
+
+
+def _worker_project_context(
+    config: HostRelayConfig, field: SharedFieldStore, project_ref: str
+) -> dict[str, Any]:
+    """Where this worker's project stands on this host: its team first, then its journal (W304 finding 39).
+
+    A just-linked agent could not see its coordinator or teammates: the
+    command returned only the journal, and failed when the journal was not
+    bound yet. The team comes from the record the relay writes on
+    attendance, and a journal that is not available is a named state.
+    """
+
+    parsed = parse_ref(project_ref)
+    if parsed.kind != "project":
+        raise DomainError("field_project_ref_invalid", "Expected a work:project reference.")
+    on_host = field._project_path(parsed.object_id).exists()
+    team = field.read_project_team(parsed.object_id) if on_host else []
+    repositories = (
+        field.read_project_repositories(parsed.object_id)
+        if on_host
+        else {"revision": 0, "repositories": []}
+    )
+    try:
+        journal = JournalWorkspace(
+            config.journal_workspace_root,
+            RepositoryMap.from_mapping(dict(config.source_repositories), require_existing=False),
+        ).context(project_ref)
+        journal_state = {"journal_state": "available"}
+    except DomainError as exc:
+        journal = {}
+        journal_state = {
+            "journal_state": "unavailable",
+            "journal_error_code": exc.code,
+            "journal_error": str(exc),
+        }
+    return {
+        "project_ref": project_ref,
+        "project_on_this_host": on_host,
+        **(
+            {}
+            if on_host
+            else {"project_note": "The relay writes this project's record on its next poll."}
+        ),
+        "coordinators": [
+            str(member.get("worker_name") or "")
+            for member in team
+            if str(member.get("role") or "") == "coordinator"
+        ],
+        "team": team,
+        # The repositories to set the workspace up from (W304 finding 39).
+        "repositories": repositories["repositories"],
+        "repositories_revision": repositories["revision"],
+        **journal_state,
+        **journal,
+    }
 
 
 PROCEDURE_TARGETS = ("codex", "claude-code")

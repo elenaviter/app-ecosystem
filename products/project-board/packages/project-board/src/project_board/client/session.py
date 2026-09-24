@@ -542,9 +542,31 @@ def pull_worker_input(
     )
     already_held_count = int(active_before.get("total") or 0)
 
+    projects_not_on_host: list[dict[str, Any]] = []
     for project_ref in project_refs:
         parsed = parse_ref(str(project_ref))
         if parsed.kind != "project":
+            continue
+        if not field._project_path(parsed.object_id).exists():
+            # Attended on the board, not yet written on this host (W304
+            # finding 39): the relay writes the record on its next poll of
+            # the project, and the project's mail waits on the board until
+            # then. One such project never stops the rest of the receive. It
+            # is listed after the scoped projects, whose positions the lease
+            # loop below uses as indexes.
+            projects_not_on_host.append(
+                {
+                    "project_ref": str(project_ref),
+                    "project_id": parsed.object_id,
+                    "revision": 0,
+                    "leased_messages": 0,
+                    "state": "not_on_this_host",
+                    "note": (
+                        "The relay writes this project's record on its next poll; "
+                        "its mail waits on the board until then."
+                    ),
+                }
+            )
             continue
         project_scopes.append((str(project_ref), parsed.object_id))
         projects.append(
@@ -565,6 +587,7 @@ def pull_worker_input(
             and str(row.get("assignment_ref") or "")
         )
     assignment_refs = list(dict.fromkeys(assignment_refs))
+    projects.extend(projects_not_on_host)
 
     def report_delivery_failure(
         project_id: str,

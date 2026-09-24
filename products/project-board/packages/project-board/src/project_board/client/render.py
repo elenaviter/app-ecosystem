@@ -207,7 +207,9 @@ def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
     for project in result.get("projects") or []:
         if isinstance(project, Mapping):
             lines.append(
-                f"project: {project.get('project_ref')} · revision {project.get('revision')} · leased {project.get('leased_messages')}"
+                f"project: {project.get('project_ref')} · not on this host yet: {project.get('note')}"
+                if project.get("state") == "not_on_this_host"
+                else f"project: {project.get('project_ref')} · revision {project.get('revision')} · leased {project.get('leased_messages')}"
             )
     for ref in result.get("assignments") or []:
         lines.append(f"assignment: {ref}")
