@@ -108,6 +108,7 @@ from connection_hub.delegated_credentials.resource_operations import (
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
     CREDENTIALLESS_CARD_SOURCE,
+    PROJECT_PERSON_SELECTION_SOURCE,
     CONTROL_COMPOSITION_AND,
     CONTROL_COMPOSITIONS,
     NAMED_SERVICE_OPERATIONS_ALL,
@@ -140,6 +141,12 @@ from connection_hub.delegated_credentials.controls.snapshot import (
 )
 from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationPort,
+)
+from connection_hub.delegated_credentials.project_identity_authorization import (
+    ProjectOperationRequest,
+)
+from connection_hub.delegated_credentials.project_identity_lifecycle import (
+    ProjectIdentityLifecycleError,
 )
 from connection_hub.delegated_credentials.project_person_access import (
     ProjectPersonControlLifecycle,
@@ -586,6 +593,7 @@ ACCESS_SOURCE_OAUTH = "oauth"
 # client_id is caller-supplied and stable, so re-consent updates one record.
 ACCESS_SOURCE_AGENT = "agent"
 ACCESS_SOURCE_CONTROL = CREDENTIALLESS_CARD_SOURCE
+ACCESS_SOURCE_PROJECT_PERSON = PROJECT_PERSON_SELECTION_SOURCE
 
 
 def oauth_card_kind(
@@ -1258,11 +1266,17 @@ class AutomationAccessRecord:
             ACCESS_SOURCE_OAUTH: "oauth",
             ACCESS_SOURCE_MANUAL: "issued_token",
             ACCESS_SOURCE_CONTROL: "credentialless",
+            ACCESS_SOURCE_PROJECT_PERSON: "platform_session",
         }.get(self.source, self.source or "issued_token")
         public["credential_reach"] = (
             "multi_resource"
             if self.source
-            in {ACCESS_SOURCE_AGENT, ACCESS_SOURCE_MANUAL, ACCESS_SOURCE_CONTROL}
+            in {
+                ACCESS_SOURCE_AGENT,
+                ACCESS_SOURCE_MANUAL,
+                ACCESS_SOURCE_CONTROL,
+                ACCESS_SOURCE_PROJECT_PERSON,
+            }
             or client_uses_full_card_catalog(self.client_metadata)
             else "single_resource"
         )
@@ -5703,6 +5717,52 @@ class AutomationAccessService:
             target_subject=target_subject,
             request_id=request_id,
         )
+
+    async def project_operation_authorize(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        resource: str,
+        operation: str,
+        required_grants: Any = (),
+        request_resource: str = "",
+        surface: str = "application",
+    ) -> dict[str, Any]:
+        """Evaluate one signed-in person's operation against the live edge."""
+
+        person_subject = _subject_from_user(user)
+        if not person_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        request = ProjectOperationRequest(
+            person_subject=person_subject,
+            project_ref=project_ref,
+            resource=resource,
+            operation=operation,
+            required_grants=required_grants,
+            request_resource=request_resource,
+            surface=surface,
+        )
+        try:
+            decision = await self._project_person_controls.authorize_operation(request)
+        except ProjectIdentityLifecycleError as exc:
+            return {
+                "ok": False,
+                "error": exc.reason,
+                "status": 409,
+            }
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "project_identity_edge_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        return decision.to_dict()
 
     async def control_card_basis(
         self,

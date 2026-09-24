@@ -16,6 +16,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CONTROL_COMPOSITION_OR,
     CardAuthority,
 )
+from connection_hub.delegated_credentials.catalog.models import CatalogDocument
 from connection_hub.delegated_credentials.controls.project_person import (
     PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE,
     PROJECT_PERSON_CONTROL_PROPERTY,
@@ -29,11 +30,21 @@ from connection_hub.delegated_credentials.project_authorization import (
 from connection_hub.delegated_credentials.project_person_access import (
     ProjectPersonControlLifecycle,
 )
+from connection_hub.delegated_credentials.project_identity_lifecycle import (
+    PROJECT_IDENTITY_EDGE_PROVENANCE,
+    ProjectPersonCardIdentity,
+)
+from connection_hub.delegated_credentials.project_identity_authorization import (
+    ProjectOperationRequest,
+)
 
 
 PROJECT_REF = "work:project:quickstart"
 ADMIN = "platform-admin-1"
 TARGET = "platform-user-2"
+RESOURCE = "https://board.example.test/mcp"
+OPERATION = "review.accept"
+GRANT = "work:review"
 
 
 @dataclass(frozen=True)
@@ -91,7 +102,21 @@ class _Host:
         return record
 
     async def _active_catalog(self):
-        return SimpleNamespace(version="catalog-v1")
+        return CatalogDocument.build(
+            {
+                "delegated_credentials": {
+                    "oauth": {
+                        "resources": [
+                            {
+                                "resource": RESOURCE,
+                                "grants": [GRANT],
+                                "tools": {OPERATION: {"grants": [GRANT]}},
+                            }
+                        ]
+                    }
+                }
+            }
+        )
 
     @staticmethod
     def _version_of(active):
@@ -235,6 +260,11 @@ async def test_create_is_project_held_target_named_and_audited() -> None:
         target_subject=TARGET,
     )
     stored, state = host.records[(identity.project_subject, identity.control_id)]
+    person_identity = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF,
+        person_subject=TARGET,
+    )
+    my_card, my_card_state = host.records[(TARGET, person_identity.my_card_id)]
     audit = stored.provenance[PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE]
     assert result["ok"] is True
     assert result["created"] is True
@@ -242,6 +272,20 @@ async def test_create_is_project_held_target_named_and_audited() -> None:
     assert stored.grantor_subject == identity.project_subject
     assert stored.grantor_subject != TARGET
     assert stored.properties[PROJECT_PERSON_CONTROL_PROPERTY]["target_subject"] == TARGET
+    assert my_card_state == CARD_STATE_ACTIVE
+    assert my_card.grantor_subject == TARGET
+    assert my_card.delegate_subject == TARGET
+    assert my_card.resource_grants == {}
+    assert my_card.resource_operations == {}
+    assert my_card.named_service_operations.is_none
+    assert my_card.control_card is not None
+    assert my_card.control_card.control_id == identity.control_id
+    assert my_card.provenance[PROJECT_IDENTITY_EDGE_PROVENANCE]["edge_ref"] == (
+        person_identity.edge_ref
+    )
+    assert result["my_card_created"] is True
+    assert result["my_card"]["access_id"] == person_identity.my_card_id
+    assert result["project_identity_edge"]["edge_ref"] == person_identity.edge_ref
     assert audit["action"] == "created"
     assert audit["actor_subject"] == ADMIN
     assert audit["request_id"] == "request-create"
@@ -405,6 +449,92 @@ async def test_named_service_only_create_still_resolves_the_decision_ceiling() -
 
 
 @pytest.mark.asyncio
+async def test_project_operation_resolves_the_recorded_edge_and_both_current_cards() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle)
+    control_identity = ProjectPersonControlIdentity.build(
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+    )
+    person_identity = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF,
+        person_subject=TARGET,
+    )
+    control, control_state = host.records[
+        (control_identity.project_subject, control_identity.control_id)
+    ]
+    my_card, my_card_state = host.records[(TARGET, person_identity.my_card_id)]
+    selected = {
+        "resource_grants": {RESOURCE: (GRANT,)},
+        "resource_operations": {RESOURCE: (OPERATION,)},
+    }
+    host.records[(control_identity.project_subject, control_identity.control_id)] = (
+        _Record(dataclasses.replace(control.authority, **selected)),
+        control_state,
+    )
+    host.records[(TARGET, person_identity.my_card_id)] = (
+        _Record(dataclasses.replace(my_card.authority, **selected)),
+        my_card_state,
+    )
+
+    decision = await lifecycle.authorize_operation(
+        ProjectOperationRequest(
+            person_subject=TARGET,
+            project_ref=PROJECT_REF,
+            resource=RESOURCE,
+            operation=OPERATION,
+            required_grants=(GRANT,),
+        )
+    )
+
+    assert decision.allowed is True
+    assert decision.reason == "project_operation_allowed"
+    assert decision.edge is not None
+    assert decision.edge.edge_ref == person_identity.edge_ref
+    assert decision.control_card is not None
+    assert decision.my_card is not None
+
+
+@pytest.mark.asyncio
+async def test_project_operation_reports_malformed_control_through_evaluator() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle)
+    identity = ProjectPersonControlIdentity.build(
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+    )
+    control, state = host.records[(identity.project_subject, identity.control_id)]
+    malformed_properties = dict(control.properties)
+    malformed_properties.pop(PROJECT_PERSON_CONTROL_PROPERTY)
+    host.records[(identity.project_subject, identity.control_id)] = (
+        _Record(
+            dataclasses.replace(
+                control.authority,
+                properties=malformed_properties,
+            )
+        ),
+        state,
+    )
+
+    decision = await lifecycle.authorize_operation(
+        ProjectOperationRequest(
+            person_subject=TARGET,
+            project_ref=PROJECT_REF,
+            resource=RESOURCE,
+            operation=OPERATION,
+            required_grants=(GRANT,),
+        )
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "control_card_identity_invalid"
+    assert decision.blocking_boundary == "control_card"
+    assert decision.details == {"identity_reason": "project_person_control_marker_missing"}
+
+
+@pytest.mark.asyncio
 async def test_admin_revoke_is_audited_and_removes_live_authority() -> None:
     host = _Host()
     port = _Port()
@@ -424,10 +554,17 @@ async def test_admin_revoke_is_audited_and_removes_live_authority() -> None:
         target_subject=TARGET,
     )
     stored, state = host.records[(identity.project_subject, identity.control_id)]
+    person_identity = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF,
+        person_subject=TARGET,
+    )
+    _my_card, my_card_state = host.records[(TARGET, person_identity.my_card_id)]
     audit = stored.provenance[PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE]
     assert result["ok"] is True
     assert result["removed"] is True
     assert state == CARD_STATE_REVOKED
+    assert my_card_state == CARD_STATE_REVOKED
+    assert result["project_identity_edge_removed"] is True
     assert audit["action"] == "revoked"
     assert audit["actor_subject"] == ADMIN
     assert audit["request_id"] == "request-revoke"

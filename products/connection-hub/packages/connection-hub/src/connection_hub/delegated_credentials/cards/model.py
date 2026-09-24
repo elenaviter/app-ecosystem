@@ -80,6 +80,10 @@ CARD_STATE_ACTIVE = "active"
 CARD_STATE_REVOKED = "revoked"
 
 CREDENTIALLESS_CARD_SOURCE = "control"
+# A signed-in person needs no reusable bearer for the positive selection that
+# narrows her project access.  This source keeps that selection durable and
+# owner-editable while making its credential-free storage contract explicit.
+PROJECT_PERSON_SELECTION_SOURCE = "project-person"
 
 CONTROL_COMPOSITION_AND = "and"
 CONTROL_COMPOSITION_OR = "or"
@@ -631,6 +635,19 @@ class CardAuthority:
             if self.control_card is not None:
                 raise CardRecordError("control_card_chain_not_supported")
             mode = mode or CONTROL_COMPOSITION_AND
+        elif self.source == PROJECT_PERSON_SELECTION_SOURCE:
+            if self.card_kind != CARD_KIND_AUTOMATION:
+                raise CardRecordError("project_person_card_kind_invalid")
+            if not self.issuer_ref:
+                raise CardRecordError("project_person_card_issuer_ref_missing")
+            if not self.issuer_kind:
+                raise CardRecordError("project_person_card_issuer_kind_missing")
+            if not self.grantor_subject or self.delegate_subject != self.grantor_subject:
+                raise CardRecordError("project_person_card_subject_mismatch")
+            if self.expires_at:
+                raise CardRecordError("project_person_card_has_expiry")
+            if self.control_card is None:
+                raise CardRecordError("project_person_card_control_binding_missing")
         object.__setattr__(self, "composition_mode", mode)
 
     def content_hash(self) -> str:
@@ -672,7 +689,7 @@ def authority_is_usable(authority: "CardAuthority", moment: int) -> bool:
     """Whether this authority may still be served at ``moment``."""
     if authority.state != CARD_STATE_ACTIVE:
         return False
-    if authority_is_credentialless(authority):
+    if authority_is_credential_free(authority):
         return True
     return authority.expires_at > moment
 
@@ -686,11 +703,32 @@ def authority_is_credentialless(authority: "CardAuthority") -> bool:
     )
 
 
+def authority_is_project_person_selection(authority: "CardAuthority") -> bool:
+    """Whether this Card is a signed-in person's persistent project selection."""
+
+    return (
+        authority.source == PROJECT_PERSON_SELECTION_SOURCE
+        and authority.card_kind == CARD_KIND_AUTOMATION
+        and bool(authority.grantor_subject)
+        and authority.delegate_subject == authority.grantor_subject
+        and authority.expires_at == 0
+        and authority.control_card is not None
+    )
+
+
+def authority_is_credential_free(authority: "CardAuthority") -> bool:
+    """Whether persistence intentionally keeps no reusable credential handles."""
+
+    return authority_is_credentialless(authority) or authority_is_project_person_selection(
+        authority
+    )
+
+
 def authority_projection_ttl(
     authority: "CardAuthority", moment: int
 ) -> int | None:
-    """Serving residency; ``None`` is a credentialless persistent projection."""
-    if authority_is_credentialless(authority):
+    """Serving residency; ``None`` is a persistent credential-free projection."""
+    if authority_is_credential_free(authority):
         return None
     return max(0, authority.expires_at - int(moment))
 
@@ -777,6 +815,7 @@ __all__ = [
     "CARD_AUTHORITY_SCHEMA_V5",
     "CARD_AUTHORITY_SCHEMA_V6",
     "CREDENTIALLESS_CARD_SOURCE",
+    "PROJECT_PERSON_SELECTION_SOURCE",
     "CONTROL_COMPOSITION_AND",
     "CONTROL_COMPOSITION_OR",
     "CONTROL_COMPOSITIONS",
@@ -795,7 +834,9 @@ __all__ = [
     "ControlCardBinding",
     "NamedServiceSelection",
     "authority_is_usable",
+    "authority_is_credential_free",
     "authority_is_credentialless",
+    "authority_is_project_person_selection",
     "authority_projection_ttl",
     "card_authority_payload_hash",
     "card_revision_name",

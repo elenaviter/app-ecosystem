@@ -76,6 +76,42 @@ def _roles(values: Iterable[Any] | str | None) -> frozenset[str]:
 
 
 @dataclass(frozen=True)
+class ProjectMembershipConfig:
+    """Descriptor-owned membership provider and administrative roles."""
+
+    provider_bundle_id: str = ""
+    provider_operation: str = ""
+    administrative_roles: tuple[str, ...] = ()
+
+    @classmethod
+    def from_mapping(cls, value: Any) -> "ProjectMembershipConfig":
+        if value is None:
+            return cls()
+        if not isinstance(value, Mapping):
+            raise ProjectAuthorizationError("project_membership_config_invalid")
+        provider = value.get("provider")
+        if provider is None:
+            provider = {}
+        if not isinstance(provider, Mapping):
+            raise ProjectAuthorizationError("project_membership_provider_invalid")
+        bundle_id = clean_text(provider.get("bundle_id"))
+        operation = clean_text(provider.get("operation"))
+        if bool(bundle_id) != bool(operation):
+            raise ProjectAuthorizationError("project_membership_provider_invalid")
+        return cls(
+            provider_bundle_id=bundle_id,
+            provider_operation=operation,
+            administrative_roles=tuple(
+                sorted(_roles(value.get("administrative_roles")))
+            ),
+        )
+
+    @property
+    def provider_configured(self) -> bool:
+        return bool(self.provider_bundle_id and self.provider_operation)
+
+
+@dataclass(frozen=True)
 class ProjectMembershipEvidence:
     """One host-owned project membership answer, with no implied authority."""
 
@@ -399,6 +435,7 @@ __all__ = [
     "ProjectAuthorizationPort",
     "ProjectAuthorizationRequest",
     "ProjectMembershipEvidence",
+    "ProjectMembershipConfig",
     "ProjectMembershipResolver",
     "ResolverBackedProjectAuthorizationPort",
 ]

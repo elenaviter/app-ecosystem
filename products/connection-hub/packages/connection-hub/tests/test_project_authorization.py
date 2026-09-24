@@ -13,6 +13,7 @@ from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
     ProjectAuthorizationRequest,
+    ProjectMembershipConfig,
     ProjectMembershipEvidence,
     ResolverBackedProjectAuthorizationPort,
 )
@@ -64,6 +65,43 @@ def _request(
         operation=operation,
         request_id="request-123",
     )
+
+
+def test_project_membership_config_reads_provider_and_roles() -> None:
+    config = ProjectMembershipConfig.from_mapping(
+        {
+            "provider": {
+                "bundle_id": "problem-board@1-0",
+                "operation": "project_membership_resolve",
+            },
+            "administrative_roles": ["owner", "admin", "OWNER"],
+        }
+    )
+
+    assert config.provider_configured is True
+    assert config.provider_bundle_id == "problem-board@1-0"
+    assert config.provider_operation == "project_membership_resolve"
+    assert config.administrative_roles == ("admin", "owner")
+
+
+def test_project_membership_config_keeps_missing_provider_explicit() -> None:
+    config = ProjectMembershipConfig.from_mapping(None)
+
+    assert config.provider_configured is False
+    assert config.administrative_roles == ()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"provider": "problem-board@1-0"},
+        {"provider": {"bundle_id": "problem-board@1-0"}},
+        {"provider": {"operation": "project_membership_resolve"}},
+    ],
+)
+def test_project_membership_config_refuses_malformed_provider(value) -> None:
+    with pytest.raises(ProjectAuthorizationError, match="project_membership_provider_invalid"):
+        ProjectMembershipConfig.from_mapping(value)
 
 
 def test_allow_decision_is_bound_to_exact_trusted_coordinates() -> None:

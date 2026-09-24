@@ -106,9 +106,10 @@ All are authenticated (`PlatformAuth`) and visibility-gated by
 | `delegated_access_create` | POST | operations | Mint a short-lived KDCube automation bearer bounded by exact `resource_grants`, `resource_operations`, optional `named_service_operations`, and bounded Card `properties`. Application API selections use app-scoped operation references in `resource_operations["*"]`, a selected delegated role in `resource_grants["*"]`, and the `kdcube.application_operations` policy marker. The flat top-level `operations` list is derived for compatibility. |
 | `delegated_access_update` | POST | operations | Replace or preserve the selected dimensions and bounded `properties` of an existing owner-scoped Card in place. The credential remains bound to the same `access_id`. A descriptor-synchronized app-agent Card accepts either `selected_capabilities` or `reset_to_control_defaults: true` with `expected_card_revision`; reset restores the linked descriptor Control Card's current defaults while preserving user-connected MCP resources and account scope. Worker Agent Cards reject reset because their Control Card is a ceiling rather than their default. Optional `accepted_operations` (`{resource: [operation]}`) accepts a changed descriptor for exactly those selected operations; every other changed selected operation stays suspended. Application API edits preserve the explicit selection marker, including when the reviewed selection is empty. |
 | `project_person_control_get` | POST | operations | Read the project-held Control Card for one `project_ref` and `target_subject`. The authenticated platform actor is authorized by the host-bound `ProjectAuthorizationPort`; payload identity or role claims confer no authority. |
-| `project_person_control_create` | POST | operations | Create the deterministic project-held Control Card for one target person, optionally with an exact initial catalog selection. Project-creator bootstrap is an explicit host policy decision. Composition is fixed to `and`, so the Card can only narrow the person's linked authority. The immutable first revision records actor, request, time, and exact selected fields. |
+| `project_person_control_create` | POST | operations | Create the deterministic project-held Control Card for one target person, optionally with an exact initial catalog selection. Project-creator bootstrap is an explicit host policy decision. Composition is fixed to `and`. The same lifecycle records the project identity edge and creates the person's credential-free My Card with an empty selection. The immutable first revision records actor, request, time, and exact selected fields. |
 | `project_person_control_update` | POST | operations | Replace selected dimensions of one project-held per-person Control Card under card and catalog revision preconditions. The authorization decision supplies the exact delegable ceiling; the target person cannot update her own Card, and composition remains fixed to `and`. Every applied change records an immutable field-level audit event. |
-| `project_person_control_revoke` | POST | operations | Revoke one project-held per-person Control Card under the same exact host decision. The target cannot revoke her own Card; the durable revoked revision records the actor, request, time, and state change before live authority disappears. |
+| `project_person_control_revoke` | POST | operations | End the project identity edge and revoke one project-held per-person Control Card under the same exact host decision. The target cannot revoke her own Card; the person's My Card and the durable Control Card revision both stop contributing live authority. |
+| `project_operation_authorize` | POST | operations | Evaluate one exact project resource operation for the authenticated session subject against the active catalog, current per-person Control Card, and current My Card. The response is the evaluator decision with named blocking-boundary evidence; payload identity, Card, revision, and catalog claims confer no authority. |
 |`delegated_access_renew`|POST|operations|Renew a card's credential. `mode: prolong` extends the credential a connected app holds (refresh token, access binding, card expiry) without touching the client; `mode: reissue` (default) issues a fresh token on a manual card, expired or live, retiring the previous one and returning the new one once. Every grant, selection, account binding and policy stays. Optional `ttl_seconds` (default: the card's previous lifetime). Refusals: `delegated_access_revoked`, `delegated_access_credential_expired`, `delegated_access_prolong_unsupported`, `delegated_access_renew_unsupported`.|
 | `delegated_agent_grant_create` | POST | operations | Merge or replace exact authority on a hosted-agent or existing external-client card. A request-bound recovery submission must return the opaque signed `request_approval_ticket`; the server verifies it before atomically adding the exact operation and selecting `once` or `always`. |
 | `delegated_invocation_policy_set` | POST | operations | Set `once` or `always` for one already-granted resource operation, optionally scoped to a selected provider account. |
@@ -131,6 +132,26 @@ All are authenticated (`PlatformAuth`) and visibility-gated by
 > `delegated_to_kdcube_start_oauth` and the public
 > `delegated_to_kdcube_oauth_callback`; non-OAuth providers use
 > `delegated_to_kdcube_connect_credential`.
+
+### Project membership provider
+
+Project-person Control Card administration uses the descriptor-owned
+`project_membership` block:
+
+```yaml
+project_membership:
+  provider:
+    bundle_id: problem-board@1-0
+    operation: project_membership_resolve
+  administrative_roles: [owner, admin]
+```
+
+Connection Hub calls the named operation through the request-bound local
+bundle bridge with the current platform session and validates its canonical
+membership response. An unconfigured provider returns the named
+`project_membership_resolver_missing` refusal. The Card and identity-edge
+lifecycle, provider response contract, and enforcement order are canonical in
+[Delegated Access Cards](../../../../../docs/connection-hub/package/delegated-cards.md#project-held-control-cards-for-people).
 
 ### Public OAuth routes
 
