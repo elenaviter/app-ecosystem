@@ -16,12 +16,14 @@ PROJECT_PERSON_CONTROL_CREATE = "project.person_control.create"
 PROJECT_PERSON_CONTROL_READ = "project.person_control.read"
 PROJECT_PERSON_CONTROL_UPDATE = "project.person_control.update"
 PROJECT_PERSON_CONTROL_REVOKE = "project.person_control.revoke"
+PROJECT_PERSON_MY_CARD_SEED = "project.person_my_card.seed"
 PROJECT_PERSON_CONTROL_OPERATIONS = frozenset(
     {
         PROJECT_PERSON_CONTROL_CREATE,
         PROJECT_PERSON_CONTROL_READ,
         PROJECT_PERSON_CONTROL_UPDATE,
         PROJECT_PERSON_CONTROL_REVOKE,
+        PROJECT_PERSON_MY_CARD_SEED,
     }
 )
 
@@ -430,6 +432,7 @@ __all__ = [
     "PROJECT_PERSON_CONTROL_READ",
     "PROJECT_PERSON_CONTROL_REVOKE",
     "PROJECT_PERSON_CONTROL_UPDATE",
+    "PROJECT_PERSON_MY_CARD_SEED",
     "ProjectAuthorizationDecision",
     "ProjectAuthorizationError",
     "ProjectAuthorizationPort",

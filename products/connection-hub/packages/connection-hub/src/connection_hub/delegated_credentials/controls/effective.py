@@ -59,6 +59,7 @@ from connection_hub.delegated_credentials.conversation_target_policy import (
     CONVERSATION_TARGETS_PROPERTY,
     compose_conversation_targets,
 )
+from connection_hub.delegated_credentials.resource_operations import operation_union
 
 
 class ControlCardMismatch(RuntimeError):
@@ -360,6 +361,59 @@ def _legacy_application_policy(authority: CardAuthority) -> ApplicationOperation
     return ApplicationOperationRolePolicy(default_role=default_role)
 
 
+def intersect_card_authority_selection(
+    card: CardAuthority,
+    ceiling: CardAuthority,
+) -> CardAuthority:
+    """Return ``card`` with only selection fields intersected by ``ceiling``.
+
+    Cross-owner project identity Cards cannot use ordinary Control Card
+    composition because that contract intentionally requires one grantor. This
+    helper shares the same resource, named-service, and account intersection
+    semantics without composing identity, properties, or credential lifetime.
+    """
+
+    resource_grants: dict[str, tuple[str, ...]] = {}
+    for resource, card_grants in card.resource_grants.items():
+        ceiling_grants = ceiling.resource_grants.get(resource)
+        if ceiling_grants is None:
+            continue
+        resource_grants[resource] = _intersect_values(
+            tuple(card_grants),
+            tuple(ceiling_grants),
+        )
+    resource_operations = {
+        resource: _intersect_values(
+            tuple(card.resource_operations.get(resource, ())),
+            tuple(ceiling.resource_operations.get(resource, ())),
+        )
+        for resource in resource_grants
+    }
+    try:
+        named_selection, named_services = _intersect_named_services(
+            card,
+            ceiling,
+            resource_grants,
+        )
+        account_scope = _intersect_accounts(
+            card.account_scope,
+            ceiling.account_scope,
+        )
+    except ControlCardMismatch:
+        raise
+    except Exception as exc:
+        raise ControlCardMismatch("control_card_authority_invalid") from exc
+    return dataclasses.replace(
+        card,
+        operations=operation_union(resource_operations),
+        resource_grants=resource_grants,
+        resource_operations=resource_operations,
+        named_service_operations=named_selection,
+        named_services=copy.deepcopy(named_services),
+        account_scope=account_scope,
+    )
+
+
 def effective_card_authority(
     card: CardAuthority,
     control: CardAuthority | ProjectControlCardAuthority,
@@ -598,4 +652,8 @@ def effective_card_authority(
     )
 
 
-__all__ = ["ControlCardMismatch", "effective_card_authority"]
+__all__ = [
+    "ControlCardMismatch",
+    "effective_card_authority",
+    "intersect_card_authority_selection",
+]

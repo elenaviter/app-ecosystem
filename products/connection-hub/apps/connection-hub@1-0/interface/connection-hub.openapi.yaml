@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Connection Hub App Interface
-  version: 0.3.2
+  version: 0.3.3
   description: |
     Interface contract for connection-hub@1-0.
 
@@ -339,6 +339,8 @@ paths:
         Creates the deterministic project-owned Card under an explicit project
         authorization decision. Creator bootstrap comes from the host project
         membership lifecycle; the request carries no role or creator claim.
+        The migration-only boolean records immutable provenance used by the
+        one-shot My Card seed operation.
       operationId: project_person_control_create
       x-kdcube-result-alias: project_person_control_create
       parameters:
@@ -405,6 +407,36 @@ paths:
         "200":
           description: Revocation audit and removal state, or a structured denial.
 
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_my_card_seed:
+    post:
+      tags: [Delegated Access]
+      summary: Seed an existing person's untouched My Card during migration.
+      description: >
+        An authenticated project administrator may copy an existing person's
+        previously selected authority into the deterministic My Card created by
+        project_person_control_create. Connection Hub reconciles the selection
+        with the active catalog and intersects it with the current per-person
+        Control Card before writing. Only untouched revision 1 is writable; an
+        exact replay returns the seeded Card and every conflicting replay or
+        user-edited Card is refused. The Control Card must carry the immutable
+        migration marker recorded by project_person_control_create; normal
+        project-person creation remains empty and cannot call this operation.
+      operationId: project_person_my_card_seed
+      x-kdcube-result-alias: project_person_my_card_seed
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectPersonMyCardSeedEnvelope"
+      responses:
+        "200":
+          description: Seeded or already-seeded My Card, or a structured refusal.
+
   /bundles/{tenant}/{project}/{bundle_id}/operations/project_operation_authorize:
     post:
       tags: [Delegated Access]
@@ -414,7 +446,9 @@ paths:
         resolves the current project identity edge, per-person Control Card,
         My Card, and active catalog, and returns the evaluator decision for one
         exact resource operation. Payload identity, Card, revision, and catalog
-        fields confer no authority.
+        fields confer no authority. An `ok: true` response means the evaluation
+        completed, while `allowed` contains its allow or deny verdict. An
+        evaluation failure returns `ok: false`.
       operationId: project_operation_authorize
       x-kdcube-result-alias: project_operation_authorize
       parameters:
@@ -1301,6 +1335,10 @@ components:
                     project_ref: { type: string, minLength: 1 }
                     target_subject: { type: string, minLength: 1 }
                     manage_url: { type: string }
+                    migration:
+                      type: boolean
+                      default: false
+                      description: Marks a Control Card created by the explicit existing-person migration.
     ProjectPersonControlUpdateEnvelope:
       allOf:
         - $ref: "#/components/schemas/Envelope"
@@ -1322,6 +1360,42 @@ components:
                       additionalProperties:
                         type: array
                         items: { type: string }
+    ProjectPersonMyCardSeedEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required:
+                - project_ref
+                - target_subject
+                - resource_grants
+                - resource_operations
+              properties:
+                project_ref: { type: string, minLength: 1 }
+                target_subject: { type: string, minLength: 1 }
+                resource_grants:
+                  type: object
+                  additionalProperties:
+                    type: array
+                    items: { type: string }
+                resource_operations:
+                  type: object
+                  additionalProperties:
+                    type: array
+                    items: { type: string }
+                named_service_operations:
+                  oneOf:
+                    - type: string
+                    - type: object
+                      additionalProperties: true
+                  default: {}
+                account_scope:
+                  type: object
+                  additionalProperties: true
+                  default: {}
     ProjectOperationAuthorizeEnvelope:
       allOf:
         - $ref: "#/components/schemas/Envelope"

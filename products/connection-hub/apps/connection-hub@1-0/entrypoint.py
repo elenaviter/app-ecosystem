@@ -238,6 +238,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "project_person_control_create",
     "project_person_control_update",
     "project_person_control_revoke",
+    "project_person_my_card_seed",
     "control_card_attach",
     "control_card_detach",
     "control_card_revoke",
@@ -2615,6 +2616,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_person_control_create": {"visibility": {"user_types": []}},
                             "project_person_control_update": {"visibility": {"user_types": []}},
                             "project_person_control_revoke": {"visibility": {"user_types": []}},
+                            "project_person_my_card_seed": {"visibility": {"user_types": []}},
                             "project_operation_authorize": {"visibility": {"user_types": []}},
                             "control_card_attach": {"visibility": {"user_types": []}},
                             "control_card_detach": {"visibility": {"user_types": []}},
@@ -4157,6 +4159,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             ).strip(),
             label=str(payload.get("label") or "").strip(),
             manage_url=str(payload.get("manage_url") or "").strip(),
+            migration=payload.get("migration") is True,
         )
 
     @api(
@@ -4261,6 +4264,41 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             project_ref=str(payload.get("project_ref") or "").strip(),
             target_subject=str(payload.get("target_subject") or "").strip(),
             request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_my_card_seed",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_my_card_seed"),
+    )
+    async def project_person_my_card_seed(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Seed an existing person's untouched My Card during migration."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_person_my_card_seed(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            target_subject=str(payload.get("target_subject") or "").strip(),
+            request_id=_audit_request_id(request),
+            resource_grants=dict(payload.get("resource_grants") or {}),
+            resource_operations=dict(payload.get("resource_operations") or {}),
+            named_service_operations=payload.get("named_service_operations", {}),
+            account_scope=dict(payload.get("account_scope") or {}),
         )
 
     @api(

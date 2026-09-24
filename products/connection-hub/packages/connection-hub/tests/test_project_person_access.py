@@ -10,24 +10,38 @@ from typing import Any
 
 import pytest
 
+from connection_hub.delegated_credentials.automation_access import (
+    AutomationAccessService,
+)
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
     CARD_STATE_REVOKED,
     CONTROL_COMPOSITION_OR,
     CardAuthority,
+    NamedServiceSelection,
 )
 from connection_hub.delegated_credentials.catalog.models import CatalogDocument
+from connection_hub.delegated_credentials.controls.effective import (
+    intersect_card_authority_selection,
+)
 from connection_hub.delegated_credentials.controls.project_person import (
     PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE,
     PROJECT_PERSON_CONTROL_PROPERTY,
     ProjectPersonControlIdentity,
 )
+from connection_hub.delegated_credentials.controls.snapshot import (
+    materialize_control_snapshot,
+)
 from connection_hub.delegated_credentials.project_authorization import (
     PROJECT_PERSON_CONTROL_CREATE,
     PROJECT_PERSON_CONTROL_REVOKE,
+    PROJECT_PERSON_MY_CARD_SEED,
     ProjectAuthorizationDecision,
 )
 from connection_hub.delegated_credentials.project_person_access import (
+    PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE,
+    PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA,
+    PROJECT_PERSON_MY_CARD_SEED_PROVENANCE,
     ProjectPersonControlLifecycle,
 )
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
@@ -165,24 +179,54 @@ class _Host:
 
     async def update_access(self, user, **kwargs):
         self.update_calls.append({"user": user, **kwargs})
-        identity = ProjectPersonControlIdentity.build(
-            project_ref=PROJECT_REF,
-            target_subject=TARGET,
+        key = (user["user_id"], kwargs["access_id"])
+        existing, _state = self.records[key]
+        assert kwargs.get("expected_card_revision") in (
+            None,
+            existing.card_revision,
         )
-        existing, _state = self.records[(identity.project_subject, identity.control_id)]
+        resource_grants = kwargs.get("resource_grants", existing.resource_grants)
+        resource_operations = kwargs.get(
+            "resource_operations",
+            existing.resource_operations,
+        )
+        named_service_operations = NamedServiceSelection.from_stored(
+            kwargs.get(
+                "named_service_operations",
+                existing.named_service_operations.to_stored(),
+            ),
+            present=True,
+        )
         candidate = _Record(
             dataclasses.replace(
                 existing.authority,
                 card_revision=existing.card_revision + 1,
                 label=kwargs.get("label") or existing.label,
+                operations=tuple(
+                    sorted(
+                        {
+                            operation
+                            for operations in resource_operations.values()
+                            for operation in operations
+                        }
+                    )
+                ),
+                resource_grants={
+                    resource: tuple(grants)
+                    for resource, grants in resource_grants.items()
+                },
+                resource_operations={
+                    resource: tuple(operations)
+                    for resource, operations in resource_operations.items()
+                },
+                named_service_operations=named_service_operations,
+                account_scope=kwargs.get("account_scope", existing.account_scope),
+                properties=kwargs.get("properties", existing.properties),
             )
         )
         transform = kwargs["_record_transform"]
         updated = transform(existing, candidate)
-        self.records[(identity.project_subject, identity.control_id)] = (
-            updated,
-            CARD_STATE_ACTIVE,
-        )
+        self.records[key] = (updated, CARD_STATE_ACTIVE)
         await self.notify_change(
             kwargs["_notification_subject"],
             action="updated",
@@ -211,6 +255,7 @@ async def _create(
     *,
     actor: str = ADMIN,
     request_id: str = "request-create",
+    migration: bool = False,
 ):
     return await lifecycle.create(
         actor_subject=actor,
@@ -218,6 +263,7 @@ async def _create(
         target_subject=TARGET,
         request_id=request_id,
         label="Quickstart member",
+        migration=migration,
     )
 
 
@@ -272,6 +318,7 @@ async def test_create_is_project_held_target_named_and_audited() -> None:
     assert stored.grantor_subject == identity.project_subject
     assert stored.grantor_subject != TARGET
     assert stored.properties[PROJECT_PERSON_CONTROL_PROPERTY]["target_subject"] == TARGET
+    assert PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE not in stored.provenance
     assert my_card_state == CARD_STATE_ACTIVE
     assert my_card.grantor_subject == TARGET
     assert my_card.delegate_subject == TARGET
@@ -448,6 +495,204 @@ async def test_named_service_only_create_still_resolves_the_decision_ceiling() -
     )
 
 
+def _select_control(host: _Host) -> CardAuthority:
+    identity = ProjectPersonControlIdentity.build(
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+    )
+    stored, state = host.records[(identity.project_subject, identity.control_id)]
+    selected = materialize_control_snapshot(
+        dataclasses.replace(
+            stored.authority,
+            operations=(OPERATION,),
+            resource_grants={RESOURCE: (GRANT,)},
+            resource_operations={RESOURCE: (OPERATION,)},
+        ),
+        basis_catalog_version=stored.catalog_version,
+        origin="updated",
+    )
+    host.records[(identity.project_subject, identity.control_id)] = (
+        _Record(selected),
+        state,
+    )
+    return selected
+
+
+@pytest.mark.asyncio
+async def test_seed_my_card_is_control_capped_one_shot_and_exactly_replayable() -> None:
+    host = _Host()
+    port = _Port()
+    lifecycle = _lifecycle(host, port)
+    await _create(lifecycle, migration=True)
+    control = _select_control(host)
+    identity = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF,
+        person_subject=TARGET,
+    )
+    before, _state = host.records[(TARGET, identity.my_card_id)]
+
+    first = await lifecycle.seed_my_card(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-seed-1",
+        resource_grants={RESOURCE: ["work:admin", GRANT]},
+        resource_operations={RESOURCE: ["review.return", OPERATION]},
+    )
+    replay = await lifecycle.seed_my_card(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-seed-retry",
+        resource_grants={RESOURCE: [GRANT, "work:admin"]},
+        resource_operations={RESOURCE: [OPERATION, "review.return"]},
+    )
+    conflict = await lifecycle.seed_my_card(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-seed-conflict",
+        resource_grants={RESOURCE: [GRANT]},
+        resource_operations={RESOURCE: [OPERATION]},
+    )
+
+    stored, state = host.records[(TARGET, identity.my_card_id)]
+    marker = stored.provenance[PROJECT_PERSON_MY_CARD_SEED_PROVENANCE]
+    control_marker = control.provenance[PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE]
+    assert first["ok"] is True and first["seeded"] is True
+    assert replay["ok"] is True and replay["seeded"] is False
+    assert conflict == {
+        "ok": False,
+        "error": "project_person_my_card_seed_conflict",
+        "status": 409,
+    }
+    assert state == CARD_STATE_ACTIVE
+    assert stored.card_revision == 2
+    assert stored.resource_grants == {RESOURCE: (GRANT,)}
+    assert stored.resource_operations == {RESOURCE: (OPERATION,)}
+    assert stored.operations == (OPERATION,)
+    assert stored.label == before.label
+    assert stored.properties == before.properties
+    assert stored.control_card == before.control_card
+    assert marker["control_id"] == control.access_id
+    assert marker["control_revision"] == control.card_revision
+    assert control_marker["schema"] == PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA
+    assert control_marker["actor_subject"] == ADMIN
+    assert control_marker["request_id"] == "request-create"
+    assert port.requests[-3].operation == PROJECT_PERSON_MY_CARD_SEED
+    assert len(host.update_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_seed_refuses_a_my_card_the_person_already_changed() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle, migration=True)
+    _select_control(host)
+    identity = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF,
+        person_subject=TARGET,
+    )
+    stored, state = host.records[(TARGET, identity.my_card_id)]
+    host.records[(TARGET, identity.my_card_id)] = (
+        _Record(dataclasses.replace(stored.authority, card_revision=2)),
+        state,
+    )
+
+    result = await lifecycle.seed_my_card(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-seed-managed",
+        resource_grants={RESOURCE: [GRANT]},
+        resource_operations={RESOURCE: [OPERATION]},
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "project_person_my_card_already_managed",
+        "status": 409,
+    }
+    assert host.update_calls == []
+
+
+@pytest.mark.asyncio
+async def test_seed_refuses_a_normally_created_project_person() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle)
+    _select_control(host)
+
+    result = await lifecycle.seed_my_card(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-seed-not-migrated",
+        resource_grants={RESOURCE: [GRANT]},
+        resource_operations={RESOURCE: [OPERATION]},
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "project_person_my_card_seed_not_migrated",
+        "status": 409,
+    }
+    assert host.update_calls == []
+
+
+def test_cross_owner_selection_cap_intersects_every_selection_dimension() -> None:
+    named_services = {
+        "namespaces": {
+            "records": {
+                "tools": {
+                    "objects": {
+                        "operations": {
+                            "object.get": {"grants": [GRANT]},
+                            "object.search": {"grants": [GRANT]},
+                        }
+                    }
+                }
+            }
+        }
+    }
+    card = CardAuthority(
+        access_id="my-card",
+        client_id="person",
+        grantor_subject=TARGET,
+        delegate_subject=TARGET,
+        source="oauth",
+        card_kind="automation",
+        resource_grants={RESOURCE: (GRANT, "work:admin")},
+        resource_operations={RESOURCE: (OPERATION, "review.return")},
+        named_service_operations=NamedServiceSelection.exact(
+            {RESOURCE: {"records": ["object.get", "object.search"]}}
+        ),
+        named_services=named_services,
+        account_scope={"records": {"account-1": [GRANT, "work:admin"]}},
+    )
+    ceiling = dataclasses.replace(
+        card,
+        access_id="control-card",
+        grantor_subject="project",
+        delegate_subject="",
+        resource_grants={RESOURCE: (GRANT,)},
+        resource_operations={RESOURCE: (OPERATION,)},
+        named_service_operations=NamedServiceSelection.exact(
+            {RESOURCE: {"records": ["object.search"]}}
+        ),
+        account_scope={"records": {"account-1": [GRANT]}},
+    )
+
+    capped = intersect_card_authority_selection(card, ceiling)
+
+    assert capped.resource_grants == {RESOURCE: (GRANT,)}
+    assert capped.resource_operations == {RESOURCE: (OPERATION,)}
+    assert capped.named_service_operations.operations == {
+        RESOURCE: {"records": ("object.search",)}
+    }
+    assert capped.account_scope == {"records": {"account-1": (GRANT,)}}
+
+
 @pytest.mark.asyncio
 async def test_project_operation_resolves_the_recorded_edge_and_both_current_cards() -> None:
     host = _Host()
@@ -494,6 +739,59 @@ async def test_project_operation_resolves_the_recorded_edge_and_both_current_car
     assert decision.edge.edge_ref == person_identity.edge_ref
     assert decision.control_card is not None
     assert decision.my_card is not None
+
+
+@pytest.mark.asyncio
+async def test_project_operation_service_marks_allow_and_deny_as_evaluated() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle)
+    control_identity = ProjectPersonControlIdentity.build(
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+    )
+    person_identity = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF,
+        person_subject=TARGET,
+    )
+    control, control_state = host.records[
+        (control_identity.project_subject, control_identity.control_id)
+    ]
+    my_card, my_card_state = host.records[(TARGET, person_identity.my_card_id)]
+    selected = {
+        "resource_grants": {RESOURCE: (GRANT,)},
+        "resource_operations": {RESOURCE: (OPERATION,)},
+    }
+    host.records[(control_identity.project_subject, control_identity.control_id)] = (
+        _Record(dataclasses.replace(control.authority, **selected)),
+        control_state,
+    )
+    host.records[(TARGET, person_identity.my_card_id)] = (
+        _Record(dataclasses.replace(my_card.authority, **selected)),
+        my_card_state,
+    )
+    service = AutomationAccessService.__new__(AutomationAccessService)
+    service._project_person_controls = lifecycle
+
+    allowed = await service.project_operation_authorize(
+        {"user_id": TARGET},
+        project_ref=PROJECT_REF,
+        resource=RESOURCE,
+        operation=OPERATION,
+        required_grants=(GRANT,),
+    )
+    denied = await service.project_operation_authorize(
+        {"user_id": TARGET},
+        project_ref=PROJECT_REF,
+        resource=RESOURCE,
+        operation="review.unknown",
+        required_grants=(GRANT,),
+    )
+
+    assert allowed["ok"] is True
+    assert allowed["allowed"] is True
+    assert denied["ok"] is True
+    assert denied["allowed"] is False
 
 
 @pytest.mark.asyncio
