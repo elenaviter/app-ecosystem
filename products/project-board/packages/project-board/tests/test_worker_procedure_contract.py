@@ -869,3 +869,43 @@ def test_an_app_activation_writes_its_commit_where_a_restart_reads_it():
     assert step.index("activation.commit") < step.index("**check")
     assert "`activation.commit: <approved-sha>` on the app's entry in the staged descriptor (the proc reads it on reload and restart), then `kdcube bundle reload" in actions
     assert "a reload at a commit the descriptor does not name, which a restart undoes" in actions
+
+
+def test_the_worker_host_path_holds_on_a_host_that_has_none_of_it():
+    """W147: add-a-worker-host.md is the path a fresh headless host follows,
+    so every command must work there without anything a person remembers."""
+
+    from project_board.contract.worker_operation_contract import (
+        PROBLEM_BOARD_OPERATIONS,
+        required_grants_for_operation,
+    )
+
+    text = (OPERATIONAL_PROCEDURE_ROOT / "add-a-worker-host.md").read_text(encoding="utf-8")
+
+    # The install source exists before the install reads it.
+    clone = text.index("git clone -q https://github.com/elenaviter/app-ecosystem.git ~/src/app-ecosystem")
+    assert clone < text.index("APP_REPOSITORY=/home/<user>/src/app-ecosystem")
+    assert "/home/<user>/workspaces/app-ecosystem" not in text
+    # Step 6 probes the environment step 2 installed, never a pipx one.
+    assert "pipx" not in text
+    assert 'PB_PYTHON="$HOME/.kdcube/client-runtime/tools/problem-board-venv/bin/python"' in text
+    # The procedure is verified after the source it belongs to is selected.
+    step3 = text[text.index("## 3. Configure"):text.index("## 4. Keep")]
+    assert step3.index("pb source use-code") < step3.index("pb procedure install") < step3.index("pb procedure verify")
+    assert "A stale or unverifiable package is a defect in this\npath" in step3
+    # What the install brings and what it does not.
+    assert "They do not install Problem Board itself" in text
+    # Which step creates the Card.
+    assert "only the last creates\na Card" in text
+    # Every numbered step names the machine it runs on.
+    for number in range(15):
+        heading = text.index(f"\n## {number}. ")
+        assert text[heading:heading + 300].count("Runs on:") == 1, number
+    # The minimum grant names what the contract requires.
+    relay = {op for op in PROBLEM_BOARD_OPERATIONS if list(required_grants_for_operation(op)) == ["work:relay"]}
+    assert {"worker.heartbeat", "control.pull", "control.worker_settle", "mail.route", "assignment.report"} <= relay
+    for op in ("project.plan.item", "plan.notes.list"):
+        assert list(required_grants_for_operation(op)) == ["work:observe"], op
+    assert "the grant `work:relay`" in text and "`work:observe` to read the plan" in text
+    # A worker session never stops on a question nobody watches, started or resumed.
+    assert text.count("--disallowedTools AskUserQuestion") >= 2
