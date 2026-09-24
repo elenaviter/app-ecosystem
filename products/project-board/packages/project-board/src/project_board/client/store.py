@@ -9725,7 +9725,9 @@ class SharedFieldStore:
         clean_worker = str(self.read_worker(worker_name).get("worker_name") or "")
         root = self.control / "outbox"
         with exclusive_lock(root / ".outbox.lock"):
-            found = self._outbox.find(clean_id, worker_name=clean_worker)
+            # Any worker's row: whose it is is checked next, so another
+            # worker's delivery is refused as forbidden, not reported missing.
+            found = self._outbox.find(clean_id)
             source = found[0] if found else None
             if source is None:
                 raise DomainError(
@@ -9846,23 +9848,24 @@ class SharedFieldStore:
         lease_seconds: int = 300,
         kinds: set[str] | None = None,
     ) -> list[dict[str, Any]]:
-        root = self.control / "outbox"
         claimed: list[dict[str, Any]] = []
-        with exclusive_lock(root / ".outbox.lock"):
+        outbox = self._outbox
+        with exclusive_lock(outbox.lock):
             now_dt = datetime.now(timezone.utc)
-            for path in sorted((root / "leased").glob("*.json")):
+            # Rows in flight only: pending/ and leased/ per agent, never the
+            # settled history (W287 2b, LS3).
+            for path in list(outbox.in_flight("leased")):
                 row = read_json(path)
                 lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
                 expires_at = str(lease.get("expires_at") or "")
                 if not expires_at or parse_utc(expires_at) <= now_dt:
                     row.update(state="pending", updated_at=utc_now())
                     row.pop("lease", None)
-                    atomic_write_json(path, row)
-                    os.replace(path, root / "pending" / path.name)
+                    outbox.move_in_flight(path, row, "pending")
             maximum = max(1, min(int(limit), 100))
             pending = [
                 (source, read_json(source))
-                for source in (root / "pending").glob("*.json")
+                for source in outbox.in_flight("pending", worker_name=worker_name)
             ]
             pending.sort(
                 key=lambda item: (
@@ -9890,7 +9893,8 @@ class SharedFieldStore:
                 next_attempt_at = str(candidate.get("next_attempt_at") or "")
                 if next_attempt_at and parse_utc(next_attempt_at) > now_dt:
                     continue
-                destination = root / "leased" / source.name
+                destination = outbox.in_flight_path(candidate, "leased")
+                destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                 try:
                     os.replace(source, destination)
                 except FileNotFoundError:
@@ -9916,9 +9920,8 @@ class SharedFieldStore:
         """Return a transiently failed delivery to pending with bounded backoff."""
 
         clean_id = component(outbox_id, field="outbox_id")
-        root = self.control / "outbox"
-        source = root / "leased" / f"{clean_id}.json"
-        with exclusive_lock(root / ".outbox.lock"):
+        with exclusive_lock(self._outbox.lock):
+            source = self._leased_outbox_path(clean_id)
             row = read_json(source)
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
             if str(lease.get("relay_id") or "") != str(relay_id):
@@ -9945,9 +9948,19 @@ class SharedFieldStore:
                 updated_at=utc_now(),
             )
             row.pop("lease", None)
-            atomic_write_json(source, row)
-            os.replace(source, root / "pending" / source.name)
+            self._outbox.move_in_flight(source, row, "pending")
             return row
+
+    def _leased_outbox_path(self, outbox_id: str) -> Path:
+        found = self._outbox.find(outbox_id)
+        if found is None or found[1] != "leased":
+            raise DomainError(
+                "field_outbox_not_leased",
+                "This outbox record is not leased to a relay.",
+                status=409,
+                details={"outbox_id": outbox_id, "state": found[1] if found else "missing"},
+            )
+        return found[0]
 
     def settle_outbox(
         self,
@@ -9960,9 +9973,8 @@ class SharedFieldStore:
         remote_result: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         clean_id = component(outbox_id, field="outbox_id")
-        root = self.control / "outbox"
-        source = root / "leased" / f"{clean_id}.json"
-        with exclusive_lock(root / ".outbox.lock"):
+        with exclusive_lock(self._outbox.lock):
+            source = self._leased_outbox_path(clean_id)
             row = read_json(source)
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
             if str(lease.get("relay_id") or "") != str(relay_id):
@@ -9977,10 +9989,8 @@ class SharedFieldStore:
                 row["remote_result"] = dict(remote_result)
             if outcome == "sent":
                 row.pop("payload", None)
-            atomic_write_json(source, row)
-            destination = root / terminal_folder(outcome)
-            destination.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.replace(source, destination / source.name)
+            # Into the hour it was created, the outcome in its name (W287 2b).
+            self._outbox.settle(source, row)
             if outcome != "sent":
                 self._release_outbox_idempotency(row)
             return row

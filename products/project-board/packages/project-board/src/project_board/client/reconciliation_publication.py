@@ -21,7 +21,7 @@ from ..contract.errors import DomainError
 from ..contract.mailbox_reconciliation_contract import normalize_receipt
 from ..contract.mailbox_reconciliation_publication import publication_batches
 from .io import atomic_write_json, content_hash, exclusive_lock, read_json, utc_now
-from .outbox_layout import OUTBOX_FOLDERS
+from .outbox_store import OutboxStore
 
 
 OUTBOX_KIND = "mail.reconciliation.publish"
@@ -47,14 +47,14 @@ def queue_publication(
     record = read_json(record_path)
     receipt = normalize_receipt(record.get("receipt") or {})
     publications = publication_batches(receipt)
-    root = field.control / "outbox"
+    outbox = OutboxStore(field.control)
     outbox_ids: list[str] = []
-    with exclusive_lock(root / ".outbox.lock"):
+    with exclusive_lock(outbox.lock):
         for publication in publications:
             batch_index = int(publication["batch_index"])
             publication_hash = content_hash(publication)
             outbox_id = publication_outbox_id(publication_hash)
-            row = outbox_row(root, outbox_id)
+            row = outbox.read(outbox_id, worker_name=worker_name, project_ref=receipt["project_ref"])
             if row:
                 _require_publication_row(
                     row,
@@ -64,8 +64,7 @@ def queue_publication(
                 )
                 outbox_ids.append(outbox_id)
                 continue
-            atomic_write_json(
-                root / "pending" / f"{outbox_id}.json",
+            outbox.write_pending(
                 {
                     "schema": "problem-board.service-outbox.v1",
                     "outbox_id": outbox_id,
@@ -110,10 +109,15 @@ def publication_state(field: Any, record: Mapping[str, Any]) -> str:
 
     if not publication_is_queued(record):
         return PUBLICATION_QUEUED
-    root = field.control / "outbox"
+    outbox = OutboxStore(field.control)
+    receipt = dict(record.get("receipt") or {})
     refused = False
     for outbox_id in (record.get("publication") or {}).get("outbox_ids") or []:
-        row = outbox_row(root, str(outbox_id))
+        row = outbox.read(
+            str(outbox_id),
+            worker_name=str(receipt.get("reporter_worker_name") or ""),
+            project_ref=str(receipt.get("project_ref") or ""),
+        ) or {}
         state = str(row.get("state") or "")
         if state == "refused":
             refused = True
@@ -124,14 +128,6 @@ def publication_state(field: Any, record: Mapping[str, Any]) -> str:
 
 def publication_outbox_id(publication_hash: str) -> str:
     return f"outbox_mailrecon_{publication_hash}"
-
-
-def outbox_row(outbox_root: Path, outbox_id: str) -> dict[str, Any]:
-    for folder in OUTBOX_FOLDERS:
-        row = read_json(outbox_root / folder / f"{outbox_id}.json", required=False)
-        if row:
-            return row
-    return {}
 
 
 def _require_publication_row(
@@ -165,7 +161,6 @@ __all__ = [
     "PUBLICATION_QUEUED",
     "PUBLICATION_REFUSED",
     "TERMINAL_PUBLICATION_STATES",
-    "outbox_row",
     "publication_is_queued",
     "publication_outbox_id",
     "publication_state",
