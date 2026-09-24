@@ -104,7 +104,7 @@ before anything changes:
 | **repositories the agents may work on** | see the table below | the most important decision: each gets a deploy key with write access and a clone in every workspace. The agents reach nothing else through Problem Board. |
 | workspaces, one per agent | `~/workspaces/space001`, `space002` | each agent edits only its own clones |
 | agent names | `claude-ops@spark1`, `claude-app@spark1` | display names on the board. The board addresses a worker by a stable generated name. |
-| runtime of each agent | `claude-code` for both, or one of each | an agent is its user (the person it acts for), its runtime and its session id, and that identity never changes. One host can run Claude Code and Codex agents side by side, each in its own workspace. Needing another runtime means adding another agent. |
+| runtime of each agent | `claude-code` for both, or one of each | an agent is its runtime, the runtime account that logged it in, and its session id, and that identity never changes. One host can run Claude Code and Codex agents side by side, each in its own workspace. Needing another runtime means adding another agent. |
 | account per runtime | the Claude account for Claude Code agents, the OpenAI account for Codex agents | step 5 logs each runtime in once. Every agent of that runtime under the same Linux user shares its login and its usage. |
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
