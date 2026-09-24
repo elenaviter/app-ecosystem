@@ -64,6 +64,9 @@ package restores the presented generation only if the replacement is still the
 same family's current active generation. A concurrent rotation, revocation, or
 confirmed reuse takes precedence, so compensation cannot revive a superseded or
 revoked credential family.
+Consumed-generation replay revocation is a PostgreSQL authority guarantee;
+Redis migration-source mode provides atomic rotation and compensation without
+refresh-family history.
 
 An Agent Card keeps its reusable bearer in the deployment secret provider for
 hosted reuse and network presentation. The preview verifies the durable Card
