@@ -62,7 +62,12 @@ the highest pid (`sort -n | sed '$d'`) assumes pids rise with start time,
 and they wrap: on 2026-09-19 a fresh watch got a lower pid than the 11:38Z
 one on two hosts within four minutes, and the guard ended the fresh watch and
 kept the one closest to its cap. `ps -o etimes` is Linux only, so the command
-normalises `etime`, which both platforms print.
+normalises `etime`, which both platforms print. The pattern also matches the
+shell that runs the command: Claude Code runs every Bash command in a `bash -c`
+wrapper whose command line holds the pattern text, and that wrapper is always
+the youngest match. On 2026-09-24 a guard kept the wrapper and ended both real
+watches, leaving none. So the command drops every match whose executable is a
+shell (`ps -o comm=`), and only watch processes compete for the newest.
 
 Guard prompt, with `<id>` this session's runtime session id:
 
@@ -72,8 +77,8 @@ Guard prompt, with `<id>` this session's runtime session id:
     --runtime-session-id <id> 2>&1`, timeout 1800000 ms). 2. end every
     OLDER watch process for this session, keeping the one with the smallest
     elapsed time, with this command on one line:
-    `for p in $(ps -o pid=,etime= -p $(pgrep -d, -f "worker watch.*<id>")
-    | awk '{n=split($2,a,/[-:]/); s=0; for(i=1;i<=n;i++) s=s*(i==1&&n==4?24:60)+a[i]; print s, $1}'
+    `for p in $(ps -o pid=,etime=,comm= -p $(pgrep -d, -f "worker watch.*<id>")
+    | awk '$0 !~ /(^|[\/ ])-?[a-z]*sh$/ {n=split($2,a,/[-:]/); s=0; for(i=1;i<=n;i++) s=s*(i==1&&n==4?24:60)+a[i]; print s, $1}'
     | sort -n | awk 'NR>1{print $2}'); do kill $p; done`.
     3. run `pb worker receive --runtime-kind claude-code
     --runtime-session-id <id> --format brief` and handle and settle every
