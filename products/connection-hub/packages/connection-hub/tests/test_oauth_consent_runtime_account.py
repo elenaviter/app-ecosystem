@@ -43,7 +43,7 @@ def test_consent_shows_host_reported_runtime_account_as_identification() -> None
     assert "Access comes from the Card choices approved below" in html
 
 
-def test_consent_omits_runtime_account_block_without_an_account_id() -> None:
+def test_consent_shows_not_reported_without_an_account_id() -> None:
     client = PublicClient(
         client_id="dcr-worker",
         redirect_uris=("http://127.0.0.1/callback",),
@@ -52,5 +52,21 @@ def test_consent_omits_runtime_account_block_without_an_account_id() -> None:
 
     html = render_consent_html(_request(client), "https://hub.example.test")
 
+    assert "Provider account" in html
+    assert "Codex · Not reported" in html
+    assert "No provider account was reported by this machine" in html
+    assert "Access comes from the Card choices approved below" in html
+
+
+def test_consent_omits_provider_account_for_an_unrelated_client() -> None:
+    client = PublicClient(
+        client_id="dcr-application",
+        redirect_uris=("http://127.0.0.1/callback",),
+        client_name="Connected application",
+        client_metadata={},
+    )
+
+    html = render_consent_html(_request(client), "https://hub.example.test")
+
     assert "Provider account" not in html
-    assert "Reported by the host" not in html
+    assert "Not reported" not in html

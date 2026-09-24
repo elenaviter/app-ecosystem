@@ -643,19 +643,28 @@ def _render_host_reported_runtime_account(req: AuthorizeRequest, esc) -> str:
     metadata = req.client.client_metadata if req.client is not None else {}
     if not isinstance(metadata, Mapping):
         return ""
-    raw_account = metadata.get("kdcube_agent_account")
-    if not isinstance(raw_account, Mapping):
+    provider = str(metadata.get("kdcube_agent_provider") or "").strip()
+    if not provider:
         return ""
-    account_id = str(raw_account.get("account_id") or "").strip()
-    if not account_id:
-        return ""
-    provider = str(metadata.get("kdcube_agent_provider") or "coding runtime").strip()
     provider_label = {
         "claude-code": "Claude Code",
         "codex": "Codex",
-    }.get(provider, provider or "Coding runtime")
-    email = str(raw_account.get("email") or "").strip()
-    organization = str(raw_account.get("organization") or "").strip()
+    }.get(provider, provider)
+    raw_account = metadata.get("kdcube_agent_account")
+    account = raw_account if isinstance(raw_account, Mapping) else {}
+    account_id = str(account.get("account_id") or "").strip()
+    if not account_id:
+        return f"""
+    <div class="host-account">
+      <span class="k">Provider account</span>
+      <div>
+        <strong>{esc(provider_label)} · Not reported</strong>
+        <span class="reported-source">No provider account was reported by this machine. Access comes from the Card choices approved below.</span>
+      </div>
+    </div>
+"""
+    email = str(account.get("email") or "").strip()
+    organization = str(account.get("organization") or "").strip()
     return f"""
     <div class="host-account">
       <span class="k">Provider account</span>
