@@ -61,6 +61,7 @@ new host
     ├── .local/bin/pb                  guarded project-board launcher
     ├── .kdcube/client-runtime/tools/problem-board-venv/   isolated bootstrap
     ├── .kdcube/          (700)        selectors, snapshots, relay state, logs, mailboxes
+    ├── src/app-ecosystem, src/kdcube-ai-app   public clones the client is built from, read only
     ├── .ssh/deploy_<repo>{,.pub}      one deploy key per repository
     ├── .config/systemd/user/kdcube-problem-board-relay-*.service
     └── workspaces/       (700)
@@ -75,12 +76,22 @@ exported from reviewed App Ecosystem and KDCube commits. Agent workspaces are
 never a runtime source. The selector moves only by
 [step 13](#13-update-the-selected-client-source).
 
+**What the install brings, and what it does not.** Steps 2 to 6 install, for
+one Linux user: the guarded `pb` launcher, the isolated client environment
+(`project-board` with its Connection Hub client and foundation packages), the
+worker procedure package for Claude Code and Codex, and the user relay service.
+They do not install Problem Board itself, which is an app on the KDCube
+deployment the relay talks to, nor any KDCube or Connection Hub server. The host
+needs neither: it reaches the deployment through its endpoint.
+
 **Private state stays private.** A shared machine has other users, and a home
 directory is often readable by a shared group. The selected code snapshots,
 workspaces, and `pb` state are readable only by the user who runs those agents.
 Every step that writes code checks this.
 
 ## 0. Decide before starting
+
+Runs on: the operator's machine, as a conversation with the host agent. Nothing changes on the host yet.
 
 The host agent presents these as one proposal, and the operator approves it
 before anything changes:
@@ -104,6 +115,8 @@ The repository table, used by steps 2, 7 and 8:
 | `kdcube-ai-app` | `kdcube/kdcube` | no | KDCube platform and SDK |
 
 ## 1. Give the host agent access to the host
+
+Runs on: the operator's machine (the login), then the host (the checks).
 
 **Operator.** Give the host agent an SSH login to the machine as the user that
 will run the agents: a key it can use and the user name.
@@ -139,15 +152,28 @@ client state, and workspaces must lock down.
 
 ## 2. Install The Pinned `pb` Bootstrap For The Agent User
 
-**Host agent**, logged in as the user who will run the agents, installs the
-client family from clean exports of the exact App Ecosystem and KDCube commits
-approved by the operator:
+Runs on: the host.
+
+**Host agent**, logged in as the user who will run the agents, first clones the
+two source repositories the client is built from. Both are public, and these
+clones are the install source only, read and never edited: each agent gets its
+own clones in step 8.
 
 ```bash
-APP_REPOSITORY=/home/<user>/workspaces/app-ecosystem
+mkdir -p ~/src
+[ -d ~/src/app-ecosystem ] || git clone -q https://github.com/elenaviter/app-ecosystem.git ~/src/app-ecosystem
+[ -d ~/src/kdcube-ai-app ] || git clone -q https://github.com/kdcube/kdcube.git ~/src/kdcube-ai-app
+git -C ~/src/app-ecosystem fetch -q origin && git -C ~/src/kdcube-ai-app fetch -q origin
+```
+
+Then it installs the client family from clean exports of the exact App
+Ecosystem and KDCube commits approved by the operator:
+
+```bash
+APP_REPOSITORY=/home/<user>/src/app-ecosystem
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=/home/<user>/workspaces/kdcube-ai-app
+KDCUBE_REPOSITORY=/home/<user>/src/kdcube-ai-app
 KDCUBE_COMMIT=<approved-full-commit>
 KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
@@ -171,10 +197,11 @@ users.
 
 ## 3. Configure `pb` for the user that runs the agents
 
+Runs on: the host.
+
 **Host agent**, as that user:
 
 ```bash
-pb procedure install --target claude-code --target codex
 pb setup \
   --target-id <target> \
   --endpoint <problem_board MCP endpoint of the deployment> \
@@ -183,15 +210,23 @@ pb setup \
   --allow-root /home/<user>/workspaces
 chmod 700 ~/.kdcube
 pb source use-code \
-  --repository /home/<user>/workspaces/app-ecosystem \
+  --repository /home/<user>/src/app-ecosystem \
   --ref <approved-full-commit> \
   --expect <approved-full-commit> \
-  --kdcube-repository /home/<user>/workspaces/kdcube-ai-app \
+  --kdcube-repository /home/<user>/src/kdcube-ai-app \
   --kdcube-ref <approved-full-kdcube-commit> \
   --expect-kdcube <approved-full-kdcube-commit>
 pb source status
+pb procedure install --target claude-code --target codex
+pb procedure verify
 pb relay --once          # zero workers, success
 ```
+
+The procedure is installed after `pb source use-code`, because the selected
+client carries the revision. `pb procedure verify` proves the installed
+procedure matches it. A stale or unverifiable package is a defect in this
+path, recorded and fixed before the walk goes on, never skipped: on a host that
+joined the team earlier the package was eight revisions behind.
 
 The endpoint is the one the first machine uses (its `relay.json`,
 `target.endpoint`). It is the deployment's public address and is never written
@@ -203,6 +238,8 @@ first machine. `chmod 700` closes it until W261 lands.
 
 ## 4. Keep the user's services running
 
+Runs on: the host.
+
 **Host agent:**
 
 ```bash
@@ -213,6 +250,8 @@ loginctl show-user <user> -p Linger      # Linger=yes
 Without it, the relay stops when the last SSH session of that user closes.
 
 ## 5. Install the coding agent and log it in
+
+Runs on: the host. The login's browser approval can be on any machine.
 
 **Host agent**, for Claude Code, without touching the system: Node from its
 official build into the user's home, then the CLI.
@@ -235,6 +274,8 @@ in `~/.claude/.credentials.json` and every later session of that Linux user
 uses it, including `--resume` and fresh sessions. It changes only on `/logout`.
 
 ## 6. Give the relay a credential store, then install it
+
+Runs on: the host.
 
 **Known gap (W258):** a headless machine's credential store (Secret Service)
 exists but cannot create its store over SSH: the first write fails with
@@ -263,7 +304,7 @@ by file permissions, readable by that user's agents).
 **Host agent** checks it, then installs the relay:
 
 ```bash
-PB_PYTHON="$(pipx environment --value PIPX_LOCAL_VENVS)/project-board/bin/python"
+PB_PYTHON="$HOME/.kdcube/client-runtime/tools/problem-board-venv/bin/python"   # step 2 installed it here
 "$PB_PYTHON" -c 'import keyring; keyring.set_password("pb-probe","p","x"); print(keyring.get_password("pb-probe","p")=="x"); keyring.delete_password("pb-probe","p")'
 pb relay-service install
 pb relay-service status        # installed: true, running: true
@@ -276,6 +317,8 @@ refuses. A selected client source without that fix must be advanced through
 step 13 first.
 
 ## 7. Give the host access to exactly the approved repositories
+
+Runs on: the host (keys, verification), and GitHub in the operator's browser (adding each key).
 
 One **deploy key per repository**: an SSH key that one repository accepts for
 itself. A personal key would reach every repository its owner can reach, and
@@ -328,6 +371,8 @@ keys are not secret: the sheet can be sent by any channel.
 
 ## 8. Give each agent its own workspace and clones
 
+Runs on: the host.
+
 **Host agent:**
 
 ```bash
@@ -354,6 +399,8 @@ git -C <name> remote set-url origin "github-<name>:<owner>/<repo>.git"
 
 ## 9. Start the agent sessions
 
+Runs on: the host.
+
 **Host agent**, one detached `screen` per agent, started from its direct login
 (step 1) so the session has the user-session environment. The session reads and
 writes its workspace and the user's `pb` state, and does not stop to ask for
@@ -362,8 +409,13 @@ each command, because nobody watches its screen:
 ```bash
 screen -dmS <agent-name> bash -c 'cd ~/workspaces/<workspace> && \
   export PATH=$HOME/.local/node/bin:/usr/local/bin:$PATH && \
-  claude --add-dir ~/workspaces/<workspace> --add-dir ~/.kdcube --dangerously-skip-permissions; exec bash'
+  claude --add-dir ~/workspaces/<workspace> --add-dir ~/.kdcube --dangerously-skip-permissions \
+    --disallowedTools AskUserQuestion; exec bash'
 ```
+
+`--disallowedTools AskUserQuestion` keeps the session from stopping on an
+interactive question nobody watches: a worker asks the operator by board mail,
+which reaches them wherever they are.
 
 For Codex, the equivalent is
 `codex -C ~/workspaces/<workspace> -s danger-full-access`.
@@ -387,9 +439,20 @@ screen -S <agent-name> -X hardcopy /tmp/<agent-name>.txt    # read what it shows
 ```
 
 A session keeps its board identity only when resumed with its id, from the same
-workspace: `claude --resume <session-id>`. A new session is a new worker.
+workspace and with the same flags:
+`claude --resume <session-id> --add-dir ~/workspaces/<workspace> --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion`.
+A new session is a new worker.
 
 ## 10. Enroll each agent
+
+Runs on: the host, inside each agent session.
+
+**Joining, enrolling and authorizing are three steps, and only the last creates
+a Card.** The host joins the deployment in steps 3 and 6: `pb setup` records the
+target and host, and the relay service runs for that user. That creates no
+Card. Enrolling (this step) records one agent session as a channel of this
+host's relay. That creates no Card either. Authorizing (step 11) creates the
+agent's Card in Connection Hub and stores its credential on the host.
 
 The prompt above makes the agent run `pb worker whoami` and
 `pb worker listen --alias <agent-name>`. It reports its stable worker name and
@@ -401,6 +464,8 @@ the host can retire it (`pb worker detach --runtime-kind claude-code
 --runtime-session-id <id>`).
 
 ## 11. Authorize each agent from the operator's browser
+
+Runs on: the operator's machine (the tunnel and the browser) and the host (the command).
 
 The host has no browser, so the approval runs in the operator's browser and the
 answer reaches the host through an SSH tunnel. The authorization code is useless
@@ -420,7 +485,13 @@ pb worker authorize <profile> --no-open --callback-port 18765
 ```
 
 It prints a URL. The **operator** opens it and approves the presented worker
-authority. The standard worker grants and operations are already selected;
+authority.
+
+The minimum a worker's Card needs to use the relay is the grant `work:relay`
+(the channel: publish and heartbeat, pull and settle controls, route mail,
+report assignments), and `work:observe` to read the plan it works on
+(`project.plan.item`, `plan.notes.list`). A worker without them is refused
+when it calls those operations. The standard worker grants and operations are already selected;
 leave them as shown for a normal worker, or uncheck authority that this worker
 must not have. Do not copy rows from another worker's Card. Provider accounts
 and their claims are separate, default-closed choices and stay unselected
@@ -432,12 +503,16 @@ code and the operator enters it on any device.
 
 ## 12. Attend the project and prove the round trip
 
+Runs on: the board in the operator's browser (attendance), then the host (`pb worker inspect`, the relay log).
+
 The **operator** adds each agent to the project. The coordinator (or the
 operator) sends each agent a message, and the agent receives, replies and
 settles it. On the host, `pb worker inspect` shows each channel open, and the
 relay log shows `event=opened` for each worker.
 
 ## 13. Update The Selected Client Source
+
+Runs on: the host.
 
 The operator or coordinator first agrees the source move with every agent on
 this host because either action restarts the shared relay. The installed
@@ -451,10 +526,10 @@ the source package. Read `program_arguments[0]` from `pb relay-service status`;
 it identifies the environment the installer must update:
 
 ```bash
-APP_REPOSITORY=/home/<user>/workspaces/app-ecosystem
+APP_REPOSITORY=/home/<user>/src/app-ecosystem
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=/home/<user>/workspaces/kdcube-ai-app
+KDCUBE_REPOSITORY=/home/<user>/src/kdcube-ai-app
 KDCUBE_COMMIT=<approved-full-commit>
 KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
@@ -495,6 +570,8 @@ that performed the change exits. A failed relay verification restores the
 previous selector and source.
 
 ## 14. Retire an agent or the host
+
+Runs on: the host, and GitHub in the operator's browser (deleting deploy keys).
 
 - One agent: `pb worker detach` in its session, then end its screen.
 - The host's access to one repository: delete its deploy key in that repository.
