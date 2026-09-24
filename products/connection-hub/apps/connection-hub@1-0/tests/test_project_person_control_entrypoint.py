@@ -217,13 +217,17 @@ async def test_descriptor_port_calls_configured_membership_operation() -> None:
         calls.append(kwargs)
         subject = kwargs["data"]["subject"]
         return {
-            "ok": True,
-            "membership": {
-                "project_ref": "work:project:quickstart",
-                "subject": subject,
-                "role": "owner" if subject == "authenticated-admin" else "member",
-                "delegable_grants": ["work:admin", "work:review"],
-                "evidence": {"source": "problem-board"},
+            "project_membership_resolve": {
+                "ok": True,
+                "membership": {
+                    "project_ref": "work:project:quickstart",
+                    "subject": subject,
+                    "role": (
+                        "owner" if subject == "authenticated-admin" else "member"
+                    ),
+                    "delegable_grants": ["work:admin", "work:review"],
+                    "evidence": {"source": "problem-board"},
+                },
             },
         }
 
@@ -292,6 +296,64 @@ async def test_descriptor_port_without_provider_refuses_by_name() -> None:
 
     assert decision.allowed is False
     assert decision.reason == "project_membership_resolver_missing"
+
+
+@pytest.mark.asyncio
+async def test_descriptor_port_reads_platform_result_and_structured_refusal() -> None:
+    module = _entrypoint_module()
+    responses = [
+        {
+            "status": "ok",
+            "result": {
+                "ok": True,
+                "membership": {
+                    "project_ref": "work:project:quickstart",
+                    "subject": "authenticated-admin",
+                    "role": "owner",
+                    "delegable_grants": ["work:review"],
+                },
+            },
+        },
+        {
+            "project_membership_resolve": {
+                "ok": False,
+                "error": {
+                    "code": "work_identity_required",
+                    "message": "A signed-in person is required.",
+                },
+            }
+        },
+    ]
+
+    async def _call(**_kwargs):
+        return responses.pop(0)
+
+    port = module.descriptor_project_authorization_port(
+        SimpleNamespace(
+            bundle_props={
+                "project_membership": {
+                    "provider": {
+                        "bundle_id": "problem-board@1-0",
+                        "operation": "project_membership_resolve",
+                    },
+                    "administrative_roles": ["owner"],
+                }
+            }
+        ),
+        caller=_call,
+    )
+    decision = await port.authorize_project_person_control(
+        ProjectAuthorizationRequest.build(
+            actor_subject="authenticated-admin",
+            project_ref="work:project:quickstart",
+            target_subject="platform-user-2",
+            operation=PROJECT_PERSON_CONTROL_CREATE,
+            request_id="request-structured-refusal",
+        )
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "work_identity_required"
 
 
 @pytest.mark.asyncio
@@ -464,3 +526,148 @@ async def test_project_authorization_runs_through_request_bound_bundle_operation
     assert operation == "authorize"
     assert call["user"] == {"user_id": "platform-user-7"}
     assert "person_subject" not in call
+
+
+@pytest.mark.asyncio
+async def test_project_control_create_resolves_membership_through_bundle_operation(
+    monkeypatch,
+) -> None:
+    module = _entrypoint_module()
+    membership_calls = []
+    provider_config = {
+        "project_membership": {
+            "provider": {
+                "bundle_id": "problem-board@1-0",
+                "operation": "project_membership_resolve",
+            },
+            "administrative_roles": ["owner", "admin"],
+        }
+    }
+
+    class _CreateService:
+        async def project_person_control_create(self, user, **kwargs):
+            port = module.descriptor_project_authorization_port(
+                SimpleNamespace(bundle_props=provider_config)
+            )
+            decision = await port.authorize_project_person_control(
+                ProjectAuthorizationRequest.build(
+                    actor_subject=user["user_id"],
+                    project_ref=kwargs["project_ref"],
+                    target_subject=kwargs["target_subject"],
+                    operation=PROJECT_PERSON_CONTROL_CREATE,
+                    request_id=kwargs["request_id"],
+                )
+            )
+            return {
+                "ok": decision.allowed,
+                "reason": decision.reason,
+                "delegable_grants": list(decision.delegable_grants),
+            }
+
+    async def _access_service(*_args, **_kwargs):
+        return _CreateService()
+
+    monkeypatch.setattr(module, "_automation_access_service", _access_service)
+    monkeypatch.setattr(
+        module,
+        "_platform_user_payload",
+        lambda *a, **kw: {"user_id": kw.get("user_id")},
+    )
+    connection_hub = module.ConnectionHubEntrypoint.__new__(
+        module.ConnectionHubEntrypoint
+    )
+
+    class _ProblemBoardWorkflow:
+        @api(
+            method="POST",
+            alias="project_membership_resolve",
+            route="operations",
+        )
+        async def project_membership_resolve(self, **kwargs):
+            subject = kwargs.get("subject")
+            membership_calls.append(subject)
+            return {
+                "ok": True,
+                "membership": {
+                    "project_ref": kwargs.get("project_ref"),
+                    "subject": subject,
+                    "role": "owner" if subject == "platform-admin-1" else "member",
+                    "delegable_grants": ["work:review"],
+                    "evidence": {"source": "problem-board"},
+                },
+            }
+
+    async def _load_bundle_workflow(**kwargs):
+        if kwargs.get("bundle_id") == "connection-hub@1-0":
+            return (
+                connection_hub,
+                SimpleNamespace(id="connection-hub@1-0"),
+                "tenant-a",
+                "project-a",
+            )
+        return (
+            _ProblemBoardWorkflow(),
+            SimpleNamespace(id="problem-board@1-0"),
+            "tenant-a",
+            "project-a",
+        )
+
+    monkeypatch.setattr(integrations, "_load_bundle_workflow", _load_bundle_workflow)
+    monkeypatch.setattr(
+        integrations,
+        "_authoritative_bundle_props",
+        lambda *args, **kwargs: {},
+    )
+
+    app = FastAPI()
+    app.state.redis_async = object()
+    app.state.pg_pool = None
+    request = Request(
+        {
+            "type": "http",
+            "app": app,
+            "method": "POST",
+            "path": (
+                "/api/integrations/bundles/tenant-a/project-a/"
+                "connection-hub@1-0/operations/project_person_control_create"
+            ),
+            "query_string": b"",
+            "headers": [],
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "client": ("127.0.0.1", 12345),
+            "http_version": "1.1",
+        }
+    )
+    session = SimpleNamespace(
+        session_id="session-admin",
+        user_type=SimpleNamespace(value="registered"),
+        user_id="platform-admin-1",
+        fingerprint="fp-admin",
+        roles=["registered"],
+        permissions=[],
+        request_context=SimpleNamespace(),
+    )
+
+    result = await integrations._call_bundle_op_inner(
+        tenant="tenant-a",
+        project="project-a",
+        bundle_id="connection-hub@1-0",
+        payload=integrations.BundleSuggestionsRequest(
+            data={
+                "project_ref": "work:project:quickstart",
+                "target_subject": "platform-user-2",
+            }
+        ),
+        request=request,
+        operation="project_person_control_create",
+        route="operations",
+        session=session,
+    )
+
+    assert result["project_person_control_create"] == {
+        "ok": True,
+        "reason": "",
+        "delegable_grants": ["work:review"],
+    }
+    assert membership_calls == ["platform-admin-1", "platform-user-2"]

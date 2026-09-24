@@ -22,6 +22,29 @@ from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
 BundleOperationCaller = Callable[..., Awaitable[Mapping[str, Any]]]
 
 
+def _operation_result(operation: str, value: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize direct and platform-wrapped bundle operation results."""
+
+    result = dict(value or {})
+    if "ok" in result:
+        return result
+    nested = result.get(operation)
+    if isinstance(nested, Mapping):
+        return dict(nested)
+    if clean_text(result.get("status")).lower() == "ok":
+        nested = result.get("result")
+        if isinstance(nested, Mapping):
+            return dict(nested)
+    return result
+
+
+def _refusal_reason(response: Mapping[str, Any]) -> str:
+    error = response.get("error")
+    if isinstance(error, Mapping):
+        return clean_text(error.get("code") or response.get("reason"))
+    return clean_text(error or response.get("reason"))
+
+
 class BundleOperationProjectMembershipResolver:
     """Resolve canonical membership through one request-bound peer operation."""
 
@@ -56,8 +79,9 @@ class BundleOperationProjectMembershipResolver:
             raise ProjectAuthorizationError(
                 "project_membership_provider_response_invalid"
             )
+        response = _operation_result(self._operation, response)
         if response.get("ok") is not True:
-            reason = clean_text(response.get("error") or response.get("reason"))
+            reason = _refusal_reason(response)
             raise ProjectAuthorizationError(
                 reason or "project_membership_provider_refused"
             )
