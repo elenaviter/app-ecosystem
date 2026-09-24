@@ -156,6 +156,8 @@ import {
   matchesAccessCardFocus,
   unavailableAccessCardMessage,
 } from './accessCardFocus';
+import { accessCardOpenMode } from './cardFocusMode';
+import { agentCardPresentation } from './cardIdentityPresentation';
 import { projectPersonControlCoordinates } from './projectPersonControl';
 import {
   authorityAccountCount,
@@ -1096,6 +1098,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [pendingInvocationMode, setPendingInvocationMode] =
     useState<InvocationMode | null>(() => pendingPresetMode(pendingAgentGrantRequest(openParams)));
   const accessCardFocus = useMemo(() => accessCardFocusRequest(openParams), [openParams]);
+  const accessCardFocusKey = JSON.stringify(accessCardFocus);
+  const [accessCardFocusDismissed, setAccessCardFocusDismissed] = useState(false);
+  useEffect(() => {
+    setAccessCardFocusDismissed(false);
+  }, [accessCardFocusKey]);
+  const activeAccessCardFocus = accessCardFocusDismissed ? null : accessCardFocus;
   const [accessCardFocusState, setAccessCardFocusState] =
     useState<'idle' | 'loading' | 'resolved' | 'unavailable'>(
       () => (accessCardFocus ? 'loading' : 'idle'),
@@ -1157,6 +1165,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Editing happens on a workbench (rail of cards + one editor column) that
   // replaces the list; entering edit brings it into view.
   const workbenchRef = useRef<HTMLDivElement | null>(null);
+  const focusedCardViewRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (!editingAccessId) return;
     workbenchRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
@@ -2250,24 +2259,24 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       };
     });
   }, [pendingServiceCapability]);
-  const focusedAccessId = useRef<string | null>(null);
+  const focusedAccessRequestKey = useRef<string | null>(null);
   useEffect(() => {
-    if (!accessCardFocus?.controlOnly) return;
-    if (focusedCard && matchesAccessCardFocus(focusedCard, accessCardFocus)) {
+    if (!activeAccessCardFocus?.controlOnly) return;
+    if (focusedCard && matchesAccessCardFocus(focusedCard, activeAccessCardFocus)) {
       setAccessCardFocusState('resolved');
       return;
     }
     let current = true;
     setAccessCardFocusState('loading');
     void dispatch(loadControlCard({
-      controlId: accessCardFocus.accessId,
-      projectRef: accessCardFocus.projectRef,
-      targetSubject: accessCardFocus.targetSubject,
+      controlId: activeAccessCardFocus.accessId,
+      projectRef: activeAccessCardFocus.projectRef,
+      targetSubject: activeAccessCardFocus.targetSubject,
     })).unwrap()
       .then((result) => {
         if (!current) return;
         setAccessCardFocusState(
-          result.access && matchesAccessCardFocus(result.access, accessCardFocus)
+          result.access && matchesAccessCardFocus(result.access, activeAccessCardFocus)
             ? 'resolved'
             : 'unavailable',
         );
@@ -2276,40 +2285,41 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         if (current) setAccessCardFocusState('unavailable');
       });
     return () => { current = false; };
-  }, [accessCardFocus, dispatch, focusedCard?.access_id]);
+  }, [activeAccessCardFocus, dispatch, focusedCard?.access_id]);
   useEffect(() => {
-    if (!accessCardFocus) {
-      focusedAccessId.current = null;
+    if (!activeAccessCardFocus) {
+      focusedAccessRequestKey.current = null;
       setAccessCardFocusState('idle');
       return;
     }
     const item = findAccessCardFocus(
       [...items, ...(focusedCard ? [focusedCard] : [])],
-      accessCardFocus,
+      activeAccessCardFocus,
     );
     if (!item) {
-      if (!accessCardFocus.controlOnly) {
+      if (!activeAccessCardFocus.controlOnly) {
         setAccessCardFocusState(delegatedAccessLoading ? 'loading' : 'unavailable');
       }
       return;
     }
     setAccessCardFocusState('resolved');
-    if (focusedAccessId.current !== accessCardFocus.accessId) {
-      focusedAccessId.current = accessCardFocus.accessId;
-      startEdit(item);
-      if (accessCardFocus.resource && accessCardFocus.outerOperation) {
+    setCompactList(false);
+    if (focusedAccessRequestKey.current !== accessCardFocusKey) {
+      focusedAccessRequestKey.current = accessCardFocusKey;
+      if (accessCardOpenMode(activeAccessCardFocus) === 'edit') startEdit(item);
+      if (activeAccessCardFocus.resource && activeAccessCardFocus.outerOperation) {
         setEditResourceOperations((current) => ({
           ...current,
-          [accessCardFocus.resource as string]: Array.from(new Set([
-            ...(current[accessCardFocus.resource as string] || []),
-            accessCardFocus.outerOperation as string,
+          [activeAccessCardFocus.resource as string]: Array.from(new Set([
+            ...(current[activeAccessCardFocus.resource as string] || []),
+            activeAccessCardFocus.outerOperation as string,
           ])),
         }));
       }
     }
-    if (accessCardFocus.accountId) {
+    if (activeAccessCardFocus.accountId) {
       const account = accounts.find(
-        (candidate) => candidate.account_id === accessCardFocus.accountId,
+        (candidate) => candidate.account_id === activeAccessCardFocus.accountId,
       );
       if (account?.provider_id) {
         setExpandedAccountProviders((current) => ({
@@ -2319,7 +2329,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }
     }
   }, [
-    accessCardFocus,
+    activeAccessCardFocus,
+    accessCardFocusKey,
     items,
     focusedCard,
     accounts,
@@ -2784,6 +2795,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditAddedResources([]);
     setEditRemovedResources([]);
     setEditAcceptedOperations({});
+  };
+
+  const leaveFocusedCard = () => {
+    clearEditState();
+    setAccessCardFocusDismissed(true);
   };
 
   const resetAgentToControlDefaults = async () => {
@@ -4538,6 +4554,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     ? items.find((it) => it.access_id === editingAccessId)
       || (focusedCard?.access_id === editingAccessId ? focusedCard : null)
     : null;
+  const focusedViewRecord = !editingRecord && activeAccessCardFocus
+    ? findAccessCardFocus(
+        [...items, ...(focusedCard ? [focusedCard] : [])],
+        activeAccessCardFocus,
+      )
+    : undefined;
+  useEffect(() => {
+    if (!focusedViewRecord) return;
+    focusedCardViewRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [focusedViewRecord?.access_id]);
   const isEditableRecord = (item: DelegatedAccessRecord): boolean =>
     item.source === 'agent'
     || (item.source === 'oauth' && Boolean(item.client_id))
@@ -4546,6 +4572,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // One title rule for every view: an agent card is named by its agent and
   // app, the others by their label. The door is a field, never the name.
   const cardTitle = (item: DelegatedAccessRecord): string => {
+    const runtime = agentCardPresentation(item);
+    if (runtime) return runtime.title;
     if (item.source === 'agent' && item.client_id) {
       const who = parseAgentClientId(item.client_id);
       const agentLabel = who ? `${who.agent} · ${who.app}` : item.client_id;
@@ -4553,6 +4581,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
     return correlatedCardLabel(item);
   };
+  const cardSubtitle = (item: DelegatedAccessRecord): string => (
+    agentCardPresentation(item)?.subtitle || ''
+  );
+  const cardOwner = (item: DelegatedAccessRecord): { label: string; title: string } => {
+    const ownerId = item.grantor_subject || platformUserId;
+    return {
+      label: ownerId && ownerId === platformUserId ? 'You' : ownerId || 'Unavailable',
+      title: ownerId || 'KDCube owner unavailable',
+    };
+  };
+  const isFocusedCard = (item: DelegatedAccessRecord): boolean => Boolean(
+    activeAccessCardFocus && matchesAccessCardFocus(item, activeAccessCardFocus),
+  );
   const cardBadge = (item: DelegatedAccessRecord) => (
     <>
       <span className={`badge ${callerBadgeClass(item)}`}>{callerLabel(item)}</span>
@@ -4570,7 +4611,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Switching cards while editing discards the edit in progress: ask first.
   const switchEdit = (item: DelegatedAccessRecord) => {
     if (item.access_id === editingAccessId) return;
-    if (!editDirty) { startEdit(item); return; }
+    if (!editDirty) {
+      if (!isFocusedCard(item)) setAccessCardFocusDismissed(true);
+      startEdit(item);
+      return;
+    }
     setPendingLeave({ kind: 'switch', item });
   };
   const openLinkedControlCard = async (controlId: string) => {
@@ -4598,8 +4643,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         const action = pendingLeave;
         setPendingLeave(null);
         if (!action) return;
-        if (action.kind === 'switch') startEdit(action.item);
-        else clearEditState();
+        if (action.kind === 'switch') {
+          if (!isFocusedCard(action.item)) setAccessCardFocusDismissed(true);
+          startEdit(action.item);
+        } else leaveFocusedCard();
       }}
     />
   );
@@ -4821,7 +4868,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       nowSeconds,
       formatDate(item.expires_at) || '',
     );
-    const meta = (item.source === 'control'
+    const meta = [cardSubtitle(item), ...(item.source === 'control'
       ? [
           descriptorCapability
             ? `Descriptor ceiling: ${descriptorCapability.selectedCount} entries`
@@ -4836,7 +4883,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             : '',
           `${cardAccessCount(item)} access`,
           lifecycle?.summary || `expires ${formatDate(item.expires_at) || 'unknown'}`,
-        ].filter(Boolean)).join(' · ');
+        ])].filter(Boolean).join(' · ');
     return (
       <div
         key={item.access_id}
@@ -5024,6 +5071,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <div className="card-editor__head">
             <div>
               <div className="account-title">{cardTitle(record)} {cardBadge(record)}</div>
+              {cardSubtitle(record) ? <div className="account-sub">{cardSubtitle(record)}</div> : null}
               <div className="card-editor__summary">{cardSummary(record)}</div>
               {record.source === 'manual' || record.source === 'control'
                 ? <ClientIdRef value={record.access_id} kind="access" />
@@ -5036,7 +5084,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               className="btn btn-ghost"
               type="button"
               disabled={busy}
-              onClick={() => (editDirty ? setPendingLeave({ kind: 'leave' }) : clearEditState())}
+              onClick={() => (editDirty ? setPendingLeave({ kind: 'leave' }) : leaveFocusedCard())}
             >
               All cards
             </button>
@@ -5048,19 +5096,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               The linked administrator Control Card is unavailable. Reload the Card before editing its capability base.
             </div>
           ) : null}
-          {accessCardFocus?.accessId === record.access_id
-            && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
+          {activeAccessCardFocus?.accessId === record.access_id
+            && (activeAccessCardFocus.accountClaim || activeAccessCardFocus.claims.length) ? (
             <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
               <strong>Access update required</strong>
-              {accessCardFocus.accountClaim ? (
+              {activeAccessCardFocus.accountClaim ? (
                 <div>
-                  Allow <code>{accessCardFocus.accountClaim}</code>
-                  {accessCardFocus.accountId ? <> on <code>{accessCardFocus.accountId}</code></> : null},
+                  Allow <code>{activeAccessCardFocus.accountClaim}</code>
+                  {activeAccessCardFocus.accountId ? <> on <code>{activeAccessCardFocus.accountId}</code></> : null},
                   then save and retry the operation.
                 </div>
-              ) : accessCardFocus.claims.length ? (
+              ) : activeAccessCardFocus.claims.length ? (
                 <div>
-                  Review <code>{accessCardFocus.claims.join(', ')}</code>, save, and retry the operation.
+                  Review <code>{activeAccessCardFocus.claims.join(', ')}</code>, save, and retry the operation.
                 </div>
               ) : null}
             </div>
@@ -5285,12 +5333,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                 {cardTitle(item)}
                                 {cardBadge(item)}
                               </div>
+                              {cardSubtitle(item) ? <div className="account-sub">{cardSubtitle(item)}</div> : null}
                               {item.client_id ? <ClientIdRef value={item.client_id} kind="client" /> : null}
                               {lifecycle ? <ClientIdRef value={item.access_id} kind="card" /> : null}
                               {expiryHint(item)}
                               {renderCardComposition(item, { editing })}
                               <div className="card-fields card-identity-fields">
-                                <CardRuntimeIdentityFields item={item} owner={item.grantor_subject || platformUserId} />
+                                <CardRuntimeIdentityFields
+                                  item={item}
+                                  owner={cardOwner(item).label}
+                                  ownerTitle={cardOwner(item).title}
+                                />
                               </div>
                               {/* Edit mode keeps the per-claim checkboxes; the
                                   read-only view uses the same labelled rows as
@@ -5428,8 +5481,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 // an OAuth-delivered client on its connected bearer, or an issued
                 // token held by a script. Saving changes authority, not credential
                 // material.
-                const editable = (item.source === 'oauth' && Boolean(item.client_id))
-                  || item.source === 'manual';
+                const editable = isEditableRecord(item);
                 const editing = editable && editingAccessId === item.access_id;
                 const authority = displayedAuthority(item);
                 // Only a single-resource OAuth app has a governing client door.
@@ -5445,6 +5497,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           : null}
                         {cardBadge(item)}
                       </div>
+                      {cardSubtitle(item) ? <div className="account-sub">{cardSubtitle(item)}</div> : null}
                       {expiryHint(item)}
                       {item.source === 'manual'
                         ? <ClientIdRef value={item.access_id} kind="access" />
@@ -5452,21 +5505,25 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
                       {renderCardComposition(item, { editing })}
                       <div className="card-fields card-identity-fields">
-                        <CardRuntimeIdentityFields item={item} owner={item.grantor_subject || platformUserId} />
+                        <CardRuntimeIdentityFields
+                          item={item}
+                          owner={cardOwner(item).label}
+                          ownerTitle={cardOwner(item).title}
+                        />
                       </div>
-                      {accessCardFocus?.accessId === item.access_id
-                        && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
+                      {activeAccessCardFocus?.accessId === item.access_id
+                        && (activeAccessCardFocus.accountClaim || activeAccessCardFocus.claims.length) ? (
                         <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
                           <strong>Access update required</strong>
-                          {accessCardFocus.accountClaim ? (
+                          {activeAccessCardFocus.accountClaim ? (
                             <div>
-                              Allow <code>{accessCardFocus.accountClaim}</code>
-                              {accessCardFocus.accountId ? <> on <code>{accessCardFocus.accountId}</code></> : null},
+                              Allow <code>{activeAccessCardFocus.accountClaim}</code>
+                              {activeAccessCardFocus.accountId ? <> on <code>{activeAccessCardFocus.accountId}</code></> : null},
                               then save and retry the operation.
                             </div>
-                          ) : accessCardFocus.claims.length ? (
+                          ) : activeAccessCardFocus.claims.length ? (
                             <div>
-                              Review <code>{accessCardFocus.claims.join(', ')}</code>, save, and retry the operation.
+                              Review <code>{activeAccessCardFocus.claims.join(', ')}</code>, save, and retry the operation.
                             </div>
                           ) : null}
                         </div>
@@ -5636,29 +5693,57 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   </li>
                 );
   };
+  const detailedListItems = [
+    ...agentEntries.flatMap(([, records]) => records),
+    ...otherItems,
+  ].filter((item) => item.access_id !== focusedViewRecord?.access_id);
+  const focusedCardView = focusedViewRecord ? (
+    <section
+      className="focused-card-view"
+      ref={focusedCardViewRef}
+      aria-label={`Selected Card: ${cardTitle(focusedViewRecord)}`}
+    >
+      <div className="focused-card-view__head">
+        <strong>Selected Card</strong>
+        <button
+          className="btn btn-ghost"
+          type="button"
+          onClick={() => setAccessCardFocusDismissed(true)}
+        >
+          All cards
+        </button>
+      </div>
+      <ul className="accounts">
+        {focusedViewRecord.source === 'agent'
+          ? renderDetailedAgentCard(focusedViewRecord)
+          : renderDetailedOtherCard(focusedViewRecord)}
+      </ul>
+    </section>
+  ) : null;
   const grantedPane = (
     <section className="card">
       {renderRenewDialog()}
       {renderAgentResetDialog()}
 
-      {accessCardFocus && accessCardFocusState === 'loading' ? (
+      {activeAccessCardFocus && accessCardFocusState === 'loading' ? (
         <div className="notice" role="status">Opening the requested Card...</div>
       ) : null}
-      {accessCardFocus && accessCardFocusState === 'unavailable' ? (
+      {activeAccessCardFocus && accessCardFocusState === 'unavailable' ? (
         <div className="error" role="alert">
           <strong>Card unavailable.</strong>{' '}
-          {unavailableAccessCardMessage(accessCardFocus)}
+          {unavailableAccessCardMessage(activeAccessCardFocus)}
         </div>
       ) : null}
 
       {editingRecord ? renderWorkbench(editingRecord) : null}
       {!editingRecord && compactList ? renderCompactList() : null}
+      {!editingRecord && !compactList ? focusedCardView : null}
       {/* The detailed list. While a card is being edited the workbench above
           replaces it, so the inline edit branches below no longer render. */}
       {!editingRecord && !compactList ? (
         <div>
           {groupCards(
-            [...agentEntries.flatMap(([, records]) => records), ...otherItems],
+            detailedListItems,
             railGroupBy,
             { stateOf: cardState, doorLabel: cardDoors },
           ).map((group) => (
@@ -5701,7 +5786,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         </p>
       ) : null}
 
-      {!items.length ? (
+      {!items.length && !focusedViewRecord ? (
         <p className="muted">
           Nothing granted yet. Access appears here when an agent asks and you
           approve, when you create an automation token, or when you approve an

@@ -1,4 +1,6 @@
+import type { ReactNode } from 'react';
 import type { DelegatedAccessRecord } from '../../api/types';
+import { runtimeHostLabel, runtimeProviderLabel } from './cardIdentityPresentation';
 
 interface RuntimeAccountIdentity {
   vendor: string;
@@ -14,14 +16,14 @@ interface RuntimeIdentityFieldsProps {
   layout?: 'card' | 'facts';
 }
 
-function publicText(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
+interface IdentityRow {
+  label: string;
+  value: ReactNode;
+  valueClassName?: string;
 }
 
-function vendorLabel(value: string): string {
-  if (value === 'claude-code') return 'Claude Code';
-  if (value === 'codex') return 'Codex';
-  return value || 'Coding runtime';
+function publicText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function runtimeAccountIdentity(
@@ -34,7 +36,7 @@ function runtimeAccountIdentity(
   const accountId = publicText(account.account_id);
   if (!accountId) return null;
   return {
-    vendor: vendorLabel(publicText(metadata.kdcube_agent_provider)),
+    vendor: runtimeProviderLabel(publicText(metadata.kdcube_agent_provider)),
     accountId,
     email: publicText(account.email),
     organization: publicText(account.organization),
@@ -45,25 +47,61 @@ export function cardRuntimeIdentity(item: DelegatedAccessRecord): RuntimeAccount
   return runtimeAccountIdentity(item.client_metadata);
 }
 
-function providerAccountValue(
-  clientMetadata?: Record<string, unknown>,
-) {
+function runtimeIdentityRows(
+  clientMetadata: Record<string, unknown> | undefined,
+  owner: string,
+  ownerTitle: string,
+): IdentityRow[] {
   const identity = runtimeAccountIdentity(clientMetadata);
-  const runtimeProvider = publicText((clientMetadata || {}).kdcube_agent_provider);
-  if (identity) {
+  const provider = publicText((clientMetadata || {}).kdcube_agent_provider);
+  const rows: IdentityRow[] = [{
+    label: 'Owner',
+    value: <span title={ownerTitle}>{owner || 'Unavailable'}</span>,
+    valueClassName: 'card-owner-identity',
+  }];
+  if (!provider) return rows;
+
+  const providerLabel = identity?.vendor || runtimeProviderLabel(provider);
+  const host = runtimeHostLabel(clientMetadata);
+  rows.push({
+    label: 'Provider account',
+    value: <>
+      <strong>{providerLabel} · {identity?.email || 'Not reported'}</strong>
+      <small>
+        {identity
+          ? <>Read from the {providerLabel} login on {host}. Used to identify the agent, not to grant access.</>
+          : <>No provider account was reported by {host}.</>}
+      </small>
+    </>,
+    valueClassName: 'card-runtime-identity',
+  });
+  if (identity?.accountId) {
+    rows.push({
+      label: 'Account ID',
+      value: <code title={identity.accountId}>{identity.accountId}</code>,
+      valueClassName: 'card-runtime-identity-id',
+    });
+  }
+  if (identity?.organization) {
+    rows.push({
+      label: 'Organization ID',
+      value: <code title={identity.organization}>{identity.organization}</code>,
+      valueClassName: 'card-runtime-identity-id',
+    });
+  }
+  return rows;
+}
+
+function IdentityField({ row, layout }: { row: IdentityRow; layout: 'card' | 'facts' }) {
+  if (layout === 'facts') {
     return <>
-      <strong>{identity.vendor} · {identity.email || identity.accountId}</strong>
-      {identity.email && identity.email !== identity.accountId
-        ? <code title="Vendor account ID">{identity.accountId}</code>
-        : null}
-      {identity.organization ? <span>{identity.organization}</span> : null}
-      <small>Reported by host · identification metadata</small>
+      <dt>{row.label}</dt>
+      <dd className={row.valueClassName}>{row.value}</dd>
     </>;
   }
-  if (!runtimeProvider) return null;
   return <>
-    <strong>{vendorLabel(runtimeProvider)} · Not reported</strong>
-    <small>No provider account was reported by this machine.</small>
+    <span className="card-field-label">{row.label}</span>
+    <span className={`card-field-value ${row.valueClassName || ''}`.trim()}>{row.value}</span>
   </>;
 }
 
@@ -74,35 +112,21 @@ export function RuntimeIdentityFields({
   layout = 'card',
 }: RuntimeIdentityFieldsProps) {
   const ownerValue = owner || 'Unavailable';
-  const providerAccount = providerAccountValue(clientMetadata);
   const title = ownerTitle || owner || 'KDCube owner unavailable';
-
-  if (layout === 'facts') {
-    return <>
-      <dt>Owner</dt>
-      <dd className="card-owner-identity" title={title}>{ownerValue}</dd>
-      {providerAccount ? <>
-        <dt>Provider account</dt>
-        <dd className="card-runtime-identity">{providerAccount}</dd>
-      </> : null}
-    </>;
-  }
-
-  return <>
-    <span className="card-field-label">Owner</span>
-    <span className="card-field-value card-owner-identity" title={title}>{ownerValue}</span>
-    {providerAccount ? <>
-      <span className="card-field-label">Provider account</span>
-      <span className="card-field-value card-runtime-identity">{providerAccount}</span>
-    </> : null}
-  </>;
+  const rows = runtimeIdentityRows(clientMetadata, ownerValue, title);
+  return <>{rows.map((row) => <IdentityField key={row.label} row={row} layout={layout} />)}</>;
 }
 
-export function CardRuntimeIdentityFields({ item, owner }: {
+export function CardRuntimeIdentityFields({ item, owner, ownerTitle }: {
   item: DelegatedAccessRecord;
   owner: string;
+  ownerTitle?: string;
 }) {
   return (
-    <RuntimeIdentityFields clientMetadata={item.client_metadata} owner={owner} />
+    <RuntimeIdentityFields
+      clientMetadata={item.client_metadata}
+      owner={owner}
+      ownerTitle={ownerTitle}
+    />
   );
 }
