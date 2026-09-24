@@ -637,8 +637,8 @@ def _render_accounts_needed_panel(accounts_needed: AccountRequirements | None, e
 """
 
 
-def _render_host_reported_runtime_account(req: AuthorizeRequest, esc) -> str:
-    """Render client-supplied runtime identification apart from Card authority."""
+def _render_host_reported_runtime_account_rows(req: AuthorizeRequest, esc) -> str:
+    """Render labelled client-supplied runtime identification rows."""
 
     metadata = req.client.client_metadata if req.client is not None else {}
     if not isinstance(metadata, Mapping):
@@ -650,31 +650,33 @@ def _render_host_reported_runtime_account(req: AuthorizeRequest, esc) -> str:
         "claude-code": "Claude Code",
         "codex": "Codex",
     }.get(provider, provider)
+    host = str(
+        metadata.get("kdcube_machine_label")
+        or metadata.get("kdcube_machine_id")
+        or "this host"
+    ).strip()
     raw_account = metadata.get("kdcube_agent_account")
     account = raw_account if isinstance(raw_account, Mapping) else {}
     account_id = str(account.get("account_id") or "").strip()
     if not account_id:
         return f"""
-    <div class="host-account">
       <span class="k">Provider account</span>
       <div>
         <strong>{esc(provider_label)} · Not reported</strong>
-        <span class="reported-source">No provider account was reported by this machine. Access comes from the Card choices approved below.</span>
+        <span class="reported-source">No provider account was reported by {esc(host)}.</span>
       </div>
-    </div>
 """
     email = str(account.get("email") or "").strip()
     organization = str(account.get("organization") or "").strip()
     return f"""
-    <div class="host-account">
       <span class="k">Provider account</span>
       <div>
-        <strong>{esc(provider_label)} · {esc(email or account_id)}</strong>
-        <code>{esc(account_id)}</code>
-        {f'<span class="desc">{esc(organization)}</span>' if organization else ''}
-        <span class="reported-source">Reported by the host · identification metadata. Access comes from the Card choices approved below.</span>
+        <strong>{esc(provider_label)} · {esc(email or 'Not reported')}</strong>
+        <span class="reported-source">Read from the {esc(provider_label)} login on {esc(host)}. Used to identify the agent, not to grant access.</span>
       </div>
-    </div>
+      <span class="k">Account ID</span>
+      <code title="Account ID">{esc(account_id)}</code>
+      {f'<span class="k">Organization ID</span><code title="Organization ID">{esc(organization)}</code>' if organization else ''}
 """
 
 
@@ -953,22 +955,26 @@ def render_consent_html(
         else "none"
     )
     account_value = grantor_label or grantor_subject or "current KDCube account"
-    account_html = ""
+    identity_rows = ""
     if grantor_subject or grantor_label:
-        account_html = f"""
-    <div class="account">
-      <div>
-        <span class="k">KDCube account</span>
-        <strong>{esc(account_value)}</strong>
-        {f'<code>{esc(grantor_subject)}</code>' if grantor_subject and grantor_subject != account_value else ''}
-      </div>
-      <form class="account-form" method="post" action="{esc(signout_action)}">
+        identity_rows = f"""
+      <span class="k">Owner</span>
+      <strong title="Owner ID: {esc(grantor_subject)}">{esc(account_value)}</strong>
+"""
+    runtime_identity_rows = _render_host_reported_runtime_account_rows(req, esc)
+    identity_html = ""
+    if identity_rows or runtime_identity_rows:
+        signout_html = f"""
+      <form class="identity-actions" method="post" action="{esc(signout_action)}">
         <input type="hidden" name="next" value="{esc(return_to)}">
         <button class="signout" type="submit">Sign out of KDCube</button>
       </form>
+""" if grantor_subject or grantor_label else ""
+        identity_html = f"""
+    <div class="identity-card">
+{identity_rows}{runtime_identity_rows}{signout_html}
     </div>
 """
-    host_runtime_account_html = _render_host_reported_runtime_account(req, esc)
 
     # The card this approval creates is editable/revocable in the hub - name
     # the exact place, deep-linked to THIS client, so the page is a doorway
@@ -1042,23 +1048,23 @@ def render_consent_html(
     .details {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .7rem .85rem; margin: 0 0 .9rem; }}
     .details .row {{ display: flex; gap: .6rem; align-items: baseline; margin: .35rem 0; word-break: break-word; }}
     .k {{ flex: 0 0 96px; color: var(--muted); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }}
-    .account {{
-      display: flex; justify-content: space-between; gap: 1rem; align-items: center;
+    .identity-card {{
+      display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .42rem .75rem; align-items: baseline;
       border: 1px solid var(--line); border-radius: 8px; padding: .7rem .85rem; margin: 0 0 .9rem;
       background: var(--panel);
     }}
-    .account strong {{ display: block; font-size: .92rem; margin-top: .12rem; color: var(--ink); }}
-    .account code {{ display: inline-block; margin-top: .2rem; max-width: 100%; word-break: break-all; }}
-    .account-form {{ margin: 0; flex: 0 0 auto; }}
-    .host-account {{
-      display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: .6rem;
-      border: 1px solid var(--line); border-radius: 8px; padding: .7rem .85rem; margin: 0 0 .9rem;
-      background: var(--panel);
+    .identity-card > .k {{ max-width: 118px; white-space: normal; overflow-wrap: anywhere; line-height: 1.25; }}
+    .identity-card strong, .identity-card code, .identity-card .reported-source {{ display: block; min-width: 0; }}
+    .identity-card strong {{ color: var(--ink); overflow-wrap: anywhere; }}
+    .identity-card code {{ width: fit-content; max-width: 100%; overflow-wrap: anywhere; }}
+    .identity-card .reported-source {{ margin-top: .28rem; color: var(--muted); font-size: .72rem; }}
+    .identity-actions {{ grid-column: 1 / -1; justify-self: end; margin: .15rem 0 0; }}
+    @media (max-width: 560px) {{
+      .identity-card {{ grid-template-columns: minmax(0, 1fr); gap: .18rem; }}
+      .identity-card > strong, .identity-card > code, .identity-card > div {{ margin-bottom: .45rem; }}
+      .identity-actions {{ justify-self: stretch; }}
+      .identity-actions .signout {{ width: 100%; }}
     }}
-    .host-account strong, .host-account code, .host-account .desc, .host-account .reported-source {{ display: block; }}
-    .host-account strong {{ color: var(--ink); overflow-wrap: anywhere; }}
-    .host-account code {{ width: fit-content; max-width: 100%; margin-top: .2rem; overflow-wrap: anywhere; }}
-    .host-account .reported-source {{ margin-top: .28rem; color: var(--muted); font-size: .72rem; }}
     .hub-link {{ color: var(--accent, #0f766e); font-weight: 600; text-decoration: underline; }}
     details.fold {{ border: 1px solid var(--line); border-radius: 8px; margin: .55rem 0; padding: 0 .7rem .35rem; background: #fff; }}
     details.fold > summary {{
@@ -1157,8 +1163,7 @@ def render_consent_html(
     <p class="warn-text">Only approve if <strong>you</strong> started this connection and recognize the
     client and the redirect URL above. The connection can receive only the scopes and capabilities
     you approve here, and only if your KDCube account is allowed to delegate them.</p>
-{account_html}
-{host_runtime_account_html}
+{identity_html}
 {accounts_needed_html}
     <form method="post" action="{esc(form_action)}">
 {hidden}

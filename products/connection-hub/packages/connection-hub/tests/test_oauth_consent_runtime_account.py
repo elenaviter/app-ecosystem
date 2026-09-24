@@ -33,14 +33,24 @@ def test_consent_shows_host_reported_runtime_account_as_identification() -> None
         },
     )
 
-    html = render_consent_html(_request(client), "https://hub.example.test")
+    html = render_consent_html(
+        _request(client),
+        "https://hub.example.test",
+        grantor_subject="user-42",
+        grantor_label="Elena Example",
+    )
 
+    assert "Owner" in html
+    assert "Elena Example" in html
     assert "Provider account" in html
     assert "Codex · worker@example.test" in html
+    assert "Account ID" in html
     assert "acct-runtime-42" in html
+    assert "Organization ID" in html
     assert "org-runtime" in html
-    assert "Reported by the host" in html
-    assert "Access comes from the Card choices approved below" in html
+    assert "Read from the Codex login on this host" in html
+    assert "Used to identify the agent, not to grant access" in html
+    assert ">user-42</" not in html
 
 
 def test_consent_shows_not_reported_without_an_account_id() -> None:
@@ -54,8 +64,7 @@ def test_consent_shows_not_reported_without_an_account_id() -> None:
 
     assert "Provider account" in html
     assert "Codex · Not reported" in html
-    assert "No provider account was reported by this machine" in html
-    assert "Access comes from the Card choices approved below" in html
+    assert "No provider account was reported by this host" in html
 
 
 def test_consent_omits_provider_account_for_an_unrelated_client() -> None:

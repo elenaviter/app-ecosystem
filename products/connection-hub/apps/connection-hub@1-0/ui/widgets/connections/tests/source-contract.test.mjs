@@ -154,7 +154,7 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
   assert.doesNotMatch(slice, /state\.items\.push\(action\.payload\.access\)/)
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
-  assert.match(panel, /dispatch\(loadControlCard\(\{[\s\S]*?controlId: accessCardFocus\.accessId,[\s\S]*?projectRef: accessCardFocus\.projectRef,[\s\S]*?targetSubject: accessCardFocus\.targetSubject,/)
+  assert.match(panel, /dispatch\(loadControlCard\(\{[\s\S]*?controlId: activeAccessCardFocus\.accessId,[\s\S]*?projectRef: activeAccessCardFocus\.projectRef,[\s\S]*?targetSubject: activeAccessCardFocus\.targetSubject,/)
   assert.match(panel, /projectPersonControl: projectPersonControl \|\| undefined/)
   // The badge names the kind: an operator Card or a Control Card (controlCardKind.ts).
   assert.match(panel, /if \(item\.source === 'control'\) return controlCardLabel\(item\)/)
@@ -192,7 +192,7 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
 test('an unresolved exact Card deep link is visible instead of becoming an unfiltered list', () => {
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, /accessCardFocusState === 'unavailable'/)
-  assert.match(panel, /unavailableAccessCardMessage\(accessCardFocus\)/)
+  assert.match(panel, /unavailableAccessCardMessage\(activeAccessCardFocus\)/)
   assert.match(panel, /<strong>Card unavailable\.<\/strong>/)
 })
 

@@ -78,6 +78,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-23 | Authority cutover evolves durable receipts before schema verification | The cutover store transactionally evolves legacy receipt identity, while target preflight verifies every required authority table and column before writers stop. |
 | 2026-09-24 | Project-held per-person Control Cards gain an audited admin lifecycle | A host-authorized project partition owns each person's project Control Card; the standard editor uses exact project-and-target coordinates, the target cannot widen it, and each applied revision records actor, request, time, and field-level changes. |
 | 2026-09-24 | Project-person authorization becomes a live Card lifecycle | A descriptor-named membership provider authorizes administration, Control Card creation records a person-owned My Card edge, revocation ends it, and the request-bound operation evaluator resolves current Cards and catalog authority. |
+| 2026-09-24 | Card links open a stable view and runtime identities read as people and accounts | Plain Card links select and highlight one Card without entering edit; Save and Cancel return to that view, while action-bearing links still open the editor. Worker Cards and OAuth consent lead with the agent, show readable owner/provider fields with explicit ID labels, and explain host-reported identity in plain language. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
