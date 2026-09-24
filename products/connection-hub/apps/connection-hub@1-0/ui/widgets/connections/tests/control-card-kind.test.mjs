@@ -1,26 +1,33 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import test from 'node:test'
 
-import { controlCardLabel, controlCardNoun, isOperatorCard } from '../src/features/delegatedAccess/controlCardKind.ts'
+import { controlCardLabel, controlCardNoun } from '../src/features/delegatedAccess/controlCardKind.ts'
 
-// Operator, 2026-09-24: "AHH this is control card! everything is mixed. then
-// how i can look on MY operator card, not a control one?"
+// Operator, 2026-09-24: a person's Card per project is a Control Card, "similar
+// to project card". One name per Card (W300).
 
-test('a credentialless Card a person operates an application with reads as an operator card', () => {
-  const operator = { source: 'control', issuer_kind: 'operator' }
-  assert.equal(isOperatorCard(operator), true)
-  assert.equal(controlCardLabel(operator), 'operator card')
-  assert.equal(controlCardNoun(operator), 'this operator card')
+test('every credentialless Card is labelled a control card, whatever its issuer kind', () => {
+  for (const kind of ['operator', 'application', 'kdcube_agent_descriptor', undefined]) {
+    const card = { source: 'control', issuer_kind: kind }
+    assert.equal(controlCardLabel(card), 'control card', String(kind))
+    assert.equal(controlCardNoun(card), 'this control card', String(kind))
+  }
 })
 
-test('a Control Card that governs linked Cards keeps its name', () => {
-  for (const kind of ['application', 'kdcube_agent_descriptor', undefined]) {
-    const control = { source: 'control', issuer_kind: kind }
-    assert.equal(isOperatorCard(control), false)
-    assert.equal(controlCardLabel(control), 'control card')
+test('no reader-visible "operator card" remains in the widget', () => {
+  const files = []
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name)
+      if (statSync(path).isDirectory()) walk(path)
+      else if (/\.(tsx?|css)$/.test(name)) files.push(path)
+    }
   }
-  assert.equal(isOperatorCard({ source: 'agent', issuer_kind: 'operator' }), false)
+  walk(new URL('../src', import.meta.url).pathname)
+  const offenders = files.filter((path) => /operator card/i.test(readFileSync(path, 'utf8')))
+  assert.deepEqual(offenders, [])
 })
 
 test('the panel labels credentialless Cards through the kind, and Revoke stays on the Save row', () => {
@@ -28,6 +35,5 @@ test('the panel labels credentialless Cards through the kind, and Revoke stays o
   const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8')
   assert.match(panel, /if \(item\.source === 'control'\) return controlCardLabel\(item\);/)
   assert.match(panel, /if \(item\.source === 'control'\) return controlCardNoun\(item\);/)
-  assert.doesNotMatch(panel, /return 'control card';/)
   assert.match(styles, /\.form-actions > \.action-row, \.form-actions > \.revoke-confirm \{ width: auto; margin-left: auto; \}/)
 })
