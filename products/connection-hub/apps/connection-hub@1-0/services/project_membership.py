@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from connection_hub.bundle_operations import normalize_bundle_operation_result
+from connection_hub.bundle_operations import (
+    BundleOperationResultError,
+    normalize_bundle_operation_result,
+)
 from connection_hub.delegated_credentials.named_service_policy import clean_text
 from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationDecision,
@@ -64,7 +67,10 @@ class BundleOperationProjectMembershipResolver:
             raise ProjectAuthorizationError(
                 "project_membership_provider_response_invalid"
             )
-        response = normalize_bundle_operation_result(self._operation, response)
+        try:
+            response = normalize_bundle_operation_result(self._operation, response)
+        except BundleOperationResultError as exc:
+            raise ProjectAuthorizationError(exc.reason) from exc
         if response.get("ok") is not True:
             reason = _refusal_reason(response)
             raise ProjectAuthorizationError(

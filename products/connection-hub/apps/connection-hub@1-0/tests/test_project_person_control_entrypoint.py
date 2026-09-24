@@ -357,6 +357,41 @@ async def test_descriptor_port_reads_platform_result_and_structured_refusal() ->
 
 
 @pytest.mark.asyncio
+async def test_descriptor_port_refuses_unknown_provider_envelope_by_name() -> None:
+    module = _entrypoint_module()
+
+    async def _call(**_kwargs):
+        return {"status": "refused", "result": {"ok": True}}
+
+    port = module.descriptor_project_authorization_port(
+        SimpleNamespace(
+            bundle_props={
+                "project_membership": {
+                    "provider": {
+                        "bundle_id": "problem-board@1-0",
+                        "operation": "project_membership_resolve",
+                    },
+                    "administrative_roles": ["owner"],
+                }
+            }
+        ),
+        caller=_call,
+    )
+    decision = await port.authorize_project_person_control(
+        ProjectAuthorizationRequest.build(
+            actor_subject="authenticated-admin",
+            project_ref="work:project:quickstart",
+            target_subject="platform-user-2",
+            operation=PROJECT_PERSON_CONTROL_CREATE,
+            request_id="request-unknown-envelope",
+        )
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "bundle_operation_result_shape_invalid"
+
+
+@pytest.mark.asyncio
 async def test_raising_port_factory_isolated_to_project_person_operations(
     monkeypatch,
 ) -> None:
