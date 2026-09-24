@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from connection_hub.bundle_operations import normalize_bundle_operation_result
 from connection_hub.delegated_credentials.named_service_policy import clean_text
 from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationDecision,
@@ -20,22 +21,6 @@ from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
 
 
 BundleOperationCaller = Callable[..., Awaitable[Mapping[str, Any]]]
-
-
-def _operation_result(operation: str, value: Mapping[str, Any]) -> dict[str, Any]:
-    """Normalize direct and platform-wrapped bundle operation results."""
-
-    result = dict(value or {})
-    if "ok" in result:
-        return result
-    nested = result.get(operation)
-    if isinstance(nested, Mapping):
-        return dict(nested)
-    if clean_text(result.get("status")).lower() == "ok":
-        nested = result.get("result")
-        if isinstance(nested, Mapping):
-            return dict(nested)
-    return result
 
 
 def _refusal_reason(response: Mapping[str, Any]) -> str:
@@ -79,7 +64,7 @@ class BundleOperationProjectMembershipResolver:
             raise ProjectAuthorizationError(
                 "project_membership_provider_response_invalid"
             )
-        response = _operation_result(self._operation, response)
+        response = normalize_bundle_operation_result(self._operation, response)
         if response.get("ok") is not True:
             reason = _refusal_reason(response)
             raise ProjectAuthorizationError(
