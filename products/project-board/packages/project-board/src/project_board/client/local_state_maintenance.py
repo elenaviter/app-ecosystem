@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,8 @@ from typing import Any
 from ..contract.errors import DomainError
 from ..contract.mailbox_reconciliation_contract import normalize_receipt
 from .io import atomic_write_json, exclusive_lock, parse_utc, read_json, utc_now
-from .outbox_layout import OUTBOX_FOLDERS, OUTBOX_TERMINAL_FOLDERS
+from .outbox_layout import OUTBOX_TERMINAL_FOLDERS
+from .outbox_store import OUTBOX_TERMINAL_RETENTION_DAYS, OutboxStore
 from .reconciliation_receipts import (
     apply_receipt_retention,
     pending_path,
@@ -44,7 +46,6 @@ logger = logging.getLogger(__name__)
 MAINTENANCE_STATE = "local-state-maintenance.json"
 MAINTENANCE_STATE_SCHEMA = "problem-board.local-state-maintenance.v1"
 RETENTION_INTERVAL_SECONDS = 3600
-OUTBOX_TERMINAL_RETENTION_DAYS = 30
 LEGACY_RECEIPTS = ("mail", "reconciliation-receipts")
 LEGACY_CLAIMED = ".legacy-claimed"
 LEGACY_UNREADABLE = ".legacy-unreadable"
@@ -61,6 +62,8 @@ def run_local_state_maintenance(field: Any, *, now: datetime | None = None) -> d
     for project_id in _project_ids(field):
         summary["legacy_receipts"][project_id] = cleanup_legacy_receipts(field, project_id)
         summary["flat_events"][project_id] = migrate_flat_events(field, project_id)
+    # After the receipt cleanup, so empty receipts' rows are deleted, not moved.
+    summary["flat_outbox"] = migrate_flat_outbox(field)
     state_path = field.control / MAINTENANCE_STATE
     state = dict(read_json(state_path, required=False) or {})
     last = parse_utc(str(state.get("retention_ran_at") or "")) if state.get("retention_ran_at") else None
@@ -207,46 +210,129 @@ def migrate_flat_events(
 
 
 def apply_outbox_retention(field: Any, *, now: datetime | None = None) -> dict[str, int]:
-    """Remove settled outbox rows older than the retention window.
+    """Remove settled outbox rows older than the retention window, per agent.
 
-    Age is the file's modification time, which the relay sets when it settles
-    the row, so no row is opened. Pending and leased rows are never touched.
+    Settled rows live in hour folders per project and agent, so retention drops
+    whole folders by name and logs one line per agent (W287 2b). Rows still in
+    the flat pre-2b folders expire by file modification time, which the relay
+    set when it settled them. Attachment folders expire by age once no row in
+    flight names them. Pending and leased rows are never touched.
     """
 
     current = now or datetime.now(timezone.utc)
-    cutoff = (current - timedelta(days=OUTBOX_TERMINAL_RETENTION_DAYS)).timestamp()
-    root = field.control / "outbox"
-    totals: dict[str, int] = {}
+    cutoff_dt = current - timedelta(days=OUTBOX_TERMINAL_RETENTION_DAYS)
+    cutoff = cutoff_dt.timestamp()
+    outbox = OutboxStore(field.control)
+    totals: dict[str, int] = {"partitions": 0, "records": 0, "flat": 0, "attachments": 0}
+    projects = field.control / "projects"
+    project_refs = [
+        "work:project:" + project_dir.name
+        for project_dir in (sorted(projects.glob("*")) if projects.is_dir() else ())
+        if (project_dir / "outbox").is_dir()
+    ] + [""]
+    for project_ref in project_refs:
+        if not outbox.project_root(project_ref).is_dir():
+            continue
+        with exclusive_lock(outbox.lock):
+            removed = outbox.partitioned(project_ref).expire(cutoff=cutoff_dt)
+        totals["partitions"] += removed["partitions"]
+        totals["records"] += removed["records"]
+        for _ref, agent_root in outbox.agent_roots(project_ref=project_ref):
+            totals["attachments"] += _expire_attachments(outbox, agent_root / "attachments", cutoff)
+    root = outbox.legacy_root
     started = time.monotonic()
     examined = 0
     for folder in OUTBOX_TERMINAL_FOLDERS:
         directory = root / folder
-        removed = 0
-        if directory.is_dir():
-            expired: list[Path] = []
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    if not entry.name.endswith(".json"):
-                        continue
-                    examined += 1
-                    try:
-                        if entry.stat(follow_symlinks=False).st_mtime < cutoff:
-                            expired.append(Path(entry.path))
-                    except FileNotFoundError:
-                        continue
-            for start in range(0, len(expired), 500):
-                with exclusive_lock(root / ".outbox.lock"):
-                    for path in expired[start:start + 500]:
-                        path.unlink(missing_ok=True)
-                        removed += 1
-        totals[folder] = removed
-    logger.info(
-        "relay store read worker=* store=outbox op=retention range=..%s partitions=%d records=%d ms=%d removed=%d",
-        datetime.fromtimestamp(cutoff, timezone.utc).strftime("%Y-%m-%dT%H"),
-        len(OUTBOX_TERMINAL_FOLDERS), examined, int((time.monotonic() - started) * 1000),
-        sum(totals.values()),
-    )
+        if not directory.is_dir():
+            continue
+        expired: list[Path] = []
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".json"):
+                    continue
+                examined += 1
+                try:
+                    if entry.stat(follow_symlinks=False).st_mtime < cutoff:
+                        expired.append(Path(entry.path))
+                except FileNotFoundError:
+                    continue
+        for start in range(0, len(expired), 500):
+            with exclusive_lock(outbox.lock):
+                for path in expired[start:start + 500]:
+                    path.unlink(missing_ok=True)
+                    totals["flat"] += 1
+    totals["attachments"] += _expire_attachments(outbox, root / "attachments", cutoff)
+    if examined:
+        logger.info(
+            "relay store read worker=* store=outbox-flat op=retention range=..%s partitions=%d records=%d ms=%d removed=%d",
+            cutoff_dt.strftime("%Y-%m-%dT%H"), len(OUTBOX_TERMINAL_FOLDERS), examined,
+            int((time.monotonic() - started) * 1000), totals["flat"],
+        )
     return totals
+
+
+def _expire_attachments(outbox: OutboxStore, directory: Path, cutoff: float) -> int:
+    """Remove attachment folders older than ``cutoff`` whose row is not in flight."""
+
+    removed = 0
+    if not directory.is_dir():
+        return removed
+    for child in sorted(directory.iterdir()):
+        try:
+            if not child.is_dir() or child.stat().st_mtime >= cutoff:
+                continue
+        except FileNotFoundError:
+            continue
+        with exclusive_lock(outbox.lock):
+            found = outbox.find(child.name)
+            if found is not None and found[1] in {"pending", "leased"}:
+                continue
+            shutil.rmtree(child, ignore_errors=True)
+            removed += 1
+    return removed
+
+
+def migrate_flat_outbox(field: Any, *, batch_size: int = LEGACY_BATCH_SIZE) -> dict[str, Any]:
+    """Move pre-2b rows from ``outbox/<folder>/`` into the per-agent layout.
+
+    In-flight rows move to their agent's ``pending/`` or ``leased/`` with their
+    lease intact; settled rows move into the hour they were created. Attachment
+    folders stay where they are, because rows name them by absolute path, and
+    expire by age. Counts per agent go to the log.
+    """
+
+    outbox = OutboxStore(field.control)
+    root = outbox.legacy_root
+    started = time.monotonic()
+    moved: dict[str, int] = defaultdict(int)
+    for folder in ("pending", "leased", "sent", "refused"):
+        directory = root / folder
+        while directory.is_dir():
+            with os.scandir(directory) as entries:
+                batch = [
+                    entry.name for entry in entries
+                    if entry.name.endswith(".json") and entry.is_file(follow_symlinks=False)
+                ][:batch_size]
+            if not batch:
+                break
+            with exclusive_lock(outbox.lock):
+                for name in batch:
+                    path = directory / name
+                    row = read_json(path, required=False)
+                    if not row or not row.get("outbox_id"):
+                        continue
+                    if folder in ("pending", "leased"):
+                        outbox.move_in_flight(path, row, folder)
+                    else:
+                        outbox.settle(path, row)
+                    moved[str(row.get("worker_name") or "-").lower()] += 1
+            if len(batch) < batch_size:
+                break
+    elapsed = int((time.monotonic() - started) * 1000)
+    for agent, count in sorted(moved.items()):
+        logger.info("relay store migrated worker=%s store=outbox moved=%d ms=%d", agent, count, elapsed)
+    return {"moved": dict(moved)}
 
 
 def _handle_legacy_receipt(
@@ -280,17 +366,18 @@ def _handle_legacy_receipt(
         settle_if_terminal(field, project_id, worker_name=agent, path=target)
         counts[agent]["moved"] += 1
         return
-    root = field.control / "outbox"
-    with exclusive_lock(root / ".outbox.lock"):
-        if any((root / "leased" / f"{outbox_id}.json").exists() for outbox_id in outbox_ids):
+    outbox = OutboxStore(field.control)
+    with exclusive_lock(outbox.lock):
+        # A row may still be in the flat pre-2b folders or already in the
+        # per-agent layout; find() looks in both by id.
+        found = [outbox.find(outbox_id, worker_name=agent) for outbox_id in outbox_ids]
+        if any(item is not None and item[1] == "leased" for item in found):
             counts[agent]["deferred"] += 1
             return
-        for outbox_id in outbox_ids:
-            for folder in OUTBOX_FOLDERS:
-                row_path = root / folder / f"{outbox_id}.json"
-                if row_path.exists():
-                    row_path.unlink()
-                    counts[agent]["outbox_rows_deleted"] += 1
+        for item in found:
+            if item is not None and item[0].exists():
+                item[0].unlink()
+                counts[agent]["outbox_rows_deleted"] += 1
     path.unlink(missing_ok=True)
     counts[agent]["deleted"] += 1
 
@@ -337,6 +424,7 @@ __all__ = [
     "RETENTION_INTERVAL_SECONDS",
     "apply_outbox_retention",
     "cleanup_legacy_receipts",
+    "migrate_flat_outbox",
     "migrate_flat_events",
     "run_local_state_maintenance",
 ]
