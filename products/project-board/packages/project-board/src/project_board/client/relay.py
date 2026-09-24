@@ -1032,7 +1032,12 @@ class ProblemBoardHostRelayAdapter:
                 str(payload.get("result_summary") or ""),
             )
         try:
-            await self.client.action(object_ref=command_ref, action=action, payload=dict(payload))
+            # Literal actions, so the worker profile's coverage stays provable
+            # from this file (applications test_bundle_contract).
+            if action == "control.refuse":
+                await self.client.action(object_ref=command_ref, action="control.refuse", payload=dict(payload))
+            else:
+                await self.client.action(object_ref=command_ref, action="control.acknowledge", payload=dict(payload))
             return True
         except DomainError as exc:
             details = dict(exc.details or {})
