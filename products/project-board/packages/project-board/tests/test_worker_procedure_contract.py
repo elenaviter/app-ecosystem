@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.7"
+    assert package["revision"] == "2026.09.24.8"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -924,3 +924,12 @@ def test_the_stop_hook_rearms_a_missed_watch() -> None:
     assert "The settings are the user's: propose the lines, and the user adds them" in first_run
     assert "A missed re-arm then costs one turn" in wake
     assert "A detached or retired worker, any other session on the host, and a failure inside the hook end normally" in wake
+
+
+def test_the_start_step_reads_the_project_facts_page() -> None:
+    # W262, 2026-09-24: the coordinator lost where spark1 runs and how to reach it
+    # to a compaction. The standing facts live on one page the context names.
+    # Its hosts, agents and client release stay true across sessions and are
+    # lost with a compacted context, so the start step reads it first.
+    skill = _words(_read("SKILL.md"))
+    assert "and the project facts page `pb worker context` names (`project_facts_ref`)" in skill

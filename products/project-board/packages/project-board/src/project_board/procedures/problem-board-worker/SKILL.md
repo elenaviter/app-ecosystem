@@ -54,7 +54,7 @@ wakes and held leases still require prompt receive, handling, and settlement.
 ## Start Or Resume
 
 1. Read the repository instructions, the bottom of the current journal
-   chronicle, and the entries for the work being resumed.
+   chronicle, the entries for the work being resumed, and the project facts page `pb worker context` names (`project_facts_ref`).
 2. Identify this exact runtime session: `pb worker whoami`.
 3. Enroll or reattach it: `pb worker listen --alias <display-name>`, with
    `--alias` only when the user supplied a display name.

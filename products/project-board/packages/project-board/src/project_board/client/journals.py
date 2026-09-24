@@ -29,6 +29,10 @@ from .io import (
 from .journal_search import JournalDocument, JournalSearchIndex
 
 
+# The page holding a project's standing facts, at the root of its journal home.
+PROJECT_FACTS_FILE = "project-facts.md"
+
+
 WORKSPACE_SCHEMA = "problem-board.journal-workspace.v1"
 JOURNAL_INDEX_STATUS_SCHEMA = "problem-board.journal-index-status.v1"
 JOURNAL_INDEX_REQUIRED_FRONTMATTER = ("entry_ref", "project_ref")
@@ -323,10 +327,20 @@ class JournalWorkspace:
             project_artifact = str(artifact)
         project_id = parse_ref(project_ref).object_id
         journal_directory = journal_home / "journal"
+        # The standing facts of a project (hosts, agents, release), kept at the
+        # journal home's root. Named only when the page exists (W262).
+        facts = journal_home / PROJECT_FACTS_FILE
+        has_facts = facts.is_file()
         return {
             **binding,
             "local_journal_home": str(journal_home),
             "local_journal_directory": str(journal_directory),
+            "project_facts_ref": (
+                self._portable_child(home_ref, PurePosixPath(PROJECT_FACTS_FILE))
+                if has_facts
+                else ""
+            ),
+            "local_project_facts": str(facts) if has_facts else "",
             "local_project_artifact": project_artifact,
             "local_journal_link": str(self.root / "projects" / project_id),
             "local_workspace_link": (
