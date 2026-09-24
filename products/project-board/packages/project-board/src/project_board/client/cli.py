@@ -4190,6 +4190,37 @@ def _worker_command(args: Any) -> dict[str, Any]:
     raise ValueError(f"unsupported worker command: {args.worker_command}")
 
 
+PROCEDURE_TARGETS = ("codex", "claude-code")
+
+
+def _procedure_targets(args: Any) -> tuple[list[str], str]:
+    """The agent kinds whose installed procedure a command checks, and where they came from.
+
+    Named targets are checked as named. Otherwise the kinds this host's relay
+    channels run: a host that runs only Claude Code may still hold an old Codex
+    skill, and that copy is nobody's procedure (W304 C9, spark1, 2026-09-24).
+    A host with no configuration or no channel yet checks both kinds.
+    """
+
+    named = [str(item) for item in (getattr(args, "target", None) or [])]
+    if named:
+        return named, "named"
+    try:
+        config = HostRelayConfig.load(
+            resolve_host_config_path(getattr(args, "config", None))
+        )
+    except (DomainError, OSError, ValueError):
+        return list(PROCEDURE_TARGETS), "default"
+    kinds = {
+        channel.runtime_kind
+        for channel in config.workers
+        if channel.state != "disabled" and channel.runtime_kind in PROCEDURE_TARGETS
+    }
+    if not kinds:
+        return list(PROCEDURE_TARGETS), "default"
+    return [kind for kind in PROCEDURE_TARGETS if kind in kinds], "host_channels"
+
+
 def _procedure_command(args: Any) -> dict[str, Any]:
     from .procedures import (
         install_agent_procedure,
@@ -4198,7 +4229,7 @@ def _procedure_command(args: Any) -> dict[str, Any]:
         verify_agent_procedure,
     )
 
-    targets = list(getattr(args, "target", None) or ["codex", "claude-code"])
+    targets, targets_from = _procedure_targets(args)
     package = source_package()
 
     if args.procedure_command == "show":
@@ -4220,11 +4251,18 @@ def _procedure_command(args: Any) -> dict[str, Any]:
                 "work_agent_procedure_verification_failed",
                 "One or more installed worker procedure packages are not current and intact.",
                 status=409,
-                details={"package": package, "installed": verified},
+                details={
+                    "package": package,
+                    "targets": targets,
+                    "targets_from": targets_from,
+                    "installed": verified,
+                },
             )
         return {
             "procedure": str(source_path()),
             "package": package,
+            "targets": targets,
+            "targets_from": targets_from,
             "verified": verified,
         }
     if args.procedure_command == "install":
