@@ -4,7 +4,7 @@ import hashlib
 import math
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -82,10 +82,25 @@ def parse_source_repositories(values: Iterable[str]) -> dict[str, str]:
 @dataclass(frozen=True)
 class RepositoryMap:
     roots: Mapping[str, Path]
+    # Aliases whose checkout is not on this machine yet. A relay records them
+    # instead of refusing the whole map, so a worker's channel opens without
+    # any journal checkout, and only a use of that alias is refused (W304 D13).
+    missing: Mapping[str, Path] = field(default_factory=dict)
 
     @classmethod
-    def from_mapping(cls, values: Mapping[str, Any]) -> "RepositoryMap":
+    def from_mapping(
+        cls, values: Mapping[str, Any], *, require_existing: bool = True
+    ) -> "RepositoryMap":
+        """Map aliases to checkouts.
+
+        With `require_existing` (configuration and the journal commands), a
+        missing checkout is refused at once, so a typo never becomes a mapping.
+        The relay passes False: a checkout that is not there yet is recorded and
+        refused only when a journal actually needs it.
+        """
+
         roots: dict[str, Path] = {}
+        missing: dict[str, Path] = {}
         for alias, raw in values.items():
             if not REPOSITORY_ALIAS_RE.fullmatch(str(alias)):
                 raise DomainError(
@@ -103,19 +118,28 @@ class RepositoryMap:
                 )
             resolved = root.resolve()
             if not resolved.is_dir():
+                if not require_existing:
+                    missing[str(alias)] = resolved
+                    continue
                 raise DomainError(
                     "journal_repository_root_missing",
                     "A mapped LOCAL repository checkout does not exist.",
                     details={"alias": str(alias)},
                 )
             roots[str(alias)] = resolved
-        return cls(roots=roots)
+        return cls(roots=roots, missing=missing)
 
     def resolve(
         self, value: str, *, create: bool = False, require_directory: bool = True
     ) -> tuple[RepositoryRef, Path]:
         reference = parse_repository_ref(value)
         root = self.roots.get(reference.repository)
+        if root is None and reference.repository in self.missing:
+            raise DomainError(
+                "journal_repository_root_missing",
+                "A mapped LOCAL repository checkout does not exist.",
+                details={"alias": reference.repository, "repository": reference.repository},
+            )
         if root is None:
             raise DomainError(
                 "journal_repository_unmapped",

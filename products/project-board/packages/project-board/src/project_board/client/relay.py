@@ -569,7 +569,9 @@ class RelayConfig:
             return None
         return JournalWorkspace(
             self.journal_workspace_root,
-            RepositoryMap.from_mapping(dict(self.source_repositories)),
+            # A checkout that is not on this machine is reported per project
+            # when a journal needs it, and never keeps a channel closed (W304 D13).
+            RepositoryMap.from_mapping(dict(self.source_repositories), require_existing=False),
         )
 
 
