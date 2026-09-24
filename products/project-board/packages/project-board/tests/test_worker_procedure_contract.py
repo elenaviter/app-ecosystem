@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.15"
+    assert package["revision"] == "2026.09.23.16"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -806,3 +806,13 @@ def test_coordinator_checks_a_silent_worker_instead_of_waiting() -> None:
     assert "`~/.codex/queue_1.sqlite` `queued_items`" in coordinator
     assert "Codex takes a queued wake only when its current turn ends" in coordinator
     assert "silence is not progress" in coordinator
+
+
+def test_coordinator_stays_reachable_through_every_window() -> None:
+    # Operator, 2026-09-24: "if i did not write to you now that would stand
+    # still forever?" The coordinator's watch had expired during a window.
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "Stay reachable through every window" in coordinator
+    assert "including during a runtime window" in coordinator
+    assert "runs as a background check with a bounded end" in coordinator
+    assert "receive immediately, before the all-clear" in coordinator
