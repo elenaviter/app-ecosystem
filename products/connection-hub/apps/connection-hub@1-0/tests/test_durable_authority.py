@@ -82,7 +82,6 @@ async def test_prepare_requires_the_exact_complete_cutover_before_cleanup() -> N
 
     await authority.prepare()
 
-    assert authority.ready is True
     assert events == [
         ("schema", "oauth"),
         ("schema", "card_handles"),
@@ -107,11 +106,29 @@ async def test_prepare_fails_closed_when_the_cutover_receipt_is_missing() -> Non
     with pytest.raises(RuntimeError, match="authority_cutover_not_activated"):
         await authority.prepare()
 
-    assert authority.ready is False
     assert ("card_cleanup", 100) not in events
     assert ("replay_cleanup", 1000) not in events
-    with pytest.raises(
-        RuntimeError,
-        match="connection_hub_durable_authority_not_prepared",
-    ):
-        authority.require_ready()
+    with pytest.raises(RuntimeError, match="authority_cutover_not_activated"):
+        await authority.ensure_ready()
+
+
+@pytest.mark.asyncio
+async def test_readiness_is_verified_from_durable_evidence_on_every_call() -> None:
+    module = _entrypoint_module()
+    authority, events = _authority(module)
+
+    await authority.ensure_ready()
+    await authority.ensure_ready()
+
+    assert events == [
+        (
+            "require_activated",
+            "durable-authority-v1",
+            CONNECTION_HUB_AUTHORITY_FAMILIES,
+        ),
+        (
+            "require_activated",
+            "durable-authority-v1",
+            CONNECTION_HUB_AUTHORITY_FAMILIES,
+        ),
+    ]

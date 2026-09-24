@@ -60,7 +60,11 @@ class _RecordingService:
 def entrypoint(monkeypatch):
     module = _entrypoint_module()
     service = _RecordingService()
-    monkeypatch.setattr(module, "_automation_access_service", lambda *a, **kw: service)
+
+    async def _access_service(*_args, **_kwargs):
+        return service
+
+    monkeypatch.setattr(module, "_automation_access_service", _access_service)
     monkeypatch.setattr(
         module, "_platform_user_payload", lambda *a, **kw: {"user_id": "google:1"}
     )
@@ -98,7 +102,8 @@ def test_service_accepts_per_operation_descriptor_acceptance():
     ).parameters
 
 
-def test_service_factory_injects_invocation_policy_service(monkeypatch):
+@pytest.mark.asyncio
+async def test_service_factory_injects_invocation_policy_service(monkeypatch):
     module = _entrypoint_module()
     captured: dict = {}
     redis = object()
@@ -111,19 +116,26 @@ def test_service_factory_injects_invocation_policy_service(monkeypatch):
     monkeypatch.setattr(module, "AutomationAccessService", RecordingFactory)
     monkeypatch.setattr(module, "_runtime_tenant_project", lambda _entrypoint: ("t", "p"))
     monkeypatch.setattr(module, "_delegated_catalog_resolver", lambda *_args: object())
-    monkeypatch.setattr(module, "_delegated_card_persistence", lambda *_args: object())
+    async def _card_persistence(*_args):
+        return object()
+
+    async def _grant_store(_entrypoint):
+        return grant_store
+
+    monkeypatch.setattr(module, "_delegated_card_persistence", _card_persistence)
     monkeypatch.setattr(module, "_invocation_policy_service", lambda _entrypoint: policies)
     grant_store = object()
-    monkeypatch.setattr(module, "_oauth_grant_store", lambda _entrypoint: grant_store)
+    monkeypatch.setattr(module, "_oauth_grant_store", _grant_store)
 
-    module._automation_access_service_for(SimpleNamespace(redis=redis), object())
+    await module._automation_access_service_for(SimpleNamespace(redis=redis), object())
 
     assert captured["redis"] is redis
     assert captured["grant_store"] is grant_store
     assert captured["invocation_policy_service"] is policies
 
 
-def test_oauth_grant_store_stays_on_redis_before_migration_cutover(monkeypatch):
+@pytest.mark.asyncio
+async def test_oauth_grant_store_stays_on_redis_before_migration_cutover(monkeypatch):
     module = _entrypoint_module()
     redis = object()
     entrypoint = SimpleNamespace(
@@ -143,20 +155,23 @@ def test_oauth_grant_store_stays_on_redis_before_migration_cutover(monkeypatch):
         lambda _entrypoint: ("demo-tenant", "demo-project"),
     )
 
-    store = module._oauth_grant_store(entrypoint)
+    store = await module._oauth_grant_store(entrypoint)
 
     assert store._r is redis
     assert store._authority_store is None
 
 
-def test_oauth_grant_store_uses_the_prepared_postgresql_authority(monkeypatch):
+@pytest.mark.asyncio
+async def test_oauth_grant_store_uses_the_prepared_postgresql_authority(monkeypatch):
     module = _entrypoint_module()
     redis = object()
     oauth_authority = object()
-    durable = SimpleNamespace(
-        oauth=oauth_authority,
-        require_ready=lambda: None,
-    )
+    readiness_checks = []
+
+    async def _ensure_ready():
+        readiness_checks.append(True)
+
+    durable = SimpleNamespace(oauth=oauth_authority, ensure_ready=_ensure_ready)
     entrypoint = SimpleNamespace(
         redis=redis,
         pg_pool=object(),
@@ -178,10 +193,11 @@ def test_oauth_grant_store_uses_the_prepared_postgresql_authority(monkeypatch):
         lambda _entrypoint: ("demo-tenant", "demo-project"),
     )
 
-    store = module._oauth_grant_store(entrypoint)
+    store = await module._oauth_grant_store(entrypoint)
 
     assert store._r is redis
     assert store._authority_store is oauth_authority
+    assert readiness_checks == [True]
 
 
 def test_entrypoint_registers_delegated_gateway_contract():
@@ -254,7 +270,11 @@ async def test_entrypoint_builds_request_scoped_delegated_gateway(monkeypatch):
     monkeypatch.setattr(module, "build_hosted_gateway_binding", _binding)
     monkeypatch.setattr(module, "build_delegated_mcp_gateway_app", _surface)
     monkeypatch.setattr(module, "_runtime_tenant_project", lambda _entrypoint: ("t", "p"))
-    monkeypatch.setattr(module, "_automation_access_service", lambda *_args: "cards")
+
+    async def _access_service(*_args):
+        return "cards"
+
+    monkeypatch.setattr(module, "_automation_access_service", _access_service)
     monkeypatch.setattr(module, "_remote_mcp_service", lambda _entrypoint: "remote")
     monkeypatch.setattr(module, "_invocation_policy_service", lambda _entrypoint: "policy")
     monkeypatch.setattr(module, "_connections_config", lambda _entrypoint: {"gateway": True})
@@ -287,11 +307,10 @@ async def test_gateway_access_api_fails_before_composition_on_auth_denial(monkey
     module = _entrypoint_module()
     instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
     denial = object()
-    monkeypatch.setattr(
-        module,
-        "_bind_delegated_client_request_config",
-        lambda *_args: {},
-    )
+    async def _bind(*_args):
+        return {}
+
+    monkeypatch.setattr(module, "_bind_delegated_client_request_config", _bind)
 
     async def _deny(**kwargs):
         assert kwargs["body"] == b"{}"
@@ -729,7 +748,10 @@ async def test_operation_grant_and_once_policy_stay_fail_closed_until_both_commi
         return 1
 
     monkeypatch.setattr(consent_demand, "author_consent_granted_events", author)
-    monkeypatch.setattr(module, "_automation_access_service", lambda *a, **kw: access)
+    async def _access_service(*_args, **_kwargs):
+        return access
+
+    monkeypatch.setattr(module, "_automation_access_service", _access_service)
     monkeypatch.setattr(module, "_invocation_policy_service", lambda *a, **kw: policy_port)
     monkeypatch.setattr(
         module,

@@ -26,14 +26,13 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentia
 
 @dataclass
 class ConnectionHubDurableAuthority:
-    """One prepared PostgreSQL authority generation for the bundle."""
+    """One PostgreSQL authority generation for the bundle."""
 
     config: DelegatedAuthorityConfig
     oauth: PostgresOAuthAuthorityStore
     card_handles: PostgresCardCredentialHandleStore
     admission_replay: PostgresAdmissionReplayClaimStore
     cutovers: PostgresAuthorityCutoverStore
-    ready: bool = False
 
     @classmethod
     def compose(
@@ -79,17 +78,17 @@ class ConnectionHubDurableAuthority:
         await self.card_handles.ensure_schema()
         await self.admission_replay.ensure_schema()
         await self.cutovers.ensure_schema()
+        await self.ensure_ready()
+        await self.card_handles.reconcile_cleanup(limit=100)
+        await self.admission_replay.purge_expired(limit=1000)
+
+    async def ensure_ready(self) -> None:
+        """Verify the selected generation from durable activation evidence."""
+
         await self.cutovers.require_activated(
             self.config.generation_id,
             required_families=CONNECTION_HUB_AUTHORITY_FAMILIES,
         )
-        await self.card_handles.reconcile_cleanup(limit=100)
-        await self.admission_replay.purge_expired(limit=1000)
-        self.ready = True
-
-    def require_ready(self) -> None:
-        if not self.ready:
-            raise RuntimeError("connection_hub_durable_authority_not_prepared")
 
 
 __all__ = ["ConnectionHubDurableAuthority"]
