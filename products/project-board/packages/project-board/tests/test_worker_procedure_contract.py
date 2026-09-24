@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.2"
+    assert package["revision"] == "2026.09.24.3"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -848,5 +848,21 @@ def test_every_activation_is_addressed_to_the_approved_commit_and_its_receipt_is
     assert coordinator.index("the receipt against the approved candidate") < coordinator.index("5. **Verify the deployed artifact, never the commit.**")
     # The preflight stays, as evidence and explicitly not the guarantee.
     assert "neither is the\n   guarantee" in coordinator
-    assert "| An app under `apps/` | `kdcube bundle reload <bundle-id> --commit <approved-sha> --expect <approved-sha>`" in actions
+    assert "then `kdcube bundle reload <bundle-id> --commit <approved-sha> --expect <approved-sha>`" in actions
     assert "a reload without `--commit`, which stages whatever the checkout holds at that instant" in actions
+
+
+def test_an_app_activation_writes_its_commit_where_a_restart_reads_it():
+    """W202, procedure 2026.09.24.3: a reload's commit is not durable, so the
+    descriptor's activation.commit carries it across a restart or rebuild."""
+
+    coordinator = (PROCEDURE_ROOT / "references" / "coordinator.md").read_text(encoding="utf-8")
+    actions = (PROCEDURE_ROOT / "references" / "runtime-actions.md").read_text(encoding="utf-8")
+
+    step = coordinator[coordinator.index("4. **Execute**"):coordinator.index("5. **Verify the deployed artifact")]
+    assert "set `activation.commit: <sha>`" in step
+    assert "`kdcube bundle config apply`, then reload at the same sha" in step
+    assert "(`durable: false`)" in step and "silently undoes the\n   activation" in step
+    assert step.index("activation.commit") < step.index("**check")
+    assert "`activation.commit: <approved-sha>` on the app's entry in the staged descriptor, `kdcube bundle config apply`, then `kdcube bundle reload" in actions
+    assert "a reload at a commit the descriptor does not name, which a restart undoes" in actions

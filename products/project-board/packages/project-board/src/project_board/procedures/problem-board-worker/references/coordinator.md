@@ -210,7 +210,14 @@ descriptor-only change.
 4. **Execute** the action `runtime-actions.md` names for the tree, at the
    announced commit: `kdcube bundle reload <bundle-id> --commit <sha> --expect
    <sha>`, `kdcube refresh --build` from exports of the announced commits,
-   `pb source use-code` with `--expect` and `--expect-kdcube`. Then **check
+   `pb source use-code` with `--expect` and `--expect-kdcube`. For an app, first
+   write the commit where a restart reads it: set `activation.commit: <sha>` on
+   the app's entry in the staged `config/bundles.yaml` (located by bundle id)
+   and run `kdcube bundle config apply`, then reload at the same sha. Why: a
+   reload's commit lives only in the running proc (`durable: false`), and a
+   restart or rebuild loads the descriptor's `activation.commit`, or the mutable
+   tree when there is none, so without this a restart silently undoes the
+   activation. Then **check
    the receipt against the approved candidate**: the reload's `Loaded:`
    commit, the relay's first stamped line (`source=snapshot`,
    `app_ecosystem=<sha>`), and the commits the refresh exported each equal
