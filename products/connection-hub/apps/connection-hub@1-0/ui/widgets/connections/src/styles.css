@@ -2612,6 +2612,9 @@ code {
 
 /* Submit + Cancel row of a folded creation form. */
 .form-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+/* Revoke sits on the Save row, at its far end: the row's own full width would wrap it below (operator, 2026-09-24). */
+.form-actions > .action-row, .form-actions > .revoke-confirm { width: auto; margin-left: auto; }
+.form-actions > .action-row .btn { flex: 0 0 auto; }
 /* A form's action row that stays reachable however short the pane is: same
    flush, sticky base as .pending-actions. */
 .form-actions--sticky {
