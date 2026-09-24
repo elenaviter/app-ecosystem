@@ -126,3 +126,71 @@ def test_an_allowed_peer_is_not_refused():
     adapter = _adapter(client, peers=("*",))
 
     assert adapter._receiver_refusal(_mail(1)) == ""
+
+
+def test_the_sender_sees_its_own_delivery_refused_with_the_reason(tmp_path):
+    """End to end on the sender's host (codex-ui's review of the finding 38 pair).
+
+    The sender's relay routed the mail and recorded it sent. The receiving
+    host refused it by receiver policy, and the board answered the sender
+    with a delivery_failed notice. `pb worker deliveries` must show the
+    original delivery refused, with the code, setting, value and reason.
+    """
+
+    from project_board.client.io import content_hash
+    from project_board.client.store import SharedFieldStore
+
+    sender = SENDER
+    project = "quickstart-works-mttfmgqu"
+    field = SharedFieldStore(tmp_path / "field")
+    field.initialize()
+    field.register_worker(worker_name=sender, runtime_kind="claude-code", capabilities=[], authority_label="authority:claude-code")
+    field.create_project(project_id=project, title="Quickstart works", goal="Onboard agents.", owner="operator")
+
+    field.sync_project_mail_recipients(project, [{"worker_name": "claude-code-a7b7935d-a064-43ec-937e-2b94f1660b68", "worker_alias": "claude-ops"}])
+
+    # 1. The sender queues mail for claude-ops, and its relay routes it: the board accepts, so the row is sent.
+    queued = field.enqueue_remote_mail(
+        project,
+        sender=sender,
+        recipient="claude-code-a7b7935d-a064-43ec-937e-2b94f1660b68",
+        kind="request",
+        subject="Onboarding check 2",
+        body="reply please",
+        idempotency_key="check-2",
+    )
+    [row] = field.pull_outbox(relay_id="relay-dev-main", worker_name=sender)
+    source_ref = row["payload"]["source_message_ref"]
+    field.settle_outbox(row["outbox_id"], relay_id="relay-dev-main", outcome="sent", remote_ref="work:control:command_1")
+    assert field.list_mail_deliveries(worker_name=sender, states=["refused"])["items"] == []
+
+    # 2. The receiving host refuses it by its receiver policy.
+    receiving = _adapter(Client([]))
+    control = {**_mail(1), "payload": {"mail": {"kind": "request", "subject": "Onboarding check 2", "source_message_ref": source_ref}}}
+    failure = receiving._receiver_policy_failure(control, "receiver_policy_peer_denied")
+    assert failure["source_message_ref"] == source_ref
+
+    # 3. The board answers the sender with a delivery_failed notice, and the sender's relay materializes it.
+    notice_payload = {"mail": {"kind": "delivery_failed", "subject": "Problem Board rejected part of a message",
+                               "body": "Receiver policy refused it.", "payload": {"delivery_failure": failure}}}
+    field.materialize_control({
+        "ref": "work:control:command_notice",
+        "kind": "mail",
+        "subject": "Problem Board rejected part of a message",
+        "project_ref": f"work:project:{project}",
+        "recipient": sender,
+        "sender": "claude-code-a7b7935d-a064-43ec-937e-2b94f1660b68",
+        "payload": notice_payload,
+        "payload_hash": content_hash(notice_payload),
+    })
+
+    [refused] = field.list_mail_deliveries(worker_name=sender, states=["refused"])["items"]
+    assert refused["outbox_id"] == row["outbox_id"]
+    assert refused["recipient"] == "claude-code-a7b7935d-a064-43ec-937e-2b94f1660b68"
+    assert refused["kind"] == "request"
+    assert refused["subject"] == "Onboarding check 2"
+    assert refused["delivery_failure"]["code"] == "receiver_policy_peer_denied"
+    assert refused["delivery_failure"]["field"] == "receiver_policy.allowed_peer_workers"
+    assert refused["delivery_failure"]["value"] == SENDER
+    assert "pb host configure --allow-peer-worker" in refused["delivery_failure"]["reason"]
+    assert queued

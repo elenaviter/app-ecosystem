@@ -993,8 +993,12 @@ class ProblemBoardHostRelayAdapter:
             if code == "receiver_policy_peer_denied"
             else f"The receiving host's {setting} refused this {control.get('kind') or 'control'}."
         )
+        payload = control.get("payload") if isinstance(control.get("payload"), Mapping) else {}
+        mail = payload.get("mail") if isinstance(payload.get("mail"), Mapping) else {}
         return {
             "message_ref": str(control.get("ref") or control.get("command_ref") or ""),
+            # The sender's own ref for the mail, so its delivery row is marked refused.
+            "source_message_ref": str(mail.get("source_message_ref") or ""),
             "code": code,
             "field": setting,
             "field_source": "receiver_policy",
