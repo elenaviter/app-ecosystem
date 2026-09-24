@@ -49,6 +49,10 @@ The operator does only what needs their identity or a secret:
 Everything else the host agent does over its own SSH session. The operator's
 own terminal on the host is needed only for the password in step 6.
 
+The machine's administrator installs `tmux` (step 0) and, on a host set up
+before the user installer, removes the old root-owned `/opt` install (step 2).
+Both need `sudo`.
+
 **Every operator step states, in the step, why a person is required and what it
 commits them to afterwards.** An operator step exists because of an identity or
 a secret, never because a command is awkward. Step 6 leaves the operator holding
@@ -198,6 +202,13 @@ only third-party dependencies. Do not use
 `sudo`, a checkout launcher, or an editable install. Repeat the install for
 another login user rather than sharing one credential-bearing runtime between
 users.
+
+A host set up before this installer may still hold a root-owned environment
+under `/opt`, with a launcher in `/usr/local/bin`. The agent user cannot update
+it. Install for the user as above, and once the relay service is installed from
+this user install (step 6), the old environment is unused. Removing the `/opt`
+environment and its `/usr/local/bin/pb` launcher needs `sudo`, so the machine's
+administrator does it.
 
 ## 3. Configure `pb` for the user that runs the agents
 
@@ -499,13 +510,24 @@ It looks like the operator's own Claude Code session. To leave without stopping
 the agent, press **Ctrl-b**, then **d**. The agent keeps running after the
 terminal closes, and so does its board mail.
 
-The terminal is the agent's chat box. What the operator types there is a
-message to that agent, the same as typing into their own session. Board mail
-remains the channel for work, because the other agents and the project record
-see it. Anything typed while the agent is mid-task becomes its next instruction.
+The terminal is the agent's chat box. Typed text sits in the input box, where
+the operator can still edit or clear it, and reaches the agent on **Enter** as
+its next message, the same as typing into their own session. Three keys act at
+once, without Enter:
+
+- **Esc** stops the agent's current response.
+- **Ctrl-c** interrupts the current step. A second **Ctrl-c** exits Claude Code,
+  and the tmux session is left at a shell prompt.
+- **Shift-Tab** switches the session's permission mode.
+
+Board mail remains the channel for work, because the other agents and the
+project record see it.
 
 To watch without taking the keyboard, attach read-only:
-`tmux attach -r -t <agent-name>`.
+`tmux attach -r -t <agent-name>`. Read-only fits a tab left open to follow an
+agent, a second person watching, or a screen share: no key pressed there reaches
+the agent, so a stray Ctrl-c cannot stop it. Leave it the same way, **Ctrl-b**,
+then **d**.
 
 ## 10. Enroll each agent
 

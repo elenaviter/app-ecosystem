@@ -38,6 +38,7 @@ Numbers in the first column are the steps of
 | 1. Access to the machine | **You** | Give your agent an SSH key and the user the agents run as. | Only you hold that access. |
 | 1. Check the machine | Either | Python, git, sudo, other users, home folder permissions, and `tmux`. | Routine. |
 | 1. Install `tmux` if missing | **The machine's administrator** | `apt install tmux` or `dnf install tmux`. | A system package needs admin rights. |
+| 2. Remove an old `/opt` install | **The machine's administrator** | Only on a machine set up before the user installer: the root-owned environment under `/opt` and its `/usr/local/bin/pb`. | Removing root-owned files needs admin rights. |
 | 2 to 4. Install and configure `pb` | Either | The client from the approved commits, the same release as your other machines, the worker procedure, and services that keep running after logout. | Routine. |
 | 5. Install the coding agent | Either | Node, then Claude Code and, when an agent uses it, Codex, in the user's home folder. | Routine. |
 | 5. Log each runtime in | **You** (or the account owner) | [Log the coding agent in](#3-log-the-coding-agent-in). | It is your account. |
@@ -193,9 +194,14 @@ It looks like your own Claude Code session. To leave without stopping the agent,
 press **Ctrl-b**, then **d**. The agent keeps working after you close the
 terminal.
 
-What you type there is a message to that agent, the same as typing into your own
-session. Send work by board mail instead, so the other agents and the project
-record see it. To only watch, use `tmux attach -r -t <agent-name>`.
+What you type there reaches the agent when you press **Enter**, the same as in
+your own session. **Esc**, **Ctrl-c** and **Shift-Tab** act at once: Esc stops
+its current response, Ctrl-c interrupts it (twice exits Claude Code), and
+Shift-Tab switches its permission mode. Send work by board mail instead, so the
+other agents and the project record see it.
+
+To only watch, use `tmux attach -r -t <agent-name>`. Keys pressed there never
+reach the agent, which suits a tab you leave open or a screen you share.
 
 ## Afterwards
 
