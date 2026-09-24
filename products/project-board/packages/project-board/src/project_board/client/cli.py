@@ -3383,6 +3383,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
             "worker_identity": identity.worker_identity,
             "worker_name": identity.worker_name,
             "identity_rule": "runtime_kind + native resumable session id",
+            "channel": _whoami_channel(args, identity),
         }
     path = resolve_host_config_path(getattr(args, "config", None))
     config = HostRelayConfig.load(path)
@@ -4184,6 +4185,31 @@ def _worker_command(args: Any) -> dict[str, Any]:
             repository_journal_ref=args.repository_journal_ref,
         )
     raise ValueError(f"unsupported worker command: {args.worker_command}")
+
+
+def _whoami_channel(args: Any, identity: WorkerSessionIdentity) -> dict[str, Any]:
+    """This session's channel on the host: alias, profile and state (W304 C11).
+
+    Read from the local host configuration only, so it answers from a plain
+    shell as well as inside the session. A host without configuration, or a
+    session never enrolled, says so instead of failing.
+    """
+
+    try:
+        config = HostRelayConfig.load(
+            resolve_host_config_path(getattr(args, "config", None))
+        )
+    except (DomainError, OSError, ValueError):
+        return {"enrolled": False, "reason": "host_not_configured"}
+    channel = config.worker(identity)
+    if channel is None:
+        return {"enrolled": False, "reason": "session_not_enrolled"}
+    return {
+        "enrolled": True,
+        "worker_alias": channel.worker_alias,
+        "profile": channel.profile,
+        "state": channel.state,
+    }
 
 
 def _worker_project_context(
