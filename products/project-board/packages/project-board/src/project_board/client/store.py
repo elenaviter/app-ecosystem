@@ -8748,6 +8748,25 @@ class SharedFieldStore:
 
         return self._event_idempotency_path(worker_name, idempotency_key).is_file()
 
+    def _watch_attachment_path(self, worker_name: str) -> Path:
+        clean = component(worker_name, field="worker_name").lower()
+        return self.control / "workers" / clean / "watch.json"
+
+    def record_watch_attachment(self, worker_name: str, *, pid: int, runtime_session_id: str) -> dict[str, Any]:
+        """Record the running ``pb worker watch`` of this worker (W182).
+
+        The newest watch overwrites the record, so it names the one that should
+        be running. The Stop hook reads it to tell a live watch from none.
+        """
+
+        row = {"pid": int(pid), "runtime_session_id": str(runtime_session_id or ""), "started_at": utc_now()}
+        atomic_write_json(self._watch_attachment_path(worker_name), row)
+        return row
+
+    def read_watch_attachment(self, worker_name: str) -> dict[str, Any] | None:
+        value = read_json(self._watch_attachment_path(worker_name), required=False)
+        return dict(value) if isinstance(value, Mapping) and value else None
+
     def enqueue_control_settlement(
         self,
         project_id: str,

@@ -63,6 +63,7 @@ from .outbox_outcomes import (
 from .quarantine import list_quarantine, read_quarantine, settle_quarantine
 from ..contract.worker_identity import WorkerSessionIdentity
 from .card_refusal import with_actionable_refusal
+from .stop_guard import stop_guard_decision
 from .limit_state import (
     limit_state_from_claude_statusline,
     limit_state_from_claude_stop_failure,
@@ -814,6 +815,16 @@ def build_parser() -> argparse.ArgumentParser:
         default="-",
         help="The JSON Claude Code passed, a file or - for stdin (default).",
     )
+
+    command = worker_commands.add_parser(
+        "stop-guard",
+        help=(
+            "Claude Code's Stop hook (W182): when an attending worker's turn ends with "
+            "no pb worker watch running, block the stop once with the commands that "
+            "re-arm it. Reads the hook JSON on stdin; never blocks anything else."
+        ),
+    )
+    _host_config(command)
 
     command = worker_commands.add_parser(
         "workspace",
@@ -3548,6 +3559,12 @@ def _worker_command(args: Any) -> dict[str, Any]:
         coalesce = max(0.0, min(float(args.coalesce_seconds), 5.0))
         if args.once:
             return probe_worker_input(field, worker_name=identity.worker_name)
+        # The Stop hook reads this to tell a running watch from none (W182).
+        field.record_watch_attachment(
+            str(field.read_worker(identity.worker_name).get("worker_name") or identity.worker_name),
+            pid=os.getpid(),
+            runtime_session_id=identity.runtime_session_id,
+        )
         last_signature: tuple[str, ...] = ()
         failure_signature = ""
         failure_delay = 5
@@ -4589,6 +4606,37 @@ def _limit_state_command(args: argparse.Namespace, *, stdin: Any = None) -> int:
     return 0
 
 
+def _stop_guard_command(args: argparse.Namespace, *, stdin: Any = None) -> int:
+    """Claude Code's Stop hook: block a worker's stop once when its watch is not running (W182).
+
+    The settings are user-level, so every Claude Code session on the host runs
+    this. Anything that is not an attending worker's session, and any failure
+    here, lets the stop through: the exit code is always 0, and only a block
+    prints anything on stdout.
+    """
+
+    try:
+        source = sys.stdin if stdin is None else stdin
+        raw = source.read()
+        payload = json.loads(raw) if raw.strip() else {}
+        if not isinstance(payload, Mapping) or payload.get("stop_hook_active"):
+            return 0
+        session = str(payload.get("session_id") or "").strip()
+        if not session:
+            return 0
+        identity = WorkerSessionIdentity.create("claude-code", session)
+        config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
+        decision = stop_guard_decision(
+            payload, field=SharedFieldStore(config.field_root), worker_name=identity.worker_name
+        )
+    except Exception as exc:  # noqa: BLE001 - a guard must never trap the session it guards
+        print(f"stop guard let the stop through: {exc}", file=sys.stderr)
+        return 0
+    if decision is not None:
+        print(json.dumps(decision, ensure_ascii=True))
+    return 0
+
+
 def _limit_state_identity(
     args: argparse.Namespace, payload: Mapping[str, Any]
 ) -> WorkerSessionIdentity | None:
@@ -4642,6 +4690,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "worker" and getattr(args, "worker_command", "") == "limit-state":
         # One plain line, because Claude Code shows it as the status line.
         return _limit_state_command(args)
+    if args.command == "worker" and getattr(args, "worker_command", "") == "stop-guard":
+        # Claude Code reads the hook's decision as JSON on stdout.
+        return _stop_guard_command(args)
     worker_flags = worker_flags_from_argv(cleaned_argv)
     try:
         # Inline prose is one line or a file, before any command runs, so the

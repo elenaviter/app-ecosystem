@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.6"
+    assert package["revision"] == "2026.09.24.7"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -912,3 +912,15 @@ def test_the_worker_host_path_holds_on_a_host_that_has_none_of_it():
     assert "the grant `work:relay`" in text and "`work:observe` to read the plan" in text
     # A worker session never stops on a question nobody watches, started or resumed.
     assert text.count("--disallowedTools AskUserQuestion") >= 2
+
+
+def test_the_stop_hook_rearms_a_missed_watch() -> None:
+    # W182 line 0, 2026-09-24: a missed re-arm costs one turn, independent of the model noticing.
+    first_run = _words(_read("references/first-run.md"))
+    wake = _words(_read("references/claude-code-wake.md"))
+
+    assert '"command": "pb worker stop-guard"' in first_run
+    assert "the hook blocks the stop once and names the exact commands that re-arm the watch" in first_run
+    assert "The settings are the user's: propose the lines, and the user adds them" in first_run
+    assert "A missed re-arm then costs one turn" in wake
+    assert "A detached or retired worker, any other session on the host, and a failure inside the hook end normally" in wake
