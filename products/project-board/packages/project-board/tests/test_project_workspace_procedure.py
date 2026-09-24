@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from project_board.client.procedures import source_package_path
+from project_board.client.store import SharedFieldStore
 
 pytestmark = pytest.mark.skipif(not (shutil.which("git") and shutil.which("bash")), reason="needs git and bash")
 
@@ -88,3 +89,58 @@ def test_a_record_not_yet_on_this_host_is_awaited_never_read_as_an_empty_list():
     assert "`repositories` is empty only because nothing is here yet. Wait a minute and read again." in words
     assert "An empty list then means the card names no repositories yet" in words
     assert "It is a place inside the clone, never a separate clone." in words
+
+
+def test_an_alias_whose_folder_holds_another_remote_is_refused_and_left_alone(tmp_path, remote):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _set_up(workspace, "applications", remote)
+    other = tmp_path / "other.git"
+    _git("clone", "--quiet", "--bare", str(remote), str(other))
+
+    result = subprocess.run(
+        ["bash", "-euc", _setup_commands()],
+        env={"WORKSPACE": str(workspace), "ALIAS": "applications", "URL": str(other), "BRANCH": "", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 3
+    assert f"the project declares {other}" in result.stderr
+    assert _git("remote", "get-url", "origin", cwd=workspace / "applications") == str(remote)
+
+
+def test_a_fresh_worker_reads_its_workspace_from_the_context(tmp_path, monkeypatch):
+    from project_board.client import cli, host_config
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+
+    host = host_config.initialize_host_config(
+        target_id="target",
+        endpoint="https://runtime.example/mcp",
+        tenant="tenant",
+        platform_project="project",
+        host_id="spark1",
+        allowed_roots=[str(tmp_path)],
+        source_repositories={},
+        config_path=tmp_path / "relay.json",
+        state_root=tmp_path / "state",
+    )
+    workspace = tmp_path / "workspaces" / "space001"
+    workspace.mkdir(parents=True)
+    identity = WorkerSessionIdentity.create("claude-code", "a7b7935d-a064-43ec-937e-2b94f1660b68")
+    host_config.enroll_worker_channel(
+        host.path, identity=identity, profile="problem-board-claude-ops", authorized=True, working_directory=str(workspace)
+    )
+    monkeypatch.setenv("PROBLEM_BOARD_CONFIG", str(host.path))
+    args = cli.build_parser().parse_args(
+        ["worker", "context", "--runtime-kind", "claude-code", "--runtime-session-id", identity.runtime_session_id,
+         "--project-ref", "work:project:quickstart-works-mttfmgqu"]
+    )
+    SharedFieldStore(host_config.HostRelayConfig.load(host.path).field_root).register_worker(
+        worker_name=identity.worker_name, runtime_kind="claude-code", capabilities=[], authority_label="authority:test"
+    )
+
+    context = cli._worker_command(args)  # noqa: SLF001 - the command under test
+
+    assert context["workspace"] == str(workspace)
+    assert context["project_on_this_host"] is False

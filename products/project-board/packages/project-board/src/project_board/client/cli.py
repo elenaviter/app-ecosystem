@@ -3705,7 +3705,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
             },
         }
     if args.worker_command == "context":
-        return _worker_project_context(config, field, str(args.project_ref))
+        return _worker_project_context(
+            config, field, str(args.project_ref), channel=config.worker(identity)
+        )
     project_ref = str(getattr(args, "project_ref", "") or "").strip()
     parsed_project = parse_ref(project_ref) if project_ref else None
     if parsed_project is not None and parsed_project.kind != "project":
@@ -4160,7 +4162,11 @@ def _attended_project_ref(field: SharedFieldStore, worker_name: str) -> str:
 
 
 def _worker_project_context(
-    config: HostRelayConfig, field: SharedFieldStore, project_ref: str
+    config: HostRelayConfig,
+    field: SharedFieldStore,
+    project_ref: str,
+    *,
+    channel: Any = None,
 ) -> dict[str, Any]:
     """Where this worker's project stands on this host: its team first, then its journal (W304 finding 39).
 
@@ -4193,9 +4199,24 @@ def _worker_project_context(
             "journal_error_code": exc.code,
             "journal_error": str(exc),
         }
+    # The folder this session enrolled from (`pb worker listen`), which the
+    # host procedure makes the agent's own workspace. Repositories are set up
+    # inside it, one folder per alias (W304 finding 39).
+    workspace = str(getattr(channel, "working_directory", "") or "")
     return {
         "project_ref": project_ref,
         "project_on_this_host": on_host,
+        "workspace": workspace,
+        **(
+            {}
+            if workspace
+            else {
+                "workspace_note": (
+                    "This session enrolled before its folder was recorded: run "
+                    "`pb worker listen` from your workspace folder to record it."
+                )
+            }
+        ),
         **(
             {}
             if on_host

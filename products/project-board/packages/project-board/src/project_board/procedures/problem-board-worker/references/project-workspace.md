@@ -36,8 +36,11 @@ Each entry has an `alias`, a `url`, a `role` (`work`, `journal` or
 `artifact`), and an optional `branch` and `path`.
 
 - **`alias`** names the folder: the repository lives at `<workspace>/<alias>`,
-  where `<workspace>` is your own workspace folder (`pb worker workspace`
-  shows it). Two entries with the same URL are two folders, one per alias.
+  where `<workspace>` is the `workspace` field of the same output: the folder
+  this session enrolled from, which the host procedure makes your own. When it
+  is empty, the output says so: run `pb worker listen` from your workspace
+  folder once, and read again. Two entries with the same URL are two folders,
+  one per alias.
 - **`branch`** is the branch you work on. Without it, you use the branch the
   remote checks out by default.
 - **`path`** is the part of the repository the project uses, for example the
@@ -46,12 +49,17 @@ Each entry has an `alias`, a `url`, a `role` (`work`, `journal` or
 
 ## 2. Clone or update every repository, the journal one included
 
-For each entry, with `WORKSPACE`, `ALIAS`, `URL` and `BRANCH` (empty when the
-entry has none) set from it:
+For each entry, with `WORKSPACE` from the output's `workspace`, and `ALIAS`,
+`URL` and `BRANCH` (empty when the entry has none) from the entry:
 
 ```bash
 dest="$WORKSPACE/$ALIAS"
 if [ -d "$dest/.git" ]; then
+  origin=$(git -C "$dest" remote get-url origin)
+  if [ "$origin" != "$URL" ]; then
+    echo "$ALIAS at $dest points at $origin, the project declares $URL" >&2
+    exit 3
+  fi
   git -C "$dest" fetch --prune origin
 else
   git clone --quiet "$URL" "$dest"
@@ -66,6 +74,11 @@ fi
 
 The journal repository (role `journal`) is cloned like any other: the
 project's history lives there, and you read it before acting on a subject.
+
+A folder whose `origin` is not the declared URL stops there (exit 3): the
+project card changed the alias, or the folder holds another repository. Do not
+repoint or replace it. Tell the operator the alias, both URLs and the folder,
+and go on with the rest.
 
 A checkout or fast-forward that fails (local changes, a history that has
 diverged) is never forced. Leave that folder as it is and tell the coordinator
