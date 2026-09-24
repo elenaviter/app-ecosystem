@@ -40,10 +40,29 @@ Four rules, all enforced here:
                 server (a grant, a deploy) without touching the profile
 
 State is kept next to the host config, so a relay restart inside a rate-limit
-window does not start hammering again. A relay start forgets permanent
-refusals and runtime records, so restarting the relay retries every pending
-channel once and every channel that was waiting on the runtime at once. To
-clear everything, including the host quiet window, stop the relay and delete
+window does not start hammering again. A relay start decides once per channel
+and logs the decision (``relay pacing restart ... decision=``):
+
+    attempted         a channel backing off from a transient refusal, waiting
+                      on the runtime, or refused permanently for a reason a
+                      server-side fix can clear, is tried at once. A relay is
+                      usually restarted because the server was fixed: on
+                      2026-09-24 two channels refused while Card admission was
+                      broken reconnected fifteen minutes after the fix,
+                      because their doubled backoff survived the restart. If
+                      that attempt fails, the channel returns to its schedule
+                      from its accumulated count, never faster than before.
+    kept_backoff      the host is inside a gateway rate-limit window, which a
+                      restart does not lift, so every channel keeps its time,
+                      or a channel backing off from a credential refusal keeps
+                      its schedule, since the credential's answer is the same
+    parked_permanent  a credential the server refused (a revoked refresh
+                      family, a revoked or unknown Card) stays parked until its
+                      profile fingerprint changes, which is what
+                      ``pb worker authorize`` does. A restart never retries a
+                      credential known to be dead.
+
+To clear everything, including the host quiet window, stop the relay and delete
 ``relay-pacing.json`` beside the host config. The state holds no secret: times,
 counts, reason codes, and a fingerprint of non-secret profile fields.
 """
@@ -79,6 +98,19 @@ RUNTIME_RETRY_CAP_SECONDS = 10.0
 RUNTIME_RETRY_WINDOW_SECONDS = 15 * 60.0
 RUNTIME_RETRY_LONG_SECONDS = 60.0
 RUNTIME_SCHEDULE = "runtime"
+# The server refused the credential itself: only a new authorization, which
+# changes the profile fingerprint, can change that answer.
+CREDENTIAL_REFUSAL_REASONS = frozenset(
+    {
+        "oauth_token_request_failed",
+        "delegated_card_refresh_refused",
+        "delegated_card_revoked",
+        "delegated_card_not_found",
+    }
+)
+RESTART_ATTEMPTED = "attempted"
+RESTART_KEPT_BACKOFF = "kept_backoff"
+RESTART_PARKED_PERMANENT = "parked_permanent"
 # A 429 that names no wait still means the bucket is spent.
 HOST_QUIET_DEFAULT_SECONDS = 60.0
 # The gateway's own window is an hour. A longer Retry-After (a wrong value, or
@@ -97,6 +129,13 @@ def _error_chain(error: BaseException) -> list[BaseException]:
         chain.append(current)
         current = current.__cause__ or current.__context__
     return chain
+
+
+def credential_refusal(reason: str) -> bool:
+    """Whether a refusal reason says the credential itself is dead."""
+
+    text = str(reason or "")
+    return any(code in text for code in CREDENTIAL_REFUSAL_REASONS)
 
 
 def rate_limit_wait(error: BaseException) -> float | None:
@@ -135,6 +174,7 @@ class RelayPacing:
         self._clock = clock
         self._rng = rng
         self._state: dict[str, Any] = {"host_quiet_until": 0.0, "channels": {}, "pending": {}}
+        self.restart_decisions: dict[str, dict[str, str]] = {}
         self._load()
         if forget_permanent:
             self._forget_on_start()
@@ -157,17 +197,28 @@ class RelayPacing:
                     self._state[key] = {str(k): dict(v) for k, v in value.items() if isinstance(v, Mapping)}
 
     def _forget_on_start(self) -> None:
-        """A relay start retries permanently refused channels once, since the
-        fix may have been made on the server while the relay was down, and
-        retries every channel that was waiting on the runtime at once, since
-        the relay is usually restarted because the runtime came back."""
+        """Decide, once per channel, what a relay start does with its record.
 
-        permanent = [
-            name for name, record in self._state["pending"].items() if record.get("permanent")
-        ]
-        for name in permanent:
+        See the module docstring for the three decisions and why. Each one is
+        logged, and kept in ``restart_decisions`` for the relay's evidence.
+        """
+
+        now = self._clock()
+        quiet = float(self._state["host_quiet_until"]) > now
+        decisions: dict[str, tuple[str, str]] = {}
+        changed = False
+        for name, record in list(self._state["pending"].items()):
+            if not record.get("permanent"):
+                continue
+            reason = str(record.get("reason") or "")
+            if credential_refusal(reason):
+                decisions[name] = (RESTART_PARKED_PERMANENT, reason)
+                continue
+            # The fix may have been made on the server while the relay was down.
             self._state["pending"].pop(name, None)
             self._state["channels"].pop(name, None)
+            decisions[name] = (RESTART_ATTEMPTED, reason)
+            changed = True
         # Records of the runtime being down, on either schedule: the runtime
         # schedule, or a doubling backoff whose reason is a runtime code, as a
         # relay from before the runtime schedule wrote them during an outage.
@@ -181,13 +232,43 @@ class RelayPacing:
             and str(record.get("reason") or "") in RUNTIME_UNAVAILABLE_CODES
         ]
         for name in runtime:
-            self._state["channels"].pop(name, None)
-        if permanent:
+            record = self._state["channels"].pop(name, None) or {}
+            decisions[name] = (RESTART_ATTEMPTED, str(record.get("reason") or ""))
+            changed = True
+        for name, record in self._state["channels"].items():
+            if name in decisions:
+                continue
+            reason = str(record.get("reason") or "")
+            if quiet:
+                decisions[name] = (RESTART_KEPT_BACKOFF, "host_rate_limited")
+                continue
+            if credential_refusal(reason):
+                # The credential's own answer: a restart does not change it.
+                decisions[name] = (RESTART_KEPT_BACKOFF, reason)
+                continue
+            # One attempt now. The accumulated count stays, so a failure
+            # returns to the schedule it had, never a faster one.
+            if float(record.get("next_at") or 0.0) > now:
+                record["next_at"] = now
+                changed = True
+            decisions[name] = (RESTART_ATTEMPTED, reason)
+        if any(decision == RESTART_ATTEMPTED for decision, _ in decisions.values()):
             self._state["host_quiet_until"] = min(
                 float(self._state["host_quiet_until"]),
-                self._clock() + HOST_QUIET_CAP_SECONDS,
+                now + HOST_QUIET_CAP_SECONDS,
             )
-        if permanent or runtime:
+        self.restart_decisions = {
+            name: {"decision": decision, "reason": reason}
+            for name, (decision, reason) in sorted(decisions.items())
+        }
+        for name, (decision, reason) in sorted(decisions.items()):
+            logger.info(
+                "relay pacing restart worker=%s decision=%s reason=%s",
+                name,
+                decision,
+                reason or "-",
+            )
+        if changed:
             self._save()
 
     def _save(self) -> None:
@@ -381,7 +462,9 @@ class RelayPacing:
             name: {
                 "reason": str(record.get("reason") or ""),
                 "retry": (
-                    "after pb worker authorize, a relay restart, or in 30 minutes"
+                    "after pb worker authorize: the server refused this credential"
+                    if record.get("permanent") and credential_refusal(str(record.get("reason") or ""))
+                    else "after pb worker authorize, a relay restart, or in 30 minutes"
                     if record.get("permanent")
                     else "after pb worker authorize, or at the channel's next attempt"
                 ),
@@ -443,6 +526,11 @@ def channel_reconnect_state(
 
 __all__ = [
     "channel_reconnect_state",
+    "credential_refusal",
+    "CREDENTIAL_REFUSAL_REASONS",
+    "RESTART_ATTEMPTED",
+    "RESTART_KEPT_BACKOFF",
+    "RESTART_PARKED_PERMANENT",
     "HANDSHAKE_RETRY_BASE_SECONDS",
     "HANDSHAKE_RETRY_CAP_SECONDS",
     "HANDSHAKE_RETRY_LIMIT",
