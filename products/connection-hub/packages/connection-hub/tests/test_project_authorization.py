@@ -8,6 +8,7 @@ import dataclasses
 import pytest
 from connection_hub.delegated_credentials.project_authorization import (
     PROJECT_PERSON_CONTROL_CREATE,
+    PROJECT_PERSON_CONTROL_REVOKE,
     PROJECT_PERSON_CONTROL_UPDATE,
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
@@ -184,6 +185,36 @@ async def test_resolver_port_denies_a_non_admin_before_resolving_the_target() ->
     )
 
     decision = await _port(resolver).authorize_project_person_control(_request())
+
+    assert not decision.allowed
+    assert decision.reason == "project_actor_role_not_administrative"
+    assert resolver.calls == [(PROJECT_REF, ADMIN)]
+
+
+@pytest.mark.asyncio
+async def test_project_admin_can_revoke_after_target_membership_is_removed() -> None:
+    resolver = _MembershipResolver(
+        {(PROJECT_REF, ADMIN): _membership(ADMIN, role="admin")}
+    )
+
+    decision = await _port(resolver).authorize_project_person_control(
+        _request(operation=PROJECT_PERSON_CONTROL_REVOKE)
+    )
+
+    assert decision.allowed
+    assert resolver.calls == [(PROJECT_REF, ADMIN)]
+    assert "target_membership" not in decision.evidence
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_revoke_a_former_members_card() -> None:
+    resolver = _MembershipResolver(
+        {(PROJECT_REF, ADMIN): _membership(ADMIN, role="member")}
+    )
+
+    decision = await _port(resolver).authorize_project_person_control(
+        _request(operation=PROJECT_PERSON_CONTROL_REVOKE)
+    )
 
     assert not decision.allowed
     assert decision.reason == "project_actor_role_not_administrative"

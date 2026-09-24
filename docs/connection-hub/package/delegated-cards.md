@@ -1401,10 +1401,13 @@ The standard resolver-backed port asks an application-owned
 `ProjectMembershipResolver` for typed membership evidence for the actor and
 target. The host configures which application roles administer the project;
 the resolver supplies the actor's exact delegable-grant ceiling. Missing actor
-or target membership, a non-administrative project role, mismatched evidence,
-and an unbound resolver return named denials. The project application binds its
-canonical membership store at host composition, so membership authority stays
-with the application that owns it.
+membership, a non-administrative project role, mismatched evidence, and an
+unbound resolver return named denials. Create, read, and update also require
+current target membership. Revoke intentionally does not: an administrator can
+revoke the project-held Card after removing the member, without preserving a
+stale membership row or relying on a crash-sensitive ordering. The project
+application binds its canonical membership store at host composition, so
+membership authority stays with the application that owns it.
 
 The standard Card editor opens this lifecycle when its deep link carries the
 Card's `control_card_id` together with `project_ref` and `target_subject`.

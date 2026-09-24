@@ -353,28 +353,32 @@ class ResolverBackedProjectAuthorizationPort:
                 evidence={"actor_membership": actor.to_public_dict()},
             )
 
-        try:
-            target = (
-                actor
-                if request.target_subject == request.actor_subject
-                else await self._resolve(
-                    request=request,
-                    subject=request.target_subject,
+        target: ProjectMembershipEvidence | None = None
+        if request.operation != PROJECT_PERSON_CONTROL_REVOKE:
+            try:
+                target = (
+                    actor
+                    if request.target_subject == request.actor_subject
+                    else await self._resolve(
+                        request=request,
+                        subject=request.target_subject,
+                    )
                 )
-            )
-        except ProjectAuthorizationError as exc:
-            return self._deny(request, exc.reason)
-        if target is None:
-            return self._deny(request, "project_target_membership_missing")
+            except ProjectAuthorizationError as exc:
+                return self._deny(request, exc.reason)
+            if target is None:
+                return self._deny(request, "project_target_membership_missing")
 
+        evidence: dict[str, Any] = {
+            "authorization_source": "project_membership_resolver",
+            "actor_membership": actor.to_public_dict(),
+        }
+        if target is not None:
+            evidence["target_membership"] = target.to_public_dict()
         return ProjectAuthorizationDecision.allow(
             request,
             delegable_grants=actor.delegable_grants,
-            evidence={
-                "authorization_source": "project_membership_resolver",
-                "actor_membership": actor.to_public_dict(),
-                "target_membership": target.to_public_dict(),
-            },
+            evidence=evidence,
         )
 
 
