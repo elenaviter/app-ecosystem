@@ -58,6 +58,16 @@ also preserved when it exists. Descriptor clients and HTTPS client-metadata
 documents are resolved from their authoritative configuration on the next
 authorization.
 
+Refresh rotation also has a conditional failure-compensation transition. When
+token or Card issuance fails before the replacement reaches the client, the
+package restores the presented generation only if the replacement is still the
+same family's current active generation. A concurrent rotation, revocation, or
+confirmed reuse takes precedence, so compensation cannot revive a superseded or
+revoked credential family.
+Consumed-generation replay revocation is a PostgreSQL authority guarantee;
+Redis migration-source mode provides atomic rotation and compensation without
+refresh-family history.
+
 An Agent Card keeps its reusable bearer in the deployment secret provider for
 hosted reuse and network presentation. The preview verifies the durable Card
 identity, revision, state, expiry, and at least one usable credential path

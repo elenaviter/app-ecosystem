@@ -86,6 +86,27 @@ redis.call('SETEX', KEYS[2], ARGV[3], ARGV[2])
 return 1
 """
 
+_ATOMIC_ROLLBACK_REFRESH_TOKEN_ROTATION = """
+local prior = redis.call('GET', KEYS[1])
+if prior then
+    return -1
+end
+local replacement = redis.call('GET', KEYS[2])
+if not replacement then
+    return 0
+end
+if replacement ~= ARGV[2] then
+    return -2
+end
+local ttl = redis.call('TTL', KEYS[2])
+if ttl <= 0 then
+    return -3
+end
+redis.call('DEL', KEYS[2])
+redis.call('SETEX', KEYS[1], ttl, ARGV[1])
+return 1
+"""
+
 
 class GrantStoreUnavailable(RuntimeError):
     """The shared OAuth state store could not complete an operation."""
@@ -744,6 +765,75 @@ class GrantStore:
             if code != -2:
                 raise GrantStoreUnavailable("refresh_token.rotate")
         raise GrantStoreUnavailable("refresh_token.rotate")
+
+    async def rollback_refresh_token_rotation(
+        self,
+        refresh_token: str,
+        replacement_token: str,
+        *,
+        state: RefreshTokenState,
+    ) -> bool:
+        """Restore a consumed token after its replacement was not delivered.
+
+        This is a conditional compensation, not a general token revival. Both
+        generations must still be exactly the transition represented by
+        ``state``; otherwise the newer authority decision wins.
+        """
+
+        token = str(refresh_token or "").strip()
+        replacement = str(replacement_token or "").strip()
+        if (
+            not token
+            or not replacement
+            or token == replacement
+            or state.token != token
+        ):
+            return False
+        replacement_state = await self.get_refresh_token_state(replacement)
+        if replacement_state is None:
+            return False
+        binding_fields = (
+            "registry_access_id",
+            "card_kind",
+            "client_id",
+            "sub",
+            "identity_scope",
+        )
+        if any(
+            str(state.record.get(field) or "")
+            != str(replacement_state.record.get(field) or "")
+            for field in binding_fields
+        ):
+            return False
+
+        if self._authority_store is not None:
+            return bool(
+                await self._authority_call(
+                    "refresh_token.rotation_rollback",
+                    "rollback_refresh_token_rotation",
+                    token,
+                    replacement,
+                    expected_generation=state.raw,
+                    expected_replacement_generation=replacement_state.raw,
+                )
+            )
+
+        result = await self._redis_call(
+            "refresh_token.rotation_rollback",
+            "eval",
+            _ATOMIC_ROLLBACK_REFRESH_TOKEN_ROTATION,
+            2,
+            self._key("refresh", token),
+            self._key("refresh", replacement),
+            state.raw,
+            replacement_state.raw,
+        )
+        code = int(result)
+        if code == 1:
+            return True
+        if code in {0, -1, -2, -3}:
+            return False
+        raise GrantStoreUnavailable("refresh_token.rotation_rollback")
 
     # ---------------------- access-token operation grant ----------------------
 

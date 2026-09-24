@@ -83,6 +83,15 @@ class OAuthAuthorityStore(Protocol):
         expected_generation: Any = None,
     ) -> str | None: ...
 
+    async def rollback_refresh_token_rotation(
+        self,
+        refresh_token: str,
+        replacement_token: str,
+        *,
+        expected_generation: Any = None,
+        expected_replacement_generation: Any = None,
+    ) -> bool: ...
+
     async def revoke_refresh_token(self, refresh_token: str) -> bool: ...
 
     async def extend_refresh_token(
@@ -401,6 +410,131 @@ class PostgresOAuthAuthorityStore:
                 "consumed refresh generation was presented again"
             )
         return new_token if rotated else None
+
+    async def rollback_refresh_token_rotation(
+        self,
+        refresh_token: str,
+        replacement_token: str,
+        *,
+        expected_generation: Any = None,
+        expected_replacement_generation: Any = None,
+    ) -> bool:
+        """Restore a generation when its replacement was never delivered.
+
+        The replacement must still be this active family's current generation.
+        A concurrent rotation, revocation, or reuse decision therefore wins and
+        can never be undone by failure compensation.
+        """
+
+        token = str(refresh_token or "").strip()
+        replacement = str(replacement_token or "").strip()
+        if not token or not replacement or token == replacement:
+            return False
+        restored = False
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                row = await connection.fetchrow(
+                    f"""
+                    SELECT prior.generation_id AS prior_generation_id,
+                           prior.state AS prior_state,
+                           successor.generation_id AS replacement_generation_id,
+                           successor.state AS replacement_state,
+                           successor.expires_at AS replacement_expires_at,
+                           successor.expires_at > now() AS replacement_live,
+                           family.family_id,
+                           family.current_generation_id,
+                           family.state AS family_state,
+                           family.expires_at > now() AS family_live
+                    FROM {self.schema}.{TABLE_REFRESH_GENERATIONS} AS prior
+                    JOIN {self.schema}.{TABLE_FAMILIES} AS family
+                      ON family.family_id = prior.family_id
+                    JOIN {self.schema}.{TABLE_REFRESH_GENERATIONS} AS successor
+                      ON successor.family_id = family.family_id
+                    WHERE prior.token_sha256 = $1
+                      AND successor.token_sha256 = $2
+                    FOR UPDATE OF prior, successor, family
+                    """,
+                    bearer_sha256(token),
+                    bearer_sha256(replacement),
+                )
+                if row is None:
+                    return False
+                current = dict(row)
+                prior_generation = str(
+                    current.get("prior_generation_id") or ""
+                ).strip()
+                replacement_generation = str(
+                    current.get("replacement_generation_id") or ""
+                ).strip()
+                if (
+                    str(current.get("prior_state") or "") != "consumed"
+                    or str(current.get("replacement_state") or "") != "active"
+                    or str(current.get("family_state") or "") != "active"
+                    or not bool(current.get("replacement_live"))
+                    or not bool(current.get("family_live"))
+                    or str(current.get("current_generation_id") or "")
+                    != replacement_generation
+                    or (
+                        expected_generation is not None
+                        and str(expected_generation) != prior_generation
+                    )
+                    or (
+                        expected_replacement_generation is not None
+                        and str(expected_replacement_generation)
+                        != replacement_generation
+                    )
+                ):
+                    return False
+                replacement_expires_at = current.get("replacement_expires_at")
+                family_id = str(current.get("family_id") or "").strip()
+                replacement_status = await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_REFRESH_GENERATIONS}
+                    SET state = 'revoked',
+                        revision = revision + 1,
+                        revoked_at = now()
+                    WHERE generation_id = $1 AND state = 'active'
+                    """,
+                    replacement_generation,
+                )
+                prior_status = await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_REFRESH_GENERATIONS}
+                    SET state = 'active',
+                        revision = revision + 1,
+                        consumed_at = NULL,
+                        expires_at = $2
+                    WHERE generation_id = $1 AND state = 'consumed'
+                    """,
+                    prior_generation,
+                    replacement_expires_at,
+                )
+                family_status = await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_FAMILIES}
+                    SET current_generation_id = $2,
+                        revision = revision + 1,
+                        updated_at = now(),
+                        expires_at = $3
+                    WHERE family_id = $1
+                      AND state = 'active'
+                      AND current_generation_id = $4
+                    """,
+                    family_id,
+                    prior_generation,
+                    replacement_expires_at,
+                    replacement_generation,
+                )
+                if (
+                    replacement_status,
+                    prior_status,
+                    family_status,
+                ) != ("UPDATE 1", "UPDATE 1", "UPDATE 1"):
+                    raise RuntimeError(
+                        "refresh token rotation rollback lost its locked state"
+                    )
+                restored = True
+        return restored
 
     async def revoke_refresh_token(self, refresh_token: str) -> bool:
         token = str(refresh_token or "").strip()

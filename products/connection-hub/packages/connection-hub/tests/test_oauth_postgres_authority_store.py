@@ -362,6 +362,85 @@ async def test_rotate_refuses_a_stale_generation_without_mutation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rotation_rollback_restores_only_the_current_replacement() -> None:
+    replacement_expires_at = object()
+    connection = _Connection(
+        rows=[
+            {
+                "prior_generation_id": "ogen_old",
+                "prior_state": "consumed",
+                "replacement_generation_id": "ogen_new",
+                "replacement_state": "active",
+                "replacement_expires_at": replacement_expires_at,
+                "replacement_live": True,
+                "family_id": "ofam_1",
+                "current_generation_id": "ogen_new",
+                "family_state": "active",
+                "family_live": True,
+            }
+        ]
+    )
+    store = _store(connection)
+
+    restored = await store.rollback_refresh_token_rotation(
+        "old-refresh-bearer",
+        "new-refresh-bearer",
+        expected_generation="ogen_old",
+        expected_replacement_generation="ogen_new",
+    )
+
+    assert restored is True
+    assert connection.transaction_enters == 1
+    assert connection.transaction_exits == 1
+    assert [kind for kind, _sql, _args, _depth in connection.calls] == [
+        "fetchrow",
+        "execute",
+        "execute",
+        "execute",
+    ]
+    assert all(depth == 1 for _kind, _sql, _args, depth in connection.calls)
+    sql = "\n".join(call[1] for call in connection.calls)
+    assert "FOR UPDATE OF prior, successor, family" in sql
+    assert "SET state = 'revoked'" in sql
+    assert "SET state = 'active'" in sql
+    arguments = _all_arguments(connection)
+    assert "old-refresh-bearer" not in arguments
+    assert "new-refresh-bearer" not in arguments
+    assert hashlib.sha256(b"old-refresh-bearer").hexdigest() in arguments
+    assert hashlib.sha256(b"new-refresh-bearer").hexdigest() in arguments
+
+
+@pytest.mark.asyncio
+async def test_rotation_rollback_does_not_revive_a_revoked_family() -> None:
+    connection = _Connection(
+        rows=[
+            {
+                "prior_generation_id": "ogen_old",
+                "prior_state": "consumed",
+                "replacement_generation_id": "ogen_new",
+                "replacement_state": "revoked",
+                "replacement_expires_at": object(),
+                "replacement_live": True,
+                "family_id": "ofam_1",
+                "current_generation_id": "ogen_new",
+                "family_state": "revoked",
+                "family_live": True,
+            }
+        ]
+    )
+
+    restored = await _store(connection).rollback_refresh_token_rotation(
+        "old-refresh-bearer",
+        "new-refresh-bearer",
+        expected_generation="ogen_old",
+        expected_replacement_generation="ogen_new",
+    )
+
+    assert restored is False
+    assert [kind for kind, _sql, _args, _depth in connection.calls] == ["fetchrow"]
+
+
+@pytest.mark.asyncio
 async def test_rotation_race_revokes_the_reused_refresh_family() -> None:
     connection = _Connection(
         rows=[
@@ -622,6 +701,64 @@ async def test_client_extension_executes_against_real_postgres() -> None:
     finally:
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_issuance_can_restore_then_retry_against_real_postgres() -> None:
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    authority = PostgresOAuthAuthorityStore(
+        pg_pool=pool,
+        tenant=f"authority-test-{uuid.uuid4().hex}",
+        project="refresh-issuance-rollback",
+    )
+    store = GrantStore(
+        object(),
+        tenant=authority.tenant,
+        project=authority.project,
+        authority_store=authority,
+    )
+    try:
+        await authority.ensure_schema()
+        old_token = await store.create_refresh_token(
+            client_id="client-1",
+            sub="user-1",
+            scopes=["records:read"],
+            registry_access_id="aut_card",
+            card_kind="automation",
+        )
+        old_state = await store.get_refresh_token_state(old_token)
+        assert old_state is not None
+        withheld_replacement = await store.rotate_refresh_token(
+            old_token,
+            state=old_state,
+        )
+        assert withheld_replacement
+
+        assert await store.rollback_refresh_token_rotation(
+            old_token,
+            withheld_replacement,
+            state=old_state,
+        ) is True
+        assert await store.get_refresh_token_state(old_token) is not None
+        assert await store.get_refresh_token_state(withheld_replacement) is None
+
+        delivered_replacement = await store.rotate_refresh_token(old_token)
+        assert delivered_replacement
+        with pytest.raises(RefreshTokenReuseDetected):
+            await store.get_refresh_token_state(old_token)
+        assert await store.get_refresh_token_state(delivered_replacement) is None
+    finally:
+        async with pool.acquire() as connection:
+            await connection.execute(
+                f"DROP SCHEMA IF EXISTS {authority.schema} CASCADE"
+            )
         await pool.close()
 
 
