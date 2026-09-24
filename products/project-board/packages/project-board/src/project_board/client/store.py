@@ -84,6 +84,7 @@ from .mail_attachments import (
 from .projection import build_projection
 from .plan_storage import BucketedPlanStore
 from .local_store import PartitionedStore, new_record_id
+from .outbox_store import OutboxStore
 from .outbox_layout import (
     OUTBOX_FOLDERS,
     OUTBOX_IN_FLIGHT_FOLDERS,
@@ -699,6 +700,12 @@ class SharedFieldStore:
 
     def manifest(self) -> dict[str, Any]:
         return read_json(self.manifest_path)
+
+    @property
+    def _outbox(self) -> OutboxStore:
+        """The outbox, per project and agent (W287 2b)."""
+
+        return OutboxStore(self.control)
 
     def _project_dir(self, project_id: str) -> Path:
         return self.control / "projects" / component(project_id, field="project_id")
@@ -5837,7 +5844,14 @@ class SharedFieldStore:
             }
             attachment_files: list[dict[str, Any]] = []
             if attachment_sources:
-                folder = self.control / "outbox" / "attachments" / outbox_id
+                folder = (
+                    self._outbox.agent_root(
+                        make_ref("project", clean_project) if clean_project else "",
+                        clean_sender,
+                    )
+                    / "attachments"
+                    / outbox_id
+                )
                 folder.mkdir(parents=True, exist_ok=True, mode=0o700)
                 for source, filename in attachment_sources:
                     target = folder / filename
@@ -5864,9 +5878,7 @@ class SharedFieldStore:
                 "state": "pending",
                 "created_at": message_created_at,
             }
-            atomic_write_json(
-                self.control / "outbox" / "pending" / f"{outbox_id}.json", row
-            )
+            self._outbox.write_pending(row)
             if (
                 clean_recipient in {"operator", "owner"}
                 and mail["kind"] == "reply"
@@ -8322,7 +8334,8 @@ class SharedFieldStore:
         # delivered history made every plan index pay for 54,843 rows on
         # dev-main (W287, rule LS3 in storage-and-retention.md).
         for state in OUTBOX_IN_FLIGHT_FOLDERS:
-            for row in json_records(self.control / "outbox" / state):
+            for path in self._outbox.in_flight(state, project_ref=make_ref("project", project_id)):
+                row = read_json(path, required=False) or {}
                 note(str(row.get("worker_name") or ""), str(row.get("created_at") or ""))
         return latest
 
@@ -8573,18 +8586,19 @@ class SharedFieldStore:
         root = self.control / "outbox"
         now = utc_now()
 
+        # One batch, one id: the id is derived from the project and the batch
+        # hash, so a repeat is found by one lookup instead of reading every
+        # outbox row (W287 2b). A row queued before 2b under a random id is not
+        # found this way; publishing the same batch again is idempotent at the
+        # service, which keys plan-node batches by content hash.
+        outbox_id = "outbox_plannodes_" + hashlib.sha256(
+            f"{project_ref}\n{batch_hash}".encode("utf-8")
+        ).hexdigest()[:32]
         with exclusive_lock(root / ".outbox.lock"):
-            for state in OUTBOX_FOLDERS:
-                for path in (root / state).glob("*.json"):
-                    existing = read_json(path)
-                    if (
-                        existing.get("kind") == "plan.nodes.publish"
-                        and existing.get("project_ref") == project_ref
-                        and existing.get("content_hash") == batch_hash
-                    ):
-                        return {**existing, "replayed": True, "coalesced": False}
+            existing = self._outbox.read(outbox_id, worker_name=clean_worker, project_ref=project_ref)
+            if existing and existing.get("kind") == "plan.nodes.publish" and existing.get("content_hash") == batch_hash:
+                return {**existing, "replayed": True, "coalesced": False}
 
-            outbox_id = new_id("outbox")
             row = {
                 "schema": OUTBOX_SCHEMA,
                 "outbox_id": outbox_id,
@@ -8599,7 +8613,7 @@ class SharedFieldStore:
                 "retry_count": 0,
                 "next_attempt_at": "",
             }
-            atomic_write_json(root / "pending" / f"{outbox_id}.json", row)
+            self._outbox.write_pending(row)
             return {**row, "replayed": False, "coalesced": False}
 
     def _publish_plan_nodes_unlocked(
@@ -8657,7 +8671,7 @@ class SharedFieldStore:
             "state": "pending",
             "created_at": utc_now(),
         }
-        atomic_write_json(self.control / "outbox" / "pending" / f"{outbox_id}.json", row)
+        self._outbox.write_pending(row)
         return row
 
     def enqueue_control_settlement(
@@ -8710,9 +8724,7 @@ class SharedFieldStore:
             "state": "pending",
             "created_at": utc_now(),
         }
-        atomic_write_json(
-            self.control / "outbox" / "pending" / f"{outbox_id}.json", row
-        )
+        self._outbox.write_pending(row)
         return row
 
     def _assignment_report_receipt_path(
@@ -9019,9 +9031,7 @@ class SharedFieldStore:
                 "state": "pending",
                 "created_at": created_at,
             }
-            atomic_write_json(
-                self.control / "outbox" / "pending" / f"{outbox_id}.json", row
-            )
+            self._outbox.write_pending(row)
             result = {
                 "outbox_id": outbox_id,
                 "assignment_id": parsed.object_id,
@@ -9286,7 +9296,11 @@ class SharedFieldStore:
             outbox_id = new_id("outbox")
             attachment_files: list[dict[str, Any]] = []
             if snapshots:
-                folder = self.control / "outbox" / "attachments" / outbox_id
+                folder = (
+                    self._outbox.agent_root(make_ref("project", clean_project), clean_worker)
+                    / "attachments"
+                    / outbox_id
+                )
                 folder.mkdir(parents=True, exist_ok=True, mode=0o700)
                 for snapshot in snapshots:
                     target = folder / str(snapshot["filename"])
@@ -9314,9 +9328,7 @@ class SharedFieldStore:
                 "state": "pending",
                 "created_at": utc_now(),
             }
-            atomic_write_json(
-                self.control / "outbox" / "pending" / f"{outbox_id}.json", row
-            )
+            self._outbox.write_pending(row)
             result = {
                 "outbox_id": outbox_id,
                 "report_ref": report_ref,
@@ -9372,12 +9384,7 @@ class SharedFieldStore:
         """
 
         clean_id = component(outbox_id, field="outbox_id")
-        root = self.control / "outbox"
-        for folder in ("sent", "refused", "leased", "pending"):
-            row = read_json(root / folder / f"{clean_id}.json", required=False)
-            if row:
-                return dict(row)
-        return None
+        return self._outbox.read(clean_id)
 
     def enqueue_project_report_failure(
         self,
@@ -9456,9 +9463,7 @@ class SharedFieldStore:
                 "state": "pending",
                 "created_at": utc_now(),
             }
-            atomic_write_json(
-                self.control / "outbox" / "pending" / f"{outbox_id}.json", row
-            )
+            self._outbox.write_pending(row)
             result = {
                 "outbox_id": outbox_id,
                 "report_ref": report_ref,
@@ -9521,10 +9526,13 @@ class SharedFieldStore:
         }
         root = self.control / "outbox"
         with exclusive_lock(root / ".outbox.lock"):
-            for state in ("sent", "refused", "leased", "pending"):
-                existing = read_json(
-                    root / state / f"{clean_outbox_id}.json", required=False
+            for existing in [
+                self._outbox.read(
+                    clean_outbox_id,
+                    worker_name=row["worker_name"],
+                    project_ref=row["project_ref"],
                 )
+            ]:
                 if not existing:
                     continue
                 identity = {
@@ -9542,18 +9550,13 @@ class SharedFieldStore:
                         details={"outbox_id": clean_outbox_id},
                     )
                 return {**existing, "replayed": True}
-            atomic_write_json(root / "pending" / f"{clean_outbox_id}.json", row)
+            self._outbox.write_pending(row)
         return {**row, "replayed": False}
 
     def outbox_record(self, outbox_id: str) -> dict[str, Any] | None:
         clean_id = component(outbox_id, field="outbox_id")
-        root = self.control / "outbox"
-        with exclusive_lock(root / ".outbox.lock"):
-            for state in OUTBOX_FOLDERS:
-                path = root / state / f"{clean_id}.json"
-                if path.exists():
-                    return read_json(path)
-        return None
+        with exclusive_lock(self._outbox.lock):
+            return self._outbox.read(clean_id)
 
     def worker_outbox_status(self, *, worker_name: str, outbox_id: str) -> dict[str, Any]:
         """Return one worker-owned delivery state without its retained payload."""
@@ -9623,20 +9626,35 @@ class SharedFieldStore:
                 details={"states": list(selected_states)},
             )
 
-        root = self.control / "outbox"
+        def wanted(row: Mapping[str, Any]) -> bool:
+            return (
+                str(row.get("kind") or "") == "mail.route"
+                and str(row.get("worker_name") or "") == clean_worker
+                and (not clean_project_ref or str(row.get("project_ref") or "") == clean_project_ref)
+                and str(row.get("state") or "") in selected_states
+            )
+
         rows: list[dict[str, Any]] = []
-        with exclusive_lock(root / ".outbox.lock"):
-            for folder in OUTBOX_FOLDERS:
-                for row in json_records(root / folder):
-                    if str(row.get("kind") or "") != "mail.route":
-                        continue
-                    if str(row.get("worker_name") or "") != clean_worker:
-                        continue
-                    if clean_project_ref and str(row.get("project_ref") or "") != clean_project_ref:
-                        continue
-                    if str(row.get("state") or "") not in selected_states:
-                        continue
-                    rows.append(row)
+        with exclusive_lock(self._outbox.lock):
+            for folder in OUTBOX_IN_FLIGHT_FOLDERS:
+                if folder not in selected_states:
+                    continue
+                for path in self._outbox.in_flight(folder, worker_name=clean_worker, project_ref=clean_project_ref):
+                    row = read_json(path, required=False)
+                    if row and wanted(row):
+                        rows.append(dict(row))
+            if set(selected_states) - set(OUTBOX_IN_FLIGHT_FOLDERS):
+                # Settled deliveries inside the retention window, newest hours
+                # first, this worker's folders only (W287 2b).
+                rows.extend(
+                    self._outbox.settled_newest(
+                        op="list",
+                        limit=10_000,
+                        worker_name=clean_worker,
+                        project_ref=clean_project_ref,
+                        predicate=wanted,
+                    )
+                )
 
         rows.sort(
             key=lambda row: (
@@ -9707,14 +9725,8 @@ class SharedFieldStore:
         clean_worker = str(self.read_worker(worker_name).get("worker_name") or "")
         root = self.control / "outbox"
         with exclusive_lock(root / ".outbox.lock"):
-            source = next(
-                (
-                    root / folder / f"{clean_id}.json"
-                    for folder in OUTBOX_FOLDERS
-                    if (root / folder / f"{clean_id}.json").is_file()
-                ),
-                None,
-            )
+            found = self._outbox.find(clean_id, worker_name=clean_worker)
+            source = found[0] if found else None
             if source is None:
                 raise DomainError(
                     "field_outbox_not_found",
@@ -9802,14 +9814,8 @@ class SharedFieldStore:
             replay = self.enqueue_remote_mail(**common, attachments=attachments)
 
         with exclusive_lock(root / ".outbox.lock"):
-            source = next(
-                (
-                    root / folder / f"{clean_id}.json"
-                    for folder in OUTBOX_FOLDERS
-                    if (root / folder / f"{clean_id}.json").is_file()
-                ),
-                None,
-            )
+            found = self._outbox.find(clean_id, worker_name=clean_worker)
+            source = found[0] if found else None
             if source is not None:
                 row = read_json(source)
                 row.update(
