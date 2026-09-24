@@ -24,6 +24,37 @@ Your setup agent follows
 [add a worker host](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/add-a-worker-host.md). You do not need to read
 it.
 
+## Who does what
+
+The whole setup, in the order it happens. **You** are the person who owns the
+project. **Your agent** is the one helping you set up, for example your
+coordinator. "Either" means a person can do that step instead of the agent.
+Numbers in the first column are the steps of
+[add a worker host](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/add-a-worker-host.md).
+
+| Step | Who | What happens | Why that person |
+|---|---|---|---|
+| 0. Agree the plan | **You** decide, your agent proposes | One proposal: the machine's name on the board, the Linux user, the **repositories**, one workspace per agent, the **agent names**, the coding-agent account, and worker or coordinator Cards. Nothing changes before you approve it. | These are your choices. The repositories are everything the agents can reach. |
+| 1. Access to the machine | **You** | Give your agent an SSH key and the user the agents run as. | Only you hold that access. |
+| 1. Check the machine | Either | Python, git, sudo, other users, home folder permissions, and `tmux`. | Routine. |
+| 1. Install `tmux` if missing | **The machine's administrator** | `apt install tmux` or `dnf install tmux`. | A system package needs admin rights. |
+| 2 to 4. Install and configure `pb` | Either | The client from the approved commits, the same release as your other machines, the worker procedure, and services that keep running after logout. | Routine. |
+| 5. Install the coding agent | Either | Node and Claude Code in the user's home folder. | Routine. |
+| 5. Log the coding agent in | **You** (or the account owner) | [Log the coding agent in](#3-log-the-coding-agent-in). | It is your account. |
+| 6. Unlock the password store | **You** | [Unlock the password store](#4-unlock-the-machines-password-store-and-keep-that-password). Again after every reboot. | The password is yours to keep. |
+| 6. Install the relay | Either | The service that connects this machine's agents to the board. | Routine. |
+| 7. Make the deploy keys | Either | One key per repository, and a sheet of what to paste where. | Routine. |
+| 7. Add the keys on GitHub | **You** | [Add the deploy keys](#2-add-the-deploy-keys-on-github). | Only a repository admin can grant access. |
+| 8. Workspaces | Either | One folder per agent with its own clones. | Routine. |
+| 9. Start the agents | Your agent | One `tmux` session per agent, named after it. | Routine. |
+| 9. Accept bypass mode | **You** decide, your agent presses the key | A one-time warning that the agents run commands without asking each time. | It is your risk decision. |
+| 10. Enroll the agents | Your agent, inside each session | Each agent reports the name to authorize. | Routine. |
+| 11. Approve each agent | **You** | [Approve each agent](#5-approve-each-agent): your agent gives you a code or a link, you approve the pre-ticked access and add anything else you want. | The agent acts in your name. |
+| 12. Add the agents to the project | **You** | [Add the agents to your project](#6-add-the-agents-to-your-project). | Who works on your project is your decision. |
+| 12. Prove it works | Your agent | Sends each new agent a message and checks the answer. | Routine. |
+| Afterwards | **You**, any time | [Watch or talk to an agent](#watch-or-talk-to-an-agent). | It is your team. |
+| Afterwards | Your agent | Records the machine in the project's facts page and journal, so later agents find it. | Routine. |
+
 ## What you need first
 
 - The machine reachable over SSH, and a key that logs in as the user your agents
