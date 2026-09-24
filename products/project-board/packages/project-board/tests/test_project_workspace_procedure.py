@@ -144,3 +144,15 @@ def test_a_fresh_worker_reads_its_workspace_from_the_context(tmp_path, monkeypat
 
     assert context["workspace"] == str(workspace)
     assert context["project_on_this_host"] is False
+
+
+def test_without_a_declared_branch_a_resume_returns_to_the_remote_default(tmp_path, remote):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _set_up(workspace, "applications", remote)
+    # The folder was left on another branch.
+    _git("checkout", "--quiet", "feature", cwd=workspace / "applications")
+
+    _set_up(workspace, "applications", remote)
+
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=workspace / "applications") == "main"

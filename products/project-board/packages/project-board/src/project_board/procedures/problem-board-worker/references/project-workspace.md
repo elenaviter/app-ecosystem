@@ -64,13 +64,17 @@ if [ -d "$dest/.git" ]; then
 else
   git clone --quiet "$URL" "$dest"
 fi
-if [ -n "$BRANCH" ]; then
-  git -C "$dest" checkout --quiet "$BRANCH"
-  git -C "$dest" merge --ff-only --quiet "origin/$BRANCH"
-else
-  git -C "$dest" merge --ff-only --quiet "@{upstream}"
+if [ -z "$BRANCH" ]; then
+  git -C "$dest" remote set-head origin --auto >/dev/null
+  BRANCH=$(git -C "$dest" symbolic-ref --short refs/remotes/origin/HEAD)
+  BRANCH=${BRANCH#origin/}
 fi
+git -C "$dest" checkout --quiet "$BRANCH"
+git -C "$dest" merge --ff-only --quiet "origin/$BRANCH"
 ```
+
+Without a declared branch, the remote's default branch is the one you work
+on, read from the remote each time, whatever branch the folder was left on.
 
 The journal repository (role `journal`) is cloned like any other: the
 project's history lives there, and you read it before acting on a subject.
