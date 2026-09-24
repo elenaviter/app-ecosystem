@@ -1235,7 +1235,9 @@ async def test_oauth_profile_marker_resolves_to_real_card_authority(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_oauth_worker_profile_cannot_submit_a_coordinator_operation(tmp_path):
+async def test_oauth_worker_profile_saves_an_operation_the_person_added(tmp_path):
+    """W272, operator ruling 2026-09-24: the profile is what the consent page
+    pre-ticks. The person may tick more, and the Card holds what they chose."""
     h = _Harness(tmp_path, connections=_connections_with_authorization_profiles())
 
     resolved = await h.service.resolve_oauth_consent_authority(
@@ -1252,48 +1254,14 @@ async def test_oauth_worker_profile_cannot_submit_a_coordinator_operation(tmp_pa
         expected_catalog_version=h.catalog.active.version,
     )
 
-    assert resolved == {
-        "ok": False,
-        "error": "oauth_authorization_profile_operations_exceeded",
-        "status": 400,
-        "resource": MEMORIES,
-        "operations": ["write"],
-    }
+    assert resolved["ok"] is True, resolved
+    assert resolved["resource_operations"][MEMORIES] == ["write"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("resource_grants", "resource_operations", "expected"),
-    [
-        (
-            {TASKS: ["tasks:use"]},
-            {TASKS: ["search"]},
-            {
-                "ok": False,
-                "error": "oauth_authorization_profile_resource_exceeded",
-                "status": 400,
-                "resource": TASKS,
-            },
-        ),
-        (
-            {MEMORIES: ["memories:write"]},
-            {MEMORIES: ["search"]},
-            {
-                "ok": False,
-                "error": "oauth_authorization_profile_grants_exceeded",
-                "status": 400,
-                "resource": MEMORIES,
-                "grants": ["memories:write"],
-            },
-        ),
-    ],
-)
-async def test_oauth_worker_profile_cannot_add_resources_or_grants(
-    tmp_path,
-    resource_grants,
-    resource_operations,
-    expected,
-):
+async def test_oauth_worker_profile_still_reaches_only_the_clients_services(tmp_path):
+    """A profile no longer caps the selection, and the client's reach still
+    does: a client that connected through one door gets no other service."""
     h = _Harness(tmp_path, connections=_connections_with_authorization_profiles())
 
     resolved = await h.service.resolve_oauth_consent_authority(
@@ -1302,15 +1270,17 @@ async def test_oauth_worker_profile_cannot_add_resources_or_grants(
         entry_resource=MEMORIES,
         requested_grants=["work:profile:worker"],
         client_metadata={},
-        resource_grants=resource_grants,
-        resource_operations=resource_operations,
+        resource_grants={TASKS: ["tasks:use"]},
+        resource_operations={TASKS: ["search"]},
         named_service_operations={},
         account_scope={},
         expected_card_revision=0,
         expected_catalog_version=h.catalog.active.version,
     )
 
-    assert resolved == expected
+    assert resolved["ok"] is False
+    assert resolved["error"] == "oauth_client_resource_unreachable"
+    assert resolved["resources"] == [TASKS]
 
 
 @pytest.mark.asyncio
