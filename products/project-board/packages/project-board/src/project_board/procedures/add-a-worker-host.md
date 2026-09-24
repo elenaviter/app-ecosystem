@@ -432,13 +432,13 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/workspa
 For a Codex agent, the session starts the same way, with:
 
 ```bash
-codex -C \$HOME/workspaces/<workspace> -s danger-full-access -a on-request --search
+codex -C ~/workspaces/<workspace> -s danger-full-access -a on-request --search
 ```
 
 and resumes with its own id and the same flags:
 
 ```bash
-codex resume <session-id> -C \$HOME/workspaces/<workspace> -s danger-full-access -a on-request --search
+codex resume <session-id> -C ~/workspaces/<workspace> -s danger-full-access -a on-request --search
 ```
 
 `-s danger-full-access` lets it work in its workspace and the user's `pb` state
