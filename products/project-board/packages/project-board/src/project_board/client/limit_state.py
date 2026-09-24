@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -45,10 +46,30 @@ KIND_OK = "ok"
 KIND_RATE_LIMITED = "rate_limited"
 KIND_OUT_OF_TOKENS = "out_of_tokens"
 KIND_UNKNOWN = "unknown"
+# The session ended on an error that is neither a usage limit nor credits
+# (authentication, an outage). ``reached`` names it, so the board can tell
+# credits, limits, auth and outage apart (W26 acceptance 9).
+KIND_STOPPED = "stopped"
 
 LIMIT_STATE_KINDS = frozenset(
-    {KIND_OK, KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS, KIND_UNKNOWN}
+    {KIND_OK, KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS, KIND_STOPPED, KIND_UNKNOWN}
 )
+
+# Claude Code ``StopFailure`` matcher values (code.claude.com hooks) that mean
+# the session cannot continue. The procedure's settings snippet matches every
+# one, and each maps to a kind below.
+STOP_FAILURE_RATE_LIMITED = frozenset({"rate_limit"})
+STOP_FAILURE_OUT_OF_TOKENS = frozenset({"billing_error", "account_on_hold"})
+STOP_FAILURE_ERRORS: tuple[str, ...] = (
+    "rate_limit",
+    "billing_error",
+    "account_on_hold",
+    "authentication_failed",
+    "oauth_org_not_allowed",
+    "overloaded",
+    "server_error",
+)
+_STOP_FAILURE_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 def _utc(value: Any) -> str:
@@ -308,22 +329,32 @@ def limit_state_from_claude_stop_failure(
     *,
     observed_at: str = "",
 ) -> dict[str, Any]:
-    """A ``StopFailure`` hook payload with matcher ``rate_limit`` is the hit itself.
+    """A ``StopFailure`` hook payload: the turn ended on this error, now.
 
-    The hook carries no reset time, so the state is rate limited with an empty
-    ``resets_at`` until the status line reports the window.
+    ``rate_limit`` is rate limited, ``billing_error`` and ``account_on_hold``
+    are out of tokens (out of credits: operator, 2026-09-23 23:05Z, "we had to
+    know about this but we weren't"), and any other error is ``stopped`` under
+    its own name. Only a payload with no error name reads ``unknown``. The hook
+    carries no reset time, so ``resets_at`` stays empty until the status line
+    reports a window.
     """
 
     error = ""
     if isinstance(payload, Mapping):
-        error = str(payload.get("error") or payload.get("matcher") or "").strip()
-    if error and error != "rate_limit":
+        error = str(payload.get("error") or payload.get("matcher") or "").strip().lower()
+    if not _STOP_FAILURE_NAME.fullmatch(error):
         return unknown_state(SOURCE_CLAUDE_STOP_FAILURE, observed_at=observed_at)
+    if error in STOP_FAILURE_RATE_LIMITED:
+        kind = KIND_RATE_LIMITED
+    elif error in STOP_FAILURE_OUT_OF_TOKENS:
+        kind = KIND_OUT_OF_TOKENS
+    else:
+        kind = KIND_STOPPED
     return {
-        "kind": KIND_RATE_LIMITED,
+        "kind": kind,
         "source": SOURCE_CLAUDE_STOP_FAILURE,
         "windows": [],
-        "reached": "rate_limit",
+        "reached": error,
         "resets_at": "",
         "observed_at": _utc(observed_at),
     }
@@ -374,10 +405,13 @@ def limit_state_line(state: Mapping[str, Any] | None) -> str:
     kind = str(state.get("kind") or KIND_UNKNOWN)
     resets = str(state.get("resets_at") or "")
     when = f", resets {resets[11:16]}Z" if len(resets) >= 16 else ""
+    reached = str(state.get("reached") or "")
     if kind == KIND_OUT_OF_TOKENS:
-        return "out of tokens" + when
+        detail = " (" + reached + ")" if reached in STOP_FAILURE_OUT_OF_TOKENS else ""
+        return "out of tokens" + detail + when
+    if kind == KIND_STOPPED:
+        return "stopped (" + (reached or "error") + ")"
     if kind == KIND_RATE_LIMITED:
-        reached = str(state.get("reached") or "")
         detail = " (" + reached + ")" if reached else ""
         return "rate limited" + detail + when
     if kind == KIND_OK:
