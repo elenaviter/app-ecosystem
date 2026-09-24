@@ -48,6 +48,7 @@ from .host_config import HostRelayConfig, WorkerChannelConfig, set_worker_channe
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
+from .relay_trace import RelayActivityTrace
 from .relay_admission import is_namespace_handshake_timeout, is_runtime_unavailable
 from .session_delivery import (
     notify_agent_session,
@@ -259,18 +260,22 @@ def _object_result(response: Mapping[str, Any]) -> dict[str, Any]:
     return dict(response)
 
 
-def _coordinate_queue_wait_seconds(request: Mapping[str, Any]) -> float | None:
+def _coordinate_queue_window(
+    request: Mapping[str, Any],
+) -> tuple[float, float] | None:
     last_error = request.get("last_transport_error")
     last_error = last_error if isinstance(last_error, Mapping) else {}
     queued_at = str(last_error.get("observed_at") or request.get("created_at") or "")
     claimed_at = str(request.get("leased_at") or request.get("first_claimed_at") or "")
     try:
-        return max(
-            0.0,
-            (parse_utc(claimed_at) - parse_utc(queued_at)).total_seconds(),
-        )
+        return parse_utc(queued_at).timestamp(), parse_utc(claimed_at).timestamp()
     except DomainError:
         return None
+
+
+def _coordinate_queue_wait_seconds(request: Mapping[str, Any]) -> float | None:
+    window = _coordinate_queue_window(request)
+    return None if window is None else max(0.0, window[1] - window[0])
 
 
 def _secret_fields(value: Any, path: tuple[str, ...] = ()) -> list[str]:
@@ -580,6 +585,7 @@ class ProblemBoardHostRelayAdapter:
         attendance_cache: dict[str, Any] | None = None,
         heartbeat_sent_at: dict[str, float] | None = None,
         monotonic: Callable[[], float] | None = None,
+        trace: RelayActivityTrace | None = None,
     ) -> None:
         self.config = config
         self.field = field
@@ -634,9 +640,17 @@ class ProblemBoardHostRelayAdapter:
             heartbeat_sent_at if heartbeat_sent_at is not None else {}
         )
         self._monotonic = monotonic or time.monotonic
+        self._trace = trace or RelayActivityTrace(log=logger)
         # The LOCAL journal mapping gap this cycle found, if any, so a journal
         # view in the same cycle refuses with the cause instead of "unbound".
         self._journal_mapping_gap: dict[str, Any] | None = None
+
+    def _trace_stage(self, stage: str, *, operation: str):
+        return self._trace.stage(
+            stage,
+            channel=self.config.worker_name,
+            operation=operation,
+        )
 
     def _session_report_delta(
         self,
@@ -2669,9 +2683,8 @@ class ProblemBoardHostRelayAdapter:
             mailbox_reconciliation = {"state": "directory_unavailable"}
             if isinstance(recipients, list):
                 try:
-                    mailbox_reconciliation = await asyncio.to_thread(
-                        self._reconcile_project_mailboxes,
-                        recipients,
+                    mailbox_reconciliation = await self._run_startup_recovery(
+                        recipients
                     )
                 except DomainError:
                     # The same project-materialization race applies to this compact
@@ -2704,6 +2717,19 @@ class ProblemBoardHostRelayAdapter:
             ),
             "journal_workspace": journal_workspace,
         }
+
+    async def _run_startup_recovery(
+        self,
+        recipients: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        with self._trace_stage(
+            "startup_recovery",
+            operation="mailbox.reconciliation",
+        ):
+            return await asyncio.to_thread(
+                self._reconcile_project_mailboxes,
+                recipients,
+            )
 
     def _reconcile_project_mailboxes(
         self, recipients: Sequence[Mapping[str, Any]]
@@ -2768,14 +2794,37 @@ class ProblemBoardHostRelayAdapter:
         ]
 
     async def poll_once(self) -> dict[str, Any]:
-        registration = await self._ensure_registration()
+        cycle = self._trace.start_cycle()
+        outcome = "succeeded"
+        try:
+            return await self._poll_once_body()
+        except BaseException as exc:
+            outcome = (
+                "cancelled"
+                if isinstance(exc, asyncio.CancelledError)
+                else f"failed:{type(exc).__name__}"
+            )
+            raise
+        finally:
+            self._trace.finish_cycle(cycle, outcome=outcome)
+
+    async def _poll_once_body(self) -> dict[str, Any]:
+        with self._trace_stage(
+            "channel.registration",
+            operation="worker.publish",
+        ):
+            registration = await self._ensure_registration()
         if registration is not None and registration["remote"].get("pool_status") == "limbo":
             return await self._limbo_result()
         agent_sessions = self._listener_sessions()
-        return await self._poll_project_once(
-            agent_sessions=agent_sessions,
-            force_heartbeat=True,
-        )
+        with self._trace_stage(
+            "project.poll",
+            operation="project.reconcile",
+        ):
+            return await self._poll_project_once(
+                agent_sessions=agent_sessions,
+                force_heartbeat=True,
+            )
 
     async def poll_attendances_once(self) -> dict[str, Any]:
         """Discover and poll the current project of this session-bound worker."""
@@ -2848,6 +2897,7 @@ class ProblemBoardHostRelayAdapter:
                 attendance_cache=self._attendance_cache,
                 heartbeat_sent_at=self._heartbeat_sent_at,
                 monotonic=self._monotonic,
+                trace=self._trace,
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
@@ -3093,6 +3143,7 @@ class ProblemBoardRelaySupervisor:
         session_notifier: Callable[..., Mapping[str, Any]] | None = None,
         session_queue_reconciler: Callable[..., Mapping[str, Any]] | None = None,
         pacing: RelayPacing | None = None,
+        trace: RelayActivityTrace | None = None,
     ) -> None:
         self.config_path = Path(config_path).expanduser().resolve()
         self.connector = connector
@@ -3106,6 +3157,7 @@ class ProblemBoardRelaySupervisor:
         self.session_queue_reconciler = (
             session_queue_reconciler or reconcile_agent_session_queue
         )
+        self._trace = trace or RelayActivityTrace(log=logger)
         # Keyed by worker name. A session carries one live, Card-scoped Data
         # Bus connection and the adapter's registration state. The Card itself
         # opens the connection; terminal authority failure drops the session
@@ -3872,6 +3924,7 @@ class ProblemBoardRelaySupervisor:
                 ),
                 field=SharedFieldStore(host.field_root),
                 client=client,
+                trace=self._trace,
             )
         except BaseException as exc:
             await stack.aclose()
@@ -4063,12 +4116,29 @@ class ProblemBoardRelaySupervisor:
             outcome: str,
             relay_started: float,
             governed_action_seconds: float,
+            wait_context: Sequence[Mapping[str, Any]],
         ) -> None:
             queue_wait = _coordinate_queue_wait_seconds(request)
             queue_wait_text = (
                 "unavailable" if queue_wait is None else f"{queue_wait:.3f}"
             )
             relay_total_seconds = time.monotonic() - relay_started
+            if queue_wait is not None and queue_wait >= self._trace.slow_seconds:
+                logger.warning(
+                    "Problem Board coordinate slow wait worker=%s request_id=%s "
+                    "operation=%s queue_wait_seconds=%.3f threshold_seconds=%.3f "
+                    "waited_on=%s",
+                    channel.worker_name,
+                    str(request.get("request_id") or ""),
+                    str(request.get("action") or ""),
+                    queue_wait,
+                    self._trace.slow_seconds,
+                    json.dumps(
+                        list(wait_context),
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                )
             logger.info(
                 "Problem Board coordinate stages worker=%s request_id=%s "
                 "operation=%s outcome=%s queue_wait_seconds=%s "
@@ -4090,6 +4160,14 @@ class ProblemBoardRelaySupervisor:
             relay_started = time.monotonic()
             governed_action_seconds = 0.0
             outcome = "refused"
+            queue_window = _coordinate_queue_window(request)
+            wait_context = (
+                self._trace.wait_context(*queue_window)
+                if queue_window is not None
+                and queue_window[1] - queue_window[0]
+                >= self._trace.slow_seconds
+                else []
+            )
             observed_identity = {
                 key: str(request.get(key) or "") for key in expected_identity
             }
@@ -4120,6 +4198,7 @@ class ProblemBoardRelaySupervisor:
                     outcome=outcome,
                     relay_started=relay_started,
                     governed_action_seconds=governed_action_seconds,
+                    wait_context=wait_context,
                 )
                 continue
             try:
@@ -4196,6 +4275,7 @@ class ProblemBoardRelaySupervisor:
                 outcome=outcome,
                 relay_started=relay_started,
                 governed_action_seconds=governed_action_seconds,
+                wait_context=wait_context,
             )
         return counts
 
@@ -4433,7 +4513,12 @@ class ProblemBoardRelaySupervisor:
             for _attempt in range(2):
                 started = time.monotonic()
                 try:
-                    session = await self._open_session(host, channel)
+                    with self._trace.stage(
+                        "channel.open",
+                        channel=channel.worker_name,
+                        operation="data_bus.connect",
+                    ):
+                        session = await self._open_session(host, channel)
                 except Exception as exc:
                     failure = staged_failure(
                         exc, operation="channel.open", target=host.endpoint,
@@ -4467,10 +4552,24 @@ class ProblemBoardRelaySupervisor:
         # before anything is asked of it. When the grace expires the drain and
         # the poll below fail as they always did, and the cycle records the
         # failure and replaces the session.
-        await self._await_own_reconnect(channel, session)
+        with self._trace.stage(
+            "channel.reconnect",
+            channel=channel.worker_name,
+            operation="data_bus.wait_until_connected",
+        ):
+            await self._await_own_reconnect(channel, session)
         started = time.monotonic()
         try:
-            coordinate = await self._drain_coordinate_for_worker(host, channel, session)
+            with self._trace.stage(
+                "coordinate.drain",
+                channel=channel.worker_name,
+                operation="coordinate.claim_and_execute",
+            ):
+                coordinate = await self._drain_coordinate_for_worker(
+                    host,
+                    channel,
+                    session,
+                )
         except Exception as exc:
             failure = staged_failure(
                 exc, operation="coordinate.drain", target=channel.worker_name,
@@ -4482,7 +4581,12 @@ class ProblemBoardRelaySupervisor:
             raise failure from exc
         started = time.monotonic()
         try:
-            result = await session.adapter.poll_attendances_once()
+            with self._trace.stage(
+                "attendance.poll",
+                channel=channel.worker_name,
+                operation="attendance.reconcile",
+            ):
+                result = await session.adapter.poll_attendances_once()
             if coordinate["claimed"]:
                 result = {**dict(result), "coordinate_requests": coordinate}
             return result
@@ -4987,10 +5091,30 @@ class ProblemBoardRelaySupervisor:
             self._coordinate_draining.pop(channel.worker_name, None)
 
     async def poll_once(self) -> dict[str, Any]:
+        cycle = self._trace.start_cycle()
+        outcome = "succeeded"
+        try:
+            return await self._poll_once_body()
+        except BaseException as exc:
+            outcome = (
+                "cancelled"
+                if isinstance(exc, asyncio.CancelledError)
+                else f"failed:{self._failure_code(exc)}"
+            )
+            raise
+        finally:
+            self._trace.finish_cycle(cycle, outcome=outcome)
+
+    async def _poll_once_body(self) -> dict[str, Any]:
         self._ensure_coordinate_server()
-        host = HostRelayConfig.load(self.config_path)
+        with self._trace.stage("host.load", operation="relay.config"):
+            host = HostRelayConfig.load(self.config_path)
         self._ensure_local_state_maintenance(host.field_root)
-        locally_retired = await self._disable_locally_terminal_channels(host)
+        with self._trace.stage(
+            "channels.retire_local",
+            operation="terminal_listener.reconcile",
+        ):
+            locally_retired = await self._disable_locally_terminal_channels(host)
         if locally_retired:
             host = HostRelayConfig.load(self.config_path)
         channels = [worker for worker in host.workers if worker.state == "active"]
@@ -5002,10 +5126,19 @@ class ProblemBoardRelaySupervisor:
         }
         for worker_name in list(self._sessions):
             if worker_name not in active_names:
-                await self._drop_session(worker_name)
-        await self._reconcile_queues_before_channels(
-            host, [*channels, *pending_channels]
-        )
+                with self._trace.stage(
+                    "channel.close",
+                    channel=worker_name,
+                    operation="inactive_session.close",
+                ):
+                    await self._drop_session(worker_name)
+        with self._trace.stage(
+            "native_queue.reconcile",
+            operation="session_queue.preflight",
+        ):
+            await self._reconcile_queues_before_channels(
+                host, [*channels, *pending_channels]
+            )
         # Only channels the pacing allows call the gateway this cycle. A
         # deferred active channel still gets its local session wake below.
         pacing = self._pacing
@@ -5032,17 +5165,29 @@ class ProblemBoardRelaySupervisor:
             worker for worker in pending_channels
             if worker.worker_name not in due_pending_names
         ]
-        results = await asyncio.gather(
-            *(self._poll_channel(host, worker) for worker in due_channels),
-            return_exceptions=True,
-        )
-        pending_results = await asyncio.gather(
-            *(self._poll_channel(host, worker) for worker in due_pending),
-            return_exceptions=True,
-        )
-        remote_retired = await self._apply_host_retirements(
-            host, [*results, *pending_results]
-        )
+        with self._trace.stage(
+            "channels.active",
+            operation="channel.poll_due",
+        ):
+            results = await asyncio.gather(
+                *(self._poll_channel(host, worker) for worker in due_channels),
+                return_exceptions=True,
+            )
+        with self._trace.stage(
+            "channels.pending",
+            operation="authorization.retry_due",
+        ):
+            pending_results = await asyncio.gather(
+                *(self._poll_channel(host, worker) for worker in due_pending),
+                return_exceptions=True,
+            )
+        with self._trace.stage(
+            "channels.retire_remote",
+            operation="host_retirements.apply",
+        ):
+            remote_retired = await self._apply_host_retirements(
+                host, [*results, *pending_results]
+            )
         retired = [*locally_retired, *remote_retired]
         retired_names = {row["worker_name"] for row in retired}
         workers: list[dict[str, Any]] = []
@@ -5073,7 +5218,12 @@ class ProblemBoardRelaySupervisor:
             # refusal must not make an already-running coding session deaf.
             try:
                 notification_started = time.monotonic()
-                delivery = await self._notify_available_input(host, channel)
+                with self._trace.stage(
+                    "session.notify",
+                    channel=channel.worker_name,
+                    operation="input.available",
+                ):
+                    delivery = await self._notify_available_input(host, channel)
             except Exception as exc:  # noqa: BLE001
                 failure = staged_failure(
                     exc, operation="session.notify", target=channel.worker_name,
@@ -5216,7 +5366,12 @@ class ProblemBoardRelaySupervisor:
             if channel.worker_name in retired_names:
                 continue
             try:
-                delivery = await self._notify_available_input(host, channel)
+                with self._trace.stage(
+                    "session.notify",
+                    channel=channel.worker_name,
+                    operation="input.available.deferred_channel",
+                ):
+                    delivery = await self._notify_available_input(host, channel)
             except Exception:  # noqa: BLE001 - a local wake never blocks the cycle
                 logger.warning(
                     "Problem Board session wake failed worker=%s", channel.worker_name,
@@ -5291,9 +5446,16 @@ class ProblemBoardRelaySupervisor:
             row["authorization_transition"] = "activated"
             pacing.record_success(channel.worker_name)
             await self._record_relay_channel_recovered(host, channel)
-            row["session_delivery"] = await self._notify_session(
-                host, channel, event_kind="control_plane.connected"
-            )
+            with self._trace.stage(
+                "session.notify",
+                channel=channel.worker_name,
+                operation="control_plane.connected",
+            ):
+                row["session_delivery"] = await self._notify_session(
+                    host,
+                    channel,
+                    event_kind="control_plane.connected",
+                )
             hint = row.get("next_poll_seconds")
             if isinstance(hint, (int, float)) and hint > 0:
                 next_poll_seconds.append(int(hint))

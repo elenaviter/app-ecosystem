@@ -163,6 +163,16 @@ that evidence on `work_client_source_activation_failed` after restoring the
 previous source. systemd service changes use its native start and restart
 transactions.
 
+The relay emits one structured warning when a cycle takes at least five
+seconds. `total_seconds` measures the complete cycle; `stages` is bounded
+JSON that names each stage, worker channel, operation, duration, and outcome.
+Startup mailbox reconciliation is the `startup_recovery` stage. A coordinate
+request that waited at least five seconds also reports its queue duration and
+the bounded stage/channel/operation records that overlapped that wait. These
+records contain controlled labels and timing evidence, never request payloads.
+The supervised relay and the direct single-cycle command use the same timing
+and logging rule.
+
 The service definition sets the relay's file-descriptor limit
 (`SoftResourceLimits.NumberOfFiles` in the LaunchAgent, `LimitNOFILE` in the
 unit). Without it the relay inherits the login session's ceiling, 256 on a
