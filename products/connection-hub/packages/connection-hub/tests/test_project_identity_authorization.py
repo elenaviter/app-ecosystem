@@ -9,6 +9,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
     CARD_STATE_REVOKED,
     CardAuthority,
+    ControlCardBinding,
     NamedServiceSelection,
 )
 from connection_hub.delegated_credentials.catalog.authorization import (
@@ -74,6 +75,7 @@ def _my_card(
     grants: tuple[str, ...] = (GRANT,),
     revision: int = 7,
     state: str = CARD_STATE_ACTIVE,
+    linked: bool = True,
 ) -> CardAuthority:
     return CardAuthority(
         access_id="my-card-1",
@@ -89,6 +91,16 @@ def _my_card(
         resource_grants={RESOURCE: grants},
         resource_operations={RESOURCE: operations},
         named_service_operations=NamedServiceSelection.none(),
+        control_card=(
+            ControlCardBinding(
+                control_id="project-person-control-1",
+                issuer_ref=PROJECT_REF,
+                issuer_kind="project_person",
+                control_revision=4,
+            )
+            if linked
+            else None
+        ),
         created_at=NOW - 60,
         expires_at=NOW + 3600,
     )
@@ -389,6 +401,44 @@ def test_stale_edge_revision_denies_before_capability_evaluation() -> None:
     assert decision.reason == "my_card_revision_mismatch"
     assert decision.blocking_boundary == BOUNDARY_MY_CARD
     assert decision.details == {"resolved_card_revision": my_card.card_revision}
+
+
+def test_my_card_must_be_linked_to_the_project_control_card() -> None:
+    control = _control_card()
+    my_card = _my_card(linked=False)
+
+    decision = _authorize(
+        edge=_edge(control, my_card),
+        control=control,
+        my_card=my_card,
+    )
+
+    assert not decision.allowed
+    assert decision.reason == "my_card_control_binding_missing"
+    assert decision.blocking_boundary == BOUNDARY_MY_CARD
+
+
+def test_my_card_link_to_another_control_card_is_refused() -> None:
+    control = _control_card()
+    my_card = dataclasses.replace(
+        _my_card(),
+        control_card=ControlCardBinding(
+            control_id="project-person-control-other",
+            issuer_ref=PROJECT_REF,
+            issuer_kind="project_person",
+            control_revision=4,
+        ),
+    )
+
+    decision = _authorize(
+        edge=_edge(control, my_card),
+        control=control,
+        my_card=my_card,
+    )
+
+    assert not decision.allowed
+    assert decision.reason == "my_card_control_binding_mismatch"
+    assert decision.blocking_boundary == BOUNDARY_MY_CARD
 
 
 @pytest.mark.parametrize(

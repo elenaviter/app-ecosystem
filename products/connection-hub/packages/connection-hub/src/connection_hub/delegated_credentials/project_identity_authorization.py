@@ -402,11 +402,19 @@ def _card_issue(
             return _Issue("project_control_card_requires_and", role)
         if not control_snapshot_is_exact(card):
             return _Issue("project_control_card_exact_snapshot_required", role)
-    elif card.control_card is not None and (
-        card.control_card.control_id != edge.control_card.access_id
-        or card.control_card.issuer_ref != edge.control_card.issuer_ref
-    ):
-        return _Issue("my_card_control_binding_mismatch", role)
+    else:
+        binding = card.control_card
+        if binding is None:
+            return _Issue("my_card_control_binding_missing", role)
+        if (
+            binding.control_id != edge.control_card.access_id
+            or binding.issuer_ref != edge.control_card.issuer_ref
+            or (
+                bool(edge.control_card.issuer_kind)
+                and binding.issuer_kind != edge.control_card.issuer_kind
+            )
+        ):
+            return _Issue("my_card_control_binding_mismatch", role)
     return None
 
 
