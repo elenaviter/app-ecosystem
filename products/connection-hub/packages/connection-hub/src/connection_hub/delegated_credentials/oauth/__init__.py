@@ -28,6 +28,7 @@ _EXPORTS = {
     "protected_resource_metadata": f"{_BASE}.metadata",
     "protected_resource_metadata_url": f"{_BASE}.metadata",
     "GrantStore": f"{_BASE}.store",
+    "OAuthGrantStoreProvider": f"{_BASE}.runtime_store",
 }
 
 __all__ = list(_EXPORTS)

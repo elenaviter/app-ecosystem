@@ -167,11 +167,16 @@ async def test_oauth_grant_store_uses_the_prepared_postgresql_authority(monkeypa
     redis = object()
     oauth_authority = object()
     readiness_checks = []
+    store = object()
 
-    async def _ensure_ready():
+    async def _resolve():
         readiness_checks.append(True)
+        return store
 
-    durable = SimpleNamespace(oauth=oauth_authority, ensure_ready=_ensure_ready)
+    durable = SimpleNamespace(
+        oauth=oauth_authority,
+        oauth_grants=SimpleNamespace(resolve=_resolve),
+    )
     entrypoint = SimpleNamespace(
         redis=redis,
         pg_pool=object(),
@@ -193,10 +198,9 @@ async def test_oauth_grant_store_uses_the_prepared_postgresql_authority(monkeypa
         lambda _entrypoint: ("demo-tenant", "demo-project"),
     )
 
-    store = await module._oauth_grant_store(entrypoint)
+    resolved = await module._oauth_grant_store(entrypoint)
 
-    assert store._r is redis
-    assert store._authority_store is oauth_authority
+    assert resolved is store
     assert readiness_checks == [True]
 
 

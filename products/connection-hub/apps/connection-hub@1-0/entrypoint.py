@@ -91,9 +91,6 @@ from connection_hub.delegated_credentials.request_approval import (
     peek_request_approval_ticket,
     verify_request_approval_ticket,
 )
-from connection_hub.delegated_credentials.oauth.authority_store import (
-    PostgresOAuthAuthorityStore,
-)
 from connection_hub.delegated_credentials.oauth.store import GrantStore
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.automation_access import (
     AutomationAccessService,
@@ -769,6 +766,7 @@ def _durable_authority(entrypoint: Any) -> ConnectionHubDurableAuthority:
     tenant, project = _runtime_tenant_project(entrypoint)
     authority = ConnectionHubDurableAuthority.compose(
         config=config,
+        redis=getattr(entrypoint, "redis", None),
         pg_pool=pg_pool,
         tenant=tenant,
         project=project,
@@ -778,17 +776,10 @@ def _durable_authority(entrypoint: Any) -> ConnectionHubDurableAuthority:
     return authority
 
 
-async def _oauth_authority_store(entrypoint: Any) -> PostgresOAuthAuthorityStore:
-    durable = _durable_authority(entrypoint)
-    await durable.ensure_ready()
-    return durable.oauth
-
-
 async def _oauth_grant_store(entrypoint: Any) -> GrantStore:
     config = _delegated_authority_config(entrypoint)
-    authority = None
     if config.uses_postgresql:
-        authority = await _oauth_authority_store(entrypoint)
+        return await _durable_authority(entrypoint).oauth_grants.resolve()
     existing = getattr(entrypoint, "_oauth_grant_store", None)
     if existing is not None:
         return existing
@@ -800,7 +791,6 @@ async def _oauth_grant_store(entrypoint: Any) -> GrantStore:
         redis,
         tenant,
         project,
-        authority_store=authority,
     )
     entrypoint._oauth_grant_store = store
     return store
@@ -921,6 +911,9 @@ async def _bind_delegated_client_request_config(
         request.state.oauth_delegated_config = cfg
         request.state.oauth_delegated_issuer = str(cfg.get("issuer") or "").rstrip("/")
         request.state.oauth_grant_store_required = True
+        authority_config = _delegated_authority_config(entrypoint)
+        request.state.oauth_authority_backend = authority_config.backend
+        request.state.oauth_authority_generation_id = authority_config.generation_id
         if getattr(entrypoint, "redis", None) is not None:
             request.state.oauth_grant_store = await _oauth_grant_store(entrypoint)
         request.state.connection_hub_authority_registry = _authority_registry_config(entrypoint)
@@ -988,6 +981,7 @@ async def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
         card_store=BundleStorageDelegatedCardStore(storage_root),
         settings=DelegatedCacheSettings.from_connections(_connections_config(entrypoint)),
         credential_handles=credential_handles,
+        authority_backend=config.backend,
     )
 
 
@@ -1278,6 +1272,7 @@ async def _automation_access_service_for(
         tenant=tenant,
         project=project,
         grant_store=await _oauth_grant_store(entrypoint),
+        authority_backend=_delegated_authority_config(entrypoint).backend,
         config=config,
         catalog_resolver=_delegated_catalog_resolver(entrypoint, redis),
         card_persistence=await _delegated_card_persistence(entrypoint, redis),

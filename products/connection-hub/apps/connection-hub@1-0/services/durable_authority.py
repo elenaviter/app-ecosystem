@@ -7,7 +7,6 @@ from connection_hub.delegated_credentials.admission_replay import (
     PostgresAdmissionReplayClaimStore,
 )
 from connection_hub.delegated_credentials.authority_config import (
-    CONNECTION_HUB_AUTHORITY_FAMILIES,
     DelegatedAuthorityConfig,
 )
 from connection_hub.delegated_credentials.authority_cutover import (
@@ -16,8 +15,8 @@ from connection_hub.delegated_credentials.authority_cutover import (
 from connection_hub.delegated_credentials.cards.credential_handles import (
     PostgresCardCredentialHandleStore,
 )
-from connection_hub.delegated_credentials.oauth.authority_store import (
-    PostgresOAuthAuthorityStore,
+from connection_hub.delegated_credentials.oauth.runtime_store import (
+    OAuthGrantStoreProvider,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.cards.credential_handles import (
     postgres_card_credential_handle_store,
@@ -29,16 +28,30 @@ class ConnectionHubDurableAuthority:
     """One PostgreSQL authority generation for the bundle."""
 
     config: DelegatedAuthorityConfig
-    oauth: PostgresOAuthAuthorityStore
+    oauth_grants: OAuthGrantStoreProvider
     card_handles: PostgresCardCredentialHandleStore
     admission_replay: PostgresAdmissionReplayClaimStore
-    cutovers: PostgresAuthorityCutoverStore
+
+    @property
+    def oauth(self) -> Any:
+        store = self.oauth_grants.authority_store
+        if store is None:
+            raise RuntimeError("PostgreSQL OAuth authority store is unavailable")
+        return store
+
+    @property
+    def cutovers(self) -> PostgresAuthorityCutoverStore:
+        store = self.oauth_grants.cutover_store
+        if store is None:
+            raise RuntimeError("PostgreSQL authority cutover store is unavailable")
+        return store
 
     @classmethod
     def compose(
         cls,
         *,
         config: DelegatedAuthorityConfig,
+        redis: Any,
         pg_pool: Any,
         tenant: str,
         project: str,
@@ -48,13 +61,16 @@ class ConnectionHubDurableAuthority:
             raise RuntimeError(
                 "ConnectionHubDurableAuthority requires PostgreSQL configuration"
             )
+        oauth_grants = OAuthGrantStoreProvider.from_config(
+            config=config,
+            redis=redis,
+            pg_pool=pg_pool,
+            tenant=tenant,
+            project=project,
+        )
         return cls(
             config=config,
-            oauth=PostgresOAuthAuthorityStore(
-                pg_pool=pg_pool,
-                tenant=tenant,
-                project=project,
-            ),
+            oauth_grants=oauth_grants,
             card_handles=postgres_card_credential_handle_store(
                 pg_pool=pg_pool,
                 tenant=tenant,
@@ -62,11 +78,6 @@ class ConnectionHubDurableAuthority:
                 settings=settings,
             ),
             admission_replay=PostgresAdmissionReplayClaimStore(
-                pg_pool=pg_pool,
-                tenant=tenant,
-                project=project,
-            ),
-            cutovers=PostgresAuthorityCutoverStore(
                 pg_pool=pg_pool,
                 tenant=tenant,
                 project=project,
@@ -85,10 +96,7 @@ class ConnectionHubDurableAuthority:
     async def ensure_ready(self) -> None:
         """Verify the selected generation from durable activation evidence."""
 
-        await self.cutovers.require_activated(
-            self.config.generation_id,
-            required_families=CONNECTION_HUB_AUTHORITY_FAMILIES,
-        )
+        await self.oauth_grants.ensure_ready()
 
 
 __all__ = ["ConnectionHubDurableAuthority"]

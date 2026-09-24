@@ -40,6 +40,10 @@ from connection_hub.authority_inventory import (
 from connection_hub.authority_projection import (
     authority_has_platform_privilege,
 )
+from connection_hub.delegated_credentials.authority_config import (
+    AUTHORITY_BACKEND_POSTGRESQL,
+    AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE,
+)
 from connection_hub.delegated_credentials.oauth.authority import (
     build_delegated_client_credential,
 )
@@ -58,6 +62,7 @@ from connection_hub.delegated_credentials.oauth.clients import (
 )
 from connection_hub.delegated_credentials.oauth.store import (
     GrantStore,
+    GrantStoreUnavailable,
 )
 from connection_hub.delegated_credentials.named_service_policy import (
     as_string_list,
@@ -1468,6 +1473,7 @@ class AutomationAccessService:
         project: str,
         config: OAuthDelegatedClientConfig,
         grant_store: GrantStore | None = None,
+        authority_backend: str = AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE,
         authority: Any | None = None,
         catalog_resolver: Any | None = None,
         card_persistence: Any | None = None,
@@ -1483,7 +1489,16 @@ class AutomationAccessService:
         self._tenant = _clean(tenant)
         self._project = _clean(project)
         self._config = config
-        self._store = grant_store or GrantStore(redis, self._tenant, self._project)
+        selected_backend = _clean(authority_backend).lower()
+        if grant_store is None and selected_backend == AUTHORITY_BACKEND_POSTGRESQL:
+            raise GrantStoreUnavailable(
+                "selected_authority.automation_grant_store_not_bound"
+            )
+        self._store = grant_store or GrantStore(
+            redis,
+            self._tenant,
+            self._project,
+        )
         self._authority = authority
         self._authority_factory = authority_factory
         self._minter = minter
