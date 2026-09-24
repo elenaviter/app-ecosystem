@@ -28,6 +28,11 @@ def test_45_the_install_merges_the_claude_code_settings_and_says_how():
     assert "`settings.json.bak-<UTC time>`" in HOST
     assert "the undo command (copy the backup back)" in HOST
     assert "A status line that already runs something else is left as it is and named in `notes`" in HOST
+    # codex-main's review of #116: older entries updated, the pb that ran the install, a symlink kept.
+    assert "a bare `pb` becomes the full path" in HOST
+    assert "a `StopFailure` matcher that covered only `rate_limit` gains every other stopping error" in HOST
+    assert "an install that cannot name its `pb` is refused before it writes anything" in HOST
+    assert "A `settings.json` that is a symlink stays one, and the file it points to is what changes" in HOST
     assert "9. Usage and watch settings" in GUIDE
     assert "Installing the procedure sets this up in the machine's Claude Code settings, keeps a copy of the previous settings" in GUIDE
 

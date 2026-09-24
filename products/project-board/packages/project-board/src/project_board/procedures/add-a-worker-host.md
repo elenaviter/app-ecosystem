@@ -468,14 +468,20 @@ Runs on: the host.
 - the `Stop` hook runs `<pb> worker stop-guard`, which keeps the session's
   watch running.
 
-`<pb>` is this host's own `pb`, by its full path. The install keeps every
-other key and hook, adds only what is missing, and changes nothing on a second
-run. Before it writes, it keeps a copy of the file as
-`settings.json.bak-<UTC time>`. Its output, `claude_code_settings`, lists what
-it added and kept, the backup and the undo command (copy the backup back). A
-status line that already runs something else is left as it is and named in
-`notes`, with how to pipe its JSON into `pb worker limit-state`. A settings file
-that is not valid JSON is refused and left unchanged. The first-run reference
+`<pb>` is the `pb` that ran the install, by its full path: the launcher on
+`PATH` when it runs that same `pb`, otherwise the program itself. Run the
+install through `pb`; an install that cannot name its `pb` is refused before it
+writes anything. The install keeps every other key and hook, adds only what is
+missing, and changes nothing on a second run. Older Problem Board entries are
+brought up to date in place: a bare `pb` becomes the full path, and a
+`StopFailure` matcher that covered only `rate_limit` gains every other stopping
+error. Before it writes, it keeps a copy of the file as
+`settings.json.bak-<UTC time>`. A `settings.json` that is a symlink stays one,
+and the file it points to is what changes. Its output, `claude_code_settings`,
+lists what it added, updated and kept, the backup and the undo command (copy the
+backup back). A status line that already runs something else is left as it is
+and named in `notes`, with how to pipe its JSON into `pb worker limit-state`. A
+settings file that is not valid JSON is refused and left unchanged. The first-run reference
 ("Claude Code Says When It Is Out Of Tokens") explains what each entry
 reports. Without them the card says `limit not reported` (spark1 until
 2026-09-24). Codex agents need none of this.
