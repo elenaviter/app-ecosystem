@@ -77,13 +77,18 @@ def test_a_channel_opens_and_the_missing_journal_is_reported_for_its_project(tmp
 
 
 class RecordingField(SharedFieldStore):
-    def __init__(self, root):
+    """The field store with its service-event outbox recorded, receipts included."""
+
+    def __init__(self, root, events=None):
         super().__init__(root)
-        self.events = []
+        self.events = [] if events is None else events
 
     def enqueue_service_event(self, project_id, **values):
         self.events.append({"project_id": project_id, **values})
         return {"queued": True}
+
+    def service_event_receipt_exists(self, *, worker_name, idempotency_key):
+        return any(event["idempotency_key"] == idempotency_key for event in self.events)
 
 
 BINDING = {
@@ -96,17 +101,39 @@ BINDING = {
 }
 
 
-def test_the_worker_card_hears_once_that_the_journal_is_unavailable_and_once_that_it_is_back(tmp_path):
+def _host(tmp_path, checkout):
+    """One host whose source map names a checkout that does not exist yet."""
+
     host, _identity, channel = make_host(tmp_path)
-    checkout = tmp_path / "later-cloned"
     config = dataclasses.replace(
         relay.RelayConfig.from_host_channel(host, channel, project_id="project"),
         journal_workspace_root=tmp_path / "journal-workspace",
         source_repositories={"applications": str(checkout)},
         create_missing_journal_home=True,
     )
-    field = RecordingField(host.field_root)
-    adapter = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=object())
+    SharedFieldStore(host.field_root).register_worker(
+        worker_name=config.worker_name,
+        runtime_kind=config.runtime_kind,
+        capabilities=[],
+        authority_label="authority:codex-api",
+    )
+    return host, config
+
+
+def _relay(host, config, events=None):
+    """A relay process: a fresh adapter over the host's field, as after a restart."""
+
+    field = RecordingField(host.field_root, events)
+    return relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=object()), field
+
+
+def _record(adapter):
+    return adapter.field.journal_incident_record(adapter.config.worker_name, "work:project:project")
+
+
+def test_the_worker_card_hears_once_that_the_journal_is_unavailable_and_once_that_it_is_back(tmp_path):
+    checkout = tmp_path / "later-cloned"
+    adapter, field = _relay(*_host(tmp_path, checkout))
 
     adapter._reconcile_journal_binding(BINDING)
     adapter._reconcile_journal_binding(BINDING)
@@ -129,3 +156,69 @@ def test_the_worker_card_hears_once_that_the_journal_is_unavailable_and_once_tha
 
     adapter._reconcile_journal_binding(BINDING)
     assert len(field.events) == 2
+
+
+def test_a_relay_restarted_during_the_gap_does_not_report_it_again(tmp_path):
+    checkout = tmp_path / "later-cloned"
+    host, config = _host(tmp_path, checkout)
+    first, field = _relay(host, config)
+    first._reconcile_journal_binding(BINDING)
+
+    restarted, _field = _relay(host, config, field.events)
+    restarted._reconcile_journal_binding(BINDING)
+    restarted._reconcile_journal_binding(BINDING)
+
+    assert [event["metadata"]["state"] for event in field.events] == ["unavailable"]
+
+
+def test_a_journal_that_returns_across_a_restart_is_reported_back(tmp_path):
+    checkout = tmp_path / "later-cloned"
+    host, config = _host(tmp_path, checkout)
+    first, field = _relay(host, config)
+    first._reconcile_journal_binding(BINDING)
+    (checkout / "docs" / "journal" / "projects" / "project").mkdir(parents=True)
+
+    restarted, _field = _relay(host, config, field.events)
+    restarted._reconcile_journal_binding(BINDING)
+    restarted._reconcile_journal_binding(BINDING)
+
+    unavailable, available = field.events
+    assert available["metadata"]["state"] == "available"
+    assert available["idempotency_key"] == unavailable["idempotency_key"] + ":restored"
+    assert _record(restarted) == {}
+
+
+def test_an_event_queued_before_its_phase_was_written_is_not_queued_again(tmp_path):
+    checkout = tmp_path / "later-cloned"
+    host, config = _host(tmp_path, checkout)
+    first, field = _relay(host, config)
+    first._reconcile_journal_binding(BINDING)
+    # The relay stopped after the outbox took the event and before the record said so.
+    record = _record(first)
+    first.field.write_journal_incident_record(
+        first.config.worker_name, "work:project:project", {**record, "open_note": "pending"}
+    )
+
+    restarted, _field = _relay(host, config, field.events)
+    restarted._reconcile_journal_binding(BINDING)
+
+    assert len(field.events) == 1
+    repaired = _record(restarted)
+    assert repaired["open_note"] == "enqueued"
+
+
+def test_a_close_that_failed_to_queue_is_finished_by_the_next_relay(tmp_path):
+    checkout = tmp_path / "later-cloned"
+    host, config = _host(tmp_path, checkout)
+    first, field = _relay(host, config)
+    first._reconcile_journal_binding(BINDING)
+    (checkout / "docs" / "journal" / "projects" / "project").mkdir(parents=True)
+    first._journal_notice_event = lambda **_values: False
+    first._reconcile_journal_binding(BINDING)
+    assert _record(first)["close_note"] == "pending"
+
+    restarted, _field = _relay(host, config, field.events)
+    restarted._reconcile_journal_binding(BINDING)
+    restarted._reconcile_journal_binding(BINDING)
+
+    assert [event["metadata"]["state"] for event in field.events] == ["unavailable", "available"]

@@ -3706,6 +3706,59 @@ class SharedFieldStore:
             record["closed_at"] = record.pop("recovered_at")
         return record
 
+    def _journal_incident_path(self, worker_name: str, project_ref: str) -> tuple[str, Path]:
+        worker = self.read_worker(worker_name)
+        clean = str(worker.get("worker_name") or "")
+        digest = hashlib.sha256(str(project_ref).encode("utf-8")).hexdigest()[:24]
+        return clean, self.control / "journal-incidents" / clean / f"{digest}.json"
+
+    def journal_incident_record(self, worker_name: str, project_ref: str) -> dict[str, Any]:
+        """The durable record of a project journal the relay reports unavailable, or empty (W304 D13).
+
+        The same shape as the dead-path record: the incident's start and a
+        phase for each of its two events, pending until the outbox holds it and
+        enqueued after, so a relay restarted in the middle resumes the phase it
+        finds instead of reporting the incident again or never closing it.
+        """
+
+        _clean, path = self._journal_incident_path(worker_name, project_ref)
+        row = read_json(path, required=False) or {}
+        return dict(row) if isinstance(row, Mapping) else {}
+
+    def write_journal_incident_record(
+        self, worker_name: str, project_ref: str, record: Mapping[str, Any] | None
+    ) -> None:
+        """Replace the journal incident record, or remove it once the incident is fully reported."""
+
+        clean, path = self._journal_incident_path(worker_name, project_ref)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with exclusive_lock(self.control / "locks" / f"journal-incident-{clean}.lock"):
+            if not record:
+                if path.exists():
+                    path.unlink()
+                return
+            atomic_write_json(
+                path,
+                {
+                    "schema": "problem-board.journal-incident-record.v1",
+                    "worker_name": clean,
+                    "project_ref": str(project_ref),
+                    **{
+                        key: str(record.get(key) or "")
+                        for key in (
+                            "since",
+                            "repository",
+                            "path",
+                            "error_code",
+                            "message",
+                            "open_note",
+                            "close_note",
+                            "closed_at",
+                        )
+                    },
+                },
+            )
+
     def write_dead_path_record(
         self, worker_name: str, record: Mapping[str, Any] | None
     ) -> None:
