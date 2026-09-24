@@ -56,6 +56,7 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { InfoMark } from '../../components/InfoMark';
 import { ModalLayer } from '../../components/ModalLayer';
 import { CARD_GROUP_OPTIONS, correlatedCardLabel, groupCards, type CardGroupBy } from './cardGroups';
+import { controlCardLabel, controlCardNoun } from './controlCardKind';
 import { groupClaimsByService } from '../../components/claimGroups';
 import { SecretResourceSelector } from './SecretResourceSelector';
 import {
@@ -389,7 +390,7 @@ function clientDoorFor(item: DelegatedAccessRecord): string {
 }
 
 function callerLabel(item: DelegatedAccessRecord): string {
-  if (item.source === 'control') return 'control card';
+  if (item.source === 'control') return controlCardLabel(item);
   const kind = recordKind(item);
   if (kind === 'agent') return 'hosted agent';
   if (kind === 'client') return 'connected client';
@@ -398,7 +399,7 @@ function callerLabel(item: DelegatedAccessRecord): string {
 }
 
 function callerNoun(item: DelegatedAccessRecord): string {
-  if (item.source === 'control') return 'this control card';
+  if (item.source === 'control') return controlCardNoun(item);
   const kind = recordKind(item);
   if (kind === 'agent') return 'this agent';
   if (kind === 'client') return 'this client';

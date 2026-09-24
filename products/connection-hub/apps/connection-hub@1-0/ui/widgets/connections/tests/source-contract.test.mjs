@@ -153,7 +153,8 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, /dispatch\(loadControlCard\(\{ controlId: accessCardFocus\.accessId \}\)\)/)
-  assert.match(panel, /if \(item\.source === 'control'\) return 'control card'/)
+  // The badge names the kind: an operator Card or a Control Card (controlCardKind.ts).
+  assert.match(panel, /if \(item\.source === 'control'\) return controlCardLabel\(item\)/)
   assert.match(panel, /item\.source === 'control' \? 'credentialless'/)
   assert.match(panel, /aria-label="Control Card composition"/)
   assert.match(panel, /<Field label="Combines with linked cards" wide>/)
