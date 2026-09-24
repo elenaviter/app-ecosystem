@@ -2957,6 +2957,11 @@ class AutomationAccessService:
                 "error": "invalid_named_service_operation_selection",
                 "message": str(exc),
             }
+        if selected_named_service_operations is not None:
+            selected_named_service_operations = self._declared_named_service_selection(
+                catalog_config,
+                selected_named_service_operations,
+            )
         selected_resources = list(selected_resource_grants)
         if catalog_config.resources and not selected_resources:
             return {"ok": False, "error": "delegated_access_requires_resource_grants"}

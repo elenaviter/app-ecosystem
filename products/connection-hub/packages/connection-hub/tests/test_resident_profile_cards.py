@@ -61,6 +61,8 @@ CLIENT = "kdcube-agent:workspace@1-0:lg-react"
 MEMORIES = "https://host/api/mcp/memories*"
 TASKS = "https://host/api/mcp/tasks*"
 MAIL = "https://host/api/mcp/mail*"
+NAMED_SERVICES = "https://host/api/mcp/named-services*"
+NAMED_SERVICES_CONCRETE = "https://host/api/mcp/named-services/instance-1"
 USER = {"user_id": GRANTOR, "roles": ["kdcube:role:registered"], "permissions": []}
 OTHER_USER = {"user_id": OTHER, "roles": ["kdcube:role:registered"], "permissions": []}
 SUPER_ADMIN_USER = {
@@ -135,6 +137,52 @@ def _connections_with_application_apis():
             "label": "Application APIs",
             "grants": ["kdcube:role:super-admin"],
             "tools": {},
+        }
+    )
+    return connections
+
+
+def _connections_with_named_services():
+    connections = _connections()
+    oauth = connections["delegated_credentials"]["oauth"]
+    oauth["capabilities"].extend(
+        {
+            "grant": grant,
+            "label": grant,
+            "delegable_roles": ["kdcube:role:registered"],
+        }
+        for grant in ("named_services:use", "slack:read")
+    )
+    oauth["resources"].append(
+        {
+            "resource": NAMED_SERVICES,
+            "label": "Named services",
+            "grants": ["named_services:use", "slack:read"],
+            "tools": {
+                "named_services_call": {
+                    "grants": ["named_services:use"],
+                    "description": "Call a named service",
+                }
+            },
+            "named_services": {
+                "namespaces": {
+                    "slack": {
+                        "tools": {
+                            "objects": {
+                                "grants": ["named_services:use"],
+                                "operations": {
+                                    "object.search": {
+                                        "grants": [
+                                            "named_services:use",
+                                            "slack:read",
+                                        ]
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            },
         }
     )
     return connections
@@ -262,8 +310,8 @@ class _Locks:
 
 
 class _Harness:
-    def __init__(self, tmp_path, *, policies: bool = True) -> None:
-        self.connections = _connections()
+    def __init__(self, tmp_path, *, policies: bool = True, connections=None) -> None:
+        self.connections = connections or _connections()
         self.catalog = _Catalog(self.connections)
         self.persistence = _Persistence()
         self.grant_store = _GrantStore()
@@ -332,6 +380,40 @@ class _Harness:
 
 def _profile() -> ResidentCallerProfile:
     return ResidentCallerProfile.parse(GRANTOR, CLIENT)
+
+
+@pytest.mark.asyncio
+async def test_create_access_canonicalizes_concrete_url_named_service_operations(tmp_path):
+    h = _Harness(tmp_path, connections=_connections_with_named_services())
+
+    created = await h.service.create_access(
+        USER,
+        label="lg-react",
+        resource_grants={
+            NAMED_SERVICES_CONCRETE: ["named_services:use", "slack:read"]
+        },
+        named_service_operations={
+            NAMED_SERVICES_CONCRETE: {"slack": ["object.search"]}
+        },
+        client_id=CLIENT,
+    )
+
+    assert created["ok"], created
+    assert created["access"]["resource_grants"] == {
+        NAMED_SERVICES: ["named_services:use", "slack:read"]
+    }
+    assert created["access"]["named_service_operations"] == {
+        NAMED_SERVICES: {"slack": ["object.search"]}
+    }
+    state = await h.service.agent_namespace_grant_state(
+        grantor_subject=GRANTOR,
+        client_id=CLIENT,
+        access_id=created["access"]["access_id"],
+        namespace="slack",
+        operation="object.search",
+    )
+    assert state["granted"] is True
+    assert state["missing_claims"] == []
 
 
 @pytest.mark.asyncio
