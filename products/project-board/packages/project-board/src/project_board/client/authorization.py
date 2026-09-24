@@ -10,23 +10,12 @@ from ..contract.worker_operation_contract import (
     PROBLEM_BOARD_OPERATIONS,
     required_grants_for_operation,
 )
+from .credential_refusal import RECONNECT_CODES, requires_browser_reconnect as _requires_browser_reconnect
 from .host_config import HostRelayConfig, WorkerChannelConfig
 
 
 PROFILE_METADATA_ABSENT = "profile_metadata_absent"
 PROFILE_METADATA_PRESENT = "relay_observation_pending"
-RECONNECT_CODES = frozenset(
-    {
-        "credential_missing",
-        "delegated_card_refresh_refused",
-        "mcp_authorization_rejected",
-        "oauth_profile_credential_missing",
-        "oauth_profile_login_required",
-        "oauth_profile_access_id_mismatch",
-        "oauth_profile_credential_invalid",
-        "oauth_refresh_unsupported",
-    }
-)
 
 
 def _worker_client_name(channel: WorkerChannelConfig) -> str:
@@ -67,16 +56,6 @@ def _connection_hub_error(exc: BaseException) -> DomainError:
     code = str(getattr(exc, "code", "") or "work_relay_authorization_failed")
     message = str(getattr(exc, "message", "") or str(exc) or "Worker authorization failed.")
     return DomainError(code, message, status=409)
-
-
-def _requires_browser_reconnect(exc: BaseException) -> bool:
-    code = str(getattr(exc, "code", "") or type(exc).__name__)
-    if code in RECONNECT_CODES:
-        return True
-    if code != "oauth_token_request_failed":
-        return False
-    details = getattr(exc, "details", {})
-    return isinstance(details, Mapping) and details.get("oauth_error") == "invalid_grant"
 
 
 def _device_authorization_presenter(prompt: Any) -> None:

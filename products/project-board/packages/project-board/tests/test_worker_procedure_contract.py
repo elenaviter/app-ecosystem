@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.23.16"
+    assert package["revision"] == "2026.09.24.1"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -816,3 +816,16 @@ def test_coordinator_stays_reachable_through_every_window() -> None:
     assert "including during a runtime window" in coordinator
     assert "runs as a background check with a bounded end" in coordinator
     assert "receive immediately, before the all-clear" in coordinator
+
+
+def test_first_run_states_what_a_relay_restart_does_with_each_refusal():
+    """W292: a restart retries transient refusals once and parks dead credentials."""
+
+    text = (PROCEDURE_ROOT / "references" / "first-run.md").read_text(encoding="utf-8")
+    section = text[text.index("## `session_reconnecting`"):text.index("## `session_attending`")]
+    assert "`data_bus_connect_refused`) once at once" in section
+    assert "never a faster one" in section
+    assert "`oauth_token_request_failed` answered with `invalid_grant`" in section
+    assert "stays parked across restarts" in section
+    assert "token endpoint that was down (a 5xx) is tried at once" in section
+    assert "`attempted`, `kept_backoff` or `parked_permanent`" in section

@@ -38,7 +38,7 @@ def test_a_relay_start_forgets_an_outage_record_written_before_the_runtime_sched
     # The old relay recorded the outage on the doubling schedule, five times.
     for _ in range(5):
         pacing.record_failure("codex-ui", "oauth_challenge_not_advertised")
-    pacing.record_failure("refused", "delegated_card_refresh_refused")
+    pacing.record_failure("refused", "delegated_card_refresh_refused", credential=True)
     assert pacing.channel_due("codex-ui") is False
     assert pacing.snapshot()["channels"]["codex-ui"]["schedule"] == "backoff"
 

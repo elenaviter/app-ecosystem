@@ -47,6 +47,7 @@ from ..contract.plan_host import NOTE_VIEW_KIND, PLAN_HOST_CONTROL_KINDS
 from .host_config import HostRelayConfig, WorkerChannelConfig, set_worker_channel_state
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
+from .credential_refusal import credential_refused
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
 from .relay_trace import RelayActivityTrace
 from .relay_admission import is_namespace_handshake_timeout, is_runtime_unavailable
@@ -3744,6 +3745,7 @@ class ProblemBoardRelaySupervisor:
             HANDSHAKE_TIMEOUT_REASON if handshake else self._failure_code(error),
             handshake_timeout=handshake,
             runtime_unavailable=not handshake and is_runtime_unavailable(error),
+            credential=credential_refused(error),
         )
 
     @staticmethod
@@ -5257,6 +5259,7 @@ class ProblemBoardRelaySupervisor:
                         fingerprint=self._profile_fingerprint(host, channel),
                         permanent=True,
                         reason=self._failure_code(result),
+                        credential=credential_refused(result),
                     )
                     identity = WorkerSessionIdentity.create(
                         channel.runtime_kind, channel.runtime_session_id
@@ -5403,6 +5406,7 @@ class ProblemBoardRelaySupervisor:
                     fingerprint=fingerprints[channel.worker_name],
                     permanent=permanent,
                     reason=self._failure_code(result),
+                    credential=permanent and credential_refused(result),
                 )
                 if not permanent:
                     self._record_channel_failure(pacing, channel.worker_name, result)

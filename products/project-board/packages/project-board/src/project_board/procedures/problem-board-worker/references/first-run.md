@@ -193,6 +193,16 @@ that is not there (`oauth_challenge_not_advertised`,
 connection) is retried every ten
 seconds for fifteen minutes, then once a minute, and a relay restart retries
 it at once. Other failures keep the normal backoff, up to thirty minutes.
+A relay restart tries a channel refused for a transient reason (for example
+`data_bus_connect_refused`) once at once, whatever its backoff, because a relay
+is usually restarted after the server was fixed. If that attempt fails, the
+channel returns to its own schedule, never a faster one. A credential the
+server refused (`oauth_token_request_failed` answered with `invalid_grant` by a
+revoked refresh family, a revoked or unknown Card) stays parked across restarts
+until `pb worker authorize` gives it a new credential. The same code answered
+by a token endpoint that was down (a 5xx) is tried at once like any transient
+refusal. The relay log names each
+channel's decision at start: `attempted`, `kept_backoff` or `parked_permanent`.
 Until then `pb coordinate`
 refuses at once with `work_coordinate_channel_reconnecting`. Why: a worker
 that cannot reach the board should learn that at once, not after a 90-second
