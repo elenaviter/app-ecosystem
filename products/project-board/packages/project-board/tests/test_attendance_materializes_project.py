@@ -62,7 +62,18 @@ class Board:
                 "ref": "work:worker:remote",
                 "attendances": [{"project_ref": PROJECT_REF, "role": "worker"}],
                 "attendance_revision": 1,
-                "assignment_project": {"project_ref": PROJECT_REF, "title": "Quickstart works", "goal": "Onboard agents."},
+                "assignment_project": {
+                    "project_ref": PROJECT_REF,
+                    "title": "Quickstart works",
+                    "goal": "Onboard agents.",
+                    # The project card's repositories (W304 finding 39, step 2 on the board).
+                    "repositories_revision": 3,
+                    "repositories": [
+                        {"alias": "applications", "url": "git@github.com:kdcube/applications.git", "role": "work"},
+                        {"alias": "journals", "url": "git@github.com:kdcube/applications.git", "role": "journal", "path": "playground/domain-solution/docs/journal"},
+                        {"alias": "broken", "url": "", "role": "work"},
+                    ],
+                },
                 "assignments": [],
                 "team": [
                     {"worker_name": COORDINATOR, "worker_alias": "claude-main", "role": "coordinator", "runtime_kind": "claude-code"},
@@ -167,6 +178,9 @@ def test_a_relay_that_starts_after_the_link_writes_the_project_its_team_and_deli
     assert context["project_on_this_host"] is True
     assert context["coordinators"] == [COORDINATOR]
     assert {member["worker_alias"] for member in context["team"]} == {"claude-main", "codex-main", "claude-ops"}
+    # The workspace is set up from these; an entry without a URL is not kept.
+    assert context["repositories_revision"] == 3
+    assert [(row["alias"], row["role"]) for row in context["repositories"]] == [("applications", "work"), ("journals", "journal")]
 
 
 def test_a_receive_before_the_record_exists_lists_the_project_and_goes_on(tmp_path):

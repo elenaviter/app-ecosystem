@@ -4202,6 +4202,11 @@ def _worker_project_context(
         raise DomainError("field_project_ref_invalid", "Expected a work:project reference.")
     on_host = field._project_path(parsed.object_id).exists()
     team = field.read_project_team(parsed.object_id) if on_host else []
+    repositories = (
+        field.read_project_repositories(parsed.object_id)
+        if on_host
+        else {"revision": 0, "repositories": []}
+    )
     try:
         journal = JournalWorkspace(
             config.journal_workspace_root,
@@ -4229,6 +4234,9 @@ def _worker_project_context(
             if str(member.get("role") or "") == "coordinator"
         ],
         "team": team,
+        # The repositories to set the workspace up from (W304 finding 39).
+        "repositories": repositories["repositories"],
+        "repositories_revision": repositories["revision"],
         **journal_state,
         **journal,
     }

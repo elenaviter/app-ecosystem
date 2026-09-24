@@ -2639,13 +2639,14 @@ class ProblemBoardHostRelayAdapter:
         """
 
         project_id = self.config.project_id
-        if self.field._project_path(project_id).exists():
-            return False
         project = (
             dict(heartbeat.get("assignment_project"))
             if isinstance(heartbeat.get("assignment_project"), Mapping)
             else {}
         )
+        if self.field._project_path(project_id).exists():
+            self._sync_project_repositories(project)
+            return False
         if not project:
             return False
         title = str(project.get("title") or project_id)
@@ -2665,7 +2666,20 @@ class ProblemBoardHostRelayAdapter:
             f"work:project:{project_id}",
             self.config.worker_name,
         )
+        self._sync_project_repositories(project)
         return True
+
+    def _sync_project_repositories(self, project: Mapping[str, Any]) -> None:
+        """Keep the project's declared repositories on this host, by the board's revision."""
+
+        repositories = project.get("repositories")
+        if not isinstance(repositories, list):
+            return
+        self.field.sync_project_repositories(
+            self.config.project_id,
+            repositories,
+            revision=int(project.get("repositories_revision") or 0),
+        )
 
     def _reconcile_assignments(
         self, heartbeat: Mapping[str, Any]

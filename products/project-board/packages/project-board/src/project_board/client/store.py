@@ -7614,6 +7614,58 @@ class SharedFieldStore:
             atomic_write_json(path, record)
             return record
 
+    PROJECT_REPOSITORY_ROLES = frozenset({"work", "journal", "artifact"})
+
+    def sync_project_repositories(
+        self, project_id: str, repositories: Sequence[Mapping[str, Any]], *, revision: int
+    ) -> bool:
+        """Store the project's repository list as the board last declared it (W304 finding 39).
+
+        The board's project card declares the repositories an agent works in,
+        each `{alias, url, role, branch?, path?}` with role work, journal or
+        artifact, under one revision. The agent sets up its workspace from
+        this list. A revision this host already holds is not written again.
+        """
+
+        clean_id = component(project_id, field="project_id")
+        path = self._project_dir(clean_id) / "repositories.json"
+        with exclusive_lock(self._project_lock(clean_id)):
+            self.read_project(clean_id)
+            current = read_json(path, required=False) or {}
+            if int(current.get("revision") or 0) >= int(revision) > 0:
+                return False
+            rows: list[dict[str, Any]] = []
+            for raw in repositories:
+                if not isinstance(raw, Mapping):
+                    continue
+                alias = str(raw.get("alias") or "").strip()
+                url = str(raw.get("url") or "").strip()
+                role = str(raw.get("role") or "work").strip()
+                if not alias or not url or role not in self.PROJECT_REPOSITORY_ROLES:
+                    continue
+                rows.append(
+                    {
+                        "alias": alias,
+                        "url": url,
+                        "role": role,
+                        "branch": str(raw.get("branch") or ""),
+                        "path": str(raw.get("path") or ""),
+                    }
+                )
+            atomic_write_json(
+                path,
+                {"revision": int(revision), "repositories": rows, "updated_at": utc_now()},
+            )
+            return True
+
+    def read_project_repositories(self, project_id: str) -> dict[str, Any]:
+        path = self._project_dir(component(project_id, field="project_id")) / "repositories.json"
+        record = read_json(path, required=False) or {}
+        return {
+            "revision": int(record.get("revision") or 0),
+            "repositories": list(record.get("repositories") or []),
+        }
+
     def read_project_team(self, project_id: str) -> list[dict[str, Any]]:
         path = self._project_dir(component(project_id, field="project_id")) / "team.json"
         record = read_json(path, required=False)
