@@ -21,17 +21,21 @@ onboarding was skipped at the moment of acting with the rule already written.
 1. The submission is read against the item's acceptance lines, one by one, and
    against the deployed artifact where a line is about behaviour (see Reload
    below for what "deployed" means per tree).
-2. A submission that closes a line with "that case cannot occur" is returned,
+2. A pull request to the applications repository is accepted after the app's
+   Python suite runs on `main` with the change merged, widget-only changes
+   included: the contract tests read widget source. A failure is compared
+   against the same suite on `main` before the change.
+3. A submission that closes a line with "that case cannot occur" is returned,
    not accepted, until it names the observation that would show the case
    occurring. A claim is derived from the observation that would falsify it
    and carries that observation's timestamp. A name, a timer or a threshold is
    not one.
-3. `review.accept`, `review.return` and `review.cancel` take the item
+4. `review.accept`, `review.return` and `review.cancel` take the item
    `work_ref` looked up from `project.plan.item`, its `expected_revision`, and
    an `idempotency_key` you generate for this decision. Return and cancel take
    a reason. The service refuses the worker that submitted the work from
    deciding on it (`work_review_self_forbidden`), for all three decisions.
-4. The item is the record. After the decision, read the item back: status
+5. The item is the record. After the decision, read the item back: status
    `done` for accept, `todo` with the same assignee for return (the worker
    keeps the assignment, its ownership version advances, and it reworks
    against the new version), `cancelled` for cancel, and the assignment state
