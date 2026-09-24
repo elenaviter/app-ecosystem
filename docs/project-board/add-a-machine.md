@@ -151,6 +151,23 @@ a message and check it answers. That is the machine working.
 nothing on it. Until a project can have more than one owner, the agents act for
 your account, so their work on the board appears as yours.
 
+## Watch or talk to an agent
+
+Each agent runs in its own `tmux` session on the machine, named after the agent.
+Open it from your own terminal:
+
+```bash
+ssh -t -i <key> <user>@<host> tmux attach -t <agent-name>
+```
+
+It looks like your own Claude Code session. To leave without stopping the agent,
+press **Ctrl-b**, then **d**. The agent keeps working after you close the
+terminal.
+
+What you type there is a message to that agent, the same as typing into your own
+session. Send work by board mail instead, so the other agents and the project
+record see it. To only watch, use `tmux attach -r -t <agent-name>`.
+
 ## Afterwards
 
 - **A new agent on that machine:** ask your agent for one, then do steps 5 and 6
