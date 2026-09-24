@@ -155,6 +155,7 @@ import {
   matchesAccessCardFocus,
   unavailableAccessCardMessage,
 } from './accessCardFocus';
+import { projectPersonControlCoordinates } from './projectPersonControl';
 import {
   authorityAccountCount,
   authorityAllowsOuterOperation,
@@ -1727,9 +1728,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const nowSeconds = Math.floor(Date.now() / 1000);
   const [railGroupBy, setRailGroupBy] = useState<CardGroupBy>('kind');
   const [pendingLeave, setPendingLeave] = useState<{ kind: 'switch'; item: DelegatedAccessRecord } | { kind: 'leave' } | null>(null);
-  const revoke = async (accessId: string) => {
+  const revoke = async (item: DelegatedAccessRecord) => {
     setConfirmRevokeId(null);
-    await dispatch(revokeDelegatedAccess({ accessId })).unwrap().catch(() => undefined);
+    const projectPersonControl = projectPersonControlCoordinates(item);
+    await dispatch(revokeDelegatedAccess({
+      accessId: item.access_id,
+      projectPersonControl: projectPersonControl || undefined,
+    })).unwrap().catch(() => undefined);
     void dispatch(loadDelegatedAccess());
   };
   // Expiry as the server saw it, else against the browser clock. An expired
@@ -1854,7 +1859,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       return (
         <span className="revoke-confirm">
           <span className="revoke-confirm__q">Revoke?</span>
-          <button className="btn btn-danger" type="button" disabled={busy} onClick={() => revoke(accessId)}>
+          <button className="btn btn-danger" type="button" disabled={busy} onClick={() => revoke(item)}>
             Confirm
           </button>
           <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => setConfirmRevokeId(null)}>
@@ -2199,7 +2204,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
     setEditAccountScope(seedAccountScopeFromRecord(item));
     setEditLabel(item.label || '');
-    setEditCompositionMode(item.composition_mode === 'or' ? 'or' : 'and');
+    setEditCompositionMode(
+      projectPersonControlCoordinates(item)
+        ? 'and'
+        : item.composition_mode === 'or' ? 'or' : 'and',
+    );
     setEditConversationTargets(cardConversationTargets(item.properties));
     setEditAgentCapabilities(agentCapabilitySelectionMap(
       item.source === 'control' && isAgentDescriptorControl(item.properties)
@@ -2242,7 +2251,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
     let current = true;
     setAccessCardFocusState('loading');
-    void dispatch(loadControlCard({ controlId: accessCardFocus.accessId })).unwrap()
+    void dispatch(loadControlCard({
+      controlId: accessCardFocus.accessId,
+      projectRef: accessCardFocus.projectRef,
+      targetSubject: accessCardFocus.targetSubject,
+    })).unwrap()
       .then((result) => {
         if (!current) return;
         setAccessCardFocusState(
@@ -3117,6 +3130,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }
     }
     let updated;
+    const projectPersonControl = projectPersonControlCoordinates(item);
     try {
       updated = await dispatch(updateDelegatedAccess({
         accessId: item.access_id,
@@ -3136,8 +3150,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         // Changed descriptors the grantor reviewed and accepts with this save;
         // every other changed selected operation stays suspended.
         acceptedOperations: editAcceptedOperations,
-        compositionMode: item.source === 'control' ? editCompositionMode : undefined,
+        compositionMode: item.source === 'control'
+          ? (projectPersonControl ? 'and' : editCompositionMode)
+          : undefined,
         properties: selectedProperties,
+        projectPersonControl: projectPersonControl || undefined,
       })).unwrap();
     } catch (error) {
       setEditActionError(`Save was not applied: ${String(error || 'request refused')}`);
@@ -4916,6 +4933,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       : null;
     const descriptorCapabilityControl = record.source === 'control'
       && isAgentDescriptorControl(record.properties);
+    const projectPersonControl = projectPersonControlCoordinates(record);
     const linkedControl = linkedControlCard(record);
     const linkedCapabilityProperties = linkedControl?.control_authority?.properties
       || linkedControl?.properties;
@@ -5077,10 +5095,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 </span>
               </Field>
               <Field label="Combines with linked cards" wide>
-                {descriptorCapabilityControl ? (
+                {descriptorCapabilityControl || projectPersonControl ? (
                   <div className="authority-reading" aria-label="Control Card composition">
                     <span className="authority-reading__active">AND</span>
-                    <small>The administrator preset limits every linked Agent Card.</small>
+                    <small>{projectPersonControl
+                      ? 'The project Card limits the target person\'s linked authority.'
+                      : 'The administrator preset limits every linked Agent Card.'}</small>
                   </div>
                 ) : (
                   <div className="authority-reading" role="group" aria-label="Control Card composition">

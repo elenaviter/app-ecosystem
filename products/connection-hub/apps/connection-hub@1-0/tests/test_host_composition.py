@@ -104,6 +104,7 @@ async def test_automation_access_composes_the_real_kdcube_postgresql_adapters(
     entrypoint = SimpleNamespace(
         redis=object(),
         bundle_storage_root=lambda: tmp_path,
+        project_authorization_port=object(),
     )
 
     service = await module._automation_access_service_for(
@@ -116,5 +117,9 @@ async def test_automation_access_composes_the_real_kdcube_postgresql_adapters(
     assert service._store is grant_store
     assert service._catalog_resolver is catalog_resolver
     assert service._invocation_policies is invocation_policies
+    assert (
+        service._project_person_controls._authorization_port
+        is entrypoint.project_authorization_port
+    )
     assert service._persistence._handles is durable.card_handles
     assert durable.ready is True

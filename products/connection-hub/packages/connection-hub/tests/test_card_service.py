@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -15,6 +16,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CARD_AUTHORITY_SCHEMA_V1,
     CARD_AUTHORITY_SCHEMA_V6,
     CARD_STATE_ACTIVE,
+    CARD_STATE_REVOKED,
     CardAuthority,
     CardCurrentPointer,
     CardRecordError,
@@ -51,6 +53,9 @@ class _Cache:
         return False
 
     async def commit_projection(self, *args, **kwargs) -> bool:
+        return True
+
+    async def commit_tombstone(self, *args, **kwargs) -> bool:
         return True
 
     async def index_add(self, *, access_id: str, **kwargs) -> None:
@@ -139,6 +144,85 @@ async def test_service_uses_host_lock_and_commits_authority(tmp_path):
             "wait_seconds": CARD_LOCK_WAIT_SECONDS,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_revoke_commits_the_supplied_audited_revision(tmp_path) -> None:
+    @asynccontextmanager
+    async def mutation_lock(**kwargs):
+        yield {"owner": "test"}
+
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    service = DelegatedCardService(
+        store=store,
+        cache=_Cache(),
+        mutation_lock=mutation_lock,
+    )
+    authority = _authority()
+    await service.commit(
+        authority,
+        subject_hash=SUBJECT_HASH,
+        expected_revision=0,
+        now=NOW,
+    )
+    audited = replace(
+        replace_state(authority, CARD_STATE_REVOKED),
+        provenance={"project_person_control_audit": {"action": "revoked"}},
+    )
+
+    pointer = await service.revoke(
+        subject_hash=SUBJECT_HASH,
+        access_id=ACCESS_ID,
+        expected_revision=authority.card_revision,
+        revoked_authority=audited,
+    )
+
+    current = await store.read_current_authority(
+        subject_hash=SUBJECT_HASH,
+        access_id=ACCESS_ID,
+    )
+    assert pointer is not None and pointer.card_revision == 2
+    assert current is not None and current[1] == audited
+
+
+@pytest.mark.asyncio
+async def test_revoke_refuses_a_supplied_revision_that_changes_authority(tmp_path) -> None:
+    @asynccontextmanager
+    async def mutation_lock(**kwargs):
+        yield {"owner": "test"}
+
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    service = DelegatedCardService(
+        store=store,
+        cache=_Cache(),
+        mutation_lock=mutation_lock,
+    )
+    authority = _authority()
+    await service.commit(
+        authority,
+        subject_hash=SUBJECT_HASH,
+        expected_revision=0,
+        now=NOW,
+    )
+    invalid = replace(
+        replace_state(authority, CARD_STATE_REVOKED),
+        label="Rewritten while revoking",
+        provenance={"project_person_control_audit": {"action": "revoked"}},
+    )
+
+    with pytest.raises(CardConflict, match="revoked_authority_invalid"):
+        await service.revoke(
+            subject_hash=SUBJECT_HASH,
+            access_id=ACCESS_ID,
+            expected_revision=authority.card_revision,
+            revoked_authority=invalid,
+        )
+
+    current = await store.read_current_authority(
+        subject_hash=SUBJECT_HASH,
+        access_id=ACCESS_ID,
+    )
+    assert current is not None and current[1] == authority
 
 
 @pytest.mark.asyncio

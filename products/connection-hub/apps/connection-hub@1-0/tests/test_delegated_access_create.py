@@ -108,10 +108,14 @@ async def test_service_factory_injects_invocation_policy_service(monkeypatch):
     captured: dict = {}
     redis = object()
     policies = object()
+    project_authorization = object()
 
     class RecordingFactory:
         def __init__(self, **kwargs):
             captured.update(kwargs)
+
+        def bind_project_authorization_port(self, port):
+            captured["project_authorization_port"] = port
 
     monkeypatch.setattr(module, "AutomationAccessService", RecordingFactory)
     monkeypatch.setattr(module, "_runtime_tenant_project", lambda _entrypoint: ("t", "p"))
@@ -127,11 +131,18 @@ async def test_service_factory_injects_invocation_policy_service(monkeypatch):
     grant_store = object()
     monkeypatch.setattr(module, "_oauth_grant_store", _grant_store)
 
-    await module._automation_access_service_for(SimpleNamespace(redis=redis), object())
+    await module._automation_access_service_for(
+        SimpleNamespace(
+            redis=redis,
+            project_authorization_port=project_authorization,
+        ),
+        object(),
+    )
 
     assert captured["redis"] is redis
     assert captured["grant_store"] is grant_store
     assert captured["invocation_policy_service"] is policies
+    assert captured["project_authorization_port"] is project_authorization
 
 
 @pytest.mark.asyncio

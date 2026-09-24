@@ -41,6 +41,16 @@ test('standalone site preserves every exact Card selector accepted by the widget
   }
 })
 
+test('standalone site forwards project person control coordinates', () => {
+  const url = new URL(buildWidgetUrl({
+    ...base,
+    search: '?control_card_id=person-control-1&project_ref=work%3Aproject%3Aquickstart&target_subject=platform-user-2',
+  }))
+  assert.equal(url.searchParams.get('control_card_id'), 'person-control-1')
+  assert.equal(url.searchParams.get('project_ref'), 'work:project:quickstart')
+  assert.equal(url.searchParams.get('target_subject'), 'platform-user-2')
+})
+
 test('standalone site forwards guided Card context but excludes unknown fields', () => {
   const url = new URL(buildWidgetUrl({
     ...base,

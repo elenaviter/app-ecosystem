@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import html
+import inspect
 import json
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -231,6 +233,10 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "control_card_get",
     "control_card_create",
     "control_card_update",
+    "project_person_control_get",
+    "project_person_control_create",
+    "project_person_control_update",
+    "project_person_control_revoke",
     "control_card_attach",
     "control_card_detach",
     "control_card_revoke",
@@ -1191,6 +1197,24 @@ def _expected_invocation_policy_revision(payload: Mapping[str, Any]) -> int | No
     return revision
 
 
+def _audit_request_id(request: Any) -> str:
+    """Host request identity for mutation evidence, never a payload claim."""
+
+    state = getattr(request, "state", None) if request is not None else None
+    for source in (state, request):
+        for key in ("request_id", "trace_id", "invocation_id"):
+            value = str(getattr(source, key, "") or "").strip()
+            if value:
+                return value
+    scope = getattr(request, "scope", None) if request is not None else None
+    if isinstance(scope, Mapping):
+        for key in ("request_id", "trace_id", "invocation_id"):
+            value = str(scope.get(key) or "").strip()
+            if value:
+                return value
+    return f"connection-hub-{uuid.uuid4().hex}"
+
+
 def _validate_secret_invocation_mode(*, resource: str, mode: str) -> None:
     """Standing wildcard secret authority is reusable by definition."""
 
@@ -1254,6 +1278,26 @@ def _expected_remote_mcp_revision(payload: Mapping[str, Any]) -> int:
     return revision
 
 
+async def _project_authorization_port(entrypoint: Any) -> Any | None:
+    """Resolve the host-composed project policy port without owning policy."""
+
+    try:
+        port = getattr(entrypoint, "project_authorization_port", None)
+        if port is None:
+            factory = getattr(entrypoint, "project_authorization_port_factory", None)
+            if callable(factory):
+                port = factory()
+        if inspect.isawaitable(port):
+            port = await port
+        return port
+    except Exception:  # noqa: BLE001 - the host policy adapter is optional
+        LOGGER.exception(
+            "[connection-hub.project-person-control] "
+            "project authorization port construction failed"
+        )
+        return None
+
+
 async def _automation_access_service_for(
     entrypoint: Any,
     config: Any,
@@ -1267,7 +1311,7 @@ async def _automation_access_service_for(
     """
     tenant, project = _runtime_tenant_project(entrypoint)
     redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
-    return AutomationAccessService(
+    service = AutomationAccessService(
         redis=redis,
         tenant=tenant,
         project=project,
@@ -1281,6 +1325,10 @@ async def _automation_access_service_for(
         ),
         invocation_policy_service=_invocation_policy_service(entrypoint),
     )
+    service.bind_project_authorization_port(
+        await _project_authorization_port(entrypoint)
+    )
+    return service
 
 
 async def _automation_access_service(
@@ -2561,6 +2609,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "control_card_get": {"visibility": {"user_types": []}},
                             "control_card_create": {"visibility": {"user_types": []}},
                             "control_card_update": {"visibility": {"user_types": []}},
+                            "project_person_control_get": {"visibility": {"user_types": []}},
+                            "project_person_control_create": {"visibility": {"user_types": []}},
+                            "project_person_control_update": {"visibility": {"user_types": []}},
+                            "project_person_control_revoke": {"visibility": {"user_types": []}},
                             "control_card_attach": {"visibility": {"user_types": []}},
                             "control_card_detach": {"visibility": {"user_types": []}},
                             "control_card_revoke": {"visibility": {"user_types": []}},
@@ -4003,6 +4055,202 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 if "accepted_operations" in payload
                 else None
             ),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_control_get",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_control_get"),
+    )
+    async def project_person_control_get(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Read the project-held Control Card for one named person."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_person_control_get(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            target_subject=str(payload.get("target_subject") or "").strip(),
+            request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_control_create",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_control_create"),
+    )
+    async def project_person_control_create(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Create the project-owned Control Card that narrows one person."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_person_control_create(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            target_subject=str(payload.get("target_subject") or "").strip(),
+            request_id=_audit_request_id(request),
+            resource_grants=(
+                dict(payload.get("resource_grants") or {})
+                if "resource_grants" in payload
+                else None
+            ),
+            resource_operations=(
+                dict(payload.get("resource_operations") or {})
+                if "resource_operations" in payload
+                else None
+            ),
+            named_service_operations=(
+                payload.get("named_service_operations")
+                if "named_service_operations" in payload
+                else None
+            ),
+            account_scope=(
+                dict(payload.get("account_scope") or {})
+                if "account_scope" in payload
+                else None
+            ),
+            properties=(
+                dict(payload.get("properties") or {})
+                if isinstance(payload.get("properties"), Mapping)
+                else None
+            ),
+            composition_mode=str(
+                payload.get("composition_mode") or "and"
+            ).strip(),
+            label=str(payload.get("label") or "").strip(),
+            manage_url=str(payload.get("manage_url") or "").strip(),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_control_update",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_control_update"),
+    )
+    async def project_person_control_update(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Replace one person's project Control Card selection."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_person_control_update(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            target_subject=str(payload.get("target_subject") or "").strip(),
+            request_id=_audit_request_id(request),
+            resource_grants=(
+                dict(payload.get("resource_grants") or {})
+                if "resource_grants" in payload
+                else None
+            ),
+            resource_operations=(
+                dict(payload.get("resource_operations") or {})
+                if "resource_operations" in payload
+                else None
+            ),
+            named_service_operations=(
+                payload.get("named_service_operations")
+                if "named_service_operations" in payload
+                else None
+            ),
+            account_scope=(
+                dict(payload.get("account_scope") or {})
+                if "account_scope" in payload
+                else None
+            ),
+            properties=(
+                dict(payload.get("properties") or {})
+                if "properties" in payload
+                and isinstance(payload.get("properties"), Mapping)
+                else None
+            ),
+            composition_mode=(
+                str(payload.get("composition_mode") or "").strip()
+                if "composition_mode" in payload
+                else None
+            ),
+            label=str(payload.get("label") or "").strip() or None,
+            expected_card_revision=_expected_card_revision(payload),
+            expected_catalog_version=str(
+                payload.get("expected_catalog_version") or ""
+            ).strip()
+            or None,
+            accepted_operations=(
+                dict(payload.get("accepted_operations") or {})
+                if "accepted_operations" in payload
+                else None
+            ),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_control_revoke",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_control_revoke"),
+    )
+    async def project_person_control_revoke(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Revoke the project-owned Control Card for one named person."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_person_control_revoke(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            target_subject=str(payload.get("target_subject") or "").strip(),
+            request_id=_audit_request_id(request),
         )
 
     @api(

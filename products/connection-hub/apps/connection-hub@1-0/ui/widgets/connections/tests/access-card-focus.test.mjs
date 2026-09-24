@@ -60,6 +60,17 @@ test('control_card_id opens only the credentialless control Card', () => {
   ), true)
 })
 
+test('project person control focus carries its policy coordinates', () => {
+  const request = focus({
+    control_card_id: 'person-control-1',
+    project_ref: 'work:project:quickstart',
+    target_subject: 'platform-user-2',
+  })
+  assert.equal(request.accessId, 'person-control-1')
+  assert.equal(request.projectRef, 'work:project:quickstart')
+  assert.equal(request.targetSubject, 'platform-user-2')
+})
+
 test('the exact visible card is resolved and an unavailable card is named', () => {
   const request = focus({ access_id: 'oauth-fable-card' })
   const cards = [

@@ -138,6 +138,12 @@ from connection_hub.delegated_credentials.controls.snapshot import (
     materialize_control_snapshot,
     reviewed_control_snapshot_properties,
 )
+from connection_hub.delegated_credentials.project_authorization import (
+    ProjectAuthorizationPort,
+)
+from connection_hub.delegated_credentials.project_person_access import (
+    ProjectPersonControlLifecycle,
+)
 from connection_hub.delegated_credentials.cards.identity import (
     CARD_KINDS,
     CARD_KIND_AGENT,
@@ -1484,6 +1490,7 @@ class AutomationAccessService:
         relay_factory: RelayFactory | None = None,
         resource_overlay_provider: ResourceOverlayProvider | None = None,
         invocation_policy_service: Any | None = None,
+        project_authorization_port: ProjectAuthorizationPort | None = None,
     ) -> None:
         self._redis = redis
         self._tenant = _clean(tenant)
@@ -1517,6 +1524,25 @@ class AutomationAccessService:
         # policies to the stable card and the read model report them. Without
         # it, migration refuses to fold a record whose policies it cannot see.
         self._invocation_policies = invocation_policy_service
+        self._project_person_controls = ProjectPersonControlLifecycle(
+            host=self,
+            authorization_port=project_authorization_port,
+            authority_from_record=card_authority_from_record,
+            record_from_authority=record_from_card,
+        )
+
+    def bind_project_authorization_port(
+        self,
+        authorization_port: ProjectAuthorizationPort | None,
+    ) -> None:
+        """Bind the host policy port for this request-scoped service instance."""
+
+        self._project_person_controls = ProjectPersonControlLifecycle(
+            host=self,
+            authorization_port=authorization_port,
+            authority_from_record=card_authority_from_record,
+            record_from_authority=record_from_card,
+        )
 
     # -- card persistence -----------------------------------------------------
     #
@@ -1987,10 +2013,21 @@ class AutomationAccessService:
             expected_revision=expected_revision,
         )
 
-    async def _forget_record(self, record: AutomationAccessRecord) -> None:
+    async def _forget_record(
+        self,
+        record: AutomationAccessRecord,
+        *,
+        revoked_record: AutomationAccessRecord | None = None,
+    ) -> None:
+        authority = card_authority_from_record(record)
+        subject_hash = _subject_key(record.grantor_subject)
+        if revoked_record is None:
+            await self._cards().forget(authority, subject_hash=subject_hash)
+            return
         await self._cards().forget(
-            card_authority_from_record(record),
-            subject_hash=_subject_key(record.grantor_subject),
+            authority,
+            subject_hash=subject_hash,
+            revoked_authority=card_authority_from_record(revoked_record),
         )
 
     async def _list_active_records(
@@ -2306,7 +2343,13 @@ class AutomationAccessService:
                 namespace["connected_accounts"] = requirements
         return namespaces
 
-    async def resource_options(self, user: Mapping[str, Any]) -> list[dict[str, Any]]:
+    async def resource_options(
+        self,
+        user: Mapping[str, Any],
+        *,
+        _delegable_grants: Iterable[str] | None = None,
+        _platform_admin: bool | None = None,
+    ) -> list[dict[str, Any]]:
         """The catalog projected through what THIS grantor may delegate.
 
         A card can never carry more than its grantor holds, so a claim outside
@@ -2318,9 +2361,15 @@ class AutomationAccessService:
         offer = await self._offer_config(owner_subject=_subject_from_user(user))
         if offer is None:
             return []
-        platform_admin = _is_platform_admin(user)
-        delegable = set(
-            (await self._available_inventory(user, config=offer)).grant_names()
+        platform_admin = (
+            _is_platform_admin(user)
+            if _platform_admin is None
+            else bool(_platform_admin)
+        )
+        delegable = (
+            set((await self._available_inventory(user, config=offer)).grant_names())
+            if _delegable_grants is None
+            else set(_as_list(_delegable_grants))
         )
         out: list[dict[str, Any]] = []
         for resource in offer.resources:
@@ -3503,6 +3552,8 @@ class AutomationAccessService:
         named_service_operations: Mapping[str, Any] | str | None,
         account_scope: Mapping[str, Any] | None,
         properties: Mapping[str, Any] | None,
+        _delegable_grants: Iterable[str] | None = None,
+        _platform_admin: bool | None = None,
     ) -> "ResolvedCardAuthority":
         """The authority a save writes, resolved once for every entrance.
 
@@ -3728,10 +3779,20 @@ class AutomationAccessService:
                 ]
             )
         authority_grants = _as_list(authority_grants)
-        inventory = await self._available_inventory(
-            user, requested_grants=authority_grants, config=catalog_config
+        delegable_grants = (
+            set(
+                (
+                    await self._available_inventory(
+                        user,
+                        requested_grants=authority_grants,
+                        config=catalog_config,
+                    )
+                ).grant_names()
+            )
+            if _delegable_grants is None
+            else set(_as_list(_delegable_grants))
         )
-        denied = [grant for grant in selected_grants if grant not in set(inventory.grant_names())]
+        denied = [grant for grant in selected_grants if grant not in delegable_grants]
         if denied:
             return ResolvedCardAuthority(error={
                 "ok": False,
@@ -3750,7 +3811,7 @@ class AutomationAccessService:
                 properties=selected_properties,
                 resource_grants=selected_resource_grants,
                 resource_operations=selected_resource_operations,
-                delegable_roles=inventory.grant_names(),
+                delegable_roles=delegable_grants,
                 allowed_roles=catalog_config.resource_grants(
                     APPLICATION_API_RESOURCE
                 ),
@@ -3758,7 +3819,12 @@ class AutomationAccessService:
         except ApplicationOperationPolicyError as exc:
             return ResolvedCardAuthority(error=_application_policy_refusal(exc))
         admin_required = [cfg.resource for cfg in resource_configs if cfg.admin_only]
-        if admin_required and not _is_platform_admin(user):
+        platform_admin = (
+            _is_platform_admin(user)
+            if _platform_admin is None
+            else bool(_platform_admin)
+        )
+        if admin_required and not platform_admin:
             return ResolvedCardAuthority(error={
                 "ok": False,
                 "error": "delegated_access_resource_requires_admin",
@@ -3920,6 +3986,14 @@ class AutomationAccessService:
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
         properties: Mapping[str, Any] | None = None,
         composition_mode: str | None = None,
+        _delegable_grants: Iterable[str] | None = None,
+        _platform_admin: bool | None = None,
+        _record_transform: Callable[
+            [AutomationAccessRecord, AutomationAccessRecord],
+            AutomationAccessRecord,
+        ]
+        | None = None,
+        _notification_subject: str = "",
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -4078,6 +4152,8 @@ class AutomationAccessService:
             named_service_operations=named_service_operations,
             account_scope=account_scope,
             properties=properties,
+            _delegable_grants=_delegable_grants,
+            _platform_admin=_platform_admin,
         )
         if resolved.error is not None:
             return resolved.error
@@ -4273,6 +4349,8 @@ class AutomationAccessService:
             composition_mode=selected_composition_mode,
             properties=selected_properties,
         )
+        if _record_transform is not None:
+            updated = _record_transform(existing, updated)
         del remaining
         try:
             await self._persist_record(updated, expected_revision=existing.card_revision)
@@ -4286,7 +4364,11 @@ class AutomationAccessService:
                 "retryable": True,
                 "status": 503,
             }
-        await self.notify_change(grantor_subject, action="updated", access=updated.to_public_dict())
+        await self.notify_change(
+            _clean(_notification_subject) or grantor_subject,
+            action="updated",
+            access=updated.to_public_dict(),
+        )
         saved = updated.to_public_dict()
         saved["catalog_drift"] = card_drift(card=updated, active=active, baseline=active)
         return {"ok": True, "access": saved, "pruned": reconciled.to_public_dict()}
@@ -4988,6 +5070,8 @@ class AutomationAccessService:
         record: AutomationAccessRecord,
         *,
         state: str = CARD_STATE_ACTIVE,
+        _delegable_grants: Iterable[str] | None = None,
+        _platform_admin: bool | None = None,
     ) -> dict[str, Any]:
         view = (await self._card_view(record, state=state)).to_dict()
         try:
@@ -4995,7 +5079,11 @@ class AutomationAccessService:
                 [record], owner_subject=record.grantor_subject
             )
             view["catalog_drift"] = drift.get(record.access_id, {})
-            options = await self.resource_options(user)
+            options = await self.resource_options(
+                user,
+                _delegable_grants=_delegable_grants,
+                _platform_admin=_platform_admin,
+            )
             options = _descriptor_control_resource_options(
                 record.properties,
                 options,
@@ -5004,7 +5092,11 @@ class AutomationAccessService:
                 card_resources=self._card_resource_keys(record.resource_grants),
                 card_identity_scope=record.identity_scope,
                 options=options,
-                platform_admin=_is_platform_admin(user),
+                platform_admin=(
+                    _is_platform_admin(user)
+                    if _platform_admin is None
+                    else bool(_platform_admin)
+                ),
                 entry_resource="",
                 reachable=None,
             )
@@ -5483,6 +5575,134 @@ class AutomationAccessService:
         if updated.get("pruned") is not None:
             result["pruned"] = updated["pruned"]
         return result
+
+    async def project_person_control_get(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Read one project-held per-person Control Card after host policy."""
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_person_controls.get(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            request_id=request_id,
+        )
+
+    async def project_person_control_create(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+        resource_grants: Mapping[str, Any] | None = None,
+        resource_operations: Mapping[str, Any] | None = None,
+        named_service_operations: Mapping[str, Any] | str | None = None,
+        account_scope: Mapping[str, Any] | None = None,
+        properties: Mapping[str, Any] | None = None,
+        composition_mode: str = CONTROL_COMPOSITION_AND,
+        label: str = "",
+        manage_url: str = "",
+    ) -> dict[str, Any]:
+        """Create the project-owned Card that narrows one person's access."""
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_person_controls.create(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            request_id=request_id,
+            resource_grants=resource_grants,
+            resource_operations=resource_operations,
+            named_service_operations=named_service_operations,
+            account_scope=account_scope,
+            properties=properties,
+            composition_mode=composition_mode,
+            label=label,
+            manage_url=manage_url,
+        )
+
+    async def project_person_control_update(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+        resource_grants: Mapping[str, Any] | None = None,
+        resource_operations: Mapping[str, Any] | None = None,
+        named_service_operations: Mapping[str, Any] | str | None = None,
+        account_scope: Mapping[str, Any] | None = None,
+        properties: Mapping[str, Any] | None = None,
+        composition_mode: str | None = None,
+        label: str | None = None,
+        expected_card_revision: int | None = None,
+        expected_catalog_version: str | None = None,
+        accepted_operations: Mapping[str, Iterable[str]] | None = None,
+    ) -> dict[str, Any]:
+        """Replace one per-person selection under project policy and audit."""
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_person_controls.update(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            request_id=request_id,
+            resource_grants=resource_grants,
+            resource_operations=resource_operations,
+            named_service_operations=named_service_operations,
+            account_scope=account_scope,
+            properties=properties,
+            composition_mode=composition_mode,
+            label=label,
+            expected_card_revision=expected_card_revision,
+            expected_catalog_version=expected_catalog_version,
+            accepted_operations=accepted_operations,
+        )
+
+    async def project_person_control_revoke(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Revoke one project-held per-person Card after host policy."""
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_person_controls.revoke(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            request_id=request_id,
+        )
 
     async def control_card_basis(
         self,

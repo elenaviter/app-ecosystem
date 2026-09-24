@@ -45,6 +45,11 @@ from connection_hub.delegated_credentials.cards.model import (
 from connection_hub.delegated_credentials.cards.service import CardConflict, replace_state
 from connection_hub.delegated_credentials.cards.store import subject_hash_for
 from connection_hub.delegated_credentials.catalog.models import CatalogDocument
+from connection_hub.delegated_credentials.controls.model import new_credentialless_card
+from connection_hub.delegated_credentials.controls.project_person import (
+    ProjectPersonControlIdentity,
+    bind_project_person_control,
+)
 from connection_hub.delegated_credentials.oauth.config import (
     oauth_delegated_config_from_connections,
 )
@@ -933,6 +938,42 @@ async def test_cross_owner_cards_are_invisible_and_immutable(tmp_path):
     assert await h.card(access_id) is not None
     # The other grantor's own profile is a different card entirely.
     assert stable_resident_access_id(OTHER, CLIENT) != access_id
+
+
+@pytest.mark.asyncio
+async def test_target_cannot_update_project_held_card_through_generic_endpoint(
+    tmp_path,
+):
+    h = _Harness(tmp_path)
+    identity = ProjectPersonControlIdentity.build(
+        project_ref="work:project:quickstart",
+        target_subject=OTHER,
+    )
+    authority = bind_project_person_control(
+        new_credentialless_card(
+            control_id=identity.control_id,
+            grantor_subject=identity.project_subject,
+            catalog_version=h.catalog.active.version,
+            issuer_ref=identity.project_ref,
+            issuer_kind="project",
+            issuer_label="Quickstart member",
+            now=int(time.time()),
+        ),
+        identity=identity,
+    )
+    h.persistence.seed(authority)
+    writes_before = h.persistence.persist_calls
+
+    result = await h.service.update_access(
+        OTHER_USER,
+        access_id=identity.control_id,
+        resource_grants={TASKS: ["tasks:use"]},
+    )
+
+    assert result["error"] == "delegated_access_not_found"
+    assert h.persistence.persist_calls == writes_before
+    stored = h.persistence.cards[identity.control_id][0]
+    assert stored == authority
 
 
 @pytest.mark.asyncio
