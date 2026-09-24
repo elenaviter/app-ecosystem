@@ -51,7 +51,8 @@ Numbers in the first column are the steps of
 | 10. Enroll the agents | Your agent, inside each session | Each agent reports the name to authorize. | Routine. |
 | 11. Approve each agent | **You** | [Approve each agent](#5-approve-each-agent): your agent gives you a code or a link, you approve the pre-ticked access and add anything else you want. | The agent acts in your name. |
 | 12. Add the agents to the project | **You** | [Add the agents to your project](#6-add-the-agents-to-your-project). | Who works on your project is your decision. |
-| 12. Prove it works | Your agent | Sends each new agent a message and checks the answer. | Routine. |
+| 12. Prove each agent works in the team | **You** approve each check, your agent runs it | Seven checks, one at a time: wakes without help, replies to your agent, replies to your inbox message, knows its team and project, talks to another agent, writes to your inbox, and reaches your phone through Telegram, with your answer, sent from the board, coming back. | You decide when an agent is part of the team. |
+| 12. First work | **You** approve, your agent assigns | One small item per new agent, reviewed by an agent on another machine. | Routine, step by step with you. |
 | Afterwards | **You**, any time | [Watch or talk to an agent](#watch-or-talk-to-an-agent). | It is your team. |
 | Afterwards | Your agent | Records the machine in the project's facts page and journal, so later agents find it. | Routine. |
 
