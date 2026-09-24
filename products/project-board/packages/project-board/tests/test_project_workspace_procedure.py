@@ -52,7 +52,7 @@ def _set_up(workspace: Path, alias: str, url: Path, branch: str = "") -> None:
     subprocess.run(
         ["bash", "-euc", _setup_commands()],
         check=True,
-        env={"WORKSPACE": str(workspace), "ALIAS": alias, "URL": str(url), "BRANCH": branch, "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"},
+        env={"WORKSPACE": str(workspace), "ALIAS": alias, "URL": str(url), "BRANCH": branch, "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "SSH_CONFIG": "/dev/null"},
     )
 
 
@@ -100,7 +100,7 @@ def test_an_alias_whose_folder_holds_another_remote_is_refused_and_left_alone(tm
 
     result = subprocess.run(
         ["bash", "-euc", _setup_commands()],
-        env={"WORKSPACE": str(workspace), "ALIAS": "applications", "URL": str(other), "BRANCH": "", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"},
+        env={"WORKSPACE": str(workspace), "ALIAS": "applications", "URL": str(other), "BRANCH": "", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "SSH_CONFIG": "/dev/null"},
         capture_output=True,
         text=True,
     )
@@ -169,7 +169,7 @@ def test_a_folder_with_uncommitted_work_is_left_on_its_branch(tmp_path, remote):
 
     result = subprocess.run(
         ["bash", "-euc", _setup_commands()],
-        env={"WORKSPACE": str(workspace), "ALIAS": "applications", "URL": str(remote), "BRANCH": "", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"},
+        env={"WORKSPACE": str(workspace), "ALIAS": "applications", "URL": str(remote), "BRANCH": "", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "SSH_CONFIG": "/dev/null"},
         capture_output=True,
         text=True,
     )
@@ -190,7 +190,7 @@ def test_a_new_file_not_yet_added_also_keeps_the_folder_on_its_branch(tmp_path, 
 
     result = subprocess.run(
         ["bash", "-euc", _setup_commands()],
-        env={"WORKSPACE": str(workspace), "ALIAS": "applications", "URL": str(remote), "BRANCH": "", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"},
+        env={"WORKSPACE": str(workspace), "ALIAS": "applications", "URL": str(remote), "BRANCH": "", "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "SSH_CONFIG": "/dev/null"},
         capture_output=True,
         text=True,
     )
@@ -198,3 +198,75 @@ def test_a_new_file_not_yet_added_also_keeps_the_folder_on_its_branch(tmp_path, 
     assert result.returncode == 4
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=folder) == "feature"
     assert (folder / "new_source.py").exists()
+
+
+def _alias_host(tmp_path: Path, remote: Path) -> dict[str, str]:
+    """A deploy-key host as add-a-worker-host step 7 sets it up, reaching a local repository.
+
+    The SSH configuration names github-applications for github.com, and git
+    rewrites both URL forms onto the local bare repository, so the procedure
+    runs offline while the origins keep the forms a real host has.
+    """
+
+    ssh_config = tmp_path / "ssh_config"
+    ssh_config.write_text("Host github-applications\n  HostName github.com\n  User git\n")
+    gitconfig = tmp_path / "gitconfig"
+    base = str(remote.parent) + "/"
+    gitconfig.write_text(
+        f'[url "{base}"]\n    insteadOf = github-applications:kdcube/\n    insteadOf = git@github.com:kdcube/\n'
+    )
+    return {
+        "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+        "SSH_CONFIG": str(ssh_config),
+        "GIT_CONFIG_GLOBAL": str(gitconfig),
+        "HOME": str(tmp_path),
+    }
+
+
+def _run(env: dict[str, str], workspace: Path, url: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["bash", "-euc", _setup_commands()],
+        env={**env, "WORKSPACE": str(workspace), "ALIAS": "applications", "URL": url, "BRANCH": ""},
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_clone_through_the_host_s_ssh_alias_matches_the_declared_url(tmp_path, remote):
+    env = _alias_host(tmp_path, remote)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    folder = workspace / "applications"
+    subprocess.run(["git", "clone", "--quiet", "github-applications:kdcube/applications.git", str(folder)], env=env, check=True)
+
+    result = _run(env, workspace, "git@github.com:kdcube/applications.git")
+
+    assert result.returncode == 0, result.stderr
+    assert subprocess.run(["git", "-C", str(folder), "config", "--get", "remote.origin.url"], env=env,
+                          capture_output=True, text=True).stdout.strip() == "github-applications:kdcube/applications.git"
+
+
+def test_a_new_clone_uses_the_host_s_ssh_alias(tmp_path, remote):
+    env = _alias_host(tmp_path, remote)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = _run(env, workspace, "git@github.com:kdcube/applications.git")
+
+    assert result.returncode == 0, result.stderr
+    origin = subprocess.run(["git", "-C", str(workspace / "applications"), "config", "--get", "remote.origin.url"],
+                            env=env, capture_output=True, text=True).stdout.strip()
+    assert origin == "github-applications:kdcube/applications.git"
+
+
+def test_another_repository_behind_the_alias_is_still_refused(tmp_path, remote):
+    env = _alias_host(tmp_path, remote)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    subprocess.run(["git", "clone", "--quiet", "github-applications:kdcube/applications.git", str(workspace / "applications")],
+                   env=env, check=True)
+
+    result = _run(env, workspace, "git@github.com:kdcube/app-ecosystem.git")
+
+    assert result.returncode == 3
+    assert "the project declares git@github.com:kdcube/app-ecosystem.git" in result.stderr
