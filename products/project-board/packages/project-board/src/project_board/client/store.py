@@ -7571,7 +7571,7 @@ class SharedFieldStore:
                 recipient=recipient,
                 sender_identity=sender_identity,
             )
-        return self.send_mail(
+        delivered = self.send_mail(
             parsed_project.object_id if parsed_project is not None else "",
             sender=sender,
             recipient=recipient,
@@ -7585,6 +7585,66 @@ class SharedFieldStore:
             idempotency_key=f"control:{command_ref}",
             sender_identity=sender_identity,
         )
+        if control_kind == "mail" and kind == "delivery_failed":
+            failure = dict(message_payload.get("payload") or {}).get("delivery_failure")
+            if isinstance(failure, Mapping):
+                self.mark_routed_mail_refused(recipient, failure)
+        return delivered
+
+    def mark_routed_mail_refused(
+        self, worker_name: str, failure: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Mark this worker's original outbound mail refused, with the receiver's reason (W304 finding 38).
+
+        The receiving host refused the mail after the board had accepted the
+        route, so the sender's delivery row said sent, and `pb worker
+        deliveries` showed nothing while the refusal arrived only as a new
+        notice. The notice carries the original mail's source_message_ref;
+        the sent row keeps it, and here takes the refusal's code, field, value
+        and reason.
+        """
+
+        source_ref = str(failure.get("source_message_ref") or "").strip()
+        if not source_ref:
+            return None
+        clean_worker = str(self.read_worker(worker_name).get("worker_name") or "")
+
+        def original(row: Mapping[str, Any]) -> bool:
+            return (
+                str(row.get("kind") or "") == "mail.route"
+                and str(row.get("state") or "") == "sent"
+                and str(row.get("source_message_ref") or "") == source_ref
+            )
+
+        with exclusive_lock(self._outbox.lock):
+            rows = self._outbox.settled_newest(
+                op="mark-refused", limit=1, worker_name=clean_worker, predicate=original
+            )
+            if not rows:
+                return None
+            row = dict(rows[0])
+            found = self._outbox.find(
+                str(row["outbox_id"]),
+                worker_name=clean_worker,
+                project_ref=str(row.get("project_ref") or ""),
+            )
+            if found is None:
+                return None
+            row.update(
+                state="refused",
+                remote_disposition="refused_by_receiver",
+                refused_at=utc_now(),
+                delivery_failure={
+                    key: failure.get(key)
+                    for key in ("code", "field", "value", "reason", "recipient", "message_ref")
+                    if key in failure
+                },
+            )
+            self._outbox.settle(found[0], row)
+            # A refused delivery must not look answered to a retry under the
+            # same key: the retry creates a fresh delivery.
+            self._release_outbox_idempotency(row)
+            return row
 
     def sync_project_team(self, project_id: str, team: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         """Store the project's linked workers as the relay last heard them.
@@ -10189,6 +10249,19 @@ class SharedFieldStore:
             if remote_result is not None:
                 row["remote_result"] = dict(remote_result)
             if outcome == "sent":
+                payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+                # The body goes, the address stays: a receiving host may still
+                # refuse this mail, and its refusal finds the row by
+                # source_message_ref and names it by recipient and subject.
+                for key, kept in (
+                    ("source_message_ref", "source_message_ref"),
+                    ("recipient", "recipient"),
+                    ("kind", "kind_sent"),
+                    ("subject", "subject"),
+                    ("idempotency_key", "idempotency_key"),
+                ):
+                    if payload.get(key):
+                        row[kept] = str(payload[key])
                 row.pop("payload", None)
             # Into the hour it was created, the outcome in its name (W287 2b).
             self._outbox.settle(source, row)
@@ -10215,7 +10288,8 @@ class SharedFieldStore:
         payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
         project_ref = str(row.get("project_ref") or "")
         if str(row.get("kind") or "") == "mail.route":
-            key = str(payload.get("idempotency_key") or "")
+            # A sent row keeps the key beside its dropped body (W304 finding 38).
+            key = str(payload.get("idempotency_key") or row.get("idempotency_key") or "")
             worker_name = str(row.get("worker_name") or payload.get("sender") or "")
             if key and worker_name:
                 try:

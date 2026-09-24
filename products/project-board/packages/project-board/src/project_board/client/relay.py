@@ -975,6 +975,92 @@ class ProblemBoardHostRelayAdapter:
                 return "receiver_policy_peer_denied"
         return ""
 
+    # What each receiver-policy refusal names, so the sender and the host
+    # owner see the setting that decided it (W304 finding 38).
+    RECEIVER_POLICY_SETTINGS = {
+        "receiver_policy_peer_denied": "receiver_policy.allowed_peer_workers",
+        "receiver_policy_control_kind_denied": "receiver_policy.allowed_control_kinds",
+        "receiver_policy_control_too_large": "receiver_policy.max_control_bytes",
+        "receiver_policy_session_resume_view_denied": "receiver_policy.allow_session_resume_view",
+    }
+
+    def _receiver_policy_failure(self, control: Mapping[str, Any], code: str) -> dict[str, Any]:
+        setting = self.RECEIVER_POLICY_SETTINGS.get(code, "receiver_policy")
+        sender = str(control.get("sender") or "")
+        reason = (
+            f"The receiving host accepts mail only from the peers in {setting}, and {sender or 'this sender'} is not one. "
+            "The host owner changes it with `pb host configure --allow-peer-worker`."
+            if code == "receiver_policy_peer_denied"
+            else f"The receiving host's {setting} refused this {control.get('kind') or 'control'}."
+        )
+        payload = control.get("payload") if isinstance(control.get("payload"), Mapping) else {}
+        mail = payload.get("mail") if isinstance(payload.get("mail"), Mapping) else {}
+        return {
+            "message_ref": str(control.get("ref") or control.get("command_ref") or ""),
+            # The sender's own ref for the mail, so its delivery row is marked refused.
+            "source_message_ref": str(mail.get("source_message_ref") or ""),
+            "code": code,
+            "field": setting,
+            "field_source": "receiver_policy",
+            "value": sender if code == "receiver_policy_peer_denied" else str(control.get("kind") or ""),
+            "reason": reason,
+        }
+
+    async def _settle_leased_control(
+        self,
+        command_ref: str,
+        *,
+        action: str,
+        payload: Mapping[str, Any],
+        kind: str = "",
+        sender: str = "",
+    ) -> bool:
+        """Settle one leased control, log a refusal with its reason, and never close the channel.
+
+        W304 finding 38: a refusal logged nothing, and the board's receipt for
+        an applied refusal (the control, state "refused") was read as a
+        refused operation, which closed the worker channel. A board that
+        predates the applied marker is recognized by that state. Any other
+        failure is logged, and the lease expires so the control plane offers
+        the control again: one control never stops the rest.
+        """
+
+        target_state = "refused" if action == "control.refuse" else "acknowledged"
+        if action == "control.refuse":
+            logger.warning(
+                "Problem Board relay refused control control=%s kind=%s sender=%s worker=%s summary=%s",
+                command_ref,
+                kind or "unknown",
+                sender or "unknown",
+                self.config.worker_name,
+                str(payload.get("result_summary") or ""),
+            )
+        try:
+            # Literal actions, so the worker profile's coverage stays provable
+            # from this file (applications test_bundle_contract).
+            if action == "control.refuse":
+                await self.client.action(object_ref=command_ref, action="control.refuse", payload=dict(payload))
+            else:
+                await self.client.action(object_ref=command_ref, action="control.acknowledge", payload=dict(payload))
+            return True
+        except DomainError as exc:
+            details = dict(exc.details or {})
+            if details.get("outcome_state") == target_state and details.get("applied") is not False:
+                # The board applied it and returned the control, whose own
+                # state is the settled one (a board before the applied marker).
+                return True
+            logger.warning(
+                "Problem Board relay could not settle control control=%s action=%s kind=%s code=%s status=%s reason=%s; "
+                "the lease expires and the control is offered again",
+                command_ref,
+                action,
+                kind or "unknown",
+                exc.code,
+                exc.status,
+                str(exc),
+            )
+            return False
+
     async def _refuse_malformed_control(
         self,
         *,
@@ -1008,9 +1094,10 @@ class ProblemBoardHostRelayAdapter:
             code,
             failure["field"] or "unreported",
         )
-        await self.client.action(
-            object_ref=command_ref,
+        await self._settle_leased_control(
+            command_ref,
             action="control.refuse",
+            kind=kind,
             payload={
                 "lease_id": lease_id,
                 "lease_owner": self.config.relay_id,
@@ -1482,9 +1569,10 @@ class ProblemBoardHostRelayAdapter:
                         "details": {"retryable": True},
                     },
                 }
-                await self.client.action(
-                    object_ref=command_ref,
+                await self._settle_leased_control(
+                    command_ref,
                     action="control.refuse",
+                    kind=kind,
                     payload={
                         "lease_id": lease_id,
                         "lease_owner": self.config.relay_id,
@@ -1496,13 +1584,16 @@ class ProblemBoardHostRelayAdapter:
                 continue
             refusal = self._receiver_refusal(item)
             if refusal:
-                await self.client.action(
-                    object_ref=command_ref,
+                await self._settle_leased_control(
+                    command_ref,
                     action="control.refuse",
+                    kind=kind,
+                    sender=str(item.get("sender") or ""),
                     payload={
                         "lease_id": lease_id,
                         "lease_owner": self.config.relay_id,
                         "result_summary": f"Receiving host refused control: {refusal}",
+                        "result": {"delivery_failure": self._receiver_policy_failure(item, refusal)},
                     },
                 )
                 counts["controls_refused"] += 1
@@ -1525,9 +1616,10 @@ class ProblemBoardHostRelayAdapter:
                             )
                         except DomainError:
                             pass
-                    await self.client.action(
-                        object_ref=command_ref,
+                    await self._settle_leased_control(
+                        command_ref,
                         action="control.refuse",
+                        kind=kind,
                         payload={
                             "lease_id": lease_id,
                             "lease_owner": self.config.relay_id,
@@ -1536,9 +1628,10 @@ class ProblemBoardHostRelayAdapter:
                     )
                     counts["controls_refused"] += 1
                     continue
-                await self.client.action(
-                    object_ref=command_ref,
+                await self._settle_leased_control(
+                    command_ref,
                     action="control.acknowledge",
+                    kind=kind,
                     payload={
                         "lease_id": lease_id,
                         "lease_owner": self.config.relay_id,
@@ -1566,9 +1659,10 @@ class ProblemBoardHostRelayAdapter:
                             )
                         except DomainError:
                             pass
-                    await self.client.action(
-                        object_ref=command_ref,
+                    await self._settle_leased_control(
+                        command_ref,
                         action="control.refuse",
+                        kind=kind,
                         payload={
                             "lease_id": lease_id,
                             "lease_owner": self.config.relay_id,
@@ -1577,9 +1671,10 @@ class ProblemBoardHostRelayAdapter:
                     )
                     counts["controls_refused"] += 1
                     continue
-                await self.client.action(
-                    object_ref=command_ref,
+                await self._settle_leased_control(
+                    command_ref,
                     action="control.acknowledge",
+                    kind=kind,
                     payload={
                         "lease_id": lease_id,
                         "lease_owner": self.config.relay_id,
@@ -1615,9 +1710,10 @@ class ProblemBoardHostRelayAdapter:
                 )
                 counts["controls_refused"] += 1
                 continue
-            await self.client.action(
-                object_ref=command_ref,
+            await self._settle_leased_control(
+                command_ref,
                 action="control.acknowledge",
+                kind=kind,
                 payload={
                     "lease_id": lease_id,
                     "lease_owner": self.config.relay_id,

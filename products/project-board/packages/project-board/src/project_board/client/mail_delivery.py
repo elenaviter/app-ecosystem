@@ -16,14 +16,17 @@ def delivery_summary(row: Mapping[str, Any]) -> dict[str, Any]:
 
     payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
     body = str(payload.get("body") or "")
+    failure = row.get("delivery_failure") if isinstance(row.get("delivery_failure"), Mapping) else None
     return {
         "outbox_id": str(row.get("outbox_id") or ""),
         "project_ref": str(row.get("project_ref") or ""),
         "state": str(row.get("state") or ""),
-        "recipient": str(payload.get("recipient") or ""),
-        "kind": str(payload.get("kind") or ""),
-        "subject": str(payload.get("subject") or ""),
-        "source_message_ref": str(payload.get("source_message_ref") or ""),
+        # A sent row keeps these beside the dropped body (W304 finding 38).
+        "recipient": str(payload.get("recipient") or row.get("recipient") or ""),
+        "kind": str(payload.get("kind") or row.get("kind_sent") or ""),
+        "subject": str(payload.get("subject") or row.get("subject") or ""),
+        "source_message_ref": str(payload.get("source_message_ref") or row.get("source_message_ref") or ""),
+        **({"delivery_failure": dict(failure)} if failure is not None else {}),
         "remote_disposition": str(row.get("remote_disposition") or ""),
         "created_at": str(row.get("created_at") or ""),
         "settled_at": str(row.get("settled_at") or ""),
