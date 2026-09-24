@@ -109,6 +109,10 @@ LOCAL_JOURNAL_MAPPING_CODES = frozenset(
 # Attendance adapters are rebuilt every cycle, so the once-per-gap log line
 # is remembered at module scope, keyed by relay, project, and code.
 _reported_journal_gaps: set[tuple[str, str, str]] = set()
+# The journal notice this relay published per project and not yet closed
+# (W304 D13): one event when a journal becomes unavailable, one when it is back.
+_journal_notices: dict[tuple[str, str], dict[str, str]] = {}
+JOURNAL_NOTICE_KIND = "worker.journal"
 
 # The remote worker-session row is a presence projection, not a replica of the
 # host's delivery ledger. Twenty control refs are enough to reconcile recently
@@ -1016,6 +1020,74 @@ class ProblemBoardHostRelayAdapter:
         )
         return failure
 
+    def _journal_notice_event(self, *, key: str, summary: str, metadata: Mapping[str, Any]) -> bool:
+        try:
+            self.field.enqueue_service_event(
+                str(self.config.project_id),
+                worker_name=self.config.worker_name,
+                kind=JOURNAL_NOTICE_KIND,
+                summary=summary,
+                source_event_ref=f"relay:{key}",
+                metadata=dict(metadata),
+                idempotency_key=key,
+            )
+            return True
+        except DomainError:
+            # The project is not materialized here yet: the next cycle tries again.
+            return False
+
+    def _publish_journal_notice(self, project_ref: str, gap: Mapping[str, Any]) -> None:
+        """Tell the worker and the operator, once, that this project's journal is unavailable.
+
+        An event on the board, the W182 path for what the tooling reports on a
+        worker's behalf, and the worker card shows it (W304 D13). A second
+        cycle with the same gap publishes nothing.
+        """
+
+        slot = (self.config.relay_id, project_ref)
+        current = _journal_notices.get(slot)
+        if current and current.get("code") == gap["error_code"] and current.get("path") == gap.get("path", ""):
+            return
+        since = utc_now()
+        key = f"journal:{self.config.relay_id}:{project_ref}:{since}"
+        metadata = {
+            "notice": "journal",
+            "state": "unavailable",
+            "project_ref": project_ref,
+            "repository": gap.get("repository", ""),
+            "path": gap.get("path", ""),
+            "error_code": gap["error_code"],
+            "since": since,
+            "runtime_kind": self.config.runtime_kind,
+            "runtime_session_id": self.config.runtime_session_id,
+            "worker_alias": self.config.worker_alias or "",
+            "reported_by": "relay",
+        }
+        if self._journal_notice_event(key=key, summary=str(gap["message"]), metadata=metadata):
+            _journal_notices[slot] = {"key": key, "code": gap["error_code"], "path": gap.get("path", ""), "since": since}
+
+    def _close_journal_notice(self, project_ref: str) -> None:
+        """The journal is back: one event closes the notice this relay published."""
+
+        slot = (self.config.relay_id, project_ref)
+        current = _journal_notices.get(slot)
+        if not current:
+            return
+        metadata = {
+            "notice": "journal",
+            "state": "available",
+            "project_ref": project_ref,
+            "since": current.get("since", ""),
+            "restored_at": utc_now(),
+            "reported_by": "relay",
+        }
+        if self._journal_notice_event(
+            key=f"{current['key']}:restored",
+            summary=f"journal available again for {project_ref}",
+            metadata=metadata,
+        ):
+            _journal_notices.pop(slot, None)
+
     def _reconcile_journal_binding(self, heartbeat: Mapping[str, Any]) -> dict[str, Any]:
         if self.journal_workspace is None:
             return {"state": "disabled"}
@@ -1064,7 +1136,9 @@ class ProblemBoardHostRelayAdapter:
                     gap["journal_home_ref"],
                     ",".join(gap["mapped_repositories"]) or "-",
                 )
+            self._publish_journal_notice(project_ref, gap)
             return gap
+        self._close_journal_notice(project_ref)
         self._journal_mapping_gap = None
         _reported_journal_gaps.difference_update(
             {key for key in _reported_journal_gaps if key[:2] == (self.config.relay_id, project_ref)}

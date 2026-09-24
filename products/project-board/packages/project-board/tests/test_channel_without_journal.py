@@ -74,3 +74,58 @@ def test_a_channel_opens_and_the_missing_journal_is_reported_for_its_project(tmp
     assert gap["repository"] == "applications"
     missing_path = str((tmp_path / "never-cloned").resolve())
     assert gap["message"] == f"journal unavailable for work:project:project: applications not found at {missing_path}"
+
+
+class RecordingField(SharedFieldStore):
+    def __init__(self, root):
+        super().__init__(root)
+        self.events = []
+
+    def enqueue_service_event(self, project_id, **values):
+        self.events.append({"project_id": project_id, **values})
+        return {"queued": True}
+
+
+BINDING = {
+    "journal_binding": {
+        "project_ref": "work:project:project",
+        "journal_home_ref": "repo:applications/docs/journal/projects/project",
+        "project_artifact_ref": "",
+        "revision": 1,
+    }
+}
+
+
+def test_the_worker_card_hears_once_that_the_journal_is_unavailable_and_once_that_it_is_back(tmp_path):
+    host, _identity, channel = make_host(tmp_path)
+    checkout = tmp_path / "later-cloned"
+    config = dataclasses.replace(
+        relay.RelayConfig.from_host_channel(host, channel, project_id="project"),
+        journal_workspace_root=tmp_path / "journal-workspace",
+        source_repositories={"applications": str(checkout)},
+        create_missing_journal_home=True,
+    )
+    field = RecordingField(host.field_root)
+    adapter = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=object())
+
+    adapter._reconcile_journal_binding(BINDING)
+    adapter._reconcile_journal_binding(BINDING)
+
+    [unavailable] = field.events
+    assert unavailable["kind"] == "worker.journal"
+    assert unavailable["summary"] == (
+        f"journal unavailable for work:project:project: applications not found at {checkout.resolve()}"
+    )
+    assert unavailable["metadata"]["state"] == "unavailable"
+    assert unavailable["metadata"]["path"] == str(checkout.resolve())
+
+    (checkout / "docs" / "journal" / "projects" / "project").mkdir(parents=True)
+    restored = adapter._reconcile_journal_binding(BINDING)
+
+    assert restored.get("state") != "unmapped"
+    assert [event["metadata"]["state"] for event in field.events] == ["unavailable", "available"]
+    assert field.events[1]["summary"] == "journal available again for work:project:project"
+    assert field.events[1]["idempotency_key"] == unavailable["idempotency_key"] + ":restored"
+
+    adapter._reconcile_journal_binding(BINDING)
+    assert len(field.events) == 2

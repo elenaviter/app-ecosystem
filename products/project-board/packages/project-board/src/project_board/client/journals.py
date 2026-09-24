@@ -135,6 +135,12 @@ class RepositoryMap:
         reference = parse_repository_ref(value)
         root = self.roots.get(reference.repository)
         if root is None and reference.repository in self.missing:
+            # Checked again on every use: a checkout cloned after the relay
+            # started is used from its next cycle, without a restart.
+            late = self.missing[reference.repository]
+            if late.is_dir():
+                root = late
+        if root is None and reference.repository in self.missing:
             raise DomainError(
                 "journal_repository_root_missing",
                 "A mapped LOCAL repository checkout does not exist.",
