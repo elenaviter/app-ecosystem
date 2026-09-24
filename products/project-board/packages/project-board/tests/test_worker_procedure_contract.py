@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.12"
+    assert package["revision"] == "2026.09.24.13"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -375,7 +375,11 @@ def test_start_or_resume_and_the_claude_code_wake_path() -> None:
     # Pids wrap (2026-09-19, two hosts): select by elapsed time, not pid order.
     assert "Keeping the highest pid (`sort -n | sed '$d'`) assumes pids rise with start time" in wake
     assert "keeping the one with the smallest elapsed time" in wake
-    assert "ps -o pid=,etime= -p $(pgrep -d, -f \"worker watch.*<id>\")" in wake
+    assert "ps -o pid=,etime=,comm= -p $(pgrep -d, -f \"worker watch.*<id>\")" in wake
+    # The pattern also matches the shell running the command (2026-09-24,
+    # claude-ops): shells are dropped before the newest is chosen.
+    assert "awk '$0 !~ /(^|[\\/ ])-?[a-z]*sh$/ {" in wake
+    assert "that wrapper is always the youngest match" in wake
     assert "sort -n | awk 'NR>1{print $2}'" in wake
     assert "pgrep -f \"worker watch.*<id>\" | sort -n | sed '$d'" not in wake.replace("(`sort -n | sed '$d'`)", "")
     assert "`ps -o etimes` is Linux only" in wake
