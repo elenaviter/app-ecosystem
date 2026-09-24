@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.8"
+    assert package["revision"] == "2026.09.24.9"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -118,7 +118,14 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
     for step in ("`configure_target`", "`install_relay`", "`enroll_session`", "`authorize_profile`", "`attend_project`"):
         assert step in first_run, step
     assert "preserve the returned profile and append `--device`" in first_run
-    assert "append `--device`, never callback flags" in skill
+    assert "append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`" in skill
+    # W305, 2026-09-24: the skill once said "never callback flags" while the
+    # host procedure kept the tunnel as its only recovery from a failed device
+    # login, so an agent following the skill would refuse that recovery.
+    assert "never callback flags" not in skill
+    host = _words((OPERATIONAL_PROCEDURE_ROOT / "add-a-worker-host.md").read_text(encoding="utf-8"))
+    assert "pb worker authorize <profile> --device" in host
+    assert "runs the same command with `--no-open --callback-port 18765` in place of `--device`" in host
     assert "the credential goes to the native store" in skill
     # The package owns the setup coordinate meanings and source install path.
     assert "What The Setup Coordinates Mean" in first_run
@@ -933,3 +940,21 @@ def test_the_start_step_reads_the_project_facts_page() -> None:
     # lost with a compacted context, so the start step reads it first.
     skill = _words(_read("SKILL.md"))
     assert "and the project facts page `pb worker context` names (`project_facts_ref`)" in skill
+
+
+def test_an_agent_searches_the_plan_and_the_journal_before_acting_on_a_subject() -> None:
+    # W305, 2026-09-24: asked to connect the agents on spark1, the coordinator
+    # followed a stale runbook and missed the host's own record, although both
+    # were in the journal. The search existed, and no step told an agent to run it.
+    skill = _words(_read("SKILL.md"))
+    assert "Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it" in skill
+    assert "`project.plan.search` for the plan and `pb worker journal-search --project-ref <project> --query <subject>` for the journal" in skill
+    assert "For the subject of the task, search the plan and the journal (Choose A Relevant Next Action)." in skill
+
+
+def test_connecting_agents_on_another_machine_starts_at_the_operator_decisions() -> None:
+    # W305, 2026-09-24: the same request skipped step 0, so nobody asked the
+    # operator for agent names, repositories or GitHub access.
+    skill = _words(_read("SKILL.md"))
+    assert "Connecting agents on another machine follows the add-a-worker-host procedure" in skill
+    assert "from its step 0, where the operator decides names, repositories and access before anything changes" in skill

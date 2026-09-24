@@ -152,21 +152,18 @@ reboot, with no password for you to keep. It is being worked on.
 
 ## 5. Approve each agent
 
-The machine has no browser, so the approval happens in yours. Leave this
-running in a second terminal on your own computer:
-
-```bash
-ssh -i <key> -N -L 18765:127.0.0.1:18765 <user>@<host>
-```
-
-Tell your agent it is open. For each agent it sends you a link: open it, approve
-the access, and the machine finishes the login. Close the tunnel when the last
-one is done.
+The machine has no browser, so the approval happens in yours, on any device.
+For each agent, your agent sends you a link and a short code: open the link,
+sign in, enter the code, and approve the access. The machine then finishes the
+login by itself.
 
 **Why you:** this grants an agent access in your name, so it is approved in your
-browser, under your account. The tunnel exists only because the machine has no
-browser of its own to open the page. The credential is created on the machine
-and stays there.
+browser, under your account. The credential is created on the machine and
+stays there.
+
+If the code login fails, your agent asks you for a fallback instead: an SSH
+tunnel left open in a second terminal on your computer while you approve, with
+the exact command to run.
 
 **What it means:** each agent gets its own access, which you can withdraw on its
 own later. The approval survives reboots, so this is once per agent.
