@@ -64,6 +64,7 @@ from .quarantine import list_quarantine, read_quarantine, settle_quarantine
 from ..contract.worker_identity import WorkerSessionIdentity
 from .card_refusal import with_actionable_refusal
 from .stop_guard import stop_guard_decision
+from .worker_watch import worker_watch_events
 from .limit_state import (
     limit_state_from_claude_statusline,
     limit_state_from_claude_stop_failure,
@@ -3574,94 +3575,13 @@ def _worker_command(args: Any) -> dict[str, Any]:
             pid=os.getpid(),
             runtime_session_id=identity.runtime_session_id,
         )
-        last_signature: tuple[str, ...] = ()
-        failure_signature = ""
-        failure_delay = 5
-        while True:
-            try:
-                result = probe_worker_input(field, worker_name=identity.worker_name)
-                pending_refs = tuple(str(item) for item in result.get("pending_refs") or [])
-                held_refs = tuple(
-                    str(item) for item in result.get("held_lease_refs") or []
-                )
-                held_count = int(result.get("held_lease_count") or 0)
-                signals = tuple(
-                    json.dumps(item, sort_keys=True)
-                    for item in result.get("signals") or []
-                )
-                held_signature = (f"held:{held_count}",) if held_count else ()
-                signature = pending_refs + held_refs + held_signature + signals
-                if signature and signature != last_signature:
-                    if pending_refs and coalesce:
-                        time.sleep(coalesce)
-                        result = probe_worker_input(
-                            field, worker_name=identity.worker_name
-                        )
-                        pending_refs = tuple(
-                            str(item) for item in result.get("pending_refs") or []
-                        )
-                        held_refs = tuple(
-                            str(item)
-                            for item in result.get("held_lease_refs") or []
-                        )
-                        held_count = int(result.get("held_lease_count") or 0)
-                        signals = tuple(
-                            json.dumps(item, sort_keys=True)
-                            for item in result.get("signals") or []
-                        )
-                        held_signature = (
-                            (f"held:{held_count}",) if held_count else ()
-                        )
-                        signature = pending_refs + held_refs + held_signature + signals
-                    event = {
-                        "event": "problem_board.inbox_available",
-                        "worker": identity.worker_name,
-                        "pending_count": int(result.get("pending_count") or 0),
-                        "held_lease_count": int(
-                            result.get("held_lease_count") or 0
-                        ),
-                        "signals": list(result.get("signals") or []),
-                        "instruction": str(result.get("instruction") or ""),
-                    }
-                    print(json.dumps(event, ensure_ascii=True, sort_keys=True), flush=True)
-                last_signature = signature
-                if not signature:
-                    last_signature = ()
-                if failure_signature:
-                    print(
-                        json.dumps(
-                            {
-                                "event": "problem_board.watch_recovered",
-                                "worker": identity.worker_name,
-                            },
-                            sort_keys=True,
-                        ),
-                        flush=True,
-                    )
-                failure_signature = ""
-                failure_delay = 5
-                time.sleep(interval)
-            except (DomainError, OSError, ValueError) as exc:
-                code = exc.code if isinstance(exc, DomainError) else type(exc).__name__
-                signature = f"{code}:{exc}"
-                if signature != failure_signature:
-                    print(
-                        json.dumps(
-                            {
-                                "event": "problem_board.watch_failed",
-                                "worker": identity.worker_name,
-                                "code": code,
-                                "message": str(exc),
-                                "retry_seconds": failure_delay,
-                            },
-                            ensure_ascii=True,
-                            sort_keys=True,
-                        ),
-                        flush=True,
-                    )
-                failure_signature = signature
-                time.sleep(failure_delay)
-                failure_delay = min(failure_delay * 2, 60)
+        for event in worker_watch_events(
+            field,
+            worker_name=identity.worker_name,
+            check_interval_seconds=interval,
+            coalesce_seconds=coalesce,
+        ):
+            print(json.dumps(event, ensure_ascii=True, sort_keys=True), flush=True)
     if args.worker_command == "detach":
         return {
             "worker": identity.worker_name,

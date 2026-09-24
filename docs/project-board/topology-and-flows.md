@@ -263,6 +263,12 @@ machine relay
 user-started agent session
   -> Codex receives the standard exact-session instruction from the login relay
      or Claude Code keeps one pb worker watch in its background facility
+  -> each durable local-mail write sends a best-effort notification to that
+     Claude Code worker's own Unix datagram endpoint
+       the watch binds before its first probe, so mail written before either
+       relay or watch restart is found by that probe
+       a missing, stale, or full endpoint loses no mail; the ordinary check
+       interval remains the slow safety probe
   -> the selected adapter checks availability across direct + attended project inboxes
        no lease, no body, no retained delivery batch
        PB coalesces a short burst and suppresses duplicate notifications
