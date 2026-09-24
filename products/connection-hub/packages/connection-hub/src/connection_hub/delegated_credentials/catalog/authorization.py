@@ -165,7 +165,7 @@ class CapabilityRequest:
         return {key: value for key, value in fields.items() if value and key in carried}
 
 
-def _card_permits_capability(
+def card_permits_capability(
     card: CardAuthority,
     request: CapabilityRequest,
 ) -> bool:
@@ -215,7 +215,7 @@ def _card_boundary_attribution(
         return None
     return attribute_card_boundary(
         composition,
-        permits=lambda card: _card_permits_capability(card, request),
+        permits=lambda card: card_permits_capability(card, request),
     )
 
 
@@ -471,6 +471,7 @@ __all__ = [
     "CardProvenance",
     "authorize_current_capability",
     "capability_denial",
+    "card_permits_capability",
     "card_boundary_denial",
     "catalog_unavailable_denial",
     "denial_is_capability_not_granted",
