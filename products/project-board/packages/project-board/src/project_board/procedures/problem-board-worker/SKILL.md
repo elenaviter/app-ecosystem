@@ -31,13 +31,13 @@ an installed service is a coordinated runtime action. Selecting a released
 client version or an App Ecosystem plus KDCube source manifest with `pb source` is the same kind of
 host action because it changes both the command and relay source. When `pb status` is not
 `session_attending` or `pb` is missing, guide the user through setup with
-[first run](references/first-run.md), never inventing a value they own.
+[first run](references/first-run.md), never inventing a value they own. Connecting agents on another machine follows the add-a-worker-host procedure (`repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/add-a-worker-host.md`) from its step 0, where the operator decides names, repositories and access before anything changes.
 
 ## Choose A Relevant Next Action
 
 Before an action, name the task or observed event that calls for it and what
 its result could change. Reassess after a wake or a returned command; a check
-that was useful once is not automatically useful again.
+that was useful once is not automatically useful again. Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --project-ref <project> --query <subject>` for the journal, then read what they return.
 
 For a repeated status query or retry, name the pending operation or receipt, use
 a bounded attempt count, and stop when another repetition cannot inform the next
@@ -54,7 +54,7 @@ wakes and held leases still require prompt receive, handling, and settlement.
 ## Start Or Resume
 
 1. Read the repository instructions, the bottom of the current journal
-   chronicle, the entries for the work being resumed, and the project facts page `pb worker context` names (`project_facts_ref`).
+   chronicle, the entries for the work being resumed, and the project facts page `pb worker context` names (`project_facts_ref`). For the subject of the task, search the plan and the journal (Choose A Relevant Next Action).
 2. Identify this exact runtime session: `pb worker whoami`.
 3. Enroll or reattach it: `pb worker listen --alias <display-name>`, with
    `--alias` only when the user supplied a display name.

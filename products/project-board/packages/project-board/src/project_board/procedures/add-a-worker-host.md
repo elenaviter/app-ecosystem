@@ -3,7 +3,7 @@ id: app-ecosystem.project-board.procedure.add-a-worker-host
 title: Add A Worker Host
 summary: Step by step, for a person or for an agent acting for them, to turn a remote Linux machine on a private network into a host that runs Problem Board agent sessions with access to exactly the repositories they work on.
 tags: [procedure, problem-board, setup, relay, worker, linux, headless]
-keywords: [worker host, tailnet, headless, deploy key, pinned client, systemd relay, keyring, ssh tunnel, bypass permissions, private code]
+keywords: [worker host, tailnet, headless, deploy key, pinned client, systemd relay, keyring, device login, bypass permissions, private code]
 see_also:
   - ./first-time-setup.md
   - ./operator.md
@@ -43,7 +43,7 @@ The operator does only what needs their identity or a secret:
 | 6 | type the credential store password once per boot (until W258) |
 | 7 | add each deploy key on GitHub |
 | 9 | accept bypass mode for the agent sessions |
-| 11 | approve each agent's Card in a browser |
+| 11 | approve each agent's Card, with a code, in a browser on any device |
 | 12 | add the agents to the project |
 
 Everything else the host agent does over its own SSH session. The operator's
@@ -498,32 +498,27 @@ the host can retire it (`pb worker detach --runtime-kind claude-code
 
 ## 11. Authorize each agent from the operator's browser
 
-Runs on: the operator's machine (the tunnel and the browser) and the host (the command).
+Runs on: the host (the command) and any device with a browser (the operator's approval).
 
-The host has no browser, so the approval runs in the operator's browser and the
-answer reaches the host through an SSH tunnel. The authorization code is useless
-without the verifier, which never leaves the host, and the credential is stored
-on the host.
-
-**Operator**, on their own machine, leaves a tunnel open:
-
-```bash
-ssh -i ~/.ssh/<key> -N -L 18765:127.0.0.1:18765 <user>@<host>
-```
+The host has no browser, so it uses device login: the command prints a
+verification URL and a short code, and the operator approves on any device. The
+host opens no listener and needs no tunnel. The private device code never leaves
+the host, and the credential is stored there.
 
 **Host agent**, in its direct login on the host, one agent at a time:
 
 ```bash
-pb worker authorize <profile> --no-open --callback-port 18765
+pb worker authorize <profile> --device
 ```
 
-It prints a URL. The **operator** opens it and approves the presented worker
-authority. A first Card labels the client as a **Problem Board worker** and
-checks the descriptor's standard worker operations. To create a coordinator
-Card instead, use:
+It prints the URL and the code. The **operator** opens the URL on any device,
+signs in, enters the code, and approves the presented worker authority. A first
+Card labels the client as a **Problem Board worker** and checks the
+descriptor's standard worker operations. To create a coordinator Card instead,
+use:
 
 ```bash
-pb worker authorize <profile> --no-open --callback-port 18765 --coordinator
+pb worker authorize <profile> --device --coordinator
 ```
 
 That consent labels the client as a **Problem Board coordinator** and checks
@@ -541,24 +536,35 @@ leave them as shown for a normal worker, or uncheck authority that this worker
 must not have. Do not copy rows from another worker's Card. Provider accounts
 and their claims are separate, default-closed choices and stay unselected
 unless this worker actually needs one. The command on the host then completes.
-Close the tunnel after the last agent.
 
 The role option applies only when no Card exists or when the operator asks for
 a replacement. With an existing profile, ordinary `pb worker authorize
-<profile>` reconnects that exact Card and keeps its authority; adding
+<profile> --device` reconnects that exact Card and keeps its authority. Adding
 `--coordinator` does not rewrite it. To deliberately replace an existing Card
 with the coordinator proposal, revoke and replace it in one explicit action:
 
 ```bash
-pb worker authorize <profile> --no-open --callback-port 18765 --replace-card --coordinator
+pb worker authorize <profile> --device --replace-card --coordinator
 ```
 
 Replacement revokes the old Card before the new consent. The descriptor-owned
 profile and consent enforcement are defined in [Delegated Access
 Cards](repo:app-ecosystem/docs/connection-hub/package/delegated-cards.md#descriptor-owned-authorization-profiles).
+Device mode is defined in [first-time setup](first-time-setup.md#authorize-a-headless-host).
 
-Device login (W257) replaces the tunnel when it lands: the host prints a short
-code and the operator enters it on any device.
+**Known gap: device login is not yet proven live end to end (W257).** Its live
+run stopped at the operator approval on 2026-09-24. The first host that
+completes step 11 with `--device` records it in W257. If device login fails, the
+fallback is the callback through an SSH tunnel. The **operator** leaves the
+tunnel open on their own machine:
+
+```bash
+ssh -i ~/.ssh/<key> -N -L 18765:127.0.0.1:18765 <user>@<host>
+```
+
+and the host agent runs the same command with `--no-open --callback-port 18765`
+in place of `--device`. The operator opens the printed URL in their own browser,
+and closes the tunnel after the last agent.
 
 ## 12. Attend the project and prove the round trip
 
