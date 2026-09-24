@@ -110,6 +110,14 @@ which every channel fails on a transport condition backs off and retries. A
 credential cannot change to a different runtime session, and a profile cannot
 be shared by two local channels.
 
+The all-channel retry stays inside the running relay process and uses the host
+runtime's bounded backoff, including when the first channel open after a
+platform refresh meets a temporary OAuth metadata rejection. A non-retryable
+Card rejection exits with its exact error code; the persisted channel pacing
+then prevents a rejected credential from becoming a restart loop. The worker
+skill's first-run reconnect section owns the restart decisions for transient
+and credential refusals.
+
 A retryable authorization or metadata outage opens a durable, per-worker
 `relay_diagnostic` in the machine-local field. `pb host inspect`, `pb
 relay-service status`, and `pb worker list` show its exact code and start time
