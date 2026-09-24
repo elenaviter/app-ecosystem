@@ -80,13 +80,21 @@ def _integer(value: Any) -> int:
 
 def _values(value: Iterable[Any] | str | None) -> tuple[str, ...]:
     source: Iterable[Any]
-    if isinstance(value, str):
+    if value is None:
+        source = ()
+    elif isinstance(value, str):
         source = value.replace(",", " ").split()
     elif isinstance(value, (list, tuple, set, frozenset)):
         source = value
     else:
-        source = ()
-    return tuple(dict.fromkeys(item for raw in source if (item := _clean(raw))))
+        raise ValueError("project_operation_required_grants_invalid")
+    normalized: list[str] = []
+    for raw in source:
+        if not isinstance(raw, str):
+            raise ValueError("project_operation_required_grants_invalid")
+        if item := _clean(raw):
+            normalized.append(item)
+    return tuple(dict.fromkeys(normalized))
 
 
 def _card_prefix(role: str) -> str:
@@ -201,9 +209,22 @@ class ProjectOperationRequest:
     required_grants: tuple[str, ...] = ()
     request_resource: str = ""
     surface: str = "application"
+    _required_grants_error: str = field(
+        default="",
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "required_grants", _values(self.required_grants))
+        try:
+            required_grants = _values(self.required_grants)
+            error = ""
+        except ValueError as exc:
+            required_grants = ()
+            error = str(exc)
+        object.__setattr__(self, "required_grants", required_grants)
+        object.__setattr__(self, "_required_grants_error", error)
 
     def validation_reason(self) -> str:
         return next(
@@ -217,6 +238,10 @@ class ProjectOperationRequest:
                     (not _clean(self.project_ref), "project_identity_missing"),
                     (not _clean(self.resource), "project_operation_resource_missing"),
                     (not _clean(self.operation), "project_operation_missing"),
+                    (
+                        bool(self._required_grants_error),
+                        self._required_grants_error,
+                    ),
                 )
                 if condition
             ),

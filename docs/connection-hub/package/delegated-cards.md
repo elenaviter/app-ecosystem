@@ -98,6 +98,11 @@ Card produces a named default-closed denial. The allow or denial carries the
 non-secret edge evidence so the caller can inspect who, which project, and
 which two Card revisions were evaluated.
 
+Capability requirements and administrative-role configuration accept only
+string values in their declared string collections. A mapping, arbitrary
+object, or non-string member is invalid input and fails closed by name; it is
+never normalized into an empty requirement.
+
 The host derives the person subject from its authenticated session and resolves
 both Card references through authoritative Connection Hub storage. A public
 caller never supplies a trusted subject, Card authority, revision, or catalog

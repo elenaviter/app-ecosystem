@@ -55,17 +55,23 @@ def _grants(values: Any) -> tuple[str, ...]:
         values = ()
     if not isinstance(values, (list, tuple, set, frozenset)):
         raise ProjectAuthorizationError("project_authorization_grants_invalid")
+    if any(not isinstance(value, str) for value in values):
+        raise ProjectAuthorizationError("project_authorization_grants_invalid")
     return tuple(sorted({clean_text(value) for value in values if clean_text(value)}))
 
 
 def _roles(values: Iterable[Any] | str | None) -> frozenset[str]:
     source: Iterable[Any]
-    if isinstance(values, str):
+    if values is None:
+        source = ()
+    elif isinstance(values, str):
         source = values.replace(",", " ").split()
     elif isinstance(values, (list, tuple, set, frozenset)):
         source = values
     else:
-        source = ()
+        raise ProjectAuthorizationError("project_administrative_roles_invalid")
+    if any(not isinstance(value, str) for value in source):
+        raise ProjectAuthorizationError("project_administrative_roles_invalid")
     return frozenset(role for value in source if (role := clean_text(value).lower()))
 
 

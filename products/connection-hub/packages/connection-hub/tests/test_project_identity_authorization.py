@@ -580,6 +580,21 @@ def test_missing_edge_is_default_closed() -> None:
     assert decision.blocking_boundary == BOUNDARY_EDGE
 
 
+@pytest.mark.parametrize(
+    "required_grants",
+    ({"work:missing": True}, object()),
+    ids=("mapping", "object"),
+)
+def test_malformed_required_grants_are_a_named_default_closed_denial(
+    required_grants,
+) -> None:
+    decision = _authorize(request=_request(required_grants=required_grants))
+
+    assert not decision.allowed
+    assert decision.reason == "project_operation_required_grants_invalid"
+    assert decision.blocking_boundary == BOUNDARY_EDGE
+
+
 def test_missing_catalog_is_retryable_and_default_closed() -> None:
     control = _control_card()
     my_card = _my_card()

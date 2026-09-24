@@ -150,6 +150,40 @@ def test_request_has_no_role_or_creator_authority_input() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    "delegable_grants",
+    ({"work:review": True}, object()),
+    ids=("mapping", "object"),
+)
+def test_membership_rejects_malformed_delegable_grants(delegable_grants) -> None:
+    with pytest.raises(
+        ProjectAuthorizationError,
+        match="project_authorization_grants_invalid",
+    ):
+        ProjectMembershipEvidence.build(
+            project_ref=PROJECT_REF,
+            subject=ADMIN,
+            role="admin",
+            delegable_grants=delegable_grants,
+        )
+
+
+@pytest.mark.parametrize(
+    "administrative_roles",
+    ({"admin": True}, object()),
+    ids=("mapping", "object"),
+)
+def test_port_rejects_malformed_administrative_roles(administrative_roles) -> None:
+    with pytest.raises(
+        ProjectAuthorizationError,
+        match="project_administrative_roles_invalid",
+    ):
+        ResolverBackedProjectAuthorizationPort(
+            resolver=_MembershipResolver({}),
+            administrative_roles=administrative_roles,
+        )
+
+
 @pytest.mark.asyncio
 async def test_resolver_port_allows_a_project_admin_with_exact_membership_evidence() -> (
     None
