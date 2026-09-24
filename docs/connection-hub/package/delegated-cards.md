@@ -1331,6 +1331,48 @@ authority wildcard. AND and OR preview applies the same check and produces an
 empty effective authority for an unmarked or wildcard control. This keeps the
 preview and the admission decision on the same stored sets.
 
+### Project-held Control Cards for people
+
+A project may hold one Control Card for each person whose project access it
+governs. The Card lives in a deterministic project authority partition, while
+its bounded `connection_hub.project_person_control` property names the exact
+`project_ref`, target platform subject, and project authority subject. Its Card
+id is deterministic from project plus target. The target person is therefore
+an explicit subject of the rule, not the Card's owner and not a storage key.
+
+The lifecycle is exposed through `project_person_control_create`,
+`project_person_control_get`, and `project_person_control_update`. Connection
+Hub takes the actor from the authenticated platform session. The request's
+project and target identify the Card being managed; they grant nothing. Every
+operation asks an injected async `ProjectAuthorizationPort` for a decision
+bound to that exact actor, project, target, operation, and host request id. A
+missing port, a missing policy answer, a malformed or mismatched decision, and
+a named denial all fail closed. Connection Hub never reads an application's
+membership store or infers project authority from platform roles.
+
+The standard Card editor opens this lifecycle when its deep link carries the
+Card's `control_card_id` together with `project_ref` and `target_subject`.
+Those coordinates survive the standalone-site iframe boundary. The editor
+loads and saves through the project-person operations while every ordinary
+Card continues to use its owner-scoped operations.
+
+Creation uses that same port. A project creator receives bootstrap authority
+only when the project application's canonical membership lifecycle returns it;
+there is no caller-authored `creator`, `admin`, application, or role flag.
+Updates have an additional invariant: the target person cannot update her own
+project-held Card, even if a policy adapter accidentally returns allow. The
+project policy decision also supplies the exact delegable grant ceiling used by
+the catalog-aware Card editor, so an administrator cannot save a capability
+outside the project's decision.
+
+Every successful create or update stamps the immutable Card revision with
+`connection_hub.project_person_control.audit.v1` evidence: authenticated actor,
+project, target, host request id, UTC time, before and after revision, and the
+exact changed authorization fields. The current revision exposes its evidence
+to the administrator; durable revision history retains the evidence for every
+earlier edit. A save that changes no authorization field is refused rather than
+creating an empty audit event.
+
 ### Legacy Control Card freeze
 
 The owner-facing read of an unmarked Control Card freezes it once into a new

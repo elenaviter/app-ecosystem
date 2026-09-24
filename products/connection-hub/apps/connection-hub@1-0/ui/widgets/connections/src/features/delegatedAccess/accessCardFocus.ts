@@ -2,6 +2,8 @@ export interface AccessCardFocus {
   accessId: string;
   manualOnly: boolean;
   controlOnly: boolean;
+  projectRef?: string;
+  targetSubject?: string;
   resource?: string;
   claims: string[];
   outerOperation?: string;
@@ -19,10 +21,14 @@ export function accessCardFocusFromParams(get: (key: string) => string): AccessC
   const accountId = get('account_id').trim();
   const accountClaim = get('account_claim').trim();
   const outerOperation = get('outer_operation').trim();
+  const projectRef = get('project_ref').trim();
+  const targetSubject = get('target_subject').trim();
   return {
     accessId,
     manualOnly: Boolean(manualAccessId),
     controlOnly: Boolean(controlCardId),
+    projectRef: projectRef || undefined,
+    targetSubject: targetSubject || undefined,
     resource: resource || undefined,
     claims,
     outerOperation: outerOperation || undefined,

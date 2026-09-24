@@ -155,6 +155,7 @@ import {
   matchesAccessCardFocus,
   unavailableAccessCardMessage,
 } from './accessCardFocus';
+import { projectPersonControlCoordinates } from './projectPersonControl';
 import {
   authorityAccountCount,
   authorityAllowsOuterOperation,
@@ -2242,7 +2243,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
     let current = true;
     setAccessCardFocusState('loading');
-    void dispatch(loadControlCard({ controlId: accessCardFocus.accessId })).unwrap()
+    void dispatch(loadControlCard({
+      controlId: accessCardFocus.accessId,
+      projectRef: accessCardFocus.projectRef,
+      targetSubject: accessCardFocus.targetSubject,
+    })).unwrap()
       .then((result) => {
         if (!current) return;
         setAccessCardFocusState(
@@ -3117,6 +3122,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }
     }
     let updated;
+    const projectPersonControl = projectPersonControlCoordinates(item);
     try {
       updated = await dispatch(updateDelegatedAccess({
         accessId: item.access_id,
@@ -3138,6 +3144,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         acceptedOperations: editAcceptedOperations,
         compositionMode: item.source === 'control' ? editCompositionMode : undefined,
         properties: selectedProperties,
+        projectPersonControl: projectPersonControl || undefined,
       })).unwrap();
     } catch (error) {
       setEditActionError(`Save was not applied: ${String(error || 'request refused')}`);

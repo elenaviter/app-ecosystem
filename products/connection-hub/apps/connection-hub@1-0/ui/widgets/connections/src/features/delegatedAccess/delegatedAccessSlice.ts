@@ -70,15 +70,19 @@ export const loadDelegatedAccess = createAsyncThunk<DelegatedAccessListResult, v
 
 export const loadControlCard = createAsyncThunk<
   ControlCardGetResult,
-  { controlId: string },
+  { controlId: string; projectRef?: string; targetSubject?: string },
   { rejectValue: string }
 >(
   'delegatedAccess/loadControlCard',
-  async ({ controlId }, { rejectWithValue }) => {
+  async ({ controlId, projectRef, targetSubject }, { rejectWithValue }) => {
     try {
-      const res = await postOp<ControlCardGetResult>('control_card_get', {
-        control_id: controlId,
-      });
+      const projectPerson = Boolean(projectRef && targetSubject);
+      const res = await postOp<ControlCardGetResult>(
+        projectPerson ? 'project_person_control_get' : 'control_card_get',
+        projectPerson
+          ? { project_ref: projectRef, target_subject: targetSubject }
+          : { control_id: controlId },
+      );
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to load the Control Card'));
       if (!res?.access) return rejectWithValue('Connection Hub returned no editable Card');
       if (res.access.state && res.access.state !== 'active') {
@@ -185,6 +189,10 @@ export interface UpdateDelegatedAccessArgs {
    *  for credential-bearing Cards, preserving their current values. */
   compositionMode?: 'and' | 'or';
   properties?: Record<string, unknown>;
+  projectPersonControl?: {
+    projectRef: string;
+    targetSubject: string;
+  };
 }
 
 /** Edit a manual automation IN PLACE — the card keeps its access_id/client_id,
@@ -211,34 +219,43 @@ export const updateDelegatedAccess = createAsyncThunk<
       acceptedOperations,
       compositionMode,
       properties,
+      projectPersonControl,
     },
     { rejectWithValue },
   ) => {
     try {
-      const res = await postOp<DelegatedAccessCreateResult>('delegated_access_update', {
-        access_id: accessId,
-        label,
-        resource_grants: resourceGrants || {},
-        resource_operations: resourceOperations || {},
-        ...(operations !== undefined ? { operations } : {}),
-        ...(namedServiceOperations !== undefined
-          ? { named_service_operations: namedServiceOperations }
-          : {}),
-        ...(accountScope !== undefined
-          ? { account_scope: accountScope }
-          : {}),
-        ...(expectedCardRevision !== undefined
-          ? { expected_card_revision: expectedCardRevision }
-          : {}),
-        ...(expectedCatalogVersion
-          ? { expected_catalog_version: expectedCatalogVersion }
-          : {}),
-        ...(acceptedOperations && Object.keys(acceptedOperations).length
-          ? { accepted_operations: acceptedOperations }
-          : {}),
-        ...(compositionMode ? { composition_mode: compositionMode } : {}),
-        ...(properties !== undefined ? { properties } : {}),
-      });
+      const res = await postOp<DelegatedAccessCreateResult>(
+        projectPersonControl ? 'project_person_control_update' : 'delegated_access_update',
+        {
+          ...(projectPersonControl
+            ? {
+                project_ref: projectPersonControl.projectRef,
+                target_subject: projectPersonControl.targetSubject,
+              }
+            : { access_id: accessId }),
+          label,
+          resource_grants: resourceGrants || {},
+          resource_operations: resourceOperations || {},
+          ...(operations !== undefined ? { operations } : {}),
+          ...(namedServiceOperations !== undefined
+            ? { named_service_operations: namedServiceOperations }
+            : {}),
+          ...(accountScope !== undefined
+            ? { account_scope: accountScope }
+            : {}),
+          ...(expectedCardRevision !== undefined
+            ? { expected_card_revision: expectedCardRevision }
+            : {}),
+          ...(expectedCatalogVersion
+            ? { expected_catalog_version: expectedCatalogVersion }
+            : {}),
+          ...(acceptedOperations && Object.keys(acceptedOperations).length
+            ? { accepted_operations: acceptedOperations }
+            : {}),
+          ...(compositionMode ? { composition_mode: compositionMode } : {}),
+          ...(properties !== undefined ? { properties } : {}),
+        },
+      );
       // A precondition failure is not an error to show and forget: it carries
       // the refreshed card the editor must reload.
       if (res?.ok === false && res?.status === 409) return res;

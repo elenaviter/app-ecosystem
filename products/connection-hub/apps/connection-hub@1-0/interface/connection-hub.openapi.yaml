@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Connection Hub App Interface
-  version: 0.3.0
+  version: 0.3.1
   description: |
     Interface contract for connection-hub@1-0.
 
@@ -305,6 +305,80 @@ paths:
       responses:
         "200":
           description: Resolved grants, resources, namespaces, and providers.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_get:
+    post:
+      tags: [Delegated Access]
+      summary: Read one project-held Control Card for a target person.
+      description: >
+        The authenticated platform subject is the actor. Project and target
+        coordinates identify the Card and confer no authority; an injected
+        project authorization port decides the exact read and fails closed
+        when project membership evidence is unavailable.
+      operationId: project_person_control_get
+      x-kdcube-result-alias: project_person_control_get
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectPersonControlIdentityEnvelope"
+      responses:
+        "200":
+          description: Current Card and immutable revision audit, or a structured denial.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_create:
+    post:
+      tags: [Delegated Access]
+      summary: Create a project-held Control Card for a target person.
+      description: >
+        Creates the deterministic project-owned Card under an explicit project
+        authorization decision. Creator bootstrap comes from the host project
+        membership lifecycle; the request carries no role or creator claim.
+      operationId: project_person_control_create
+      x-kdcube-result-alias: project_person_control_create
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectPersonControlCreateEnvelope"
+      responses:
+        "200":
+          description: Created or existing Card and immutable revision audit, or a structured denial.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_update:
+    post:
+      tags: [Delegated Access]
+      summary: Replace one project-held per-person Control Card selection.
+      description: >
+        Applies catalog-aware selection changes under Card and catalog revision
+        preconditions. The target person cannot update her own Card. Every
+        applied edit stores the authenticated actor, host request id, time, and
+        exact changed fields in the immutable Card revision.
+      operationId: project_person_control_update
+      x-kdcube-result-alias: project_person_control_update
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectPersonControlUpdateEnvelope"
+      responses:
+        "200":
+          description: Updated Card and immutable revision audit, or a structured denial.
 
   /bundles/{tenant}/{project}/{bundle_id}/operations/delegated_invocation_policy_set:
     post:
@@ -1119,6 +1193,80 @@ components:
       required: false
       schema: { type: string }
   schemas:
+    ProjectPersonControlIdentityEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [project_ref, target_subject]
+              properties:
+                project_ref: { type: string, minLength: 1 }
+                target_subject: { type: string, minLength: 1 }
+    ProjectPersonControlSelection:
+      type: object
+      properties:
+        resource_grants:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        resource_operations:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+        named_service_operations:
+          oneOf:
+            - type: string
+            - type: object
+              additionalProperties: true
+        account_scope:
+          type: object
+          additionalProperties: true
+        properties:
+          type: object
+          additionalProperties: true
+        composition_mode: { type: string, enum: [and, or] }
+        label: { type: string }
+    ProjectPersonControlCreateEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              unevaluatedProperties: false
+              allOf:
+                - $ref: "#/components/schemas/ProjectPersonControlSelection"
+                - type: object
+                  required: [project_ref, target_subject]
+                  properties:
+                    project_ref: { type: string, minLength: 1 }
+                    target_subject: { type: string, minLength: 1 }
+                    manage_url: { type: string }
+    ProjectPersonControlUpdateEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              unevaluatedProperties: false
+              allOf:
+                - $ref: "#/components/schemas/ProjectPersonControlSelection"
+                - type: object
+                  required: [project_ref, target_subject, expected_card_revision]
+                  properties:
+                    project_ref: { type: string, minLength: 1 }
+                    target_subject: { type: string, minLength: 1 }
+                    expected_card_revision: { type: integer, minimum: 1 }
+                    expected_catalog_version: { type: string }
+                    accepted_operations:
+                      type: object
+                      additionalProperties:
+                        type: array
+                        items: { type: string }
     DelegatedInvocationPolicyEnvelope:
       allOf:
         - $ref: "#/components/schemas/Envelope"

@@ -15,6 +15,8 @@ export const WIDGET_QUERY_PARAMS = [
   'manual_access_id',
   'control_card_id',
   'access_id',
+  'project_ref',
+  'target_subject',
   'oauth_consent',
   'resource',
   'claims',
