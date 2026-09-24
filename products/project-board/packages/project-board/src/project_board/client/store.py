@@ -8683,7 +8683,26 @@ class SharedFieldStore:
         work_ref: str = "",
         metadata: Mapping[str, Any] | None = None,
         content_hash_value: str = "",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
+        """Queue one project event from ``worker_name``.
+
+        With ``idempotency_key``, a second call under the same key returns the
+        first row instead of queueing another, and
+        ``service_event_receipt_exists`` answers whether it was queued. The
+        relay's own notices use this (W182): they are events, not mail, and a
+        crash between queueing and remembering must not publish twice.
+        """
+
+        receipt_path = (
+            self._event_idempotency_path(worker_name, idempotency_key)
+            if str(idempotency_key or "").strip()
+            else None
+        )
+        if receipt_path is not None:
+            prior = read_json(receipt_path, required=False)
+            if prior:
+                return {**prior, "replayed": True}
         clean_project = component(project_id, field="project_id")
         self.read_project(clean_project)
         normalized_work_ref = str(work_ref or "")
@@ -8715,7 +8734,19 @@ class SharedFieldStore:
             "created_at": utc_now(),
         }
         self._outbox.write_pending(row)
+        if receipt_path is not None:
+            atomic_write_json(receipt_path, row)
         return row
+
+    def _event_idempotency_path(self, worker_name: str, key: str) -> Path:
+        clean = component(worker_name, field="worker_name").lower()
+        token = content_hash({"worker": clean, "key": str(key)})
+        return self.control / "workers" / clean / "idempotency" / "events" / f"{token}.json"
+
+    def service_event_receipt_exists(self, *, worker_name: str, idempotency_key: str) -> bool:
+        """Whether an event under this worker's key was queued."""
+
+        return self._event_idempotency_path(worker_name, idempotency_key).is_file()
 
     def enqueue_control_settlement(
         self,

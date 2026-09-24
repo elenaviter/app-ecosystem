@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.4"
+    assert package["revision"] == "2026.09.24.5"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -371,7 +371,8 @@ def test_start_or_resume_and_the_claude_code_wake_path() -> None:
     assert "A brief overlap of two watches costs nothing. A gap of one guard interval cost nineteen minutes" in wake
     assert "`stale` once it has stopped" in wake
     assert "`listener.state` does not move when the watch stops" in wake
-    assert "queues one direct operator update through the worker's own outbox" in wake
+    assert "`worker.notification_path` event on the worker's project" in wake
+    assert "It is an event, never mail" in wake
     assert "starts no turn, even after the network returns, until a person types in the session" in wake
     assert "runtime_has_no_supported_local_queue" in wake
     assert "`oauth_metadata_request_failed` with `status=404` for every worker" in wake

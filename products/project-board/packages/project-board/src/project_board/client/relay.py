@@ -1777,6 +1777,9 @@ class ProblemBoardHostRelayAdapter:
                 "wake_id": current["wake_id"],
                 "since": current["since"],
                 "open_note": "pending",
+                # Frozen at the open, so a retried event carries the same
+                # facts and replays instead of conflicting.
+                "pending": reach.get("pending_messages"),
             }
             if not self._write_record(record):
                 logger.warning(
@@ -1957,8 +1960,8 @@ class ProblemBoardHostRelayAdapter:
     def _note_exists(self, key: str) -> bool:
         try:
             return bool(
-                self.field.remote_mail_receipt_exists(
-                    sender=self.config.worker_name, idempotency_key=key
+                self.field.service_event_receipt_exists(
+                    worker_name=self.config.worker_name, idempotency_key=key
                 )
             )
         except DomainError:
@@ -1966,7 +1969,7 @@ class ProblemBoardHostRelayAdapter:
 
     def _queue_open_note(self, record: Mapping[str, Any], reach: Mapping[str, Any]) -> bool:
         alias = self.config.worker_alias or self.config.worker_name
-        pending = reach.get("pending_messages")
+        pending = record.get("pending", reach.get("pending_messages"))
         kind = str(record.get("kind") or "")
         since = str(record.get("since") or "")
         wake_id = str(record.get("wake_id") or "")
@@ -1982,7 +1985,7 @@ class ProblemBoardHostRelayAdapter:
                 f"{pending}. The session is Codex {self.config.runtime_session_id}. "
                 f"Running `pb worker receive --wake-id {wake_id}` in it clears the "
                 "wake. The relay will not enqueue another for the same input. This "
-                "message is sent by the relay, not by the model, which is why the "
+                "notice is published by the relay, not by the model, which is why the "
                 "model has not answered."
             )
         elif kind == "failed_overdue":
@@ -2000,7 +2003,7 @@ class ProblemBoardHostRelayAdapter:
                 f"--wake-id {wake_id}` in it clears the wake; if the queue command "
                 "keeps failing, the Codex app-server for that session is the place to "
                 "look. The relay will not enqueue another for the same input. This "
-                "message is sent by the relay, not by the model, which is why the "
+                "notice is published by the relay, not by the model, which is why the "
                 "model has not answered."
             )
         elif kind == "queued":
@@ -2020,7 +2023,7 @@ class ProblemBoardHostRelayAdapter:
                 f"The session is Codex {self.config.runtime_session_id}. If it is not "
                 "mid-turn, typing anything in it makes it drain its queue and receive. "
                 "The relay will not enqueue a second wake for the same input. This "
-                "message is sent by the relay, not by the model."
+                "notice is published by the relay, not by the model."
             )
         else:
             subject = f"{alias}: notification path dead since {since}, {pending} message(s) waiting"
@@ -2031,10 +2034,13 @@ class ProblemBoardHostRelayAdapter:
                 "reach the model. Mail and assignments queue and are not lost. "
                 f"Pending now: {pending}. The session is Claude Code "
                 f"{self.config.runtime_session_id}. Typing anything in it, or its "
-                "scheduled guard, restores the path. This message is sent by the "
+                "scheduled guard, restores the path. This notice is published by the "
                 "relay, not by the model, which is why the model has not answered."
             )
-        return self._queue_operator_note(key=self._open_key(record), subject=subject, body=body)
+        state = "wake_queued" if kind == "queued" else "dead"
+        return self._queue_operator_note(
+            key=self._open_key(record), subject=subject, body=body, record=record, state=state
+        )
 
     def _queue_close_note(self, record: Mapping[str, Any], reach: Mapping[str, Any]) -> bool:
         alias = self.config.worker_alias or self.config.worker_name
@@ -2065,35 +2071,73 @@ class ProblemBoardHostRelayAdapter:
                 f"again as of {seen}. The path that died at {since} is back, and queued "
                 "mail reaches the session on its next receive."
             )
-        return self._queue_operator_note(key=self._close_key(record), subject=subject, body=body)
+        state = "wake_dequeued" if kind == "queued" else "restored"
+        return self._queue_operator_note(
+            key=self._close_key(record), subject=subject, body=body, record=record, state=state
+        )
 
-    def _queue_operator_note(self, *, key: str, subject: str, body: str) -> bool:
-        """One direct operator update from this worker's outbox, never a second failure.
+    NOTICE_EVENT_KIND = "worker.notification_path"
 
-        True when a note under this key is in the outbox: written now,
-        replayed unchanged, or refused as an idempotency conflict, which
-        means an earlier attempt wrote it with a different pending count and
-        the process did not live to remember that. False on any other
-        refusal, so the caller keeps its record as it was and tries again
-        next cycle.
+    def _queue_operator_note(
+        self,
+        *,
+        key: str,
+        subject: str,
+        body: str,
+        record: Mapping[str, Any] | None = None,
+        state: str = "",
+    ) -> bool:
+        """Publish one notification-path notice as a project event, never as mail.
+
+        Operator ruling, 2026-09-23: notices the tooling writes on a worker's
+        behalf are events, not messages (W182). The event carries its facts,
+        is attributed to the relay's reporting of this worker rather than to
+        the worker as a message sender, and is never indexed as mail. The
+        board shows the path state on the worker's card from its inbox
+        checks, so a worker that attends no project has no event to publish
+        and loses nothing: its card already says stale or unreachable.
+
+        True when the event under this key is queued, now or on an earlier
+        attempt (its receipt). False on a refusal, so the caller keeps its
+        record and tries again next cycle.
         """
+        project_id = str(self.config.project_id or "").strip()
+        if not project_id:
+            logger.info(
+                "Problem Board worker %s: %s. No project attended, so no event; "
+                "the worker card shows the path state.",
+                self.config.worker_name,
+                subject,
+            )
+            return True
+        facts = dict(record or {})
+        metadata = {
+            "notice": "notification_path",
+            "state": state,
+            "incident_kind": str(facts.get("kind") or "dead_path"),
+            "since": str(facts.get("since") or ""),
+            "pending_messages": facts.get("pending"),
+            "wake_id": str(facts.get("wake_id") or ""),
+            "runtime_kind": self.config.runtime_kind,
+            "runtime_session_id": self.config.runtime_session_id,
+            "worker_alias": self.config.worker_alias or "",
+            "reported_by": "relay",
+        }
         try:
-            self.field.enqueue_remote_mail(
-                "",
-                sender=self.config.worker_name,
-                recipient="operator",
-                kind="update",
-                subject=subject,
-                body=body,
+            self.field.enqueue_service_event(
+                project_id,
+                worker_name=self.config.worker_name,
+                kind=self.NOTICE_EVENT_KIND,
+                summary=f"{subject}. {body}",
+                source_event_ref=f"relay:{key}",
+                metadata=metadata,
                 idempotency_key=key,
             )
             return True
-        except DomainError as exc:
-            if exc.code == "field_mail_idempotency_conflict":
-                return True
+        except DomainError:
             # Telling the operator must not become a second failure on top of
             # the first. The caller logs and retries.
-            logger.debug("Could not queue the operator note %s.", key, exc_info=True)
+            logger.debug("Could not queue the notice event %s.", key, exc_info=True)
             return False
 
     async def _flush_outbox(
