@@ -42,7 +42,8 @@ descriptor and provider catalogs to render choices around that stored
 selection.
 
 This page covers every Card owned by Connection Hub: manual automations,
-hosted agents, external OAuth/MCP clients, and credentialless Control Cards.
+hosted agents, external OAuth/MCP clients, project-person My Cards, and
+credentialless Control Cards.
 Cards in **Delegated to
 KDCube** represent connected provider accounts and use a different storage
 lifecycle; see [Delegated Accounts](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md)
@@ -119,10 +120,10 @@ The administrator lifecycle for the per-person Card is documented under
 
 ## Card Families
 
-All four families use `AutomationAccessRecord`, the same immutable revision
+All five families use `AutomationAccessRecord`, the same immutable revision
 format, and the same lifecycle implementation. Their purpose and credential
-retention differ. The three caller families appear in the central **Delegated
-by KDCube** list. A Control Card is opened by exact id from the application
+retention differ. The four person-or-caller-owned families appear in the
+central **Delegated by KDCube** list. A Control Card is opened by exact id from the application
 that gave it its control role; a future central listing is a view over the same
 records, not another store or migration. A descriptor-controlled agent's
 Control Card is an administrator surface. That access boundary is independent
@@ -133,6 +134,7 @@ of an ordinary user's right to edit their own Agent Card.
 | `manual` | A script, service, or external automation whose operator copies a bearer. | `delegated_access_create`. | The raw bearer is returned once and is not retained. The record keeps `session_id` and `last_four` for revocation and identification. |
 | `agent` | An agent with deterministic identity `kdcube-agent:<app>:<agent>`, usable from a hosted runtime or as an external MCP caller. | Demand-driven consent, or descriptor synchronization for a resident agent whose Card selects from a Control Card. | Every Agent Card retains its reusable access token server-side. The hosted runtime presents it for resident calls; an external instance presents the same Card credential over the network. List views expose non-secret metadata. |
 | `oauth` | An external OAuth/MCP client. | Automatically on initial token issuance and every refresh rotation. | Current access- and refresh-token handles are retained server-side so revoke can invalidate both. They are never returned by list. |
+| `project-person` | A signed-in person's positive My Card selection for one project identity edge. | Created empty with that person's project-held Control Card, then edited by the person within the current project and catalog ceilings. | None. It is durable and person-owned, but the platform session supplies identity; the Card retains no bearer, refresh token, session, or expiry. |
 | `control` | A reusable authorization rule linked to one or more caller Cards. | An owner-scoped `control_card_create`, normally initiated by the application that will link it. | None. It has no delegate, bearer, refresh token, session, or expiry. |
 
 An OAuth client and an agent are both delegated callers. Hosted execution keeps
@@ -1395,24 +1397,58 @@ The lifecycle is exposed through `project_person_control_create`,
 `project_person_control_get`, `project_person_control_update`, and
 `project_person_control_revoke`. Connection Hub takes the actor from the
 authenticated platform session. The request's project and target identify the
-Card being managed; they grant nothing. Every operation asks an injected async
+Card being managed; they grant nothing. Every operation asks an async
 `ProjectAuthorizationPort` for a decision bound to that exact actor, project,
 target, operation, and host request id. A missing port, a missing policy answer,
 a malformed or mismatched decision, and a named denial all fail closed.
 Connection Hub never reads an application's membership store or infers project
 authority from platform roles.
 
-The standard resolver-backed port asks an application-owned
-`ProjectMembershipResolver` for typed membership evidence for the actor and
-target. The host configures which application roles administer the project;
-the resolver supplies the actor's exact delegable-grant ceiling. Missing actor
-membership, a non-administrative project role, mismatched evidence, and an
-unbound resolver return named denials. Create, read, and update also require
-current target membership. Revoke intentionally does not: an administrator can
-revoke the project-held Card after removing the member, without preserving a
-stale membership row or relying on a crash-sensitive ordering. The project
-application binds its canonical membership store at host composition, so
-membership authority stays with the application that owns it.
+The standard resolver-backed port asks an application-owned membership
+operation for typed evidence for the actor and target. The Connection Hub
+descriptor names that operation and the project roles that may administer
+per-person Control Cards:
+
+```yaml
+project_membership:
+  provider:
+    bundle_id: problem-board@1-0
+    operation: project_membership_resolve
+  administrative_roles: [owner, admin]
+```
+
+The call runs through the request-bound bundle-operation bridge under the same
+signed-in person's session. Its request is
+`{"project_ref": "...", "subject": "..."}`. A successful answer contains
+`{"ok": true, "membership": null}` for no membership, or a membership object
+with matching `project_ref` and `subject`, a non-empty `role`, the actor's
+`delegable_grants`, and optional non-secret `evidence`. A provider refusal,
+malformed response, or mismatched project or subject is a named denial. When
+the descriptor names no provider, authorization returns
+`project_membership_resolver_missing`; platform roles remain outside this
+project-membership decision.
+
+Missing actor membership, a non-administrative project role, mismatched
+evidence, and an unbound resolver return named denials. Create, read, and
+update also require current target membership. Revoke intentionally does not:
+an administrator can revoke the project-held Card after removing the member,
+without preserving a stale membership row or relying on a crash-sensitive
+ordering. Membership authority therefore stays with the application that owns
+the canonical membership record.
+
+Creating a new per-person Control Card also creates a stable project identity
+edge and a durable, credential-free My Card in the person's Card partition.
+The My Card starts with an empty positive selection. The edge marker records
+stable project, person, Control Card, and My Card coordinates; authorization
+resolves both current Card revisions from durable storage instead of trusting
+the marker's initial revisions. Repeating create repairs a missing companion
+My Card without creating another identity. Deployments that already have
+per-person Control Cards migrate their prior positive selections explicitly;
+new-card initialization uses its declared empty selection.
+
+Revocation ends the edge by revoking the person's My Card before revoking the
+project-held Control Card. A retry completes either partially applied step;
+an ended edge remains an explicit closed project relationship.
 
 The standard Card editor opens this lifecycle when its deep link carries the
 Card's `control_card_id` together with `project_ref` and `target_subject`.
@@ -1437,6 +1473,15 @@ ceiling used by the catalog-aware Card editor, so an administrator cannot save
 a capability outside the project's decision. Another administrator manages an
 administrator's own Control Card; a sole project creator remains at the
 bootstrap ceiling selected by the project policy.
+
+The authenticated operation `project_operation_authorize` is the application
+boundary for an exact check. Its payload supplies `project_ref`, `resource`,
+`operation`, optional `required_grants`, `request_resource`, and `surface`.
+Connection Hub derives the person subject from the current session, resolves
+the edge and both Cards, loads the active catalog, and returns the project
+evaluator's decision. Callers cannot supply a trusted person subject, Card,
+revision, or catalog document. The decision names the blocking boundary and is
+retryable only for an explicitly unavailable current authority.
 
 Every successful create, update, or revocation stamps the immutable Card
 revision with `connection_hub.project_person_control.audit.v1` evidence:

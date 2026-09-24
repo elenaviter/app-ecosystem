@@ -27,6 +27,14 @@ from connection_hub.delegated_credentials.cards.store import subject_hash_for
 from connection_hub.delegated_credentials.controls.model import (
     new_credentialless_card,
 )
+from connection_hub.delegated_credentials.controls.project_person import (
+    PROJECT_PERSON_CONTROL_ISSUER_KIND,
+    ProjectPersonControlIdentity,
+    bind_project_person_control,
+)
+from connection_hub.delegated_credentials.project_identity_lifecycle import (
+    new_project_person_my_card,
+)
 
 OWNER = "platform-user-1"
 SUBJECT_HASH = subject_hash_for(OWNER)
@@ -266,3 +274,58 @@ async def test_agent_can_attach_a_credentialless_control_without_control_handle_
     assert control.access_id not in handles.read_ids
     assert control.access_id not in handles.read_current_ids
     assert handles.written_ids == [agent.access_id]
+
+
+@pytest.mark.asyncio
+async def test_project_person_my_card_is_persistent_without_credential_handles() -> None:
+    identity = ProjectPersonControlIdentity.build(
+        project_ref="work:project:demo",
+        target_subject=OWNER,
+    )
+    control = bind_project_person_control(
+        new_credentialless_card(
+            initial_selection=_agent(),
+            grantor_subject=identity.project_subject,
+            catalog_version="catalog-v1",
+            control_id=identity.control_id,
+            issuer_ref=identity.project_ref,
+            issuer_kind=PROJECT_PERSON_CONTROL_ISSUER_KIND,
+            now=int(time.time()),
+        ),
+        identity=identity,
+    )
+    my_card = new_project_person_my_card(control_card=control)
+    authorities = {my_card.access_id: my_card}
+    handles = _Handles()
+    persistence = _persistence(authorities, handles)
+    empty = CardCredentialHandles(access_id=my_card.access_id)
+
+    assert await persistence.load(
+        my_card.access_id,
+        subject_hash=SUBJECT_HASH,
+    ) == (my_card, empty)
+    assert await persistence.load_current(
+        my_card.access_id,
+        subject_hash=SUBJECT_HASH,
+    ) == (my_card, empty)
+
+    updated = dataclasses.replace(
+        my_card,
+        label="My reviewed project Card",
+        card_revision=2,
+    )
+    await persistence.persist(
+        updated,
+        empty,
+        subject_hash=SUBJECT_HASH,
+        expected_revision=1,
+    )
+
+    assert await persistence.load(
+        my_card.access_id,
+        subject_hash=SUBJECT_HASH,
+    ) == (updated, empty)
+    assert handles.read_ids == []
+    assert handles.read_current_ids == []
+    assert handles.written_ids == []
+    assert handles.removed_ids == [my_card.access_id]

@@ -405,6 +405,32 @@ paths:
         "200":
           description: Revocation audit and removal state, or a structured denial.
 
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_operation_authorize:
+    post:
+      tags: [Delegated Access]
+      summary: Authorize one project operation for the signed-in person.
+      description: >
+        Derives the person subject from the authenticated platform session,
+        resolves the current project identity edge, per-person Control Card,
+        My Card, and active catalog, and returns the evaluator decision for one
+        exact resource operation. Payload identity, Card, revision, and catalog
+        fields confer no authority.
+      operationId: project_operation_authorize
+      x-kdcube-result-alias: project_operation_authorize
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectOperationAuthorizeEnvelope"
+      responses:
+        "200":
+          description: Project operation allow or named default-closed denial.
+
   /bundles/{tenant}/{project}/{bundle_id}/operations/delegated_invocation_policy_set:
     post:
       tags: [Delegated Access]
@@ -1296,6 +1322,25 @@ components:
                       additionalProperties:
                         type: array
                         items: { type: string }
+    ProjectOperationAuthorizeEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [project_ref, resource, operation]
+              properties:
+                project_ref: { type: string, minLength: 1 }
+                resource: { type: string, minLength: 1 }
+                operation: { type: string, minLength: 1 }
+                required_grants:
+                  type: array
+                  items: { type: string, minLength: 1 }
+                  uniqueItems: true
+                request_resource: { type: string }
+                surface: { type: string, default: application }
     DelegatedInvocationPolicyEnvelope:
       allOf:
         - $ref: "#/components/schemas/Envelope"

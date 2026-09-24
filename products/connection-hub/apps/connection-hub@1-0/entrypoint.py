@@ -205,6 +205,7 @@ from .surfaces.delegated_gateway import (
 )
 from .surfaces.delegated_gateway_host import build_hosted_gateway_binding
 from .services.durable_authority import ConnectionHubDurableAuthority
+from .services.project_membership import descriptor_project_authorization_port
 
 BUNDLE_ID = "connection-hub@1-0"
 ENTRYPOINT_NAME = "connection-hub"
@@ -274,6 +275,7 @@ CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
     "identity_family_resolve",
     "identity_resolve",
     "opex",
+    "project_operation_authorize",
     "react_context_preview",
 })
 # These public POSTs use their own protocol authentication/anti-forgery contract
@@ -1279,7 +1281,7 @@ def _expected_remote_mcp_revision(payload: Mapping[str, Any]) -> int:
 
 
 async def _project_authorization_port(entrypoint: Any) -> Any | None:
-    """Resolve the host-composed project policy port without owning policy."""
+    """Resolve an explicit host port or the descriptor-bound provider port."""
 
     try:
         port = getattr(entrypoint, "project_authorization_port", None)
@@ -1289,7 +1291,7 @@ async def _project_authorization_port(entrypoint: Any) -> Any | None:
                 port = factory()
         if inspect.isawaitable(port):
             port = await port
-        return port
+        return port if port is not None else descriptor_project_authorization_port(entrypoint)
     except Exception:  # noqa: BLE001 - the host policy adapter is optional
         LOGGER.exception(
             "[connection-hub.project-person-control] "
@@ -2613,6 +2615,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_person_control_create": {"visibility": {"user_types": []}},
                             "project_person_control_update": {"visibility": {"user_types": []}},
                             "project_person_control_revoke": {"visibility": {"user_types": []}},
+                            "project_operation_authorize": {"visibility": {"user_types": []}},
                             "control_card_attach": {"visibility": {"user_types": []}},
                             "control_card_detach": {"visibility": {"user_types": []}},
                             "control_card_revoke": {"visibility": {"user_types": []}},
@@ -2668,6 +2671,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                         "connections_settings": {"visibility": {"user_types": []}},
                     },
                 },
+            },
+            "project_membership": {
+                "provider": {
+                    "bundle_id": "",
+                    "operation": "",
+                },
+                "administrative_roles": [],
             },
             # No provider is hardcoded here. The set of available providers is
             # DYNAMIC — driven by the connection registry (any registered
@@ -4251,6 +4261,40 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             project_ref=str(payload.get("project_ref") or "").strip(),
             target_subject=str(payload.get("target_subject") or "").strip(),
             request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_operation_authorize",
+        route="operations",
+        csrf=False,
+        **_api_visibility("project_operation_authorize"),
+    )
+    async def project_operation_authorize(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Authorize one exact project operation for the signed-in person."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_operation_authorize(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            resource=str(payload.get("resource") or "").strip(),
+            operation=str(payload.get("operation") or "").strip(),
+            required_grants=payload.get("required_grants", ()),
+            request_resource=str(payload.get("request_resource") or "").strip(),
+            surface=str(payload.get("surface") or "application").strip(),
         )
 
     @api(

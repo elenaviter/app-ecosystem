@@ -53,6 +53,15 @@ from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationPort,
     ProjectAuthorizationRequest,
 )
+from connection_hub.delegated_credentials.project_identity_authorization import (
+    ProjectOperationAuthorizationDecision,
+    ProjectOperationRequest,
+)
+from connection_hub.delegated_credentials.project_identity_lifecycle import (
+    ProjectIdentityLifecycle,
+    ProjectIdentityLifecycleError,
+    ProjectIdentityLifecycleResult,
+)
 
 
 AuthorityFromRecord = Callable[[Any], CardAuthority]
@@ -85,6 +94,45 @@ class ProjectPersonControlLifecycle:
         self._authorization_port = authorization_port
         self._authority_from_record = authority_from_record
         self._record_from_authority = record_from_authority
+        self._project_identities = ProjectIdentityLifecycle(
+            host=host,
+            authority_from_record=authority_from_record,
+            record_from_authority=record_from_authority,
+        )
+
+    @staticmethod
+    def _identity_failure(exc: Exception) -> dict[str, Any]:
+        if isinstance(exc, ProjectIdentityLifecycleError):
+            return {"ok": False, "error": exc.reason, "status": 409}
+        if isinstance(exc, CardServingUnavailable):
+            return _serving_state_unavailable(exc)
+        if isinstance(exc, CardUnavailable):
+            return {
+                "ok": False,
+                "error": "project_identity_edge_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        if isinstance(exc, (CardConflict, CardCommitFailed)):
+            return {
+                "ok": False,
+                "error": "project_identity_edge_not_committed",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 503,
+            }
+        raise exc
+
+    @staticmethod
+    def _identity_view(
+        result: dict[str, Any],
+        identity: ProjectIdentityLifecycleResult,
+    ) -> dict[str, Any]:
+        result["project_identity_edge"] = identity.edge.to_dict()
+        result["my_card"] = identity.my_card.to_public_dict()
+        result["my_card_created"] = identity.my_card_created
+        return result
 
     async def _authorize(
         self,
@@ -326,16 +374,27 @@ class ProjectPersonControlLifecycle:
         )
         existing = await self._load(identity)
         if not isinstance(existing, dict):
-            _record, state = existing
+            record, state = existing
             if state != CARD_STATE_ACTIVE:
                 return {
                     "ok": False,
                     "error": "project_person_control_not_active",
                     "status": 409,
                 }
+            try:
+                project_identity = await self._project_identities.ensure(record)
+            except (
+                CardUnavailable,
+                CardServingUnavailable,
+                CardConflict,
+                CardCommitFailed,
+                ProjectIdentityLifecycleError,
+            ) as exc:
+                return self._identity_failure(exc)
             result = await self._view(identity=identity, decision=decision)
             if result.get("ok") is True:
                 result["created"] = False
+                self._identity_view(result, project_identity)
             return result
         if existing.get("error") != "project_person_control_not_found":
             return existing
@@ -457,6 +516,7 @@ class ProjectPersonControlLifecycle:
                 )
             )
             await self._host._persist_record(record, expected_revision=0)
+            project_identity = await self._project_identities.ensure(record)
         except CatalogUnavailable as exc:
             return {
                 "ok": False,
@@ -465,7 +525,12 @@ class ProjectPersonControlLifecycle:
                 "retryable": True,
                 "status": 503,
             }
-        except (CardRecordError, ControlCardError, ProjectPersonControlError) as exc:
+        except (
+            CardRecordError,
+            ControlCardError,
+            ProjectIdentityLifecycleError,
+            ProjectPersonControlError,
+        ) as exc:
             return {
                 "ok": False,
                 "error": getattr(exc, "reason", str(exc)),
@@ -490,6 +555,7 @@ class ProjectPersonControlLifecycle:
         if result.get("ok") is True:
             result["created"] = True
             result["pruned"] = pruned
+            self._identity_view(result, project_identity)
         return result
 
     async def update(
@@ -639,10 +705,27 @@ class ProjectPersonControlLifecycle:
             project_ref=project_ref,
             target_subject=target_subject,
         )
+        try:
+            edge_removed = await self._project_identities.end(
+                project_ref=project_ref,
+                person_subject=target_subject,
+            )
+        except (
+            CardUnavailable,
+            CardServingUnavailable,
+            CardConflict,
+            CardCommitFailed,
+            ProjectIdentityLifecycleError,
+        ) as exc:
+            return self._identity_failure(exc)
         loaded = await self._load(identity)
         if isinstance(loaded, dict):
             if loaded.get("error") == "project_person_control_not_found":
-                return {"ok": True, "removed": False}
+                return {
+                    "ok": True,
+                    "removed": False,
+                    "project_identity_edge_removed": edge_removed,
+                }
             return loaded
         existing, state = loaded
         before = self._authority_from_record(existing)
@@ -651,6 +734,7 @@ class ProjectPersonControlLifecycle:
                 "ok": True,
                 "removed": False,
                 "control_id": identity.control_id,
+                "project_identity_edge_removed": edge_removed,
                 "project_person_control": identity.to_property(),
                 "audit": copy.deepcopy(
                     dict(before.provenance or {}).get(
@@ -711,9 +795,18 @@ class ProjectPersonControlLifecycle:
             "ok": True,
             "removed": True,
             "control_id": identity.control_id,
+            "project_identity_edge_removed": edge_removed,
             "project_person_control": identity.to_property(),
             "audit": audit.to_dict(),
         }
+
+    async def authorize_operation(
+        self,
+        request: ProjectOperationRequest,
+    ) -> ProjectOperationAuthorizationDecision:
+        """Resolve the live project edge and evaluate one exact operation."""
+
+        return await self._project_identities.authorize(request)
 
 
 __all__ = [

@@ -23,6 +23,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_REVOKED,
     CONTROL_COMPOSITION_AND,
     CardAuthority,
+    authority_is_credential_free,
     authority_is_credentialless,
 )
 from connection_hub.delegated_credentials.catalog.authorization import (
@@ -437,7 +438,7 @@ def _card_issue(
             role,
             details={"resolved_card_revision": _integer(card.card_revision)},
         )
-    if not authority_is_credentialless(card) and _integer(card.expires_at) <= now:
+    if not authority_is_credential_free(card) and _integer(card.expires_at) <= now:
         return _Issue(f"{prefix}_expired", role)
 
     if role == BOUNDARY_CONTROL_CARD:

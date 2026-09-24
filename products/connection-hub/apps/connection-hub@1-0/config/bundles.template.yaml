@@ -47,6 +47,8 @@ bundles:
                 visibility: *default_visibility
               delegated_access_create:
                 visibility: *default_visibility
+              project_operation_authorize:
+                visibility: *default_visibility
               delegated_access_update:
                 visibility: *default_visibility
               delegated_invocation_policy_set:
@@ -105,6 +107,14 @@ bundles:
           widget:
             connections_settings:
               visibility: *default_visibility
+
+      project_membership:
+        provider:
+          bundle_id: "problem-board@1-0"
+          operation: "project_membership_resolve"
+        administrative_roles:
+        - owner
+        - admin
 
       connections:
         oauth:
