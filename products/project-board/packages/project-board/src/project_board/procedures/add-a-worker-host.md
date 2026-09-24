@@ -106,6 +106,7 @@ before anything changes:
 | agent names | `claude-ops@spark1`, `claude-app@spark1` | display names on the board. The board addresses a worker by a stable generated name. |
 | coding agent account | the account whose subscription the agents use | step 5 logs in with it. Every session of that Linux user shares it. |
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
+| `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 
 The repository table, used by steps 2, 7 and 8:
 
@@ -143,6 +144,7 @@ whoami; uname -srm; head -2 /etc/os-release
 python3 --version; git --version
 echo "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS"   # both set
 sudo -n true && echo sudo-ok
+command -v tmux || echo "tmux missing: ask the machine's admin to install it (apt install tmux, or dnf install tmux)"
 getent passwd | awk -F: '$3>=1000 && $3<60000 {print $1}'   # other users on the machine
 stat -c '%A %G %n' ~                                         # who can read the home directory
 ```
@@ -402,21 +404,29 @@ git -C <name> remote set-url origin "github-<name>:<owner>/<repo>.git"
 
 Runs on: the host.
 
-**Host agent**, one detached `screen` per agent, started from its direct login
-(step 1) so the session has the user-session environment. The session reads and
-writes its workspace and the user's `pb` state, and does not stop to ask for
-each command, because nobody watches its screen:
+**Host agent**, one detached `tmux` session per agent, named after the agent and
+started from its direct login (step 1) so the session has the user-session
+environment. The session reads and writes its workspace and the user's `pb`
+state, and does not stop to ask for each command, because nobody approves each command:
 
 ```bash
-screen -dmS <agent-name> bash -c 'cd ~/workspaces/<workspace> && \
-  export PATH=$HOME/.local/node/bin:/usr/local/bin:$PATH && \
-  claude --add-dir ~/workspaces/<workspace> --add-dir ~/.kdcube --dangerously-skip-permissions \
-    --disallowedTools AskUserQuestion; exec bash'
+tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/workspaces/<workspace> && \
+  export PATH=\$HOME/.local/node/bin:\$HOME/.local/bin:\$PATH && \
+  claude --add-dir \$HOME/workspaces/<workspace> --add-dir \$HOME/.kdcube --dangerously-skip-permissions \
+    --disallowedTools AskUserQuestion; exec bash'"
 ```
 
-`--disallowedTools AskUserQuestion` keeps the session from stopping on an
-interactive question nobody watches: a worker asks the operator by board mail,
-which reaches them wherever they are.
+- **tmux carries Claude Code's display and mouse.** Claude Code draws with UTF-8 box characters and turns
+  on mouse reporting. In a `screen` session started without UTF-8, the operator
+  who attaches sees `?` for every box character, and each mouse movement arrives
+  in the agent's input box as text (`94;29M97;29M...`). tmux carries both, and
+  Claude Code recognizes it. `-u` forces UTF-8.
+- **`~/.local/bin` comes before `/usr/local/bin`.** The guarded `pb` launcher from
+  step 2 lives in `~/.local/bin`. A host set up before that launcher existed may
+  still have an old `/usr/local/bin/pb`, and the session must not run it.
+- **`--disallowedTools AskUserQuestion`** keeps the session from stopping on an
+  interactive question nobody watches: a worker asks the operator by board mail,
+  which reaches them wherever they are.
 
 For Codex, the equivalent is
 `codex -C ~/workspaces/<workspace> -s danger-full-access`.
@@ -426,23 +436,45 @@ The first start in bypass mode shows a one-time warning. Accepting it is the
 confirms:
 
 ```bash
-screen -S <agent-name> -X stuff "$(printf '\033[B')"   # down, to "Yes, I accept"
-screen -S <agent-name> -X stuff '^M'                     # Enter
+tmux send-keys -t <agent-name> Down      # to "Yes, I accept"
+tmux send-keys -t <agent-name> Enter
 ```
 
 A prompt is sent the same way, text and Enter as two separate commands, because
-a return inside pasted text is read as part of the text:
+a return inside the text is read as part of it. Keep the prompt short, and read
+the answer with `capture-pane`:
 
 ```bash
-screen -S <agent-name> -X stuff 'Use the problem-board-worker skill. Join Problem Board as <agent-name>.'
-screen -S <agent-name> -X stuff '^M'
-screen -S <agent-name> -X hardcopy /tmp/<agent-name>.txt    # read what it shows
+tmux send-keys -t <agent-name> -l 'Use the problem-board-worker skill. Join Problem Board as <agent-name>.'
+tmux send-keys -t <agent-name> Enter
+tmux capture-pane -p -t <agent-name> | tail -40      # read what it shows
 ```
 
 A session keeps its board identity only when resumed with its id, from the same
-workspace and with the same flags:
+workspace and with the same flags. Resuming is also how a session started with
+older flags gets the current ones:
 `claude --resume <session-id> --add-dir ~/workspaces/<workspace> --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion`.
 A new session is a new worker.
+
+### Watch or talk to an agent
+
+**Operator**, from their own terminal, at any time:
+
+```bash
+ssh -t -i ~/.ssh/<key> <user>@<host> tmux attach -t <agent-name>
+```
+
+It looks like the operator's own Claude Code session. To leave without stopping
+the agent, press **Ctrl-b**, then **d**. The agent keeps running after the
+terminal closes, and so does its board mail.
+
+The terminal is the agent's chat box. What the operator types there is a
+message to that agent, the same as typing into their own session. Board mail
+remains the channel for work, because the other agents and the project record
+see it. Anything typed while the agent is mid-task becomes its next instruction.
+
+To watch without taking the keyboard, attach read-only:
+`tmux attach -r -t <agent-name>`.
 
 ## 10. Enroll each agent
 
@@ -600,7 +632,8 @@ previous selector and source.
 
 Runs on: the host, and GitHub in the operator's browser (deleting deploy keys).
 
-- One agent: `pb worker detach` in its session, then end its screen.
+- One agent: `pb worker detach` in its session, then end its tmux session
+  (`tmux kill-session -t <agent-name>`).
 - The host's access to one repository: delete its deploy key in that repository.
 - The whole host: detach every agent, run `pb relay-service uninstall` and
   remove the guarded `pb` launcher and its isolated client environment for each
