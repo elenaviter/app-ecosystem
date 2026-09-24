@@ -212,12 +212,15 @@ descriptor-only change.
    <sha>`, `kdcube refresh --build` from exports of the announced commits,
    `pb source use-code` with `--expect` and `--expect-kdcube`. For an app, first
    write the commit where a restart reads it: set `activation.commit: <sha>` on
-   the app's entry in the staged `config/bundles.yaml` (located by bundle id)
-   and run `kdcube bundle config apply`, then reload at the same sha. Why: a
-   reload's commit lives only in the running proc (`durable: false`), and a
-   restart or rebuild loads the descriptor's `activation.commit`, or the mutable
-   tree when there is none, so without this a restart silently undoes the
-   activation. Then **check
+   the app's entry in the staged `config/bundles.yaml` (located by bundle id),
+   then reload at the same sha. The proc reads that staged file on a reload and
+   on a restart, so no apply step sits between them. Why: a reload's commit
+   lives only in the running proc (`durable: false`), and a restart or rebuild
+   loads the descriptor's `activation.commit`, or the mutable tree when there
+   is none, so without this a restart silently undoes the activation. With the
+   pin set, a reload without `--commit` re-activates the pinned commit, never
+   the tree, and `activation.require_commit: true` guards the entry the day the
+   pin is removed: then a commitless reload is refused. Then **check
    the receipt against the approved candidate**: the reload's `Loaded:`
    commit, the relay's first stamped line (`source=snapshot`,
    `app_ecosystem=<sha>`), and the commits the refresh exported each equal
