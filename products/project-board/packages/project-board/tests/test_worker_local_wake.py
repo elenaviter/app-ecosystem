@@ -92,6 +92,38 @@ def test_mailbox_write_reaches_only_its_watch_in_about_one_second(tmp_path: Path
     beta_events.close()
 
 
+def test_three_mail_burst_emits_once_with_the_complete_pending_count(tmp_path: Path):
+    field = _field(tmp_path)
+    events = _events(field, ALPHA)
+    relay = SharedFieldStore(field.root)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(next, events)
+        _wait_for_listener(field, ALPHA)
+
+        started = time.monotonic()
+        _send(relay, ALPHA, "burst-1")
+        time.sleep(0.1)
+        _send(relay, ALPHA, "burst-2")
+        time.sleep(0.1)
+        _send(relay, ALPHA, "burst-3")
+
+        event = first.result(timeout=2)
+        elapsed = time.monotonic() - started
+        followup = pool.submit(next, events)
+        try:
+            assert 0.8 <= elapsed < 1.5
+            assert event["pending_count"] == 3
+            time.sleep(0.25)
+            assert not followup.done(), "one short burst emitted a second event"
+        finally:
+            # Release the follow-up next() before the executor shuts down.
+            _send(relay, ALPHA, "after-burst")
+            followup.result(timeout=2)
+
+    events.close()
+
+
 def test_mail_written_while_the_watch_is_down_is_seen_after_watch_restart(
     tmp_path: Path,
 ):

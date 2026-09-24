@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from typing import Any
 
@@ -57,7 +58,14 @@ def worker_watch_events(
                 signature, event = _availability(result)
                 if signature and signature != last_signature:
                     if result.get("pending_refs") and coalesce:
-                        wake.wait(coalesce)
+                        deadline = time.monotonic() + coalesce
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            # A datagram drains the current burst but does not
+                            # shorten its fixed coalescing window.
+                            wake.wait(remaining)
                         result = probe_worker_input(field, worker_name=worker_name)
                         signature, event = _availability(result)
                     last_signature = signature
