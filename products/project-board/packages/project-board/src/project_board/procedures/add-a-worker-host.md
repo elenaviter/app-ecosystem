@@ -277,6 +277,24 @@ in a browser on any machine, approve, and paste the code back. The login lands
 in `~/.claude/.credentials.json` and every later session of that Linux user
 uses it, including `--resume` and fresh sessions. It changes only on `/logout`.
 
+**Host agent**, for Codex, when any agent in step 0 uses it: the same Node, then
+the CLI.
+
+```bash
+export PATH=$HOME/.local/node/bin:$PATH
+npm install -g @openai/codex
+codex --version
+```
+
+**Operator** (or the person whose account the Codex agents use): log in once, in
+an SSH session as that user. Run `codex login` and complete the sign-in it
+prints, in a browser on any machine. The login lands in `~/.codex/auth.json`, and
+every Codex session of that Linux user uses it.
+
+**Why a person:** each login is an account and its usage. Every agent of that
+runtime under this Linux user works under it, which is why step 0 names the
+account per runtime.
+
 ## 6. Give the relay a credential store, then install it
 
 Runs on: the host.

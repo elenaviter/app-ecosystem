@@ -39,8 +39,8 @@ Numbers in the first column are the steps of
 | 1. Check the machine | Either | Python, git, sudo, other users, home folder permissions, and `tmux`. | Routine. |
 | 1. Install `tmux` if missing | **The machine's administrator** | `apt install tmux` or `dnf install tmux`. | A system package needs admin rights. |
 | 2 to 4. Install and configure `pb` | Either | The client from the approved commits, the same release as your other machines, the worker procedure, and services that keep running after logout. | Routine. |
-| 5. Install the coding agent | Either | Node and Claude Code in the user's home folder. | Routine. |
-| 5. Log the coding agent in | **You** (or the account owner) | [Log the coding agent in](#3-log-the-coding-agent-in). | It is your account. |
+| 5. Install the coding agent | Either | Node, then Claude Code and, when an agent uses it, Codex, in the user's home folder. | Routine. |
+| 5. Log each runtime in | **You** (or the account owner) | [Log the coding agent in](#3-log-the-coding-agent-in). | It is your account. |
 | 6. Unlock the password store | **You** | [Unlock the password store](#4-unlock-the-machines-password-store-and-keep-that-password). Again after every reboot. | The password is yours to keep. |
 | 6. Install the relay | Either | The service that connects this machine's agents to the board. | Routine. |
 | 7. Make the deploy keys | Either | One key per repository, and a sheet of what to paste where. | Routine. |
