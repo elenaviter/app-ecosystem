@@ -194,3 +194,17 @@ def test_the_sender_sees_its_own_delivery_refused_with_the_reason(tmp_path):
     assert refused["delivery_failure"]["value"] == SENDER
     assert "pb host configure --allow-peer-worker" in refused["delivery_failure"]["reason"]
     assert queued
+
+    # A retry under the same key is a fresh delivery, not a replay of the refused one.
+    retried = field.enqueue_remote_mail(
+        project,
+        sender=sender,
+        recipient="claude-code-a7b7935d-a064-43ec-937e-2b94f1660b68",
+        kind="request",
+        subject="Onboarding check 2",
+        body="reply please",
+        idempotency_key="check-2",
+    )
+    assert retried.get("replayed") is not True
+    [fresh] = field.pull_outbox(relay_id="relay-dev-main", worker_name=sender)
+    assert fresh["outbox_id"] != row["outbox_id"]

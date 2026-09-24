@@ -7638,6 +7638,9 @@ class SharedFieldStore:
                 },
             )
             self._outbox.settle(found[0], row)
+            # A refused delivery must not look answered to a retry under the
+            # same key: the retry creates a fresh delivery.
+            self._release_outbox_idempotency(row)
             return row
 
     def sync_project_team(self, project_id: str, team: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -10252,6 +10255,7 @@ class SharedFieldStore:
                     ("recipient", "recipient"),
                     ("kind", "kind_sent"),
                     ("subject", "subject"),
+                    ("idempotency_key", "idempotency_key"),
                 ):
                     if payload.get(key):
                         row[kept] = str(payload[key])
@@ -10281,7 +10285,8 @@ class SharedFieldStore:
         payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
         project_ref = str(row.get("project_ref") or "")
         if str(row.get("kind") or "") == "mail.route":
-            key = str(payload.get("idempotency_key") or "")
+            # A sent row keeps the key beside its dropped body (W304 finding 38).
+            key = str(payload.get("idempotency_key") or row.get("idempotency_key") or "")
             worker_name = str(row.get("worker_name") or payload.get("sender") or "")
             if key and worker_name:
                 try:
