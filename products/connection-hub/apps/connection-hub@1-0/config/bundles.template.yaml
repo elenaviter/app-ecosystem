@@ -116,6 +116,11 @@ bundles:
         - owner
         - admin
 
+      project_invitation_binding:
+        provider:
+          bundle_id: "problem-board@1-0"
+          operation: "project_invitation_binding_resolve"
+
       connections:
         oauth:
             # Public base for Connection Hub browser callbacks when a flow does

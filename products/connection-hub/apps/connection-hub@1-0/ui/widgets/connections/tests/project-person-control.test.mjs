@@ -16,8 +16,26 @@ test('a project person Control Card exposes bounded editor coordinates', () => {
       },
     },
   }), {
+    kind: 'person',
     projectRef: 'work:project:quickstart',
     targetSubject: 'platform-user-2',
+  })
+})
+
+test('a pending invitation Control Card exposes invitation editor coordinates', () => {
+  assert.deepEqual(projectPersonControlCoordinates({
+    properties: {
+      'connection_hub.project_invitation_control': {
+        schema: 'connection_hub.project_invitation_control.v1',
+        project_ref: 'work:project:quickstart',
+        invitation_ref: 'work:invitation:inv-1',
+        target_email_digest: 'opaque',
+      },
+    },
+  }), {
+    kind: 'invitation',
+    projectRef: 'work:project:quickstart',
+    invitationRef: 'work:invitation:inv-1',
   })
 })
 

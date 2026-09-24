@@ -309,12 +309,14 @@ paths:
   /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_get:
     post:
       tags: [Delegated Access]
-      summary: Read one project-held Control Card for a target person.
+      summary: Read one live-person or pending-invitation project Control Card.
       description: >
-        The authenticated platform subject is the actor. Project and target
-        coordinates identify the Card and confer no authority; an injected
-        project authorization port decides the exact read and fails closed
-        when project membership evidence is unavailable.
+        The authenticated platform subject is the actor. A live Card is
+        addressed by project_ref plus target_subject; a pending Card is
+        addressed by project_ref, invitation_ref, and its deterministic
+        control_id. These coordinates confer no authority. The injected
+        project authorization port admits only a project administrator and
+        fails closed when current membership evidence is unavailable.
       operationId: project_person_control_get
       x-kdcube-result-alias: project_person_control_get
       parameters:
@@ -326,7 +328,9 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ProjectPersonControlIdentityEnvelope"
+              oneOf:
+                - $ref: "#/components/schemas/ProjectPersonControlIdentityEnvelope"
+                - $ref: "#/components/schemas/ProjectInvitationControlIdentityEnvelope"
       responses:
         "200":
           description: Current Card and immutable revision audit, or a structured denial.
@@ -334,14 +338,16 @@ paths:
   /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_create:
     post:
       tags: [Delegated Access]
-      summary: Create a project-held Control Card for a target person.
+      summary: Create a live-person or pending-invitation project Control Card.
       description: >
-        Creates the deterministic project-owned Card under an explicit project
-        authorization decision. Creator bootstrap comes from the host project
-        membership lifecycle; the request carries no role or creator claim.
-        `migration` and `project_creation` are mutually exclusive seed origins.
-        Either one records immutable provenance used by the one-shot My Card
-        seed operation; an ordinary new person starts with an empty My Card.
+        Creates a deterministic project-owned Card under an explicit project
+        authorization decision. A live-person request supplies target_subject.
+        A pre-membership invitation request supplies invitation_ref and
+        target_email; Connection Hub stores only its normalized digest. No
+        person identity edge or My Card exists until the invitation is bound.
+        Creator bootstrap comes from the host membership lifecycle; the request
+        carries no role or creator claim. `migration` and `project_creation`
+        are mutually exclusive live-person seed origins.
       operationId: project_person_control_create
       x-kdcube-result-alias: project_person_control_create
       parameters:
@@ -353,7 +359,9 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ProjectPersonControlCreateEnvelope"
+              oneOf:
+                - $ref: "#/components/schemas/ProjectPersonControlCreateEnvelope"
+                - $ref: "#/components/schemas/ProjectInvitationControlCreateEnvelope"
       responses:
         "200":
           description: Created or existing Card and immutable revision audit, or a structured denial.
@@ -361,12 +369,14 @@ paths:
   /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_update:
     post:
       tags: [Delegated Access]
-      summary: Replace one project-held per-person Control Card selection.
+      summary: Replace one live-person or pending-invitation Control Card selection.
       description: >
         Applies catalog-aware selection changes under Card and catalog revision
-        preconditions. The target person cannot update her own Card. Every
-        applied edit stores the authenticated actor, host request id, time, and
-        exact changed fields in the immutable Card revision.
+        preconditions. A live target person cannot update her own Card. A
+        pending invitation has no person identity and only a current project
+        administrator may edit it. Every applied edit stores the authenticated
+        actor, host request id, time, and exact changed fields in the immutable
+        Card revision.
       operationId: project_person_control_update
       x-kdcube-result-alias: project_person_control_update
       parameters:
@@ -378,7 +388,9 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ProjectPersonControlUpdateEnvelope"
+              oneOf:
+                - $ref: "#/components/schemas/ProjectPersonControlUpdateEnvelope"
+                - $ref: "#/components/schemas/ProjectInvitationControlUpdateEnvelope"
       responses:
         "200":
           description: Updated Card and immutable revision audit, or a structured denial.
@@ -386,12 +398,13 @@ paths:
   /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_revoke:
     post:
       tags: [Delegated Access]
-      summary: Revoke one project-held Control Card for a target person.
+      summary: Revoke one live-person or pending-invitation project Control Card.
       description: >
         Commits an audited revoked revision under the same exact project
-        authorization decision. The target person cannot revoke her own Card,
-        and the revoked Card stops resolving as live authority before the
-        operation returns.
+        authorization decision. The live target person cannot revoke her own
+        Card. Revoking an unbound invitation prevents its later binding. The
+        revoked Card stops resolving as live authority before the operation
+        returns.
       operationId: project_person_control_revoke
       x-kdcube-result-alias: project_person_control_revoke
       parameters:
@@ -403,10 +416,41 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ProjectPersonControlIdentityEnvelope"
+              oneOf:
+                - $ref: "#/components/schemas/ProjectPersonControlIdentityEnvelope"
+                - $ref: "#/components/schemas/ProjectInvitationControlIdentityEnvelope"
       responses:
         "200":
           description: Revocation audit and removal state, or a structured denial.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_bind_invitation:
+    post:
+      tags: [Delegated Access]
+      summary: Bind a pending invitation Control Card to the signed-in person.
+      description: >
+        Resolves current invitation evidence through the descriptor-named
+        application provider, requires the evidence to match the exact project,
+        invitation, pending control id, signed-in person, and stored email
+        digest, then creates the deterministic live per-person Control Card and
+        a full initial My Card from the reviewed pending selection. The pending
+        Card is consumed as a revoked audited revision. Exact retries are
+        idempotent and repair a partially committed transition; unrelated live
+        Cards conflict.
+      operationId: project_person_control_bind_invitation
+      x-kdcube-result-alias: project_person_control_bind_invitation
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectInvitationControlIdentityEnvelope"
+      responses:
+        "200":
+          description: Live Control Card, full initial My Card, identity edge, and non-secret binding evidence, or a structured denial.
 
   /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_my_card_seed:
     post:
@@ -1290,6 +1334,19 @@ components:
               properties:
                 project_ref: { type: string, minLength: 1 }
                 target_subject: { type: string, minLength: 1 }
+    ProjectInvitationControlIdentityEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              additionalProperties: false
+              required: [project_ref, invitation_ref, control_id]
+              properties:
+                project_ref: { type: string, minLength: 1 }
+                invitation_ref: { type: string, minLength: 1 }
+                control_id: { type: string, minLength: 1 }
     ProjectPersonControlSelection:
       type: object
       properties:
@@ -1348,6 +1405,25 @@ components:
                       type: boolean
                       default: false
                       description: Marks the creator Control Card established with a new project.
+    ProjectInvitationControlCreateEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              unevaluatedProperties: false
+              allOf:
+                - $ref: "#/components/schemas/ProjectPersonControlSelection"
+                - type: object
+                  required: [project_ref, invitation_ref, target_email]
+                  properties:
+                    project_ref: { type: string, minLength: 1 }
+                    invitation_ref: { type: string, minLength: 1 }
+                    target_email:
+                      type: string
+                      minLength: 3
+                      description: Used to bind the invitation; only its normalized SHA-256 digest is retained on the pending Card.
+                    manage_url: { type: string }
     ProjectPersonControlUpdateEnvelope:
       allOf:
         - $ref: "#/components/schemas/Envelope"
@@ -1362,6 +1438,32 @@ components:
                   properties:
                     project_ref: { type: string, minLength: 1 }
                     target_subject: { type: string, minLength: 1 }
+                    expected_card_revision: { type: integer, minimum: 1 }
+                    expected_catalog_version: { type: string }
+                    accepted_operations:
+                      type: object
+                      additionalProperties:
+                        type: array
+                        items: { type: string }
+    ProjectInvitationControlUpdateEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/Envelope"
+        - type: object
+          properties:
+            data:
+              unevaluatedProperties: false
+              allOf:
+                - $ref: "#/components/schemas/ProjectPersonControlSelection"
+                - type: object
+                  required:
+                    - project_ref
+                    - invitation_ref
+                    - control_id
+                    - expected_card_revision
+                  properties:
+                    project_ref: { type: string, minLength: 1 }
+                    invitation_ref: { type: string, minLength: 1 }
+                    control_id: { type: string, minLength: 1 }
                     expected_card_revision: { type: integer, minimum: 1 }
                     expected_catalog_version: { type: string }
                     accepted_operations:

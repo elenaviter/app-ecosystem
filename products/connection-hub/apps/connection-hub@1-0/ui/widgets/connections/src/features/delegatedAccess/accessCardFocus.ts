@@ -4,6 +4,7 @@ export interface AccessCardFocus {
   controlOnly: boolean;
   projectRef?: string;
   targetSubject?: string;
+  invitationRef?: string;
   resource?: string;
   claims: string[];
   outerOperation?: string;
@@ -23,12 +24,14 @@ export function accessCardFocusFromParams(get: (key: string) => string): AccessC
   const outerOperation = get('outer_operation').trim();
   const projectRef = get('project_ref').trim();
   const targetSubject = get('target_subject').trim();
+  const invitationRef = get('invitation_ref').trim();
   return {
     accessId,
     manualOnly: Boolean(manualAccessId),
     controlOnly: Boolean(controlCardId),
     projectRef: projectRef || undefined,
     targetSubject: targetSubject || undefined,
+    invitationRef: invitationRef || undefined,
     resource: resource || undefined,
     claims,
     outerOperation: outerOperation || undefined,

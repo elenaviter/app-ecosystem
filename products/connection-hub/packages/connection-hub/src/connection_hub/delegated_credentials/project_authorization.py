@@ -17,6 +17,18 @@ PROJECT_PERSON_CONTROL_READ = "project.person_control.read"
 PROJECT_PERSON_CONTROL_UPDATE = "project.person_control.update"
 PROJECT_PERSON_CONTROL_REVOKE = "project.person_control.revoke"
 PROJECT_PERSON_MY_CARD_SEED = "project.person_my_card.seed"
+PROJECT_INVITATION_CONTROL_CREATE = "project.invitation_control.create"
+PROJECT_INVITATION_CONTROL_READ = "project.invitation_control.read"
+PROJECT_INVITATION_CONTROL_UPDATE = "project.invitation_control.update"
+PROJECT_INVITATION_CONTROL_REVOKE = "project.invitation_control.revoke"
+PROJECT_INVITATION_CONTROL_OPERATIONS = frozenset(
+    {
+        PROJECT_INVITATION_CONTROL_CREATE,
+        PROJECT_INVITATION_CONTROL_READ,
+        PROJECT_INVITATION_CONTROL_UPDATE,
+        PROJECT_INVITATION_CONTROL_REVOKE,
+    }
+)
 PROJECT_PERSON_CONTROL_OPERATIONS = frozenset(
     {
         PROJECT_PERSON_CONTROL_CREATE,
@@ -24,6 +36,7 @@ PROJECT_PERSON_CONTROL_OPERATIONS = frozenset(
         PROJECT_PERSON_CONTROL_UPDATE,
         PROJECT_PERSON_CONTROL_REVOKE,
         PROJECT_PERSON_MY_CARD_SEED,
+        *PROJECT_INVITATION_CONTROL_OPERATIONS,
     }
 )
 
@@ -183,9 +196,10 @@ class ProjectAuthorizationRequest:
     """Trusted lifecycle coordinates presented to the project policy host.
 
     The actor comes from the authenticated platform session. ``project_ref``
-    and ``target_subject`` identify the record being managed; they confer no
-    authority by themselves. Creator bootstrap is a policy decision made by
-    the port for ``PROJECT_PERSON_CONTROL_CREATE``, never a request flag.
+    and ``target_subject`` identify the person or invitation record being
+    managed; they confer no authority by themselves. Creator bootstrap is a
+    policy decision made by the port for ``PROJECT_PERSON_CONTROL_CREATE``,
+    never a request flag.
     """
 
     actor_subject: str
@@ -398,7 +412,11 @@ class ResolverBackedProjectAuthorizationPort:
             )
 
         target: ProjectMembershipEvidence | None = None
-        if request.operation != PROJECT_PERSON_CONTROL_REVOKE:
+        target_membership_required = request.operation not in {
+            PROJECT_PERSON_CONTROL_REVOKE,
+            *PROJECT_INVITATION_CONTROL_OPERATIONS,
+        }
+        if target_membership_required:
             try:
                 target = (
                     actor
@@ -427,6 +445,11 @@ class ResolverBackedProjectAuthorizationPort:
 
 
 __all__ = [
+    "PROJECT_INVITATION_CONTROL_CREATE",
+    "PROJECT_INVITATION_CONTROL_OPERATIONS",
+    "PROJECT_INVITATION_CONTROL_READ",
+    "PROJECT_INVITATION_CONTROL_REVOKE",
+    "PROJECT_INVITATION_CONTROL_UPDATE",
     "PROJECT_PERSON_CONTROL_CREATE",
     "PROJECT_PERSON_CONTROL_OPERATIONS",
     "PROJECT_PERSON_CONTROL_READ",

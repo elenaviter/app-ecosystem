@@ -148,6 +148,12 @@ from connection_hub.delegated_credentials.project_identity_authorization import 
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
     ProjectIdentityLifecycleError,
 )
+from connection_hub.delegated_credentials.project_invitation_access import (
+    ProjectInvitationControlLifecycle,
+)
+from connection_hub.delegated_credentials.project_invitation_binding import (
+    ProjectInvitationBindingResolver,
+)
 from connection_hub.delegated_credentials.project_person_access import (
     ProjectPersonControlLifecycle,
 )
@@ -1505,6 +1511,9 @@ class AutomationAccessService:
         resource_overlay_provider: ResourceOverlayProvider | None = None,
         invocation_policy_service: Any | None = None,
         project_authorization_port: ProjectAuthorizationPort | None = None,
+        project_invitation_binding_resolver: (
+            ProjectInvitationBindingResolver | None
+        ) = None,
     ) -> None:
         self._redis = redis
         self._tenant = _clean(tenant)
@@ -1538,9 +1547,21 @@ class AutomationAccessService:
         # policies to the stable card and the read model report them. Without
         # it, migration refuses to fold a record whose policies it cannot see.
         self._invocation_policies = invocation_policy_service
+        self._project_authorization_port = project_authorization_port
+        self._project_invitation_binding_resolver = project_invitation_binding_resolver
+        self._bind_project_lifecycles()
+
+    def _bind_project_lifecycles(self) -> None:
         self._project_person_controls = ProjectPersonControlLifecycle(
             host=self,
-            authorization_port=project_authorization_port,
+            authorization_port=self._project_authorization_port,
+            authority_from_record=card_authority_from_record,
+            record_from_authority=record_from_card,
+        )
+        self._project_invitation_controls = ProjectInvitationControlLifecycle(
+            host=self,
+            authorization_port=self._project_authorization_port,
+            binding_resolver=self._project_invitation_binding_resolver,
             authority_from_record=card_authority_from_record,
             record_from_authority=record_from_card,
         )
@@ -1551,12 +1572,17 @@ class AutomationAccessService:
     ) -> None:
         """Bind the host policy port for this request-scoped service instance."""
 
-        self._project_person_controls = ProjectPersonControlLifecycle(
-            host=self,
-            authorization_port=authorization_port,
-            authority_from_record=card_authority_from_record,
-            record_from_authority=record_from_card,
-        )
+        self._project_authorization_port = authorization_port
+        self._bind_project_lifecycles()
+
+    def bind_project_invitation_binding_resolver(
+        self,
+        resolver: ProjectInvitationBindingResolver | None,
+    ) -> None:
+        """Bind the current request's invitation-to-person evidence resolver."""
+
+        self._project_invitation_binding_resolver = resolver
+        self._bind_project_lifecycles()
 
     # -- card persistence -----------------------------------------------------
     #
@@ -5595,10 +5621,12 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         project_ref: str,
-        target_subject: str,
+        target_subject: str = "",
+        invitation_ref: str = "",
+        control_id: str = "",
         request_id: str,
     ) -> dict[str, Any]:
-        """Read one project-held per-person Control Card after host policy."""
+        """Read one live-person or pending-invitation project Control Card."""
 
         actor_subject = _subject_from_user(user)
         if not actor_subject:
@@ -5606,6 +5634,14 @@ class AutomationAccessService:
                 "ok": False,
                 "error": "delegated_access_requires_authenticated_user",
             }
+        if _clean(invitation_ref):
+            return await self._project_invitation_controls.get(
+                actor_subject=actor_subject,
+                project_ref=project_ref,
+                invitation_ref=invitation_ref,
+                control_id=control_id,
+                request_id=request_id,
+            )
         return await self._project_person_controls.get(
             actor_subject=actor_subject,
             project_ref=project_ref,
@@ -5618,7 +5654,9 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         project_ref: str,
-        target_subject: str,
+        target_subject: str = "",
+        invitation_ref: str = "",
+        target_email: str = "",
         request_id: str,
         resource_grants: Mapping[str, Any] | None = None,
         resource_operations: Mapping[str, Any] | None = None,
@@ -5631,7 +5669,7 @@ class AutomationAccessService:
         migration: bool = False,
         project_creation: bool = False,
     ) -> dict[str, Any]:
-        """Create the project-owned Card that narrows one person's access."""
+        """Create a live-person or pending-invitation project Control Card."""
 
         actor_subject = _subject_from_user(user)
         if not actor_subject:
@@ -5639,6 +5677,28 @@ class AutomationAccessService:
                 "ok": False,
                 "error": "delegated_access_requires_authenticated_user",
             }
+        if _clean(invitation_ref):
+            if migration or project_creation:
+                return {
+                    "ok": False,
+                    "error": "project_invitation_control_seed_origin_invalid",
+                    "status": 400,
+                }
+            return await self._project_invitation_controls.create(
+                actor_subject=actor_subject,
+                project_ref=project_ref,
+                invitation_ref=invitation_ref,
+                target_email=target_email,
+                request_id=request_id,
+                resource_grants=resource_grants,
+                resource_operations=resource_operations,
+                named_service_operations=named_service_operations,
+                account_scope=account_scope,
+                properties=properties,
+                composition_mode=composition_mode,
+                label=label,
+                manage_url=manage_url,
+            )
         return await self._project_person_controls.create(
             actor_subject=actor_subject,
             project_ref=project_ref,
@@ -5661,7 +5721,9 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         project_ref: str,
-        target_subject: str,
+        target_subject: str = "",
+        invitation_ref: str = "",
+        control_id: str = "",
         request_id: str,
         resource_grants: Mapping[str, Any] | None = None,
         resource_operations: Mapping[str, Any] | None = None,
@@ -5674,7 +5736,7 @@ class AutomationAccessService:
         expected_catalog_version: str | None = None,
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
     ) -> dict[str, Any]:
-        """Replace one per-person selection under project policy and audit."""
+        """Replace one live or pending project selection under host policy."""
 
         actor_subject = _subject_from_user(user)
         if not actor_subject:
@@ -5682,6 +5744,24 @@ class AutomationAccessService:
                 "ok": False,
                 "error": "delegated_access_requires_authenticated_user",
             }
+        if _clean(invitation_ref):
+            return await self._project_invitation_controls.update(
+                actor_subject=actor_subject,
+                project_ref=project_ref,
+                invitation_ref=invitation_ref,
+                control_id=control_id,
+                request_id=request_id,
+                resource_grants=resource_grants,
+                resource_operations=resource_operations,
+                named_service_operations=named_service_operations,
+                account_scope=account_scope,
+                properties=properties,
+                composition_mode=composition_mode,
+                label=label,
+                expected_card_revision=expected_card_revision,
+                expected_catalog_version=expected_catalog_version,
+                accepted_operations=accepted_operations,
+            )
         return await self._project_person_controls.update(
             actor_subject=actor_subject,
             project_ref=project_ref,
@@ -5704,10 +5784,12 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         project_ref: str,
-        target_subject: str,
+        target_subject: str = "",
+        invitation_ref: str = "",
+        control_id: str = "",
         request_id: str,
     ) -> dict[str, Any]:
-        """Revoke one project-held per-person Card after host policy."""
+        """Revoke one live-person or pending-invitation project Card."""
 
         actor_subject = _subject_from_user(user)
         if not actor_subject:
@@ -5715,10 +5797,43 @@ class AutomationAccessService:
                 "ok": False,
                 "error": "delegated_access_requires_authenticated_user",
             }
+        if _clean(invitation_ref):
+            return await self._project_invitation_controls.revoke(
+                actor_subject=actor_subject,
+                project_ref=project_ref,
+                invitation_ref=invitation_ref,
+                control_id=control_id,
+                request_id=request_id,
+            )
         return await self._project_person_controls.revoke(
             actor_subject=actor_subject,
             project_ref=project_ref,
             target_subject=target_subject,
+            request_id=request_id,
+        )
+
+    async def project_person_control_bind_invitation(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        invitation_ref: str,
+        control_id: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Bind a provider-verified pending Card to the signed-in person."""
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_invitation_controls.bind(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            invitation_ref=invitation_ref,
+            control_id=control_id,
             request_id=request_id,
         )
 

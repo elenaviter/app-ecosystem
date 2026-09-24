@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import time
@@ -277,11 +278,19 @@ class ProjectPersonCardIdentity:
 def new_project_person_my_card(
     *,
     control_card: CardAuthority,
+    initial_selection: CardAuthority | None = None,
+    initial_provenance: Mapping[str, Any] | None = None,
     label: str = "",
     manage_url: str = "",
     now: int | None = None,
 ) -> CardAuthority:
-    """Create the person's empty positive selection under one Control Card."""
+    """Create the person's positive selection under one Control Card.
+
+    Most project-person Cards start empty and are seeded by their owning
+    lifecycle. Invitation redemption supplies the already reviewed Control
+    Card as ``initial_selection`` so the invited person's first My Card is
+    exactly what the administrator granted.
+    """
 
     control_identity = ProjectPersonControlIdentity.from_authority(control_card)
     identity = ProjectPersonCardIdentity.build(
@@ -289,6 +298,26 @@ def new_project_person_my_card(
         person_subject=control_identity.target_subject,
         control_revision=control_card.card_revision,
     )
+    seed = initial_selection
+    if seed is not None:
+        seed_identity = ProjectPersonControlIdentity.from_authority(seed)
+        if (
+            seed_identity.project_ref != control_identity.project_ref
+            or seed_identity.target_subject != control_identity.target_subject
+            or seed.access_id != control_card.access_id
+            or seed.card_revision != control_card.card_revision
+        ):
+            raise ProjectIdentityLifecycleError(
+                "project_identity_initial_selection_mismatch"
+            )
+    provenance = {PROJECT_IDENTITY_EDGE_PROVENANCE: identity.marker()}
+    for key, value in dict(initial_provenance or {}).items():
+        marker_key = clean_text(key)
+        if not marker_key or marker_key == PROJECT_IDENTITY_EDGE_PROVENANCE:
+            raise ProjectIdentityLifecycleError(
+                "project_identity_initial_provenance_invalid"
+            )
+        provenance[marker_key] = copy.deepcopy(value)
     created_at = int(time.time()) if now is None else int(now)
     authority = CardAuthority(
         access_id=identity.my_card_id,
@@ -301,15 +330,48 @@ def new_project_person_my_card(
         card_revision=identity.initial_my_card_revision,
         catalog_version=control_card.catalog_version,
         state=CARD_STATE_ACTIVE,
-        resource_grants={},
-        resource_operations={},
-        named_service_operations=NamedServiceSelection.none(),
-        named_services={},
-        account_scope={},
+        operations=tuple(seed.operations) if seed is not None else (),
+        resource_grants=(
+            {
+                resource: tuple(grants)
+                for resource, grants in seed.resource_grants.items()
+            }
+            if seed is not None
+            else {}
+        ),
+        resource_operations=(
+            {
+                resource: tuple(operations)
+                for resource, operations in seed.resource_operations.items()
+            }
+            if seed is not None
+            else {}
+        ),
+        named_service_operations=(
+            seed.named_service_operations
+            if seed is not None
+            else NamedServiceSelection.none()
+        ),
+        named_services=(
+            copy.deepcopy(dict(seed.named_services)) if seed is not None else {}
+        ),
+        account_scope=(
+            {
+                provider: {
+                    account_id: tuple(claims) for account_id, claims in accounts.items()
+                }
+                for provider, accounts in seed.account_scope.items()
+            }
+            if seed is not None
+            else {}
+        ),
         identity_scope="grantor",
         created_at=created_at,
         expires_at=0,
-        provenance={PROJECT_IDENTITY_EDGE_PROVENANCE: identity.marker()},
+        resource_acceptance=(
+            copy.deepcopy(dict(seed.resource_acceptance)) if seed is not None else {}
+        ),
+        provenance=provenance,
         control_card=ControlCardBinding(
             control_id=identity.control_id,
             issuer_ref=identity.project_ref,
@@ -358,7 +420,13 @@ class ProjectIdentityLifecycle:
     def _authority(self, record: Any, state: str) -> CardAuthority:
         return dataclasses.replace(self._authority_from_record(record), state=state)
 
-    async def ensure(self, control_record: Any) -> ProjectIdentityLifecycleResult:
+    async def ensure(
+        self,
+        control_record: Any,
+        *,
+        initial_selection: CardAuthority | None = None,
+        initial_provenance: Mapping[str, Any] | None = None,
+    ) -> ProjectIdentityLifecycleResult:
         control = self._authority_from_record(control_record)
         control_identity = ProjectPersonControlIdentity.from_authority(control)
         identity = ProjectPersonCardIdentity.build(
@@ -372,7 +440,11 @@ class ProjectIdentityLifecycle:
         )
         created = False
         if loaded is None:
-            my_authority = new_project_person_my_card(control_card=control)
+            my_authority = new_project_person_my_card(
+                control_card=control,
+                initial_selection=initial_selection,
+                initial_provenance=initial_provenance,
+            )
             my_record = self._record_from_authority(my_authority)
             await self._host._persist_record(my_record, expected_revision=0)
             state = CARD_STATE_ACTIVE
@@ -387,6 +459,11 @@ class ProjectIdentityLifecycle:
             existing_identity = ProjectPersonCardIdentity.from_my_card(my_authority)
             if existing_identity.edge_ref != identity.edge_ref:
                 raise ProjectIdentityLifecycleError("project_identity_edge_conflict")
+            for key, value in dict(initial_provenance or {}).items():
+                if my_authority.provenance.get(key) != value:
+                    raise ProjectIdentityLifecycleError(
+                        "project_identity_initialization_conflict"
+                    )
         my_authority = self._authority(my_record, state)
         identity = ProjectPersonCardIdentity.from_my_card(my_authority)
         edge = identity.edge(control_card=control, my_card=my_authority)

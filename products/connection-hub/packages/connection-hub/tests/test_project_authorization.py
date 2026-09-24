@@ -7,6 +7,7 @@ import dataclasses
 
 import pytest
 from connection_hub.delegated_credentials.project_authorization import (
+    PROJECT_INVITATION_CONTROL_CREATE,
     PROJECT_PERSON_CONTROL_CREATE,
     PROJECT_PERSON_CONTROL_REVOKE,
     PROJECT_PERSON_CONTROL_UPDATE,
@@ -272,6 +273,26 @@ async def test_project_admin_can_revoke_after_target_membership_is_removed() -> 
     decision = await _port(resolver).authorize_project_person_control(
         _request(operation=PROJECT_PERSON_CONTROL_REVOKE)
     )
+
+    assert decision.allowed
+    assert resolver.calls == [(PROJECT_REF, ADMIN)]
+    assert "target_membership" not in decision.evidence
+
+
+@pytest.mark.asyncio
+async def test_project_admin_can_create_a_pending_invitation_before_membership_exists() -> None:
+    resolver = _MembershipResolver(
+        {(PROJECT_REF, ADMIN): _membership(ADMIN, role="admin")}
+    )
+    request = ProjectAuthorizationRequest.build(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject="work:invitation:inv-1",
+        operation=PROJECT_INVITATION_CONTROL_CREATE,
+        request_id="invitation-create",
+    )
+
+    decision = await _port(resolver).authorize_project_person_control(request)
 
     assert decision.allowed
     assert resolver.calls == [(PROJECT_REF, ADMIN)]
