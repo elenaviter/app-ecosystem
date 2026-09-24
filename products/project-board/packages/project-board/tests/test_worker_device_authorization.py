@@ -64,6 +64,17 @@ def _install_services(monkeypatch, tmp_path, *, existing=None, oauth, profile_se
         "_recover_sibling_profile",
         AsyncMock(return_value=None),
     )
+    monkeypatch.setattr(
+        authorization,
+        "read_runtime_account",
+        AsyncMock(
+            return_value={
+                "account_id": "vendor-account-one",
+                "email": "worker@example.test",
+                "organization": "vendor-org-one",
+            }
+        ),
+    )
     return services
 
 
@@ -162,7 +173,53 @@ async def test_new_profile_passes_device_mode_to_connection_hub(monkeypatch, tmp
     assert "Problem Board worker" in kwargs["client_name"]
     assert kwargs["client_metadata"]["kdcube_credential_use"] == "multi_resource"
     assert kwargs["client_metadata"]["kdcube_authorization_profile"] == "worker"
+    assert kwargs["client_metadata"]["kdcube_agent_account"] == {
+        "account_id": "vendor-account-one",
+        "email": "worker@example.test",
+        "organization": "vendor-org-one",
+    }
     assert response["profile"]["access_id"] == "access-one"
+
+
+@pytest.mark.asyncio
+async def test_new_profile_authorizes_when_provider_account_is_not_reported(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    result = SimpleNamespace(profile=_profile(), probe=_probe())
+    oauth = SimpleNamespace(authorize=AsyncMock(return_value=result))
+    _install_services(
+        monkeypatch,
+        tmp_path,
+        oauth=oauth,
+        profile_service=SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        authorization,
+        "read_runtime_account",
+        AsyncMock(
+            side_effect=DomainError(
+                "work_runtime_account_unavailable",
+                "The coding runtime did not report its signed-in account.",
+                status=409,
+            )
+        ),
+    )
+
+    response = await authorization.authorize_worker_profile(
+        "host.json",
+        profile_name="spark1-worker",
+        device=True,
+    )
+
+    metadata = oauth.authorize.await_args.kwargs["client_metadata"]
+    assert "kdcube_agent_account" not in metadata
+    assert response["profile"]["access_id"] == "access-one"
+    assert (
+        "Provider account not reported: work_runtime_account_unavailable."
+        in capsys.readouterr().err
+    )
 
 
 @pytest.mark.asyncio

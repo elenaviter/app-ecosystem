@@ -11,7 +11,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 try:
     from service_foundation.host_relay import HostRelayRetryableError
@@ -39,6 +39,7 @@ from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
 from ..contract.refs import parse_ref
 from ..contract.worker_identity import WorkerSessionIdentity, normalize_worker_alias
+from ..contract.runtime_account import normalize_runtime_account
 from .io import content_hash, new_id, parse_utc, read_json, utc_now
 from .journals import JournalWorkspace, RepositoryMap
 from .mail_attachments import normalize_attachment_manifest
@@ -46,6 +47,7 @@ from .plan_authority import PLAN_REF_RESOLUTION_SCHEMA
 from ..contract.plan_host import NOTE_VIEW_KIND, PLAN_HOST_CONTROL_KINDS
 from .host_config import HostRelayConfig, WorkerChannelConfig, set_worker_channel_state
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
+from .runtime_account import read_runtime_account
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .credential_refusal import credential_refused
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
@@ -587,6 +589,8 @@ class ProblemBoardHostRelayAdapter:
         heartbeat_sent_at: dict[str, float] | None = None,
         monotonic: Callable[[], float] | None = None,
         trace: RelayActivityTrace | None = None,
+        runtime_account_reader: Callable[[], Awaitable[Mapping[str, Any]]] | None = None,
+        runtime_account_error_state: dict[str, str] | None = None,
     ) -> None:
         self.config = config
         self.field = field
@@ -642,9 +646,40 @@ class ProblemBoardHostRelayAdapter:
         )
         self._monotonic = monotonic or time.monotonic
         self._trace = trace or RelayActivityTrace(log=logger)
+        self._runtime_account_reader = runtime_account_reader
+        self._runtime_account_error_state = (
+            runtime_account_error_state
+            if runtime_account_error_state is not None
+            else {"code": ""}
+        )
         # The LOCAL journal mapping gap this cycle found, if any, so a journal
         # view in the same cycle refuses with the cause instead of "unbound".
         self._journal_mapping_gap: dict[str, Any] | None = None
+
+    async def _runtime_account(self) -> dict[str, str]:
+        """Read identification metadata for an actual publish or heartbeat."""
+
+        if self._runtime_account_reader is None:
+            return {}
+        try:
+            account = normalize_runtime_account(await self._runtime_account_reader())
+        except DomainError as exc:
+            if self._runtime_account_error_state.get("code") != exc.code:
+                logger.warning(
+                    "Problem Board could not read runtime account identity "
+                    "worker_name=%s error_code=%s",
+                    self.config.worker_name,
+                    exc.code,
+                )
+                self._runtime_account_error_state["code"] = exc.code
+            return {}
+        self._runtime_account_error_state["code"] = ""
+        return account
+
+    async def _add_runtime_account(self, payload: dict[str, Any]) -> None:
+        account = await self._runtime_account()
+        if account:
+            payload["runtime_account"] = account
 
     def _trace_stage(self, stage: str, *, operation: str):
         return self._trace.stage(
@@ -1067,6 +1102,7 @@ class ProblemBoardHostRelayAdapter:
             "poll_interval_seconds": interval,
             "repository_urls": dict(self.config.source_repository_urls),
         }
+        await self._add_runtime_account(payload)
         completed = [
             {
                 "code": str(item.get("code") or ""),
@@ -2668,6 +2704,7 @@ class ProblemBoardHostRelayAdapter:
                 heartbeat_payload["assignment_files"] = assignment_files_delta
             if store_reads_delta is not None:
                 heartbeat_payload["store_reads"] = store_reads_delta
+            await self._add_runtime_account(heartbeat_payload)
             try:
                 heartbeat_response = await self.client.action(
                     object_ref="work:worker:self",
@@ -2800,10 +2837,12 @@ class ProblemBoardHostRelayAdapter:
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
         """Heartbeat first; republish only when the control plane no longer knows us."""
 
+        heartbeat_payload = dict(payload)
+        await self._add_runtime_account(heartbeat_payload)
         try:
             return _object_result(
                 await self.client.action(
-                    object_ref="work:worker:self", action="worker.heartbeat", payload=dict(payload)
+                    object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
                 )
             ), None
         except DomainError as exc:
@@ -2818,7 +2857,7 @@ class ProblemBoardHostRelayAdapter:
             return {}, registration
         return _object_result(
             await self.client.action(
-                object_ref="work:worker:self", action="worker.heartbeat", payload=dict(payload)
+                object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
             )
         ), registration
 
@@ -2943,6 +2982,8 @@ class ProblemBoardHostRelayAdapter:
                 heartbeat_sent_at=self._heartbeat_sent_at,
                 monotonic=self._monotonic,
                 trace=self._trace,
+                runtime_account_reader=self._runtime_account_reader,
+                runtime_account_error_state=self._runtime_account_error_state,
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
@@ -3971,6 +4012,9 @@ class ProblemBoardRelaySupervisor:
                 field=SharedFieldStore(host.field_root),
                 client=client,
                 trace=self._trace,
+                runtime_account_reader=lambda: read_runtime_account(
+                    channel.runtime_kind
+                ),
             )
         except BaseException as exc:
             await stack.aclose()

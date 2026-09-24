@@ -201,6 +201,8 @@ export interface DelegatedAccessRecord {
   label?: string;
   client_id?: string;
   delegate_subject?: string;
+  /** KDCube person whose authority created this Card. */
+  grantor_subject?: string;
   operations?: string[];
   /** Exact outer MCP/REST operation selection per protected resource. */
   resource_operations?: DelegatedAccessResourceOperations;
