@@ -397,6 +397,67 @@ def wake_deferred_until(state: Mapping[str, Any] | None, *, now: str) -> str:
     return resets_at if resets_at and resets_at > _utc(now) else ""
 
 
+# Claude Code names its windows; Codex reports minutes. Both read the same way.
+_WINDOW_NAME_LABELS = {
+    "five_hour": "5 h",
+    "seven_day": "week",
+    "seven_day_opus": "week (Opus)",
+    "seven_day_sonnet": "week (Sonnet)",
+}
+
+
+def window_length_label(window: Mapping[str, Any]) -> str:
+    """A window by its length, the way the operator reads it: `5 h`, `week`.
+
+    The operator could not tell a rolling window from a weekly one while the
+    board showed only a name or one number (W26, 2026-09-24).
+    """
+
+    try:
+        minutes = int(window.get("window_minutes") or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    if minutes > 0:
+        if minutes % 10080 == 0:
+            return "week" if minutes == 10080 else f"{minutes // 10080} weeks"
+        if minutes >= 1440 and minutes % 1440 == 0:
+            return f"{minutes // 1440} d"
+        if minutes >= 60:
+            return f"{round(minutes / 60)} h"
+        return f"{minutes} min"
+    name = str(window.get("name") or "")
+    return _WINDOW_NAME_LABELS.get(name, name or "window")
+
+
+def limit_windows_line(state: Mapping[str, Any] | None) -> str:
+    """Every reported window with its length and use, nearest its limit first.
+
+    `week 65% · 5 h 23%` for Claude Code, `week 20%` for Codex, which reports
+    its weekly window as `primary`.
+    """
+
+    if not isinstance(state, Mapping):
+        return ""
+    windows = [
+        window
+        for window in state.get("windows") or []
+        if isinstance(window, Mapping) and window.get("used_percent") is not None
+    ]
+    windows.sort(key=lambda window: -float(window["used_percent"]))
+    return " · ".join(
+        f"{window_length_label(window)} {round(float(window['used_percent']))}%"
+        for window in windows
+    )
+
+
+def _reached_label(state: Mapping[str, Any]) -> str:
+    reached = str(state.get("reached") or "")
+    for window in state.get("windows") or []:
+        if isinstance(window, Mapping) and str(window.get("name") or "") == reached:
+            return window_length_label(window)
+    return _WINDOW_NAME_LABELS.get(reached, reached)
+
+
 def limit_state_line(state: Mapping[str, Any] | None) -> str:
     """One short line for a status bar: what the limit is and when it resets."""
 
@@ -412,15 +473,12 @@ def limit_state_line(state: Mapping[str, Any] | None) -> str:
     if kind == KIND_STOPPED:
         return "stopped (" + (reached or "error") + ")"
     if kind == KIND_RATE_LIMITED:
-        detail = " (" + reached + ")" if reached else ""
+        window = _reached_label(state)
+        detail = " (" + window + ")" if window else ""
         return "rate limited" + detail + when
     if kind == KIND_OK:
-        windows = [
-            str(w.get("name")) + " " + str(int(w["used_percent"])) + "%"
-            for w in state.get("windows") or []
-            if isinstance(w, Mapping) and w.get("used_percent") is not None
-        ]
-        return "usage ok (" + ", ".join(windows) + ")" if windows else "usage ok"
+        windows = limit_windows_line(state)
+        return "usage ok (" + windows + ")" if windows else "usage ok"
     return "limit unknown"
 
 
