@@ -22,14 +22,18 @@ _TARGET = "2" * 64
 _PREVIEW = "3" * 64
 
 
-def _receipt(*, target_generation: str = _TARGET) -> AuthorityCutoverReceipt:
+def _receipt(
+    *,
+    generation_id: str = "authority-test-v1",
+    target_generation: str = _TARGET,
+) -> AuthorityCutoverReceipt:
     counts = {
         FAMILY_OAUTH_CLIENTS: 49,
         FAMILY_OAUTH_REFRESH: 56,
         FAMILY_OAUTH_ACCESS: 1,
     }
     return AuthorityCutoverReceipt(
-        generation_id="authority-test-v1",
+        generation_id=generation_id,
         source_generation=_SOURCE,
         target_generation=target_generation,
         source_counts=counts,
@@ -107,6 +111,13 @@ async def test_cutover_activation_is_idempotent_and_conflict_checked_in_postgres
             )
         with pytest.raises(AuthorityCutoverConflict):
             await store.activate(_receipt(target_generation="4" * 64))
+
+        second = await store.activate(
+            _receipt(generation_id="authority-test-v2")
+        )
+        assert second.generation_id == "authority-test-v2"
+        assert await store.read("authority-test-v1") is None
+        assert await store.read("authority-test-v2") == second
     finally:
         async with pool.acquire() as connection:
             await connection.execute(

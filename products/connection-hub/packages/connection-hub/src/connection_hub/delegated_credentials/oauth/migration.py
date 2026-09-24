@@ -81,6 +81,58 @@ class PostgresOAuthMigrationTarget:
             return await self._import_access(source)
         raise ValueError(f"unsupported OAuth migration record: {source.record_type}")
 
+    async def remove_record(self, record: AuthorityMigrationRecord) -> bool:
+        """Remove one stale migration identity inside the caller's transaction."""
+
+        target = record.validated()
+        async with self._pool.acquire() as connection, connection.transaction():
+            if target.record_type == "oauth_client":
+                status = await connection.execute(
+                    f"DELETE FROM {self.schema}.{TABLE_CLIENTS} WHERE client_id = $1",
+                    target.identity,
+                )
+            elif target.record_type == "oauth_access":
+                status = await connection.execute(
+                    f"DELETE FROM {self.schema}.{TABLE_ACCESS_BINDINGS} "
+                    "WHERE token_sha256 = $1",
+                    target.identity,
+                )
+            elif target.record_type == "oauth_refresh":
+                status = await connection.execute(
+                    f"""
+                    DELETE FROM {self.schema}.{TABLE_FAMILIES}
+                    WHERE family_id IN (
+                        SELECT family_id
+                        FROM {self.schema}.{TABLE_REFRESH_GENERATIONS}
+                        WHERE token_sha256 = $1
+                    )
+                    """,
+                    target.identity,
+                )
+            else:
+                raise ValueError(
+                    f"unsupported OAuth migration record: {target.record_type}"
+                )
+        return not str(status or "").endswith(" 0")
+
+    async def synchronize_records(
+        self,
+        records: tuple[AuthorityMigrationRecord, ...],
+        *,
+        captured_at_ms: int,
+    ) -> None:
+        """Remove target records absent from, or changed in, the source snapshot."""
+
+        source_by_key = {
+            (record.record_type, record.identity): record.validated()
+            for record in records
+        }
+        current = await self.snapshot(captured_at_ms=int(captured_at_ms))
+        for target in current.records:
+            source = source_by_key.get((target.record_type, target.identity))
+            if source is None or source.evidence() != target.evidence():
+                await self.remove_record(target)
+
     async def _import_client(self, source: AuthorityMigrationRecord) -> bool:
         payload = canonical_oauth_client_record(
             _json_object(source.payload.get("record"))

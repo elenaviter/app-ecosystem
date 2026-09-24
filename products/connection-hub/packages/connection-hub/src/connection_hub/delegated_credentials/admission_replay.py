@@ -217,6 +217,24 @@ class PostgresAdmissionReplayClaimStore:
             )
         return [dict(row) for row in rows]
 
+    async def remove_migrated_digest(self, nonce_sha256: str) -> bool:
+        """Remove one stale digest-only claim during snapshot replacement."""
+
+        digest = str(nonce_sha256 or "").strip().lower()
+        if len(digest) != 64 or any(value not in "0123456789abcdef" for value in digest):
+            raise ValueError("admission replay digest must be a SHA-256 digest")
+        async with self._pool.acquire() as connection, connection.transaction():
+            status = await connection.execute(
+                f"""
+                DELETE FROM {self.schema}.{TABLE_ADMISSION_REPLAY_CLAIMS}
+                WHERE nonce_sha256 = $1
+                  AND service_id = $2
+                """,
+                digest,
+                MIGRATED_DIGEST_ONLY_SERVICE_ID,
+            )
+        return not str(status or "").endswith(" 0")
+
     async def purge_expired(self, *, now: int | None = None, limit: int = 1000) -> int:
         """Remove a bounded batch after the proof validity window has ended."""
 

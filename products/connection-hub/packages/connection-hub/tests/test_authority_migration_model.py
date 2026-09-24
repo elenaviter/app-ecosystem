@@ -94,6 +94,11 @@ class _Target:
     def __init__(self, source: AuthorityMigrationSnapshot) -> None:
         self.source = source
         self.imported: list[str] = []
+        self.synchronized: list[str] = []
+
+    async def synchronize(self, source: AuthorityMigrationSnapshot) -> None:
+        self.synchronized.append(source.generation)
+        self.source = source
 
     async def import_record(self, record: AuthorityMigrationRecord) -> bool:
         self.imported.append(record.identity)
@@ -106,6 +111,11 @@ class _Target:
 class _FailingTarget(_Target):
     async def import_record(self, record: AuthorityMigrationRecord) -> bool:
         raise RuntimeError("target-row-conflict")
+
+
+class _UnsynchronizedTarget(_Target):
+    async def synchronize(self, source: AuthorityMigrationSnapshot) -> None:
+        self.synchronized.append(source.generation)
 
 
 class _Source:
@@ -157,6 +167,7 @@ async def test_apply_imports_then_writes_the_exact_reconciled_receipt() -> None:
     )
 
     assert target.imported == ["a" * 64]
+    assert target.synchronized == [source.generation]
     assert migration_source.inspect_count == 1
     assert receipts.activated == [receipt]
     assert receipt.source_counts == source.counts
@@ -181,6 +192,7 @@ async def test_rehearsal_imports_and_reconciles_without_a_receipt() -> None:
 
     assert destination == source
     assert target.imported == ["a" * 64]
+    assert target.synchronized == [source.generation]
     assert migration_source.inspect_count == 1
 
 
@@ -209,28 +221,40 @@ async def test_rehearsal_names_the_first_record_that_cannot_be_imported() -> Non
 
 
 @pytest.mark.asyncio
-async def test_rehearsal_names_the_first_reconciliation_conflict() -> None:
+async def test_rehearsal_replaces_changed_target_evidence_before_import() -> None:
+    source = _snapshot()
+    destination = _snapshot(payload_value="different")
+    preview = _preview(source)
+    target = _Target(destination)
+
+    reconciled = await rehearse_reviewed_migration(
+        preview=preview,
+        source=_Source(source),
+        target=target,
+        confirmed_preview_sha256=preview.preview_sha256,
+    )
+
+    assert reconciled == source
+    assert target.synchronized == [source.generation]
+    assert target.imported == ["a" * 64]
+
+
+@pytest.mark.asyncio
+async def test_rehearsal_still_refuses_a_target_that_did_not_synchronize() -> None:
     source = _snapshot()
     destination = _snapshot(payload_value="different")
     preview = _preview(source)
 
     with pytest.raises(
         AuthorityMigrationImportFailed,
-        match=(
-            "authority_migration_record_import_failed:"
-            f"oauth_refresh:{'a' * 64}:target_record_content_mismatch"
-        ),
-    ) as raised:
+        match="target_record_content_mismatch",
+    ):
         await rehearse_reviewed_migration(
             preview=preview,
             source=_Source(source),
-            target=_Target(destination),
+            target=_UnsynchronizedTarget(destination),
             confirmed_preview_sha256=preview.preview_sha256,
         )
-
-    assert raised.value.record_type == "oauth_refresh"
-    assert raised.value.identity == "a" * 64
-    assert raised.value.reason == "target_record_content_mismatch"
 
 
 @pytest.mark.asyncio
