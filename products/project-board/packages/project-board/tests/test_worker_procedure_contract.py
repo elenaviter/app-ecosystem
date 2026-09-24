@@ -974,6 +974,6 @@ def test_an_agent_sets_up_its_workspace_from_the_project_record():
     reference = " ".join((source_package_path() / "references" / "project-workspace.md").read_text(encoding="utf-8").split())
     assert "whenever you are added to a project, set up its workspace from its record: [project workspace](references/project-workspace.md)" in skill
     assert "pb worker context --project-ref <project>" in reference
-    assert "Clone every repository in the list into your workspace, the journal repository (role `journal`) included" in reference
-    assert "fetch it and fast-forward before you work" in reference
-    assert "tell the operator by name, with its URL" in reference
+    assert "the repository lives at `<workspace>/<alias>`" in reference
+    assert "The journal repository (role `journal`) is cloned like any other" in reference
+    assert "tell the operator by name, with its alias and URL" in reference

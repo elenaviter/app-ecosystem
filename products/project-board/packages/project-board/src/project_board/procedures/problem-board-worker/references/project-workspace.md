@@ -1,9 +1,9 @@
 ---
 id: applications.playground.problem-board.skill-reference.project-workspace
 title: Set Up A Project Workspace
-summary: How a worker sets up its workspace for a project it attends, from the project's record on its host, the journal repository included.
+summary: How a worker sets up its workspace for a project it attends, from the project's record on its host, the journal repository included, each repository at its declared branch in a folder named by its alias.
 tags: [procedure, problem-board, worker, workspace, repositories, attendance]
-keywords: [pb worker context, repositories, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
+keywords: [pb worker context, project_on_this_host, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
 see_also:
   - ./identity-and-authorization.md
   - ./collaboration.md
@@ -12,30 +12,67 @@ see_also:
 # Set Up A Project Workspace
 
 When the operator adds you to a project, your host receives the project's
-record within seconds: its team and the repositories set on the project card.
-You set up your workspace from that record, when you are added and each time
-you resume.
+record: its team and the repositories set on the project card. You set up your
+workspace from that record, when you are added and each time you resume.
 
-1. Read the record:
+## 1. Read the record, once it is on this host
 
-   ```bash
-   pb worker context --project-ref <project> --format brief
-   ```
+```bash
+pb worker context --project-ref <project> --format brief
+```
 
-   It lists the team with the coordinator, the `repositories` (each with an
-   alias, a URL, a role of `work`, `journal` or `artifact`, and an optional
-   branch or path), and the journal home.
+Read `project_on_this_host` first.
 
-2. Clone every repository in the list into your workspace, the journal
-   repository (role `journal`) included. The journal is where the project's
-   history lives, and you read it before acting on a subject.
+- **`false`**: the record has not reached this host yet. The relay writes it
+  within seconds of the link. `repositories` is empty only because nothing is
+  here yet. Wait a minute and read again. After ten minutes still `false`,
+  tell the operator that the relay has not written the project on this host,
+  with the output of `pb worker inspect`.
+- **`true`**: the record is here, and `repositories` is the project card's
+  list. An empty list then means the card names no repositories yet: ask the
+  coordinator which repositories the work needs, rather than guessing.
 
-3. A repository you already have: fetch it and fast-forward before you work,
-   so you start from the project's current state.
+Each entry has an `alias`, a `url`, a `role` (`work`, `journal` or
+`artifact`), and an optional `branch` and `path`.
 
-4. A repository you cannot reach (no deploy key on this host, no access):
-   tell the operator by name, with its URL, and go on with the rest. The
-   operator adds the key or the access, and you clone it then.
+- **`alias`** names the folder: the repository lives at `<workspace>/<alias>`,
+  where `<workspace>` is your own workspace folder (`pb worker workspace`
+  shows it). Two entries with the same URL are two folders, one per alias.
+- **`branch`** is the branch you work on. Without it, you use the branch the
+  remote checks out by default.
+- **`path`** is the part of the repository the project uses, for example the
+  journal home inside the journal repository. It is a place inside the clone,
+  never a separate clone.
 
-An empty list means the project card names no repositories yet. Ask the
-coordinator which repositories the work needs, rather than guessing.
+## 2. Clone or update every repository, the journal one included
+
+For each entry, with `WORKSPACE`, `ALIAS`, `URL` and `BRANCH` (empty when the
+entry has none) set from it:
+
+```bash
+dest="$WORKSPACE/$ALIAS"
+if [ -d "$dest/.git" ]; then
+  git -C "$dest" fetch --prune origin
+else
+  git clone --quiet "$URL" "$dest"
+fi
+if [ -n "$BRANCH" ]; then
+  git -C "$dest" checkout --quiet "$BRANCH"
+  git -C "$dest" merge --ff-only --quiet "origin/$BRANCH"
+else
+  git -C "$dest" merge --ff-only --quiet "@{upstream}"
+fi
+```
+
+The journal repository (role `journal`) is cloned like any other: the
+project's history lives there, and you read it before acting on a subject.
+
+A checkout or fast-forward that fails (local changes, a history that has
+diverged) is never forced. Leave that folder as it is and tell the coordinator
+which alias and why.
+
+## 3. Report what you cannot reach
+
+A repository you cannot clone or fetch (no deploy key on this host, no
+access): tell the operator by name, with its alias and URL, and go on with the
+rest. The operator adds the key or the access, and you clone it then.
