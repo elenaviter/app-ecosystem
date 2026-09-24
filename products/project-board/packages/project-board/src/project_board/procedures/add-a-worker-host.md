@@ -62,7 +62,7 @@ new host
     ├── .local/bin/pb                  guarded project-board launcher
     ├── .kdcube/client-runtime/tools/problem-board-venv/   isolated bootstrap
     ├── .kdcube/          (700)        selectors, snapshots, relay state, logs, mailboxes
-    ├── src/app-ecosystem, src/kdcube-ai-app   public clones the client is built from, read only
+    ├── src/app-ecosystem, src/kdcube          public clones the client is built from, read only
     ├── .ssh/deploy_<repo>{,.pub}      one deploy key per repository
     ├── .config/systemd/user/kdcube-problem-board-relay-*.service
     └── workspaces/       (700)
@@ -104,7 +104,8 @@ before anything changes:
 | **repositories the agents may work on** | see the table below | the most important decision: each gets a deploy key with write access and a clone in every workspace. The agents reach nothing else through Problem Board. |
 | workspaces, one per agent | `~/workspaces/space001`, `space002` | each agent edits only its own clones |
 | agent names | `claude-ops@spark1`, `claude-app@spark1` | display names on the board. The board addresses a worker by a stable generated name. |
-| coding agent account | the account whose subscription the agents use | step 5 logs in with it. Every session of that Linux user shares it. |
+| runtime of each agent | `claude-code` for both, or one of each | an agent is its runtime, the runtime account that logged it in, and its session id, and that identity never changes. One host can run Claude Code and Codex agents side by side, each in its own workspace. Needing another runtime means adding another agent. |
+| account per runtime | the Claude account for Claude Code agents, the OpenAI account for Codex agents | step 5 logs each runtime in once. Every agent of that runtime under the same Linux user shares its login and its usage. |
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 
@@ -114,7 +115,7 @@ The repository table, used by steps 2, 7 and 8:
 |---|---|---|---|
 | `applications` | `kdcube/applications` | yes | Problem Board and the other apps |
 | `app-ecosystem` | `elenaviter/app-ecosystem` | no | Connection Hub and foundation packages |
-| `kdcube-ai-app` | `kdcube/kdcube` | no | KDCube platform and SDK |
+| `kdcube` | `kdcube/kdcube` | no | KDCube platform and SDK |
 
 ## 1. Give the host agent access to the host
 
@@ -165,8 +166,8 @@ own clones in step 8.
 ```bash
 mkdir -p ~/src
 [ -d ~/src/app-ecosystem ] || git clone -q https://github.com/elenaviter/app-ecosystem.git ~/src/app-ecosystem
-[ -d ~/src/kdcube-ai-app ] || git clone -q https://github.com/kdcube/kdcube.git ~/src/kdcube-ai-app
-git -C ~/src/app-ecosystem fetch -q origin && git -C ~/src/kdcube-ai-app fetch -q origin
+[ -d ~/src/kdcube ] || git clone -q https://github.com/kdcube/kdcube.git ~/src/kdcube
+git -C ~/src/app-ecosystem fetch -q origin && git -C ~/src/kdcube fetch -q origin
 ```
 
 Then it installs the client family from clean exports of the exact App
@@ -176,7 +177,7 @@ Ecosystem and KDCube commits approved by the operator:
 APP_REPOSITORY=/home/<user>/src/app-ecosystem
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=/home/<user>/src/kdcube-ai-app
+KDCUBE_REPOSITORY=/home/<user>/src/kdcube
 KDCUBE_COMMIT=<approved-full-commit>
 KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
@@ -216,7 +217,7 @@ pb source use-code \
   --repository /home/<user>/src/app-ecosystem \
   --ref <approved-full-commit> \
   --expect <approved-full-commit> \
-  --kdcube-repository /home/<user>/src/kdcube-ai-app \
+  --kdcube-repository /home/<user>/src/kdcube \
   --kdcube-ref <approved-full-kdcube-commit> \
   --expect-kdcube <approved-full-kdcube-commit>
 pb source status
@@ -275,6 +276,24 @@ SSH session as that user. Run `claude`, choose the account, open the printed URL
 in a browser on any machine, approve, and paste the code back. The login lands
 in `~/.claude/.credentials.json` and every later session of that Linux user
 uses it, including `--resume` and fresh sessions. It changes only on `/logout`.
+
+**Host agent**, for Codex, when any agent in step 0 uses it: the same Node, then
+the CLI.
+
+```bash
+export PATH=$HOME/.local/node/bin:$PATH
+npm install -g @openai/codex
+codex --version
+```
+
+**Operator** (or the person whose account the Codex agents use): log in once, in
+an SSH session as that user. Run `codex login` and complete the sign-in it
+prints, in a browser on any machine. The login lands in `~/.codex/auth.json`, and
+every Codex session of that Linux user uses it.
+
+**Why a person:** each login is an account and its usage. Every agent of that
+runtime under this Linux user works under it, which is why step 0 names the
+account per runtime.
 
 ## 6. Give the relay a credential store, then install it
 
@@ -428,8 +447,10 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/workspa
   interactive question nobody watches: a worker asks the operator by board mail,
   which reaches them wherever they are.
 
-For Codex, the equivalent is
-`codex -C ~/workspaces/<workspace> -s danger-full-access`.
+A Codex agent starts in its own tmux session the same way, with `codex` in
+place of `claude`. Which sandbox and approval flags a Codex worker should use is
+being settled in W307, which records the two forms in use today. A Codex worker
+is woken by the relay through its native queue, so it needs no `pb worker watch`.
 
 The first start in bypass mode shows a one-time warning. Accepting it is the
 **operator's** decision. The host agent then selects **Yes, I accept** and
@@ -594,7 +615,7 @@ it identifies the environment the installer must update:
 APP_REPOSITORY=/home/<user>/src/app-ecosystem
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=/home/<user>/src/kdcube-ai-app
+KDCUBE_REPOSITORY=/home/<user>/src/kdcube
 KDCUBE_COMMIT=<approved-full-commit>
 KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
@@ -670,7 +691,7 @@ Key:
 
     ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAzcyOq6rmbwmcldadYYQ52Qf2zvmlislDzmQ/DOFjGk spark1 deploy key: app-ecosystem
 
-### kdcube-ai-app
+### kdcube
 
 Title: spark1 agents
 Allow write access: yes
