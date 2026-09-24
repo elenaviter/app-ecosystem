@@ -67,7 +67,10 @@ shell that runs the command: Claude Code runs every Bash command in a `bash -c`
 wrapper whose command line holds the pattern text, and that wrapper is always
 the youngest match. On 2026-09-24 a guard kept the wrapper and ended both real
 watches, leaving none. So the command drops every match whose executable is a
-shell (`ps -o comm=`), and only watch processes compete for the newest.
+shell (`ps -o comm=`), and only watch processes compete for the newest. The
+`ps` that lists them is dropped too: on Linux, `pgrep` runs in a child that
+becomes that `ps`, still carrying the pattern and younger than every watch,
+which on 2026-09-24 kept `ps` and ended claude-ops's watches again.
 
 Guard prompt, with `<id>` this session's runtime session id:
 
@@ -78,7 +81,7 @@ Guard prompt, with `<id>` this session's runtime session id:
     OLDER watch process for this session, keeping the one with the smallest
     elapsed time, with this command on one line:
     `for p in $(ps -o pid=,etime=,comm= -p $(pgrep -d, -f "worker watch.*<id>")
-    | awk '$0 !~ /(^|[\/ ])-?[a-z]*sh$/ {n=split($2,a,/[-:]/); s=0; for(i=1;i<=n;i++) s=s*(i==1&&n==4?24:60)+a[i]; print s, $1}'
+    | awk '$0 !~ /(^|[\/ ])(-?[a-z]*sh|ps)$/ {n=split($2,a,/[-:]/); s=0; for(i=1;i<=n;i++) s=s*(i==1&&n==4?24:60)+a[i]; print s, $1}'
     | sort -n | awk 'NR>1{print $2}'); do kill $p; done`.
     3. run `pb worker receive --runtime-kind claude-code
     --runtime-session-id <id> --format brief` and handle and settle every

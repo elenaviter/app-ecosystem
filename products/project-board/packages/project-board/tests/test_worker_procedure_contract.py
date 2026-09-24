@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.16"
+    assert package["revision"] == "2026.09.24.17"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -379,7 +379,7 @@ def test_start_or_resume_and_the_claude_code_wake_path() -> None:
     assert "ps -o pid=,etime=,comm= -p $(pgrep -d, -f \"worker watch.*<id>\")" in wake
     # The pattern also matches the shell running the command (2026-09-24,
     # claude-ops): shells are dropped before the newest is chosen.
-    assert "awk '$0 !~ /(^|[\\/ ])-?[a-z]*sh$/ {" in wake
+    assert "awk '$0 !~ /(^|[\\/ ])(-?[a-z]*sh|ps)$/ {" in wake
     assert "that wrapper is always the youngest match" in wake
     assert "sort -n | awk 'NR>1{print $2}'" in wake
     assert "pgrep -f \"worker watch.*<id>\" | sort -n | sed '$d'" not in wake.replace("(`sort -n | sed '$d'`)", "")
