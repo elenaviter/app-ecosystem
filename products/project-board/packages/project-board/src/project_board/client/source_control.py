@@ -263,15 +263,21 @@ class ClientSourceController:
             )
         except Exception as exc:
             rollback = self._restore_and_restart(previous, previous_release, wait_seconds)
+            details: dict[str, Any] = {
+                "selected": dict(selected),
+                "reason": str(getattr(exc, "code", "") or exc),
+                "rollback": rollback,
+            }
+            if isinstance(exc, DomainError):
+                details["cause"] = exc.to_dict()
+                for key in ("command", "returncode", "stderr"):
+                    if key in exc.details:
+                        details[key] = exc.details[key]
             raise DomainError(
                 "work_client_source_activation_failed",
                 "The relay could not restart on the selected Project Board "
                 "source; the previous source was restored.",
-                details={
-                    "selected": dict(selected),
-                    "reason": str(getattr(exc, "code", "") or exc),
-                    "rollback": rollback,
-                },
+                details=details,
             ) from exc
         if startup.get("state") != "started":
             rollback = self._restore_and_restart(previous, previous_release, wait_seconds)

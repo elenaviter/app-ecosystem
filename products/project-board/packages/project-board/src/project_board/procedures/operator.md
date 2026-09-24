@@ -155,6 +155,14 @@ agent terminals. Its definition and logs are reported in command output. Host-
 boot service authority beyond the user's login session remains an explicit
 administrator decision.
 
+On macOS, install, start, and restart wait for the prior LaunchAgent to leave
+launchd before loading the current definition. A transient launchd bootstrap
+return code 5 is retried with a bounded backoff. A terminal service-manager
+failure reports its command, return code, and stderr; source activation keeps
+that evidence on `work_client_source_activation_failed` after restoring the
+previous source. systemd service changes use its native start and restart
+transactions.
+
 The service definition sets the relay's file-descriptor limit
 (`SoftResourceLimits.NumberOfFiles` in the LaunchAgent, `LimitNOFILE` in the
 unit). Without it the relay inherits the login session's ceiling, 256 on a

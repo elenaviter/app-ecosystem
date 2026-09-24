@@ -380,6 +380,50 @@ def test_released_selection_accepts_pep440_equivalent_version_spelling(
     assert receipt["selected"]["version"] == "2026.9.22.2241"
 
 
+def test_activation_failure_preserves_relay_command_evidence(tmp_path: Path) -> None:
+    class _FailsFirstRestart(_Service):
+        def restart(self) -> dict[str, object]:
+            self.restarts += 1
+            if self.restarts == 1:
+                raise DomainError(
+                    "work_relay_service_command_failed",
+                    "launchd could not restart the relay.",
+                    details={
+                        "command": ["launchctl", "bootstrap", "gui/501"],
+                        "returncode": 5,
+                        "stderr": "Bootstrap failed: 5: Input/output error",
+                    },
+                )
+            return {"running": True}
+
+    config = tmp_path / "target" / "relay.json"
+    service = _FailsFirstRestart(tmp_path)
+    controller = ClientSourceController(
+        config,
+        service=service,
+        release_source={"mode": "released", "version": "2026.09.22.2241"},
+    )
+
+    with pytest.raises(DomainError) as failure:
+        controller.use_release(
+            expect_version="2026.09.22.2241", wait_seconds=0
+        )
+
+    assert failure.value.code == "work_client_source_activation_failed"
+    assert failure.value.details["command"] == [
+        "launchctl",
+        "bootstrap",
+        "gui/501",
+    ]
+    assert failure.value.details["returncode"] == 5
+    assert failure.value.details["stderr"] == (
+        "Bootstrap failed: 5: Input/output error"
+    )
+    assert failure.value.details["cause"]["code"] == (
+        "work_relay_service_command_failed"
+    )
+
+
 class _Service:
     def __init__(self, root: Path, *, startup_state: str = "started") -> None:
         self.definition_path = root / "service-definition"

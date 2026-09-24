@@ -30,6 +30,10 @@ STARTUP_RECORD_NAME = "relay.start.json"
 # a record that has not appeared in this long is a failed start.
 STARTUP_WAIT_SECONDS = 30.0
 STARTUP_POLL_SECONDS = 0.5
+LAUNCHD_UNLOAD_WAIT_SECONDS = 30.0
+LAUNCHD_UNLOAD_POLL_SECONDS = 0.5
+LAUNCHD_BOOTSTRAP_ATTEMPTS = 3
+LAUNCHD_BOOTSTRAP_RETRY_SECONDS = 0.5
 
 
 # The relay's file-descriptor limit, rendered into the LaunchAgent and the
@@ -112,30 +116,45 @@ def _run(
             details={"command": str(command[0])},
         ) from exc
     except subprocess.CalledProcessError as exc:
-        is_launchd = bool(command and Path(command[0]).name == "launchctl")
-        message = (
-            "launchd could not change the login-scoped Problem Board relay. "
-            "Run the same pb relay-service command from the logged-in user's "
-            "normal Terminal; do not run it as root."
-            if is_launchd
-            else "The host user-service command failed."
-        )
-        details: dict[str, Any] = {
-            "command": list(command),
-            "returncode": exc.returncode,
-            "stdout": exc.stdout.strip(),
-            "stderr": exc.stderr.strip(),
-        }
-        if is_launchd:
-            details["recovery"] = (
-                "Use the logged-in desktop user's Terminal so launchd and the "
-                "user's native credential store share the intended session."
-            )
-        raise DomainError(
-            "work_relay_service_command_failed",
-            message,
-            details=details,
+        raise _service_command_error(
+            command,
+            returncode=exc.returncode,
+            stdout=exc.stdout,
+            stderr=exc.stderr,
         ) from exc
+
+
+def _service_command_error(
+    command: Sequence[str],
+    *,
+    returncode: int,
+    stdout: str | None,
+    stderr: str | None,
+) -> DomainError:
+    is_launchd = bool(command and Path(command[0]).name == "launchctl")
+    message = (
+        "launchd could not change the login-scoped Problem Board relay. "
+        "Run the same pb relay-service command from the logged-in user's "
+        "normal Terminal; do not run it as root."
+        if is_launchd
+        else "The host user-service command failed."
+    )
+    details: dict[str, Any] = {
+        "command": list(command),
+        "returncode": int(returncode),
+        "stdout": str(stdout or "").strip(),
+        "stderr": str(stderr or "").strip(),
+    }
+    if is_launchd:
+        details["recovery"] = (
+            "Use the logged-in desktop user's Terminal so launchd and the "
+            "user's native credential store share the intended session."
+        )
+    return DomainError(
+        "work_relay_service_command_failed",
+        message,
+        details=details,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,6 +312,50 @@ class RelayService:
     def _launchd_target(self) -> str:
         return f"gui/{os.getuid()}/{self.service_id}"
 
+    def _wait_for_launchd_unload(self) -> None:
+        command = ["launchctl", "print", self._launchd_target()]
+        deadline = time.monotonic() + LAUNCHD_UNLOAD_WAIT_SECONDS
+        while True:
+            result = _run(command, check=False)
+            if result.returncode != 0:
+                return
+            if time.monotonic() >= deadline:
+                raise DomainError(
+                    "work_relay_service_stop_timeout",
+                    "launchd did not unload the Problem Board relay in time.",
+                    details={
+                        "command": command,
+                        "target": self._launchd_target(),
+                        "waited_seconds": LAUNCHD_UNLOAD_WAIT_SECONDS,
+                    },
+                )
+            time.sleep(LAUNCHD_UNLOAD_POLL_SECONDS)
+
+    def _bootstrap_launchd(self) -> subprocess.CompletedProcess[str]:
+        self._wait_for_launchd_unload()
+        command = [
+            "launchctl",
+            "bootstrap",
+            f"gui/{os.getuid()}",
+            str(self.definition_path),
+        ]
+        for attempt in range(LAUNCHD_BOOTSTRAP_ATTEMPTS):
+            result = _run(command, check=False)
+            if result.returncode == 0:
+                return result
+            if (
+                result.returncode != 5
+                or attempt + 1 == LAUNCHD_BOOTSTRAP_ATTEMPTS
+            ):
+                raise _service_command_error(
+                    command,
+                    returncode=result.returncode,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                )
+            time.sleep(LAUNCHD_BOOTSTRAP_RETRY_SECONDS)
+        raise AssertionError("launchd bootstrap attempts were not evaluated")
+
     def install(self) -> dict[str, Any]:
         """Write the stable bootstrap definition and (re)start under it."""
 
@@ -319,14 +382,7 @@ class RelayService:
         self._write_definition()
         if self.system == "Darwin":
             _run(["launchctl", "bootout", self._launchd_target()], check=False)
-            _run(
-                [
-                    "launchctl",
-                    "bootstrap",
-                    f"gui/{os.getuid()}",
-                    str(self.definition_path),
-                ]
-            )
+            self._bootstrap_launchd()
             _run(["launchctl", "kickstart", "-k", self._launchd_target()])
         else:
             _run(["systemctl", "--user", "daemon-reload"])
@@ -351,14 +407,7 @@ class RelayService:
                     "command_output": "",
                 }
             self._write_definition()
-            _run(
-                [
-                    "launchctl",
-                    "bootstrap",
-                    f"gui/{os.getuid()}",
-                    str(self.definition_path),
-                ]
-            )
+            self._bootstrap_launchd()
             result = _run(["launchctl", "kickstart", self._launchd_target()])
         else:
             self._write_definition()
@@ -397,14 +446,7 @@ class RelayService:
                 return {**started, "restarted": False}
             self._write_definition()
             _run(["launchctl", "bootout", self._launchd_target()], check=False)
-            _run(
-                [
-                    "launchctl",
-                    "bootstrap",
-                    f"gui/{os.getuid()}",
-                    str(self.definition_path),
-                ]
-            )
+            self._bootstrap_launchd()
             result = _run(
                 ["launchctl", "kickstart", "-k", self._launchd_target()]
             )
