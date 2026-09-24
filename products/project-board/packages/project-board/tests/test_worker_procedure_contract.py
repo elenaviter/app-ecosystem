@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.13"
+    assert package["revision"] == "2026.09.24.14"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -100,6 +100,7 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
         "references/shared-runtime-state.md",
         "references/collaboration.md",
         "references/brief-output.md",
+        "references/project-workspace.md",
     }
     for reference in references:
         assert (PROCEDURE_ROOT / reference).is_file(), reference
@@ -964,3 +965,15 @@ def test_connecting_agents_on_another_machine_starts_at_the_operator_decisions()
     skill = _words(_read("SKILL.md"))
     assert "Connecting agents on another machine follows the add-a-worker-host procedure" in skill
     assert "from its step 0, where the operator decides names, repositories and access before anything changes" in skill
+
+
+def test_an_agent_sets_up_its_workspace_from_the_project_record():
+    """W304 finding 39: attending a project brings its record, and the agent clones from it."""
+
+    skill = " ".join((source_package_path() / "SKILL.md").read_text(encoding="utf-8").split())
+    reference = " ".join((source_package_path() / "references" / "project-workspace.md").read_text(encoding="utf-8").split())
+    assert "whenever you are added to a project, set up its workspace from its record: [project workspace](references/project-workspace.md)" in skill
+    assert "pb worker context --project-ref <project>" in reference
+    assert "the repository lives at `<workspace>/<alias>`" in reference
+    assert "The journal repository (role `journal`) is cloned like any other" in reference
+    assert "tell the operator by name, with its alias and URL" in reference

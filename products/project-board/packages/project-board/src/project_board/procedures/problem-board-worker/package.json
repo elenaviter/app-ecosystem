@@ -1,7 +1,7 @@
 {
   "schema": "problem-board.procedure-source.v1",
   "package_id": "problem-board-worker",
-  "revision": "2026.09.24.13",
+  "revision": "2026.09.24.14",
   "entrypoint": "SKILL.md",
   "references": [
     "references/identity-and-authorization.md",
@@ -14,6 +14,7 @@
     "references/first-run.md",
     "references/shared-runtime-state.md",
     "references/collaboration.md",
-    "references/brief-output.md"
+    "references/brief-output.md",
+    "references/project-workspace.md"
   ]
 }

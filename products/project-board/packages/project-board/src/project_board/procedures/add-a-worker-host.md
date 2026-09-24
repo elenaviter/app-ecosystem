@@ -653,7 +653,16 @@ Runs on: the board in the operator's browser (attendance and the operator's
 messages), the operator's phone (Telegram), and the host (`pb worker inspect`,
 the relay log).
 
-The **operator** adds each agent to the project. Then the coordinator and the
+The **operator** adds each agent to the project. Within seconds the agent's
+host holds the project's record: its team and the repositories set on the
+project card. **The agent** then sets up its workspace from that record, as
+the worker procedure's project-workspace reference says:
+- it reads `pb worker context --project-ref <project>` once `project_on_this_host` is true;
+- it clones each listed repository, the journal repository (role `journal`) included, into `<workspace>/<alias>` at its declared branch;
+- it fetches and fast-forwards any it already has;
+- it tells the operator by name about any it cannot reach.
+
+The workspace holding each listed alias at its branch is the proof. Then the coordinator and the
 operator prove, **one check at a time**, that each agent communicates on every
 channel and knows it is part of the team. The coordinator proposes each check,
 the operator approves it, and the result is shown before the next one. An agent

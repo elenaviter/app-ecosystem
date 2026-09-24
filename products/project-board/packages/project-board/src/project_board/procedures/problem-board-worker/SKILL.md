@@ -92,7 +92,7 @@ wakes and held leases still require prompt receive, handling, and settlement.
    live. Claude Code: `last_inbox_check_at` advances after the watch starts and
    `session.inbox_check_state` reads `current`.
 7. Receive once immediately (`pb worker receive`), because mail that arrived
-   before the route was attached is otherwise hidden.
+   before the route was attached is otherwise hidden. Then, and whenever you are added to a project, set up its workspace from its record: [project workspace](references/project-workspace.md).
 
 Read [identity and authorization](references/identity-and-authorization.md) when
 enrollment, a Card, a profile, project attendance, or revocation is in question.
