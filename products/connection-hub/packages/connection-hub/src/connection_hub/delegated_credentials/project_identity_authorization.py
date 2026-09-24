@@ -13,8 +13,9 @@ same-grantor invariant of ordinary caller-to-Control-Card composition.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 from connection_hub.delegated_credentials.cards.identity import CARD_KIND_CONTROL
 from connection_hub.delegated_credentials.cards.model import (
@@ -32,10 +33,14 @@ from connection_hub.delegated_credentials.catalog.authorization import (
     CapabilityRequest,
     card_permits_capability,
 )
+from connection_hub.delegated_credentials.controls.project_person import (
+    PROJECT_PERSON_CONTROL_ISSUER_KIND,
+    ProjectPersonControlError,
+    ProjectPersonControlIdentity,
+)
 from connection_hub.delegated_credentials.controls.snapshot import (
     control_snapshot_is_exact,
 )
-
 
 PROJECT_IDENTITY_EDGE_SCHEMA = "connection_hub.project_identity_delegation_edge.v1"
 PROJECT_OPERATION_AUTHORIZATION_SCHEMA = (
@@ -57,7 +62,7 @@ CARD_RESOLUTION_STATES = frozenset(
 
 BOUNDARY_EDGE = "project_identity_edge"
 BOUNDARY_CATALOG = "active_catalog"
-BOUNDARY_CONTROL_CARD = "project_control_card"
+BOUNDARY_CONTROL_CARD = "control_card"
 BOUNDARY_MY_CARD = "my_card"
 ALLOW_REASON = "project_operation_allowed"
 
@@ -85,7 +90,7 @@ def _values(value: Iterable[Any] | str | None) -> tuple[str, ...]:
 
 
 def _card_prefix(role: str) -> str:
-    return "project_control_card" if role == BOUNDARY_CONTROL_CARD else "my_card"
+    return "control_card" if role == BOUNDARY_CONTROL_CARD else "my_card"
 
 
 @dataclass(frozen=True)
@@ -138,7 +143,7 @@ class ProjectIdentityDelegationEdge:
         if not _clean(self.project_subject):
             return "project_identity_subject_missing"
         if not isinstance(self.control_card, ProjectIdentityCardReference):
-            return "project_control_card_reference_missing"
+            return "control_card_reference_missing"
         if not isinstance(self.my_card, ProjectIdentityCardReference):
             return "my_card_reference_missing"
         for role, reference in (
@@ -149,10 +154,20 @@ class ProjectIdentityDelegationEdge:
                 return reason
         if self.control_card.access_id == self.my_card.access_id:
             return "project_identity_cards_not_distinct"
-        if self.control_card.grantor_subject != self.project_subject:
-            return "project_control_card_owner_mismatch"
-        if self.control_card.issuer_ref != self.project_ref:
-            return "project_control_card_project_mismatch"
+        expected = ProjectPersonControlIdentity.build(
+            project_ref=self.project_ref,
+            target_subject=self.person_subject,
+        )
+        if self.project_subject != expected.project_subject:
+            return "control_card_project_subject_mismatch"
+        if self.control_card.access_id != expected.control_id:
+            return "control_card_reference_mismatch"
+        if self.control_card.grantor_subject != expected.project_subject:
+            return "control_card_owner_mismatch"
+        if self.control_card.issuer_ref != expected.project_ref:
+            return "control_card_project_mismatch"
+        if self.control_card.issuer_kind != PROJECT_PERSON_CONTROL_ISSUER_KIND:
+            return "control_card_issuer_mismatch"
         if self.my_card.grantor_subject != self.person_subject:
             return "my_card_owner_mismatch"
         return ""
@@ -195,7 +210,10 @@ class ProjectOperationRequest:
             (
                 reason
                 for condition, reason in (
-                    (not _clean(self.person_subject), "project_session_identity_missing"),
+                    (
+                        not _clean(self.person_subject),
+                        "project_session_identity_missing",
+                    ),
                     (not _clean(self.project_ref), "project_identity_missing"),
                     (not _clean(self.resource), "project_operation_resource_missing"),
                     (not _clean(self.operation), "project_operation_missing"),
@@ -250,19 +268,19 @@ class ProjectCardResolution:
     reason: str = ""
 
     @classmethod
-    def current(cls, authority: CardAuthority) -> "ProjectCardResolution":
+    def current(cls, authority: CardAuthority) -> ProjectCardResolution:
         return cls(authority=authority)
 
     @classmethod
-    def missing(cls) -> "ProjectCardResolution":
+    def missing(cls) -> ProjectCardResolution:
         return cls(state=CARD_RESOLUTION_MISSING)
 
     @classmethod
-    def updating(cls, reason: str = "") -> "ProjectCardResolution":
+    def updating(cls, reason: str = "") -> ProjectCardResolution:
         return cls(state=CARD_RESOLUTION_UPDATING, reason=_clean(reason))
 
     @classmethod
-    def unavailable(cls, reason: str = "") -> "ProjectCardResolution":
+    def unavailable(cls, reason: str = "") -> ProjectCardResolution:
         return cls(state=CARD_RESOLUTION_UNAVAILABLE, reason=_clean(reason))
 
     def to_public_dict(self) -> dict[str, Any]:
@@ -353,7 +371,9 @@ def _card_issue(
             details={"resolution_state": state},
         )
     if state != CARD_RESOLUTION_CURRENT:
-        details = {"resolution_reason": _clean(resolved.reason)} if resolved.reason else {}
+        details = (
+            {"resolution_reason": _clean(resolved.reason)} if resolved.reason else {}
+        )
         return _Issue(
             f"{prefix}_{state}",
             role,
@@ -397,11 +417,25 @@ def _card_issue(
 
     if role == BOUNDARY_CONTROL_CARD:
         if card.card_kind != CARD_KIND_CONTROL or not authority_is_credentialless(card):
-            return _Issue("project_control_card_invalid", role)
+            return _Issue("control_card_invalid", role)
         if card.composition_mode != CONTROL_COMPOSITION_AND:
-            return _Issue("project_control_card_requires_and", role)
+            return _Issue("control_card_requires_and", role)
         if not control_snapshot_is_exact(card):
-            return _Issue("project_control_card_exact_snapshot_required", role)
+            return _Issue("control_card_exact_snapshot_required", role)
+        try:
+            identity = ProjectPersonControlIdentity.from_authority(card)
+        except ProjectPersonControlError as exc:
+            return _Issue(
+                "control_card_identity_invalid",
+                role,
+                details={"identity_reason": exc.reason},
+            )
+        if identity.project_ref != edge.project_ref:
+            return _Issue("control_card_project_mismatch", role)
+        if identity.target_subject != edge.person_subject:
+            return _Issue("control_card_target_mismatch", role)
+        if identity.project_subject != edge.project_subject:
+            return _Issue("control_card_project_subject_mismatch", role)
     else:
         binding = card.control_card
         if binding is None:
@@ -425,7 +459,7 @@ def _capability_reason(boundary: str, capability: CapabilityRequest) -> str:
     }.get(capability.kind, "operation")
     prefix = {
         BOUNDARY_CATALOG: "active_catalog_excludes_project",
-        BOUNDARY_CONTROL_CARD: "project_control_card_excludes",
+        BOUNDARY_CONTROL_CARD: "control_card_excludes",
         BOUNDARY_MY_CARD: "my_card_excludes",
     }[boundary]
     return f"{prefix}_{suffix}"
@@ -487,6 +521,32 @@ def authorize_project_operation(
             my_card=my_card,
         )
 
+    capabilities = request.capability_requests()
+    if catalog is None:
+        issue = _Issue("active_catalog_unavailable", BOUNDARY_CATALOG, retryable=True)
+    else:
+        issue = next(
+            (
+                _Issue(
+                    _capability_reason(BOUNDARY_CATALOG, capability),
+                    BOUNDARY_CATALOG,
+                    capability=capability,
+                )
+                for capability in capabilities
+                if not catalog.permits(capability)
+            ),
+            None,
+        )
+    if issue is not None:
+        return _decision(
+            issue,
+            request=request,
+            edge=edge,
+            catalog=catalog,
+            control_card=control_card,
+            my_card=my_card,
+        )
+
     moment = int(time.time()) if now is None else int(now)
     for role, reference, resolution in (
         (BOUNDARY_CONTROL_CARD, edge.control_card, control_card),
@@ -502,41 +562,23 @@ def authorize_project_operation(
                 my_card=my_card,
             )
 
-    if catalog is None:
-        issue = _Issue("active_catalog_unavailable", BOUNDARY_CATALOG, retryable=True)
-    else:
-        capabilities = request.capability_requests()
-        issue = next(
-            (
-                _Issue(
-                    _capability_reason(BOUNDARY_CATALOG, capability),
-                    BOUNDARY_CATALOG,
-                    capability=capability,
-                )
-                for capability in capabilities
-                if not catalog.permits(capability)
-            ),
-            None,
-        )
-        if issue is None:
-            authorities = (
-                (BOUNDARY_CONTROL_CARD, control_card.authority),
-                (BOUNDARY_MY_CARD, my_card.authority),
+    authorities = (
+        (BOUNDARY_CONTROL_CARD, control_card.authority),
+        (BOUNDARY_MY_CARD, my_card.authority),
+    )
+    issue = next(
+        (
+            _Issue(
+                _capability_reason(boundary, capability),
+                boundary,
+                capability=capability,
             )
-            issue = next(
-                (
-                    _Issue(
-                        _capability_reason(boundary, capability),
-                        boundary,
-                        capability=capability,
-                    )
-                    for boundary, authority in authorities
-                    for capability in capabilities
-                    if authority is None
-                    or not card_permits_capability(authority, capability)
-                ),
-                None,
-            )
+            for boundary, authority in authorities
+            for capability in capabilities
+            if authority is None or not card_permits_capability(authority, capability)
+        ),
+        None,
+    )
     return _decision(
         issue,
         request=request,

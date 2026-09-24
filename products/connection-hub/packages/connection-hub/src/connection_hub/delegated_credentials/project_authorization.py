@@ -6,11 +6,11 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Protocol
+from typing import Any, Protocol
 
 from connection_hub.delegated_credentials.named_service_policy import clean_text
-
 
 PROJECT_PERSON_CONTROL_CREATE = "project.person_control.create"
 PROJECT_PERSON_CONTROL_READ = "project.person_control.read"
@@ -58,6 +58,82 @@ def _grants(values: Any) -> tuple[str, ...]:
     return tuple(sorted({clean_text(value) for value in values if clean_text(value)}))
 
 
+def _roles(values: Iterable[Any] | str | None) -> frozenset[str]:
+    source: Iterable[Any]
+    if isinstance(values, str):
+        source = values.replace(",", " ").split()
+    elif isinstance(values, (list, tuple, set, frozenset)):
+        source = values
+    else:
+        source = ()
+    return frozenset(role for value in source if (role := clean_text(value).lower()))
+
+
+@dataclass(frozen=True)
+class ProjectMembershipEvidence:
+    """One host-owned project membership answer, with no implied authority."""
+
+    project_ref: str
+    subject: str
+    role: str
+    delegable_grants: tuple[str, ...] = ()
+    evidence: Mapping[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        project_ref: Any,
+        subject: Any,
+        role: Any,
+        delegable_grants: Any = (),
+        evidence: Mapping[str, Any] | None = None,
+    ) -> ProjectMembershipEvidence:
+        if evidence is not None and not isinstance(evidence, Mapping):
+            raise ProjectAuthorizationError("project_membership_evidence_invalid")
+        return cls(
+            project_ref=_required(
+                project_ref,
+                "project_membership_project_ref_missing",
+            ),
+            subject=_required(subject, "project_membership_subject_missing"),
+            role=_required(role, "project_membership_role_missing").lower(),
+            delegable_grants=_grants(delegable_grants),
+            evidence=copy.deepcopy(dict(evidence or {})),
+        )
+
+    def validate_for(self, *, project_ref: str, subject: str) -> None:
+        if clean_text(self.project_ref) != project_ref:
+            raise ProjectAuthorizationError("project_membership_project_ref_mismatch")
+        if clean_text(self.subject) != subject:
+            raise ProjectAuthorizationError("project_membership_subject_mismatch")
+        _required(self.role, "project_membership_role_missing")
+        _grants(self.delegable_grants)
+        if not isinstance(self.evidence, Mapping):
+            raise ProjectAuthorizationError("project_membership_evidence_invalid")
+
+    def to_public_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "project_ref": self.project_ref,
+            "subject": self.subject,
+            "role": self.role,
+        }
+        if self.evidence:
+            result["evidence"] = copy.deepcopy(dict(self.evidence))
+        return result
+
+
+class ProjectMembershipResolver(Protocol):
+    """Application-owned lookup for canonical project membership evidence."""
+
+    async def resolve_project_membership(
+        self,
+        *,
+        project_ref: str,
+        subject: str,
+    ) -> ProjectMembershipEvidence | None: ...
+
+
 @dataclass(frozen=True)
 class ProjectAuthorizationRequest:
     """Trusted lifecycle coordinates presented to the project policy host.
@@ -83,7 +159,7 @@ class ProjectAuthorizationRequest:
         target_subject: Any,
         operation: Any,
         request_id: Any,
-    ) -> "ProjectAuthorizationRequest":
+    ) -> ProjectAuthorizationRequest:
         return cls(
             actor_subject=_required(
                 actor_subject,
@@ -128,7 +204,7 @@ class ProjectAuthorizationDecision:
         delegable_grants: Any = (),
         platform_admin: bool = False,
         evidence: Mapping[str, Any] | None = None,
-    ) -> "ProjectAuthorizationDecision":
+    ) -> ProjectAuthorizationDecision:
         return cls(
             allowed=True,
             actor_subject=request.actor_subject,
@@ -148,7 +224,7 @@ class ProjectAuthorizationDecision:
         *,
         reason: Any,
         evidence: Mapping[str, Any] | None = None,
-    ) -> "ProjectAuthorizationDecision":
+    ) -> ProjectAuthorizationDecision:
         return cls(
             allowed=False,
             actor_subject=request.actor_subject,
@@ -168,7 +244,9 @@ class ProjectAuthorizationDecision:
         if clean_text(self.actor_subject) != request.actor_subject:
             raise ProjectAuthorizationError("project_authorization_actor_mismatch")
         if clean_text(self.project_ref) != request.project_ref:
-            raise ProjectAuthorizationError("project_authorization_project_ref_mismatch")
+            raise ProjectAuthorizationError(
+                "project_authorization_project_ref_mismatch"
+            )
         if clean_text(self.target_subject) != request.target_subject:
             raise ProjectAuthorizationError("project_authorization_target_mismatch")
         if _operation(self.operation) != request.operation:
@@ -182,11 +260,17 @@ class ProjectAuthorizationDecision:
         if self.allowed:
             _grants(self.delegable_grants)
             if clean_text(self.reason):
-                raise ProjectAuthorizationError("project_authorization_allow_reason_invalid")
+                raise ProjectAuthorizationError(
+                    "project_authorization_allow_reason_invalid"
+                )
         elif not clean_text(self.reason):
-            raise ProjectAuthorizationError("project_authorization_denial_reason_missing")
+            raise ProjectAuthorizationError(
+                "project_authorization_denial_reason_missing"
+            )
         elif self.delegable_grants or self.platform_admin:
-            raise ProjectAuthorizationError("project_authorization_denial_authority_invalid")
+            raise ProjectAuthorizationError(
+                "project_authorization_denial_authority_invalid"
+            )
 
 
 class ProjectAuthorizationPort(Protocol):
@@ -195,8 +279,103 @@ class ProjectAuthorizationPort(Protocol):
     async def authorize_project_person_control(
         self,
         request: ProjectAuthorizationRequest,
+    ) -> ProjectAuthorizationDecision: ...
+
+
+class ResolverBackedProjectAuthorizationPort:
+    """Authorize project-held Control Card changes from membership evidence."""
+
+    def __init__(
+        self,
+        *,
+        resolver: ProjectMembershipResolver | None,
+        administrative_roles: Iterable[Any] | str,
+    ) -> None:
+        self._resolver = resolver
+        self._administrative_roles = _roles(administrative_roles)
+
+    async def _resolve(
+        self,
+        *,
+        request: ProjectAuthorizationRequest,
+        subject: str,
+    ) -> ProjectMembershipEvidence | None:
+        assert self._resolver is not None
+        membership = await self._resolver.resolve_project_membership(
+            project_ref=request.project_ref,
+            subject=subject,
+        )
+        if membership is None:
+            return None
+        if not isinstance(membership, ProjectMembershipEvidence):
+            raise ProjectAuthorizationError("project_membership_evidence_invalid")
+        membership.validate_for(
+            project_ref=request.project_ref,
+            subject=subject,
+        )
+        return membership
+
+    @staticmethod
+    def _deny(
+        request: ProjectAuthorizationRequest,
+        reason: str,
+        *,
+        evidence: Mapping[str, Any] | None = None,
     ) -> ProjectAuthorizationDecision:
-        ...
+        return ProjectAuthorizationDecision.deny(
+            request,
+            reason=reason,
+            evidence=evidence,
+        )
+
+    async def authorize_project_person_control(
+        self,
+        request: ProjectAuthorizationRequest,
+    ) -> ProjectAuthorizationDecision:
+        if self._resolver is None:
+            return self._deny(request, "project_membership_resolver_missing")
+        if not self._administrative_roles:
+            return self._deny(request, "project_administrative_roles_missing")
+
+        try:
+            actor = await self._resolve(
+                request=request,
+                subject=request.actor_subject,
+            )
+        except ProjectAuthorizationError as exc:
+            return self._deny(request, exc.reason)
+        if actor is None:
+            return self._deny(request, "project_actor_membership_missing")
+        if actor.role.lower() not in self._administrative_roles:
+            return self._deny(
+                request,
+                "project_actor_role_not_administrative",
+                evidence={"actor_membership": actor.to_public_dict()},
+            )
+
+        try:
+            target = (
+                actor
+                if request.target_subject == request.actor_subject
+                else await self._resolve(
+                    request=request,
+                    subject=request.target_subject,
+                )
+            )
+        except ProjectAuthorizationError as exc:
+            return self._deny(request, exc.reason)
+        if target is None:
+            return self._deny(request, "project_target_membership_missing")
+
+        return ProjectAuthorizationDecision.allow(
+            request,
+            delegable_grants=actor.delegable_grants,
+            evidence={
+                "authorization_source": "project_membership_resolver",
+                "actor_membership": actor.to_public_dict(),
+                "target_membership": target.to_public_dict(),
+            },
+        )
 
 
 __all__ = [
@@ -209,4 +388,7 @@ __all__ = [
     "ProjectAuthorizationError",
     "ProjectAuthorizationPort",
     "ProjectAuthorizationRequest",
+    "ProjectMembershipEvidence",
+    "ProjectMembershipResolver",
+    "ResolverBackedProjectAuthorizationPort",
 ]

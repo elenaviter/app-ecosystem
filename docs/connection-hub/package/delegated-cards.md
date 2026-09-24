@@ -105,9 +105,12 @@ version. Cross-owner project edges use this dedicated AND evaluator; they do
 not relax the same-grantor invariant of ordinary caller-to-Control-Card
 composition.
 
-This per-person Control Card is separate from a project's Agent Control Card.
-The former governs one person's project operations. The latter governs hosted
-agents for the project and retains its own descriptor projection and lifecycle.
+Named denials identify `active_catalog`, `control_card`, `my_card`, or
+`project_identity_edge` as the blocking boundary. The per-person Control Card
+governs one person's project operations. A **Project Control Card** governs
+hosted agents for the project through its descriptor projection and lifecycle.
+The administrator lifecycle for the per-person Card is documented under
+[Project-held Control Cards for people](#project-held-control-cards-for-people).
 
 ## Card Families
 
@@ -1393,6 +1396,15 @@ target, operation, and host request id. A missing port, a missing policy answer,
 a malformed or mismatched decision, and a named denial all fail closed.
 Connection Hub never reads an application's membership store or infers project
 authority from platform roles.
+
+The standard resolver-backed port asks an application-owned
+`ProjectMembershipResolver` for typed membership evidence for the actor and
+target. The host configures which application roles administer the project;
+the resolver supplies the actor's exact delegable-grant ceiling. Missing actor
+or target membership, a non-administrative project role, mismatched evidence,
+and an unbound resolver return named denials. The project application binds its
+canonical membership store at host composition, so membership authority stays
+with the application that owns it.
 
 The standard Card editor opens this lifecycle when its deep link carries the
 Card's `control_card_id` together with `project_ref` and `target_subject`.

@@ -3,7 +3,6 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-
 from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AUTOMATION
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
@@ -19,6 +18,12 @@ from connection_hub.delegated_credentials.catalog.models import CatalogDocument
 from connection_hub.delegated_credentials.controls.model import (
     new_credentialless_card,
 )
+from connection_hub.delegated_credentials.controls.project_person import (
+    PROJECT_PERSON_CONTROL_ISSUER_KIND,
+    PROJECT_PERSON_CONTROL_PROPERTY,
+    ProjectPersonControlIdentity,
+    bind_project_person_control,
+)
 from connection_hub.delegated_credentials.project_identity_authorization import (
     BOUNDARY_CATALOG,
     BOUNDARY_CONTROL_CARD,
@@ -32,11 +37,15 @@ from connection_hub.delegated_credentials.project_identity_authorization import 
     authorize_project_operation,
 )
 
-
 NOW = 1_800_000_000
 PERSON = "platform-user-1"
-PROJECT_SUBJECT = "project:demo-project"
 PROJECT_REF = "work:project:demo-project"
+CONTROL_IDENTITY = ProjectPersonControlIdentity.build(
+    project_ref=PROJECT_REF,
+    target_subject=PERSON,
+)
+PROJECT_SUBJECT = CONTROL_IDENTITY.project_subject
+CONTROL_ID = CONTROL_IDENTITY.control_id
 RESOURCE = "https://board.example/api/integrations/bundles/demo/problem-board/mcp"
 OPERATION = "project.people.list"
 GRANT = "work:review"
@@ -93,9 +102,9 @@ def _my_card(
         named_service_operations=NamedServiceSelection.none(),
         control_card=(
             ControlCardBinding(
-                control_id="project-person-control-1",
+                control_id=CONTROL_ID,
                 issuer_ref=PROJECT_REF,
-                issuer_kind="project_person",
+                issuer_kind=PROJECT_PERSON_CONTROL_ISSUER_KIND,
                 control_revision=4,
             )
             if linked
@@ -117,15 +126,18 @@ def _control_card(
         initial_selection=_my_card(operations=operations, grants=grants),
         grantor_subject=PROJECT_SUBJECT,
         catalog_version="catalog-before",
-        control_id="project-person-control-1",
+        control_id=CONTROL_ID,
         issuer_ref=PROJECT_REF,
-        issuer_kind="project_person",
+        issuer_kind=PROJECT_PERSON_CONTROL_ISSUER_KIND,
         issuer_label="Demo project: person",
         composition_mode="and",
         revision=revision,
         now=NOW - 60,
     )
-    return dataclasses.replace(control, state=state)
+    return bind_project_person_control(
+        dataclasses.replace(control, state=state),
+        identity=CONTROL_IDENTITY,
+    )
 
 
 def _edge(
@@ -212,11 +224,11 @@ def test_allow_carries_inspectable_person_project_and_card_edge() -> None:
         "project_identity": {"ref": PROJECT_REF, "subject": PROJECT_SUBJECT},
         "cards": {
             "control_card": {
-                "access_id": "project-person-control-1",
+                "access_id": CONTROL_ID,
                 "grantor_subject": PROJECT_SUBJECT,
                 "card_revision": 4,
                 "issuer_ref": PROJECT_REF,
-                "issuer_kind": "project_person",
+                "issuer_kind": PROJECT_PERSON_CONTROL_ISSUER_KIND,
             },
             "my_card": {
                 "access_id": "my-card-1",
@@ -237,7 +249,7 @@ def test_allow_carries_inspectable_person_project_and_card_edge() -> None:
             BOUNDARY_CONTROL_CARD,
             (),
             (OPERATION,),
-            "project_control_card_excludes_operation",
+            "control_card_excludes_operation",
         ),
         (BOUNDARY_MY_CARD, (OPERATION,), (), "my_card_excludes_operation"),
     ),
@@ -267,7 +279,7 @@ def test_each_card_is_an_independent_positive_selection(
 @pytest.mark.parametrize(
     ("control_grants", "my_grants", "boundary", "reason"),
     (
-        ((), (GRANT,), BOUNDARY_CONTROL_CARD, "project_control_card_excludes_grant"),
+        ((), (GRANT,), BOUNDARY_CONTROL_CARD, "control_card_excludes_grant"),
         ((GRANT,), (), BOUNDARY_MY_CARD, "my_card_excludes_grant"),
     ),
 )
@@ -296,12 +308,16 @@ def test_required_grant_is_checked_on_both_cards(
 @pytest.mark.parametrize(
     ("role", "resolution", "reason"),
     (
-        (BOUNDARY_CONTROL_CARD, ProjectCardResolution.missing(), "project_control_card_missing"),
+        (
+            BOUNDARY_CONTROL_CARD,
+            ProjectCardResolution.missing(),
+            "control_card_missing",
+        ),
         (BOUNDARY_MY_CARD, ProjectCardResolution.missing(), "my_card_missing"),
         (
             BOUNDARY_CONTROL_CARD,
             ProjectCardResolution.updating("mutation_in_progress"),
-            "project_control_card_updating",
+            "control_card_updating",
         ),
         (
             BOUNDARY_MY_CARD,
@@ -332,7 +348,7 @@ def test_missing_or_unavailable_card_resolution_denies_by_name(
 @pytest.mark.parametrize(
     ("role", "reason"),
     (
-        (BOUNDARY_CONTROL_CARD, "project_control_card_revoked"),
+        (BOUNDARY_CONTROL_CARD, "control_card_revoked"),
         (BOUNDARY_MY_CARD, "my_card_revoked"),
     ),
 )
@@ -355,6 +371,44 @@ def test_revoked_card_denies_by_name(role: str, reason: str) -> None:
     assert decision.blocking_boundary == role
 
 
+@pytest.mark.parametrize(
+    ("change_marker", "identity_reason"),
+    (
+        (
+            lambda properties: properties.pop(PROJECT_PERSON_CONTROL_PROPERTY),
+            "project_person_control_marker_missing",
+        ),
+        (
+            lambda properties: properties[PROJECT_PERSON_CONTROL_PROPERTY].update(
+                target_subject="platform-user-other"
+            ),
+            "project_person_control_id_mismatch",
+        ),
+    ),
+)
+def test_control_card_requires_the_exact_project_person_identity(
+    change_marker,
+    identity_reason: str,
+) -> None:
+    control = _control_card()
+    properties = {
+        key: dict(value) if isinstance(value, dict) else value
+        for key, value in control.properties.items()
+    }
+    change_marker(properties)
+    changed = dataclasses.replace(control, properties=properties)
+
+    decision = _authorize(
+        edge=_edge(control, _my_card()),
+        control=changed,
+    )
+
+    assert not decision.allowed
+    assert decision.reason == "control_card_identity_invalid"
+    assert decision.blocking_boundary == BOUNDARY_CONTROL_CARD
+    assert decision.details == {"identity_reason": identity_reason}
+
+
 def test_active_catalog_removal_caps_cards_written_against_an_older_catalog() -> None:
     decision = _authorize(catalog=_catalog(operations=()))
 
@@ -365,10 +419,24 @@ def test_active_catalog_removal_caps_cards_written_against_an_older_catalog() ->
     assert decision.blocking_capability.path()["outer_operation"] == OPERATION
 
 
+def test_active_catalog_denial_precedes_a_stale_stored_card() -> None:
+    decision = _authorize(
+        catalog=_catalog(operations=()),
+        control_resolution=ProjectCardResolution.missing(),
+    )
+
+    assert not decision.allowed
+    assert decision.reason == "active_catalog_excludes_project_operation"
+    assert decision.blocking_boundary == BOUNDARY_CATALOG
+
+
 @pytest.mark.parametrize(
     ("operation_request", "reason"),
     (
-        (_request(person_subject="platform-user-2"), "project_session_identity_mismatch"),
+        (
+            _request(person_subject="platform-user-2"),
+            "project_session_identity_mismatch",
+        ),
         (_request(project_ref="work:project:other"), "project_identity_mismatch"),
     ),
 )
@@ -403,7 +471,7 @@ def test_stale_edge_revision_denies_before_capability_evaluation() -> None:
     assert decision.details == {"resolved_card_revision": my_card.card_revision}
 
 
-def test_my_card_must_be_linked_to_the_project_control_card() -> None:
+def test_my_card_must_be_linked_to_the_person_control_card() -> None:
     control = _control_card()
     my_card = _my_card(linked=False)
 
@@ -425,7 +493,7 @@ def test_my_card_link_to_another_control_card_is_refused() -> None:
         control_card=ControlCardBinding(
             control_id="project-person-control-other",
             issuer_ref=PROJECT_REF,
-            issuer_kind="project_person",
+            issuer_kind=PROJECT_PERSON_CONTROL_ISSUER_KIND,
             control_revision=4,
         ),
     )
@@ -449,19 +517,29 @@ def test_my_card_link_to_another_control_card_is_refused() -> None:
                 edge,
                 project_subject="project:other",
             ),
-            "project_control_card_owner_mismatch",
+            "control_card_project_subject_mismatch",
         ),
         (
             lambda edge: dataclasses.replace(
                 edge,
                 project_ref="work:project:other",
             ),
-            "project_control_card_project_mismatch",
+            "control_card_project_subject_mismatch",
         ),
         (
             lambda edge: dataclasses.replace(
                 edge,
                 person_subject="platform-user-2",
+            ),
+            "control_card_reference_mismatch",
+        ),
+        (
+            lambda edge: dataclasses.replace(
+                edge,
+                my_card=dataclasses.replace(
+                    edge.my_card,
+                    grantor_subject="platform-user-2",
+                ),
             ),
             "my_card_owner_mismatch",
         ),
