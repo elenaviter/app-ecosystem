@@ -49,8 +49,26 @@ def test_consent_shows_host_reported_runtime_account_as_identification() -> None
     assert "Organization ID" in html
     assert "org-runtime" in html
     assert "Read from the Codex login on this host" in html
-    assert "Used to identify the agent, not to grant access" in html
+    assert "It identifies the agent's provider account" in html
+    assert "Access comes from the owner's Card" in html
     assert ">user-42</" not in html
+
+
+def test_consent_does_not_call_an_account_without_email_unreported() -> None:
+    client = PublicClient(
+        client_id="dcr-worker",
+        redirect_uris=("http://127.0.0.1/callback",),
+        client_metadata={
+            "kdcube_agent_provider": "codex",
+            "kdcube_agent_account": {"account_id": "acct-runtime-42"},
+        },
+    )
+
+    html = render_consent_html(_request(client), "https://hub.example.test")
+
+    assert "Provider account" in html
+    assert "<strong>Codex</strong>" in html
+    assert "Codex · Not reported" not in html
 
 
 def test_consent_shows_not_reported_without_an_account_id() -> None:

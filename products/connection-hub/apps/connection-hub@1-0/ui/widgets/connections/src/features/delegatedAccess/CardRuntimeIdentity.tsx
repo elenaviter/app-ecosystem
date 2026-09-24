@@ -43,6 +43,15 @@ function runtimeAccountIdentity(
   };
 }
 
+function providerAccountLabel(
+  providerLabel: string,
+  identity: RuntimeAccountIdentity | null,
+): string {
+  if (identity?.email) return `${providerLabel} · ${identity.email}`;
+  if (identity) return providerLabel;
+  return `${providerLabel} · Not reported`;
+}
+
 export function cardRuntimeIdentity(item: DelegatedAccessRecord): RuntimeAccountIdentity | null {
   return runtimeAccountIdentity(item.client_metadata);
 }
@@ -66,10 +75,10 @@ function runtimeIdentityRows(
   rows.push({
     label: 'Provider account',
     value: <>
-      <strong>{providerLabel} · {identity?.email || 'Not reported'}</strong>
+      <strong>{providerAccountLabel(providerLabel, identity)}</strong>
       <small>
         {identity
-          ? <>Read from the {providerLabel} login on {host}. Used to identify the agent, not to grant access.</>
+          ? <>Read from the {providerLabel} login on {host}. It identifies the agent&apos;s provider account. Access comes from the owner&apos;s Card.</>
           : <>No provider account was reported by {host}.</>}
       </small>
     </>,

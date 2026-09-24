@@ -668,11 +668,14 @@ def _render_host_reported_runtime_account_rows(req: AuthorizeRequest, esc) -> st
 """
     email = str(account.get("email") or "").strip()
     organization = str(account.get("organization") or "").strip()
+    provider_account_label = (
+        f"{provider_label} · {email}" if email else provider_label
+    )
     return f"""
       <span class="k">Provider account</span>
       <div>
-        <strong>{esc(provider_label)} · {esc(email or 'Not reported')}</strong>
-        <span class="reported-source">Read from the {esc(provider_label)} login on {esc(host)}. Used to identify the agent, not to grant access.</span>
+        <strong>{esc(provider_account_label)}</strong>
+        <span class="reported-source">Read from the {esc(provider_label)} login on {esc(host)}. It identifies the agent's provider account. Access comes from the owner's Card.</span>
       </div>
       <span class="k">Account ID</span>
       <code title="Account ID">{esc(account_id)}</code>

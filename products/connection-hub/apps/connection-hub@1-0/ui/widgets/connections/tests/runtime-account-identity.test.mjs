@@ -16,9 +16,10 @@ test('Card identity shows owner and host-reported provider account separately', 
   assert.match(identity, /label: 'Organization ID'/);
   assert.match(identity, /kdcube_agent_account/);
   assert.match(identity, /kdcube_agent_provider/);
+  assert.match(identity, /if \(identity\) return providerLabel/);
   assert.match(identity, /Not reported/);
   assert.match(identity, /Read from the \{providerLabel\} login on \{host\}/);
-  assert.match(identity, /Used to identify the agent, not to grant access/);
+  assert.match(identity, /It identifies the agent&apos;s provider account\. Access comes from the owner&apos;s Card\./);
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx');
   assert.match(
