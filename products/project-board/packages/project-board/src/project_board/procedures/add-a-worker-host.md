@@ -104,7 +104,8 @@ before anything changes:
 | **repositories the agents may work on** | see the table below | the most important decision: each gets a deploy key with write access and a clone in every workspace. The agents reach nothing else through Problem Board. |
 | workspaces, one per agent | `~/workspaces/space001`, `space002` | each agent edits only its own clones |
 | agent names | `claude-ops@spark1`, `claude-app@spark1` | display names on the board. The board addresses a worker by a stable generated name. |
-| coding agent account | the account whose subscription the agents use | step 5 logs in with it. Every session of that Linux user shares it. |
+| runtime per agent | `claude-code` for both, or `codex` for one | chosen per agent. One host can run Claude Code and Codex agents side by side, each in its own workspace. |
+| account per runtime | the Claude account for Claude Code agents, the OpenAI account for Codex agents | step 5 logs each runtime in once. Every agent of that runtime under the same Linux user shares its login and its usage. |
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 
@@ -428,8 +429,22 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/workspa
   interactive question nobody watches: a worker asks the operator by board mail,
   which reaches them wherever they are.
 
-For Codex, the equivalent is
-`codex -C ~/workspaces/<workspace> -s danger-full-access`.
+For a Codex agent, the session starts the same way, with:
+
+```bash
+codex -C \$HOME/workspaces/<workspace> -s danger-full-access -a on-request --search
+```
+
+and resumes with its own id and the same flags:
+
+```bash
+codex resume <session-id> -C \$HOME/workspaces/<workspace> -s danger-full-access -a on-request --search
+```
+
+`-s danger-full-access` lets it work in its workspace and the user's `pb` state
+without a sandbox prompt, `-a on-request` lets the model decide when to ask, and
+`--search` gives it web search. A Codex worker is woken by the relay through its
+native queue, so it needs no `pb worker watch`.
 
 The first start in bypass mode shows a one-time warning. Accepting it is the
 **operator's** decision. The host agent then selects **Yes, I accept** and
