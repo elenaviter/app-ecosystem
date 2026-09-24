@@ -168,7 +168,7 @@ def test_pb_worker_limit_state_records_what_claude_code_said_and_prints_one_line
     assert cli._limit_state_command(args, stdin=io.StringIO(json.dumps(payload))) == 0
     out = capsys.readouterr()
     # One plain line for the status bar, no envelope.
-    assert out.out.strip() == "rate limited (five_hour), resets 17:00Z"
+    assert out.out.strip() == "rate limited (5 h), resets 17:00Z"
     recorded = field.runtime_limit_state(identity.worker_name)
     assert recorded["kind"] == "rate_limited" and recorded["source"] == "claude-code-statusline"
     assert recorded["recorded_at"]
@@ -184,7 +184,7 @@ def test_pb_worker_limit_state_records_what_claude_code_said_and_prints_one_line
     assert cli._limit_state_command(stop_args, stdin=io.StringIO(json.dumps({"error": "rate_limit"}))) == 0
     assert capsys.readouterr().out.strip() == "rate limited (rate_limit)"
     assert field.runtime_limit_state(identity.worker_name)["source"] == "claude-code-stop-failure"
-    assert limit_state_line({"kind": "ok", "windows": [{"name": "five_hour", "used_percent": 42.0}]}) == "usage ok (five_hour 42%)"
+    assert limit_state_line({"kind": "ok", "windows": [{"name": "five_hour", "used_percent": 42.0}]}) == "usage ok (5 h 42%)"
     assert field.runtime_limit_state("nobody") == {}
 
 
@@ -226,13 +226,13 @@ def test_limit_state_takes_its_identity_from_the_payload_and_is_silent_for_a_ses
     payload = {"session_id": claude.runtime_session_id, "rate_limits": {"five_hour": {"used_percentage": 100, "resets_at": 1790010000}}}
     assert cli._limit_state_command(bare, stdin=io.StringIO(_json.dumps(payload))) == 0
     out = capsys.readouterr()
-    assert out.out.strip() == "rate limited (five_hour), resets 17:00Z" and out.err == ""
+    assert out.out.strip() == "rate limited (5 h), resets 17:00Z" and out.err == ""
     assert field.runtime_limit_state(claude.worker_name)["reached"] == "five_hour"
     # Another Claude Code session on the host, not a worker: the line prints, nothing is recorded or said.
     other = {"session_id": "11111111-2222-4333-8444-555555555555", "rate_limits": {"five_hour": {"used_percentage": 10, "resets_at": 1790010000}}}
     assert cli._limit_state_command(bare, stdin=io.StringIO(_json.dumps(other))) == 0
     out = capsys.readouterr()
-    assert out.out.strip() == "usage ok (five_hour 10%)" and out.err == ""
+    assert out.out.strip() == "usage ok (5 h 10%)" and out.err == ""
     assert field.runtime_limit_state(WorkerSessionIdentity.create("claude-code", other["session_id"]).worker_name) == {}
     # No session id anywhere: still one line, nothing said.
     assert cli._limit_state_command(bare, stdin=io.StringIO(_json.dumps({"rate_limits": {}}))) == 0
@@ -306,3 +306,32 @@ def test_the_procedure_settings_snippet_matches_every_mapped_error():
     first_run = (source_package_path() / "references" / "first-run.md").read_text(encoding="utf-8")
     matcher = "|".join(STOP_FAILURE_ERRORS)
     assert f'"matcher": "{matcher}"' in first_run
+
+
+def test_every_window_is_labelled_by_its_length_nearest_its_limit_first():
+    """W26, operator 2026-09-24: one unlabelled number could not tell 5 h from week."""
+
+    from project_board.client.limit_state import limit_state_line, limit_windows_line, window_length_label
+
+    claude = {
+        "kind": "ok",
+        "windows": [
+            {"name": "five_hour", "used_percent": 23.4, "window_minutes": 300},
+            {"name": "seven_day", "used_percent": 65.0, "window_minutes": 10080},
+        ],
+    }
+    assert limit_windows_line(claude) == "week 65% · 5 h 23%"
+    assert limit_state_line(claude) == "usage ok (week 65% · 5 h 23%)"
+    codex = {"kind": "ok", "windows": [{"name": "primary", "used_percent": 20.0, "window_minutes": 10080}]}
+    assert limit_state_line(codex) == "usage ok (week 20%)"
+    # Claude Code's names read the same when minutes are missing.
+    assert window_length_label({"name": "seven_day"}) == "week"
+    assert window_length_label({"name": "five_hour", "window_minutes": None}) == "5 h"
+    assert window_length_label({"name": "primary", "window_minutes": 1440}) == "1 d"
+    limited = {
+        "kind": "rate_limited",
+        "reached": "five_hour",
+        "resets_at": "2026-09-24T02:50:00Z",
+        "windows": claude["windows"],
+    }
+    assert limit_state_line(limited) == "rate limited (5 h), resets 02:50Z"
