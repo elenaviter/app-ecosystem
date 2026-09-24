@@ -16,6 +16,8 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
 
+from connection_hub.bundle_operations import normalize_bundle_operation_result
+
 BundleOperationCaller = Callable[..., Awaitable[Mapping[str, Any]]]
 
 
@@ -24,19 +26,6 @@ DEFAULT_CONNECTION_HUB_BUNDLE_ID = "connection-hub@1-0"
 
 def _str(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _unwrap_operation_result(operation: str, result: Mapping[str, Any]) -> dict[str, Any]:
-    """Normalize direct and REST-style bundle operation results.
-
-    The in-process bridge may return either the raw operation payload or the
-    same alias-wrapped shape that public REST routes expose. SDK callers should
-    not need to know which transport shape was used.
-    """
-
-    if operation in result and isinstance(result.get(operation), Mapping):
-        return dict(result.get(operation) or {})
-    return dict(result)
 
 
 def _prop(entrypoint: Any, path: str, default: Any = None) -> Any:
@@ -247,7 +236,7 @@ class ConnectionEdgesClient:
             route=route,
             http_method=http_method,
         )
-        return _unwrap_operation_result(operation, result)
+        return normalize_bundle_operation_result(operation, result)
 
 
 def connection_hub_bundle_id_from_entrypoint(entrypoint: Any) -> str:
