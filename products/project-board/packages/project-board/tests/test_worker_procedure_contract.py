@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.11"
+    assert package["revision"] == "2026.09.24.12"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -950,7 +950,7 @@ def test_an_agent_searches_the_plan_and_the_journal_before_acting_on_a_subject()
     # were in the journal. The search existed, and no step told an agent to run it.
     skill = _words(_read("SKILL.md"))
     assert "Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it" in skill
-    assert "`project.plan.search` for the plan and `pb worker journal-search --project-ref <project> --query <subject>` for the journal" in skill
+    assert "`project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend" in skill
     assert "For the subject of the task, search the plan and the journal (Choose A Relevant Next Action)." in skill
 
 

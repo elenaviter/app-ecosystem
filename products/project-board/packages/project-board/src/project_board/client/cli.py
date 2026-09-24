@@ -1123,7 +1123,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _host_config(command)
     _agent_identity(command)
-    command.add_argument("--project-ref", required=True)
+    command.add_argument(
+        "--project-ref",
+        default="",
+        help="Defaults to the one project this worker attends.",
+    )
     command.add_argument("--query", default="")
     command.add_argument("--work-ref", default="")
     command.add_argument("--author", default="")
@@ -4121,10 +4125,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
         }
     if args.worker_command == "journal-search":
         if parsed_project is None:
-            raise DomainError(
-                "field_project_ref_required",
-                "Journal search requires a project ref.",
-            )
+            project_ref = _attended_project_ref(field, identity.worker_name)
         workspace = JournalWorkspace(
             config.journal_workspace_root,
             RepositoryMap.from_mapping(dict(config.source_repositories)),
@@ -4210,6 +4211,32 @@ def _whoami_channel(args: Any, identity: WorkerSessionIdentity) -> dict[str, Any
         "profile": channel.profile,
         "state": channel.state,
     }
+
+
+def _attended_project_ref(field: SharedFieldStore, worker_name: str) -> str:
+    """The one project this worker attends, for a command that names none (W305).
+
+    An agent about to act on a subject searches its project's journal with
+    only a query. A worker attending no project, or several, is asked to name
+    one, with the choices.
+    """
+
+    try:
+        worker = field.read_worker(worker_name)
+    except DomainError:
+        worker = {}
+    attended = sorted(
+        str(ref) for ref in worker.get("attended_project_refs") or [] if str(ref or "").strip()
+    )
+    if len(attended) == 1:
+        return attended[0]
+    raise DomainError(
+        "field_project_ref_required",
+        "This worker attends several projects: name one with --project-ref."
+        if attended
+        else "This worker attends no project, so it has no project journal: name one with --project-ref.",
+        details={"attended_project_refs": attended},
+    )
 
 
 def _worker_project_context(
