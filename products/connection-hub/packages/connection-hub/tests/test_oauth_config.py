@@ -152,10 +152,13 @@ def test_resource_authorization_profiles_expand_against_its_operation_catalog():
     ] == ["worker.publish", "assignment.assign"]
 
 
-def test_a_whole_card_row_takes_the_profile_operations_of_every_resource():
-    """W272, 2026-09-24: a whole-card consent keys its grants under `*`, and
-    `pb worker authorize --replace-card` was refused on save with
-    `oauth_authorization_profile_resource_exceeded` for resource `*`."""
+def test_a_profile_belongs_only_to_the_resource_that_declares_it():
+    """W272, 2026-09-24: `pb worker authorize --replace-card` requests no
+    resource, and the consent page showed the worker operations under "All
+    platform and application APIs" as well as under Problem Board. The
+    operator: "why the permissions that have nothing to do with 'all
+    services' are there? remove that". A profile's operations live on the
+    service that declares the profile and nowhere else."""
 
     config = oauth_delegated_config_from_connections(
         {
@@ -173,14 +176,13 @@ def test_a_whole_card_row_takes_the_profile_operations_of_every_resource():
                             "resource": "https://runtime.example.test/mcp/problem-board",
                             "tools": {
                                 "worker.publish": {"grants": ["work:relay"]},
-                                "worker.heartbeat": {},
                                 "assignment.assign": {"grants": ["work:coordinate"]},
                             },
                             "authorization_profiles": {
                                 "worker": {
                                     "scope": "work:profile:worker",
                                     "label": "Problem Board worker",
-                                    "operations": ["worker.publish", "worker.heartbeat"],
+                                    "operations": ["worker.publish"],
                                 },
                             },
                         },
@@ -189,14 +191,14 @@ def test_a_whole_card_row_takes_the_profile_operations_of_every_resource():
             }
         }
     )
+    assert [
+        tool.name
+        for tool in config.authorization_profile_tools(
+            ["work:profile:worker"],
+            resource="https://runtime.example.test/mcp/problem-board",
+        )
+    ] == ["worker.publish"]
     for key in ("*", ""):
-        tools = config.authorization_profile_tools(["work:profile:worker"], resource=key)
-        assert [tool.name for tool in tools] == ["worker.publish", "worker.heartbeat"]
-        grants = {tool.name: tool.grants for tool in tools}
-        # A tool without grants takes its own resource's grants, never the
-        # all-resource row's platform:use.
-        assert "platform:use" not in grants["worker.heartbeat"]
-    # A named resource that is not in the catalog still gets nothing.
-    assert config.authorization_profile_tools(
-        ["work:profile:worker"], resource="https://elsewhere.example/mcp"
-    ) == ()
+        assert config.authorization_profile_tools(
+            ["work:profile:worker"], resource=key
+        ) == ()

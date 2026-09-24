@@ -338,3 +338,44 @@ def test_coordinator_profile_proposes_the_whole_resource_catalog() -> None:
     assert selection["resource_operations"] == {
         BOARD_PATTERN: ["worker.publish", "assignment.assign"]
     }
+
+
+def test_a_whole_card_worker_request_proposes_only_the_declaring_service() -> None:
+    """W272, 2026-09-24: a request that names no service (the whole Card)
+    proposed the worker operations under the all-resource row too. They
+    belong to the service that declares the profile and nowhere else."""
+
+    config = _config(
+        [
+            {
+                "resource": "*",
+                "label": "All platform and application APIs",
+                "grants": ["platform:use"],
+            },
+            {
+                "resource": BOARD_PATTERN,
+                "label": "Problem Board",
+                "tools": {
+                    "worker.publish": {"grants": [GRANT]},
+                    "assignment.assign": {"grants": ["work:coordinate"]},
+                },
+                "authorization_profiles": {
+                    "worker": {
+                        "scope": WORKER_PROFILE,
+                        "label": "Problem Board worker",
+                        "operations": ["worker.publish"],
+                    }
+                },
+            },
+        ]
+    )
+
+    selection = requested_card_selection(
+        [WORKER_PROFILE],
+        config=config,
+        resource="",
+        full_catalog=True,
+    )
+
+    assert selection["resource_grants"] == {BOARD_PATTERN: [GRANT]}
+    assert selection["resource_operations"] == {BOARD_PATTERN: ["worker.publish"]}

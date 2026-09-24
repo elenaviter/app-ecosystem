@@ -4,7 +4,7 @@
 """Descriptor-backed configuration for the OAuth delegated credential adapter."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from typing import Any, Mapping
 
@@ -334,29 +334,6 @@ class OAuthDelegatedClientConfig:
 
         if not self.authorization_profile_requested(scopes):
             return None
-        if str(resource or "").strip() in ("", "*"):
-            # The whole-card key, whether or not the catalog also declares an
-            # all-resource '*' row: a profile's operations on every resource
-            # that declares it, the same union the authorize route checks
-            # (W272). Each tool carries its own resource's grants, so a tool
-            # without grants never inherits the all-resource row's defaults.
-            requested = {str(scope).strip() for scope in scopes if str(scope).strip()}
-            union: list[OAuthDelegatedToolConfig] = []
-            for item in self.resources:
-                names: set[str] = set()
-                for profile in item.authorization_profiles:
-                    if profile.scope not in requested:
-                        continue
-                    if "*" in profile.operations:
-                        names.update(tool.name for tool in item.tools)
-                    else:
-                        names.update(profile.operations)
-                union.extend(
-                    tool if tool.grants else replace(tool, grants=tuple(item.grants))
-                    for tool in item.tools
-                    if tool.name in names
-                )
-            return tuple(union)
         resource_cfg = self.resource_config(resource)
         profiles = self.authorization_profiles_for_scopes(scopes, resource=resource)
         if resource_cfg is None or not profiles:
