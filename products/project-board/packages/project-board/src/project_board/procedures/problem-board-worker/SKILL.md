@@ -59,7 +59,7 @@ wakes and held leases still require prompt receive, handling, and settlement.
 3. Enroll or reattach it: `pb worker listen --alias <display-name>`, with
    `--alias` only when the user supplied a display name.
 4. Follow `next`; present its exact `pb worker authorize <profile>`. Do not reconstruct a profile name.
-   On a browserless host append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`; the handoff exposes only public URL/code and the credential goes to the native store. Authorization captures the provider account from local runtime state and labels it **Provider account**, **Reported by the host**; [identity and authorization](references/identity-and-authorization.md) owns the account and Card-authority contract.
+   On a browserless host append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`; the handoff exposes only public URL/code and the credential goes to the native store. Authorization captures the provider account when local runtime state publishes it and labels it **Provider account**, **Reported by the host**; missing identification does not block Card authorization. [Identity and authorization](references/identity-and-authorization.md) owns the account and Card-authority contract.
 5. Establish the notification path returned for this runtime:
 
    - **Codex:** the persistent login relay owns the `codex-queue` subscription

@@ -34,10 +34,12 @@ identity.
 
 Describe an agent with its provider, provider account, and native session ID.
 The stable worker address is still derived from provider plus session ID. The
-login-scoped relay reads the public provider-account description from the
-runtime on authorization and each heartbeat: Claude Code's
+login-scoped relay reads the public provider-account description, when one is
+available, from the runtime on authorization and each heartbeat: Claude Code's
 `~/.claude.json` `oauthAccount`, or Codex's `~/.codex/auth.json` account ID and
 public identity claims. It sends only account ID, email, and organization.
+Missing provider-account metadata is displayed as not reported and does not
+block Card authorization because it is identification rather than authority.
 When the account ID changes for the same session, Problem Board preserves the
 worker address and reports the change to the operator and worker.
 

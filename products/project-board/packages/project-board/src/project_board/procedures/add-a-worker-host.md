@@ -301,7 +301,9 @@ publishes an account ID and public identity claims in `~/.codex/auth.json`.
 `pb worker authorize` reads only the account ID, email, and organization from
 that local runtime state. Credential and token values stay in their native
 files and never enter Problem Board, Connection Hub client metadata, command
-arguments, or logs.
+arguments, or logs. A runtime may use an API key or otherwise omit this public
+account description. In that case authorization continues without the
+identification metadata and reports `Provider account not reported`.
 
 ## 6. Give the relay a credential store, then install it
 
@@ -547,12 +549,14 @@ the host, and the credential is stored there.
 pb worker authorize <profile> --device
 ```
 
-The command automatically reads the public provider-account description from
-the coding runtime at authorization time and includes it in the client's
-bounded registration metadata. There is no account flag to type and no token
-to copy. Before approving, the consent page shows **Provider account**, the
-provider name and account identifier, and **Reported by the host**. This is
-identification metadata; the operator's Card choices establish access.
+The command reads the public provider-account description from the coding
+runtime at authorization time, when the runtime publishes one, and includes it
+in the client's bounded registration metadata. There is no account flag to type
+and no token to copy. Before approving, the consent page shows **Provider
+account**, the provider name and account identifier, and **Reported by the
+host**. This is identification metadata; the operator's Card choices establish
+access. If the runtime does not publish an account description, the command
+prints `Provider account not reported` and continues authorization without it.
 
 It prints the URL and the code. The **operator** opens the URL on any device,
 signs in, enters the code, and approves the presented worker authority. A first

@@ -210,6 +210,19 @@ def _manual_browser_opener(url: str) -> bool:
     return True
 
 
+async def _optional_runtime_account(runtime_kind: str) -> dict[str, str] | None:
+    """Read identification metadata without making it an authority gate."""
+
+    try:
+        return await read_runtime_account(runtime_kind)
+    except DomainError as exc:
+        if not str(exc.code or "").startswith("work_runtime_account_"):
+            raise
+        sys.stderr.write(f"Provider account not reported: {exc.code}.\n")
+        sys.stderr.flush()
+        return None
+
+
 def _sibling_profile_roots(config_path: Path, configured_root: Path) -> list[Path]:
     """Find app-scoped profile stores left beside the configured host store."""
 
@@ -519,7 +532,7 @@ async def authorize_worker_profile(
         options["browser_opener"] = _manual_browser_opener
     if callback_port is not None and not device:
         options["callback_port"] = callback_port
-    runtime_account = await read_runtime_account(channel.runtime_kind)
+    runtime_account = await _optional_runtime_account(channel.runtime_kind)
     try:
         result = await oauth.authorize(
             name=profile_name,
