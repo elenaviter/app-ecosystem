@@ -72,3 +72,5 @@ def test_a_channel_opens_and_the_missing_journal_is_reported_for_its_project(tmp
     assert gap["state"] == "unmapped"
     assert gap["error_code"] == "journal_repository_root_missing"
     assert gap["repository"] == "applications"
+    missing_path = str((tmp_path / "never-cloned").resolve())
+    assert gap["message"] == f"journal unavailable for work:project:project: applications not found at {missing_path}"

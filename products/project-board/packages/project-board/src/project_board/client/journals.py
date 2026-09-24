@@ -138,7 +138,11 @@ class RepositoryMap:
             raise DomainError(
                 "journal_repository_root_missing",
                 "A mapped LOCAL repository checkout does not exist.",
-                details={"alias": reference.repository, "repository": reference.repository},
+                details={
+                    "alias": reference.repository,
+                    "repository": reference.repository,
+                    "path": str(self.missing[reference.repository]),
+                },
             )
         if root is None:
             raise DomainError(

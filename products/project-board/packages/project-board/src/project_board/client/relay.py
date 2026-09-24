@@ -1033,13 +1033,22 @@ class ProblemBoardHostRelayAdapter:
             if exc.code not in LOCAL_JOURNAL_MAPPING_CODES:
                 raise
             details = dict(exc.details or {})
+            repository = str(details.get("repository") or details.get("alias") or "")
+            path = str(details.get("path") or "")
             gap = {
                 "state": "unmapped",
                 "project_ref": project_ref,
                 "journal_home_ref": str(binding.get("journal_home_ref") or ""),
                 "error_code": exc.code,
                 "error_summary": str(exc),
-                "repository": str(details.get("repository") or details.get("alias") or ""),
+                "repository": repository,
+                "path": path,
+                # One sentence for the worker and the operator (W304 D13).
+                "message": (
+                    f"journal unavailable for {project_ref}: {repository} not found at {path}"
+                    if path
+                    else f"journal unavailable for {project_ref}: {exc}"
+                ),
                 "mapped_repositories": sorted(self.journal_workspace.repositories.roots),
             }
             self._journal_mapping_gap = gap
@@ -1047,14 +1056,12 @@ class ProblemBoardHostRelayAdapter:
             if key not in _reported_journal_gaps:
                 _reported_journal_gaps.add(key)
                 logger.warning(
-                    "Problem Board journal ref not mapped on this host project=%s "
-                    "ref=%s code=%s repository=%s mapped=%s; controls still flow, "
-                    "journal views refuse until `pb host configure --set-source-repo` "
-                    "maps it or the project binding names a mapped alias",
-                    project_ref,
-                    gap["journal_home_ref"],
+                    "Problem Board %s (code=%s ref=%s mapped=%s); controls still flow, "
+                    "journal views refuse until the checkout exists or "
+                    "`pb host configure --set-source-repo` maps it",
+                    gap["message"],
                     exc.code,
-                    gap["repository"],
+                    gap["journal_home_ref"],
                     ",".join(gap["mapped_repositories"]) or "-",
                 )
             return gap
