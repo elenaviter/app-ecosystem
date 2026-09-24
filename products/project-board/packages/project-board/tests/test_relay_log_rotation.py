@@ -7,7 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from project_board.client import entrypoint, relay_service
+from project_board.contract.errors import DomainError
 from project_board.client.relay_logging import (
     RELAY_CRASH_LOG_MAX_BYTES,
     prepare_relay_crash_log,
@@ -145,12 +148,34 @@ def test_restart_reloads_launchd_definition_before_kickstart(
     service = _service(tmp_path, system="Darwin")
     service.definition_path.write_text("stale", encoding="utf-8")
     calls: list[list[str]] = []
+    print_calls = 0
+    bootstrap_calls = 0
 
     def fake_run(command, *, check=True):
+        nonlocal bootstrap_calls, print_calls
         calls.append(list(command))
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        operation = command[1]
+        if operation == "print":
+            print_calls += 1
+            returncode = 0 if print_calls == 1 else 3
+        elif operation == "bootstrap":
+            bootstrap_calls += 1
+            returncode = 5 if bootstrap_calls == 1 else 0
+        else:
+            returncode = 0
+        return subprocess.CompletedProcess(
+            command,
+            returncode,
+            stdout="",
+            stderr=(
+                "Bootstrap failed: 5: Input/output error"
+                if returncode == 5
+                else ""
+            ),
+        )
 
     monkeypatch.setattr(relay_service, "_run", fake_run)
+    monkeypatch.setattr(relay_service.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(RelayService, "status", lambda self: {"running": True})
 
     result = service.restart()
@@ -160,10 +185,50 @@ def test_restart_reloads_launchd_definition_before_kickstart(
     assert [command[1] for command in calls] == [
         "print",
         "bootout",
+        "print",
+        "bootstrap",
         "bootstrap",
         "kickstart",
     ]
     assert result["restarted"] is True
+
+
+def test_restart_reports_persistent_launchd_bootstrap_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = _service(tmp_path, system="Darwin")
+    service.definition_path.write_text("stale", encoding="utf-8")
+    print_calls = 0
+
+    def fake_run(command, *, check=True):
+        nonlocal print_calls
+        operation = command[1]
+        if operation == "print":
+            print_calls += 1
+            returncode = 0 if print_calls == 1 else 3
+            stderr = ""
+        elif operation == "bootstrap":
+            returncode = 5
+            stderr = "Bootstrap failed: 5: Input/output error"
+        else:
+            returncode = 0
+            stderr = ""
+        return subprocess.CompletedProcess(
+            command, returncode, stdout="", stderr=stderr
+        )
+
+    monkeypatch.setattr(relay_service, "_run", fake_run)
+    monkeypatch.setattr(relay_service.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(DomainError) as failure:
+        service.restart()
+
+    assert failure.value.code == "work_relay_service_command_failed"
+    assert failure.value.details["command"][1] == "bootstrap"
+    assert failure.value.details["returncode"] == 5
+    assert failure.value.details["stderr"] == (
+        "Bootstrap failed: 5: Input/output error"
+    )
 
 
 def test_relay_logging_is_configured_before_source_dispatch(
