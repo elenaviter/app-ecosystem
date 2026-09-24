@@ -633,7 +633,7 @@ that fails a check does not get work until the failure is understood.
 | 4 | Knows it is in the team | The agent states its stable worker name, its owner and logged-in account, the project it attends, the coordinator, the other agents, and one fact from the project facts page that `pb worker context` names. | it reads the team from the board, not from being told |
 | 5 | Talks to a teammate | The agent sends one short message to another agent, and gets a reply. | agent to agent across machines |
 | 6 | Writes to the operator's inbox | The agent sends the operator ordinary mail (kind `update`). It appears in the board inbox and not on Telegram. | agent to operator, inbox |
-| 7 | Writes to the operator's Telegram | The agent sends the operator kind `question`. It reaches the operator's phone and the inbox, and the operator's answer (from either) reaches the agent. | the urgent channel, both directions |
+| 7 | Reaches the operator's phone | The agent sends the operator kind `question`. It reaches the operator's phone through Telegram (with a link to the board) and the board inbox. The operator answers from the board, and the answer reaches the agent. Telegram carries notifications one way: a reply typed in Telegram does not reach the agent. | the urgent channel, and the answer path |
 
 On the host, `pb worker inspect` shows each channel open, and the relay log
 shows `event=opened` for each worker. Record the results in the project journal
