@@ -25,8 +25,9 @@ COORDINATOR = "claude-code-dfd0d696-82d2-4bec-8a9c-d94493ec63a5"
 class Board:
     """The control plane as a fresh host meets it right after the operator's link."""
 
-    def __init__(self, recipient: str) -> None:
+    def __init__(self, recipient: str, *, linked: bool = True) -> None:
         self.recipient = recipient
+        self.linked = linked
         self.calls: list[dict[str, Any]] = []
         self.pulled = False
 
@@ -53,8 +54,8 @@ class Board:
             if not body.get("project_ref"):
                 return {"ok": True, "object": {
                     "ref": "work:worker:remote",
-                    "attendances": [{"project_ref": PROJECT_REF, "role": "worker"}],
-                    "attendance_revision": 1,
+                    "attendances": [{"project_ref": PROJECT_REF, "role": "worker"}] if self.linked else [],
+                    "attendance_revision": 1 if self.linked else 0,
                     "host_retirements": [],
                 }}
             return {"ok": True, "object": {
@@ -76,7 +77,58 @@ class Board:
         return {"ok": True, "object": {"ref": object_ref, "applied": True}}
 
 
-def test_a_linked_agent_without_work_gets_the_project_its_team_and_its_first_mail(tmp_path, monkeypatch):
+def _fresh_host(tmp_path, *, listening: bool = True):
+    host, identity, channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.register_worker(
+        worker_name=identity.worker_name,
+        runtime_kind=identity.runtime_kind,
+        runtime_session_id=identity.runtime_session_id,
+        capabilities=[],
+        authority_label="connection-hub:test",
+    )
+    if listening:
+        field.listen_worker(identity.worker_name)
+    config = dataclasses.replace(
+        relay.RelayConfig.from_host_channel(host, channel, project_id=""),
+        allowed_peer_workers=("*",),
+    )
+    return host, identity, field, config
+
+
+def test_a_link_while_the_relay_runs_is_written_on_the_ping(tmp_path):
+    host, identity, field, config = _fresh_host(tmp_path)
+    board = Board(identity.worker_name, linked=False)
+    adapter = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board)
+    asyncio.run(adapter.poll_attendances_once())
+    assert not field._project_path("quickstart-works-mttfmgqu").exists()
+
+    # The operator links the agent: the board pushes project.linked to the relay.
+    board.linked = True
+    assert adapter.request_attendance_refresh(
+        kind="project.linked",
+        refs={"project_ref": PROJECT_REF, "role": "worker", "attendance_revision": 1},
+    )
+    asyncio.run(adapter.poll_attendances_once())
+
+    assert field.read_project("quickstart-works-mttfmgqu")["title"] == "Quickstart works"
+
+
+def test_an_agent_whose_session_was_down_at_link_finds_the_mail_on_its_next_receive(tmp_path):
+    host, identity, field, config = _fresh_host(tmp_path, listening=False)
+    board = Board(identity.worker_name)
+    asyncio.run(relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board).poll_attendances_once())
+
+    # The session comes back later and receives what waited in its mailbox.
+    field.listen_worker(identity.worker_name)
+    received = pull_worker_input(field, worker_name=identity.worker_name, limit=20, lease_seconds=300)
+
+    assert [item["message"]["subject"] for item in received["items"]] == ["Onboarding check 2"]
+
+
+def test_a_relay_that_starts_after_the_link_writes_the_project_its_team_and_delivers_the_first_mail(tmp_path, monkeypatch):
+    # The relay was down when the operator linked the agent: the attendance is
+    # durable on the board and the mail waited there, so its first poll does all of it.
     host, identity, channel = make_host(tmp_path)
     field = SharedFieldStore(host.field_root)
     field.register_worker(
