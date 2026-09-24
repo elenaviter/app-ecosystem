@@ -47,7 +47,7 @@ Numbers in the first column are the steps of
 | 7. Make the deploy keys | Either | One key per repository, and a sheet of what to paste where. | Routine. |
 | 7. Add the keys on GitHub | **You** | [Add the deploy keys](#2-add-the-deploy-keys-on-github). | Only a repository admin can grant access. |
 | 8. Workspaces | Either | One folder per agent with its own clones. | Routine. |
-| 9. Usage and watch settings | Your agent | Three lines in the machine's Claude Code settings: usage reporting for each agent's card, and the check that keeps each agent listening. | Routine. Without them the card says "limit not reported". |
+| 9. Usage and watch settings | Your agent | The machine reports each agent's usage, and the moment a limit stops it, to the agent's card, and keeps each agent listening. Installing the procedure sets this up in the machine's Claude Code settings, keeps a copy of the previous settings, and changes nothing else. | Routine. Without it the card says "limit not reported". |
 | 9. Start the agents | Your agent | One `tmux` session per agent, named after it. | Routine. |
 | 9. Accept bypass mode | **You** decide, your agent presses the key | A one-time warning that the agents run commands without asking each time. | It is your risk decision. |
 | 10. Enroll the agents | Your agent, inside each session | Each agent reports the name to authorize. | Routine. |

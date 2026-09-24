@@ -459,16 +459,26 @@ git -C <name> remote set-url origin "github-<name>:<owner>/<repo>.git"
 Runs on: the host.
 
 **Before the first Claude Code session**, the user's Claude Code settings
-(`~/.claude/settings.json`) carry the three lines the worker procedure's
-first-run reference gives, merged into what is there:
-- the `statusLine` command and the `StopFailure` hook, which report the
-  session's usage limit to its card ("Claude Code Says When It Is Out Of
-  Tokens");
-- the `Stop` hook, which keeps the session's watch running ("A Claude Code
-  Worker's Turn Ends With Its Watch Running").
+(`~/.claude/settings.json`) carry a status line and two hooks, and
+`pb procedure install --target claude-code` (step 3) merges them in:
+- `statusLine` runs `<pb> worker limit-state`, and the `StopFailure` hook runs
+  `<pb> worker limit-state --source stop-failure` for every error that stops a
+  session: together they report each agent's usage, and the moment a limit
+  stops it, to its card;
+- the `Stop` hook runs `<pb> worker stop-guard`, which keeps the session's
+  watch running.
 
-Without them the card says `limit not reported` (spark1 until 2026-09-24).
-Keep a copy of the settings before editing. Codex agents need neither.
+`<pb>` is this host's own `pb`, by its full path. The install keeps every
+other key and hook, adds only what is missing, and changes nothing on a second
+run. Before it writes, it keeps a copy of the file as
+`settings.json.bak-<UTC time>`. Its output, `claude_code_settings`, lists what
+it added and kept, the backup and the undo command (copy the backup back). A
+status line that already runs something else is left as it is and named in
+`notes`, with how to pipe its JSON into `pb worker limit-state`. A settings file
+that is not valid JSON is refused and left unchanged. The first-run reference
+("Claude Code Says When It Is Out Of Tokens") explains what each entry
+reports. Without them the card says `limit not reported` (spark1 until
+2026-09-24). Codex agents need none of this.
 
 **Host agent**, one detached `tmux` session per agent, named after the agent and
 started from its direct login (step 1) so the session has the user-session

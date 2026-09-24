@@ -4312,16 +4312,24 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             "verified": verified,
         }
     if args.procedure_command == "install":
-        return {
+        installed = install_agent_procedure(
+            args.target,
+            home=args.home,
+            force=args.force,
+            allow_downgrade=bool(getattr(args, "allow_downgrade", False)),
+        )
+        result = {
             "procedure": str(source_path()),
             "package": package,
-            "installed": install_agent_procedure(
-                args.target,
-                home=args.home,
-                force=args.force,
-                allow_downgrade=bool(getattr(args, "allow_downgrade", False)),
-            ),
+            "installed": installed,
         }
+        if "claude-code" in (args.target or []):
+            # The status line and hooks a Claude Code worker needs (W304 finding 45).
+            from .claude_settings import merge_claude_code_settings
+            from .procedures import _home_path
+
+            result["claude_code_settings"] = merge_claude_code_settings(_home_path(args.home))
+        return result
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")
 
 

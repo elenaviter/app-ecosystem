@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.17"
+    assert package["revision"] == "2026.09.24.18"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -152,12 +152,14 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
     assert "its channel is `pending_authorization`" in first_run
     assert "ask before proposing `pb relay-service start`. Do not reinstall it" in first_run
     assert "This state means the channel works (`active`) and the worker attends a project" in first_run
-    # W26: Claude Code reports its own usage limit through two settings lines the user adds.
+    # W26: Claude Code reports its own usage limit through two settings lines,
+    # which the install merges into the user's settings (W304 finding 45).
     assert "Claude Code Says When It Is Out Of Tokens" in first_run
     assert "never inferred from silence" in first_run
     assert '"statusLine": {"type": "command", "command": "pb worker limit-state"}' in first_run
     assert "pb worker limit-state --source stop-failure" in first_run
-    assert "The settings are the user's: propose the lines, and the user adds them" in first_run
+    assert "`pb procedure install --target claude-code` merges these lines" in first_run
+    assert "keeps a copy of the file before it writes, changes nothing on a second run" in first_run
 
 
 def test_package_preserves_the_application_revision_chain() -> None:
@@ -935,7 +937,7 @@ def test_the_stop_hook_rearms_a_missed_watch() -> None:
 
     assert '"command": "pb worker stop-guard"' in first_run
     assert "the hook blocks the stop once and names the exact commands that re-arm the watch" in first_run
-    assert "The settings are the user's: propose the lines, and the user adds them" in first_run
+    assert "`pb procedure install --target claude-code` adds this hook with the lines above" in first_run
     assert "A missed re-arm then costs one turn" in wake
     assert "A detached or retired worker, any other session on the host, and a failure inside the hook end normally" in wake
 

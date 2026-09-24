@@ -23,11 +23,13 @@ HOST = _words(PROCEDURES / "add-a-worker-host.md")
 GUIDE = _words(REPO / "docs" / "project-board" / "add-a-machine.md")
 
 
-def test_45_the_claude_code_usage_and_stop_settings_are_a_host_step():
-    assert "Before the first Claude Code session" in HOST
-    assert "the `statusLine` command and the `StopFailure` hook" in HOST
-    assert "the `Stop` hook, which keeps the session's watch running" in HOST
+def test_45_the_install_merges_the_claude_code_settings_and_says_how():
+    assert "`pb procedure install --target claude-code` (step 3) merges them in" in HOST
+    assert "`settings.json.bak-<UTC time>`" in HOST
+    assert "the undo command (copy the backup back)" in HOST
+    assert "A status line that already runs something else is left as it is and named in `notes`" in HOST
     assert "9. Usage and watch settings" in GUIDE
+    assert "Installing the procedure sets this up in the machine's Claude Code settings, keeps a copy of the previous settings" in GUIDE
 
 
 def test_24_an_approved_agent_is_told_to_follow_start_or_resume():
