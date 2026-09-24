@@ -64,6 +64,17 @@ def _install_services(monkeypatch, tmp_path, *, existing=None, oauth, profile_se
         "_recover_sibling_profile",
         AsyncMock(return_value=None),
     )
+    monkeypatch.setattr(
+        authorization,
+        "read_runtime_account",
+        AsyncMock(
+            return_value={
+                "account_id": "vendor-account-one",
+                "email": "worker@example.test",
+                "organization": "vendor-org-one",
+            }
+        ),
+    )
     return services
 
 
@@ -162,6 +173,11 @@ async def test_new_profile_passes_device_mode_to_connection_hub(monkeypatch, tmp
     assert "Problem Board worker" in kwargs["client_name"]
     assert kwargs["client_metadata"]["kdcube_credential_use"] == "multi_resource"
     assert kwargs["client_metadata"]["kdcube_authorization_profile"] == "worker"
+    assert kwargs["client_metadata"]["kdcube_agent_account"] == {
+        "account_id": "vendor-account-one",
+        "email": "worker@example.test",
+        "organization": "vendor-org-one",
+    }
     assert response["profile"]["access_id"] == "access-one"
 
 

@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from ..contract.errors import DomainError
+from ..contract.runtime_account import normalize_runtime_account
 from .credential_refusal import RECONNECT_CODES, requires_browser_reconnect as _requires_browser_reconnect
 from .host_config import HostRelayConfig, WorkerChannelConfig
+from .runtime_account import read_runtime_account
 
 
 PROFILE_METADATA_ABSENT = "profile_metadata_absent"
@@ -36,14 +38,15 @@ def _worker_client_metadata(
     channel: WorkerChannelConfig,
     *,
     coordinator: bool = False,
-) -> dict[str, str]:
+    runtime_account: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Public correlation facts asserted by this enrolled worker.
 
     Connection Hub renders and searches these values but never treats them as
     worker, machine, or session authority.
     """
 
-    return {
+    metadata: dict[str, Any] = {
         "kdcube_app_id": config.bundle_id,
         "kdcube_credential_use": "multi_resource",
         "kdcube_target_id": config.target_id,
@@ -59,6 +62,10 @@ def _worker_client_metadata(
             "coordinator" if coordinator else "worker"
         ),
     }
+    account = normalize_runtime_account(runtime_account)
+    if account:
+        metadata["kdcube_agent_account"] = account
+    return metadata
 
 
 def _connection_hub_error(exc: BaseException) -> DomainError:
@@ -512,6 +519,7 @@ async def authorize_worker_profile(
         options["browser_opener"] = _manual_browser_opener
     if callback_port is not None and not device:
         options["callback_port"] = callback_port
+    runtime_account = await read_runtime_account(channel.runtime_kind)
     try:
         result = await oauth.authorize(
             name=profile_name,
@@ -528,6 +536,7 @@ async def authorize_worker_profile(
                 config,
                 channel,
                 coordinator=coordinator,
+                runtime_account=runtime_account,
             ),
             timeout_seconds=max(30.0, min(float(wait_seconds), 1800.0)),
             **options,

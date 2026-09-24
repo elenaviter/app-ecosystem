@@ -130,6 +130,7 @@ import type {
   DelegatedInvocationPolicy,
   DelegatedToKdcubeAccount,
 } from '../../api/types';
+import { CardRuntimeIdentityFields } from './CardRuntimeIdentity';
 import {
   clearIssuedDelegatedAccess,
   createDelegatedAccess,
@@ -1029,6 +1030,7 @@ function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
 
 export function DelegatedAccessPanel({ openParams }: { openParams?: Record<string, string> } = {}) {
   const dispatch = useAppDispatch();
+  const platformUserId = useAppSelector((s) => s.identity.platformUserId || s.delegatedAccess.platformUserId);
   const {
     items,
     focusedCard,
@@ -5281,6 +5283,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               {lifecycle ? <ClientIdRef value={item.access_id} kind="card" /> : null}
                               {expiryHint(item)}
                               {renderCardComposition(item, { editing })}
+                              <div className="card-fields card-identity-fields">
+                                <CardRuntimeIdentityFields item={item} owner={item.grantor_subject || platformUserId} />
+                              </div>
                               {/* Edit mode keeps the per-claim checkboxes; the
                                   read-only view uses the same labelled rows as
                                   every other credential card. */}
@@ -5440,6 +5445,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         : (item.client_id && item.client_id !== item.label
                             ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
                       {renderCardComposition(item, { editing })}
+                      <div className="card-fields card-identity-fields">
+                        <CardRuntimeIdentityFields item={item} owner={item.grantor_subject || platformUserId} />
+                      </div>
                       {accessCardFocus?.accessId === item.access_id
                         && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
                         <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>

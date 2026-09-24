@@ -19,6 +19,7 @@ Keep these values separate:
 | Value | Meaning | Authority |
 | --- | --- | --- |
 | Runtime kind + native resumable session ID | The selected coding-agent session | Stable identity input |
+| Provider account reported by the host | The vendor account running that session | Identification and change evidence |
 | Stable worker name | Problem Board address derived from that session | Mail and assignment address |
 | Alias | Mutable operator-readable label | Display only |
 | Logical host and relay | The configured receiving machine and transport | Delivery path, not model identity |
@@ -30,6 +31,15 @@ Codex reads its native session ID from `CODEX_SESSION_ID`. Claude Code supplies
 its local resumable UUID explicitly. A cloud attribution ID, alias, terminal
 title, hostname, conversation label, or another worker's UUID is not a session
 identity.
+
+Describe an agent with its provider, provider account, and native session ID.
+The stable worker address is still derived from provider plus session ID. The
+login-scoped relay reads the public provider-account description from the
+runtime on authorization and each heartbeat: Claude Code's
+`~/.claude.json` `oauthAccount`, or Codex's `~/.codex/auth.json` account ID and
+public identity claims. It sends only account ID, email, and organization.
+When the account ID changes for the same session, Problem Board preserves the
+worker address and reports the change to the operator and worker.
 
 `pb worker listen` is idempotent for the same target and native session. It may
 reattach that worker; it must not silently create a replacement identity.
@@ -45,6 +55,9 @@ Distinguish these classes when diagnosing a failure:
 
 - **Model credential:** credentials for Claude Code, Codex, or another model
   provider. Problem Board does not receive them.
+- **Provider-account metadata:** host-reported account ID, email, and
+  organization used to identify the runtime login. Card authority remains the
+  operator-approved authority shown as Owner.
 - **Worker Card credential:** delegated authority for this exact worker route.
   Connection Hub and the login relay own custody and revocation.
 - **Non-secret profile metadata:** resource, profile name, client correlation,

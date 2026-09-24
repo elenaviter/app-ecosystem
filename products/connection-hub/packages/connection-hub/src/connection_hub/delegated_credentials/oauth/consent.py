@@ -637,6 +637,38 @@ def _render_accounts_needed_panel(accounts_needed: AccountRequirements | None, e
 """
 
 
+def _render_host_reported_runtime_account(req: AuthorizeRequest, esc) -> str:
+    """Render client-supplied runtime identification apart from Card authority."""
+
+    metadata = req.client.client_metadata if req.client is not None else {}
+    if not isinstance(metadata, Mapping):
+        return ""
+    raw_account = metadata.get("kdcube_agent_account")
+    if not isinstance(raw_account, Mapping):
+        return ""
+    account_id = str(raw_account.get("account_id") or "").strip()
+    if not account_id:
+        return ""
+    provider = str(metadata.get("kdcube_agent_provider") or "coding runtime").strip()
+    provider_label = {
+        "claude-code": "Claude Code",
+        "codex": "Codex",
+    }.get(provider, provider or "Coding runtime")
+    email = str(raw_account.get("email") or "").strip()
+    organization = str(raw_account.get("organization") or "").strip()
+    return f"""
+    <div class="host-account">
+      <span class="k">Provider account</span>
+      <div>
+        <strong>{esc(provider_label)} · {esc(email or account_id)}</strong>
+        <code>{esc(account_id)}</code>
+        {f'<span class="desc">{esc(organization)}</span>' if organization else ''}
+        <span class="reported-source">Reported by the host · identification metadata. Access comes from the Card choices approved below.</span>
+      </div>
+    </div>
+"""
+
+
 def render_consent_html(
     req: AuthorizeRequest,
     issuer: str,
@@ -927,6 +959,7 @@ def render_consent_html(
       </form>
     </div>
 """
+    host_runtime_account_html = _render_host_reported_runtime_account(req, esc)
 
     # The card this approval creates is editable/revocable in the hub - name
     # the exact place, deep-linked to THIS client, so the page is a doorway
@@ -1008,6 +1041,15 @@ def render_consent_html(
     .account strong {{ display: block; font-size: .92rem; margin-top: .12rem; color: var(--ink); }}
     .account code {{ display: inline-block; margin-top: .2rem; max-width: 100%; word-break: break-all; }}
     .account-form {{ margin: 0; flex: 0 0 auto; }}
+    .host-account {{
+      display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: .6rem;
+      border: 1px solid var(--line); border-radius: 8px; padding: .7rem .85rem; margin: 0 0 .9rem;
+      background: var(--panel);
+    }}
+    .host-account strong, .host-account code, .host-account .desc, .host-account .reported-source {{ display: block; }}
+    .host-account strong {{ color: var(--ink); overflow-wrap: anywhere; }}
+    .host-account code {{ width: fit-content; max-width: 100%; margin-top: .2rem; overflow-wrap: anywhere; }}
+    .host-account .reported-source {{ margin-top: .28rem; color: var(--muted); font-size: .72rem; }}
     .hub-link {{ color: var(--accent, #0f766e); font-weight: 600; text-decoration: underline; }}
     details.fold {{ border: 1px solid var(--line); border-radius: 8px; margin: .55rem 0; padding: 0 .7rem .35rem; background: #fff; }}
     details.fold > summary {{
@@ -1107,6 +1149,7 @@ def render_consent_html(
     client and the redirect URL above. The connection can receive only the scopes and capabilities
     you approve here, and only if your KDCube account is allowed to delegate them.</p>
 {account_html}
+{host_runtime_account_html}
 {accounts_needed_html}
     <form method="post" action="{esc(form_action)}">
 {hidden}
