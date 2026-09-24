@@ -143,6 +143,14 @@ folders are removed 30 days after the row was created, per agent. Rows from
 before this layout are moved into it once by housekeeping, and are found by id
 in the old flat folders until then.
 
+Stores the relay reads only by key, never by listing, are bounded by age:
+handled markers, idempotency records, processed mail, undeliverable mail,
+operator responses, settled scope leases and journal-index operations after 30
+days, journal receipts after 90 days. A journal-index lock file goes only once
+its operation record is gone. A record a migration cannot read is moved to a
+`.legacy-unreadable/` folder beside its store, kept for a person, never deleted
+unread.
+
 ## Owner And Worker Conversation
 
 Every enrolled worker has one conversation with its owner. The worker may be

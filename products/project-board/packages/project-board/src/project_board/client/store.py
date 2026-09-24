@@ -7648,14 +7648,20 @@ class SharedFieldStore:
                 recipient_status = str(
                     (recipient or {}).get("pool_status") or "active"
                 ).lower()
-                state_counts = {
-                    state: len(list((source_root / state).glob("*.json")))
-                    for state in ALL_MAILBOX_STATES
-                }
-                if recipient is not None and recipient_status not in {
+                live_recipient = recipient is not None and recipient_status not in {
                     "retired",
                     "not_linked",
-                }:
+                }
+                # A live mailbox is only examined, so only its states in flight
+                # are counted. processed/ and quarantine/ are listed only when
+                # the mailbox is archived and every state moves (W287 2c, LS3).
+                state_counts = {
+                    state: len(list((source_root / state).glob("*.json")))
+                    for state in (
+                        ACTIVE_MAILBOX_STATES if live_recipient else ALL_MAILBOX_STATES
+                    )
+                }
+                if live_recipient:
                     examined_mailboxes.append(
                         {
                             "recipient": address,
