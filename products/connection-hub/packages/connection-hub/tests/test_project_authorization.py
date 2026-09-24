@@ -6,21 +6,61 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-
 from connection_hub.delegated_credentials.project_authorization import (
     PROJECT_PERSON_CONTROL_CREATE,
+    PROJECT_PERSON_CONTROL_REVOKE,
     PROJECT_PERSON_CONTROL_UPDATE,
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
     ProjectAuthorizationRequest,
+    ProjectMembershipEvidence,
+    ResolverBackedProjectAuthorizationPort,
 )
 
+PROJECT_REF = "work:project:quickstart"
+ADMIN = "platform-admin-1"
+TARGET = "platform-user-2"
 
-def _request(*, operation: str = PROJECT_PERSON_CONTROL_UPDATE) -> ProjectAuthorizationRequest:
+
+class _MembershipResolver:
+    def __init__(self, memberships: dict[tuple[str, str], object]) -> None:
+        self.memberships = memberships
+        self.calls: list[tuple[str, str]] = []
+
+    async def resolve_project_membership(self, *, project_ref: str, subject: str):
+        self.calls.append((project_ref, subject))
+        return self.memberships.get((project_ref, subject))
+
+
+def _membership(
+    subject: str,
+    *,
+    role: str,
+    grants: tuple[str, ...] = (),
+) -> ProjectMembershipEvidence:
+    return ProjectMembershipEvidence.build(
+        project_ref=PROJECT_REF,
+        subject=subject,
+        role=role,
+        delegable_grants=grants,
+        evidence={"membership_revision": 7},
+    )
+
+
+def _port(resolver) -> ResolverBackedProjectAuthorizationPort:
+    return ResolverBackedProjectAuthorizationPort(
+        resolver=resolver,
+        administrative_roles={"owner", "admin"},
+    )
+
+
+def _request(
+    *, operation: str = PROJECT_PERSON_CONTROL_UPDATE
+) -> ProjectAuthorizationRequest:
     return ProjectAuthorizationRequest.build(
-        actor_subject="platform-admin-1",
-        project_ref="work:project:quickstart",
-        target_subject="platform-user-2",
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
         operation=operation,
         request_id="request-123",
     )
@@ -45,9 +85,18 @@ def test_allow_decision_is_bound_to_exact_trusted_coordinates() -> None:
     ("change", "reason"),
     [
         ({"actor_subject": "platform-admin-2"}, "project_authorization_actor_mismatch"),
-        ({"project_ref": "work:project:other"}, "project_authorization_project_ref_mismatch"),
-        ({"target_subject": "platform-user-3"}, "project_authorization_target_mismatch"),
-        ({"operation": PROJECT_PERSON_CONTROL_CREATE}, "project_authorization_operation_mismatch"),
+        (
+            {"project_ref": "work:project:other"},
+            "project_authorization_project_ref_mismatch",
+        ),
+        (
+            {"target_subject": "platform-user-3"},
+            "project_authorization_target_mismatch",
+        ),
+        (
+            {"operation": PROJECT_PERSON_CONTROL_CREATE},
+            "project_authorization_operation_mismatch",
+        ),
         ({"request_id": "request-other"}, "project_authorization_request_id_mismatch"),
     ],
 )
@@ -99,3 +148,176 @@ def test_request_has_no_role_or_creator_authority_input() -> None:
         "operation",
         "request_id",
     }
+
+
+@pytest.mark.parametrize(
+    "delegable_grants",
+    ({"work:review": True}, object()),
+    ids=("mapping", "object"),
+)
+def test_membership_rejects_malformed_delegable_grants(delegable_grants) -> None:
+    with pytest.raises(
+        ProjectAuthorizationError,
+        match="project_authorization_grants_invalid",
+    ):
+        ProjectMembershipEvidence.build(
+            project_ref=PROJECT_REF,
+            subject=ADMIN,
+            role="admin",
+            delegable_grants=delegable_grants,
+        )
+
+
+@pytest.mark.parametrize(
+    "administrative_roles",
+    ({"admin": True}, object()),
+    ids=("mapping", "object"),
+)
+def test_port_rejects_malformed_administrative_roles(administrative_roles) -> None:
+    with pytest.raises(
+        ProjectAuthorizationError,
+        match="project_administrative_roles_invalid",
+    ):
+        ResolverBackedProjectAuthorizationPort(
+            resolver=_MembershipResolver({}),
+            administrative_roles=administrative_roles,
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolver_port_allows_a_project_admin_with_exact_membership_evidence() -> (
+    None
+):
+    resolver = _MembershipResolver(
+        {
+            (PROJECT_REF, ADMIN): _membership(
+                ADMIN,
+                role="admin",
+                grants=("work:review", "work:coordinate"),
+            ),
+            (PROJECT_REF, TARGET): _membership(TARGET, role="member"),
+        }
+    )
+
+    decision = await _port(resolver).authorize_project_person_control(_request())
+
+    assert decision.allowed
+    assert decision.delegable_grants == ("work:coordinate", "work:review")
+    assert not decision.platform_admin
+    assert decision.evidence["authorization_source"] == "project_membership_resolver"
+    assert decision.evidence["actor_membership"]["role"] == "admin"
+    assert decision.evidence["target_membership"]["role"] == "member"
+
+
+@pytest.mark.asyncio
+async def test_resolver_port_denies_a_non_admin_before_resolving_the_target() -> None:
+    resolver = _MembershipResolver(
+        {
+            (PROJECT_REF, ADMIN): _membership(ADMIN, role="member"),
+            (PROJECT_REF, TARGET): _membership(TARGET, role="member"),
+        }
+    )
+
+    decision = await _port(resolver).authorize_project_person_control(_request())
+
+    assert not decision.allowed
+    assert decision.reason == "project_actor_role_not_administrative"
+    assert resolver.calls == [(PROJECT_REF, ADMIN)]
+
+
+@pytest.mark.asyncio
+async def test_project_admin_can_revoke_after_target_membership_is_removed() -> None:
+    resolver = _MembershipResolver(
+        {(PROJECT_REF, ADMIN): _membership(ADMIN, role="admin")}
+    )
+
+    decision = await _port(resolver).authorize_project_person_control(
+        _request(operation=PROJECT_PERSON_CONTROL_REVOKE)
+    )
+
+    assert decision.allowed
+    assert resolver.calls == [(PROJECT_REF, ADMIN)]
+    assert "target_membership" not in decision.evidence
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_revoke_a_former_members_card() -> None:
+    resolver = _MembershipResolver(
+        {(PROJECT_REF, ADMIN): _membership(ADMIN, role="member")}
+    )
+
+    decision = await _port(resolver).authorize_project_person_control(
+        _request(operation=PROJECT_PERSON_CONTROL_REVOKE)
+    )
+
+    assert not decision.allowed
+    assert decision.reason == "project_actor_role_not_administrative"
+    assert resolver.calls == [(PROJECT_REF, ADMIN)]
+
+
+@pytest.mark.asyncio
+async def test_resolver_port_denies_when_no_resolver_is_bound() -> None:
+    decision = await _port(None).authorize_project_person_control(_request())
+
+    assert not decision.allowed
+    assert decision.reason == "project_membership_resolver_missing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("memberships", "reason"),
+    (
+        ({}, "project_actor_membership_missing"),
+        (
+            {(PROJECT_REF, ADMIN): _membership(ADMIN, role="admin")},
+            "project_target_membership_missing",
+        ),
+    ),
+)
+async def test_resolver_port_denies_missing_membership_by_name(
+    memberships: dict[tuple[str, str], object],
+    reason: str,
+) -> None:
+    decision = await _port(
+        _MembershipResolver(memberships)
+    ).authorize_project_person_control(_request())
+
+    assert not decision.allowed
+    assert decision.reason == reason
+
+
+@pytest.mark.asyncio
+async def test_project_owner_can_create_their_own_creator_bootstrap_card() -> None:
+    owner = _membership(
+        ADMIN,
+        role="owner",
+        grants=("work:admin",),
+    )
+    resolver = _MembershipResolver({(PROJECT_REF, ADMIN): owner})
+    request = ProjectAuthorizationRequest.build(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=ADMIN,
+        operation=PROJECT_PERSON_CONTROL_CREATE,
+        request_id="creator-bootstrap",
+    )
+
+    decision = await _port(resolver).authorize_project_person_control(request)
+
+    assert decision.allowed
+    assert decision.delegable_grants == ("work:admin",)
+    assert resolver.calls == [(PROJECT_REF, ADMIN)]
+
+
+@pytest.mark.asyncio
+async def test_mismatched_membership_evidence_is_a_named_denial() -> None:
+    wrong_actor = dataclasses.replace(
+        _membership(ADMIN, role="admin"),
+        project_ref="work:project:other",
+    )
+    resolver = _MembershipResolver({(PROJECT_REF, ADMIN): wrong_actor})
+
+    decision = await _port(resolver).authorize_project_person_control(_request())
+
+    assert not decision.allowed
+    assert decision.reason == "project_membership_project_ref_mismatch"
