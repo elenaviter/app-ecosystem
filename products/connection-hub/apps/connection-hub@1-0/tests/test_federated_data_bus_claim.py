@@ -72,7 +72,11 @@ async def test_direct_platform_session_claim_uses_host_authenticated_context(mon
 
     monkeypatch.setattr(module, "_authenticate_request_context", external_authenticator)
     monkeypatch.setattr(module, "issue_federated_data_bus_token", issue_token)
-    monkeypatch.setattr(module, "_automation_access_service", lambda *args, **kwargs: live_sessions)
+
+    async def _access_service(*_args, **_kwargs):
+        return live_sessions
+
+    monkeypatch.setattr(module, "_automation_access_service", _access_service)
 
     result = await module.ConnectionHubEntrypoint.federated_data_bus_claim(
         instance,

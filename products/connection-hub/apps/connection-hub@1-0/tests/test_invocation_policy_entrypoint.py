@@ -93,7 +93,11 @@ def entrypoint(monkeypatch):
     access = _Access()
     policies = _Policies()
     monkeypatch.setattr(module, "_platform_user_payload", lambda *_args, **_kwargs: {"sub": "user-1"})
-    monkeypatch.setattr(module, "_automation_access_service", lambda *_args: access)
+
+    async def _access_service(*_args):
+        return access
+
+    monkeypatch.setattr(module, "_automation_access_service", _access_service)
     monkeypatch.setattr(module, "_invocation_policy_service", lambda *_args: policies)
     instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
     return SimpleNamespace(

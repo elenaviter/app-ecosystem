@@ -336,27 +336,45 @@ class PostgresCardCredentialHandleStore:
             )
         return created
 
-    async def remove(self, authority: CardAuthority) -> None:
+    async def replace_current(
+        self,
+        authority: CardAuthority,
+        handles: CardCredentialHandles,
+    ) -> None:
+        """Install changed source evidence, then prove the exact replacement."""
+
+        await self.write(authority, handles)
+        await self.import_current(authority, handles)
+
+    async def remove_current(self, access_id: str) -> None:
+        """Retire one stale active migration identity with durable cleanup custody."""
+
+        identifier = str(access_id or "").strip()
+        if not identifier:
+            raise CardCredentialHandleUnavailable("card_handle_access_id_missing")
         try:
-            current = await self._metadata.read_current(authority.access_id)
+            current = await self._metadata.read_current(identifier)
         except Exception as exc:
             raise CardCredentialHandleUnavailable(
                 "card_handle_metadata_unavailable",
-                access_id=authority.access_id,
+                access_id=identifier,
             ) from exc
         if current is None or current.state != HANDLE_STATE_ACTIVE:
             return
         try:
             await self._resident_secrets.retire(
-                authority.access_id,
+                identifier,
                 expected_revision=current.revision,
                 state=HANDLE_STATE_REVOKED,
             )
         except Exception as exc:
             raise CardCredentialHandleUnavailable(
                 "card_handle_retirement_failed",
-                access_id=authority.access_id,
+                access_id=identifier,
             ) from exc
+
+    async def remove(self, authority: CardAuthority) -> None:
+        await self.remove_current(authority.access_id)
 
 
 __all__ = [

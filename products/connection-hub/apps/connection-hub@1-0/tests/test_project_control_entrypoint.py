@@ -40,7 +40,11 @@ class _Service:
 def entrypoint(monkeypatch):
     module = _entrypoint_module()
     service = _Service()
-    monkeypatch.setattr(module, "_automation_access_service", lambda *a, **kw: service)
+
+    async def _access_service(*_args, **_kwargs):
+        return service
+
+    monkeypatch.setattr(module, "_automation_access_service", _access_service)
     monkeypatch.setattr(
         module,
         "_platform_user_payload",

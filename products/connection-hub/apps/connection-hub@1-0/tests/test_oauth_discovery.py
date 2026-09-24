@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from starlette.requests import Request
@@ -37,6 +38,29 @@ def _request(*, method: str = "GET") -> Request:
             "server": ("runtime.example.test", 443),
         }
     )
+
+
+def _postgres_entrypoint(module, durable):
+    entrypoint = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    entrypoint.bundle_props = {
+        "connections": {
+            "delegated_credentials": {
+                "oauth": {"enabled": True},
+                "authority": {
+                    "backend": "postgresql",
+                    "generation_id": "durable-authority-v1",
+                },
+            }
+        }
+    }
+    entrypoint.redis = object()
+    entrypoint.pg_pool = object()
+    entrypoint._durable_authority = durable
+    entrypoint.runtime_identity = lambda: {
+        "tenant": "tenant-a",
+        "project": "project-a",
+    }
+    return entrypoint
 
 
 def test_connection_hub_post_surfaces_have_explicit_csrf_classification():
@@ -108,6 +132,76 @@ async def test_connection_hub_discovery_advertises_enabled_client_registration_m
         "https://runtime.example.test/api/integrations/bundles/tenant-a/project-a/"
         "connection-hub@1-0/public/oauth/device_authorization"
     )
+
+
+@pytest.mark.asyncio
+async def test_fresh_postgresql_entrypoint_serves_discovery_and_access_list(
+    monkeypatch,
+):
+    module = _load_entrypoint_module()
+    readiness_checks = []
+
+    async def _ensure_ready():
+        readiness_checks.append("checked")
+
+    durable = SimpleNamespace(oauth=object(), ensure_ready=_ensure_ready)
+
+    class _AccessService:
+        async def list_access(self, user):
+            assert user == {"user_id": "user-a"}
+            return {"ok": True, "platform_user_id": "user-a", "items": []}
+
+    service = _AccessService()
+
+    async def _access_service_for(_entrypoint, _config):
+        return service
+
+    monkeypatch.setattr(module, "_automation_access_service_for", _access_service_for)
+    monkeypatch.setattr(
+        module,
+        "_platform_user_payload",
+        lambda *_args, **_kwargs: {"user_id": "user-a"},
+    )
+    monkeypatch.setattr(module, "_invocation_policy_service", lambda _entrypoint: object())
+
+    discovery_entrypoint = _postgres_entrypoint(module, durable)
+    response = await discovery_entrypoint.oauth_get(
+        request=_request(),
+        path_tail=".well-known/oauth-authorization-server",
+    )
+    assert response.status_code == 200
+
+    access_entrypoint = _postgres_entrypoint(module, durable)
+    listing = await access_entrypoint.delegated_access_list(
+        request=_request(),
+        user_id="user-a",
+    )
+    assert listing["ok"] is True
+    assert readiness_checks == ["checked", "checked"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_postgresql_entrypoint_refuses_without_activation_receipt(
+    monkeypatch,
+):
+    module = _load_entrypoint_module()
+
+    async def _ensure_ready():
+        raise RuntimeError("authority_cutover_receipt_missing")
+
+    durable = SimpleNamespace(oauth=object(), ensure_ready=_ensure_ready)
+
+    async def _access_service_for(_entrypoint, _config):
+        return object()
+
+    monkeypatch.setattr(module, "_automation_access_service_for", _access_service_for)
+    entrypoint = _postgres_entrypoint(module, durable)
+
+    with pytest.raises(RuntimeError, match="authority_cutover_receipt_missing"):
+        await entrypoint.oauth_get(
+            request=_request(),
+            path_tail=".well-known/oauth-authorization-server",
+        )
 
 
 @pytest.mark.asyncio

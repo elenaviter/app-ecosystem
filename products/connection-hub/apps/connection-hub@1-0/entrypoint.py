@@ -778,11 +778,17 @@ def _durable_authority(entrypoint: Any) -> ConnectionHubDurableAuthority:
     return authority
 
 
-def _oauth_authority_store(entrypoint: Any) -> PostgresOAuthAuthorityStore:
-    return _durable_authority(entrypoint).oauth
+async def _oauth_authority_store(entrypoint: Any) -> PostgresOAuthAuthorityStore:
+    durable = _durable_authority(entrypoint)
+    await durable.ensure_ready()
+    return durable.oauth
 
 
-def _oauth_grant_store(entrypoint: Any) -> GrantStore:
+async def _oauth_grant_store(entrypoint: Any) -> GrantStore:
+    config = _delegated_authority_config(entrypoint)
+    authority = None
+    if config.uses_postgresql:
+        authority = await _oauth_authority_store(entrypoint)
     existing = getattr(entrypoint, "_oauth_grant_store", None)
     if existing is not None:
         return existing
@@ -790,12 +796,6 @@ def _oauth_grant_store(entrypoint: Any) -> GrantStore:
     if redis is None:
         raise RuntimeError("shared Redis is unavailable for OAuth handoffs")
     tenant, project = _runtime_tenant_project(entrypoint)
-    authority = None
-    config = _delegated_authority_config(entrypoint)
-    if config.uses_postgresql:
-        durable = _durable_authority(entrypoint)
-        durable.require_ready()
-        authority = durable.oauth
     store = GrantStore(
         redis,
         tenant,
@@ -912,14 +912,17 @@ def _oauth_public_base_url(request: Any) -> str:
     return f"{str(request.base_url).rstrip('/')}{public_path}".rstrip("/")
 
 
-def _bind_delegated_client_request_config(entrypoint: Any, request: Any) -> Dict[str, Any]:
+async def _bind_delegated_client_request_config(
+    entrypoint: Any,
+    request: Any,
+) -> Dict[str, Any]:
     cfg = _oauth_adapter_config(entrypoint, request)
     if request is not None:
         request.state.oauth_delegated_config = cfg
         request.state.oauth_delegated_issuer = str(cfg.get("issuer") or "").rstrip("/")
         request.state.oauth_grant_store_required = True
         if getattr(entrypoint, "redis", None) is not None:
-            request.state.oauth_grant_store = _oauth_grant_store(entrypoint)
+            request.state.oauth_grant_store = await _oauth_grant_store(entrypoint)
         request.state.connection_hub_authority_registry = _authority_registry_config(entrypoint)
         # Parsed provider/claim registry, so the OAuth consent page can resolve
         # which connected accounts the requested scope needs (the "Accounts this
@@ -935,15 +938,15 @@ def _bind_delegated_client_request_config(entrypoint: Any, request: Any) -> Dict
         # capability and never builds it. Lazy: most OAuth requests never touch
         # it, and the frozen config keeps a later build consistent with what
         # this request validated.
-        parsed = oauth_delegated_config(request)
-        request.state.automation_access_factory = (
-            lambda: _automation_access_service_for(entrypoint, parsed)
-        )
+        if getattr(entrypoint, "redis", None) is not None:
+            parsed = oauth_delegated_config(request)
+            access_service = await _automation_access_service_for(entrypoint, parsed)
+            request.state.automation_access_factory = lambda: access_service
     return cfg
 
 
-def _delegated_oauth_config_from_entrypoint(entrypoint: Any, request: Any) -> Any:
-    raw_cfg = _bind_delegated_client_request_config(entrypoint, request)
+async def _delegated_oauth_config_from_entrypoint(entrypoint: Any, request: Any) -> Any:
+    raw_cfg = await _bind_delegated_client_request_config(entrypoint, request)
     if request is not None:
         return oauth_delegated_config(request)
     state = SimpleNamespace(oauth_delegated_config=raw_cfg)
@@ -965,7 +968,7 @@ def _delegated_catalog_resolver(entrypoint: Any, redis: Any) -> Any:
     )
 
 
-def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
+async def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
     """Durable card persistence, or ``None`` when bundle storage is
     unavailable — card operations then fail closed."""
     storage_root = entrypoint.bundle_storage_root()
@@ -976,7 +979,7 @@ def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
     config = _delegated_authority_config(entrypoint)
     if config.uses_postgresql:
         durable = _durable_authority(entrypoint)
-        durable.require_ready()
+        await durable.ensure_ready()
         credential_handles = durable.card_handles
     return DurableCardPersistence(
         redis=redis,
@@ -988,12 +991,12 @@ def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
     )
 
 
-def _admission_replay_claims(entrypoint: Any) -> Any:
+async def _admission_replay_claims(entrypoint: Any) -> Any:
     config = _delegated_authority_config(entrypoint)
     if not config.uses_postgresql:
         return None
     durable = _durable_authority(entrypoint)
-    durable.require_ready()
+    await durable.ensure_ready()
     return durable.admission_replay
 
 
@@ -1257,7 +1260,10 @@ def _expected_remote_mcp_revision(payload: Mapping[str, Any]) -> int:
     return revision
 
 
-def _automation_access_service_for(entrypoint: Any, config: Any) -> AutomationAccessService:
+async def _automation_access_service_for(
+    entrypoint: Any,
+    config: Any,
+) -> AutomationAccessService:
     """Build the service against an already-resolved delegated-client config.
 
     The config is the request's authorization input, so it is frozen by the
@@ -1271,10 +1277,10 @@ def _automation_access_service_for(entrypoint: Any, config: Any) -> AutomationAc
         redis=redis,
         tenant=tenant,
         project=project,
-        grant_store=_oauth_grant_store(entrypoint),
+        grant_store=await _oauth_grant_store(entrypoint),
         config=config,
         catalog_resolver=_delegated_catalog_resolver(entrypoint, redis),
-        card_persistence=_delegated_card_persistence(entrypoint, redis),
+        card_persistence=await _delegated_card_persistence(entrypoint, redis),
         resource_overlay_provider=lambda owner_subject: _remote_mcp_resource_overlay(
             entrypoint, owner_subject
         ),
@@ -1282,9 +1288,18 @@ def _automation_access_service_for(entrypoint: Any, config: Any) -> AutomationAc
     )
 
 
-def _automation_access_service(entrypoint: Any, request: Any) -> AutomationAccessService:
-    return _automation_access_service_for(
-        entrypoint, _delegated_oauth_config_from_entrypoint(entrypoint, request)
+async def _automation_access_service(
+    entrypoint: Any,
+    request: Any,
+) -> AutomationAccessService:
+    if request is not None:
+        await _bind_delegated_client_request_config(entrypoint, request)
+        factory = getattr(request.state, "automation_access_factory", None)
+        if callable(factory):
+            return factory()
+    return await _automation_access_service_for(
+        entrypoint,
+        await _delegated_oauth_config_from_entrypoint(entrypoint, request),
     )
 
 
@@ -3168,7 +3183,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         path_tail: str = "",
         **kwargs: Any,
     ):
-        cfg = _bind_delegated_client_request_config(self, request)
+        cfg = await _bind_delegated_client_request_config(self, request)
         if not _bool(cfg.get("enabled"), default=False):
             LOGGER.warning("[connection-hub.oauth] rejected disabled GET path=%s", path_tail)
             return JSONResponse(
@@ -3280,7 +3295,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         **kwargs: Any,
     ):
         del kwargs
-        cfg = _bind_delegated_client_request_config(self, request)
+        cfg = await _bind_delegated_client_request_config(self, request)
         if not _bool(cfg.get("enabled"), default=False):
             LOGGER.warning("[connection-hub.oauth] rejected disabled POST path=%s", path_tail)
             return JSONResponse(
@@ -3335,6 +3350,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 warn_missing=True,
             )
 
+        await _bind_delegated_client_request_config(self, request)
+        replay_claims = await _admission_replay_claims(self)
+
         return await handle_delegated_admission(
             context=AdmissionHostContext(
                 connections=_connections_config(self),
@@ -3342,9 +3360,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 tenant=tenant,
                 project=project,
                 resolve_secret=_resolve_secret,
-                bind_delegated_request=lambda req: (
-                    _bind_delegated_client_request_config(self, req)
-                ),
+                bind_delegated_request=lambda _req: None,
                 invocation_policies=_invocation_policy_service(self),
                 invocation_recovery_url_builder=lambda view, admission: (
                     connection_hub_invocation_policy_url(
@@ -3389,7 +3405,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                         invocation_change_id=change_id,
                     )
                 ),
-                replay_claims=_admission_replay_claims(self),
+                replay_claims=replay_claims,
             ),
             payload=_payload(data, **kwargs),
             request=request,
@@ -3760,7 +3776,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         tenant, project = _runtime_tenant_project(self)
         binding = await build_hosted_gateway_binding(
             request=request,
-            access_service=_automation_access_service(self, request),
+            access_service=await _automation_access_service(self, request),
             remote_mcp_service=_remote_mcp_service(self),
             invocation_policy_service=_invocation_policy_service(self),
             tenant=tenant,
@@ -3786,7 +3802,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         **kwargs: Any,
     ) -> Any:
         del kwargs
-        _bind_delegated_client_request_config(self, request)
+        await _bind_delegated_client_request_config(self, request)
         denial = await authorize_delegated_mcp_proxy_request(
             request=request,
             body=b"{}",
@@ -3797,7 +3813,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         tenant, project = _runtime_tenant_project(self)
         binding = await build_hosted_gateway_binding(
             request=request,
-            access_service=_automation_access_service(self, request),
+            access_service=await _automation_access_service(self, request),
             remote_mcp_service=_remote_mcp_service(self),
             invocation_policy_service=_invocation_policy_service(self),
             tenant=tenant,
@@ -3845,7 +3861,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        response = await _automation_access_service(self, request).list_access(user)
+        response = await (await _automation_access_service(self, request)).list_access(user)
         if response.get("ok") is not True:
             return response
         owner = str(response.get("platform_user_id") or "").strip()
@@ -3883,7 +3899,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).control_card_get(
+        return await (await _automation_access_service(self, request)).control_card_get(
             user,
             control_id=str(payload.get("control_id") or "").strip(),
         )
@@ -3908,7 +3924,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).control_card_create(
+        return await (await _automation_access_service(self, request)).control_card_create(
             user,
             initial_selection_access_id=str(
                 payload.get("initial_selection_access_id")
@@ -3947,7 +3963,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).control_card_update(
+        return await (await _automation_access_service(self, request)).control_card_update(
             user,
             control_id=str(payload.get("control_id") or "").strip(),
             resource_grants=(
@@ -4014,7 +4030,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).attach_control_card(
+        return await (await _automation_access_service(self, request)).attach_control_card(
             user,
             access_id=str(payload.get("access_id") or "").strip(),
             control_id=str(payload.get("control_id") or "").strip(),
@@ -4042,7 +4058,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).detach_control_card(
+        return await (await _automation_access_service(self, request)).detach_control_card(
             user,
             access_id=str(payload.get("access_id") or "").strip(),
             control_id=str(payload.get("control_id") or "").strip(),
@@ -4069,7 +4085,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).control_card_revoke(
+        return await (await _automation_access_service(self, request)).control_card_revoke(
             user,
             control_id=str(payload.get("control_id") or "").strip(),
         )
@@ -4098,7 +4114,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).project_control_basis(
+        return await (await _automation_access_service(self, request)).project_control_basis(
             user,
             access_id=str(payload.get("access_id") or "").strip(),
         )
@@ -4125,7 +4141,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).attach_project_control(
+        return await (await _automation_access_service(self, request)).attach_project_control(
             user,
             access_id=str(payload.get("access_id") or "").strip(),
             control_id=str(payload.get("control_id") or "").strip(),
@@ -4154,7 +4170,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).detach_project_control(
+        return await (await _automation_access_service(self, request)).detach_project_control(
             user,
             access_id=str(payload.get("access_id") or "").strip(),
             control_id=str(payload.get("control_id") or "").strip(),
@@ -4190,7 +4206,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         resource = str(payload.get("resource") or "").strip()
         operation = str(payload.get("operation") or "").strip()
         mode = str(payload.get("mode") or "").strip().lower()
-        listing = await _automation_access_service(self, request).list_access(user)
+        listing = await (await _automation_access_service(self, request)).list_access(user)
         if listing.get("ok") is not True:
             return listing
         card = next(
@@ -4298,7 +4314,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     resource_operations=resource_operations,
                     invocation_modes=invocation_modes,
                 )
-            access_service = _automation_access_service(self, request)
+            access_service = await _automation_access_service(self, request)
             result = await access_service.create_access(
                 user,
                 label=str(payload.get("label") or "").strip(),
@@ -4409,7 +4425,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             sorted((payload.get("accepted_operations") or {}).keys()),
         )
         try:
-            access_service = _automation_access_service(self, request)
+            access_service = await _automation_access_service(self, request)
             if "reset_to_control_defaults" in payload:
                 if payload.get("reset_to_control_defaults") is not True:
                     raise ValueError("reset_to_control_defaults must be true")
@@ -4531,7 +4547,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         claims = _safe_list(payload.get("claims") or payload.get("scopes"))
         resource_operations = _resource_operations_for(payload, resource)
         named_service_operations = _named_service_operations_for(payload, resource)
-        access_service = _automation_access_service(self, request)
+        access_service = await _automation_access_service(self, request)
         invocation_mode = str(payload.get("invocation_mode") or "").strip().lower()
         invocation_access_id = str(payload.get("access_id") or "").strip()
         invocation_change_id = str(
@@ -4983,7 +4999,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        result = await _automation_access_service(self, request).renew_access(
+        result = await (await _automation_access_service(self, request)).renew_access(
             user,
             access_id=str(payload.get("access_id") or "").strip(),
             ttl_seconds=payload.get("ttl_seconds"),
@@ -5027,7 +5043,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await _automation_access_service(self, request).revoke_access(
+        return await (await _automation_access_service(self, request)).revoke_access(
             user,
             access_id=str(payload.get("access_id") or "").strip(),
         )
@@ -5283,7 +5299,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         # disconnect itself.
         if result.get("removed") and provider_id:
             try:
-                pruned = await _automation_access_service(self, request).prune_account_from_grants(
+                pruned = await (await _automation_access_service(self, request)).prune_account_from_grants(
                     grantor_subject=platform_user_id,
                     provider_id=provider_id,
                     account_id=resolved_account_id,
@@ -5908,7 +5924,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         try:
             live_subject = platform_user_id or actor_user_id
             if live_subject:
-                await _automation_access_service(self, request).register_live_session(
+                await (await _automation_access_service(self, request)).register_live_session(
                     live_subject, grant.session.session_id, grant.expires_at
                 )
         except Exception:

@@ -246,6 +246,13 @@ class PostgresAuthorityCutoverStore:
         async with self._pool.acquire() as connection, connection.transaction():
             await connection.execute(
                 f"""
+                DELETE FROM {self.schema}.{TABLE_AUTHORITY_CUTOVERS}
+                WHERE generation_id <> $1
+                """,
+                candidate.generation_id,
+            )
+            await connection.execute(
+                f"""
                 INSERT INTO {self.schema}.{TABLE_AUTHORITY_CUTOVERS} (
                     generation_id, source_generation, target_generation,
                     source_counts, target_counts, prerequisites, preview_sha256

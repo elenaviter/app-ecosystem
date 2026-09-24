@@ -31,6 +31,8 @@ class AuthorityMigrationSource(Protocol):
 
 
 class AuthorityMigrationTarget(Protocol):
+    async def synchronize(self, source: AuthorityMigrationSnapshot) -> None: ...
+
     async def import_record(self, record: AuthorityMigrationRecord) -> bool: ...
 
     async def snapshot(
@@ -136,6 +138,14 @@ async def _import_and_reconcile(
     inspection = (await source.inspect()).validated()
     verify_migration_preview(reviewed, inspection)
     snapshot = inspection.snapshot
+    try:
+        await target.synchronize(snapshot)
+    except Exception as exc:
+        raise AuthorityMigrationImportFailed(
+            record_type="authority_snapshot",
+            identity=snapshot.generation,
+            reason=_import_failure_reason(exc),
+        ) from exc
     for record in snapshot.records:
         try:
             await target.import_record(record)

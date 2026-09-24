@@ -64,17 +64,109 @@ class ConnectionHubPostgresMigrationTarget:
         ):
             raise ValueError("Connection Hub migration targets must share one scope")
 
+    @staticmethod
+    def _card_components(
+        record: AuthorityMigrationRecord,
+    ) -> tuple[CardAuthority, CardCredentialHandles]:
+        source = record.validated()
+        authority = CardAuthority.from_mapping(source.payload.get("authority") or {})
+        handles_payload = dict(source.payload.get("handles") or {})
+        handles_payload["access_token"] = str(
+            source.secrets.get("resident_bearer") or ""
+        )
+        return authority, CardCredentialHandles.from_mapping(handles_payload)
+
+    async def _synchronize_cards(
+        self,
+        records: tuple[AuthorityMigrationRecord, ...],
+        *,
+        captured_at_ms: int,
+    ) -> None:
+        source_by_id = {record.identity: record.validated() for record in records}
+        current = await self.card_handles.migration_metadata(
+            captured_at_ms=captured_at_ms
+        )
+        for metadata in current:
+            source = source_by_id.get(metadata.access_id)
+            if source is None:
+                await self.card_handles.remove_current(metadata.access_id)
+                continue
+            authority, handles = self._card_components(source)
+            expected_secret = bool(source.secrets.get("resident_bearer"))
+            matches = (
+                metadata.card_revision == authority.card_revision
+                and metadata.expires_at == authority.expires_at
+                and metadata.session_id == handles.session_id
+                and metadata.resident_access_sha256
+                == str(source.payload.get("resident_access_sha256") or "")
+                and bool(metadata.resident_access_secret_ref) == expected_secret
+            )
+            if not matches:
+                await self.card_handles.replace_current(authority, handles)
+
+    async def _synchronize_admission_replay(
+        self,
+        records: tuple[AuthorityMigrationRecord, ...],
+        *,
+        captured_at_ms: int,
+    ) -> None:
+        source_by_id = {record.identity: record.validated() for record in records}
+        current = await self.admission_replay.migration_rows(
+            captured_at_ms=captured_at_ms
+        )
+        for row in current:
+            value = dict(row)
+            identity = str(value.get("nonce_sha256") or "")
+            target = AuthorityMigrationRecord(
+                record_type="admission_replay",
+                identity=identity,
+                families=(FAMILY_ADMISSION_REPLAY,),
+                payload={
+                    "service_id_recorded": str(value.get("service_id") or "")
+                    != MIGRATED_DIGEST_ONLY_SERVICE_ID
+                },
+                expires_at_ms=int(value.get("expires_at_ms") or 0),
+            ).validated()
+            source = source_by_id.get(identity)
+            if source is None or source.evidence() != target.evidence():
+                await self.admission_replay.remove_migrated_digest(identity)
+
+    async def synchronize(self, source: AuthorityMigrationSnapshot) -> None:
+        """Make the inactive target an exact base for one reviewed import."""
+
+        snapshot = source.validated()
+        if (snapshot.tenant, snapshot.project) != (self.tenant, self.project):
+            raise ValueError("Connection Hub migration target scope mismatch")
+        oauth_records = tuple(
+            record
+            for record in snapshot.records
+            if record.record_type.startswith("oauth_")
+        )
+        card_records = tuple(
+            record for record in snapshot.records if record.record_type == "card_handles"
+        )
+        replay_records = tuple(
+            record for record in snapshot.records if record.record_type == "admission_replay"
+        )
+        await self.oauth.synchronize_records(
+            oauth_records,
+            captured_at_ms=snapshot.captured_at_ms,
+        )
+        await self._synchronize_cards(
+            card_records,
+            captured_at_ms=snapshot.captured_at_ms,
+        )
+        await self._synchronize_admission_replay(
+            replay_records,
+            captured_at_ms=snapshot.captured_at_ms,
+        )
+
     async def import_record(self, record: AuthorityMigrationRecord) -> bool:
         source = record.validated()
         if source.record_type.startswith("oauth_"):
             return await self.oauth.import_record(source)
         if source.record_type == "card_handles":
-            authority = CardAuthority.from_mapping(source.payload.get("authority") or {})
-            handles_payload = dict(source.payload.get("handles") or {})
-            handles_payload["access_token"] = str(
-                source.secrets.get("resident_bearer") or ""
-            )
-            handles = CardCredentialHandles.from_mapping(handles_payload)
+            authority, handles = self._card_components(source)
             return await self.card_handles.import_current(authority, handles)
         if source.record_type == "admission_replay":
             if source.expires_at_ms is None:
