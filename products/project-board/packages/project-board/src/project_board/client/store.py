@@ -81,6 +81,7 @@ from .mail_attachments import (
     stored_attachment_manifest,
     verified_attachment,
 )
+from .local_wake import notify_worker_watch
 from .projection import build_projection
 from .plan_storage import BucketedPlanStore
 from .local_store import PartitionedStore, new_record_id
@@ -5742,6 +5743,8 @@ class SharedFieldStore:
             if replay_identity_hash:
                 result["idempotency_identity_hash"] = replay_identity_hash
             atomic_write_json(receipt_path, result)
+            if status == "pending":
+                notify_worker_watch(self.root, clean_recipient)
             if clean_project:
                 self._record_event_unlocked(
                     clean_project,
