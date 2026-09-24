@@ -1,7 +1,13 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-from connection_hub.bundle_operations import normalize_bundle_operation_result
+import pytest
+
+from connection_hub.bundle_operations import (
+    BUNDLE_OPERATION_RESULT_SHAPE_INVALID,
+    BundleOperationResultError,
+    normalize_bundle_operation_result,
+)
 
 
 def test_normalize_bundle_operation_result_keeps_direct_payload() -> None:
@@ -28,11 +34,21 @@ def test_normalize_bundle_operation_result_reads_status_result() -> None:
     ) == payload
 
 
-def test_normalize_bundle_operation_result_preserves_unknown_shape() -> None:
+def test_normalize_bundle_operation_result_refuses_unknown_shape_by_name() -> None:
     response = {
         "status": "refused",
         "result": {"ok": True},
         "error": {"code": "operation_refused"},
     }
 
-    assert normalize_bundle_operation_result("membership_resolve", response) == response
+    with pytest.raises(BundleOperationResultError) as raised:
+        normalize_bundle_operation_result("membership_resolve", response)
+
+    assert raised.value.reason == BUNDLE_OPERATION_RESULT_SHAPE_INVALID
+
+
+def test_normalize_bundle_operation_result_refuses_non_mapping_by_name() -> None:
+    with pytest.raises(BundleOperationResultError) as raised:
+        normalize_bundle_operation_result("membership_resolve", None)
+
+    assert raised.value.reason == BUNDLE_OPERATION_RESULT_SHAPE_INVALID
