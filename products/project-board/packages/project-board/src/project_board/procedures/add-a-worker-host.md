@@ -241,7 +241,9 @@ pb relay --once          # zero workers, success
 ```
 
 `--allow-peer-worker` sets the whole list of teammates who may write to these
-agents, from step 0. Repeat the flag for several names, and `pb host show`
+agents, from step 0. A host set up before this setting existed has an empty
+list and refuses every teammate's mail (dev-main until 2026-09-24): run the
+same command there. Repeat the flag for several names, and `pb host show`
 prints the result. Run it again later to change the list, then restart the
 relay (a coordinated runtime action) so it reads the new policy.
 
@@ -456,6 +458,18 @@ git -C <name> remote set-url origin "github-<name>:<owner>/<repo>.git"
 
 Runs on: the host.
 
+**Before the first Claude Code session**, the user's Claude Code settings
+(`~/.claude/settings.json`) carry the three lines the worker procedure's
+first-run reference gives, merged into what is there:
+- the `statusLine` command and the `StopFailure` hook, which report the
+  session's usage limit to its card ("Claude Code Says When It Is Out Of
+  Tokens");
+- the `Stop` hook, which keeps the session's watch running ("A Claude Code
+  Worker's Turn Ends With Its Watch Running").
+
+Without them the card says `limit not reported` (spark1 until 2026-09-24).
+Keep a copy of the settings before editing. Codex agents need neither.
+
 **Host agent**, one detached `tmux` session per agent, named after the agent and
 started from its direct login (step 1) so the session has the user-session
 environment. The session reads and writes its workspace and the user's `pb`
@@ -503,6 +517,10 @@ tmux send-keys -t <agent-name> -l 'Use the problem-board-worker skill. Join Prob
 tmux send-keys -t <agent-name> Enter
 tmux capture-pane -p -t <agent-name> | tail -40      # read what it shows
 ```
+
+Once running, a Claude Code agent keeps its own inbox watch and the guard
+prompt that renews it, as the skill's Start Or Resume step 5 and its
+claude-code-wake reference say. It needs no host step.
 
 A session keeps its board identity only when resumed with its id, from the same
 workspace and with the same flags. Resuming is also how a session started with
@@ -647,6 +665,14 @@ and the host agent runs the same command with `--no-open --callback-port 18765`
 in place of `--device`. The operator opens the printed URL in their own browser,
 and closes the tunnel after the last agent.
 
+**After the operator approves**, tell each agent in its tmux session, since
+an agent waiting for approval does not check its inbox yet:
+
+```bash
+tmux send-keys -t <agent-name> -l 'Authorized. Follow Start Or Resume of the problem-board-worker skill.'
+tmux send-keys -t <agent-name> Enter
+```
+
 ## 12. Attend the project and prove each agent works in the team
 
 Runs on: the board in the operator's browser (attendance and the operator's
@@ -662,7 +688,9 @@ the worker procedure's project-workspace reference says:
 - it fetches and fast-forwards any it already has;
 - it tells the operator by name about any it cannot reach.
 
-The workspace holding each listed alias at its branch is the proof. Then the coordinator and the
+The workspace holding each listed alias at its branch is the proof. Joining a
+project sends the agent no welcome message yet (W304 finding 37, pending): the
+coordinator's first message in check 2 is its first project mail. Then the coordinator and the
 operator prove, **one check at a time**, that each agent communicates on every
 channel and knows it is part of the team. The coordinator proposes each check,
 the operator approves it, and the result is shown before the next one. An agent
@@ -753,6 +781,13 @@ pb source status
 and running relay source. All three facts remain visible after the terminal
 that performed the change exits. A failed relay verification restores the
 previous selector and source.
+
+### Restart the agent sessions after an update
+
+A running session keeps the procedure it loaded. After `pb procedure install`,
+each Claude Code agent restarts to load the new revision: in its tmux session,
+`/exit`, then the full resume command from step 9 with its session id, from the
+same workspace. It keeps its board identity.
 
 ## 14. Retire an agent or the host
 

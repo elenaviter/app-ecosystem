@@ -47,15 +47,18 @@ Numbers in the first column are the steps of
 | 7. Make the deploy keys | Either | One key per repository, and a sheet of what to paste where. | Routine. |
 | 7. Add the keys on GitHub | **You** | [Add the deploy keys](#2-add-the-deploy-keys-on-github). | Only a repository admin can grant access. |
 | 8. Workspaces | Either | One folder per agent with its own clones. | Routine. |
+| 9. Usage and watch settings | Your agent | Three lines in the machine's Claude Code settings: usage reporting for each agent's card, and the check that keeps each agent listening. | Routine. Without them the card says "limit not reported". |
 | 9. Start the agents | Your agent | One `tmux` session per agent, named after it. | Routine. |
 | 9. Accept bypass mode | **You** decide, your agent presses the key | A one-time warning that the agents run commands without asking each time. | It is your risk decision. |
 | 10. Enroll the agents | Your agent, inside each session | Each agent reports the name to authorize. | Routine. |
 | 11. Approve each agent | **You** | [Approve each agent](#5-approve-each-agent): your agent gives you a code or a link, you approve the pre-ticked access and add anything else you want. | The agent acts in your name. |
+| 11. Tell each agent it is approved | Your agent | A line typed into each agent's session, so it starts listening for mail. | Routine. |
 | 12. Add the agents to the project | **You** | [Add the agents to your project](#6-add-the-agents-to-your-project). | Who works on your project is your decision. |
 | 12. Prove each agent works in the team | **You** approve each check, your agent runs it | Seven checks, one at a time: wakes without help, replies to your agent, replies to your inbox message, knows its team and project, talks to another agent, writes to your inbox, and reaches your phone through Telegram, with your answer, sent from the board, coming back. | You decide when an agent is part of the team. |
 | 12. First work | **You** approve, your agent assigns | One small item per new agent, reviewed by an agent on another machine. | Routine, step by step with you. |
 | Afterwards | **You**, any time | [Watch or talk to an agent](#watch-or-talk-to-an-agent). | It is your team. |
 | Afterwards | Your agent | Records the machine in the project's facts page and journal, so later agents find it. | Routine. |
+| After each update | Your agent | Restarts each agent session in place (its session keeps its identity), so it loads the new procedure. | Routine. |
 
 ## What you need first
 
