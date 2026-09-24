@@ -38,6 +38,7 @@ export function CardRuntimeIdentityFields({ item, owner }: {
   owner: string;
 }) {
   const identity = cardRuntimeIdentity(item);
+  const runtimeProvider = publicText((item.client_metadata || {}).kdcube_agent_provider);
   return <>
     <span className="card-field-label">Owner</span>
     <span className="card-field-value card-owner-identity" title={owner || 'KDCube owner unavailable'}>{owner || 'Unavailable'}</span>
@@ -50,6 +51,12 @@ export function CardRuntimeIdentityFields({ item, owner }: {
           : null}
         {identity.organization ? <span>{identity.organization}</span> : null}
         <small>Reported by host · identification metadata</small>
+      </span>
+    </> : runtimeProvider ? <>
+      <span className="card-field-label">Provider account</span>
+      <span className="card-field-value card-runtime-identity">
+        <strong>{vendorLabel(runtimeProvider)} · Not reported</strong>
+        <small>No provider account was reported by this machine.</small>
       </span>
     </> : null}
   </>;

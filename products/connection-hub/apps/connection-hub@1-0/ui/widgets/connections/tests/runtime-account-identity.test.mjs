@@ -11,6 +11,8 @@ test('Card identity shows owner and host-reported provider account separately', 
   assert.match(identity, />Provider account</);
   assert.match(identity, /kdcube_agent_account/);
   assert.match(identity, /kdcube_agent_provider/);
+  assert.match(identity, /Not reported/);
+  assert.match(identity, /No provider account was reported by this machine/);
   assert.match(identity, /Reported by host · identification metadata/);
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx');
