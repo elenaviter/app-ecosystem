@@ -37,7 +37,7 @@ def watch_process_alive(pid: int) -> bool:
         pass
     try:
         command = subprocess.run(
-            ["ps", "-o", "command=", "-p", str(pid)],
+            ["ps", "-ww", "-o", "command=", "-p", str(pid)],
             check=False, capture_output=True, text=True, timeout=5,
         ).stdout
     except (OSError, subprocess.SubprocessError):
