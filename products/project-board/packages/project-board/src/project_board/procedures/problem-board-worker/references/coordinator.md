@@ -1,9 +1,9 @@
 ---
 id: project-board.worker-reference.coordinator
 title: Accept, Route, Reload, Refresh
-summary: The coordinator's checklist for the acts a coordinator performs (review decisions, release, routing, runtime actions), placed where the act happens rather than in onboarding prose, because a rule read at onboarding was followed for a day and then skipped at the moment it mattered.
+summary: The coordinator's checklist for review decisions, capacity-aware routing, teammate setup, shared project knowledge, and runtime actions, placed where each act happens so the rule is present when it is applied.
 tags: [procedure, problem-board, coordinator, review, routing, runtime]
-keywords: [review.accept, assignment.return, release assignment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, bundles.template.yaml, bundle reload, refresh --build, widget build states, verify the artifact, what loaded]
+keywords: [review.accept, assignment.return, release assignment, worker budgets, token budget, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, bundles.template.yaml, bundle reload, refresh --build, widget build states, verify the artifact, what loaded]
 see_also:
   - runtime-actions.md
   - test-window.md
@@ -57,6 +57,73 @@ onboarding was skipped at the moment of acting with the rule already written.
    permitted to set status.
 4. Tell the released worker, with the reason, in a correlated message. Then
    route the item again or leave it for the plan.
+
+## Worker budgets
+
+The coordinator treats every worker's usable token budget as routing state.
+The evidence is the usage and limit line on its worker card, reported through
+`pb worker limit-state`, together with what the worker reports and what the
+operator says. When that evidence says a worker is running short, the
+coordinator acts without waiting to be asked:
+
+1. Move its unstarted work to a worker with budget left. Release and reassign
+   owned work through the normal assignment operations, and hand over the
+   exact branch and head so the new owner starts from the durable work already
+   produced.
+2. Leave the short worker only work it can finish cheaply, such as answering
+   review comments on its own pull requests.
+3. Tell the affected workers and the operator what moved, what stayed, and the
+   branch and head that carry each handover.
+4. Apply the same rule to the coordinator. Keep its own turns short when its
+   budget runs low, and prefer workers with enough budget when routing work.
+
+This keeps work finishable. A worker that exhausts its budget mid-task strands
+its branch and working context. W313 is the planned durable coordinator
+handover mechanism; until it lands, the current coordinator is the sole holder
+of routing decisions and open coordination threads, so it preserves enough
+budget to carry them.
+
+## Set a teammate up to work
+
+The team prepares the setup a teammate needs. When a worker reports a missing
+development environment, access grant, repository, or piece of project
+context, the coordinator arranges one durable path forward:
+
+- update the owning procedure for setup shared by projects;
+- update the project's facts or environment page for project-specific setup;
+- ask the teammate who already knows the answer to prepare and record it.
+
+The worker builds from that prepared path and reports each additional gap. The
+coordinator turns every reported gap into a procedure or project-page fix, so
+the prepared path is ready for the next teammate. When a new agent joins, the
+coordinator welcomes it, names the project's prepared context, and asks it to
+report setup gaps as it finds them.
+
+## Keep everything known in the project journal
+
+The project journal home is the team's complete shared record. It carries the
+facts page, the environment page, operator rulings with their reasons,
+runtime-window outcomes, and every project-wide gap with its fix. Whoever
+learns a project-wide fact writes a journal entry and points to it from the
+relevant item note or mail thread. The coordinator checks that the entry exists,
+and a successor coordinator begins by searching the journal.
+
+Attending agents find this record with `pb worker journal-search`. A work-item
+note or mail thread can carry the immediate conversation; its journal link
+makes the resulting knowledge available to the whole team and to later
+sessions.
+
+### Starting a project
+
+The journal accumulates from the first day. When the journal home is bound at
+project creation, the coordinator creates `project-facts.md` and
+`project-environment.md` with their standard sections. Every section contains
+either the current fact or `Not known yet`. The first host, repository,
+environment, and operator ruling update those pages as soon as each becomes
+known.
+
+Automatic page seeding by the board is a product follow-up. The coordinator
+owns this creation step in the current procedure.
 
 ## Check a silent worker, do not wait for it
 

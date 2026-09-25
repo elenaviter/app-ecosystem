@@ -412,6 +412,9 @@ In the board:
 1. Create a project and select its first published worker.
 2. Link any additional workers that should attend it.
 3. Configure the portable repository and journal-home references.
+   When the journal home is first bound, follow
+   [Starting a project](./problem-board-worker/references/coordinator.md#starting-a-project)
+   to create the facts and environment pages that accumulate from day one.
 4. Create work with a repository and accepted base commit.
 5. Assign it, then send a ping or short message.
 

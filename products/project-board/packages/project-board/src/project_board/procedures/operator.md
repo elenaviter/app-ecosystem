@@ -1,9 +1,9 @@
 ---
 id: app-ecosystem.project-board.procedure.operator
 title: Operate Problem Board And Its Local Relay
-summary: Explains the host command installation, one-relay multi-worker boundary, Connection Hub authorization, receiving-machine policy, board evidence, and operator controls.
+summary: Explains host installation, the one-relay multi-worker boundary, Connection Hub authorization, receiving policy, board evidence, worker-capacity routing, and operator controls.
 tags: [procedure, operator, relay, problem-board]
-keywords: [Connection Hub profile, host relay, worker session, receiver policy, OAuth reconnect, replace Card]
+keywords: [Connection Hub profile, host relay, worker session, worker capacity, token budget, receiver policy, OAuth reconnect, replace Card]
 see_also:
   - ./agent-worker.md
   - repo:app-ecosystem/docs/project-board/relay.template.json
@@ -458,6 +458,12 @@ runtime. Its status evidence remains separate:
 | `last_mail_settled_at` | The session settled the exact local message lease. |
 | Relay degraded interval | The worker's governed route recovered after the recorded error code and start/end times. |
 | Assignment report | The current owner reported with the exact ownership version. |
+| Usage and limit line | The runtime reported the worker's current token capacity to its card. |
+
+The coordinator applies the capacity, teammate-setup, and shared-project-journal
+rules in [the coordinator reference](./problem-board-worker/references/coordinator.md),
+which owns when work moves, how a teammate gets prepared, and where
+project-wide knowledge is recorded.
 
 Use ping to test the route. A relay acknowledgement without a later inbox check
 means the machine is online but there is no later evidence that the model
