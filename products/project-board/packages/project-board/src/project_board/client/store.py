@@ -23,6 +23,7 @@ from ..contract.mailbox_reconciliation_contract import (
     MAILBOX_RECONCILIATION_RECEIPT_SCHEMA,
 )
 from ..contract.operator_mail_contract import (
+    COORDINATOR_RECIPIENT,
     OPERATOR_RECIPIENTS,
     require_operator_mail_kind,
 )
@@ -5375,6 +5376,22 @@ class SharedFieldStore:
 
         address = str(recipient or "").strip().lower()
         if address in {"operator", "owner"}:
+            return {
+                "worker_name": address,
+                "route": "remote",
+                "pool_status": "active",
+            }
+        if address == COORDINATOR_RECIPIENT:
+            # W313 step 5: the role, not a person. Only the board knows who
+            # holds it at send time, so this address always goes to the board,
+            # even when the holder is a session on this host.
+            if not str(project_id or "").strip():
+                raise DomainError(
+                    "field_project_context_required",
+                    "Mail to the coordinator names the project whose coordinator it is.",
+                    status=409,
+                    details={"recipient": address, "argument": "--project-ref"},
+                )
             return {
                 "worker_name": address,
                 "route": "remote",
