@@ -54,8 +54,28 @@ def test_38_44_the_peer_list_is_set_on_every_host_old_ones_included():
     assert "Who may write to your agents" in GUIDE
 
 
-def test_37_the_welcome_on_joining_is_named_as_pending():
-    assert "Joining a project sends the agent no welcome message yet (W304 finding 37, pending)" in HOST
+def test_37_joining_sends_the_welcome_notice_and_the_agent_reports_ready():
+    # W304 finding 37 is fixed (applications#101): step 12 describes the notice
+    # and the ready message it asks for, no longer a pending gap.
+    words = " ".join(HOST.split())
+    assert "no welcome message yet" not in words
+    assert "project sends the agent one welcome notice" in words
+    assert "tell the coordinator it is ready, naming anything it could not reach" in words
+
+
+def test_16_device_login_is_proven_live_and_the_tunnel_is_the_fallback():
+    words = " ".join(HOST.split())
+    assert "Known gap: device login is not yet proven live" not in words
+    assert "Device login is proven live end to end" in words
+    assert "If it fails, the fallback is the callback through an SSH tunnel." in words
+
+
+def test_u4_agent_workspaces_live_under_kdcube():
+    # Operator ruling, 2026-09-25: "i do not want this in user folder."
+    assert "~/workspaces" not in HOST
+    assert "mkdir -p ~/.kdcube/pb/workspaces && chmod 700 ~/.kdcube/pb/workspaces" in HOST
+    assert "--add-dir ~/.kdcube/pb/workspaces/<alias>" in HOST
+    assert "An existing host keeps its old folders until a planned move." in HOST
 
 
 def test_25_33_43_the_watch_and_its_guard_are_the_agent_s_own():
@@ -87,13 +107,16 @@ def test_15_repositories_and_deploy_keys_come_from_the_project_card():
 def test_every_step_has_an_owner_in_both_tables():
     # W304 "Who does what": both documents name an owner for every step.
     table = HOST[HOST.index("## Who does what"):HOST.index("## What you end up with")]
-    for number in (*range(0, 2), "2 to 4", *range(5, 7), "7, at 12", *range(8, 15)):
+    for number in (*range(0, 2), "2 to 3", *range(4, 7), "7, at 12", *range(8, 15)):
         assert f"| {number} |" in table, number
     for owner in ("**operator**", "either", "**machine administrator**", "host agent"):
         assert owner in table, owner
+    # Step 4 runs sudo loginctl enable-linger: it is the machine administrator's.
+    assert "| 4 | **machine administrator** |" in table
     guide = GUIDE[GUIDE.index("## Who does what"):GUIDE.index("## What you need first")]
-    for number in ("| 0.", "| 1.", "| 5.", "| 6.", "| 7.", "| 8.", "| 9.", "| 10.", "| 11.", "| 12."):
+    for number in ("| 0.", "| 1.", "| 2 to 3.", "| 4.", "| 5.", "| 6.", "| 7.", "| 8.", "| 9.", "| 10.", "| 11.", "| 12.", "| 13.", "| 14."):
         assert number in guide, number
+    assert "| 4. Keep the agents running after logout | **The machine's administrator** |" in guide
 
 
 def _step7_script() -> str:

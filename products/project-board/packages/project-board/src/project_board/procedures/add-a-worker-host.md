@@ -45,7 +45,8 @@ Every step, in the order it happens:
 | 1 | **operator** | an SSH login to the machine for the host agent | only the operator holds that access |
 | 1 | either | check Python, git, other users, home folder permissions, `tmux` | routine |
 | 1 | **machine administrator** | install `tmux` when it is missing | a system package needs `sudo` |
-| 2 to 4 | either | install and configure `pb` from the approved commits, the worker procedure, and user services that survive logout | routine |
+| 2 to 3 | either | install and configure `pb` from the approved commits and the worker procedure | routine |
+| 4 | **machine administrator** | let the user's services survive logout (`sudo loginctl enable-linger`) | a system setting needs `sudo` |
 | 5 | either | install the coding agent runtimes in the user's home | routine |
 | 5 | **operator** (or the account owner) | log each runtime in with the account it should use | it is their account |
 | 6 | **operator** | type the credential store password once per boot (until W258) | the password is theirs to keep |
@@ -129,7 +130,7 @@ before anything changes:
 | host id and label | `spark1`, "spark1 (Linux, headless)" | the machine's name on the board. "The agents on a host agree before a relay restart" is per host id. |
 | Linux user that runs the agents | `lena` | owns the keys, the relay and the credential store |
 | **the project the agents join** | `Quickstart works` | its project card lists the repositories (alias, URL, role). Step 7 gives this host a deploy key for exactly those, and step 12 clones them into each agent's workspace. The agents reach nothing else through Problem Board. Which repositories a project uses is decided on its card, not per host (W304 finding 15). |
-| workspaces, one per agent | `~/workspaces/space001`, `space002` | each agent edits only its own clones |
+| workspaces, one per agent | `~/.kdcube/pb/workspaces/claude-ops`, `~/.kdcube/pb/workspaces/claude-app` | each agent edits only its own clones. The root is `~/.kdcube/pb/workspaces/<alias>` on every host (operator ruling, 2026-09-25: not in the user's home folder). An existing host keeps its old folders until a planned move. |
 | agent names | `claude-ops@spark1`, `claude-app@spark1` | display names on the board. The board addresses a worker by a stable generated name. |
 | runtime of each agent | `claude-code` for both, or one of each | an agent session is described by its runtime, provider account, and session ID. Its stable worker address remains runtime plus session ID; an account change is recorded and reported. One host can run Claude Code and Codex agents side by side, each in its own workspace. Needing another runtime means adding another agent. |
 | account per runtime | the Claude account for Claude Code agents, the OpenAI account for Codex agents | step 5 logs each runtime in once. Every agent of that runtime under the same Linux user shares its login and its usage. |
@@ -570,9 +571,9 @@ attends the project (step 12), at the branch the card declares, so a workspace
 always matches the card it serves.
 
 ```bash
-mkdir -p ~/workspaces && chmod 700 ~/workspaces
-for w in <workspace-1> <workspace-2>; do mkdir -p ~/workspaces/$w; done
-sudo -u <another-user> ls ~/workspaces     # must be: Permission denied
+mkdir -p ~/.kdcube/pb/workspaces && chmod 700 ~/.kdcube/pb/workspaces
+for a in <alias-1> <alias-2>; do mkdir -p ~/.kdcube/pb/workspaces/$a; done
+sudo -u <another-user> ls ~/.kdcube/pb/workspaces     # must be: Permission denied
 ```
 
 Step 9 starts each agent in its workspace, and enrolling there (step 10)
@@ -667,7 +668,7 @@ claude-code-wake reference say. It needs no host step.
 A session keeps its board identity only when resumed with its id, from the same
 workspace and with the same flags. Resuming is also how a session started with
 older flags gets the current ones:
-`claude --resume <session-id> --add-dir ~/workspaces/<workspace> --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion`.
+`claude --resume <session-id> --add-dir ~/.kdcube/pb/workspaces/<alias> --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion`.
 A new session is a new worker.
 
 ### Watch or talk to an agent
@@ -793,10 +794,9 @@ profile and consent enforcement are defined in [Delegated Access
 Cards](repo:app-ecosystem/docs/connection-hub/package/delegated-cards.md#descriptor-owned-authorization-profiles).
 Device mode is defined in [first-time setup](first-time-setup.md#authorize-a-headless-host).
 
-**Known gap: device login is not yet proven live end to end (W257).** Its live
-run stopped at the operator approval on 2026-09-24. The first host that
-completes step 11 with `--device` records it in W257. If device login fails, the
-fallback is the callback through an SSH tunnel. The **operator** leaves the
+Device login is proven live end to end (claude-ops on spark1, 2026-09-24, and
+claude-app on spark1, 2026-09-25). If it fails, the fallback is the callback
+through an SSH tunnel. The **operator** leaves the
 tunnel open on their own machine:
 
 ```bash
@@ -838,8 +838,11 @@ setup again. Nothing is cloned by hand: a clone the card does not
 list is not the project's.
 
 The workspace holding each listed alias at its branch is the proof. Joining a
-project sends the agent no welcome message yet (W304 finding 37, pending): the
-coordinator's first message in check 2 is its first project mail. Then the coordinator and the
+project sends the agent one welcome notice: the project, its role, the
+coordinator by stable name, the team, the journal home, and what to do first
+(read `pb worker context`, clone the listed repositories, then tell the
+coordinator it is ready, naming anything it could not reach). That ready
+message is the first sign it is working. Then the coordinator and the
 operator prove, **one check at a time**, that each agent communicates on every
 channel and knows it is part of the team. The coordinator proposes each check,
 the operator approves it, and the result is shown before the next one. An agent

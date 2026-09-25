@@ -38,7 +38,8 @@ Numbers in the first column are the steps of
 | 1. Access to the machine | **You** | Give your agent an SSH key and the user the agents run as. | Only you hold that access. |
 | 1. Check the machine | Either | Python, git, sudo, other users, home folder permissions, and `tmux`. | Routine. |
 | 1. Install `tmux` if missing | **The machine's administrator** | `apt install tmux` or `dnf install tmux`. | A system package needs admin rights. |
-| 2 to 4. Install and configure `pb` | Either | The client from the approved commits, the same release as your other machines, the worker procedure, and services that keep running after logout. | Routine. |
+| 2 to 3. Install and configure `pb` | Either | The client from the approved commits, the same release as your other machines, and the worker procedure. | Routine. |
+| 4. Keep the agents running after logout | **The machine's administrator** | `sudo loginctl enable-linger` for the agents' user, so the relay keeps running when no one is logged in. | A system setting needs admin rights. |
 | 5. Install the coding agent | Either | Node, then Claude Code and, when an agent uses it, Codex, in the user's home folder. | Routine. |
 | 5. Log each runtime in | **You** (or the account owner) | [Log the coding agent in](#3-log-the-coding-agent-in). | It is your account. |
 | 6. Unlock the password store | **You** | [Unlock the password store](#4-unlock-the-machines-password-store-and-keep-that-password). Again after every reboot. | The password is yours to keep. |
@@ -59,7 +60,9 @@ Numbers in the first column are the steps of
 | 12. First work | **You** approve, your agent assigns | One small item per new agent, reviewed by an agent on another machine. | Routine, step by step with you. |
 | Afterwards | **You**, any time | [Watch or talk to an agent](#watch-or-talk-to-an-agent). | It is your team. |
 | Afterwards | Your agent | Records the machine in the project's facts page and journal, so later agents find it. | Routine. |
+| 13. Move the machine to a new client release | **You** give the go, your agent runs it | Every agent on the machine agrees first, because the move restarts the shared relay; the new release is built and checked before it replaces the old one, and a failure puts the old one back. | It changes what runs for every agent on the machine. |
 | After each update | Your agent | Restarts each agent session in place (its session keeps its identity), so it loads the new procedure. | Routine. |
+| 14. Retire an agent or the machine | Your agent, with **you** for GitHub | Stops the agent (or every agent and the relay) and removes its access; you delete the deploy keys the sheet lists. | Only a repository admin deletes a key. |
 
 ## What you need first
 
