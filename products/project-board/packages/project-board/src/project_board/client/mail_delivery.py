@@ -8,6 +8,8 @@ from .io import atomic_write_json, read_json, utc_now
 
 
 ACTIVE_MAILBOX_STATES = ("inbox", "leased")
+# A recipient that left the project keeps what it holds (W325).
+UNLEASED_MAILBOX_STATES = ("inbox",)
 ALL_MAILBOX_STATES = ("inbox", "leased", "processed", "quarantine")
 
 
@@ -87,6 +89,7 @@ def archive_mailbox_messages(
 __all__ = [
     "ACTIVE_MAILBOX_STATES",
     "ALL_MAILBOX_STATES",
+    "UNLEASED_MAILBOX_STATES",
     "archive_mailbox_messages",
     "delivery_summary",
 ]
