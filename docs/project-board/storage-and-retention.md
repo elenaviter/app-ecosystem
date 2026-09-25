@@ -129,6 +129,9 @@ its UTC time range, so retention removes whole folders by name and a listing
 sorts by time without opening a file. Housekeeping (retention and the one-time
 cleanup of pre-W287 flat directories) runs in a thread beside the relay cycle
 on its own schedule, and records in the field when retention last ran.
+Stable-key lookup indexes contain one entry per retained id. Their bytes count
+toward the same per-agent cap as record bodies, so rewriting one key cannot
+grow storage outside the advertised bound.
 
 ### Local store audit
 

@@ -10,6 +10,7 @@ at the places that broke them.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import json
 import os
 import time
@@ -17,8 +18,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from service_foundation.host_relay import HostRelayRuntime
 
 from project_board.client import local_state_maintenance as maintenance
+from project_board.client import relay
 from project_board.client import reconciliation_receipts as receipts
 from project_board.client.local_store import last_read_summaries
 from project_board.client.outbox_store import OutboxStore, state_of_name
@@ -29,6 +32,8 @@ from project_board.contract.mailbox_reconciliation_contract import (
     normalize_receipt,
 )
 from project_board.contract.reference_records import reference_for_record
+
+from relay_helpers import make_host
 
 
 WORKER = "codex-api"
@@ -340,8 +345,39 @@ def test_retention_runs_once_an_hour_by_a_fact_kept_in_the_field(field):
     assert maintenance.run_local_state_maintenance(again, now=now + timedelta(minutes=61))["retention"] is not None
 
 
-def test_guard_a_large_history_costs_the_cycle_nothing(field, monkeypatch):
-    """Acceptance 8: 50,000 receipts and 50,000 settled rows, and the cycle reads none."""
+@pytest.mark.asyncio
+async def test_guard_a_large_history_costs_neither_cycles_nor_first_heartbeat(
+    tmp_path, monkeypatch
+):
+    """Acceptance 8: 50,000 receipts and settled rows do not delay startup."""
+
+    host, identity, _channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.register_worker(
+        worker_name=identity.worker_name,
+        worker_alias="worker",
+        worker_identity=identity.worker_identity,
+        runtime_kind=identity.runtime_kind,
+        runtime_session_id=identity.runtime_session_id,
+        capabilities=[],
+        authority_label="connection-hub:test",
+        host_id=host.host_id,
+        host_label=host.host_label,
+        host_kind=host.host_kind,
+        relay_id=host.relay_id,
+    )
+    field.register_worker(
+        worker_name=WORKER,
+        runtime_kind="codex",
+        capabilities=[],
+        authority_label=f"authority:{WORKER}",
+    )
+    field.create_project(
+        project_id=PROJECT,
+        title="Local state",
+        goal="Keep the relay's local state bounded.",
+        owner="operator",
+    )
 
     legacy = field._project_dir(PROJECT) / "mail" / "reconciliation-receipts"
     legacy.mkdir(parents=True)
@@ -367,12 +403,66 @@ def test_guard_a_large_history_costs_the_cycle_nothing(field, monkeypatch):
 
         monkeypatch.setattr(module, "read_json", counted)
 
-    started = time.monotonic()
+    cycle_started = time.monotonic()
     field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
     field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
     activity = field._assignee_last_activity(PROJECT)
-    elapsed = time.monotonic() - started
+    cycle_elapsed = time.monotonic() - cycle_started
 
     assert history_reads == []
     assert WORKER not in activity or activity[WORKER]
-    assert elapsed < 2.0, f"two cycles and one activity read took {elapsed:.2f}s over a 50,000-record history"
+    assert cycle_elapsed < 2.0, (
+        "two cycles and one activity read took "
+        f"{cycle_elapsed:.2f}s over a 50,000-record history"
+    )
+
+    class FirstHeartbeatClient:
+        connected = True
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def action(self, *, object_ref, action, payload=None):
+            self.calls.append(action)
+            if action == "worker.publish":
+                return {
+                    "ok": True,
+                    "object": {"ref": "work:worker:remote", "pool_status": "active"},
+                }
+            if action == "worker.heartbeat":
+                return {
+                    "ok": True,
+                    "object": {
+                        "ref": "work:worker:remote",
+                        "attendances": [],
+                        "host_retirements": [],
+                    },
+                }
+            if action == "control.pull":
+                return {"ok": True, "object": {"lease_id": "lease", "items": []}}
+            return {"ok": True, "object": {"ref": object_ref}}
+
+    client = FirstHeartbeatClient()
+
+    @asynccontextmanager
+    async def connector(_host, _channel, *, replacement_epoch):
+        yield client
+
+    supervisor = relay.ProblemBoardRelaySupervisor(
+        config_path=host.path,
+        connector=connector,
+    )
+    runtime = HostRelayRuntime(adapter=supervisor)
+    startup_started = time.monotonic()
+    try:
+        await runtime.run_once()
+    finally:
+        await supervisor.aclose()
+    startup_elapsed = time.monotonic() - startup_started
+
+    assert "worker.heartbeat" in client.calls
+    assert history_reads == []
+    assert startup_elapsed < 2.0, (
+        "relay startup to first heartbeat took "
+        f"{startup_elapsed:.2f}s over a 50,000-record history"
+    )

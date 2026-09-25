@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .io import read_json
-from .local_store import PartitionedStore
+from .local_store import PartitionedStore, rebuild_day_index
 
 
 DEFAULT_MAX_BYTES_PER_AGENT = 50 * 1024 * 1024
@@ -81,6 +81,18 @@ class KeyedHistoryStore:
     def root(self) -> Path:
         return self.partitioned.root
 
+    def _rebuild_index_for(self, path: Path, *, agent: str) -> None:
+        """Refresh a partition index; legacy flat paths have no such index."""
+
+        if not path.is_relative_to(self.root):
+            return
+        rebuild_day_index(
+            path.parent.parent,
+            store=self.store,
+            agent=agent,
+            announce=False,
+        )
+
     def write(
         self,
         *,
@@ -97,6 +109,7 @@ class KeyedHistoryStore:
         )
         if prior is not None:
             prior.unlink(missing_ok=True)
+            self._rebuild_index_for(prior, agent=agent)
         return self.partitioned.write(
             agent,
             record_id,
@@ -166,6 +179,7 @@ class KeyedHistoryStore:
         if path is None:
             return False
         path.unlink(missing_ok=True)
+        self._rebuild_index_for(path, agent=agent)
         return True
 
     def newest(

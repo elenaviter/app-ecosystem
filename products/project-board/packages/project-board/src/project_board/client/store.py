@@ -8515,10 +8515,17 @@ class SharedFieldStore:
             parsed_entry.object_id,
         )
 
-    def list_journals(self, project_id: str, *, work_ref: str = "") -> list[dict[str, Any]]:
+    def list_journals(
+        self,
+        project_id: str,
+        *,
+        work_ref: str = "",
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
         return self._journal_receipts().list(
             component(project_id, field="project_id"),
             work_ref=work_ref,
+            limit=limit,
         )
 
     def _record_event_unlocked(
@@ -8878,14 +8885,10 @@ class SharedFieldStore:
 
         clean_project = component(project_id, field="project_id")
         project = self.read_project(clean_project)
-        journal_receipts = newest_json_records(
-            self._project_dir(clean_project) / "journals",
+        journal_receipts = self.list_journals(
+            clean_project,
+            work_ref=work_ref,
             limit=20,
-            predicate=(
-                (lambda row: row.get("work_ref") == work_ref)
-                if work_ref
-                else None
-            ),
         )
         return {
             "schema": FIELD_SCHEMA,

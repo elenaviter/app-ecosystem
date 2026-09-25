@@ -56,9 +56,19 @@ class JournalReceiptStore:
         self.legacy_path(project_id, entry_id).unlink(missing_ok=True)
         return path
 
-    def list(self, project_id: str, *, work_ref: str = "") -> list[dict[str, Any]]:
+    def list(
+        self,
+        project_id: str,
+        *,
+        work_ref: str = "",
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
         rows = self.history(project_id).newest(
-            limit=JOURNAL_RECEIPT_MAX_RECORDS,
+            limit=(
+                JOURNAL_RECEIPT_MAX_RECORDS
+                if limit is None
+                else max(1, int(limit))
+            ),
             agents=[PROJECT_AGENT],
             predicate=(
                 (lambda row: str(row.get("work_ref") or "") == work_ref)

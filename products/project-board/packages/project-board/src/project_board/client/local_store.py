@@ -9,7 +9,7 @@ Layout, per project and agent (the worker or person a record belongs to)::
     <project>/<store>/<agent>/<yyyy>/<mm>/<dd>/<hh>/<created>_<key>__<slug>.json
         a caller-chosen key (a content hash that deduplicates) cannot carry a
         time, so its name is prefixed with the creation stamp
-    <project>/<store>/<agent>/<yyyy>/<mm>/<dd>/ids      one "<record_id> <hh>" line per record
+    <project>/<store>/<agent>/<yyyy>/<mm>/<dd>/ids      one "<record_id> <hh>" line per retained id
 
 The file name starts with the record's UTC creation stamp, so a listing sorts
 by time and retention removes whole hour folders without opening a file (rule
@@ -188,15 +188,13 @@ class PartitionedStore:
         """Write one record into its hour folder, then index its id for the day.
 
         The caller holds the lock that serializes writes to this store, so the
-        index line follows a file that exists. A crash between the two leaves a
-        record the index does not name, never an index line without a record.
+        compact index follows a file that exists. A crash between the two leaves
+        a record the index does not name, never an index entry without a record.
         """
 
         path = self.record_path(agent, created, record_id, slug=slug)
         atomic_write_json(path, row)
-        ids = path.parent.parent / IDS_FILE
-        with open(ids, "a", encoding="utf-8") as handle:
-            handle.write(f"{record_id} {path.parent.name}\n")
+        _index_record(path.parent.parent, record_id=record_id, hour=path.parent.name)
         return path
 
     # -- reads ---------------------------------------------------------------
@@ -274,15 +272,27 @@ class PartitionedStore:
                 live = [(start, agent) for agent, head in heads.items() if head is not None for start in [head[1]]]
                 if not live:
                     break
-                _start, agent = max(live)
-                hour, start = heads[agent]  # type: ignore[misc]
-                names = sorted((n for n in os.listdir(hour) if n.endswith(".json")), reverse=True)
-                read.opened(agent, start.strftime("%Y-%m-%dT%H"), len(names))
-                for name in names:
-                    row = read_json(hour / name, required=False)
-                    if row and (predicate is None or predicate(row)):
-                        found.append((name, dict(row)))
-                heads[agent] = next(cursors[agent], None)
+                newest_start = max(start for start, _agent in live)
+                # An hour is one merge boundary. Reading only one agent at an
+                # equal-hour tie can satisfy ``limit`` with an older row while
+                # a newer row from another agent in that same hour remains
+                # unopened.
+                for agent in sorted(
+                    agent for start, agent in live if start == newest_start
+                ):
+                    hour, start = heads[agent]  # type: ignore[misc]
+                    names = sorted(
+                        (n for n in os.listdir(hour) if n.endswith(".json")),
+                        reverse=True,
+                    )
+                    read.opened(
+                        agent, start.strftime("%Y-%m-%dT%H"), len(names)
+                    )
+                    for name in names:
+                        row = read_json(hour / name, required=False)
+                        if row and (predicate is None or predicate(row)):
+                            found.append((name, dict(row)))
+                    heads[agent] = next(cursors[agent], None)
         found.sort(key=lambda item: item[0], reverse=True)
         return [row for _name, row in found[:limit]]
 
@@ -378,8 +388,6 @@ class PartitionedStore:
                     inventory.append((hour, start, names, size))
 
                 retained: list[tuple[Path, datetime, list[str], int]] = []
-                total_records = 0
-                total_bytes = 0
                 for hour, start, names, size in inventory:
                     if start + timedelta(hours=1) <= cutoff:
                         shutil.rmtree(hour)
@@ -387,8 +395,13 @@ class PartitionedStore:
                         removed["records"] += len(names)
                         continue
                     retained.append((hour, start, names, size))
-                    total_records += len(names)
-                    total_bytes += size
+
+                _rebuild_day_indexes(self.agent_root(agent), inventory)
+                _prune_empty_days(self.agent_root(agent))
+                retained = [item for item in retained if item[0].is_dir()]
+                total_records = sum(len(names) for _hour, _start, names, _size in retained)
+                total_bytes = sum(size for _hour, _start, _names, size in retained)
+                total_bytes += _index_bytes(self.agent_root(agent))
 
                 while retained and (
                     (record_limit and total_records > record_limit)
@@ -397,11 +410,20 @@ class PartitionedStore:
                     hour, _start, names, size = retained.pop(0)
                     shutil.rmtree(hour)
                     total_records -= len(names)
-                    total_bytes -= size
                     removed["partitions"] += 1
                     removed["records"] += len(names)
-            _rebuild_changed_day_indexes(self.agent_root(agent), inventory)
-            _prune_empty_days(self.agent_root(agent))
+                    if hour.parent.is_dir() and _numbered(hour.parent, 2):
+                        rebuild_day_index(
+                            hour.parent,
+                            store=self.store,
+                            agent=agent,
+                            announce=False,
+                        )
+                    _prune_empty_days(self.agent_root(agent))
+                    total_bytes = sum(
+                        retained_size
+                        for _retained_hour, _retained_start, _retained_names, retained_size in retained
+                    ) + _index_bytes(self.agent_root(agent))
         return removed
 
 
@@ -414,11 +436,19 @@ def rebuild_day_index(
 ) -> int:
     """Rewrite a day's ``ids`` file from the record names in its hour folders."""
 
+    entries: dict[str, str] = {}
+    for hour in _numbered(day, 2):
+        for name in sorted(os.listdir(hour)):
+            if not name.endswith(".json") or "_" not in name:
+                continue
+            record_id = record_id_of(name)
+            if record_id:
+                entries[record_id] = hour.name
     lines = [
-        f"{record_id_of(name)} {hour.name}"
-        for hour in _numbered(day, 2)
-        for name in sorted(os.listdir(hour))
-        if name.endswith(".json") and "_" in name
+        f"{record_id} {hour}"
+        for record_id, hour in sorted(
+            entries.items(), key=lambda item: (item[1], item[0])
+        )
     ]
     atomic_write_text(day / IDS_FILE, "".join(f"{line}\n" for line in lines))
     if announce:
@@ -436,6 +466,38 @@ def atomic_write_text(path: Path, text: str) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(text, encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _index_record(day: Path, *, record_id: str, hour: str) -> None:
+    """Atomically add or replace one id while compacting duplicate entries."""
+
+    entries: dict[str, str] = {}
+    ids = day / IDS_FILE
+    if ids.is_file():
+        for line in ids.read_text(encoding="utf-8").splitlines():
+            parts = line.split()
+            if len(parts) == 2:
+                entries[parts[0]] = parts[1]
+    entries[record_id] = hour
+    lines = (
+        f"{key} {value}\n"
+        for key, value in sorted(entries.items(), key=lambda item: (item[1], item[0]))
+    )
+    atomic_write_text(ids, "".join(lines))
+
+
+def _index_bytes(agent_root: Path) -> int:
+    """Bytes occupied by retained lookup indexes for one agent."""
+
+    total = 0
+    for year in _numbered(agent_root, 4):
+        for month in _numbered(year, 2):
+            for day in _numbered(month, 2):
+                try:
+                    total += (day / IDS_FILE).stat().st_size
+                except FileNotFoundError:
+                    continue
+    return total
 
 
 def _numbered(parent: Path, width: int, *, reverse: bool = False) -> list[Path]:
@@ -459,13 +521,13 @@ def _prune_empty_days(agent_root: Path) -> None:
         _rmdir(year)
 
 
-def _rebuild_changed_day_indexes(
+def _rebuild_day_indexes(
     agent_root: Path,
     inventory: list[tuple[Path, datetime, list[str], int]],
 ) -> None:
-    """Refresh indexes only for days whose inventoried hours disappeared."""
+    """Compact every inventoried day before its index bytes enforce retention."""
 
-    days = {hour.parent for hour, _start, _names, _size in inventory if not hour.exists()}
+    days = {hour.parent for hour, _start, _names, _size in inventory}
     for day in sorted(days):
         if day.is_dir() and _numbered(day, 2):
             rebuild_day_index(

@@ -51,6 +51,25 @@ def test_flat_history_migration_is_bounded_resumable_and_keeps_bad_input(tmp_pat
     )["state"] == "complete"
 
 
+def test_removing_a_legacy_exact_path_does_not_create_a_partition_index(tmp_path: Path):
+    history = KeyedHistoryStore(
+        tmp_path / "history",
+        store="history",
+        retention_days=30,
+    )
+    legacy = tmp_path / "legacy" / "one.json"
+    legacy.parent.mkdir()
+    legacy.write_text(json.dumps({"record_id": "one"}))
+
+    assert history.remove(
+        agent="codex-ui",
+        record_id="one",
+        legacy_paths=[legacy],
+    )
+    assert not legacy.exists()
+    assert not list(tmp_path.rglob("ids"))
+
+
 def test_scope_leases_keep_active_rows_pending_and_partition_terminal_rows(tmp_path: Path):
     store = ScopeLeaseStore(tmp_path / "scope-leases")
     row = {
