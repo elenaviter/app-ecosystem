@@ -3170,7 +3170,11 @@ class ProblemBoardHostRelayAdapter:
             bool(assignment_files_delta)
             or project_ref in self._assignment_files_signatures
         )
-        heartbeat_sent = force_heartbeat or session_delta is not None or files_changed or (
+        worker_info = self.field.worker_info(self.config.worker_name)
+        info_pending = bool(worker_info) and (
+            worker_info.get("published_text") != str(worker_info.get("text") or "")
+        )
+        heartbeat_sent = force_heartbeat or session_delta is not None or files_changed or info_pending or (
             self._project_heartbeat_wait(
                 project_ref=project_ref,
                 sessions=agent_sessions,
@@ -3193,6 +3197,11 @@ class ProblemBoardHostRelayAdapter:
                 heartbeat_payload["assignment_files"] = assignment_files_delta
             if store_reads_delta is not None:
                 heartbeat_payload["store_reads"] = store_reads_delta
+            # W330: the worker's own line rides every heartbeat once it was
+            # ever set; an empty text clears it on the board, and a worker
+            # that never set one sends no key, so the board keeps its value.
+            if worker_info:
+                heartbeat_payload["worker_info"] = {"text": str(worker_info.get("text") or "")}
             await self._add_runtime_account(heartbeat_payload)
             try:
                 with self._trace_stage(
@@ -3239,6 +3248,10 @@ class ProblemBoardHostRelayAdapter:
             if store_reads_delta is not None:
                 self._store_reads_signatures[project_ref] = store_reads_signature
             heartbeat_result = _object_result(heartbeat_response)
+            if worker_info and "info_text" in heartbeat_result:
+                stored = str(heartbeat_result.get("info_text") or "")
+                if stored == str(worker_info.get("text") or ""):
+                    self.field.mark_worker_info_published(self.config.worker_name, stored)
             self._record_attendance_observation(heartbeat_result)
             self._materialize_attended_project(heartbeat_result)
             journal_workspace = self._reconcile_journal_binding(heartbeat_result)
