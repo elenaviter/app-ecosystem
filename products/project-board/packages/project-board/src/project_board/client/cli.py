@@ -3883,6 +3883,17 @@ def _worker_command(args: Any) -> dict[str, Any]:
         # would otherwise report back (2026-09-23, twenty of them).
         refuse_unresolved_slots(args.subject, argument="--subject")
         refuse_unresolved_slots(body, argument="--body-file" if args.body_file else "--body")
+        if str(args.work_ref or "").strip() and not project_id:
+            # A work ref names an item of one project's plan, so it is checked
+            # against that project. Without --project-ref the check used to
+            # fail deep inside as "project_id must contain only letters...",
+            # which names neither flag (W304 finding 49).
+            raise DomainError(
+                "field_mail_work_ref_requires_project",
+                "--work-ref names a plan item of a project; add --project-ref "
+                "<project-ref> for the project that item belongs to.",
+                details={"argument": "--project-ref", "work_ref": str(args.work_ref)},
+            )
         resolution = field.resolve_mail_recipient(project_id, args.recipient)
         recipient = str(resolution["worker_name"])
         route = str(resolution["route"])
