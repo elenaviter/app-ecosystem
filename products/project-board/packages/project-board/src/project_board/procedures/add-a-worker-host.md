@@ -807,8 +807,8 @@ The migration is complete when each target reports all of these facts:
    `releases/<release-id>/venv`;
 2. `relay.program_arguments[0]` ends in
    `releases/current/venv/bin/python`;
-3. the target receipt and `relay.startup_record.source` name the same snapshot
-   release ID, both commits, and all six package tree IDs;
+3. every target receipt and every `relay.startup_record.source` name the same
+   snapshot release ID, both commits, and all six package tree IDs;
 4. `pb procedure verify` succeeds through `~/.local/bin/pb`.
 
 After every target passes those checks, no launcher or relay service consumes
@@ -816,7 +816,7 @@ After every target passes those checks, no launcher or relay service consumes
 that directory. A root-owned `/opt` install and `/usr/local/bin/pb` may likewise
 be removed by the machine administrator. A failed build leaves the former
 client and relay running. A failed relay startup restores the previous current
-release and target receipt.
+release, every target receipt, the launcher, and every installed relay.
 
 ### Restart the agent sessions after an update
 

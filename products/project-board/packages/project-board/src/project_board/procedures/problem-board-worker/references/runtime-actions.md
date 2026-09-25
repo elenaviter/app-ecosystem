@@ -59,32 +59,40 @@ dependencies. `releases/current` is the one atomic host pointer. The generated
 `releases/current/venv/bin/pb`. Every relay service definition executes the
 same stable `current/venv/bin/python` path.
 
-Each target keeps its own `selection.json` as a receipt of the source action
-performed for that target. The receipt does not choose another executable.
-This division lets `pb --config <target>` retain target-specific evidence while
-the launcher and all relays on the host use one complete dependency set.
+Each target keeps its own `selection.json` receipt. A host switch writes the
+same selected source to every configured target receipt; those files are
+synchronized evidence rather than independent selectors. This division lets
+`pb --config <target>` report durable evidence while the launcher and every
+relay on the host use one complete dependency set.
 
 A switch has four phases under one host activation lock:
 
-1. export or identify the candidate release;
-2. create its `venv`, resolve the complete dependency graph, run candidate
-   `pb --version`, and import its entry package with checkout import paths
-   removed; source builds also import every package named by the source
-   manifest;
-3. atomically move `releases/current` and write the target receipt, then restart
-   the installed relay from the stable current path;
-4. accept the switch only when the new relay's startup record names the
-   candidate source, then retain the three most recently activated complete
-   environments.
+1. export or identify the candidate, create its `venv`, resolve the complete
+   dependency graph, run candidate `pb --version` and `pip check`, and import
+   the candidate-owned CLI, relay, authorization, Connection Hub, and
+   foundation modules with checkout import paths removed; source builds also
+   import every package named by the source manifest;
+2. stop every installed relay whose definition uses the host's stable current
+   path;
+3. atomically move `releases/current`, write every configured target receipt,
+   and install the inert launcher;
+4. restart every installed relay and accept the switch only when every new
+   startup record names the candidate source, then retain the three most
+   recently activated complete environments.
 
-A build or smoke failure leaves `current`, every receipt, and the running relay
-unchanged. A restart or startup-record failure restores both pointers and
-restarts the previous release. Pruning begins only after verified activation.
+A build or smoke failure occurs before relays stop and leaves `current`, every
+receipt, the launcher, and all running relays unchanged. A stop, activation,
+restart, or startup-record failure restores the exact previous current release,
+each target's previous receipt or absence of one, and the previous launcher,
+then restarts and verifies every former relay. If a candidate relay cannot be
+stopped, rollback reports that failure and does not move `current` while that
+process could still load modules from it. Pruning begins only after every relay
+has verified the activation.
 
 `pb source status` reports the active release ID and path, environment commands,
 launcher path and version, this target's receipt, the source loaded by the
-command, and the running relay's startup record. A code receipt names both full
-commits and the tree ID of every exported package.
+command, and every discovered host relay's status. A code receipt names both
+full commits and the tree ID of every exported package.
 
 ## Move An Existing Host To Release Environments
 

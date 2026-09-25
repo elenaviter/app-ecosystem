@@ -65,7 +65,8 @@ Both paths create one complete environment below
 `~/.kdcube/client-runtime/tools/problem-board/releases/<release-id>/venv` and
 atomically select it through `releases/current`. The generated
 `~/.local/bin/pb` launcher executes that current environment. The owning
-switch, rollback, retention, and migration contract is in
+switch updates every configured target receipt and every installed relay as one
+host transaction. The rollback, retention, and migration contract is in
 [runtime actions](runtime-actions.md#one-complete-host-release).
 
 For a team host, ask for both repository paths and full commits, then propose
