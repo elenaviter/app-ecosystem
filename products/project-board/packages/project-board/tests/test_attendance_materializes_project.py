@@ -75,6 +75,19 @@ class Board:
                     ],
                 },
                 "assignments": [],
+                # Who acts as coordinator now (W313): codex-main holds the
+                # role while claude-main, the home coordinator, is away.
+                "coordinator": {
+                    "state": "held",
+                    "holder": {"worker_name": "codex-019fb07f-9251-7f42-a45e-cd212bd5b6c2", "worker_alias": "codex-main", "attending": True},
+                    "home": {"worker_name": COORDINATOR, "worker_alias": "claude-main", "attending": True},
+                    "acting": True,
+                    "since": "2026-09-25T06:00:00Z",
+                    "expected_until": "",
+                    "home_available": False,
+                    "home_unavailable_reason": "away",
+                    "revision": 2,
+                },
                 "team": [
                     {"worker_name": COORDINATOR, "worker_alias": "claude-main", "role": "coordinator", "runtime_kind": "claude-code"},
                     {"worker_name": "codex-019fb07f-9251-7f42-a45e-cd212bd5b6c2", "worker_alias": "codex-main", "role": "worker", "runtime_kind": "codex"},
@@ -177,6 +190,12 @@ def test_a_relay_that_starts_after_the_link_writes_the_project_its_team_and_deli
     )
     assert context["project_on_this_host"] is True
     assert context["coordinators"] == [COORDINATOR]
+    # The labels list every coordinator; the holder is the one to address.
+    assert context["coordinator"]["holder"]["worker_alias"] == "codex-main"
+    assert context["coordinator"]["home"]["worker_alias"] == "claude-main"
+    assert context["coordinator"]["acting"] is True
+    assert context["coordinator"]["home_unavailable_reason"] == "away"
+    assert context["coordinator"]["revision"] == 2
     assert {member["worker_alias"] for member in context["team"]} == {"claude-main", "codex-main", "claude-ops"}
     # The workspace is set up from these; an entry without a URL is not kept.
     assert context["repositories_revision"] == 3

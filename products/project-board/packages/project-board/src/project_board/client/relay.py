@@ -3319,6 +3319,15 @@ class ProblemBoardHostRelayAdapter:
                     # The project is not materialized here yet; the next cycle
                     # after its materialize control lands stores the team.
                     pass
+            # Who acts as coordinator now (W313): the holder, not the first
+            # labelled teammate. Absent from a board that predates it.
+            if isinstance(heartbeat_result.get("coordinator"), Mapping):
+                try:
+                    self.field.sync_project_coordinator(
+                        self.config.project_id, heartbeat_result["coordinator"]
+                    )
+                except DomainError:
+                    pass
             recipients = heartbeat_result.get("mail_recipients")
             if not isinstance(recipients, list):
                 recipients = heartbeat_result.get("team")

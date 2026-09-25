@@ -8282,6 +8282,53 @@ class SharedFieldStore:
             "received_at": str(record.get("updated_at") or ""),
         }
 
+    def sync_project_coordinator(
+        self, project_id: str, coordinator: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Keep who acts as the project's coordinator now, as the board said (W313).
+
+        The team lists every agent carrying the coordinator label; this names
+        the one holding the role. A heartbeat answered earlier never replaces
+        a later revision.
+        """
+
+        clean_id = component(project_id, field="project_id")
+        path = self._project_dir(clean_id) / "coordinator.json"
+
+        def worker(value: Any) -> dict[str, Any]:
+            value = value if isinstance(value, Mapping) else {}
+            return {
+                "worker_name": str(value.get("worker_name") or "").lower(),
+                "worker_alias": str(value.get("worker_alias") or ""),
+                "attending": bool(value.get("attending", True)),
+            }
+
+        record = {
+            "schema": FIELD_SCHEMA,
+            "project_id": clean_id,
+            "state": str(coordinator.get("state") or ""),
+            "holder": worker(coordinator.get("holder")),
+            "home": worker(coordinator.get("home")),
+            "acting": bool(coordinator.get("acting")),
+            "since": str(coordinator.get("since") or ""),
+            "expected_until": str(coordinator.get("expected_until") or ""),
+            "home_available": bool(coordinator.get("home_available")),
+            "home_unavailable_reason": str(coordinator.get("home_unavailable_reason") or ""),
+            "revision": int(coordinator.get("revision") or 0),
+            "updated_at": utc_now(),
+        }
+        with exclusive_lock(self._project_lock(clean_id)):
+            self.read_project(clean_id)
+            current = read_json(path, required=False) or {}
+            if current and int(current.get("revision") or 0) > record["revision"]:
+                return None
+            atomic_write_json(path, record)
+            return record
+
+    def read_project_coordinator(self, project_id: str) -> dict[str, Any]:
+        path = self._project_dir(component(project_id, field="project_id")) / "coordinator.json"
+        return dict(read_json(path, required=False) or {})
+
     def read_project_team(self, project_id: str) -> list[dict[str, Any]]:
         path = self._project_dir(component(project_id, field="project_id")) / "team.json"
         record = read_json(path, required=False)
