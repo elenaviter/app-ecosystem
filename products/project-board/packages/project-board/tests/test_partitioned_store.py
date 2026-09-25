@@ -49,7 +49,7 @@ def test_a_record_lives_in_its_agent_and_hour_and_is_found_by_id(tmp_path):
     assert store.find("event_missing", within_days=36500) is None
 
 
-def test_an_index_line_without_its_record_is_absent_and_the_day_is_reindexed(tmp_path, caplog):
+def test_an_index_line_without_its_record_waits_for_retention_to_compact(tmp_path, caplog):
     store = _store(tmp_path)
     (tmp_path / "events" / "codex-api" / "2026" / "09" / "23" / "11" / "20260923T110500.000000Z_event_b.json").unlink()
 
@@ -58,9 +58,15 @@ def test_an_index_line_without_its_record_is_absent_and_the_day_is_reindexed(tmp
         assert store.find("event_b", agents=["codex-api"], within_days=36500) is None
 
     ids = (tmp_path / "events" / "codex-api" / "2026" / "09" / "23" / "ids").read_text().splitlines()
-    assert ids == ["event_a 10", "event_c 12"]
-    rebuilt = [r for r in caplog.records if "index rebuilt" in r.getMessage()]
-    assert len(rebuilt) == 1
+    assert ids == ["event_a 10", "event_b 11", "event_c 12"]
+    assert not [r for r in caplog.records if "index rebuilt" in r.getMessage()]
+
+    store.expire(cutoff=_at(1), max_bytes_per_agent=10_000)
+
+    assert (tmp_path / "events" / "codex-api" / "2026" / "09" / "23" / "ids").read_text().splitlines() == [
+        "event_a 10",
+        "event_c 12",
+    ]
 
 
 def test_newest_opens_only_the_hours_it_needs_and_logs_the_range_per_agent(tmp_path, caplog):
@@ -136,7 +142,7 @@ def test_expire_enforces_record_and_byte_bounds_with_oldest_hours_first(tmp_path
     assert list((tmp_path / "events").rglob("*.json")) == []
 
 
-def test_stable_key_rewrites_compact_the_index_and_index_bytes_count_toward_retention(
+def test_retention_compacts_stable_key_rewrites_and_counts_index_bytes(
     tmp_path,
 ):
     history = KeyedHistoryStore(
@@ -154,8 +160,18 @@ def test_stable_key_rewrites_compact_the_index_and_index_bytes_count_toward_rete
 
     ids = tmp_path / "history" / "codex-api" / "2026" / "09" / "23" / "ids"
     records = list((tmp_path / "history").rglob("*.json"))
-    assert ids.read_text().splitlines() == ["stable-key 10"]
+    assert ids.read_text().splitlines() == ["stable-key 10"] * 20
     assert len(records) == 1
+
+    compact_size = len("stable-key 10\n".encode("utf-8"))
+    removed = history.partitioned.expire(
+        cutoff=_at(1),
+        max_records_per_agent=1,
+        max_bytes_per_agent=records[0].stat().st_size + compact_size,
+    )
+
+    assert removed == {"partitions": 0, "records": 0}
+    assert ids.read_text().splitlines() == ["stable-key 10"]
 
     removed = history.partitioned.expire(
         cutoff=_at(1),

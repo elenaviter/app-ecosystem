@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from project_board.client import local_state_maintenance as maintenance
+from project_board.client import local_store
 from project_board.client import store as store_module
 from project_board.client.outbox_store import OutboxStore, state_of_name
 from project_board.client.store import SharedFieldStore
@@ -73,6 +74,49 @@ def test_claim_retry_and_settle_move_the_row_and_name_the_outcome(field):
     assert state_of_name(settled[0].name) == "refused"
     assert field.read_outbox_record(second["outbox_id"])["state"] == "refused"
     assert field.worker_outbox_status(worker_name=WORKER, outbox_id=second["outbox_id"])["state"] == "refused"
+
+
+def test_settlement_appends_to_a_large_index_without_reading_or_rewriting_it(
+    field, monkeypatch
+):
+    outbox = OutboxStore(field.control)
+    pending_row = {
+        "outbox_id": "outbox_large_index_guard",
+        "kind": "event.publish",
+        "worker_name": WORKER,
+        "project_ref": PROJECT_REF,
+        "state": "pending",
+        "created_at": "2026-09-25T10:00:00Z",
+    }
+    source = outbox.write_pending(pending_row)
+    ids = outbox.agent_root(PROJECT_REF, WORKER) / "2026" / "09" / "25" / "ids"
+    ids.parent.mkdir(parents=True, exist_ok=True)
+    ids.write_text("".join(f"old_{index:05d} 09\n" for index in range(50_000)))
+    original_inode = ids.stat().st_ino
+    original_size = ids.stat().st_size
+    original_read_text = Path.read_text
+    original_atomic_write_text = local_store.atomic_write_text
+
+    def reject_index_read(path, *args, **kwargs):
+        if path == ids:
+            raise AssertionError("settlement read retained index history")
+        return original_read_text(path, *args, **kwargs)
+
+    def reject_index_rewrite(path, text):
+        if path == ids:
+            raise AssertionError("settlement rewrote retained index history")
+        return original_atomic_write_text(path, text)
+
+    monkeypatch.setattr(Path, "read_text", reject_index_read)
+    monkeypatch.setattr(local_store, "atomic_write_text", reject_index_rewrite)
+
+    target = outbox.settle(source, {**pending_row, "state": "sent"})
+
+    assert target.is_file() and not source.exists()
+    assert ids.stat().st_ino == original_inode
+    assert ids.stat().st_size == original_size + len(
+        "outbox_large_index_guard 10\n".encode("utf-8")
+    )
 
 
 def test_a_claim_never_opens_a_settled_row(field, monkeypatch):

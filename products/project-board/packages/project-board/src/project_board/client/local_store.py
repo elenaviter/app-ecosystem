@@ -9,13 +9,16 @@ Layout, per project and agent (the worker or person a record belongs to)::
     <project>/<store>/<agent>/<yyyy>/<mm>/<dd>/<hh>/<created>_<key>__<slug>.json
         a caller-chosen key (a content hash that deduplicates) cannot carry a
         time, so its name is prefixed with the creation stamp
-    <project>/<store>/<agent>/<yyyy>/<mm>/<dd>/ids      one "<record_id> <hh>" line per retained id
+    <project>/<store>/<agent>/<yyyy>/<mm>/<dd>/ids      append-only "<record_id> <hh>" lookup entries
 
 The file name starts with the record's UTC creation stamp, so a listing sorts
 by time and retention removes whole hour folders without opening a file (rule
 LS2 in ``docs/project-board/storage-and-retention.md``). A lookup by id that
 cannot compute its folder reads the day ``ids`` files newest first, inside the
 retention window only (LS3).
+
+Housekeeping rebuilds each day index from retained record names. That removes
+stale and duplicate append entries away from the relay delivery path.
 
 Every read goes through :meth:`PartitionedStore.reading`, which records the
 hour folders it opened and logs one line per agent::
@@ -188,13 +191,17 @@ class PartitionedStore:
         """Write one record into its hour folder, then index its id for the day.
 
         The caller holds the lock that serializes writes to this store, so the
-        compact index follows a file that exists. A crash between the two leaves
-        a record the index does not name, never an index entry without a record.
+        append follows a file that exists. A crash between the two leaves a
+        record the index does not name, never an index entry without a record.
+        Housekeeping compacts duplicate entries before enforcing retention;
+        the relay delivery path never reads or rewrites retained index history.
         """
 
         path = self.record_path(agent, created, record_id, slug=slug)
         atomic_write_json(path, row)
-        _index_record(path.parent.parent, record_id=record_id, hour=path.parent.name)
+        ids = path.parent.parent / IDS_FILE
+        with open(ids, "a", encoding="utf-8") as handle:
+            handle.write(f"{record_id} {path.parent.name}\n")
         return path
 
     # -- reads ---------------------------------------------------------------
@@ -345,12 +352,11 @@ class PartitionedStore:
                                     for name in os.listdir(folder) if folder.is_dir() else ():
                                         if name.endswith(".json") and record_id_of(name) == record_id:
                                             return folder / name
-                                    # The index names a record whose file is gone
-                                    # (a crash between steps, or an hour removed by
-                                    # retention). Treat it as absent and rebuild
-                                    # this day's index from its folder names.
-                                    rebuild_day_index(day, store=self.store, agent=agent)
-                                    break
+                                    # A rewrite or removal can leave an older
+                                    # append behind until background retention
+                                    # compacts the day. Reads never turn that
+                                    # retained history into foreground work.
+                                    continue
         return None
 
     # -- retention -----------------------------------------------------------
@@ -466,24 +472,6 @@ def atomic_write_text(path: Path, text: str) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(text, encoding="utf-8")
     os.replace(temporary, path)
-
-
-def _index_record(day: Path, *, record_id: str, hour: str) -> None:
-    """Atomically add or replace one id while compacting duplicate entries."""
-
-    entries: dict[str, str] = {}
-    ids = day / IDS_FILE
-    if ids.is_file():
-        for line in ids.read_text(encoding="utf-8").splitlines():
-            parts = line.split()
-            if len(parts) == 2:
-                entries[parts[0]] = parts[1]
-    entries[record_id] = hour
-    lines = (
-        f"{key} {value}\n"
-        for key, value in sorted(entries.items(), key=lambda item: (item[1], item[0]))
-    )
-    atomic_write_text(ids, "".join(lines))
 
 
 def _index_bytes(agent_root: Path) -> int:
