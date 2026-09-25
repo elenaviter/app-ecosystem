@@ -58,7 +58,7 @@ Every step, in the order it happens:
 | 7 | host agent | check `gh auth status` and write access for each repository on the card | routine |
 | 8 | either | one empty workspace per agent | routine |
 | 9 | host agent | start one `tmux` session per agent | routine |
-| 9 | **operator** decides, host agent presses the key | accept bypass mode for the agent sessions | it is the operator's risk decision |
+| 9 | **operator** decides, host agent applies it | approve unattended command mode: Claude Code's one-time bypass warning or Codex's `--ask-for-approval never` policy | it is the operator's risk decision; the host user and repository deploy keys remain the boundary |
 | 10 | the agent, inside its session | enroll and report the profile to authorize | routine |
 | 11 | **operator** | approve each agent's Card, with a code, in a browser on any device | the agent acts in the operator's name |
 | 11 | host agent | tell each approved agent to start listening | routine |
@@ -346,9 +346,18 @@ codex --version
 ```
 
 **Operator** (or the person whose account the Codex agents use): log in once, in
-an SSH session as that user. Run `codex login` and complete the sign-in it
-prints, in a browser on any machine. The login lands in `~/.codex/auth.json`, and
-every Codex session of that Linux user uses it.
+an SSH session as that user. On a headless host, run
+`codex login --device-auth`, open the address it prints on any device, enter the
+code, then run `codex login status`. Device login is the normal path when it is
+enabled for the ChatGPT workspace.
+
+When device login is unavailable, use Codex's localhost callback through SSH.
+On the operator's machine, run
+`ssh -L 1455:localhost:1455 -i <key> <user>@<host>` and keep that connection
+open. In its remote shell, run `codex login`, open the printed URL in the
+operator's local browser, and finish with `codex login status`. The browser's
+callback to local port 1455 reaches Codex through the tunnel. The login lands in
+`~/.codex/auth.json`, and every Codex session of that Linux user uses it.
 
 **Why a person:** each login is an account and its usage. Every agent of that
 runtime under this Linux user works under it, which is why step 0 names the
@@ -660,14 +669,36 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/.kdcube
   interactive question nobody watches: a worker asks the operator by board mail,
   which reaches them wherever they are.
 
-A Codex agent starts in its own tmux session the same way, with `codex` in
-place of `claude`. Which sandbox and approval flags a Codex worker should use is
-being settled in W307, which records the two forms in use today. A Codex worker
-is woken by the relay through its native queue, so it needs no `pb worker watch`.
+**Host agent**, for a Codex worker, uses this exact unattended worker mode:
 
-The first start in bypass mode shows a one-time warning. Accepting it is the
-**operator's** decision. The host agent then selects **Yes, I accept** and
-confirms:
+```bash
+tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'export PATH=\$HOME/.local/node/bin:\$HOME/.local/bin:\$PATH && \
+  codex -C \$HOME/workspaces/<workspace> \
+    --sandbox danger-full-access --ask-for-approval never --search \
+    --add-dir \$HOME/.kdcube; exec bash'"
+```
+
+- `--sandbox danger-full-access` gives Codex the rights of the dedicated host
+  user. That user's home permissions, the workspace layout from step 8, and the
+  per-repository deploy keys from step 7 are the boundary. Codex can write Git
+  metadata, create commits, run project tools, and reach the approved remotes.
+- `--ask-for-approval never` is the unattended worker policy: an approval prompt
+  cannot hold the session while nobody is attached, and a failed command returns
+  to the model. The agent still routes project and operator decisions through
+  Problem Board. `on-request` is the attended diagnostic mode: substitute it
+  while a person remains attached to answer Codex prompts. Sandbox access and
+  approval prompts are separate, so `on-request` can prompt even with
+  `danger-full-access`.
+- `-C` names the agent's primary workspace. `--add-dir ~/.kdcube` names the
+  worker and relay state the session uses. `--search` enables live web search.
+- The login relay wakes this exact session with
+  `codex queue --thread <session-id>`. The queued turn tells the model to run
+  `pb worker receive --wake-id <wake-id>`; a Codex worker runs no
+  `pb worker watch` process.
+
+Claude Code's first start in bypass mode shows a one-time warning. Accepting it
+is the **operator's** decision. The host agent then selects **Yes, I accept**
+and confirms:
 
 ```bash
 tmux send-keys -t <agent-name> Down      # to "Yes, I accept"
@@ -690,8 +721,10 @@ claude-code-wake reference say. It needs no host step.
 
 A session keeps its board identity only when resumed with its id, from the same
 workspace and with the same flags. Resuming is also how a session started with
-older flags gets the current ones:
+older flags gets the current ones. For Claude Code:
 `claude --resume <session-id> --add-dir ~/.kdcube/pb/workspaces/<alias> --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion`.
+For Codex:
+`codex resume <session-id> -C ~/.kdcube/pb/workspaces/<alias> --sandbox danger-full-access --ask-for-approval never --search --add-dir ~/.kdcube`.
 A new session is a new worker.
 
 ### Watch or talk to an agent

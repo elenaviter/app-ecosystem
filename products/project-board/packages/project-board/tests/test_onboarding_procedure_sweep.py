@@ -261,9 +261,6 @@ def test_15_step_7_stops_before_any_grant_or_revoke_when_collection_fails(tmp_pa
         assert code != 0, name
         assert "STOP:" in output and "Nothing granted or revoked." in output, (name, output)
         assert "REVOKE" not in output and "GRANT" not in output, (name, output)
-
-
-
 def test_15_step_7_retires_a_moved_alias_and_reads_host_blocks_through_ssh(tmp_path):
     # ae#120 review (codex-ui): an alias retargeted to another repository left
     # the old repository's key authorized, and an exact-line match missed a
@@ -344,3 +341,18 @@ def test_u5_gh_is_signed_in_per_user_with_the_operators_chosen_identity():
     assert "read -rs T && printf '%s\\n' \"$T\" | gh auth login --with-token; unset T" in HOST
     assert "never in a file or an environment variable" in words
     assert "| 7 | **operator** | create a token for the GitHub identity chosen in step 0" in HOST
+
+
+def test_12_codex_has_a_complete_headless_login_and_start_contract():
+    assert "`codex login --device-auth`" in HOST
+    assert "`ssh -L 1455:localhost:1455 -i <key> <user>@<host>`" in HOST
+    assert "`codex login status`" in HOST
+    assert "--sandbox danger-full-access --ask-for-approval never --search" in HOST
+    assert "--add-dir \\$HOME/.kdcube" in HOST
+    assert "`on-request` is the attended diagnostic mode" in HOST
+    assert "`codex queue --thread <session-id>`" in HOST
+    assert "`codex resume <session-id>" in HOST
+
+    assert "`codex login --device-auth`" in GUIDE
+    assert "SSH tunnel for Codex browser login" in GUIDE
+    assert "Codex uses `--ask-for-approval never`" in GUIDE
