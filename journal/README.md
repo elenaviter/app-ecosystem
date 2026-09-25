@@ -82,6 +82,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-24 | Project repository presets use the shared operation contract | `project.set_repositories` is a canonical `work.project` operation requiring `work:coordinate`, so every Project Board transport and host adapter consumes the same policy entry. |
 | 2026-09-24 | Invitation Control Cards bridge pre-membership policy to a live person | A project administrator reviews one deterministic pending Card before membership; verified acceptance atomically claims that Card before creating the live Control Card, full initial My Card, and project identity edge, while retries repair any missing person-side write. |
 | 2026-09-25 | Project Board clients switch as complete release environments | Each release owns its interpreter and dependency set, one inert launcher and every relay definition follow the host-wide current pointer, candidate smoke checks precede activation, and failed startup restores the prior release and target receipt. |
+| 2026-09-25 | Deferred join controls refresh attendance in the same relay cycle | A cached not-linked result now triggers an immediate authoritative attendance heartbeat and retries the leased welcome or assignment in place, preserving fail-closed refusal while removing the idle-poll delay. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
