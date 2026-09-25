@@ -25,6 +25,12 @@ from project_board.client.source_manifest import (
 from project_board.contract.errors import DomainError
 
 
+def test_source_control_reexports_the_code_entrypoint_contract() -> None:
+    assert source_control.PROJECT_BOARD_CODE_ENTRYPOINT == (
+        relay_source.PROJECT_BOARD_CODE_ENTRYPOINT
+    )
+
+
 @pytest.fixture(autouse=True)
 def _complete_candidate_environment(
     monkeypatch: pytest.MonkeyPatch,
@@ -819,6 +825,70 @@ def test_failed_rollback_is_reported_as_failed(tmp_path: Path) -> None:
         )
 
     assert failure.value.details["rollback"]["state"] == "restore_failed"
+
+
+def test_rollback_restart_attempts_every_relay_and_reports_each_failure(
+    tmp_path: Path,
+) -> None:
+    class _RestartFails(_Service):
+        def restart(self) -> dict[str, object]:
+            self.restarts += 1
+            raise DomainError(
+                "work_relay_service_command_failed",
+                "relay restart failed",
+                details={"returncode": 5},
+            )
+
+    class _StartupMismatch(_Service):
+        def await_source(
+            self,
+            expected: dict[str, object],
+            *,
+            since: str,
+            wait_seconds: float,
+        ) -> dict[str, object]:
+            del expected, since, wait_seconds
+            return {"state": "source_mismatch", "observed": {"mode": "unknown"}}
+
+    first_config = tmp_path / "targets" / "one" / "relay.json"
+    second_config = tmp_path / "targets" / "two" / "relay.json"
+    third_config = tmp_path / "targets" / "three" / "relay.json"
+    first = _RestartFails(tmp_path / "services" / "one")
+    second = _StartupMismatch(tmp_path / "services" / "two")
+    third = _Service(tmp_path / "services" / "three")
+    controller = ClientSourceController(
+        first_config,
+        service=first,
+        host_services={second_config: second, third_config: third},
+        release_source={"mode": "released", "version": "2026.9.22.2200"},
+    )
+
+    rollback = controller._restart_without_restore(
+        previous_host_source={"mode": "released", "version": "2026.9.22.2200"},
+        installed_services=[
+            (first_config, first),
+            (second_config, second),
+            (third_config, third),
+        ],
+        wait_seconds=0,
+    )
+
+    assert rollback["state"] == "restore_failed"
+    assert rollback["reason"] == "previous_relays_could_not_be_restarted"
+    assert [item["config"] for item in rollback["restart_failures"]] == [
+        str(first_config),
+        str(second_config),
+    ]
+    assert rollback["restart_failures"][0]["cause"]["code"] == (
+        "work_relay_service_command_failed"
+    )
+    assert rollback["restart_failures"][1]["startup"]["state"] == (
+        "source_mismatch"
+    )
+    assert [item["config"] for item in rollback["host_relays"]] == [
+        str(third_config)
+    ]
+    assert first.restarts == second.restarts == third.restarts == 1
 
 
 def test_host_switch_updates_and_restarts_every_target(tmp_path: Path) -> None:

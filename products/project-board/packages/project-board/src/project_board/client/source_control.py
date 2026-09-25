@@ -12,6 +12,7 @@ from .io import utc_now
 from .source_composite import prepare_client_release
 from .relay_source import (
     CLIENT_SOURCE_PATHS,
+    PROJECT_BOARD_CODE_ENTRYPOINT,
     SELECTION_SCHEMA,
     canonical_release_version,
     client_release_root,
@@ -586,6 +587,42 @@ class ClientSourceController:
             startups.append({"config": str(config), "startup": startup})
         return startups
 
+    def _restart_services_for_rollback(
+        self,
+        services: list[tuple[Path, Any]],
+        *,
+        expected: Mapping[str, Any],
+        wait_seconds: float,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        startups: list[dict[str, Any]] = []
+        failures: list[dict[str, Any]] = []
+        for config, service in services:
+            try:
+                since = utc_now()
+                service.restart()
+                startup = service.await_source(
+                    expected, since=since, wait_seconds=wait_seconds
+                )
+                if startup.get("state") != "started":
+                    failures.append(
+                        {
+                            "config": str(config),
+                            "reason": "work_client_source_relay_start_mismatch",
+                            "startup": startup,
+                        }
+                    )
+                    continue
+                startups.append({"config": str(config), "startup": startup})
+            except Exception as exc:
+                failure: dict[str, Any] = {
+                    "config": str(config),
+                    "reason": str(getattr(exc, "code", "") or exc),
+                }
+                if isinstance(exc, DomainError):
+                    failure["cause"] = exc.to_dict()
+                failures.append(failure)
+        return startups, failures
+
     def _restore(
         self,
         previous_explicit: Mapping[Path, Mapping[str, Any]],
@@ -648,23 +685,24 @@ class ClientSourceController:
                 "source": dict(previous_host_source),
                 "reason": str(getattr(exc, "code", "") or exc),
             }
-        try:
-            startups = self._restart_services(
-                installed_services,
-                expected=previous_host_source,
-                wait_seconds=wait_seconds,
-            )
-            return {
-                "state": "restored",
-                "source": dict(previous_host_source),
-                "host_relays": startups,
-            }
-        except Exception as exc:
+        startups, restart_failures = self._restart_services_for_rollback(
+            installed_services,
+            expected=previous_host_source,
+            wait_seconds=wait_seconds,
+        )
+        if restart_failures:
             return {
                 "state": "restore_failed",
                 "source": dict(previous_host_source),
-                "reason": str(getattr(exc, "code", "") or exc),
+                "reason": "previous_relays_could_not_be_restarted",
+                "host_relays": startups,
+                "restart_failures": restart_failures,
             }
+        return {
+            "state": "restored",
+            "source": dict(previous_host_source),
+            "host_relays": startups,
+        }
 
     def _restart_without_restore(
         self,
@@ -673,17 +711,18 @@ class ClientSourceController:
         installed_services: list[tuple[Path, Any]],
         wait_seconds: float,
     ) -> dict[str, Any]:
-        try:
-            startups = self._restart_services(
-                installed_services,
-                expected=previous_host_source,
-                wait_seconds=wait_seconds,
-            )
-        except Exception as exc:
+        startups, restart_failures = self._restart_services_for_rollback(
+            installed_services,
+            expected=previous_host_source,
+            wait_seconds=wait_seconds,
+        )
+        if restart_failures:
             return {
                 "state": "restore_failed",
                 "source": dict(previous_host_source),
-                "reason": str(getattr(exc, "code", "") or exc),
+                "reason": "previous_relays_could_not_be_restarted",
+                "host_relays": startups,
+                "restart_failures": restart_failures,
             }
         return {
             "state": "restored",
@@ -694,6 +733,7 @@ class ClientSourceController:
 
 __all__ = [
     "ClientSourceController",
+    "PROJECT_BOARD_CODE_ENTRYPOINT",
     "effective_selection",
     "installed_release_source",
     "source_matches",

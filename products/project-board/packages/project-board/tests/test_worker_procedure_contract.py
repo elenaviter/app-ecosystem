@@ -202,6 +202,8 @@ def test_source_selection_guidance_is_added_without_rewriting_collaboration() ->
     assert "`client.pinned: false` with `source.mode: checkout`" in runtime
     assert "Move An Existing Host To Release Environments" in runtime
     assert "One Complete Host Release" in runtime
+    assert "The bootstrap installer detects those running current-path relay units and exits before building or activating a candidate" in runtime
+    assert "one failed restart does not prevent the remaining relays from being attempted" in runtime
     assert "At that point the former venv has no launcher or service consumer and may be deleted" in runtime
     assert "same released version or composite source, including both commits and all six package trees" in runtime
     assert "the full App Ecosystem and KDCube commits" in coordinator

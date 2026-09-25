@@ -6,6 +6,10 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
+import platform
+import plistlib
+import subprocess
 import sys
 from pathlib import Path
 
@@ -50,6 +54,118 @@ CLIENT_SOURCE_IMPORTS = _SOURCE_MANIFEST.CLIENT_SOURCE_IMPORTS
 
 LAUNCHER_MARKER = _RELEASE_INSTALL.LAUNCHER_MARKER
 LEGACY_LAUNCHER_MARKER = _RELEASE_INSTALL.LEGACY_LAUNCHER_MARKERS[-1]
+RELAY_MODULE_ARGUMENTS = ("-m", "project_board.client.entrypoint", "relay")
+
+
+def _manager_reports_running(command: tuple[str, ...]) -> bool:
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except OSError as exc:
+        raise SystemExit(
+            "work_client_source_installer_relay_state_unknown: "
+            f"Cannot verify the installed relay state: {exc}."
+        ) from exc
+    return result.returncode == 0
+
+
+def _running_current_relays(
+    release_root: Path,
+    *,
+    user_home: Path | None = None,
+    system: str | None = None,
+) -> list[dict[str, str]]:
+    if not _RELEASE_INSTALL.active_release_id(release_root):
+        return []
+    current_python = str(_RELEASE_INSTALL.active_python(release_root))
+    home = (user_home or Path.home()).expanduser().resolve()
+    selected_system = str(system or platform.system()).strip()
+    running: list[dict[str, str]] = []
+    if selected_system == "Darwin":
+        definitions = sorted(
+            (home / "Library" / "LaunchAgents").glob(
+                "tech.kdcube.problem-board.relay.*.plist"
+            )
+        )
+        for definition in definitions:
+            try:
+                value = plistlib.loads(definition.read_bytes())
+            except (OSError, ValueError, plistlib.InvalidFileException):
+                continue
+            arguments = tuple(
+                str(item) for item in value.get("ProgramArguments") or ()
+            )
+            service_id = str(value.get("Label") or "").strip()
+            if (
+                not service_id
+                or arguments[:4] != (current_python, *RELAY_MODULE_ARGUMENTS)
+            ):
+                continue
+            if _manager_reports_running(
+                ("launchctl", "print", f"gui/{os.getuid()}/{service_id}")
+            ):
+                running.append(
+                    {
+                        "service_id": service_id,
+                        "definition": str(definition),
+                    }
+                )
+        return running
+    if selected_system == "Linux":
+        definitions = sorted(
+            (home / ".config" / "systemd" / "user").glob(
+                "kdcube-problem-board-relay-*.service"
+            )
+        )
+        escaped_python = (
+            current_python.replace("%", "%%")
+            .replace("\\", "\\\\")
+            .replace('"', '\\"')
+        )
+        expected = (
+            f'ExecStart="{escaped_python}" "-m" '
+            '"project_board.client.entrypoint" "relay" '
+        )
+        for definition in definitions:
+            try:
+                text = definition.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if expected not in text:
+                continue
+            service_id = definition.name
+            if _manager_reports_running(
+                ("systemctl", "--user", "is-active", service_id)
+            ):
+                running.append(
+                    {
+                        "service_id": service_id,
+                        "definition": str(definition),
+                    }
+                )
+    return running
+
+
+def _refuse_running_migrated_host(release_root: Path) -> None:
+    active_release_id = _RELEASE_INSTALL.active_release_id(release_root)
+    if not active_release_id:
+        return
+    running = _running_current_relays(release_root)
+    if not running:
+        return
+    services = ", ".join(item["service_id"] for item in running)
+    raise SystemExit(
+        "work_client_source_installer_migrated_host: This host already runs "
+        "Project Board relays from releases/current. Use "
+        "~/.local/bin/pb source use-code for the next source change so every "
+        "relay participates in the verified host transaction. "
+        f"Active release: {active_release_id}. Running relays: {services}."
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -139,6 +255,7 @@ def _install_locked(
     base_python: Path,
     force_launcher: bool,
 ) -> dict[str, object]:
+    _refuse_running_migrated_host(release_root)
     packages = _first_party_packages(source_root, kdcube_source_root)
     labels = tuple(
         relative

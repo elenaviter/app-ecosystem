@@ -318,3 +318,138 @@ def test_switching_current_delivers_new_loader_behavior_without_reinstalling_lau
     assert first.stdout.strip() == "old loader"
     assert second.stdout.strip() == "new loader"
     assert launcher.read_bytes() == launcher_before
+
+
+def test_source_installer_finds_a_running_current_path_launchd_relay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installer = _installer_module()
+    root = tmp_path / "client"
+    identity = "a" * 64
+    release = installer._RELEASE_INSTALL.release_path(root, identity)
+    release.mkdir(parents=True)
+    installer._RELEASE_INSTALL.active_release_link(root).symlink_to(identity)
+    service_id = "tech.kdcube.problem-board.relay.123456789abc"
+    definition = (
+        tmp_path
+        / "home"
+        / "Library"
+        / "LaunchAgents"
+        / f"{service_id}.plist"
+    )
+    definition.parent.mkdir(parents=True)
+    definition.write_bytes(
+        installer.plistlib.dumps(
+            {
+                "Label": service_id,
+                "ProgramArguments": [
+                    str(installer._RELEASE_INSTALL.active_python(root)),
+                    "-m",
+                    "project_board.client.entrypoint",
+                    "relay",
+                    "--config",
+                    str(tmp_path / "relay.json"),
+                ],
+            }
+        )
+    )
+    commands: list[tuple[str, ...]] = []
+
+    def run(command, **_kwargs):
+        commands.append(tuple(command))
+        return subprocess.CompletedProcess(command, 0, "running", "")
+
+    monkeypatch.setattr(installer.subprocess, "run", run)
+
+    running = installer._running_current_relays(
+        root,
+        user_home=tmp_path / "home",
+        system="Darwin",
+    )
+
+    assert running == [
+        {"service_id": service_id, "definition": str(definition)}
+    ]
+    assert commands == [
+        ("launchctl", "print", f"gui/{installer.os.getuid()}/{service_id}")
+    ]
+
+
+def test_source_installer_finds_a_running_current_path_systemd_relay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installer = _installer_module()
+    root = tmp_path / "client"
+    identity = "c" * 64
+    release = installer._RELEASE_INSTALL.release_path(root, identity)
+    release.mkdir(parents=True)
+    installer._RELEASE_INSTALL.active_release_link(root).symlink_to(identity)
+    service_id = "kdcube-problem-board-relay-123456789abc.service"
+    definition = (
+        tmp_path / "home" / ".config" / "systemd" / "user" / service_id
+    )
+    definition.parent.mkdir(parents=True)
+    definition.write_text(
+        "[Service]\n"
+        f'ExecStart="{installer._RELEASE_INSTALL.active_python(root)}" '
+        '"-m" "project_board.client.entrypoint" "relay" '
+        f'"--config" "{tmp_path / "relay.json"}"\n',
+        encoding="utf-8",
+    )
+    commands: list[tuple[str, ...]] = []
+
+    def run(command, **_kwargs):
+        commands.append(tuple(command))
+        return subprocess.CompletedProcess(command, 0, "active", "")
+
+    monkeypatch.setattr(installer.subprocess, "run", run)
+
+    running = installer._running_current_relays(
+        root,
+        user_home=tmp_path / "home",
+        system="Linux",
+    )
+
+    assert running == [
+        {"service_id": service_id, "definition": str(definition)}
+    ]
+    assert commands == [
+        ("systemctl", "--user", "is-active", service_id)
+    ]
+
+
+def test_source_installer_refuses_a_migrated_host_before_building(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installer = _installer_module()
+    root = tmp_path / "client"
+    identity = "b" * 64
+    release = installer._RELEASE_INSTALL.release_path(root, identity)
+    release.mkdir(parents=True)
+    installer._RELEASE_INSTALL.active_release_link(root).symlink_to(identity)
+    monkeypatch.setattr(
+        installer,
+        "_running_current_relays",
+        lambda _root: [
+            {
+                "service_id": "tech.kdcube.problem-board.relay.123456789abc",
+                "definition": "/tmp/relay.plist",
+            }
+        ],
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="work_client_source_installer_migrated_host.*pb source use-code",
+    ):
+        installer.install(
+            source_root=tmp_path / "missing-app-source",
+            kdcube_source_root=tmp_path / "missing-kdcube-source",
+            release_root=root,
+            command_dir=tmp_path / "bin",
+            base_python=Path("/usr/bin/python3"),
+            force_launcher=False,
+        )
