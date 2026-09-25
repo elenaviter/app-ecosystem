@@ -137,9 +137,9 @@ old definition names the former interpreter. Every later source switch keeps
 the same `releases/current/venv/bin/python` service command and performs its own
 verified restart.
 
-On a host that already runs relays from `releases/current`,
+On a host that already has relay definitions using `releases/current`,
 `~/.local/bin/pb source use-code` owns every later code-source change. The
-bootstrap installer detects those running current-path relay units and exits
+bootstrap installer detects those installed current-path relay units and exits
 before building or activating a candidate, directing the operator to the
 host-wide source transaction instead.
 

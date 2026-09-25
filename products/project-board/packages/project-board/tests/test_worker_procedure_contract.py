@@ -87,7 +87,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.25.7"
+    assert package["revision"] == "2026.09.25.8"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -202,7 +202,11 @@ def test_source_selection_guidance_is_added_without_rewriting_collaboration() ->
     assert "`client.pinned: false` with `source.mode: checkout`" in runtime
     assert "Move An Existing Host To Release Environments" in runtime
     assert "One Complete Host Release" in runtime
-    assert "The bootstrap installer detects those running current-path relay units and exits before building or activating a candidate" in runtime
+    assert (
+        "The bootstrap installer detects those installed current-path relay "
+        "units and exits before building or activating a candidate"
+        in runtime
+    )
     assert "one failed restart does not prevent the remaining relays from being attempted" in runtime
     assert "At that point the former venv has no launcher or service consumer and may be deleted" in runtime
     assert "same released version or composite source, including both commits and all six package trees" in runtime

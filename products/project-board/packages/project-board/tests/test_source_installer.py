@@ -320,9 +320,8 @@ def test_switching_current_delivers_new_loader_behavior_without_reinstalling_lau
     assert launcher.read_bytes() == launcher_before
 
 
-def test_source_installer_finds_a_running_current_path_launchd_relay(
+def test_source_installer_finds_an_installed_launchd_relay_without_manager_state(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     installer = _installer_module()
     root = tmp_path / "client"
@@ -354,31 +353,19 @@ def test_source_installer_finds_a_running_current_path_launchd_relay(
             }
         )
     )
-    commands: list[tuple[str, ...]] = []
-
-    def run(command, **_kwargs):
-        commands.append(tuple(command))
-        return subprocess.CompletedProcess(command, 0, "running", "")
-
-    monkeypatch.setattr(installer.subprocess, "run", run)
-
-    running = installer._running_current_relays(
+    installed = installer._installed_current_relays(
         root,
         user_home=tmp_path / "home",
         system="Darwin",
     )
 
-    assert running == [
+    assert installed == [
         {"service_id": service_id, "definition": str(definition)}
     ]
-    assert commands == [
-        ("launchctl", "print", f"gui/{installer.os.getuid()}/{service_id}")
-    ]
 
 
-def test_source_installer_finds_a_running_current_path_systemd_relay(
+def test_source_installer_finds_an_installed_systemd_relay_without_manager_state(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     installer = _installer_module()
     root = tmp_path / "client"
@@ -398,25 +385,14 @@ def test_source_installer_finds_a_running_current_path_systemd_relay(
         f'"--config" "{tmp_path / "relay.json"}"\n',
         encoding="utf-8",
     )
-    commands: list[tuple[str, ...]] = []
-
-    def run(command, **_kwargs):
-        commands.append(tuple(command))
-        return subprocess.CompletedProcess(command, 0, "active", "")
-
-    monkeypatch.setattr(installer.subprocess, "run", run)
-
-    running = installer._running_current_relays(
+    installed = installer._installed_current_relays(
         root,
         user_home=tmp_path / "home",
         system="Linux",
     )
 
-    assert running == [
+    assert installed == [
         {"service_id": service_id, "definition": str(definition)}
-    ]
-    assert commands == [
-        ("systemctl", "--user", "is-active", service_id)
     ]
 
 
@@ -432,7 +408,7 @@ def test_source_installer_refuses_a_migrated_host_before_building(
     installer._RELEASE_INSTALL.active_release_link(root).symlink_to(identity)
     monkeypatch.setattr(
         installer,
-        "_running_current_relays",
+        "_installed_current_relays",
         lambda _root: [
             {
                 "service_id": "tech.kdcube.problem-board.relay.123456789abc",

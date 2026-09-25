@@ -209,6 +209,10 @@ only third-party dependencies. Do not use
 `sudo`, a checkout launcher, or an editable install. Repeat the install for
 another login user rather than sharing one credential-bearing runtime between
 users.
+After this first installation, `pb source use-code` owns code-source updates.
+The bootstrap installer recognizes an installed stable-current relay definition
+and directs the operator to that host transaction; the exact lifecycle is in
+step 13 and the installed worker procedure's `references/runtime-actions.md`.
 
 A host set up before release environments may still hold either a root-owned
 environment under `/opt` or the user-owned
