@@ -26,9 +26,11 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator, Mapping, Sequence
 
-from .io import atomic_write_json, read_json
+from ..contract.errors import DomainError
+from .io import atomic_write_json, parse_utc, read_json
+from .local_wake import notify_relay_outbox
 from .local_store import PartitionedStore, agent_component, slug_component
 from .outbox_layout import OUTBOX_FOLDERS, OUTBOX_IN_FLIGHT_FOLDERS
 
@@ -116,6 +118,9 @@ class OutboxStore:
     def write_pending(self, row: Mapping[str, Any]) -> Path:
         path = self.in_flight_path(row, "pending")
         atomic_write_json(path, row)
+        # The row is the authority. This best-effort hint only lets the relay
+        # probe immediately instead of waiting for its next project cycle.
+        notify_relay_outbox(self.control.parent)
         return path
 
     def in_flight(self, folder: str, *, worker_name: str = "", project_ref: str = "") -> Iterator[Path]:
@@ -126,6 +131,90 @@ class OutboxStore:
         legacy = self.legacy_root / folder
         if legacy.is_dir():
             yield from sorted(legacy.glob("*.json"))
+
+    def ready_rows(
+        self,
+        *,
+        worker_names: Sequence[str] = (),
+        now: datetime | None = None,
+    ) -> Iterator[tuple[Path, dict[str, Any]]]:
+        """Yield pending rows whose retry time has arrived.
+
+        A worker-scoped scan includes project-level rows because an active
+        worker attending that project may carry them. Paths are deduplicated:
+        the same project-level or legacy row is visible from every worker
+        scope.
+        """
+
+        names = {str(name or "").strip().lower() for name in worker_names}
+        names.discard("")
+        paths: set[Path] = set()
+        if names:
+            for name in names:
+                paths.update(self.in_flight("pending", worker_name=name))
+        else:
+            paths.update(self.in_flight("pending"))
+        now_dt = now or datetime.now(timezone.utc)
+        for path in sorted(paths):
+            try:
+                row = read_json(path)
+            except DomainError:
+                # An unreadable pending row is still work for the ordinary
+                # cycle to diagnose. Its path remains part of the signature.
+                yield path, {}
+                continue
+            candidate_worker = str(row.get("worker_name") or "").lower()
+            if names and candidate_worker and candidate_worker not in names:
+                continue
+            next_attempt_at = str(row.get("next_attempt_at") or "")
+            if next_attempt_at:
+                try:
+                    if parse_utc(next_attempt_at) > now_dt:
+                        continue
+                except DomainError:
+                    # The claimant owns validation and the resulting error.
+                    # Treat malformed pending state as ready so it is visible.
+                    pass
+            yield path, row
+
+    def has_ready_work(self, *, worker_names: Sequence[str] = ()) -> bool:
+        return next(self.ready_rows(worker_names=worker_names), None) is not None
+
+    def ready_signature(self, *, worker_names: Sequence[str] = ()) -> tuple:
+        """A stable signature of ready pending rows for the relay wait loop."""
+
+        signature: list[tuple[str, int, int]] = []
+        for path, _row in self.ready_rows(worker_names=worker_names):
+            try:
+                stat = path.stat()
+                relative = str(path.relative_to(self.control))
+            except (OSError, ValueError):
+                continue
+            signature.append((relative, stat.st_mtime_ns, stat.st_size))
+        return tuple(signature)
+
+    def ready_project_refs(
+        self,
+        *,
+        worker_name: str,
+        limit: int = 20,
+    ) -> list[str]:
+        """Worker-owned project scopes ready for its Card channel."""
+
+        clean_worker = str(worker_name or "").strip().lower()
+        if not clean_worker:
+            return []
+        refs: set[str] = set()
+        for _path, row in self.ready_rows(worker_names=[clean_worker]):
+            candidate_worker = str(row.get("worker_name") or "").lower()
+            # A project-level row has no worker owner. It stays on the normal
+            # attendance path, where project linkage chooses its Card.
+            if candidate_worker != clean_worker:
+                continue
+            refs.add(str(row.get("project_ref") or ""))
+            if len(refs) >= max(1, int(limit)):
+                break
+        return sorted(refs)
 
     def attachments_dir(self, row: Mapping[str, Any]) -> Path:
         """Where a row's attachment files are written."""

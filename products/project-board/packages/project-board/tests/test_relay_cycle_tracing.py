@@ -185,3 +185,94 @@ def test_startup_recovery_is_a_named_cycle_stage(
             "stage": "startup_recovery",
         }
     ]
+
+
+def test_attendance_stage_names_heartbeat_controls_and_outbox(
+    tmp_path, monkeypatch, caplog
+) -> None:
+    host, _identity, channel = make_host(tmp_path)
+    clock = _Clock(time.time())
+    trace = _trace(clock)
+
+    class _HeartbeatClient:
+        async def action(self, **_kwargs):
+            clock.advance(2.0)
+            return {"object": {"attendance": "linked"}}
+
+    adapter = relay.ProblemBoardHostRelayAdapter(
+        config=relay.RelayConfig.from_host_channel(
+            host,
+            channel,
+            project_id="project",
+        ),
+        field=SharedFieldStore(host.field_root),
+        client=_HeartbeatClient(),
+        trace=trace,
+    )
+
+    async def add_runtime_account(_payload):
+        return None
+
+    async def pull_controls(**_kwargs):
+        clock.advance(2.0)
+        return {
+            "controls_materialized": 0,
+            "controls_refused": 0,
+            "controls_deferred": 0,
+        }
+
+    async def flush_outbox(**_kwargs):
+        clock.advance(2.0)
+        return {
+            "outbox_sent": 0,
+            "outbox_ignored": 0,
+            "outbox_refused": 0,
+            "outbox_retried": 0,
+        }
+
+    monkeypatch.setattr(adapter, "_add_runtime_account", add_runtime_account)
+    monkeypatch.setattr(
+        adapter, "_session_report_delta", lambda **_kwargs: (None, "sessions")
+    )
+    monkeypatch.setattr(
+        adapter, "_assignment_files_delta", lambda **_kwargs: (None, "files")
+    )
+    monkeypatch.setattr(
+        adapter, "_store_reads_delta", lambda **_kwargs: (None, "reads")
+    )
+    monkeypatch.setattr(adapter, "_record_project_heartbeat", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_record_session_report", lambda **_kwargs: None)
+    monkeypatch.setattr(adapter, "_record_attendance_observation", lambda *_args: None)
+    monkeypatch.setattr(adapter, "_materialize_attended_project", lambda *_args: None)
+    monkeypatch.setattr(
+        adapter,
+        "_reconcile_journal_binding",
+        lambda *_args: {"state": "unchanged"},
+    )
+    monkeypatch.setattr(adapter, "_reconcile_assignments", lambda *_args: (0, []))
+    monkeypatch.setattr(adapter, "_pull_controls", pull_controls)
+    monkeypatch.setattr(adapter, "_flush_outbox_unlocked", flush_outbox)
+    monkeypatch.setattr(adapter, "_report_dead_notification_path", lambda: None)
+    caplog.set_level(logging.WARNING, logger="test.relay.trace")
+
+    async def scenario():
+        cycle = trace.start_cycle()
+        with trace.stage(
+            "attendance.poll",
+            channel=channel.worker_name,
+            operation="attendance.reconcile",
+        ):
+            await adapter._poll_project_once(
+                agent_sessions=[],
+                force_heartbeat=True,
+            )
+        trace.finish_cycle(cycle, outcome="succeeded")
+
+    asyncio.run(scenario())
+
+    stages = _warning_payload(caplog, "stages=")
+    by_operation = {stage["operation"]: stage for stage in stages}
+    assert by_operation["attendance.reconcile"]["seconds"] == 6.0
+    assert by_operation["worker.heartbeat"]["seconds"] == 2.0
+    assert by_operation["control.pull"]["seconds"] == 2.0
+    assert by_operation["outbox.flush"]["seconds"] == 2.0
