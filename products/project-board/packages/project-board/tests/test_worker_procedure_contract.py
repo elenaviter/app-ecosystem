@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.18"
+    assert package["revision"] == "2026.09.24.19"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -979,3 +979,21 @@ def test_an_agent_sets_up_its_workspace_from_the_project_record():
     assert "the repository lives at `<workspace>/<alias>`" in reference
     assert "The journal repository (role `journal`) is cloned like any other" in reference
     assert "tell the operator by name, with its alias and URL" in reference
+
+
+def test_an_assignment_notice_is_settled_after_working_not_after_completion() -> None:
+    # W304 finding 51, 2026-09-25: the reaction settled the notice last, after
+    # `completed`, but `pb worker renew` refuses a lease held past
+    # MAX_MAIL_HOLD_SECONDS (an hour) and redelivers it. claude-ops's W313
+    # notice was refused that way mid-work.
+    from project_board.client import store
+
+    assert store.MAX_MAIL_HOLD_SECONDS == 3600
+    skill = _words(_read("SKILL.md"))
+    reaction = skill[skill.index("The reaction, in order:"):skill.index("`working` and `blocked` are progress reports;")]
+    assert "2. Report `working` (it sets Working), settle the notice's lease at once (no lease outlives an hour; the row carries the work)" in reaction
+    assert "Settle the notice's lease once." not in reaction
+    delivery = _words(_read("references/delivery-and-recovery.md"))
+    assert "**A lease is held for at most an hour, renewals included** (`MAX_MAIL_HOLD_SECONDS`, 3600)." in delivery
+    assert "`field_mail_held_too_long`" in delivery
+    assert "An assignment notice is settled right after `working` is accepted" in delivery

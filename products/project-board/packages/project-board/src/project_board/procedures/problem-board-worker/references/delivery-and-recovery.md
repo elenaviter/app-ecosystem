@@ -149,6 +149,14 @@ required visible response, and final settlement result.
 - Renewal changes the expiry of an existing lease. It does not check direct or
   project mail. During active work, run `pb worker receive` separately at safe
   work boundaries.
+- **A lease is held for at most an hour, renewals included**
+  (`MAX_MAIL_HOLD_SECONDS`, 3600). Past that, `pb worker renew` refuses with
+  `field_mail_held_too_long` and the message returns for redelivery. So settle
+  once the outcome is recorded where it lasts (a reply, a report, a note on the
+  item), never when long work behind it finishes. An assignment notice is
+  settled right after `working` is accepted: the assignment row carries the
+  work, and later reports cite the `assignment_ref` and `ownership_version`
+  kept from the notice (W304 finding 51).
 
 Lease expiry returns a message for redelivery. `prior_handling` means this
 worker already acted on it: settle the new lease without repeating the work
