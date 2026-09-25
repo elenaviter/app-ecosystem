@@ -36,6 +36,11 @@ from packaging.version import InvalidVersion, Version
 
 from ..contract.errors import DomainError
 from .io import atomic_write_json, exclusive_lock, read_json, utc_now
+from .release_install import (
+    active_release_path as active_installed_release_path,
+    default_release_root,
+    read_installation,
+)
 from .source_manifest import (
     APP_ECOSYSTEM_COMPONENT,
     APP_ECOSYSTEM_SOURCE_PATHS,
@@ -140,7 +145,7 @@ class RelaySourceRelease:
 
 
 def client_source_root(config_path: Path) -> Path:
-    """The per-target source store shared by the command and relay.
+    """The per-target source-selection receipt store.
 
     The former ``relay-source`` directory is deliberately not adopted. Its
     snapshots contain only the old relay entrypoint and application modules,
@@ -148,7 +153,29 @@ def client_source_root(config_path: Path) -> Path:
     packaged command and its Connection Hub dependencies.
     """
 
-    return Path(config_path).parent / SOURCE_ROOT_DIR
+    return Path(config_path).expanduser().resolve().parent / SOURCE_ROOT_DIR
+
+
+def client_release_root(config_path: Path) -> Path:
+    """The host-wide executable release store used by the launcher and relays.
+
+    Installed hosts keep target configs below
+    ``client-runtime/problem-board/targets``. Their command launcher is
+    host-wide, so those targets share the release store below
+    ``client-runtime/tools/problem-board``. Tests and explicit nonstandard
+    configs keep releases beside their selection receipts.
+    """
+
+    selected = Path(config_path).expanduser().resolve()
+    parents = selected.parents
+    if (
+        len(parents) >= 4
+        and parents[1].name == "targets"
+        and parents[2].name == "problem-board"
+        and parents[3].name == "client-runtime"
+    ):
+        return default_release_root(parents[3].parent.parent)
+    return client_source_root(selected)
 
 
 def relay_source_root(config_path: Path) -> Path:
@@ -508,6 +535,11 @@ def export_release(
 
 
 def current_release(root: Path) -> RelaySourceRelease | None:
+    installed = active_installed_release_path(root)
+    if installed is not None:
+        release = read_release(installed)
+        if release is not None:
+            return release
     link = Path(root) / CURRENT_LINK
     if not link.is_symlink():
         return None
@@ -975,6 +1007,13 @@ def describe_source(
         return {"mode": "unknown", "script": str(script)}
     probe = resolved.parent
     for _ in range(MARKER_SEARCH_DEPTH):
+        installation = read_installation(probe)
+        if installation:
+            source = dict(installation["source"])
+            source["release_id"] = installation["release_id"]
+            source["release_path"] = str(probe)
+            source["environment"] = dict(installation["environment"])
+            return source
         release = read_release(probe)
         if release is not None:
             source: dict[str, Any] = {

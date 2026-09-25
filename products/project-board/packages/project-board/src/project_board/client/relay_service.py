@@ -5,7 +5,6 @@ import os
 import plistlib
 import platform
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,10 +16,12 @@ from .host_config import HostRelayConfig
 from .relay_logging import RELAY_CRASH_LOG_FILENAME, relay_log_status
 from .relay_source import (
     CLIENT_SOURCE_PATHS,
+    client_release_root,
     client_source_root,
     describe_source,
     read_startup_record,
 )
+from .release_install import active_python
 
 
 SERVICE_SCHEMA = "problem-board.relay-service.v1"
@@ -206,10 +207,13 @@ class RelayService:
                 details={"system": selected_system},
             )
         logs = selected_config.parent / "logs"
-        selected_executable = Path(executable or sys.executable).expanduser()
+        source_root = client_source_root(selected_config)
+        release_root = client_release_root(selected_config)
+        selected_executable = Path(
+            executable if executable is not None else active_python(release_root)
+        ).expanduser()
         if not selected_executable.is_absolute():
             selected_executable = Path(os.path.abspath(selected_executable))
-        source_root = client_source_root(selected_config)
         if script is not None:
             selected_script = Path(script).expanduser().resolve()
             source_mode = "checkout"
@@ -357,26 +361,9 @@ class RelayService:
         raise AssertionError("launchd bootstrap attempts were not evaluated")
 
     def install(self) -> dict[str, Any]:
-        """Write the stable bootstrap definition and (re)start under it."""
+        """Write the stable current-release definition and start it."""
 
-        service = self
-        if service.module_entrypoint:
-            from .relay_source import read_selection, released_selection, write_selection
-            from .source_control import installed_release_source
-
-            if not read_selection(service.source_root):
-                released = installed_release_source()
-                write_selection(
-                    service.source_root,
-                    released_selection(str(released.get("version") or "")),
-                )
-                service = RelayService.create(
-                    self.config_path,
-                    executable=self.executable,
-                    system=self.system,
-                    home=self.user_home,
-                )
-        return service._install_definition()
+        return self._install_definition()
 
     def _install_definition(self) -> dict[str, Any]:
         self._write_definition()
@@ -569,6 +556,7 @@ class RelayService:
             "program_arguments": list(self.program_arguments),
             "source_mode": str(selected_source.get("mode") or self.source_mode),
             "source_root": str(self.source_root),
+            "release_root": str(client_release_root(self.config_path)),
             "source": selected_source,
             "source_selection_error": selection_error,
             "bootstrap_source": bootstrap_source,

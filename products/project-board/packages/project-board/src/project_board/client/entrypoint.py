@@ -72,19 +72,19 @@ def _selected_command(
 ) -> tuple[str, ...] | None:
     """The selected snapshot invocation, or ``None`` for this source.
 
-    Source-management commands always execute in the released bootstrap, so a
-    bad code snapshot cannot prevent an operator from selecting the release.
+    Source-management commands execute in the current installed environment,
+    so a bad target receipt cannot prevent an operator from selecting a release.
     Checkout and snapshot entry points are explicit development/pinned paths
     and therefore never re-dispatch themselves.
     """
 
-    if _top_level_command(argv) == "source":
+    if _top_level_command(argv) == "source" or "--version" in argv:
         return None
     observed = dict(
         current_source
         or describe_source(Path(__file__), scope_paths=CLIENT_SOURCE_PATHS)
     )
-    if observed.get("mode") != "released":
+    if observed.get("mode") != "released" or observed.get("release_id"):
         return None
     config = config_path or _config_argument(argv)
     if config is None:

@@ -11,7 +11,9 @@ from project_board.client import (
     cli,
     code_entrypoint,
     entrypoint,
+    release_install,
     relay_source,
+    source_control,
     source_composite,
 )
 from project_board.client.source_control import ClientSourceController
@@ -20,6 +22,47 @@ from project_board.client.source_manifest import (
     KDCUBE_SOURCE_PATHS,
 )
 from project_board.contract.errors import DomainError
+
+
+@pytest.fixture(autouse=True)
+def _complete_candidate_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Controller tests isolate switching from the real pip installer."""
+
+    def install(**kwargs):
+        release = release_install.release_path(kwargs["root"], kwargs["release_id"])
+        environment = release / "venv"
+        commands = environment / "bin"
+        commands.mkdir(parents=True, exist_ok=True)
+        for name in ("python", "pb"):
+            command = commands / name
+            command.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            command.chmod(0o755)
+        record = {
+            "schema": release_install.INSTALLATION_SCHEMA,
+            "release_id": kwargs["release_id"],
+            "source": dict(kwargs["source"]),
+            "installed_at": "2026-09-25T00:00:00Z",
+            "activated_at": "",
+            "environment": {
+                "path": str(environment),
+                "python": str(commands / "python"),
+                "pb": str(commands / "pb"),
+                "project_board_version": kwargs.get(
+                    "expected_project_board_version", ""
+                ),
+                "imports": [],
+            },
+            "launcher_version": release_install.LAUNCHER_VERSION,
+        }
+        release_install._atomic_write_json(
+            release / release_install.INSTALLATION_MARKER,
+            record,
+        )
+        return record
+
+    monkeypatch.setattr(source_control, "install_release_environment", install)
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -168,6 +211,29 @@ def test_client_source_never_inherits_the_old_relay_only_store(tmp_path: Path) -
 
     assert root == config.parent / "client-source"
     assert relay_source.read_selection(root) == {}
+
+
+def test_installed_targets_keep_receipts_but_share_the_host_release_store(
+    tmp_path: Path,
+) -> None:
+    config = (
+        tmp_path
+        / ".kdcube"
+        / "client-runtime"
+        / "problem-board"
+        / "targets"
+        / "dev"
+        / "relay.json"
+    )
+
+    assert relay_source.client_source_root(config) == config.parent / "client-source"
+    assert relay_source.client_release_root(config) == (
+        tmp_path
+        / ".kdcube"
+        / "client-runtime"
+        / "tools"
+        / "problem-board"
+    )
 
 
 def test_legacy_single_repository_selection_remains_readable(tmp_path: Path) -> None:
@@ -363,6 +429,26 @@ def test_changed_installed_release_requires_explicit_selection(tmp_path: Path) -
     ) is None
 
 
+def test_a_release_environment_does_not_dispatch_through_a_target_receipt(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "target" / "relay.json"
+    relay_source.write_selection(
+        relay_source.client_source_root(config),
+        relay_source.released_selection("2026.9.22.2200"),
+    )
+
+    assert entrypoint._selected_command(
+        ["status", "--config", str(config)],
+        current_source={
+            "mode": "released",
+            "version": "2026.9.22.2201",
+            "release_id": "a" * 64,
+        },
+        config_path=config,
+    ) is None
+
+
 def test_released_selection_accepts_pep440_equivalent_version_spelling(
     tmp_path: Path,
 ) -> None:
@@ -378,6 +464,52 @@ def test_released_selection_accepts_pep440_equivalent_version_spelling(
     )
 
     assert receipt["selected"]["version"] == "2026.9.22.2241"
+    assert controller.launcher.is_file()
+    assert str(release_install.active_pb(controller.root)) in controller.launcher.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_source_status_names_the_active_environment_and_launcher(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "target" / "relay.json"
+    root = relay_source.client_source_root(config)
+    release_id = "a" * 64
+    selected = relay_source.released_selection("2026.9.22.2241")
+    source_control.install_release_environment(
+        root=root,
+        release_id=release_id,
+        requirements=("unused",),
+        source=selected,
+        base_python=Path("/usr/bin/python3"),
+        expected_project_board_version="2026.9.22.2241",
+    )
+    release_install.activate_installed_release(root, release_id)
+    relay_source.write_selection(root, selected)
+    launcher = tmp_path / "bin" / "pb"
+    launcher.parent.mkdir()
+    launcher.write_text(
+        "#!/bin/sh\n"
+        f"# Project Board launcher version {release_install.LAUNCHER_VERSION}.\n"
+        f"exec {release_install.active_pb(root)} \"$@\"\n",
+        encoding="utf-8",
+    )
+    controller = ClientSourceController(
+        config,
+        service=_Service(tmp_path),
+        release_source={"mode": "released", "version": "2026.9.22.2241"},
+        launcher=launcher,
+    )
+
+    status = controller.status()
+
+    assert status["active_release"]["release_id"] == release_id
+    assert status["environment"]["python"].endswith(
+        "/releases/current/venv/bin/python"
+    )
+    assert status["launcher"]["version"] == release_install.LAUNCHER_VERSION
+    assert status["launcher"]["current"] is True
 
 
 def test_activation_failure_preserves_relay_command_evidence(tmp_path: Path) -> None:
@@ -422,6 +554,50 @@ def test_activation_failure_preserves_relay_command_evidence(tmp_path: Path) -> 
     assert failure.value.details["cause"]["code"] == (
         "work_relay_service_command_failed"
     )
+
+
+def test_failed_environment_build_does_not_switch_or_restart_the_relay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = tmp_path / "target" / "relay.json"
+    root = relay_source.client_source_root(config)
+    previous_id = "a" * 64
+    previous_selection = relay_source.released_selection("2026.9.22.2200")
+    source_control.install_release_environment(
+        root=root,
+        release_id=previous_id,
+        requirements=("unused",),
+        source=previous_selection,
+        base_python=Path("/usr/bin/python3"),
+    )
+    release_install.activate_installed_release(root, previous_id)
+    relay_source.write_selection(root, previous_selection)
+    service = _Service(tmp_path)
+    controller = ClientSourceController(
+        config,
+        service=service,
+        release_source={"mode": "released", "version": "2026.9.22.2200"},
+    )
+
+    def fail_install(**_kwargs):
+        raise release_install.ReleaseInstallError(
+            "work_client_release_install_failed",
+            "dependency resolution failed",
+        )
+
+    monkeypatch.setattr(source_control, "install_release_environment", fail_install)
+
+    with pytest.raises(DomainError) as failure:
+        controller.use_release(
+            expect_version="2026.9.22.2201",
+            wait_seconds=0,
+        )
+
+    assert failure.value.code == "work_client_release_install_failed"
+    assert release_install.active_release_id(root) == previous_id
+    assert relay_source.read_selection(root)["version"] == "2026.9.22.2200"
+    assert service.restarts == 0
 
 
 class _Service:
@@ -576,8 +752,8 @@ def test_failed_code_start_restores_released_selection(tmp_path: Path) -> None:
     assert failure.value.code == "work_client_source_activation_failed"
     assert service.restarts == 2
     selected = relay_source.read_selection(controller.root)
-    assert selected["mode"] == "released"
-    assert selected["version"] == "2026.9.22.2200"
+    assert selected == {}
+    assert release_install.active_release_id(controller.root) == ""
 
 
 def test_failed_rollback_is_reported_as_failed(tmp_path: Path) -> None:

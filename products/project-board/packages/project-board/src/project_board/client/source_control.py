@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from importlib import metadata
 from pathlib import Path
+import sys
 from typing import Any, Mapping
 
 from ..contract.errors import DomainError
@@ -11,26 +12,43 @@ from .io import utc_now
 from .source_composite import prepare_client_release
 from .relay_source import (
     CLIENT_SOURCE_PATHS,
-    PROJECT_BOARD_CODE_ENTRYPOINT,
     SELECTION_SCHEMA,
-    activate_release,
     activation_lock,
     canonical_release_version,
+    client_release_root,
     client_source_root,
-    current_release,
+    clear_selection,
     describe_source,
-    prune_releases,
     read_selection,
     released_selection,
-    selected_release,
     snapshot_selection,
     write_selection,
 )
-from .source_manifest import component_records, normalise_components
+from .release_install import (
+    ReleaseInstallError,
+    activate_installed_release,
+    active_pb,
+    active_python,
+    active_release_id,
+    active_release_path,
+    default_release_root,
+    install_launcher,
+    install_release_environment,
+    installed_environment,
+    launcher_status,
+    prune_installed_releases,
+    published_release_id,
+    validate_launcher,
+)
+from .source_manifest import (
+    CLIENT_SOURCE_PATHS as INSTALL_SOURCE_PATHS,
+    component_records,
+    normalise_components,
+)
 
 
 def installed_release_source() -> dict[str, Any]:
-    """The immutable distribution that owns the stable ``pb`` bootstrap."""
+    """The immutable host release that owns the running ``pb`` command."""
 
     try:
         distribution = metadata.distribution("project-board")
@@ -43,10 +61,10 @@ def installed_release_source() -> dict[str, Any]:
         distribution.locate_file("project_board/client/entrypoint.py")
     ).resolve()
     source = describe_source(entrypoint, scope_paths=CLIENT_SOURCE_PATHS)
-    if source.get("mode") != "released":
+    if source.get("mode") not in {"released", "snapshot"}:
         raise DomainError(
             "work_client_release_bootstrap_required",
-            "Source selection must run from the released project-board command.",
+            "Source selection must run from an installed Project Board release environment.",
             details={"observed_source": source},
         )
     return source
@@ -60,13 +78,19 @@ def effective_selection(
     selected = read_selection(root)
     if selected:
         return selected
-    released = dict(release_source or installed_release_source())
-    return {
-        "schema": SELECTION_SCHEMA,
-        "mode": "released",
-        "version": canonical_release_version(released.get("version")),
-        "implicit": True,
-    }
+    installed = dict(release_source or installed_release_source())
+    mode = str(installed.get("mode") or "")
+    if mode == "released":
+        installed["version"] = canonical_release_version(installed.get("version"))
+    elif mode != "snapshot":
+        raise DomainError(
+            "work_client_release_bootstrap_required",
+            "The running Project Board command has no installed release identity.",
+            details={"observed_source": installed},
+        )
+    installed["schema"] = SELECTION_SCHEMA
+    installed["implicit"] = True
+    return installed
 
 
 def source_matches(observed: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
@@ -85,13 +109,19 @@ def source_matches(observed: Mapping[str, Any], expected: Mapping[str, Any]) -> 
         if expected_release_id:
             if str(observed.get("release_id") or "") != expected_release_id:
                 return False
+            observed_raw = observed.get("components")
+            expected_raw = expected.get("components")
+            if not observed_raw and not expected_raw:
+                return True
+            if not observed_raw or not expected_raw:
+                return False
             try:
                 observed_components = component_records(
-                    normalise_components(observed.get("components") or []),
+                    normalise_components(observed_raw),
                     include_repository=False,
                 )
                 expected_components = component_records(
-                    normalise_components(expected.get("components") or []),
+                    normalise_components(expected_raw),
                     include_repository=False,
                 )
             except (TypeError, ValueError):
@@ -114,10 +144,25 @@ class ClientSourceController:
         *,
         service: Any | None = None,
         release_source: Mapping[str, Any] | None = None,
+        release_root: str | Path | None = None,
+        base_python: str | Path | None = None,
+        launcher: str | Path | None = None,
     ) -> None:
         self.config_path = Path(config_path).expanduser().resolve()
-        self.root = client_source_root(self.config_path)
+        self.selection_root = client_source_root(self.config_path)
+        self.root = (
+            Path(release_root).expanduser().resolve()
+            if release_root is not None
+            else client_release_root(self.config_path)
+        )
         self._release_source = dict(release_source or installed_release_source())
+        self.base_python = Path(base_python or sys.executable).expanduser().resolve()
+        if launcher is not None:
+            self.launcher = Path(launcher).expanduser()
+        elif self.root == default_release_root():
+            self.launcher = Path.home() / ".local" / "bin" / "pb"
+        else:
+            self.launcher = self.root / "bin" / "pb"
         if service is None:
             from .relay_service import RelayService
 
@@ -126,17 +171,35 @@ class ClientSourceController:
 
     def status(self) -> dict[str, Any]:
         selected = effective_selection(
-            self.root, release_source=self._release_source
+            self.selection_root, release_source=self._release_source
         )
         actual_release = dict(self._release_source)
+        active_id = active_release_id(self.root)
+        active_path = active_release_path(self.root)
+        active_installation = (
+            installed_environment(active_path) if active_path is not None else {}
+        )
         return {
-            "schema": "project-board.client-source-status.v1",
+            "schema": "project-board.client-source-status.v2",
             "root": str(self.root),
+            "selection_root": str(self.selection_root),
             "selected": selected,
+            "running_release": actual_release,
             "released_bootstrap": actual_release,
-            "selection_matches_bootstrap": (
-                selected.get("mode") != "released"
-                or source_matches(actual_release, selected)
+            "selection_matches_bootstrap": source_matches(actual_release, selected),
+            "active_release": {
+                "release_id": active_id,
+                "path": str(active_path) if active_path is not None else "",
+                "environment": dict(active_installation.get("environment") or {}),
+                "source": dict(active_installation.get("source") or {}),
+            },
+            "environment": {
+                "python": str(active_python(self.root)),
+                "pb": str(active_pb(self.root)),
+            },
+            "launcher": launcher_status(
+                self.launcher,
+                expected_pb=active_pb(self.root),
             ),
             "relay": self.service.status(),
         }
@@ -157,9 +220,10 @@ class ClientSourceController:
         self._preflight_service()
         with activation_lock(self.root):
             previous = effective_selection(
-                self.root, release_source=self._release_source
+                self.selection_root, release_source=self._release_source
             )
-            previous_release = current_release(self.root)
+            previous_explicit = read_selection(self.selection_root)
+            previous_release_id = active_release_id(self.root)
             release, evidence = prepare_client_release(
                 app_ecosystem_repository=repo,
                 app_ecosystem_ref=ref,
@@ -169,14 +233,19 @@ class ClientSourceController:
                 expect_kdcube=expect_kdcube,
                 root=self.root,
             )
-            selected = write_selection(self.root, snapshot_selection(release))
-            # ``selection.json`` is authoritative and atomic. The link is
-            # retained for compatibility readers, after the source decision is durable.
-            activate_release(self.root, release)
+            selected = snapshot_selection(release)
+            installation = self._install_release(
+                release_id=release.release_id,
+                requirements=tuple(
+                    release.path / relative for relative in INSTALL_SOURCE_PATHS
+                ),
+                source=selected,
+            )
             receipt = {
                 "schema": "project-board.client-source-activation.v1",
                 "selected": selected,
                 "previous": previous,
+                "installation": installation,
                 "repositories": {
                     "app_ecosystem": str(repo),
                     "kdcube": str(kdcube_repo),
@@ -187,10 +256,12 @@ class ClientSourceController:
                 "repository": str(repo),
                 "checkout": evidence["app_ecosystem"],
             }
-            return self._restart_and_verify(
+            return self._activate_restart_and_verify(
                 selected=selected,
                 previous=previous,
-                previous_release=previous_release,
+                previous_explicit=previous_explicit,
+                release_id=release.release_id,
+                previous_release_id=previous_release_id,
                 wait_seconds=wait_seconds,
                 receipt=receipt,
             )
@@ -198,33 +269,57 @@ class ClientSourceController:
     def use_release(
         self, *, expect_version: str, wait_seconds: float
     ) -> dict[str, Any]:
-        installed = canonical_release_version(self._release_source.get("version"))
         expected = canonical_release_version(expect_version)
-        if expected != installed:
-            raise DomainError(
-                "work_client_release_version_unexpected",
-                f"The installed project-board version is {installed}, not the approved {expected}.",
-                details={"installed": installed, "expected": expected},
-            )
         self._preflight_service()
         with activation_lock(self.root):
             previous = effective_selection(
-                self.root, release_source=self._release_source
+                self.selection_root, release_source=self._release_source
             )
-            previous_release = current_release(self.root)
-            selected = write_selection(self.root, released_selection(installed))
+            previous_explicit = read_selection(self.selection_root)
+            previous_release_id = active_release_id(self.root)
+            selected = released_selection(expected)
+            release_id = published_release_id(expected)
+            installation = self._install_release(
+                release_id=release_id,
+                requirements=(f"project-board=={expected}",),
+                source=selected,
+                expected_project_board_version=expected,
+            )
             receipt = {
                 "schema": "project-board.client-source-activation.v1",
                 "selected": selected,
                 "previous": previous,
+                "installation": installation,
             }
-            return self._restart_and_verify(
+            return self._activate_restart_and_verify(
                 selected=selected,
                 previous=previous,
-                previous_release=previous_release,
+                previous_explicit=previous_explicit,
+                release_id=release_id,
+                previous_release_id=previous_release_id,
                 wait_seconds=wait_seconds,
                 receipt=receipt,
             )
+
+    def _install_release(
+        self,
+        *,
+        release_id: str,
+        requirements: tuple[str | Path, ...],
+        source: Mapping[str, Any],
+        expected_project_board_version: str = "",
+    ) -> dict[str, Any]:
+        try:
+            return install_release_environment(
+                root=self.root,
+                release_id=release_id,
+                requirements=requirements,
+                source=source,
+                base_python=self.base_python,
+                expected_project_board_version=expected_project_board_version,
+            )
+        except ReleaseInstallError as exc:
+            raise DomainError(exc.code, str(exc), details=exc.details) from exc
 
     def _preflight_service(self) -> None:
         if (
@@ -239,21 +334,69 @@ class ClientSourceController:
                 details={"definition": str(self.service.definition_path)},
             )
 
-    def _restart_and_verify(
+    def _activate_restart_and_verify(
         self,
         *,
         selected: Mapping[str, Any],
         previous: Mapping[str, Any],
-        previous_release: Any,
+        previous_explicit: Mapping[str, Any],
+        release_id: str,
+        previous_release_id: str,
         wait_seconds: float,
         receipt: dict[str, Any],
     ) -> dict[str, Any]:
+        try:
+            validate_launcher(
+                self.launcher,
+                expected_pb=active_pb(self.root),
+            )
+        except ReleaseInstallError as exc:
+            raise DomainError(exc.code, str(exc), details=exc.details) from exc
+        try:
+            activate_installed_release(self.root, release_id)
+            selected = write_selection(self.selection_root, selected)
+            install_launcher(
+                self.launcher,
+                expected_pb=active_pb(self.root),
+            )
+        except Exception as exc:
+            rollback: dict[str, Any] = {"state": "restored"}
+            try:
+                self._restore(previous_explicit, previous_release_id)
+            except Exception as restore_exc:
+                rollback = {
+                    "state": "restore_failed",
+                    "reason": str(getattr(restore_exc, "code", "") or restore_exc),
+                }
+            details: dict[str, Any] = {
+                "release_id": release_id,
+                "reason": str(getattr(exc, "code", "") or exc),
+                "rollback": rollback,
+            }
+            if isinstance(exc, DomainError):
+                details["cause"] = exc.to_dict()
+            elif isinstance(exc, ReleaseInstallError):
+                details["cause"] = {
+                    "code": exc.code,
+                    "message": str(exc),
+                    "details": exc.details,
+                }
+            raise DomainError(
+                "work_client_source_activation_failed",
+                "The candidate Project Board release could not be activated; the previous release remains selected.",
+                details=details,
+            ) from exc
+        receipt["selected"] = selected
         if not self.service.definition_path.exists():
             return {
                 **receipt,
                 "state": "selected",
                 "relay_installed": False,
                 "relay_restart_required": True,
+                "pruned_releases": prune_installed_releases(
+                    self.root,
+                    keep=(release_id, previous_release_id),
+                ),
             }
         since = utc_now()
         try:
@@ -262,7 +405,12 @@ class ClientSourceController:
                 selected, since=since, wait_seconds=wait_seconds
             )
         except Exception as exc:
-            rollback = self._restore_and_restart(previous, previous_release, wait_seconds)
+            rollback = self._restore_and_restart(
+                previous_explicit,
+                previous_release_id,
+                previous,
+                wait_seconds,
+            )
             details: dict[str, Any] = {
                 "selected": dict(selected),
                 "reason": str(getattr(exc, "code", "") or exc),
@@ -280,7 +428,12 @@ class ClientSourceController:
                 details=details,
             ) from exc
         if startup.get("state") != "started":
-            rollback = self._restore_and_restart(previous, previous_release, wait_seconds)
+            rollback = self._restore_and_restart(
+                previous_explicit,
+                previous_release_id,
+                previous,
+                wait_seconds,
+            )
             raise DomainError(
                 "work_client_source_activation_failed",
                 "The restarted relay did not report the selected Project "
@@ -292,43 +445,45 @@ class ClientSourceController:
                 },
             )
 
-        keep = [
-            str(selected.get("release_id") or selected.get("commit") or "")
-        ]
-        if previous.get("mode") == "snapshot":
-            keep.append(
-                str(
-                    previous.get("release_id")
-                    or previous.get("commit")
-                    or ""
-                )
-            )
         return {
             **receipt,
             "state": "activated",
             "relay_installed": True,
             "startup": startup,
-            "pruned_releases": prune_releases(
-                self.root, tuple(commit for commit in keep if commit)
+            "pruned_releases": prune_installed_releases(
+                self.root,
+                keep=(release_id, previous_release_id),
             ),
         }
 
-    def _restore(self, previous: Mapping[str, Any], previous_release: Any) -> None:
-        restored = dict(previous)
-        restored.pop("implicit", None)
-        restored["selected_at"] = utc_now()
-        write_selection(self.root, restored)
-        if previous.get("mode") == "snapshot":
-            release = previous_release or selected_release(self.root, previous)
-            activate_release(self.root, release)
+    def _restore(
+        self,
+        previous_explicit: Mapping[str, Any],
+        previous_release_id: str,
+    ) -> None:
+        activate_installed_release(self.root, previous_release_id)
+        if previous_explicit:
+            restored = dict(previous_explicit)
+            restored["selected_at"] = utc_now()
+            write_selection(self.selection_root, restored)
+        else:
+            clear_selection(self.selection_root)
 
     def _restore_and_restart(
         self,
+        previous_explicit: Mapping[str, Any],
+        previous_release_id: str,
         previous: Mapping[str, Any],
-        previous_release: Any,
         wait_seconds: float,
     ) -> dict[str, Any]:
-        self._restore(previous, previous_release)
+        try:
+            self._restore(previous_explicit, previous_release_id)
+        except Exception as exc:
+            return {
+                "state": "restore_failed",
+                "source": dict(previous),
+                "reason": str(getattr(exc, "code", "") or exc),
+            }
         since = utc_now()
         try:
             self.service.restart()

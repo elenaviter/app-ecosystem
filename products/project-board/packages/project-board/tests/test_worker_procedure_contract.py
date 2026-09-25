@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.25.2"
+    assert package["revision"] == "2026.09.25.3"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -142,7 +142,8 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
     assert "There are two ways to install it, and the operator names which applies" in first_run
     assert "From the published package" in first_run
     assert "pip install \"project-board==<version>\"" in first_run
-    assert "source use-release --expect-version <version>" in first_run
+    assert "source use-release" in first_run
+    assert "--expect-version <version>" in first_run
     assert "Neither path reads a repository checkout at run time" in first_run
     assert "scripts/install_from_source.py" in first_run
     assert "the composite release ID, both full commits, all six package trees" in first_run
@@ -197,9 +198,10 @@ def test_source_selection_guidance_is_added_without_rewriting_collaboration() ->
     assert "`pb source use-release --expect-version <version>`" in runtime
     assert "`pb source use-code` with both repository paths, refs, and full approved commits" in runtime
     assert "`client.pinned: false` with `source.mode: checkout`" in runtime
-    assert "Cut Over A Host That Still Runs The Checkout Client" in runtime
-    assert "only then fast-forward or remove the checkout implementation" in runtime
-    assert "the release ID, both full commits, all six package trees" in runtime
+    assert "Move An Existing Host To Release Environments" in runtime
+    assert "One Complete Host Release" in runtime
+    assert "At that point the former venv has no launcher or service consumer and may be deleted" in runtime
+    assert "same released version or composite source, including both commits and all six package trees" in runtime
     assert "the full App Ecosystem and KDCube commits" in coordinator
     # W278: the coordinator binds every repository at assignment time.
     assert "one entry per repository the work touches" in coordinator
@@ -990,9 +992,9 @@ def test_the_worker_host_path_holds_on_a_host_that_has_none_of_it():
     clone = text.index("git clone -q https://github.com/elenaviter/app-ecosystem.git ~/src/app-ecosystem")
     assert clone < text.index("APP_REPOSITORY=/home/<user>/src/app-ecosystem")
     assert "/home/<user>/workspaces/app-ecosystem" not in text
-    # Step 6 probes the environment step 2 installed, never a pipx one.
+    # Step 6 probes the current environment step 2 installed, never a pipx one.
     assert "pipx" not in text
-    assert 'PB_PYTHON="$HOME/.kdcube/client-runtime/tools/problem-board-venv/bin/python"' in text
+    assert 'PB_PYTHON="$HOME/.kdcube/client-runtime/tools/problem-board/releases/current/venv/bin/python"' in text
     # The procedure is verified after the source it belongs to is selected.
     step3 = text[text.index("## 3. Configure"):text.index("## 4. Keep")]
     assert step3.index("pb source use-code") < step3.index("pb procedure install") < step3.index("pb procedure verify")
