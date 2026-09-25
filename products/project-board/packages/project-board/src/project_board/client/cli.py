@@ -4127,11 +4127,19 @@ def _whoami_channel(args: Any, identity: WorkerSessionIdentity) -> dict[str, Any
     channel = config.worker(identity)
     if channel is None:
         return {"enrolled": False, "reason": "session_not_enrolled"}
+    try:
+        board_record = SharedFieldStore(config.field_root).worker_board_record(identity.worker_name)
+    except DomainError:
+        board_record = {}
     return {
         "enrolled": True,
         "worker_alias": channel.worker_alias,
         "profile": channel.profile,
         "state": channel.state,
+        # Who owns this agent and which provider account it runs under, as
+        # the board records them (W304 finding 47).
+        "board_record": board_record
+        or {"state": "not_received", "note": "The relay stores it from its next heartbeat."},
     }
 
 
@@ -4159,6 +4167,15 @@ def _attended_project_ref(field: SharedFieldStore, worker_name: str) -> str:
         else "This worker attends no project, so it has no project journal: name one with --project-ref.",
         details={"attended_project_refs": attended},
     )
+
+
+def _own_board_record(field: SharedFieldStore, channel: Any) -> dict[str, Any]:
+    name = str(getattr(channel, "worker_name", "") or "")
+    try:
+        record = field.worker_board_record(name) if name else {}
+    except DomainError:
+        record = {}
+    return record or {"state": "not_received", "note": "The relay stores it from its next heartbeat."}
 
 
 def _worker_project_context(
@@ -4228,6 +4245,8 @@ def _worker_project_context(
             if str(member.get("role") or "") == "coordinator"
         ],
         "team": team,
+        # This worker's own owner and provider account (W304 finding 47).
+        "self": _own_board_record(field, channel),
         # The repositories to set the workspace up from (W304 finding 39).
         "repositories": repositories["repositories"],
         "repositories_revision": repositories["revision"],
