@@ -450,8 +450,12 @@ whatever it holds, so no app's path is ever a working checkout.
    file, so edit the live descriptor by locating the bundle id, never by the
    first match of a block.
 4. **Execute** the action `runtime-actions.md` names for the tree, at the
-   announced commit: for an app, `git -C <deploy-worktree> checkout --detach
-   <sha>` and then `kdcube bundle reload <bundle-id>`; `kdcube refresh --build`
+   announced commit: for an app, first read its entry in the staged
+   `config/bundles.yaml` (located by bundle id) and remove any `activation`
+   block, `commit` or `require_commit`, because a commitless reload still
+   applies it in the web proc while the Data Bus workers load the deploy
+   worktree, and `--local-path` keeps it; then `git -C <deploy-worktree>
+   checkout --detach <sha>` and `kdcube bundle reload <bundle-id>`; `kdcube refresh --build`
    from exports of the announced commits; `pb source use-code` with `--expect`
    and `--expect-kdcube`. Why the deploy worktree: it is the app's only path,
    read by web requests, the Data Bus workers and a restart alike, and nobody
@@ -459,9 +463,11 @@ whatever it holds, so no app's path is ever a working checkout.
    restart keeps it. The working checkouts are never an app's path. The
    descriptor's `activation.commit` is not the guarantee: a restart and the
    Data Bus workers ignore it (W333), and the 2026-09-25 23:23Z window removed
-   it. Then **check the receipt against the approved candidate**: the loaded
-   path and commit in the chat-proc log for an app (`git -C <deploy-worktree>
-   rev-parse HEAD` is the commit on disk, the log line is what loaded), the
+   it. Then **check the receipt against the approved candidate**: for an app
+   the reload's line reads `Loaded: mounted tree at head <sha>, clean`, a
+   `Loaded: snapshot of` line is a failed activation because a pin is still in
+   effect, and `git -C <deploy-worktree> rev-parse HEAD` is the commit on disk;
+   the
    relay's first stamped line (`source=snapshot`, `app_ecosystem=<sha>`), and
    the commits the refresh exported each equal the announced commit. A receipt that names another commit is a failed
    activation: report it as failed, with both commits, and stop there. A bundle
