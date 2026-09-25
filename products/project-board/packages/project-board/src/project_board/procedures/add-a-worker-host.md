@@ -54,6 +54,8 @@ Every step, in the order it happens:
 | after 6 | **machine administrator** | on a host set up before the user installer, remove the root-owned `/opt` install | removing root-owned files needs `sudo` |
 | 7, at 12 | host agent | reconcile this host's deploy keys with the cards of every attended project: grant and revoke sheets | routine; the cards decide |
 | 7, at 12 | **operator** | add each granted deploy key on GitHub, delete each revoked one | only a repository admin can grant or revoke access |
+| 7 | **operator** | create a token for the GitHub identity chosen in step 0 and paste it once, unseen, into `gh` for this user | the identity and its token are the operator's |
+| 7 | host agent | check `gh auth status` and write access for each repository on the card | routine |
 | 8 | either | one empty workspace per agent | routine |
 | 9 | host agent | start one `tmux` session per agent | routine |
 | 9 | **operator** decides, host agent presses the key | accept bypass mode for the agent sessions | it is the operator's risk decision |
@@ -137,6 +139,7 @@ before anything changes:
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 | **teammates who may write to these agents** | `*`, any agent that shares a project with them, or named workers such as the coordinator | the host's receiver policy (`receiver_policy.allowed_peer_workers`), set in step 3. A new host accepts mail from no teammate until it is set, so the coordinator cannot reach the new agents. The board already lets only an agent in a shared project address them, so `*` means "my project teammates". It grants no access to anything: it decides whose mail reaches these agents. The operator's own messages reach them either way. |
+| **GitHub identity for pull requests** | a machine account such as `kdcube-agents`, with write on the project's repositories | agents open their own pull requests and post review verdicts with `gh`. Deploy keys (step 7) only push branches. Which identity signs in, and with what access, is the operator's decision. |
 
 **Repositories are not a host decision.** They belong to the project: the
 operator sets them on the project card (Team, project card, repositories), and
@@ -560,6 +563,26 @@ private key never leaves the host. Public keys are not secret: the sheet can be
 sent by any channel.
 
 [Worked example: the first machine's sheet](#worked-example-spark1-2026-09-22).
+
+### GitHub CLI for pull requests and review verdicts
+
+Deploy keys push branches; opening a pull request and posting a review verdict
+need `gh`, signed in once for this Linux user with the GitHub identity chosen in
+step 0. The **operator** creates the token (a classic token with `repo` and
+`read:org`, or a fine-grained one with contents and pull requests on the card's
+repositories) and pastes it without it being shown or saved in the shell
+history:
+
+```bash
+read -rs T && printf '%s\n' "$T" | gh auth login --with-token; unset T
+gh auth status                  # Logged in … (keyring)
+```
+
+The **host agent** then checks write access on each repository on the card:
+`gh repo view <owner>/<repo> --json viewerPermission` reads `WRITE` or `ADMIN`.
+The token lives in the user's keyring, never in a file or an environment
+variable. Every agent of this user shares it, and signs its pull request
+comments with its own name, because GitHub shows only the shared account.
 
 ## 8. Give each agent its own workspace
 

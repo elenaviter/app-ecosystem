@@ -330,3 +330,13 @@ def test_15_step_7_retires_a_moved_alias_and_reads_host_blocks_through_ssh(tmp_p
     assert "CONFLICT github-bad" in first and "resolves to gitlab.com" in first
     # The retired key keeps being named until its files are removed.
     assert "### REVOKE moved (the card moved this alias to another repository)" in run()
+
+
+def test_u5_gh_is_signed_in_per_user_with_the_operators_chosen_identity():
+    # W304 U5 (2026-09-25): agents open their own PRs and post verdicts with gh.
+    words = " ".join(HOST.split())
+    assert "| **GitHub identity for pull requests** |" in HOST
+    assert "### GitHub CLI for pull requests and review verdicts" in HOST
+    assert "read -rs T && printf '%s\\n' \"$T\" | gh auth login --with-token; unset T" in HOST
+    assert "never in a file or an environment variable" in words
+    assert "| 7 | **operator** | create a token for the GitHub identity chosen in step 0" in HOST
