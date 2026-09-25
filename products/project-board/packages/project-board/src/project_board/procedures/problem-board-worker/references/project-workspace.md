@@ -56,17 +56,21 @@ For each entry, with `WORKSPACE` from the output's `workspace`, and `ALIAS`,
 ```bash
 resolve_host() {
   local named
-  named=$(ssh ${SSH_CONFIG:+-F "$SSH_CONFIG"} -G "$1" 2>/dev/null | awk '$1 == "hostname" {print $2; exit}')
+  if [ -n "$SSH_CONFIG" ]; then
+    named=$(ssh -F "$SSH_CONFIG" -G "$1" 2>/dev/null | awk '$1 == "hostname" {print $2; exit}')
+  else
+    named=$(ssh -G "$1" 2>/dev/null | awk '$1 == "hostname" {print $2; exit}')
+  fi
   echo "${named:-$1}"
 }
 repository() {
-  local url="${1%.git}" host path
-  case "$url" in
-    *://*) host="${url#*://}"; host="${host#*@}"; path="${host#*/}"; host="${host%%/*}" ;;
-    *:*) host="${url%%:*}"; host="${host#*@}"; path="${url#*:}" ;;
-    *) echo "$url"; return ;;
+  local repo_url="${1%.git}" repo_host repo_path
+  case "$repo_url" in
+    *://*) repo_host="${repo_url#*://}"; repo_host="${repo_host#*@}"; repo_path="${repo_host#*/}"; repo_host="${repo_host%%/*}" ;;
+    *:*) repo_host="${repo_url%%:*}"; repo_host="${repo_host#*@}"; repo_path="${repo_url#*:}" ;;
+    *) echo "$repo_url"; return ;;
   esac
-  echo "$(resolve_host "$host")/$path"
+  echo "$(resolve_host "$repo_host")/$repo_path"
 }
 dest="$WORKSPACE/$ALIAS"
 declared=$(repository "$URL")
