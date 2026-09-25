@@ -51,6 +51,16 @@ test('standalone site forwards project person control coordinates', () => {
   assert.equal(url.searchParams.get('target_subject'), 'platform-user-2')
 })
 
+test('standalone site forwards pending invitation control coordinates', () => {
+  const url = new URL(buildWidgetUrl({
+    ...base,
+    search: '?control_card_id=invitation-control-1&project_ref=work%3Aproject%3Aquickstart&invitation_ref=work%3Ainvitation%3Ainv-1',
+  }))
+  assert.equal(url.searchParams.get('control_card_id'), 'invitation-control-1')
+  assert.equal(url.searchParams.get('project_ref'), 'work:project:quickstart')
+  assert.equal(url.searchParams.get('invitation_ref'), 'work:invitation:inv-1')
+})
+
 test('standalone site forwards guided Card context but excludes unknown fields', () => {
   const url = new URL(buildWidgetUrl({
     ...base,

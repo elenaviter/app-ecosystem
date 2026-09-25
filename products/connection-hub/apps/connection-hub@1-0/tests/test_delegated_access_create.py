@@ -109,6 +109,7 @@ async def test_service_factory_injects_invocation_policy_service(monkeypatch):
     redis = object()
     policies = object()
     project_authorization = object()
+    invitation_binding = object()
 
     class RecordingFactory:
         def __init__(self, **kwargs):
@@ -116,6 +117,9 @@ async def test_service_factory_injects_invocation_policy_service(monkeypatch):
 
         def bind_project_authorization_port(self, port):
             captured["project_authorization_port"] = port
+
+        def bind_project_invitation_binding_resolver(self, resolver):
+            captured["project_invitation_binding_resolver"] = resolver
 
     monkeypatch.setattr(module, "AutomationAccessService", RecordingFactory)
     monkeypatch.setattr(module, "_runtime_tenant_project", lambda _entrypoint: ("t", "p"))
@@ -135,6 +139,7 @@ async def test_service_factory_injects_invocation_policy_service(monkeypatch):
         SimpleNamespace(
             redis=redis,
             project_authorization_port=project_authorization,
+            project_invitation_binding_resolver=invitation_binding,
         ),
         object(),
     )
@@ -143,6 +148,7 @@ async def test_service_factory_injects_invocation_policy_service(monkeypatch):
     assert captured["grant_store"] is grant_store
     assert captured["invocation_policy_service"] is policies
     assert captured["project_authorization_port"] is project_authorization
+    assert captured["project_invitation_binding_resolver"] is invitation_binding
 
 
 @pytest.mark.asyncio

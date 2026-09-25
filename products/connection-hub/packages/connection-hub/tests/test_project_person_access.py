@@ -41,6 +41,8 @@ from connection_hub.delegated_credentials.project_authorization import (
 from connection_hub.delegated_credentials.project_person_access import (
     PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE,
     PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA,
+    PROJECT_PERSON_CONTROL_PROJECT_CREATION_PROVENANCE,
+    PROJECT_PERSON_CONTROL_PROJECT_CREATION_SCHEMA,
     PROJECT_PERSON_MY_CARD_SEED_PROVENANCE,
     ProjectPersonControlLifecycle,
 )
@@ -241,6 +243,52 @@ class _Host:
         self.records[key] = (revoked_record, revoked_record.state)
 
 
+class _ResolvedSelection:
+    @staticmethod
+    def to_public_dict() -> dict[str, Any]:
+        return {"resources": [], "claims": [], "named_service_operations": []}
+
+
+class _SelectionHost(_Host):
+    @staticmethod
+    def _configured_resource(resource, *, config):
+        del resource, config
+        return None
+
+    async def _resolve_card_authority(self, **kwargs):
+        resource_grants = {
+            resource: tuple(grants)
+            for resource, grants in dict(kwargs.get("resource_grants") or {}).items()
+        }
+        resource_operations = {
+            resource: tuple(operations)
+            for resource, operations in dict(
+                kwargs.get("resource_operations") or {}
+            ).items()
+        }
+        return SimpleNamespace(
+            error=None,
+            revoke=False,
+            operations=tuple(
+                sorted(
+                    {
+                        operation
+                        for operations in resource_operations.values()
+                        for operation in operations
+                    }
+                )
+            ),
+            resource_grants=resource_grants,
+            resource_operations=resource_operations,
+            named_service_operations=NamedServiceSelection.none(),
+            named_services={},
+            account_scope=kwargs.get("account_scope") or {},
+            identity_scope="grantor",
+            properties=dict(kwargs.get("properties") or {}),
+            reconciled=_ResolvedSelection(),
+        )
+
+
 def _lifecycle(host: _Host, port: Any) -> ProjectPersonControlLifecycle:
     return ProjectPersonControlLifecycle(
         host=host,
@@ -256,6 +304,7 @@ async def _create(
     actor: str = ADMIN,
     request_id: str = "request-create",
     migration: bool = False,
+    project_creation: bool = False,
 ):
     return await lifecycle.create(
         actor_subject=actor,
@@ -264,6 +313,7 @@ async def _create(
         request_id=request_id,
         label="Quickstart member",
         migration=migration,
+        project_creation=project_creation,
     )
 
 
@@ -319,12 +369,14 @@ async def test_create_is_project_held_target_named_and_audited() -> None:
     assert stored.grantor_subject != TARGET
     assert stored.properties[PROJECT_PERSON_CONTROL_PROPERTY]["target_subject"] == TARGET
     assert PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE not in stored.provenance
+    assert PROJECT_PERSON_CONTROL_PROJECT_CREATION_PROVENANCE not in stored.provenance
     assert my_card_state == CARD_STATE_ACTIVE
     assert my_card.grantor_subject == TARGET
     assert my_card.delegate_subject == TARGET
-    assert my_card.resource_grants == {}
-    assert my_card.resource_operations == {}
-    assert my_card.named_service_operations.is_none
+    assert my_card.resource_grants == stored.resource_grants
+    assert my_card.resource_operations == stored.resource_operations
+    assert my_card.named_service_operations == stored.named_service_operations
+    assert my_card.account_scope == stored.account_scope
     assert my_card.control_card is not None
     assert my_card.control_card.control_id == identity.control_id
     assert my_card.provenance[PROJECT_IDENTITY_EDGE_PROVENANCE]["edge_ref"] == (
@@ -339,6 +391,47 @@ async def test_create_is_project_held_target_named_and_audited() -> None:
     assert host.notifications == [(TARGET, "project_person_control_created")]
     assert port.requests[0].operation == PROJECT_PERSON_CONTROL_CREATE
     assert "creator" not in dataclasses.asdict(port.requests[0])
+
+
+@pytest.mark.asyncio
+async def test_ordinary_new_my_card_starts_equal_to_its_selected_control_card() -> None:
+    host = _SelectionHost()
+    lifecycle = _lifecycle(host, _Port())
+
+    result = await lifecycle.create(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-create-selected",
+        resource_grants={RESOURCE: [GRANT]},
+        resource_operations={RESOURCE: [OPERATION]},
+        account_scope={"slack": {"account-1": ["post"]}},
+        label="Quickstart member",
+    )
+
+    control_identity = ProjectPersonControlIdentity.build(
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+    )
+    person_identity = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF,
+        person_subject=TARGET,
+    )
+    control = host.records[
+        (control_identity.project_subject, control_identity.control_id)
+    ][0]
+    my_card = host.records[(TARGET, person_identity.my_card_id)][0]
+    assert result["ok"] is True
+    assert my_card.operations == control.operations == (OPERATION,)
+    assert my_card.resource_grants == control.resource_grants == {
+        RESOURCE: (GRANT,)
+    }
+    assert my_card.resource_operations == control.resource_operations == {
+        RESOURCE: (OPERATION,)
+    }
+    assert my_card.account_scope == control.account_scope == {
+        "slack": {"account-1": ("post",)}
+    }
 
 
 @pytest.mark.asyncio
@@ -576,11 +669,60 @@ async def test_seed_my_card_is_control_capped_one_shot_and_exactly_replayable() 
     assert stored.control_card == before.control_card
     assert marker["control_id"] == control.access_id
     assert marker["control_revision"] == control.card_revision
+    assert marker["origin"] == "migration"
     assert control_marker["schema"] == PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA
     assert control_marker["actor_subject"] == ADMIN
     assert control_marker["request_id"] == "request-create"
     assert port.requests[-3].operation == PROJECT_PERSON_MY_CARD_SEED
     assert len(host.update_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_project_creator_seed_uses_distinct_immutable_origin() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle, project_creation=True)
+    control = _select_control(host)
+
+    result = await lifecycle.seed_my_card(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-project-creator-seed",
+        resource_grants={RESOURCE: [GRANT]},
+        resource_operations={RESOURCE: [OPERATION]},
+    )
+
+    origin = control.provenance[PROJECT_PERSON_CONTROL_PROJECT_CREATION_PROVENANCE]
+    assert result["ok"] is True
+    assert result["seeded"] is True
+    assert result["seed"]["origin"] == "project_creation"
+    assert origin == {
+        "schema": PROJECT_PERSON_CONTROL_PROJECT_CREATION_SCHEMA,
+        "actor_subject": ADMIN,
+        "request_id": "request-create",
+        "created_at": origin["created_at"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_control_create_refuses_two_seed_origins_before_authorization() -> None:
+    host = _Host()
+    port = _Port()
+
+    result = await _create(
+        _lifecycle(host, port),
+        migration=True,
+        project_creation=True,
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "project_person_control_seed_origin_conflict",
+        "status": 400,
+    }
+    assert port.requests == []
+    assert host.records == {}
 
 
 @pytest.mark.asyncio

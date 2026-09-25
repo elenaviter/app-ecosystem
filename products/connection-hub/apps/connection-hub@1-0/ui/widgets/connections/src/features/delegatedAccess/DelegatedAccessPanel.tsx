@@ -2263,6 +2263,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       controlId: accessCardFocus.accessId,
       projectRef: accessCardFocus.projectRef,
       targetSubject: accessCardFocus.targetSubject,
+      invitationRef: accessCardFocus.invitationRef,
     })).unwrap()
       .then((result) => {
         if (!current) return;
@@ -5107,7 +5108,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   <div className="authority-reading" aria-label="Control Card composition">
                     <span className="authority-reading__active">AND</span>
                     <small>{projectPersonControl
-                      ? 'The project Card limits the target person\'s linked authority.'
+                      ? projectPersonControl.kind === 'invitation'
+                        ? 'This project Card defines the invited person\'s starting authority.'
+                        : 'The project Card limits the target person\'s linked authority.'
                       : 'The administrator preset limits every linked Agent Card.'}</small>
                   </div>
                 ) : (

@@ -56,6 +56,10 @@ class _Service:
         self.calls.append(("revoke", {"user": user, **kwargs}))
         return {"ok": True}
 
+    async def project_person_control_bind_invitation(self, user, **kwargs):
+        self.calls.append(("bind", {"user": user, **kwargs}))
+        return {"ok": True, "bound": True}
+
     async def project_person_my_card_seed(self, user, **kwargs):
         self.calls.append(("seed", {"user": user, **kwargs}))
         return {"ok": True, "seeded": True}
@@ -99,6 +103,7 @@ def test_operations_are_declared_as_csrf_protected_posts() -> None:
             "project_person_control_create",
             "project_person_control_update",
             "project_person_control_revoke",
+            "project_person_control_bind_invitation",
             "project_person_my_card_seed",
         )
     }
@@ -132,6 +137,12 @@ def test_template_names_project_membership_provider() -> None:
         },
         "administrative_roles": ["owner", "admin"],
     }
+    assert config["project_invitation_binding"] == {
+        "provider": {
+            "bundle_id": "problem-board@1-0",
+            "operation": "project_invitation_binding_resolve",
+        }
+    }
     assert (
         config["surfaces"]["as_provider"]["api"]["operations"]
         ["project_operation_authorize"]
@@ -164,7 +175,11 @@ async def test_operations_use_authenticated_actor_and_host_request_id(entrypoint
     results.append(
         await entrypoint.module.ConnectionHubEntrypoint.project_person_control_create(
             entrypoint.instance,
-            data={**forged, "label": "Quickstart member", "migration": True},
+            data={
+                **forged,
+                "label": "Quickstart member",
+                "project_creation": True,
+            },
             request=request,
         )
     )
@@ -238,7 +253,8 @@ async def test_operations_use_authenticated_actor_and_host_request_id(entrypoint
             assert call["target_subject"] == "platform-user-2"
             assert call["request_id"] == "host-request-7"
             if operation == "create":
-                assert call["migration"] is True
+                assert call["migration"] is False
+                assert call["project_creation"] is True
             if operation == "seed":
                 assert call["resource_grants"] == {
                     "https://board.example.test/mcp": ["work:review"]
@@ -246,6 +262,53 @@ async def test_operations_use_authenticated_actor_and_host_request_id(entrypoint
                 assert call["resource_operations"] == {
                     "https://board.example.test/mcp": ["review.accept"]
                 }
+
+
+@pytest.mark.asyncio
+async def test_invitation_operations_forward_only_the_pending_coordinates(entrypoint) -> None:
+    request = SimpleNamespace(
+        state=SimpleNamespace(request_id="host-request-invitation"),
+        scope={},
+    )
+    pending = {
+        "project_ref": "work:project:quickstart",
+        "invitation_ref": "work:invitation:inv-1",
+        "control_id": "invitation-control-1",
+        "target_email": "person@example.test",
+        "actor_subject": "forged-admin",
+    }
+
+    await entrypoint.module.ConnectionHubEntrypoint.project_person_control_create(
+        entrypoint.instance,
+        data=pending,
+        request=request,
+    )
+    await entrypoint.module.ConnectionHubEntrypoint.project_person_control_get(
+        entrypoint.instance,
+        data=pending,
+        request=request,
+    )
+    await entrypoint.module.ConnectionHubEntrypoint.project_person_control_bind_invitation(
+        entrypoint.instance,
+        data=pending,
+        request=request,
+    )
+
+    create = entrypoint.service.calls[-3]
+    get = entrypoint.service.calls[-2]
+    bind = entrypoint.service.calls[-1]
+    assert [create[0], get[0], bind[0]] == ["create", "get", "bind"]
+    assert create[1]["target_email"] == "person@example.test"
+    assert create[1]["invitation_ref"] == "work:invitation:inv-1"
+    assert get[1]["control_id"] == "invitation-control-1"
+    assert bind[1] == {
+        "user": {"user_id": "authenticated-admin"},
+        "project_ref": "work:project:quickstart",
+        "invitation_ref": "work:invitation:inv-1",
+        "control_id": "invitation-control-1",
+        "request_id": "host-request-invitation",
+    }
+    assert "actor_subject" not in bind[1]
 
 
 @pytest.mark.asyncio
@@ -328,6 +391,60 @@ async def test_descriptor_port_calls_configured_membership_operation() -> None:
                 "subject": "platform-user-2",
             },
         },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_descriptor_invitation_resolver_calls_the_configured_provider() -> None:
+    module = _entrypoint_module()
+    calls = []
+
+    async def _call(**kwargs):
+        calls.append(kwargs)
+        return {
+            "project_invitation_binding_resolve": {
+                "ok": True,
+                "binding": {
+                    "project_ref": "work:project:quickstart",
+                    "invitation_ref": "work:invitation:inv-1",
+                    "control_id": "invitation-control-1",
+                    "person_subject": "platform-user-2",
+                    "email": "Person@Example.Test",
+                },
+            }
+        }
+
+    resolver = module.descriptor_project_invitation_binding_resolver(
+        SimpleNamespace(
+            bundle_props={
+                "project_invitation_binding": {
+                    "provider": {
+                        "bundle_id": "problem-board@1-0",
+                        "operation": "project_invitation_binding_resolve",
+                    }
+                }
+            }
+        ),
+        caller=_call,
+    )
+
+    evidence = await resolver.resolve_project_invitation_binding(
+        project_ref="work:project:quickstart",
+        invitation_ref="work:invitation:inv-1",
+    )
+
+    assert evidence is not None
+    assert evidence.person_subject == "platform-user-2"
+    assert evidence.email == "person@example.test"
+    assert calls == [
+        {
+            "bundle_id": "problem-board@1-0",
+            "operation": "project_invitation_binding_resolve",
+            "data": {
+                "project_ref": "work:project:quickstart",
+                "invitation_ref": "work:invitation:inv-1",
+            },
+        }
     ]
 
 

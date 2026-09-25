@@ -1,6 +1,10 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
 import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
+import {
+  controlCardGetRequest,
+  type ProjectControlCoordinates,
+} from './projectPersonControl';
 import type {
   DelegatedAccessCreateResult,
   DelegatedAccessGrantOption,
@@ -70,18 +74,21 @@ export const loadDelegatedAccess = createAsyncThunk<DelegatedAccessListResult, v
 
 export const loadControlCard = createAsyncThunk<
   ControlCardGetResult,
-  { controlId: string; projectRef?: string; targetSubject?: string },
+  { controlId: string; projectRef?: string; targetSubject?: string; invitationRef?: string },
   { rejectValue: string }
 >(
   'delegatedAccess/loadControlCard',
-  async ({ controlId, projectRef, targetSubject }, { rejectWithValue }) => {
+  async ({ controlId, projectRef, targetSubject, invitationRef }, { rejectWithValue }) => {
     try {
-      const projectPerson = Boolean(projectRef && targetSubject);
+      const request = controlCardGetRequest({
+        controlId,
+        projectRef,
+        targetSubject,
+        invitationRef,
+      });
       const res = await postOp<ControlCardGetResult>(
-        projectPerson ? 'project_person_control_get' : 'control_card_get',
-        projectPerson
-          ? { project_ref: projectRef, target_subject: targetSubject }
-          : { control_id: controlId },
+        request.operation,
+        request.data,
       );
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to load the Control Card'));
       if (!res?.access) return rejectWithValue('Connection Hub returned no editable Card');
@@ -189,10 +196,7 @@ export interface UpdateDelegatedAccessArgs {
    *  for credential-bearing Cards, preserving their current values. */
   compositionMode?: 'and' | 'or';
   properties?: Record<string, unknown>;
-  projectPersonControl?: {
-    projectRef: string;
-    targetSubject: string;
-  };
+  projectPersonControl?: ProjectControlCoordinates;
 }
 
 /** Edit a manual automation IN PLACE — the card keeps its access_id/client_id,
@@ -228,10 +232,16 @@ export const updateDelegatedAccess = createAsyncThunk<
         projectPersonControl ? 'project_person_control_update' : 'delegated_access_update',
         {
           ...(projectPersonControl
-            ? {
-                project_ref: projectPersonControl.projectRef,
-                target_subject: projectPersonControl.targetSubject,
-              }
+            ? projectPersonControl.kind === 'person'
+              ? {
+                  project_ref: projectPersonControl.projectRef,
+                  target_subject: projectPersonControl.targetSubject,
+                }
+              : {
+                  project_ref: projectPersonControl.projectRef,
+                  invitation_ref: projectPersonControl.invitationRef,
+                  control_id: accessId,
+                }
             : { access_id: accessId }),
           label,
           resource_grants: resourceGrants || {},
@@ -315,10 +325,7 @@ export const revokeDelegatedAccess = createAsyncThunk<
   DelegatedAccessRevokeResult,
   {
     accessId: string;
-    projectPersonControl?: {
-      projectRef: string;
-      targetSubject: string;
-    };
+    projectPersonControl?: ProjectControlCoordinates;
   },
   { rejectValue: string }
 >(
@@ -328,10 +335,16 @@ export const revokeDelegatedAccess = createAsyncThunk<
       const res = await postOp<DelegatedAccessRevokeResult>(
         projectPersonControl ? 'project_person_control_revoke' : 'delegated_access_revoke',
         projectPersonControl
-          ? {
-              project_ref: projectPersonControl.projectRef,
-              target_subject: projectPersonControl.targetSubject,
-            }
+          ? projectPersonControl.kind === 'person'
+            ? {
+                project_ref: projectPersonControl.projectRef,
+                target_subject: projectPersonControl.targetSubject,
+              }
+            : {
+                project_ref: projectPersonControl.projectRef,
+                invitation_ref: projectPersonControl.invitationRef,
+                control_id: accessId,
+              }
           : { access_id: accessId },
       );
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to revoke delegated access'));

@@ -147,14 +147,16 @@ test('an embedded access-card summon refreshes authority before opening its edit
 test('an exact Control Card reuses the Card editor without joining the agent-card list', () => {
   const slice = source('src/features/delegatedAccess/delegatedAccessSlice.ts')
   assert.match(slice, /focusedCard\?: DelegatedAccessRecord/)
-  assert.match(slice, /projectPerson \? 'project_person_control_get' : 'control_card_get'/)
+  assert.match(slice, /const request = controlCardGetRequest\(/)
+  assert.match(slice, /request\.operation/)
+  assert.match(slice, /request\.data/)
   assert.match(slice, /projectPersonControl \? 'project_person_control_update' : 'delegated_access_update'/)
   assert.match(slice, /projectPersonControl \? 'project_person_control_revoke' : 'delegated_access_revoke'/)
   assert.match(slice, /state\.focusedCard = action\.payload\.access/)
   assert.doesNotMatch(slice, /state\.items\.push\(action\.payload\.access\)/)
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
-  assert.match(panel, /dispatch\(loadControlCard\(\{[\s\S]*?controlId: accessCardFocus\.accessId,[\s\S]*?projectRef: accessCardFocus\.projectRef,[\s\S]*?targetSubject: accessCardFocus\.targetSubject,/)
+  assert.match(panel, /dispatch\(loadControlCard\(\{[\s\S]*?controlId: accessCardFocus\.accessId,[\s\S]*?projectRef: accessCardFocus\.projectRef,[\s\S]*?targetSubject: accessCardFocus\.targetSubject,[\s\S]*?invitationRef: accessCardFocus\.invitationRef,/)
   assert.match(panel, /projectPersonControl: projectPersonControl \|\| undefined/)
   // The badge names the kind: an operator Card or a Control Card (controlCardKind.ts).
   assert.match(panel, /if \(item\.source === 'control'\) return controlCardLabel\(item\)/)

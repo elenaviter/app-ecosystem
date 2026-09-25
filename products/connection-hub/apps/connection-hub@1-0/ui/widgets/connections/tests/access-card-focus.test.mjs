@@ -71,6 +71,17 @@ test('project person control focus carries its policy coordinates', () => {
   assert.equal(request.targetSubject, 'platform-user-2')
 })
 
+test('pending invitation control focus carries its invitation coordinate', () => {
+  const request = focus({
+    control_card_id: 'invitation-control-1',
+    project_ref: 'work:project:quickstart',
+    invitation_ref: 'work:invitation:inv-1',
+  })
+  assert.equal(request.accessId, 'invitation-control-1')
+  assert.equal(request.projectRef, 'work:project:quickstart')
+  assert.equal(request.invitationRef, 'work:invitation:inv-1')
+})
+
 test('the exact visible card is resolved and an unavailable card is named', () => {
   const request = focus({ access_id: 'oauth-fable-card' })
   const cards = [

@@ -205,6 +205,9 @@ from .surfaces.delegated_gateway import (
 )
 from .surfaces.delegated_gateway_host import build_hosted_gateway_binding
 from .services.durable_authority import ConnectionHubDurableAuthority
+from .services.project_invitation_binding import (
+    descriptor_project_invitation_binding_resolver,
+)
 from .services.project_membership import descriptor_project_authorization_port
 
 BUNDLE_ID = "connection-hub@1-0"
@@ -238,6 +241,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "project_person_control_create",
     "project_person_control_update",
     "project_person_control_revoke",
+    "project_person_control_bind_invitation",
     "project_person_my_card_seed",
     "control_card_attach",
     "control_card_detach",
@@ -1301,6 +1305,34 @@ async def _project_authorization_port(entrypoint: Any) -> Any | None:
         return None
 
 
+async def _project_invitation_binding_resolver(entrypoint: Any) -> Any | None:
+    """Resolve an explicit host resolver or the descriptor-bound provider."""
+
+    try:
+        resolver = getattr(entrypoint, "project_invitation_binding_resolver", None)
+        if resolver is None:
+            factory = getattr(
+                entrypoint,
+                "project_invitation_binding_resolver_factory",
+                None,
+            )
+            if callable(factory):
+                resolver = factory()
+        if inspect.isawaitable(resolver):
+            resolver = await resolver
+        return (
+            resolver
+            if resolver is not None
+            else descriptor_project_invitation_binding_resolver(entrypoint)
+        )
+    except Exception:  # noqa: BLE001 - the provider adapter is optional
+        LOGGER.exception(
+            "[connection-hub.project-invitation-control] "
+            "invitation binding resolver construction failed"
+        )
+        return None
+
+
 async def _automation_access_service_for(
     entrypoint: Any,
     config: Any,
@@ -1330,6 +1362,9 @@ async def _automation_access_service_for(
     )
     service.bind_project_authorization_port(
         await _project_authorization_port(entrypoint)
+    )
+    service.bind_project_invitation_binding_resolver(
+        await _project_invitation_binding_resolver(entrypoint)
     )
     return service
 
@@ -2616,6 +2651,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_person_control_create": {"visibility": {"user_types": []}},
                             "project_person_control_update": {"visibility": {"user_types": []}},
                             "project_person_control_revoke": {"visibility": {"user_types": []}},
+                            "project_person_control_bind_invitation": {"visibility": {"user_types": []}},
                             "project_person_my_card_seed": {"visibility": {"user_types": []}},
                             "project_operation_authorize": {"visibility": {"user_types": []}},
                             "control_card_attach": {"visibility": {"user_types": []}},
@@ -2680,6 +2716,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     "operation": "",
                 },
                 "administrative_roles": [],
+            },
+            "project_invitation_binding": {
+                "provider": {
+                    "bundle_id": "",
+                    "operation": "",
+                },
             },
             # No provider is hardcoded here. The set of available providers is
             # DYNAMIC — driven by the connection registry (any registered
@@ -4084,7 +4126,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         fingerprint: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Read the project-held Control Card for one named person."""
+        """Read a live-person or pending-invitation project Control Card."""
 
         del fingerprint
         payload = _payload(data, **kwargs)
@@ -4097,6 +4139,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             user,
             project_ref=str(payload.get("project_ref") or "").strip(),
             target_subject=str(payload.get("target_subject") or "").strip(),
+            invitation_ref=str(payload.get("invitation_ref") or "").strip(),
+            control_id=str(
+                payload.get("control_id") or payload.get("control_card_id") or ""
+            ).strip(),
             request_id=_audit_request_id(request),
         )
 
@@ -4115,7 +4161,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         fingerprint: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Create the project-owned Control Card that narrows one person."""
+        """Create a live-person or pending-invitation project Control Card."""
 
         del fingerprint
         payload = _payload(data, **kwargs)
@@ -4128,6 +4174,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             user,
             project_ref=str(payload.get("project_ref") or "").strip(),
             target_subject=str(payload.get("target_subject") or "").strip(),
+            invitation_ref=str(payload.get("invitation_ref") or "").strip(),
+            target_email=str(payload.get("target_email") or "").strip(),
             request_id=_audit_request_id(request),
             resource_grants=(
                 dict(payload.get("resource_grants") or {})
@@ -4160,6 +4208,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             label=str(payload.get("label") or "").strip(),
             manage_url=str(payload.get("manage_url") or "").strip(),
             migration=payload.get("migration") is True,
+            project_creation=payload.get("project_creation") is True,
         )
 
     @api(
@@ -4177,7 +4226,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         fingerprint: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Replace one person's project Control Card selection."""
+        """Replace one live-person or pending-invitation Card selection."""
 
         del fingerprint
         payload = _payload(data, **kwargs)
@@ -4190,6 +4239,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             user,
             project_ref=str(payload.get("project_ref") or "").strip(),
             target_subject=str(payload.get("target_subject") or "").strip(),
+            invitation_ref=str(payload.get("invitation_ref") or "").strip(),
+            control_id=str(
+                payload.get("control_id") or payload.get("control_card_id") or ""
+            ).strip(),
             request_id=_audit_request_id(request),
             resource_grants=(
                 dict(payload.get("resource_grants") or {})
@@ -4250,7 +4303,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         fingerprint: Optional[str] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Revoke the project-owned Control Card for one named person."""
+        """Revoke one live-person or pending-invitation project Card."""
 
         del fingerprint
         payload = _payload(data, **kwargs)
@@ -4263,6 +4316,42 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             user,
             project_ref=str(payload.get("project_ref") or "").strip(),
             target_subject=str(payload.get("target_subject") or "").strip(),
+            invitation_ref=str(payload.get("invitation_ref") or "").strip(),
+            control_id=str(
+                payload.get("control_id") or payload.get("control_card_id") or ""
+            ).strip(),
+            request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_control_bind_invitation",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_control_bind_invitation"),
+    )
+    async def project_person_control_bind_invitation(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Bind one provider-verified invitation Card to the signed-in person."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_person_control_bind_invitation(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            invitation_ref=str(payload.get("invitation_ref") or "").strip(),
+            control_id=str(payload.get("control_id") or "").strip(),
             request_id=_audit_request_id(request),
         )
 

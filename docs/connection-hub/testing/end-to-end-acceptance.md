@@ -1,11 +1,11 @@
 ---
 id: connection-hub/testing/end-to-end-acceptance
 title: "Connection Hub And Governed MCP End-To-End Acceptance"
-summary: "Human-runnable acceptance for resident-agent capability Cards, delegated MCP, direct protected-service admission, native or bridged OAuth clients, revocation, and durability."
+summary: "Human-runnable acceptance for resident-agent capability Cards, project invitation Cards, delegated MCP, direct protected-service admission, native or bridged OAuth clients, revocation, and durability."
 status: current
-tags: ["testing", "connection-hub", "delegated-access", "control-card", "agent-card", "conversation-selection", "mcp", "proxy", "admission", "invocation-policy", "consent", "claude-code"]
-keywords: ["Connection Hub acceptance", "agent capability Control Card", "Agent Card defaults", "conversation override", "live descriptor ceiling", "delegated card test", "allow once", "allow always", "external MCP proxy", "delegated MCP gateway", "one resident card", "multi-resource card", "direct admission", "descriptor drift", "live consent", "operation-only consent", "resource_operations", "named services MCP", "Claude Code OAuth", "revocation test"]
-updated_at: 2026-09-23
+tags: ["testing", "connection-hub", "delegated-access", "control-card", "agent-card", "project-invitation", "conversation-selection", "mcp", "proxy", "admission", "invocation-policy", "consent", "claude-code"]
+keywords: ["Connection Hub acceptance", "agent capability Control Card", "project invitation Control Card", "full initial My Card", "Agent Card defaults", "conversation override", "live descriptor ceiling", "delegated card test", "allow once", "allow always", "external MCP proxy", "delegated MCP gateway", "one resident card", "multi-resource card", "direct admission", "descriptor drift", "live consent", "operation-only consent", "resource_operations", "named services MCP", "Claude Code OAuth", "revocation test"]
+updated_at: 2026-09-24
 see_also:
   - ../connection-hub-architecture.md
   - ../macos-user-presence-helper.md
@@ -27,6 +27,8 @@ The procedure covers:
   user Agent Card defaults, and per-conversation choices remain separate;
 - live descriptor revocation across conversations created under older Control
   revisions;
+- a project invitation whose administrator-reviewed pending Control Card binds
+  to a full initial My Card only for the verified invited person;
 - a resident KDCube agent using a managed MCP or native named-service tool;
 - one stable resident-agent card projecting multiple compatible resources
   through one aggregate delegated MCP Gateway;
@@ -366,6 +368,124 @@ both roles, Slack permalinks for allowed actions, structured denials for
 revoked actions, and runtime revision evidence. The phase passes only when the
 real Slack/custom-MCP boundaries match the UI and all behavior survives a
 runtime reload. Unit tests or screenshots alone do not pass this phase.
+
+## Project Invitation Control Card Binding
+
+This scenario proves the pre-membership Card, administrator boundary,
+join-time identity transition, and live enforcement against a concrete Slack
+operation. Use a fresh project invitation so no earlier person Control Card can
+mask an identity conflict.
+
+### Fixture
+
+- Project administrator **Admin A**.
+- Ordinary project member **Member C**, used for the non-admin denial.
+- Invited account **Person B**, signed in with the exact normalized invitation
+  email and not yet a member of this project.
+- One canonical project invitation reference from the project application.
+- A Slack workspace connected for Person B after sign-in, with permission to
+  read channel history and post in one test channel.
+- A pending selection containing Slack channel-history read and
+  `post_message`, while one harmless Slack operation such as channel listing is
+  deliberately left unselected.
+
+Record the project ref, invitation ref, expected deterministic pending Card id,
+catalog version, and the marker `INVITE-CARD-E2E-<UTC timestamp>`.
+
+### Create and inspect before membership
+
+1. As Admin A, create the project invitation and its pending Control Card with
+   the selected Slack operations.
+2. Follow the application's exact Card link. Confirm that it carries
+   `control_card_id`, `project_ref`, and `invitation_ref`, and opens the normal
+   Connection Hub Card editor.
+3. Record the pending Card revision and inspect its public and durable views.
+4. Query the project identity edge and Person B's My Card id before acceptance.
+
+Expected result: one deterministic active pending Card exists. Its invitation
+marker contains the project, invitation, project authority subject, and a
+normalized email digest. The raw email and a person subject are absent. No
+project identity edge and no Person B My Card exist yet.
+
+### Administrator boundary
+
+1. As Member C, open the exact pending Card link and attempt a direct get and
+   update with the same coordinates.
+2. As Person B before acceptance, repeat the get and update.
+3. As Admin A, add one selected Slack operation, save, reopen, then remove it
+   and save again.
+
+Expected result: Member C and Person B receive named authorization denials and
+no Card authority payload. Admin A can read and edit the Card; each real change
+advances its revision and records actor, host request id, time, and exact field
+diff. A no-op save is refused instead of creating an empty audit revision.
+
+### Bind through the real invitation acceptance path
+
+1. Sign in as Person B and accept the invitation through the project
+   application. Do not call Connection Hub's bind operation from an admin
+   session.
+2. Capture the provider response used by Connection Hub. It must name the exact
+   project, invitation, pending Card id, signed-in Person B subject, and
+   canonical invitation email.
+3. Record the bind response, deterministic live per-person Control Card id,
+   Person B My Card id, and project identity edge.
+4. Reopen both live Cards through their ordinary project/person views.
+
+Expected result: the pending Card is an audited revoked revision carrying the
+binding marker. The deterministic live Control Card has exactly the pending
+Card's final reviewed resource grants, resource operations, named-service
+operations, account scope, and public properties. Person B's initial My Card is
+full and equal to that live Control selection. All three durable Cards carry
+the same non-secret binding marker, and the identity edge points to the two
+live Cards.
+
+### Prove identity and retry boundaries
+
+Run each negative case from a fresh invitation or from a non-mutating provider
+fixture:
+
+1. Return a different project, invitation, pending Card id, person subject, or
+   email from the provider.
+2. Attempt bind from another signed-in user.
+3. Revoke an unbound pending Card, then attempt bind.
+4. Pre-create an unrelated live per-person Control Card at the deterministic
+   destination, then attempt bind.
+5. Replay the successful bind with the same invitation.
+6. Narrow Person B's My Card, then replay bind again.
+7. In a failure-injection runtime, stop after live Control creation and retry;
+   repeat after My Card creation and before pending-card consumption.
+
+Expected result: every mismatched case fails before new person authority is
+created. A revoked invitation stays consumed. An unrelated destination Card is
+reported as a conflict. Exact retries return the same Card ids, repair missing
+durable steps, and never restore authority Person B later removed from My Card.
+
+### Concrete Slack enforcement and current cap
+
+1. As Person B, select the connected Slack account required by the copied Card
+   scope.
+2. Invoke `post_message` with the marker and confirm exactly one message in the
+   test channel.
+3. Invoke the deliberately unselected Slack operation and capture the
+   structured denial. Confirm no provider side effect.
+4. As Admin A, remove `post_message` from Person B's live Control Card while
+   leaving it selected on My Card. Retry from the same signed-in session.
+5. Restore it on the Control Card and retry.
+6. Remove Slack posting from the active deployment catalog/descriptor and
+   reload. Retry without editing either Card or starting a new session.
+
+Expected result: the initial reviewed posting operation works; the unselected
+operation is denied. Live Control removal closes posting on the next guarded
+call and restoration makes the preserved positive My Card choice effective
+again. The current descriptor/catalog withdrawal denies posting immediately
+for the old session and both stored Cards, proving that the deployment catalog
+remains the outer cap.
+
+Capture Card revisions, provider evidence with the raw email redacted,
+identity-edge coordinates, structured denials, Slack permalink, descriptor
+revision, and retry/failure-injection logs. This scenario passes only when the
+real join route and real guarded Slack operation satisfy every boundary above.
 
 ## Phase 2: Exact Operation-Only Live Consent
 

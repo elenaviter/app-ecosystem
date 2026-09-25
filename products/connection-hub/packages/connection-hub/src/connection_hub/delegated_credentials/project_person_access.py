@@ -89,6 +89,12 @@ PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE = "project_person_control_migration"
 PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA = (
     "connection_hub.project_person_control_migration.v1"
 )
+PROJECT_PERSON_CONTROL_PROJECT_CREATION_PROVENANCE = (
+    "project_person_control_project_creation"
+)
+PROJECT_PERSON_CONTROL_PROJECT_CREATION_SCHEMA = (
+    "connection_hub.project_person_control_project_creation.v1"
+)
 
 
 def _seed_request(
@@ -408,7 +414,14 @@ class ProjectPersonControlLifecycle:
         label: str = "",
         manage_url: str = "",
         migration: bool = False,
+        project_creation: bool = False,
     ) -> dict[str, Any]:
+        if migration and project_creation:
+            return {
+                "ok": False,
+                "error": "project_person_control_seed_origin_conflict",
+                "status": 400,
+            }
         authorized = await self._authorize(
             actor_subject=actor_subject,
             project_ref=project_ref,
@@ -519,37 +532,39 @@ class ProjectPersonControlLifecycle:
                         "pruned": resolved.reconciled.to_public_dict(),
                     }
                 pruned = resolved.reconciled.to_public_dict()
-                record = dataclasses.replace(
-                    record,
-                    operations=tuple(resolved.operations),
-                    resource_grants={
-                        key: tuple(value)
-                        for key, value in resolved.resource_grants.items()
-                    },
-                    resource_operations={
-                        key: tuple(value)
-                        for key, value in resolved.resource_operations.items()
-                    },
-                    named_service_operations=resolved.named_service_operations,
-                    named_services=copy.deepcopy(resolved.named_services),
-                    account_scope={
-                        provider: {
-                            account_id: tuple(claims)
-                            for account_id, claims in accounts.items()
-                        }
-                        for provider, accounts in resolved.account_scope.items()
-                    },
-                    identity_scope=resolved.identity_scope,
-                    properties=resolved.properties,
-                    resource_acceptance=next_resource_acceptance(
-                        resources=resolved.resource_grants,
-                        row_for=lambda resource: self._host._configured_resource(
-                            resource,
-                            config=catalog_config,
+                record = self._record_from_authority(
+                    dataclasses.replace(
+                        self._authority_from_record(record),
+                        operations=tuple(resolved.operations),
+                        resource_grants={
+                            key: tuple(value)
+                            for key, value in resolved.resource_grants.items()
+                        },
+                        resource_operations={
+                            key: tuple(value)
+                            for key, value in resolved.resource_operations.items()
+                        },
+                        named_service_operations=resolved.named_service_operations,
+                        named_services=copy.deepcopy(resolved.named_services),
+                        account_scope={
+                            provider: {
+                                account_id: tuple(claims)
+                                for account_id, claims in accounts.items()
+                            }
+                            for provider, accounts in resolved.account_scope.items()
+                        },
+                        identity_scope=resolved.identity_scope,
+                        properties=resolved.properties,
+                        resource_acceptance=next_resource_acceptance(
+                            resources=resolved.resource_grants,
+                            row_for=lambda resource: self._host._configured_resource(
+                                resource,
+                                config=catalog_config,
+                            ),
+                            catalog_version=catalog_version,
+                            selected_operations=resolved.resource_operations,
                         ),
-                        catalog_version=catalog_version,
-                        selected_operations=resolved.resource_operations,
-                    ),
+                    )
                 )
             authority = bind_project_person_control(
                 materialize_control_snapshot(
@@ -575,17 +590,29 @@ class ProjectPersonControlLifecycle:
                     audit=audit,
                 )
             )
-            if migration:
-                migration_marker = {
-                    "schema": PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA,
+            seed_origin = (
+                (
+                    PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE,
+                    PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA,
+                )
+                if migration
+                else (
+                    PROJECT_PERSON_CONTROL_PROJECT_CREATION_PROVENANCE,
+                    PROJECT_PERSON_CONTROL_PROJECT_CREATION_SCHEMA,
+                )
+                if project_creation
+                else None
+            )
+            if seed_origin is not None:
+                provenance_key, provenance_schema = seed_origin
+                origin_marker = {
+                    "schema": provenance_schema,
                     "actor_subject": request.actor_subject,
                     "request_id": request.request_id,
                     "created_at": audit.occurred_at,
                 }
                 provenance = copy.deepcopy(dict(record.provenance or {}))
-                provenance[PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE] = (
-                    migration_marker
-                )
+                provenance[provenance_key] = origin_marker
                 record = self._record_from_authority(
                     dataclasses.replace(
                         self._authority_from_record(record),
@@ -954,23 +981,39 @@ class ProjectPersonControlLifecycle:
                 "error": "project_person_control_invalid",
                 "status": 409,
             }
-        migration_marker = dict(control.provenance or {}).get(
-            PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE
-        )
-        if migration_marker is None:
+        provenance = dict(control.provenance or {})
+        seed_origins = [
+            ("migration", provenance.get(PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE)),
+            (
+                "project_creation",
+                provenance.get(PROJECT_PERSON_CONTROL_PROJECT_CREATION_PROVENANCE),
+            ),
+        ]
+        present_origins = [entry for entry in seed_origins if entry[1] is not None]
+        if not present_origins:
             return {
                 "ok": False,
                 "error": "project_person_my_card_seed_not_migrated",
                 "status": 409,
             }
+        if len(present_origins) != 1:
+            return {
+                "ok": False,
+                "error": "project_person_control_seed_origin_conflict",
+                "status": 409,
+            }
+        seed_origin, origin_marker = present_origins[0]
+        expected_origin_schema = {
+            "migration": PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA,
+            "project_creation": PROJECT_PERSON_CONTROL_PROJECT_CREATION_SCHEMA,
+        }[seed_origin]
         if (
-            not isinstance(migration_marker, Mapping)
-            or migration_marker.get("schema")
-            != PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA
+            not isinstance(origin_marker, Mapping)
+            or origin_marker.get("schema") != expected_origin_schema
         ):
             return {
                 "ok": False,
-                "error": "project_person_control_migration_marker_invalid",
+                "error": f"project_person_control_{seed_origin}_marker_invalid",
                 "status": 409,
             }
         if my_card.state != CARD_STATE_ACTIVE:
@@ -1027,6 +1070,7 @@ class ProjectPersonControlLifecycle:
             "actor_subject": request.actor_subject,
             "request_id": request.request_id,
             "request_digest": request_digest,
+            "origin": seed_origin,
             "control_id": control.access_id,
             "control_revision": control.card_revision,
             "seeded_at": int(time.time()),
@@ -1129,6 +1173,8 @@ class ProjectPersonControlLifecycle:
 __all__ = [
     "PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE",
     "PROJECT_PERSON_CONTROL_MIGRATION_SCHEMA",
+    "PROJECT_PERSON_CONTROL_PROJECT_CREATION_PROVENANCE",
+    "PROJECT_PERSON_CONTROL_PROJECT_CREATION_SCHEMA",
     "PROJECT_PERSON_MY_CARD_SEED_PROVENANCE",
     "PROJECT_PERSON_MY_CARD_SEED_SCHEMA",
     "ProjectPersonControlLifecycle",

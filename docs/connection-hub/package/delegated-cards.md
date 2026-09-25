@@ -134,7 +134,7 @@ of an ordinary user's right to edit their own Agent Card.
 | `manual` | A script, service, or external automation whose operator copies a bearer. | `delegated_access_create`. | The raw bearer is returned once and is not retained. The record keeps `session_id` and `last_four` for revocation and identification. |
 | `agent` | An agent with deterministic identity `kdcube-agent:<app>:<agent>`, usable from a hosted runtime or as an external MCP caller. | Demand-driven consent, or descriptor synchronization for a resident agent whose Card selects from a Control Card. | Every Agent Card retains its reusable access token server-side. The hosted runtime presents it for resident calls; an external instance presents the same Card credential over the network. List views expose non-secret metadata. |
 | `oauth` | An external OAuth/MCP client. | Automatically on initial token issuance and every refresh rotation. | Current access- and refresh-token handles are retained server-side so revoke can invalidate both. They are never returned by list. |
-| `project-person` | A signed-in person's positive My Card selection for one project identity edge. | Created empty with that person's project-held Control Card, then edited by the person within the current project and catalog ceilings. | None. It is durable and person-owned, but the platform session supplies identity; the Card retains no bearer, refresh token, session, or expiry. |
+| `project-person` | A signed-in person's positive My Card selection for one project identity edge. | Created with the current Control Card selection for both direct membership and invitation binding. Approved migration/project-creation origins may replace the untouched initial selection once. The person may later narrow it within the current project and catalog ceilings. | None. It is durable and person-owned, but the platform session supplies identity; the Card retains no bearer, refresh token, session, or expiry. |
 | `control` | A reusable authorization rule linked to one or more caller Cards. | An owner-scoped `control_card_create`, normally initiated by the application that will link it. | None. It has no delegate, bearer, refresh token, session, or expiry. |
 
 An OAuth client and an agent are both delegated callers. Hosted execution keeps
@@ -1395,9 +1395,10 @@ an explicit subject of the rule, not the Card's owner and not a storage key.
 
 The lifecycle is exposed through `project_person_control_create`,
 `project_person_control_get`, `project_person_control_update`, and
-`project_person_control_revoke`. Connection Hub takes the actor from the
-authenticated platform session. The request's project and target identify the
-Card being managed; they grant nothing. Every operation asks an async
+`project_person_control_revoke`. Those operations accept either live-person
+coordinates or pre-membership invitation coordinates. Connection Hub takes the
+actor from the authenticated platform session. The request's project and target
+identify the Card being managed; they grant nothing. Every operation asks an async
 `ProjectAuthorizationPort` for a decision bound to that exact actor, project,
 target, operation, and host request id. A missing port, a missing policy answer,
 a malformed or mismatched decision, and a named denial all fail closed.
@@ -1429,32 +1430,112 @@ the descriptor names no provider, authorization returns
 project-membership decision.
 
 Missing actor membership, a non-administrative project role, mismatched
-evidence, and an unbound resolver return named denials. Create, read, and
-update also require current target membership. Revoke intentionally does not:
-an administrator can revoke the project-held Card after removing the member,
-without preserving a stale membership row or relying on a crash-sensitive
-ordering. Membership authority therefore stays with the application that owns
-the canonical membership record.
+evidence, and an unbound resolver return named denials. Live-person create,
+read, and update also require current target membership. Invitation operations
+require the actor's current administrative membership and use the invitation
+reference as the policy target because no person membership exists yet. Revoke
+works after target membership removal, allowing an administrator to close the
+project-held Card without preserving a stale membership row or relying on a
+crash-sensitive ordering. Membership authority therefore stays with the
+application that owns the canonical membership record.
 
 Creating a new per-person Control Card also creates a stable project identity
 edge and a durable, credential-free My Card in the person's Card partition.
-The My Card starts with an empty positive selection. The edge marker records
-stable project, person, Control Card, and My Card coordinates; authorization
-resolves both current Card revisions from durable storage instead of trusting
-the marker's initial revisions. Repeating create repairs a missing companion
-My Card without creating another identity. Deployments that already have
-per-person Control Cards migrate their prior positive selections explicitly;
-new-card initialization uses its declared empty selection.
+The new My Card starts with the Control Card's current selection and the person
+may narrow it afterward.
+The edge marker records stable project, person, Control Card, and My Card
+coordinates; authorization resolves both current Card revisions from durable
+storage instead of trusting the marker's initial revisions. Repeating create
+repairs a missing companion My Card without creating another identity.
+
+Two explicit project lifecycle origins may replace an untouched My Card's
+initial selection once: `migration` preserves an existing person's prior
+selection during cutover, and `project_creation` establishes the new project's
+creator with the project's reviewed administrator selection. The create request
+may declare one origin. It is recorded immutably on the Control Card, and the
+seed marker records which origin was consumed. The seed reconciles against the
+active catalog and intersects every selection dimension with the current
+Control Card before committing. Changing either request after the first seed is
+a conflict.
+
+#### Pending invitations
+
+A project administrator can establish the reviewed Control Card before an
+invited person has a project identity. The pending Card is addressed by
+`project_ref` plus the application-owned `invitation_ref`; its deterministic id
+is derived from those two values. Its bounded
+`connection_hub.project_invitation_control` marker carries the project,
+invitation, project authority subject, and a SHA-256 digest of the normalized
+invitation email. The raw email and a person subject are absent from durable
+Card state. Creating the pending Card creates neither a project identity edge
+nor a My Card.
+
+The same standard Card editor reads and updates the pending selection. Its deep
+link carries `control_card_id`, `project_ref`, and `invitation_ref`. Only a
+current project administrator can open or mutate it. Composition is fixed to
+AND, catalog reconciliation and descriptor drift behave exactly as on the live
+per-person Card, and each create, update, or revoke writes an immutable
+`connection_hub.project_invitation_control.audit.v1` event.
+
+The Connection Hub descriptor names the application operation that resolves a
+current invitation binding under the signed-in session:
+
+```yaml
+project_invitation_binding:
+  provider:
+    bundle_id: problem-board@1-0
+    operation: project_invitation_binding_resolve
+```
+
+`project_person_control_bind_invitation` sends the exact project and invitation
+to that request-bound provider. A successful provider answer carries the
+canonical project, invitation, pending Control Card id, signed-in person
+subject, and invitation email. Connection Hub requires all coordinates to
+match the request and requires the normalized email digest to match the pending
+Card. Missing, stale, malformed, cross-project, cross-invitation,
+wrong-person, and wrong-email evidence fails closed before person authority is
+created.
+
+One successful bind performs a one-way identity transition. The first durable
+write is the claim: a compare-and-swap revokes the pending Card and records its
+binding and audit evidence. Only the request that wins that claim can create
+person-side authority:
+
+```text
+pending invitation Control Card (project + invitation)
+  -> pending Card atomically claimed as revoked with binding and audit evidence
+  -> deterministic live Control Card (project + person), same reviewed selection
+  -> person-owned My Card, full same reviewed selection
+  -> current project identity edge linking those two live Cards
+```
+
+The full initial My Card makes the invitation's reviewed capabilities usable as
+soon as the person joins, matching the direct-member rule that a new My Card
+starts equal to its Control Card. The person may narrow My Card afterward. A
+concurrent bind or revoke competes on the same pending Card revision, so exactly
+one transition wins and a losing bind creates no person authority. An exact bind
+retry returns the same stable Cards and preserves later narrowing. The
+transition records the same non-secret binding marker on the live Control Card,
+My Card, and consumed pending Card. A retry after a durable claim repairs any
+missing live Control Card, My Card, or identity edge; a pre-existing live Control
+Card without that exact marker is an identity conflict and is never adopted.
+
+Every governed operation still evaluates the active catalog first, then the
+current live per-person Control Card, then the current My Card. Consuming an
+invitation therefore creates no authority beyond the current deployment
+catalog, and a later descriptor/catalog withdrawal closes the capability for
+old and new sessions alike.
 
 Revocation ends the edge by revoking the person's My Card before revoking the
 project-held Control Card. A retry completes either partially applied step;
 an ended edge remains an explicit closed project relationship.
 
-The standard Card editor opens this lifecycle when its deep link carries the
-Card's `control_card_id` together with `project_ref` and `target_subject`.
-Those coordinates survive the standalone-site iframe boundary. The editor
-loads, saves, and revokes through the project-person operations while every
-ordinary Card continues to use its owner-scoped operations.
+The standard Card editor opens the live lifecycle when its deep link carries
+the Card's `control_card_id` together with `project_ref` and `target_subject`;
+the pending form uses `invitation_ref` in place of `target_subject`. Those
+coordinates survive the standalone-site iframe boundary. The editor loads,
+saves, and revokes through the project-person operations while every ordinary
+Card continues to use its owner-scoped operations.
 
 A project-held per-person Control Card always composes by **AND**. Effective
 access is the intersection of the project catalog, this project Control Card,
@@ -1466,13 +1547,15 @@ the mode as a fixed rule instead of an editable choice.
 Creation uses that same port. A project creator receives bootstrap authority
 only when the project application's canonical membership lifecycle returns it;
 there is no caller-authored `creator`, `admin`, application, or role flag.
-Updates and revocation have an additional invariant: the target person cannot
-mutate her own project-held Card, even if a policy adapter accidentally returns
-allow. The project policy decision also supplies the exact delegable grant
-ceiling used by the catalog-aware Card editor, so an administrator cannot save
-a capability outside the project's decision. Another administrator manages an
-administrator's own Control Card; a sole project creator remains at the
-bootstrap ceiling selected by the project policy.
+Live-person updates and revocation have an additional invariant: the target
+person cannot mutate her own project-held Card, even if a policy adapter
+accidentally returns allow. Pending invitation Cards have no target person and
+remain administrator-owned until binding. The project policy decision also
+supplies the exact delegable grant ceiling used by the catalog-aware Card
+editor, so an administrator cannot save a capability outside the project's
+decision. Another administrator manages an administrator's own Control Card;
+a sole project creator remains at the bootstrap ceiling selected by the
+project policy.
 
 The authenticated operation `project_operation_authorize` is the application
 boundary for an exact check. Its payload supplies `project_ref`, `resource`,
@@ -1483,15 +1566,17 @@ evaluator's decision. Callers cannot supply a trusted person subject, Card,
 revision, or catalog document. The decision names the blocking boundary and is
 retryable only for an explicitly unavailable current authority.
 
-Every successful create, update, or revocation stamps the immutable Card
-revision with `connection_hub.project_person_control.audit.v1` evidence:
-authenticated actor, project, target, host request id, UTC time, before and
-after revision, and the exact changed authorization fields. The current
-revision exposes its evidence to the administrator; durable revision history
-retains the evidence for every earlier edit. A save that changes no
-authorization field is refused rather than creating an empty audit event.
-Revocation records the active-to-revoked state change in the revoked durable
-revision itself, then removes live authority.
+Every successful live-person create, update, or revocation stamps the immutable
+Card revision with `connection_hub.project_person_control.audit.v1` evidence;
+the pending lifecycle uses
+`connection_hub.project_invitation_control.audit.v1`. Both carry authenticated
+actor, project, target, host request id, UTC time, before and after revision,
+and the exact changed authorization fields. The current revision exposes its
+evidence to the administrator; durable revision history retains the evidence
+for every earlier edit. A save that changes no authorization field is refused
+rather than creating an empty audit event. Revocation records the
+active-to-revoked state change in the revoked durable revision itself, then
+removes live authority.
 
 ### Legacy Control Card freeze
 
