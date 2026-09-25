@@ -432,7 +432,7 @@ A client-source selection is one of these actions ([runtime-actions](references/
 Selection). A container-local patch is not an action this team has. Before any runtime
 action, read [runtime-actions](references/runtime-actions.md), and for a test
 window [test-window](references/test-window.md). A coordinator about to accept,
-route, reload or refresh follows [coordinator](references/coordinator.md). Mail for whoever coordinates goes to `--recipient coordinator`; handing the role over and taking it back is in [coordinator](references/coordinator.md) too.
+route, reload or refresh follows [coordinator](references/coordinator.md). Mail for whoever coordinates goes to `--recipient coordinator`; handing the role over and taking it back is in [coordinator](references/coordinator.md) too. When you hold the coordinator role (home or acting), read its first section, What the coordinator is for, before anything else: you work for the operator, speak to her unasked, and drive the team.
 
 ## The Item Is Authoritative, Mail Is Commentary
 

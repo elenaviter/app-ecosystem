@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.25.6"
+    assert package["revision"] == "2026.09.25.7"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1125,3 +1125,45 @@ def test_a_routed_item_carries_its_dependencies_from_the_filing_call() -> None:
     assert "5. Set the new item's dependencies in the same call. `depends_on` lists the `identity_ref` of every item that must land first" in coordinator
     assert 'goes in the description as "Related:"' in coordinator
     assert "Recheck both directions when you rescope an item or split out a step." in coordinator
+
+
+def test_the_coordinator_reference_opens_with_what_the_coordinator_is_for() -> None:
+    # W313 handover finding 5, 2026-09-25: codex-coord became acting
+    # coordinator after reading coordinator.md, did every act correctly and
+    # never spoke to the operator. The job lived only in the outgoing
+    # coordinator's private memory, so it is written here, first.
+    raw = _read("references/coordinator.md")
+    body = raw.split("\n---\n", 1)[1]
+    headings = [line for line in body.splitlines() if line.startswith("## ")]
+    assert headings[0] == "## What the coordinator is for"
+    coordinator = _words(raw)
+    for phrase in (
+        "The coordinator works for the operator.",
+        "You speak to the operator; she should not have to ask.",
+        "The operator is your principal.",
+        "A previous coordinator stops directing her and answers only mail addressed to it by name.",
+        "Keep her informed unasked",
+        "ask with a notifying kind (`decision`, `question`, `blocked`)",
+        "Answer every message she sends through the board with a correlated reply before continuing.",
+        "situation, then verdict",
+        "Name items by key and title, never a bare number.",
+        "You drive the team; you do not wait for it.",
+        "Ask the worker; do not infer from files.",
+        "tell that worker first, then the operator",
+        "The runtime is hers; the mechanics are yours.",
+        "No runtime window (reload, refresh, client switch) without the operator's go.",
+        "Do not ask her about the mechanics.",
+        "[Worker budgets](#worker-budgets)",
+    ):
+        assert phrase in coordinator, phrase
+    # The successor reads it before anything else it inherits.
+    assert (
+        "0. Read [What the coordinator is for](#what-the-coordinator-is-for) at the "
+        "top of this file. From now on you speak to the operator."
+    ) in coordinator
+    # And the skill sends a role holder there first.
+    skill = _words(_read("SKILL.md"))
+    assert (
+        "When you hold the coordinator role (home or acting), read its first "
+        "section, What the coordinator is for, before anything else"
+    ) in skill
