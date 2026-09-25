@@ -3,7 +3,7 @@ id: project-board.worker-reference.coordinator
 title: Accept, Route, Reload, Refresh
 summary: The coordinator's checklist for review decisions, capacity-aware routing, teammate setup, shared project knowledge, and runtime actions, placed where each act happens so the rule is present when it is applied.
 tags: [procedure, problem-board, coordinator, review, routing, runtime]
-keywords: [review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, bundles.template.yaml, bundle reload, refresh --build, widget build states, verify the artifact, what loaded]
+keywords: [what the coordinator is for, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, bundles.template.yaml, bundle reload, refresh --build, widget build states, verify the artifact, what loaded]
 see_also:
   - runtime-actions.md
   - test-window.md
@@ -15,6 +15,66 @@ Read this when you are about to accept, return or cancel a submission, release
 a stalled assignment, route an item, or reload, refresh or restart the runtime. Each list is the order of
 the act, and it sits here rather than in the skill because a rule read at
 onboarding was skipped at the moment of acting with the rule already written.
+
+## What the coordinator is for
+
+The coordinator works for the operator. The team's work reaches the operator through you,
+and the operator's decisions reach the team through you. Everything else in this file is how
+to do single acts correctly; this section is the job those acts serve. Why it is
+written down: on 2026-09-25 an agent became acting coordinator after reading this
+file, performed every act correctly, and never once spoke to the operator. The
+outgoing coordinator had carried these rules only in its private memory, and a
+successor inherits none of that.
+
+**You speak to the operator; the operator should not have to ask.**
+
+- The operator is your principal. From the moment you hold the role, the operator's status,
+  decisions and questions go through you (board mail to `operator` in the
+  project conversation). A previous coordinator stops directing the operator and answers
+  only mail addressed to it by name.
+- Keep the operator informed unasked: what merged, what is live, what is in flight and who
+  has it, what is stuck and why, and what you need from the operator. After a burst of
+  work, send a short status without waiting to be asked.
+- When only the operator can act (a go, a decision, a credential, a click in their browser),
+  ask with a notifying kind (`decision`, `question`, `blocked`), so it also reaches
+  their Telegram. Put the options and your recommendation in the mail. Why: the operator is
+  not watching your terminal (operator, 2026-09-23).
+- Answer every message the operator sends through the board with a correlated reply before
+  continuing. Why: "you must always send the response."
+- Report a finding as situation, then verdict (wrong or not, and for which case),
+  then the action or who owns it. Why: "if this is the situation now whether its
+  wrong or no, and what to do about it" (2026-09-15).
+- Name items by key and title, never a bare number. When you ask the operator to do
+  something in the product, name the control they see on their screen, not the
+  operation behind it. Why: an instruction in the API's words sent the operator looking for
+  a button that does not exist (2026-09-20).
+
+**You drive the team; you do not wait for it.**
+
+- Know what every worker is doing. When a reply is overdue (about ten minutes, or
+  any window waiting on one worker), check its state yourself: its relay wake
+  lines, its queue, its heartbeat. Then re-send, nudge, or tell the operator what
+  is stuck. Why: "look on the status of workers after you wait for long time"
+  (2026-09-23).
+- Ask the worker; do not infer from files. Decide what is yours to decide; hand
+  the operator only what is theirs. Why: "cant you ask?" (2026-09-15).
+- Before routing, discuss the need with the candidates, then decide, then route.
+  A brief carries the intention and the need; the worker derives the constraints.
+- Let a worker finish its current step before switching it; queue the next thing.
+  An operator's remark about what a worker is doing is information, not an order.
+- When a worker runs short of tokens, move its unstarted work to agents with budget
+  left, without being asked ([Worker budgets](#worker-budgets), below).
+- When you diagnose why something failed for a worker, tell that worker first, then
+  the operator. Why: otherwise it repeats the failure.
+- Help a new teammate set up: prepare what it needs (procedure, pages, access) and
+  tell it the team is there. Put project knowledge in the journal, not in mail.
+
+**The runtime is the operator's; the mechanics are yours.**
+
+- No runtime window (reload, refresh, client switch) without the operator's go.
+  Once the operator gives it, you run the whole window yourself: announce, collect ready,
+  back up the board tables, execute, verify, report, update the facts table. Do not
+  ask the operator about the mechanics.
 
 ## Accept, return, cancel
 
@@ -154,14 +214,14 @@ Then act on what you found:
 - Re-send a request that never reached the worker.
 - Tell a worker in a long turn what is waiting on it, so it answers at its
   next boundary.
-- Tell the operator in the project conversation when only she can act (the
+- Tell the operator in the project conversation when only they can act (the
   session is closed, or it needs input at its terminal), naming the worker,
   what it holds, and since when.
 
 Why: a worker that is mid-turn, idle but not woken, or closed looks the same
 from the coordinator's inbox, and silence is not progress. On 2026-09-23 a
 Codex worker's wake sat queued for 41 minutes during one long turn, and a
-window waited on another idle worker until the operator noticed. Her ruling:
+window waited on another idle worker until the operator noticed. The operator's ruling:
 "you every time are calm while the workers might be idle for a long time and
 you even do not check their status."
 
@@ -215,6 +275,8 @@ mail.
 
 **What the successor does first:**
 
+0. Read [What the coordinator is for](#what-the-coordinator-is-for) at the
+   top of this file. From now on you speak to the operator.
 1. `pb worker receive`, then read the note:
    `pb coordinate project.coordinator.get --object-ref <project-ref>`, `note`.
 2. Re-announce every open window from `runtime_windows` on its own channel, and
@@ -389,7 +451,7 @@ descriptor-only change.
 
 A LaunchAgent or systemd unit is host service configuration: `pb relay-service
 install` is typed by an agent after the operator approves it, and
-`kdcube refresh --build` rebuilds her stack, so both are hers to clear.
+`kdcube refresh --build` rebuilds the operator's stack, so both are theirs to clear.
 Restarting a service whose definition exists is a coordinated runtime action
 and needs no more than the list above.
 

@@ -406,9 +406,9 @@ revised one rehearsal round at a time. What every worker does, from it:
 
 ## Keep The Operator Informed, And Name The Kind
 
-Mail to a coordinator makes nothing visible to the operator. Tell her directly
+Mail to a coordinator makes nothing visible to the operator. Tell the operator directly
 when you start something substantial, when you commit and what it proves, when
-only she can clear a block, when a finding changes her plan, and before one
+only the operator can clear a block, when a finding changes their plan, and before one
 hour passes during active work without a visible update.
 
 Mail to the operator takes one of these kinds and nothing else:
@@ -417,7 +417,7 @@ Mail to the operator takes one of these kinds and nothing else:
     progress   reply     update     result
 
 `progress` and `update` carry ordinary movement. `question`, `decision`, `blocked`
-also reach her Telegram. Ask for her input this way, never in a terminal prompt
+also reach their Telegram. Ask for their input this way, never in a terminal prompt
 (collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`.
 
 ## Runtime Actions And Test Windows
@@ -432,7 +432,7 @@ A client-source selection is one of these actions ([runtime-actions](references/
 Selection). A container-local patch is not an action this team has. Before any runtime
 action, read [runtime-actions](references/runtime-actions.md), and for a test
 window [test-window](references/test-window.md). A coordinator about to accept,
-route, reload or refresh follows [coordinator](references/coordinator.md). Mail for whoever coordinates goes to `--recipient coordinator`; handing the role over and taking it back is in [coordinator](references/coordinator.md) too.
+route, reload or refresh follows [coordinator](references/coordinator.md). Mail for whoever coordinates goes to `--recipient coordinator`; handing the role over and taking it back is in [coordinator](references/coordinator.md) too. When you hold the coordinator role (home or acting), read its first section, What the coordinator is for, before anything else: you work for the operator, speak to them unasked, and drive the team.
 
 ## The Item Is Authoritative, Mail Is Commentary
 
