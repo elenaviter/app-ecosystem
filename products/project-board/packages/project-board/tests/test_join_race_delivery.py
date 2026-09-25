@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from project_board.client import relay as relay_module
 from project_board.contract.errors import DomainError
 
@@ -33,6 +35,13 @@ def _welcome(created_at: str = "2026-09-25T14:06:37Z") -> dict:
     }
 
 
+def _second_welcome() -> dict:
+    return {
+        **_welcome(),
+        "ref": "work:control:command_welcome_second",
+    }
+
+
 class Clock:
     def __init__(self):
         self.now = 100.0
@@ -47,8 +56,10 @@ class Field:
     def __init__(self):
         self.linked = False
         self.delivered = []
+        self.attempted = []
 
     def materialize_control(self, item):
+        self.attempted.append(item["ref"])
         if not self.linked:
             raise DomainError("field_worker_not_linked", "The addressed worker is not linked to this project.", status=403)
         self.delivered.append(item["ref"])
@@ -59,15 +70,18 @@ class Field:
 
 
 class Client:
-    def __init__(self, items, *, attendances=None):
+    def __init__(self, items, *, attendances=None, heartbeat_error=None):
         self.items = items
         self.attendances = attendances
+        self.heartbeat_error = heartbeat_error
         self.calls = []
 
     async def action(self, *, object_ref, action, payload):
         self.calls.append(action)
         if action == "control.pull":
             return {"lease_id": "lease-1", "items": list(self.items)}
+        if action == "worker.heartbeat" and self.heartbeat_error is not None:
+            raise self.heartbeat_error
         if action == "worker.heartbeat" and self.attendances is not None:
             return {"attendances": list(self.attendances)}
         return {"applied": True}
@@ -152,6 +166,65 @@ def test_immediate_board_read_that_confirms_absence_refuses_in_one_cycle():
     ]
     assert field.delivered == []
     assert adapter._attendance_cache["not_linked_deferrals"] == {}
+
+
+@pytest.mark.parametrize(
+    "heartbeat_error",
+    [
+        OSError("connection reset"),
+        DomainError(
+            "work_relay_unavailable",
+            "The relay endpoint is unavailable.",
+            status=503,
+        ),
+    ],
+    ids=["transport", "domain-503"],
+)
+def test_failed_immediate_read_defers_not_linked_controls_and_continues_batch(
+    heartbeat_error,
+):
+    field, clock = Field(), Clock()
+    items = [_welcome(), _second_welcome()]
+    client = Client(items, heartbeat_error=heartbeat_error)
+    adapter = _adapter(field, client, clock)
+
+    result = asyncio.run(adapter._pull_controls())
+
+    assert result["controls_materialized"] == 0
+    assert result["controls_deferred"] == 2
+    assert result["controls_refused"] == 0
+    assert client.calls == ["control.pull", "worker.heartbeat"]
+    assert field.attempted == [item["ref"] for item in items]
+
+
+def test_authoritative_absence_uses_one_attendance_read_for_the_batch():
+    field, clock = Field(), Clock()
+    client = Client([_welcome(), _second_welcome()], attendances=[])
+    adapter = _adapter(field, client, clock)
+
+    result = asyncio.run(adapter._pull_controls())
+
+    assert result["controls_refused"] == 2
+    assert client.calls.count("worker.heartbeat") == 1
+    assert client.calls.count("control.refuse") == 2
+
+
+def test_limbo_stops_the_pulled_batch():
+    field, clock = Field(), Clock()
+    items = [_welcome(), _second_welcome()]
+    client = Client(items)
+    adapter = _adapter(field, client, clock)
+
+    async def enter_limbo():
+        return "limbo"
+
+    adapter._read_attendance_for_deferred_control = enter_limbo
+
+    result = asyncio.run(adapter._pull_controls())
+
+    assert result["controls_deferred"] == 1
+    assert field.attempted == [items[0]["ref"]]
+    assert client.calls == ["control.pull"]
 
 
 def test_a_stale_absence_resynced_from_cache_does_not_refuse_it():
