@@ -4052,6 +4052,51 @@ class SharedFieldStore:
             atomic_write_json(path, row)
             return dict(row["runtime_limit_state"])
 
+    def record_runtime_model(
+        self,
+        worker_name: str,
+        record: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """The model and reasoning effort the runtime says it runs with (W327).
+
+        Recorded from Claude Code's status line by ``pb worker limit-state``,
+        like the limit state. The status line re-runs on every update, so the
+        row is written only when the model, effort or thinking changes, and
+        the worker's updated_at is never touched.
+        """
+
+        from .runtime_model import runtime_model_changed
+
+        if not isinstance(record, Mapping) or not record:
+            raise DomainError(
+                "field_runtime_model_invalid",
+                "A runtime model is an object with a model or an effort.",
+                status=400,
+            )
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        path = self._worker_path(clean_name)
+        incoming = {key: value for key, value in record.items() if key != "recorded_at"}
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            current = row.get("runtime_model")
+            current = dict(current) if isinstance(current, Mapping) else {}
+            if current and not runtime_model_changed(current, incoming):
+                return current
+            row["runtime_model"] = {**incoming, "recorded_at": utc_now()}
+            atomic_write_json(path, row)
+            return dict(row["runtime_model"])
+
+    def runtime_model(self, worker_name: str) -> dict[str, Any]:
+        """The recorded runtime model, or empty when the runtime never said."""
+
+        try:
+            worker = self.read_worker(worker_name)
+        except DomainError:
+            return {}
+        recorded = worker.get("runtime_model")
+        return dict(recorded) if isinstance(recorded, Mapping) else {}
+
     def runtime_limit_state(self, worker_name: str) -> dict[str, Any]:
         """The recorded runtime limit state, or empty when the runtime never said."""
 

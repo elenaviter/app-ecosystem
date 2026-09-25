@@ -28,6 +28,7 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 from .card_refusal import actionable_card_refusal
 from .limit_state import session_with_limit_state, wake_deferred_until
+from .runtime_model import session_with_runtime_model
 from .worktree_files import (
     MAX_OBSERVED_PATHS as MAX_OBSERVED_PATHS_DEFAULT,
     WorktreeObserverCache,
@@ -136,6 +137,8 @@ HEARTBEAT_SESSION_FIELDS = (
     # W26: the runtime's own usage-limit state, read on this host, so the
     # board says "out of tokens, resets at" instead of reading silence.
     "limit_state",
+    # W327: the model and reasoning effort the runtime says it runs with.
+    "runtime_model",
 )
 HEARTBEAT_SUBSCRIPTION_FIELDS = (
     "adapter",
@@ -3357,18 +3360,24 @@ class ProblemBoardHostRelayAdapter:
         ), registration
 
     def _listener_sessions(self) -> list[dict[str, Any]]:
-        """This session's listener row, carrying the runtime's own limit state (W26)."""
+        """This session's listener row, carrying the runtime's own limit state (W26)
+        and the model and effort it runs with (W327)."""
 
         listener = self.field.worker_listener_session(self.config.worker_name)
         if listener is None:
             return []
         return [
-            session_with_limit_state(
-                listener,
+            session_with_runtime_model(
+                session_with_limit_state(
+                    listener,
+                    runtime_kind=self.config.runtime_kind,
+                    runtime_session_id=self.config.runtime_session_id,
+                    now=utc_now(),
+                    recorded=self.field.runtime_limit_state(self.config.worker_name),
+                ),
                 runtime_kind=self.config.runtime_kind,
                 runtime_session_id=self.config.runtime_session_id,
-                now=utc_now(),
-                recorded=self.field.runtime_limit_state(self.config.worker_name),
+                recorded=self.field.runtime_model(self.config.worker_name),
             )
         ]
 
