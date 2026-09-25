@@ -31,6 +31,8 @@ from .journal_search import JournalDocument, JournalSearchIndex
 
 # The page holding a project's standing facts, at the root of its journal home.
 PROJECT_FACTS_FILE = "project-facts.md"
+# The page holding the project's reproducible development environment.
+PROJECT_ENVIRONMENT_FILE = "project-environment.md"
 
 
 WORKSPACE_SCHEMA = "problem-board.journal-workspace.v1"
@@ -365,6 +367,8 @@ class JournalWorkspace:
         # journal home's root. Named only when the page exists (W262).
         facts = journal_home / PROJECT_FACTS_FILE
         has_facts = facts.is_file()
+        environment = journal_home / PROJECT_ENVIRONMENT_FILE
+        has_environment = environment.is_file()
         return {
             **binding,
             "local_journal_home": str(journal_home),
@@ -375,6 +379,16 @@ class JournalWorkspace:
                 else ""
             ),
             "local_project_facts": str(facts) if has_facts else "",
+            "project_environment_ref": (
+                self._portable_child(
+                    home_ref, PurePosixPath(PROJECT_ENVIRONMENT_FILE)
+                )
+                if has_environment
+                else ""
+            ),
+            "local_project_environment": (
+                str(environment) if has_environment else ""
+            ),
             "local_project_artifact": project_artifact,
             "local_journal_link": str(self.root / "projects" / project_id),
             "local_workspace_link": (
