@@ -3170,7 +3170,8 @@ class ProblemBoardHostRelayAdapter:
             bool(assignment_files_delta)
             or project_ref in self._assignment_files_signatures
         )
-        heartbeat_sent = force_heartbeat or session_delta is not None or files_changed or (
+        worker_info, info_pending = self._worker_info()
+        heartbeat_sent = force_heartbeat or session_delta is not None or files_changed or info_pending or (
             self._project_heartbeat_wait(
                 project_ref=project_ref,
                 sessions=agent_sessions,
@@ -3193,6 +3194,7 @@ class ProblemBoardHostRelayAdapter:
                 heartbeat_payload["assignment_files"] = assignment_files_delta
             if store_reads_delta is not None:
                 heartbeat_payload["store_reads"] = store_reads_delta
+            self._add_worker_info(heartbeat_payload, worker_info)
             await self._add_runtime_account(heartbeat_payload)
             try:
                 with self._trace_stage(
@@ -3239,6 +3241,7 @@ class ProblemBoardHostRelayAdapter:
             if store_reads_delta is not None:
                 self._store_reads_signatures[project_ref] = store_reads_signature
             heartbeat_result = _object_result(heartbeat_response)
+            self._acknowledge_worker_info(worker_info, heartbeat_result)
             self._record_attendance_observation(heartbeat_result)
             self._materialize_attended_project(heartbeat_result)
             journal_workspace = self._reconcile_journal_binding(heartbeat_result)
@@ -3329,6 +3332,46 @@ class ProblemBoardHostRelayAdapter:
         if self._published_interval == interval:
             return None
         return await self._publish_worker(reconcile_ceiling_seconds=interval)
+
+    def _worker_info(self) -> tuple[dict[str, Any], bool]:
+        """The worker's local info line (W330) and whether it may make a heartbeat due.
+
+        A line the board has not acknowledged forces one heartbeat per change
+        of text, not one per cycle: against a board without the field no
+        answer ever acknowledges it, and forcing every cycle would undo the
+        heartbeat pacing (review on app-ecosystem#152). The key still rides
+        every paced heartbeat, so an upgraded board stores it on the next one.
+        """
+
+        info = self.field.worker_info(self.config.worker_name)
+        text = str(info.get("text") or "")
+        # sent_text lives in the worker's local record, not on this adapter:
+        # the supervisor polls each project through a fresh child adapter.
+        pending = (
+            bool(info)
+            and info.get("published_text") != text
+            and info.get("sent_text") != text
+        )
+        return info, pending
+
+    def _add_worker_info(self, payload: dict[str, Any], info: Mapping[str, Any]) -> None:
+        # W330: the worker's own line rides every heartbeat once it was ever
+        # set; an empty text clears it on the board, and a worker that never
+        # set one sends no key, so the board keeps what it has.
+        if info:
+            text = str(info.get("text") or "")
+            payload["worker_info"] = {"text": text}
+            if info.get("sent_text") != text:
+                self.field.mark_worker_info_sent(self.config.worker_name, text)
+
+    def _acknowledge_worker_info(self, info: Mapping[str, Any], result: Mapping[str, Any]) -> None:
+        """Stop forcing heartbeats once the board answers with the same line."""
+
+        if not info or "info_text" not in result:
+            return
+        stored = str(result.get("info_text") or "")
+        if stored == str(info.get("text") or ""):
+            self.field.mark_worker_info_published(self.config.worker_name, stored)
 
     async def _heartbeat_with_republish(
         self, payload: Mapping[str, Any]
@@ -3446,15 +3489,18 @@ class ProblemBoardHostRelayAdapter:
                 project_ref="",
                 sessions=sessions,
             )
+            worker_info, info_pending = self._worker_info()
             discovery_heartbeat_sent = (
                 not self._attendance_cache.get("initialized")
                 or discovery_session_delta is not None
+                or info_pending
                 or self._discovery_heartbeat_wait(sessions) <= 0
             )
             if discovery_heartbeat_sent:
                 heartbeat_payload: dict[str, Any] = {"availability": "available"}
                 if discovery_session_delta is not None:
                     heartbeat_payload["agent_sessions"] = discovery_session_delta
+                self._add_worker_info(heartbeat_payload, worker_info)
                 with self._trace_stage(
                     "attendance.heartbeat",
                     operation="worker.heartbeat.discovery",
@@ -3472,6 +3518,7 @@ class ProblemBoardHostRelayAdapter:
                     project_ref="",
                     signature=session_signature,
                 )
+                self._acknowledge_worker_info(worker_info, discovery)
                 self._record_attendance_observation(discovery)
         with self._trace_stage(
             "attendance.controls",

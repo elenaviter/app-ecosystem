@@ -665,6 +665,9 @@ def _contains_identity(actual: Any, expected: Any) -> bool:
     return actual == expected
 
 
+WORKER_INFO_MAX_CHARS = 200
+
+
 def _team_limit_state(value: Any) -> dict[str, str]:
     """The bounded limit a team row keeps: the board already validated it."""
 
@@ -4106,6 +4109,91 @@ class SharedFieldStore:
             return {}
         recorded = worker.get("runtime_limit_state")
         return dict(recorded) if isinstance(recorded, Mapping) else {}
+
+    def set_worker_info(self, worker_name: str, text: str) -> dict[str, Any]:
+        """Record the worker's one-line info note for the relay to publish (W330).
+
+        The line is the agent's own statement about itself, shown at the top of
+        every card. It is kept locally and rides the next heartbeat, which every
+        worker Card already holds; an empty text clears it on the board.
+        """
+
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        value = str(text or "").strip()
+        if "\n" in value or "\r" in value:
+            raise DomainError(
+                "field_worker_info_multiline",
+                "The info line is one line.",
+                details={"field": "text"},
+            )
+        if any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise DomainError(
+                "field_worker_info_control_character",
+                "The info line holds printable text only.",
+                details={"field": "text"},
+            )
+        if len(value) > WORKER_INFO_MAX_CHARS:
+            raise DomainError(
+                "field_worker_info_too_long",
+                f"The info line is at most {WORKER_INFO_MAX_CHARS} characters.",
+                details={"field": "text", "length": len(value), "maximum": WORKER_INFO_MAX_CHARS},
+            )
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            previous = row.get("info") if isinstance(row.get("info"), Mapping) else {}
+            row["info"] = {
+                "text": value,
+                "set_at": utc_now(),
+                "published_text": previous.get("published_text"),
+                "published_at": str(previous.get("published_at") or ""),
+                "sent_text": previous.get("sent_text"),
+            }
+            row["updated_at"] = utc_now()
+            row["revision"] = int(row.get("revision") or 0) + 1
+            atomic_write_json(path, row)
+            return dict(row["info"])
+
+    def worker_info(self, worker_name: str) -> dict[str, Any]:
+        """The worker's local info line and what the board last acknowledged, or empty when never set."""
+
+        try:
+            worker = self.read_worker(worker_name)
+        except DomainError:
+            return {}
+        recorded = worker.get("info")
+        return dict(recorded) if isinstance(recorded, Mapping) else {}
+
+    def mark_worker_info_sent(self, worker_name: str, text: str) -> None:
+        """Remember that a heartbeat carried this line, so it forces no further heartbeat.
+
+        Against a board without the field no answer acknowledges the line;
+        one forced heartbeat per text is the most it may cost (review on
+        app-ecosystem#152). The line still rides every paced heartbeat.
+        """
+
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            info = row.get("info")
+            if not isinstance(info, Mapping) or str(info.get("text") or "") != text:
+                return
+            row["info"] = {**dict(info), "sent_text": text}
+            atomic_write_json(path, row)
+
+    def mark_worker_info_published(self, worker_name: str, text: str) -> None:
+        """Remember that the board stored this exact line, so the relay stops forcing heartbeats for it."""
+
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            info = row.get("info")
+            if not isinstance(info, Mapping) or str(info.get("text") or "") != text:
+                return
+            row["info"] = {**dict(info), "published_text": text, "published_at": utc_now()}
+            atomic_write_json(path, row)
 
     def declare_workspace(
         self,
@@ -7788,6 +7876,8 @@ class SharedFieldStore:
                         # W26 line 7: a teammate's usage limit as its runtime
                         # last reported it; empty means not reported.
                         "limit_state": _team_limit_state(member.get("limit_state")),
+                        # W330: the teammate's own line about itself; empty when none.
+                        "info_text": str(member.get("info_text") or ""),
                     }
                 )
             record = {"schema": FIELD_SCHEMA, "project_id": clean_id, "members": rows, "updated_at": utc_now()}

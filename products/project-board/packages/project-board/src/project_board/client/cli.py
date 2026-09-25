@@ -818,6 +818,21 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--clear", action="store_true", help="Clear the estimate: the work is done.")
 
     command = worker_commands.add_parser(
+        "info",
+        help=(
+            "Publish one line about this agent that everyone on its projects "
+            "must know, for example that the operator told it not to be used "
+            "actively. It shows first on every card of the agent and in the "
+            "team of pb worker context. Clear it with --clear when it no longer "
+            "holds. Without arguments, show the current line."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("text", nargs="?", default=None, help="The line, at most 200 characters.")
+    command.add_argument("--clear", action="store_true", help="Remove the line from every card.")
+
+    command = worker_commands.add_parser(
         "limit-state",
         help=(
             "Record what the coding-agent runtime itself says about its usage "
@@ -3350,6 +3365,45 @@ def _plan_command(args: Any) -> dict[str, Any]:
     raise ValueError(f"unsupported plan command: {args.plan_command}")
 
 
+def _worker_info_command(args: Any, field: Any, identity: Any) -> dict[str, Any]:
+    """pb worker info: record the agent's one-line note for the relay's next heartbeat (W330)."""
+
+    if args.clear and args.text:
+        raise DomainError("field_worker_info_arguments", "--clear takes no text.")
+    if args.text is not None and not args.clear:
+        if not str(args.text).strip():
+            raise DomainError(
+                "field_worker_info_arguments",
+                "Give the line in quotes, or --clear to remove it.",
+            )
+        info = field.set_worker_info(identity.worker_name, args.text)
+    elif args.clear:
+        info = field.set_worker_info(identity.worker_name, "")
+    else:
+        info = field.worker_info(identity.worker_name)
+    text = str(info.get("text") or "")
+    published = info.get("published_text")
+    on_board = published is not None and published == text
+    return {
+        "worker": identity.worker_name,
+        "info_text": text,
+        "info_set_at": str(info.get("set_at") or ""),
+        "on_board": on_board,
+        "rule": (
+            "Never set: no card shows a line for this agent."
+            if not info
+            else (
+                ("Cleared on the board." if not text else "The board shows this line on every card of this agent.")
+                if on_board
+                else (
+                    "Recorded. The relay sends it with its next heartbeat, within about two minutes; "
+                    "run pb worker info again to see on_board = True."
+                )
+            )
+        ),
+    }
+
+
 def _busy_until_payload(args: Any) -> dict[str, Any]:
     """The worker.estimate payload for pb worker busy-until, or the refusal, before any request."""
 
@@ -3620,6 +3674,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             "session": field.detach_worker_listener(identity.worker_name),
             "relay_channel": "close_then_disable_on_reconciliation",
         }
+    if args.worker_command == "info":
+        return _worker_info_command(args, field, identity)
     if args.worker_command == "busy-until":
         response = _reference_mapping_request(
             args,

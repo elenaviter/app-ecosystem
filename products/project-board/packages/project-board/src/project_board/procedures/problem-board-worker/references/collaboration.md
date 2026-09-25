@@ -480,6 +480,24 @@ slip say what a reader needs. The board shows the age and marks an overdue
 estimate apart from a blocked state, because stale and blocked call for
 different actions (P8, four yes votes).
 
+### The info line
+
+When the operator tells you something the team must know about you (for
+example, not to be used actively, or reviews only), publish it:
+
+```bash
+pb worker info "<one line, at most 200 characters>"
+pb worker info --clear
+```
+
+Clear it the moment it no longer holds. Why: the line is first on every card
+of yours and in the team of `pb worker context`, where the operator and the
+coordinator look before routing (coordinator, Route, step 0), while mail about
+it reaches only whoever reads that mail (W330, operator, 2026-09-25). The
+line rides the relay's next heartbeat, which every worker Card already holds,
+so it shows within about two minutes (the idle heartbeat ceiling); `pb worker
+info` without arguments says `on_board = True` once the board has it.
+
 ## Rule 7. A question about how the team collaborates is decided in rounds
 
 When the team has to choose how it collaborates or stays visible (a practice,
