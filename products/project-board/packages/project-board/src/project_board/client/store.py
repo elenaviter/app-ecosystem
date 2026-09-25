@@ -65,6 +65,7 @@ from .io import (
 )
 from .mail_delivery import (
     ACTIVE_MAILBOX_STATES,
+    UNLEASED_MAILBOX_STATES,
     ALL_MAILBOX_STATES,
     archive_mailbox_messages,
     delivery_summary,
@@ -7975,7 +7976,13 @@ class SharedFieldStore:
                         "worker_name": address,
                         "worker_alias": str(recipient.get("worker_alias") or ""),
                     }
-                    states = ACTIVE_MAILBOX_STATES
+                    # W325: mail the worker already holds stays with it until
+                    # it settles or the lease expires, so an agent unlinked
+                    # mid-task can still close its work; `pb worker leases`
+                    # finds it in the project it left. Only unleased mail is
+                    # archived; an expired lease returns to the inbox and is
+                    # archived on the next pass.
+                    states = UNLEASED_MAILBOX_STATES
                 elif address.casefold() in aliases:
                     disposition = "recipient_alias_not_addressable"
                     stable_names = sorted(aliases[address.casefold()])
