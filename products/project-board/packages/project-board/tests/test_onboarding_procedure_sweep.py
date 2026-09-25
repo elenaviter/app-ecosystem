@@ -76,10 +76,13 @@ def test_u4_agent_workspaces_live_under_kdcube():
     # Every spelling of the old home-folder root: ~/, $HOME/ (escaped in tmux), /home/<user>/.
     assert re.findall(r"(?:~|\$HOME|/home/<user>)/workspaces", HOST) == []
     assert "--allow-root /home/<user>/.kdcube/pb/workspaces" in HOST
-    assert "cd \\$HOME/.kdcube/pb/workspaces/<alias>" in HOST
+    assert 'W="$HOME/.kdcube/pb/workspaces/<alias>"' in HOST
     assert "mkdir -p ~/.kdcube/pb/workspaces && chmod 700 ~/.kdcube/pb/workspaces" in HOST
-    assert "--add-dir ~/.kdcube/pb/workspaces/<alias>" in HOST
+    assert 'exec claude ${1:+--resume "$1"} --add-dir "$W"' in HOST
     assert "An existing host keeps its old folders until a planned move." in HOST
+    collaboration = _words(PROCEDURES / "problem-board-worker" / "references" / "collaboration.md")
+    assert "worktree add --detach ~/.kdcube/pb/workspaces/<alias>/applications origin/main" in collaboration
+    assert "`~/.kdcube/pb/workspaces/<alias>/<repo>`" in collaboration
 
 
 def test_25_33_43_the_watch_and_its_guard_are_the_agent_s_own():
@@ -350,12 +353,54 @@ def test_12_codex_has_a_complete_headless_login_and_start_contract():
     assert "`ssh -L 1455:localhost:1455 -i <key> <user>@<host>`" in HOST
     assert "`codex login status`" in HOST
     assert "--sandbox danger-full-access --ask-for-approval never --search" in HOST
-    assert "--add-dir \\$HOME/.kdcube" in HOST
+    assert '--add-dir "$HOME/.kdcube"' in HOST
     assert "`on-request` is the attended diagnostic mode" in HOST
     assert "`codex queue --thread <session-id>`" in HOST
-    assert "`codex resume <session-id>" in HOST
+    assert 'exec codex ${1:+resume "$1"} -C "$W"' in HOST
 
     assert "`codex login --device-auth`" in GUIDE
     assert "`~/.local/node/bin/codex`" in GUIDE
     assert "SSH tunnel for Codex browser login" in GUIDE
     assert "Codex uses `--ask-for-approval never`" in GUIDE
+
+
+def test_35_each_agent_starts_and_resumes_from_one_script_with_every_flag(tmp_path):
+    # W304 finding 35 (2026-09-24): a resume command pasted by hand was cut and
+    # both spark1 agents lost three flags. The scripts are run here, as written.
+    import subprocess
+
+    scripts = re.findall(r"cat > ~/.local/bin/start-<agent-name> <<'EOF'\n(.*?)\nEOF\n",
+                         (PROCEDURES / "add-a-worker-host.md").read_text(encoding="utf-8"), re.S)
+    assert len(scripts) == 2, "one start script for Claude Code, one for Codex"
+    home = tmp_path / "home"
+    bin_dir = home / ".local" / "bin"
+    bin_dir.mkdir(parents=True)
+    workspace = home / ".kdcube" / "pb" / "workspaces" / "al"
+    workspace.mkdir(parents=True)
+    for runtime in ("claude", "codex"):
+        stub = bin_dir / runtime
+        stub.write_text(f'#!/bin/sh\necho {runtime} "$@"\n')
+        stub.chmod(0o755)
+    runs = {}
+    for index, body in enumerate(scripts):
+        script = tmp_path / f"start{index}"
+        script.write_text(body.replace("<alias>", "al").replace("<agent-name>", "ag") + "\n")
+        for args in ((), ("sid-1",)):
+            done = subprocess.run(["bash", str(script), *args], env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
+                                  capture_output=True, text=True, check=True)
+            runs[(index, args)] = done.stdout.split()
+    home_s, ws = str(home), str(workspace)
+    claude_flags = ["--add-dir", ws, "--add-dir", f"{home_s}/.kdcube", "--dangerously-skip-permissions",
+                    "--disallowedTools", "AskUserQuestion"]
+    assert runs[(0, ())] == ["claude", *claude_flags]
+    assert runs[(0, ("sid-1",))] == ["claude", "--resume", "sid-1", *claude_flags]
+    codex_flags = ["-C", ws, "--sandbox", "danger-full-access", "--ask-for-approval", "never", "--search",
+                   "--add-dir", f"{home_s}/.kdcube"]
+    assert runs[(1, ())] == ["codex", *codex_flags]
+    assert runs[(1, ("sid-1",))] == ["codex", "resume", "sid-1", *codex_flags]
+    words = " ".join(HOST.split())
+    assert "\"bash -lc 'start-<agent-name>; exec bash'\"" in HOST
+    assert "`start-<agent-name> <session-id>`" in HOST
+    assert "The session id is the agent's stable name without its `claude-code-` or `codex-` prefix." in words
+    assert "**Restart an agent**" in HOST and "Resume as <agent-name>: Start Or Resume." in HOST
+    assert "Agents that must not reach each other run as separate host users." in words

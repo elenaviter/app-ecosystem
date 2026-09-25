@@ -57,7 +57,7 @@ Every step, in the order it happens:
 | 7 | **operator** | create a token for the GitHub identity chosen in step 0 and paste it once, unseen, into `gh` for this user | the identity and its token are the operator's |
 | 7 | host agent | check `gh auth status` and write access for each repository on the card | routine |
 | 8 | either | one empty workspace per agent | routine |
-| 9 | host agent | start one `tmux` session per agent | routine |
+| 9 | host agent | write one start script per agent, then start one `tmux` session per agent with it | routine |
 | 9 | **operator** decides, host agent applies it | approve unattended command mode: Claude Code's one-time bypass warning or Codex's `--ask-for-approval never` policy | it is the operator's risk decision; the host user and repository deploy keys remain the boundary |
 | 10 | the agent, inside its session | enroll and report the profile to authorize | routine |
 | 11 | **operator** | approve each agent's Card, with a code, in a browser on any device | the agent acts in the operator's name |
@@ -488,6 +488,7 @@ LIST=$(pb worker list --format brief </dev/null) || stop "pb worker list failed"
 [ "$(printf '%s\n' "$LIST" | head -n1)" = OK ] || stop "pb worker list did not answer OK"
 ATTENDED=$(printf '%s\n' "$LIST" |
   awk '/^--- /{name=$NF; gsub(/[()]/, "", name)} /^runtime /{kind=$2} /^attends: /{print kind "\t" name "\t" $2}' |
+  # One agent per project is enough: every attendee reads the same project card.
   sort -u -k3,3)
 [ -n "$ATTENDED" ] || stop "no agent of this Linux user attends a project on this host"
 while IFS=$'\t' read -r kind name project; do
@@ -654,16 +655,34 @@ settings file that is not valid JSON is refused and left unchanged. The first-ru
 reports. Without them the card says `limit not reported` (spark1 until
 2026-09-24). Codex agents need none of this.
 
-**Host agent**, one detached `tmux` session per agent, named after the agent and
-started from its direct login (step 1) so the session has the user-session
-environment. The session reads and writes its workspace and the user's `pb`
-state, and does not stop to ask for each command, because nobody approves each command:
+**Host agent**, first, one start script per agent in `~/.local/bin`, holding its
+workspace and every flag, so a start or a restart is one short command and no
+flag can be lost. A long command pasted by hand gets cut: on 2026-09-24 both
+spark1 agents came back without `--add-dir ~/.kdcube`,
+`--dangerously-skip-permissions` and `--disallowedTools AskUserQuestion` (W304
+finding 35). For a Claude Code agent:
 
 ```bash
-tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/.kdcube/pb/workspaces/<alias> && \
-  export PATH=\$HOME/.local/node/bin:\$HOME/.local/bin:\$PATH && \
-  claude --add-dir \$HOME/.kdcube/pb/workspaces/<alias> --add-dir \$HOME/.kdcube --dangerously-skip-permissions \
-    --disallowedTools AskUserQuestion; exec bash'"
+cat > ~/.local/bin/start-<agent-name> <<'EOF'
+#!/usr/bin/env bash
+# Start <agent-name>, or resume it with: start-<agent-name> <session-id>
+set -eu
+W="$HOME/.kdcube/pb/workspaces/<alias>"
+export PATH="$HOME/.local/node/bin:$HOME/.local/bin:$PATH"
+cd "$W"
+exec claude ${1:+--resume "$1"} --add-dir "$W" --add-dir "$HOME/.kdcube" \
+  --dangerously-skip-permissions --disallowedTools AskUserQuestion
+EOF
+chmod 700 ~/.local/bin/start-<agent-name>
+```
+
+Then one detached `tmux` session per agent, named after the agent and started
+from its direct login (step 1) so the session has the user-session environment.
+The session reads and writes its workspace and the user's `pb` state, and does
+not stop to ask for each command, because nobody approves each command:
+
+```bash
+tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'start-<agent-name>; exec bash'"
 ```
 
 - **tmux carries Claude Code's display and mouse.** Claude Code draws with UTF-8 box characters and turns
@@ -678,13 +697,22 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/.kdcube
   interactive question nobody watches: a worker asks the operator by board mail,
   which reaches them wherever they are.
 
-**Host agent**, for a Codex worker, uses this exact unattended worker mode:
+**Host agent**, for a Codex worker, writes its start script with this exact
+unattended worker mode, and starts it the same way:
 
 ```bash
-tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'export PATH=\$HOME/.local/node/bin:\$HOME/.local/bin:\$PATH && \
-  codex -C \$HOME/.kdcube/pb/workspaces/<alias> \
-    --sandbox danger-full-access --ask-for-approval never --search \
-    --add-dir \$HOME/.kdcube; exec bash'"
+cat > ~/.local/bin/start-<agent-name> <<'EOF'
+#!/usr/bin/env bash
+# Start <agent-name>, or resume it with: start-<agent-name> <session-id>
+set -eu
+W="$HOME/.kdcube/pb/workspaces/<alias>"
+export PATH="$HOME/.local/node/bin:$HOME/.local/bin:$PATH"
+exec codex ${1:+resume "$1"} -C "$W" \
+  --sandbox danger-full-access --ask-for-approval never --search \
+  --add-dir "$HOME/.kdcube"
+EOF
+chmod 700 ~/.local/bin/start-<agent-name>
+tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'start-<agent-name>; exec bash'"
 ```
 
 - `--sandbox danger-full-access` gives Codex the rights of the dedicated host
@@ -698,6 +726,11 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'export PATH=\$HOM
   while a person remains attached to answer Codex prompts. Sandbox access and
   approval prompts are separate, so `on-request` can prompt even with
   `danger-full-access`.
+- **One host user is one boundary.** Agents run by the same Linux user share
+  its rights: with Claude Code's bypass mode or Codex's `danger-full-access`,
+  each can read and write the other agents' workspaces and the user's `pb`
+  state. A workspace per agent keeps their work apart by order, not by
+  permission. Agents that must not reach each other run as separate host users.
 - `-C` names the agent's primary workspace. `--add-dir ~/.kdcube` names the
   worker and relay state the session uses. `--search` enables live web search.
 - The login relay wakes this exact session with
@@ -729,12 +762,10 @@ prompt that renews it, as the skill's Start Or Resume step 5 and its
 claude-code-wake reference say. It needs no host step.
 
 A session keeps its board identity only when resumed with its id, from the same
-workspace and with the same flags. Resuming is also how a session started with
-older flags gets the current ones. For Claude Code:
-`claude --resume <session-id> --add-dir ~/.kdcube/pb/workspaces/<alias> --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion`.
-For Codex:
-`codex resume <session-id> -C ~/.kdcube/pb/workspaces/<alias> --sandbox danger-full-access --ask-for-approval never --search --add-dir ~/.kdcube`.
-A new session is a new worker.
+workspace and with the same flags; the start script keeps both. Resuming is also
+how a session started with older flags gets the current ones:
+`start-<agent-name> <session-id>`. The session id is the agent's stable name
+without its `claude-code-` or `codex-` prefix. A new session is a new worker.
 
 ### Watch or talk to an agent
 
@@ -760,6 +791,18 @@ once, without Enter:
 
 Board mail remains the channel for work, because the other agents and the
 project record see it.
+
+**Restart an agent**, for example after a Claude Code or Codex update: attach,
+type `/exit`, and at the shell prompt that the tmux session is left at, run
+`start-<agent-name> <session-id>`. A Claude Code agent comes back without its
+inbox watch and guard prompt, so send it the skill's Start Or Resume prompt:
+
+```bash
+tmux send-keys -t <agent-name> -l 'Use the problem-board-worker skill. Resume as <agent-name>: Start Or Resume.'
+tmux send-keys -t <agent-name> Enter
+```
+
+A Codex agent needs no prompt: its login relay wakes it.
 
 To watch without taking the keyboard, attach read-only:
 `tmux attach -r -t <agent-name>`. Read-only fits a tab left open to follow an
