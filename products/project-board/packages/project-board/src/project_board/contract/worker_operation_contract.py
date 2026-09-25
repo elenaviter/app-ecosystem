@@ -159,6 +159,22 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:admin",),
     },
+    "project.coordinator.make": {
+        "description": (
+            "Make an attending agent the acting coordinator: its Card to the "
+            "coordinator profile, then the role, with both receipts and the "
+            "half that failed."
+        ),
+        "grants": ("work:admin",),
+    },
+    "project.coordinator.make_worker": {
+        "description": (
+            "Make the acting coordinator a worker again: the role back to the "
+            "home coordinator, then its Card to the default worker profile, "
+            "with both receipts."
+        ),
+        "grants": ("work:admin",),
+    },
     "plan.item.update": {
         "description": "Update one plan item under its current revision; new attachment refs must be staged uploads.",
         "grants": ("work:coordinate",),
@@ -412,6 +428,8 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.coordinator.hand_over",
         "project.coordinator.return",
         "project.coordinator.set_away",
+        "project.coordinator.make",
+        "project.coordinator.make_worker",
         "review.accept",
         "review.return",
         "review.cancel",
