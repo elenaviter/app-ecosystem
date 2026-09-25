@@ -54,6 +54,8 @@ def test_an_enrolled_session_shows_its_alias_profile_and_state(tmp_path, monkeyp
         "worker_alias": "claude-ops",
         "profile": "problem-board-claude-ops",
         "state": "pending_authorization",
+        # Nothing from the board yet on a fresh host (W304 finding 47).
+        "board_record": {"state": "not_received", "note": "The relay stores it from its next heartbeat."},
     }
 
 

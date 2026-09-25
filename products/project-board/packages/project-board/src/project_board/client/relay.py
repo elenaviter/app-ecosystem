@@ -763,6 +763,15 @@ class ProblemBoardHostRelayAdapter:
         self._session_report_signatures[project_ref] = signature
 
     def _record_attendance_observation(self, value: Mapping[str, Any]) -> None:
+        own = value.get("self")
+        if isinstance(own, Mapping):
+            # The worker's own owner and account, for whoami and context
+            # (W304 finding 47). A record the host cannot keep never fails
+            # the heartbeat that carried it.
+            try:
+                self.field.record_worker_board_record(self.config.worker_name, own)
+            except DomainError:
+                logger.debug("Could not keep the board's own record for %s.", self.config.worker_name, exc_info=True)
         if "attendances" in value:
             snapshot_is_current = True
             if "attendance_revision" in value:

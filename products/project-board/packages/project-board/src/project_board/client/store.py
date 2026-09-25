@@ -3211,6 +3211,46 @@ class SharedFieldStore:
             atomic_write_json(path, row)
         return read_json(path)
 
+    def record_worker_board_record(
+        self, worker_name: str, record: Mapping[str, Any]
+    ) -> bool:
+        """What the board records about this worker itself (W304 finding 47).
+
+        The heartbeat carries it: the owner's display name and the provider
+        account the host reported. Written only when it changes, and never
+        as activity: ``updated_at`` stays, so presence does not read it.
+        """
+
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        path = self._worker_path(clean_name)
+        owner = record.get("owner") if isinstance(record.get("owner"), Mapping) else {}
+        account = record.get("runtime_account") if isinstance(record.get("runtime_account"), Mapping) else {}
+        value = {
+            "owner": {
+                "user_id": bounded_text(owner.get("user_id") or "", field="owner.user_id", maximum=256),
+                "display_name": bounded_text(owner.get("display_name") or "", field="owner.display_name", maximum=256),
+                "source": bounded_text(owner.get("source") or "", field="owner.source", maximum=64),
+            },
+            "runtime_account": {
+                str(key): bounded_text(item or "", field=f"runtime_account.{key}", maximum=256)
+                for key, item in account.items()
+                if str(key) in {"account_id", "email", "organization"}
+            },
+        }
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            current = row.get("board_record") if isinstance(row.get("board_record"), Mapping) else {}
+            if {key: current.get(key) for key in value} == value:
+                return False
+            row["board_record"] = {**value, "observed_at": utc_now()}
+            atomic_write_json(path, row)
+            return True
+
+    def worker_board_record(self, worker_name: str) -> dict[str, Any]:
+        row = self.read_worker(worker_name)
+        value = row.get("board_record")
+        return dict(value) if isinstance(value, Mapping) else {}
+
     def sync_worker_attendances(
         self, worker_name: str, project_refs: Sequence[str]
     ) -> dict[str, Any]:
