@@ -344,6 +344,8 @@ def test_u5_gh_is_signed_in_per_user_with_the_operators_chosen_identity():
 
 
 def test_12_codex_has_a_complete_headless_login_and_start_contract():
+    assert "`~/.local/node/bin/codex`" in HOST
+    assert "service environment" in HOST
     assert "`codex login --device-auth`" in HOST
     assert "`ssh -L 1455:localhost:1455 -i <key> <user>@<host>`" in HOST
     assert "`codex login status`" in HOST
@@ -354,5 +356,6 @@ def test_12_codex_has_a_complete_headless_login_and_start_contract():
     assert "`codex resume <session-id>" in HOST
 
     assert "`codex login --device-auth`" in GUIDE
+    assert "`~/.local/node/bin/codex`" in GUIDE
     assert "SSH tunnel for Codex browser login" in GUIDE
     assert "Codex uses `--ask-for-approval never`" in GUIDE

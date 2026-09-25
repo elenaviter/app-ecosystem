@@ -31,6 +31,7 @@ def _codex_executable() -> Path | None:
     candidates = [
         "/usr/local/bin/codex",
         "/opt/homebrew/bin/codex",
+        str(Path.home() / ".local" / "node" / "bin" / "codex"),
         str(Path.home() / ".local" / "bin" / "codex"),
         shutil.which("codex"),
     ]

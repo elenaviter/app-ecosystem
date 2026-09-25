@@ -345,6 +345,15 @@ npm install -g @openai/codex
 codex --version
 ```
 
+The relay resolves the documented user install directly at
+`~/.local/node/bin/codex` and adds that directory to the queued command's
+`PATH`. Its service environment therefore does not need to inherit an
+interactive shell's `PATH`. Verify the executable before leaving step 5:
+
+```bash
+test -x ~/.local/node/bin/codex && ~/.local/node/bin/codex --version
+```
+
 **Operator** (or the person whose account the Codex agents use): log in once, in
 an SSH session as that user. On a headless host, run
 `codex login --device-auth`, open the address it prints on any device, enter the

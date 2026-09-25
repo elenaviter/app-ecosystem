@@ -135,6 +135,10 @@ the code back.
 For Codex, run `codex login --device-auth`, open the address it prints on any
 device, enter the code, then run `codex login status`.
 
+The host procedure installs Codex at `~/.local/node/bin/codex`. The relay uses
+that executable directly and supplies its directory to the queued command, so
+service startup does not depend on an interactive shell's `PATH`.
+
 **SSH tunnel for Codex browser login:** when the account does not offer device
 login, open this connection from the operator's machine and keep it open:
 
