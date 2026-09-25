@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.19"
+    assert package["revision"] == "2026.09.24.21"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -825,6 +825,71 @@ def test_coordinator_checks_a_silent_worker_instead_of_waiting() -> None:
     assert "`~/.codex/queue_1.sqlite` `queued_items`" in coordinator
     assert "Codex takes a queued wake only when its current turn ends" in coordinator
     assert "silence is not progress" in coordinator
+
+
+def test_coordinator_rebalances_work_when_a_worker_runs_short_on_tokens() -> None:
+    # Operator, 2026-09-24: token pressure changes routing immediately, for
+    # ordinary workers and for the coordinator itself.
+    coordinator = _words(_read("references/coordinator.md"))
+    operator = _words(
+        (OPERATIONAL_PROCEDURE_ROOT / "operator.md").read_text(encoding="utf-8")
+    )
+
+    assert "Worker budgets" in coordinator
+    assert "usage and limit line on its worker card" in coordinator
+    assert "what the worker reports and what the operator says" in coordinator
+    assert "acts without waiting to be asked" in coordinator
+    assert "Move its unstarted work to a worker with budget left" in coordinator
+    assert "hand over the exact branch and head" in coordinator
+    assert "only work it can finish cheaply" in coordinator
+    assert "Apply the same rule to the coordinator" in coordinator
+    assert "project.coordinator.hand_over" in coordinator
+    assert "project.coordinator.return" in coordinator
+    assert "project reports route to that holder" in coordinator
+    assert "where those operations are not live" in coordinator
+    assert "W313 is the planned durable coordinator handover mechanism" not in coordinator
+    assert "The runtime reported the worker's current token capacity" in operator
+    assert (
+        "[the coordinator reference]"
+        "(./problem-board-worker/references/coordinator.md)"
+    ) in operator
+
+
+def test_coordinator_sets_a_teammate_up_to_work() -> None:
+    # Operator, 2026-09-24: the team prepares missing setup instead of making
+    # each worker spend its budget rediscovering it.
+    coordinator = _words(_read("references/coordinator.md"))
+
+    assert "Set a teammate up to work" in coordinator
+    assert "development environment, access grant, repository, or piece of project context" in coordinator
+    assert "update the owning procedure for setup shared by projects" in coordinator
+    assert "update the project's facts or environment page" in coordinator
+    assert "ask the teammate who already knows the answer" in coordinator
+    assert "turns every reported gap into a procedure or project-page fix" in coordinator
+    assert "welcomes it, names the project's prepared context" in coordinator
+
+
+def test_the_project_journal_accumulates_everything_from_day_one() -> None:
+    # Operator, 2026-09-24: all project knowledge is journal-readable by every
+    # attending agent, including a project that starts with no prior record.
+    coordinator = _words(_read("references/coordinator.md"))
+    setup = _words(
+        (OPERATIONAL_PROCEDURE_ROOT / "first-time-setup.md").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert "Keep everything known in the project journal" in coordinator
+    assert "project journal home is the team's complete shared record" in coordinator
+    assert "operator rulings with their reasons" in coordinator
+    assert "runtime-window outcomes" in coordinator
+    assert "Whoever learns a project-wide fact writes a journal entry" in coordinator
+    assert "a successor coordinator begins by searching the journal" in coordinator
+    assert "Starting a project" in coordinator
+    assert "creates `project-facts.md` and `project-environment.md`" in coordinator
+    assert "either the current fact or `Not known yet`" in coordinator
+    assert "Automatic page seeding by the board is a product follow-up" in coordinator
+    assert "[Starting a project](./problem-board-worker/references/coordinator.md#starting-a-project)" in setup
 
 
 def test_coordinator_stays_reachable_through_every_window() -> None:
