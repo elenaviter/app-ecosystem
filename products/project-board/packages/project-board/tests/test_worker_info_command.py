@@ -106,3 +106,17 @@ def test_two_hundred_characters_is_accepted(tmp_path, monkeypatch):
     host, identity, field, config = _fresh_host(tmp_path)
     monkeypatch.setenv("PROBLEM_BOARD_CONFIG", str(host.path))
     assert _cli(identity, "info", "y" * 200)["info_text"] == "y" * 200
+
+
+def test_a_worker_on_no_project_publishes_it_on_the_discovery_heartbeat(tmp_path, monkeypatch):
+    host, identity, field, config = _fresh_host(tmp_path)
+    monkeypatch.setenv("PROBLEM_BOARD_CONFIG", str(host.path))
+    board = InfoBoard(identity.worker_name, linked=False)
+    board.recipient = identity.worker_name
+    adapter = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board)
+    asyncio.run(adapter.poll_attendances_once())
+
+    _cli(identity, "info", LINE)
+    asyncio.run(adapter.poll_attendances_once())
+    assert _heartbeats(board)[-1]["worker_info"] == {"text": LINE}
+    assert _cli(identity, "info")["on_board"] is True
