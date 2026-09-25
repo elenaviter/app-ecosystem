@@ -90,18 +90,12 @@ class KeyedHistoryStore:
         created: datetime | None = None,
         slug: str = "",
     ) -> Path:
-        prior = self.partitioned.find(
-            record_id,
-            agents=[agent],
-            within_days=self.retention_days,
-        )
-        if prior is not None:
-            prior.unlink(missing_ok=True)
-        return self.partitioned.write(
+        return self.partitioned.replace(
             agent,
             record_id,
             created or record_time(row),
             row,
+            within_days=self.retention_days,
             slug=slug,
         )
 

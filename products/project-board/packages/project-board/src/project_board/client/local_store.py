@@ -43,7 +43,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
-from .io import atomic_write_json, read_json
+from .io import atomic_write_json, exclusive_lock, read_json
 
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,12 @@ class PartitionedStore:
         self.root = Path(root)
         self.store = store
 
+    @property
+    def lock(self) -> Path:
+        """The mutation lock shared by writers and retention for this store."""
+
+        return self.root / ".partitioned-store.lock"
+
     # -- paths ---------------------------------------------------------------
 
     def agent_root(self, agent: str) -> Path:
@@ -188,14 +194,43 @@ class PartitionedStore:
         *,
         slug: str = "",
     ) -> Path:
-        """Write one record into its hour folder, then index its id for the day.
+        """Write one record and its day index entry as one retention-safe mutation."""
 
-        The caller holds the lock that serializes writes to this store, so the
-        append follows a file that exists. A crash between the two leaves a
-        record the index does not name, never an index entry without a record.
-        Housekeeping compacts duplicate entries before enforcing retention;
-        the relay delivery path never reads or rewrites retained index history.
-        """
+        with exclusive_lock(self.lock):
+            return self._write_unlocked(agent, record_id, created, row, slug=slug)
+
+    def replace(
+        self,
+        agent: str,
+        record_id: str,
+        created: datetime,
+        row: Mapping[str, Any],
+        *,
+        within_days: int,
+        slug: str = "",
+    ) -> Path:
+        """Replace one stable-key record under the store mutation lock."""
+
+        with exclusive_lock(self.lock):
+            prior = self.find(
+                record_id,
+                agents=[agent],
+                within_days=within_days,
+            )
+            if prior is not None:
+                prior.unlink(missing_ok=True)
+            return self._write_unlocked(agent, record_id, created, row, slug=slug)
+
+    def _write_unlocked(
+        self,
+        agent: str,
+        record_id: str,
+        created: datetime,
+        row: Mapping[str, Any],
+        *,
+        slug: str = "",
+    ) -> Path:
+        """Write a record while :attr:`lock` is held."""
 
         path = self.record_path(agent, created, record_id, slug=slug)
         atomic_write_json(path, row)
@@ -375,6 +410,22 @@ class PartitionedStore:
         remaining hour folders are removed until both optional per-agent
         bounds hold (W287, LS2).
         """
+
+        with exclusive_lock(self.lock):
+            return self._expire_unlocked(
+                cutoff=cutoff,
+                max_bytes_per_agent=max_bytes_per_agent,
+                max_records_per_agent=max_records_per_agent,
+            )
+
+    def _expire_unlocked(
+        self,
+        *,
+        cutoff: datetime,
+        max_bytes_per_agent: int,
+        max_records_per_agent: int,
+    ) -> dict[str, int]:
+        """Apply retention while :attr:`lock` excludes writers."""
 
         removed = {"partitions": 0, "records": 0}
         byte_limit = max(0, int(max_bytes_per_agent))

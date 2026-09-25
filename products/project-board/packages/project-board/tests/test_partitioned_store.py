@@ -8,9 +8,12 @@ dev-main) to keep the newest 25 or 50.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import logging
 import re
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -181,6 +184,76 @@ def test_retention_compacts_stable_key_rewrites_and_counts_index_bytes(
 
     assert removed == {"partitions": 1, "records": 1}
     assert not ids.exists()
+
+
+def test_retention_cannot_replace_an_index_after_a_concurrent_append(
+    tmp_path,
+    monkeypatch,
+):
+    store = PartitionedStore(tmp_path / "events", store="events")
+    store.write(
+        "codex-api",
+        "old-event",
+        _at(10),
+        {"event_id": "old-event", "created_at": _at(10).isoformat()},
+    )
+    rebuild_reached = threading.Event()
+    writer_started = threading.Event()
+    writer_lock_attempted = threading.Event()
+    writer_done = threading.Event()
+    completed_during_rebuild: list[bool] = []
+    original_write = local_store.atomic_write_text
+    original_lock = getattr(local_store, "exclusive_lock", None)
+
+    if original_lock is not None:
+
+        @contextmanager
+        def observe_writer_lock(path):
+            if threading.current_thread().name == "partitioned-writer":
+                writer_lock_attempted.set()
+            with original_lock(path):
+                yield
+
+        monkeypatch.setattr(local_store, "exclusive_lock", observe_writer_lock)
+
+    def write_during_rebuild():
+        assert rebuild_reached.wait(timeout=2)
+        writer_started.set()
+        store.write(
+            "codex-api",
+            "new-event",
+            _at(11),
+            {"event_id": "new-event", "created_at": _at(11).isoformat()},
+        )
+        writer_done.set()
+
+    def pause_rebuild(path, text):
+        rebuild_reached.set()
+        assert writer_started.wait(timeout=2)
+        deadline = time.monotonic() + 2
+        while not writer_done.is_set() and not writer_lock_attempted.is_set():
+            assert time.monotonic() < deadline, (
+                "writer neither completed nor reached the store lock"
+            )
+            time.sleep(0.001)
+        completed_during_rebuild.append(writer_done.is_set())
+        original_write(path, text)
+
+    monkeypatch.setattr(local_store, "atomic_write_text", pause_rebuild)
+    writer = threading.Thread(
+        target=write_during_rebuild,
+        name="partitioned-writer",
+    )
+    writer.start()
+
+    store.expire(cutoff=_at(1), max_bytes_per_agent=10_000)
+    writer.join(timeout=2)
+
+    assert not writer.is_alive()
+    assert completed_during_rebuild == [False]
+    assert store.find(
+        "new-event", agents=["codex-api"], within_days=36500
+    ) is not None
 
 
 @pytest.fixture
