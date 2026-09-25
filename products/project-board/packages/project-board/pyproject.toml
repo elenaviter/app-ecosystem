@@ -29,6 +29,7 @@ dependencies = [
 test = [
     "pytest>=8,<10",
     "pytest-asyncio>=0.23,<2",
+    "pytest-xdist>=3.8,<4",
 ]
 
 [project.scripts]

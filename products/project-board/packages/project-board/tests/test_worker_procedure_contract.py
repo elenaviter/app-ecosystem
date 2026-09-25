@@ -800,6 +800,24 @@ def test_testing_procedure_runs_the_packaged_dependency_preflight_before_the_sui
     assert "$PB/procedures/dependency_preflight.py" not in testing
 
 
+def test_testing_procedure_separates_the_fast_pr_gate_from_the_merge_gate() -> None:
+    testing = _words(
+        (PACKAGE_ROOT / "src" / "project_board" / "procedures" / "testing.md").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert "Before a pull request" in testing
+    assert "touched test files" in testing
+    assert '`-n auto -m "not slow"`' in testing
+    assert "Before merge" in testing
+    assert "disposable PostgreSQL database" in testing
+    assert "PROBLEM_BOARD_HOST_PYTHON" in testing
+    assert "injected clock, event, or retry schedule" in testing
+    assert "@pytest.mark.slow" in testing
+    assert "--durations=20" in testing
+
+
 def test_operator_input_goes_through_the_board_not_a_terminal_prompt() -> None:
     # Operator, 2026-09-23: "in PB the agents cannot be sure the operator is
     # looking into their terminals. and if there are inputs needed, the agent
