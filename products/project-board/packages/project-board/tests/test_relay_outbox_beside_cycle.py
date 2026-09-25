@@ -205,6 +205,83 @@ def test_outbox_leaves_while_an_attendance_step_is_blocked(tmp_path):
     asyncio.run(scenario())
 
 
+def test_write_during_an_active_side_drain_leaves_without_the_safety_probe(
+    tmp_path,
+):
+    host, _identity, channel = make_host(tmp_path)
+    supervisor = relay.ProblemBoardRelaySupervisor(
+        config_path=host.path,
+        connector=lambda *_args, **_kwargs: None,
+    )
+    outbox = OutboxStore(host.field_root / ".problem-board")
+
+    class _BlockingFirstClient(_OutboxClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def action(self, **kwargs):
+            if not self.calls:
+                self.first_started.set()
+                await self.release_first.wait()
+            return await super().action(**kwargs)
+
+    client = _BlockingFirstClient()
+    _bind_session(host, channel, supervisor, client)
+
+    async def scenario():
+        supervisor._ensure_outbox_server()
+        await _wait_for_socket(
+            local_wake.relay_outbox_wake_socket_path(host.field_root)
+        )
+        try:
+            outbox.write_pending(_row(channel.worker_name, suffix="first"))
+            await client.first_started.wait()
+
+            outbox.write_pending(_row(channel.worker_name, suffix="second"))
+            # Let the server consume this wake while the first drain still owns
+            # the worker. Drain completion must arrange the follow-up pass.
+            await asyncio.sleep(0.05)
+            client.release_first.set()
+
+            await _wait_for_calls(client, 2, timeout=0.5)
+        finally:
+            client.release_first.set()
+            await supervisor.stop_outbox_server()
+
+    asyncio.run(scenario())
+    assert len(client.calls) == 2
+
+
+def test_twenty_row_batch_wakes_the_server_for_its_remainder(tmp_path):
+    host, _identity, channel = make_host(tmp_path)
+    supervisor = relay.ProblemBoardRelaySupervisor(
+        config_path=host.path,
+        connector=lambda *_args, **_kwargs: None,
+    )
+    client = _OutboxClient()
+    _bind_session(host, channel, supervisor, client)
+    outbox = OutboxStore(host.field_root / ".problem-board")
+
+    # No listener exists yet, so startup has only the durable rows to inspect.
+    # One flush claims 20; completion must wake a second bounded flush for row 21.
+    for index in range(21):
+        outbox.write_pending(
+            _row(channel.worker_name, suffix=f"bounded-{index:02d}")
+        )
+
+    async def scenario():
+        supervisor._ensure_outbox_server()
+        try:
+            await _wait_for_calls(client, 21, timeout=0.5)
+        finally:
+            await supervisor.stop_outbox_server()
+
+    asyncio.run(scenario())
+    assert len(client.calls) == 21
+
+
 def test_cycle_and_side_drain_serialize_one_worker_card(tmp_path):
     host, _identity, channel = make_host(tmp_path)
     supervisor = relay.ProblemBoardRelaySupervisor(

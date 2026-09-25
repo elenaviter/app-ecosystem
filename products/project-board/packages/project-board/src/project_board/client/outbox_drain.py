@@ -142,7 +142,12 @@ class RelayOutboxDrainServer:
             if not self.session_matches(host, channel, session):
                 continue
             task = asyncio.create_task(
-                self._drain(channel, session, project_refs),
+                self._drain(
+                    channel,
+                    session,
+                    project_refs,
+                    field_root=host.field_root,
+                ),
                 name=f"problem-board-outbox-{name}",
             )
             self.draining[name] = task
@@ -154,12 +159,16 @@ class RelayOutboxDrainServer:
         channel: WorkerChannelConfig,
         session: OutboxSession,
         project_refs: Sequence[str],
+        *,
+        field_root: Path,
     ) -> None:
+        completed = False
         try:
             for project_ref in project_refs[: self.PROJECT_LIMIT]:
                 if session.closing:
-                    break
+                    return
                 await session.adapter._flush_outbox(project_ref=project_ref)
+            completed = True
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - leases and the cycle are recovery
@@ -172,6 +181,12 @@ class RelayOutboxDrainServer:
             current = asyncio.current_task()
             if self.draining.get(channel.worker_name) is current:
                 self.draining.pop(channel.worker_name, None)
+                if completed:
+                    # A write wake can be consumed while this worker is still
+                    # draining, and one flush claims at most 20 rows. Wake only
+                    # after removing the marker so the next pass can claim any
+                    # durable remainder immediately.
+                    notify_relay_outbox(field_root)
 
 
 __all__ = ["OutboxSession", "RelayOutboxDrainServer"]
