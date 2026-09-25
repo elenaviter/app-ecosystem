@@ -87,7 +87,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.25.8"
+    assert package["revision"] == "2026.09.25.9"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -858,8 +858,9 @@ def test_coordinator_checks_a_silent_worker_instead_of_waiting() -> None:
 
 
 def test_coordinator_rebalances_work_when_a_worker_runs_short_on_tokens() -> None:
-    # Operator, 2026-09-24: token pressure changes routing immediately, for
-    # ordinary workers and for the coordinator itself.
+    # Operator, 2026-09-24 and 2026-09-25: token pressure changes routing
+    # immediately, while scarce workers on hosts with unique resources are
+    # preserved as the hands for work that only those hosts can perform.
     coordinator = _words(_read("references/coordinator.md"))
     operator = _words(
         (OPERATIONAL_PROCEDURE_ROOT / "operator.md").read_text(encoding="utf-8")
@@ -868,6 +869,20 @@ def test_coordinator_rebalances_work_when_a_worker_runs_short_on_tokens() -> Non
     assert "Worker budgets" in coordinator
     assert "usage and limit line on its worker card" in coordinator
     assert "what the worker reports and what the operator says" in coordinator
+    assert "keep a small routing inventory in the project's facts or environment page" in coordinator
+    assert "the machine-local resources and capabilities" in coordinator
+    assert "workers that can act as hands on that host" in coordinator
+    assert "workers that share a provider account or quota, grouped as one quota pool" in coordinator
+    assert "Their limits are coupled, not independent capacity" in coordinator
+    assert "Record `Not known yet` instead of assuming" in coordinator
+    assert "Reserve scarce host-local workers" in coordinator
+    assert "do not spend the last capable local worker on portable work" in coordinator
+    assert "Route portable work, including review, research and planning" in coordinator
+    assert "to another host or an independent quota pool first" in coordinator
+    assert "the reset is not soon enough for the work, replan before exhaustion" in coordinator
+    assert "If the work can safely wait for an imminent reset, wait instead of churning ownership" in coordinator
+    assert "Do not build a scheduler or assign token scores" in coordinator
+    assert "these three questions are the whole rule" in coordinator
     assert "acts without waiting to be asked" in coordinator
     assert "Move its unstarted work to a worker with budget left" in coordinator
     assert "hand over the exact branch and head" in coordinator
