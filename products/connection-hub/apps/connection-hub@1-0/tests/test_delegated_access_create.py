@@ -55,6 +55,10 @@ class _RecordingService:
         self.calls.append({"method": "extend", "user": user, **kwargs})
         return {"ok": True}
 
+    async def apply_authorization_profile(self, user, **kwargs):
+        self.calls.append({"method": "apply_profile", "user": user, **kwargs})
+        return {"ok": True}
+
 
 @pytest.fixture()
 def entrypoint(monkeypatch):
@@ -957,3 +961,33 @@ def test_an_ordinary_edit_never_revokes_a_card():
     assert "revoke rather than keep an empty card" not in source
     assert "An edit that leaves nothing recognised is REFUSED" in source
     assert "delegated_access_requires_resource_grants" in source
+
+
+# -- the Card lever (W313 step 2) ----------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_profile_forwards_the_card_the_profile_and_the_revision(entrypoint, monkeypatch):
+    monkeypatch.setattr(entrypoint.module, "_audit_request_id", lambda _request: "req-1")
+    result = await entrypoint.module.ConnectionHubEntrypoint.delegated_access_apply_profile(
+        entrypoint.instance,
+        data={"access_id": "aut_1", "profile": "coordinator", "expected_card_revision": "4"},
+    )
+    assert result == {"ok": True}
+    call = entrypoint.service.calls[-1]
+    assert call["method"] == "apply_profile"
+    assert call["access_id"] == "aut_1"
+    assert call["profile"] == "coordinator"
+    assert call["expected_card_revision"] == 4
+    assert call["request_id"] == "req-1"
+
+
+@pytest.mark.asyncio
+async def test_apply_profile_with_a_malformed_revision_is_a_bad_request(entrypoint):
+    result = await entrypoint.module.ConnectionHubEntrypoint.delegated_access_apply_profile(
+        entrypoint.instance,
+        data={"access_id": "aut_1", "profile": "worker", "expected_card_revision": "not-a-number"},
+    )
+    assert result["ok"] is False
+    assert result["error"] == "invalid_delegated_access_request"
+    assert entrypoint.service.calls == []

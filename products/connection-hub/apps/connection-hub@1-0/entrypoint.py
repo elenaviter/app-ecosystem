@@ -253,6 +253,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "delegated_access_renew",
     "delegated_access_revoke",
     "delegated_access_update",
+    "delegated_access_apply_profile",
     "delegated_agent_grant_create",
     "delegated_to_kdcube_connect_credential",
     "delegated_to_kdcube_disconnect",
@@ -4930,6 +4931,68 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 exc,
             )
             return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+
+    @api(
+        method="POST",
+        alias="delegated_access_apply_profile",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_access_apply_profile"),
+    )
+    async def delegated_access_apply_profile(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Re-apply a descriptor authorization profile to an OAuth Card in place.
+
+        The Card lever (W313 step 2): ``profile`` names a profile the Card's
+        resource declares (``coordinator`` raises an agent to the coordinator
+        set, ``worker`` returns it to the default worker set). The Card keeps
+        its access id and credential; the change applies on its next call, and
+        the new revision records who applied which profile.
+        """
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        access_id = str(payload.get("access_id") or "").strip()
+        profile = str(payload.get("profile") or "").strip()
+        LOGGER.info(
+            "[automation-access.apply-profile] request access_id=%s profile=%s expected_card_revision=%s",
+            access_id,
+            profile,
+            payload.get("expected_card_revision"),
+        )
+        try:
+            access_service = await _automation_access_service(self, request)
+            result = await access_service.apply_authorization_profile(
+                user,
+                access_id=access_id,
+                profile=profile,
+                expected_card_revision=_expected_card_revision(payload),
+                request_id=_audit_request_id(request),
+            )
+        except ValueError as exc:
+            LOGGER.warning(
+                "[automation-access.apply-profile] rejected access_id=%s reason=%s",
+                access_id,
+                exc,
+            )
+            return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+        LOGGER.info(
+            "[automation-access.apply-profile] result access_id=%s profile=%s ok=%s error=%s status=%s",
+            access_id,
+            profile,
+            (result or {}).get("ok"),
+            (result or {}).get("error"),
+            (result or {}).get("status"),
+        )
+        return result
 
     @api(
         method="POST",

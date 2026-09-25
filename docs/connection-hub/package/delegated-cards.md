@@ -1068,8 +1068,10 @@ authorization profile starts from that profile. A first consent without one
 starts from the resources and operations covered by the client's requested
 OAuth grants. A re-consent starts from the exact current Card, including a Card
 intentionally narrowed to zero operations, and lists new catalog operations
-separately and unchecked. Reconnect therefore keeps the existing Card; a
-client applies a profile again only when it requests a replacement Card. The
+separately and unchecked. Reconnect therefore keeps the existing Card. A
+profile is applied again either by a replacement Card or, keeping the Card, by
+its grantor with
+[`delegated_access_apply_profile`](#re-apply-a-profile-in-place-delegated_access_apply_profile). The
 screen states the requested role or grants once in its request summary instead
 of maintaining a second, read-only authority list beside the editable one.
 
@@ -1220,6 +1222,38 @@ without `resource_selection` reaches nothing else. Manual and resident cards
 pass no reachable set and keep every delegable door, because their callers
 address doors by configuration. The read-only card leads with the entry door,
 badged `client door`, and shows the rest as served through it.
+
+### Re-apply a profile in place: `delegated_access_apply_profile`
+
+The Card lever (Problem Board W313, operator ruling of 2026-09-24): one action
+gives an agent's Card the coordinator operation set, and one returns it to the
+default worker set. Before it, a raise revoked the Card and consented a new
+one, which changed the access id and with it the agent's principal.
+
+```text
+POST delegated_access_apply_profile
+  access_id               the Card
+  profile                 a profile name the Card's resource declares (worker, coordinator)
+  expected_card_revision  optional precondition, as for delegated_access_update
+```
+
+- **Who:** the Card's grantor, the same ownership `delegated_access_update`
+  requires. Only an OAuth Card: any other family is refused with
+  `delegated_access_profile_requires_oauth_card`.
+- **What it selects:** for each resource on the Card that declares the
+  profile, exactly what a first consent with that profile would propose
+  against the active catalog: the profile's operations and their real grants.
+  `worker` is therefore the declared worker list, never what the Card held
+  before a raise. A resource that does not declare the profile keeps its
+  selection. When no Card resource declares it, the call is refused with
+  `delegated_access_profile_not_declared` and `available_profiles`.
+- **How it saves:** through `delegated_access_update`, so the precondition,
+  catalog pruning and every refusal of an ordinary edit apply. The Card keeps
+  its access id and credential, and the change applies on its next call.
+- **What it records:** the new revision's `provenance.authorization_profile_audit`
+  (`connection_hub.authorization_profile.audit.v1`) names the profile, the
+  resources and operations applied, the actor, the request id, the time, the
+  revisions before and after, and the operations before and after.
 
 ## Multi-Resource Cards
 
