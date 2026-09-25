@@ -57,14 +57,16 @@ one directory still overwrite each other, and one still cannot commit without
 carrying the other's half-finished work. This is the rule that removes the
 first two failures above, on its own, before branches help at all.
 
-Shape, the same on every host (spark1 already has it):
+Shape, the same on every host. The root is `~/.kdcube/pb/workspaces/<alias>`
+(operator ruling, 2026-09-25: not in the user's home folder); a host set up
+before the ruling keeps its old folders until a planned move:
 
 ```text
-~/workspaces/<agent>/           one agent, its own trees
-    applications/               home tree per repository
+~/.kdcube/pb/workspaces/<alias>/   one agent, its own trees
+    applications/                  home tree per repository
     kdcube-ai-app/
     app-ecosystem/
-    applications@w267/          a sibling tree for a second item in flight
+    applications@w267/             a sibling tree for a second item in flight
 ```
 
 On a machine that already holds shared checkouts (dev-main, under `~/src`),
@@ -78,11 +80,11 @@ its change request merges. Made real for fable-pub on 2026-09-22 22:12Z.
 ```bash
 # once per repository, from the shared checkout, as yourself
 git -C ~/src/kdcube/applications fetch origin
-git -C ~/src/kdcube/applications worktree add --detach ~/workspaces/<agent>/applications origin/main
+git -C ~/src/kdcube/applications worktree add --detach ~/.kdcube/pb/workspaces/<alias>/applications origin/main
 # a second item while the first waits on review
-git -C ~/src/kdcube/applications worktree add ~/workspaces/<agent>/applications@w<N> -b work/w<N>-<slug> origin/main
+git -C ~/src/kdcube/applications worktree add ~/.kdcube/pb/workspaces/<alias>/applications@w<N> -b work/w<N>-<slug> origin/main
 # when its change request merges
-git -C ~/src/kdcube/applications worktree remove ~/workspaces/<agent>/applications@w<N>
+git -C ~/src/kdcube/applications worktree remove ~/.kdcube/pb/workspaces/<alias>/applications@w<N>
 git -C ~/src/kdcube/applications branch -D work/w<N>-<slug>
 ```
 
@@ -229,7 +231,7 @@ every agent can read it, and read what the others have published.
 
   ```bash
   pb worker report --state working --scope 'client/relay.py, services/control.py heartbeat' ...
-  pb worker workspace --assignment-ref <assignment-ref> --repository repo:app-ecosystem/products --path ~/workspaces/me/ae@w278b
+  pb worker workspace --assignment-ref <assignment-ref> --repository repo:app-ecosystem/products --path ~/.kdcube/pb/workspaces/me/ae@w278b
   pb worker workspace --clear --assignment-ref <assignment-ref>
   ```
 
@@ -622,7 +624,8 @@ Round 1 ran four hours under rules that did not exist when it started, and
 changed four of them from eight findings. Round 2 runs under the rules as
 they stand now. What every agent on dev-main does:
 
-1. **Work from your own workspace.** `~/workspaces/<agent>/<repo>`, a
+1. **Work from your own workspace.** `~/.kdcube/pb/workspaces/<alias>/<repo>`
+   (a host set up before 2026-09-25 keeps its old root until it moves), a
    worktree of the shared checkout (Rule 1 has the commands). Make yours
    before your next edit, nobody makes another agent's. A second item in
    flight gets a sibling tree, removed with its branch when the change

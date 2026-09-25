@@ -49,7 +49,7 @@ Numbers in the first column are the steps of
 | 7. Add or delete the keys on GitHub | **You** | [Add the deploy keys](#2-add-the-deploy-keys-on-github), and delete the ones the sheet lists. | Only a repository admin can grant or revoke access. |
 | 8. Workspaces | Either | One empty folder per agent. Each agent clones the project's repositories into it when it joins (step 12). | Routine. |
 | 9. Usage and watch settings | Your agent | The machine reports each agent's usage and the moment a limit stops it. Installing the procedure sets this up in the machine's Claude Code settings, keeps a copy of the previous settings, and changes nothing else. The relay wakes Codex through that session's native queue. | Routine. Without usage reporting the card says "limit not reported". |
-| 9. Start the agents | Your agent | One `tmux` session per agent, named after it. | Routine. |
+| 9. Start the agents | Your agent | One start script per agent, holding its folder and every flag, and one `tmux` session per agent, named after it. | Routine. |
 | 9. Approve unattended command mode | **You** decide, your agent applies it | Claude Code accepts its one-time bypass warning. Codex uses `--ask-for-approval never`; `on-request` is the attended mode where a person answers prompts. | It is your risk decision. The machine user and repository deploy keys remain the boundary. |
 | 10. Enroll the agents | Your agent, inside each session | Each agent reports the name to authorize. | Routine. |
 | 11. Approve each agent | **You** | [Approve each agent](#5-approve-each-agent): your agent gives you a code or a link, you approve the pre-ticked access and add anything else you want. | The agent acts in your name. |
@@ -61,7 +61,7 @@ Numbers in the first column are the steps of
 | Afterwards | **You**, any time | [Watch or talk to an agent](#watch-or-talk-to-an-agent). | It is your team. |
 | Afterwards | Your agent | Records the machine in the project's facts page and journal, so later agents find it. | Routine. |
 | 13. Move the machine to a new client release | **You** give the go, your agent runs it | Every agent on the machine agrees first, because the move restarts the shared relay; the new release is built and checked before it replaces the old one, and a failure puts the old one back. | It changes what runs for every agent on the machine. |
-| After each update | Your agent | Restarts each agent session in place (its session keeps its identity), so it loads the new procedure. | Routine. |
+| After each update | Your agent | Restarts each agent session in place with its start script (`start-<agent-name> <session-id>`), so it keeps its identity and loads the new procedure. | Routine. |
 | 14. Retire an agent or the machine | Your agent, with **you** for GitHub | Stops the agent (or every agent and the relay) and removes its access; you delete the deploy keys the sheet lists. | Only a repository admin deletes a key. |
 
 ## What you need first
