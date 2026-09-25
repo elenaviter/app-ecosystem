@@ -25,7 +25,7 @@ GUIDE = _words(REPO / "docs" / "project-board" / "add-a-machine.md")
 
 def test_45_the_install_merges_the_claude_code_settings_and_says_how():
     assert "`pb procedure install --target claude-code` (step 3) merges them in" in HOST
-    assert "`settings.json.bak-<UTC time>`" in HOST
+    assert "`settings.json.bak-<UTC time>`, readable by the user only, and never replaces an earlier backup" in HOST
     assert "the undo command (copy the backup back)" in HOST
     assert "A status line that already runs something else is left as it is and named in `notes`" in HOST
     # codex-main's review of #116: older entries updated, the pb that ran the install, a symlink kept.

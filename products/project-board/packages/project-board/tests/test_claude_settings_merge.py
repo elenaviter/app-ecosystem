@@ -255,3 +255,25 @@ def test_no_pb_executable_is_refused(tmp_path):
         pb_command(str(tmp_path / "project_board" / "__main__.py"), which=lambda name: None)
 
     assert refused.value.code == "work_claude_settings_pb_unresolved"
+
+
+# -- the backup is as private as the settings (codex-main re-review of #116) --------------
+
+
+def test_the_backup_is_private_and_an_earlier_one_is_kept(tmp_path, monkeypatch):
+    _write(tmp_path, {"model": "opus"})
+    (tmp_path / ".claude" / "settings.json").chmod(0o600)
+    old_umask = os.umask(0o022)
+    try:
+        first = merge_claude_code_settings(tmp_path, pb=PB)
+        _write(tmp_path, {"model": "sonnet"})
+        second = merge_claude_code_settings(tmp_path, pb=PB)
+    finally:
+        os.umask(old_umask)
+
+    assert os.stat(first["backup"]).st_mode & 0o777 == 0o600
+    assert os.stat(second["backup"]).st_mode & 0o777 == 0o600
+    # Two runs in the same second keep two backups.
+    assert first["backup"] != second["backup"]
+    assert json.loads(Path(first["backup"]).read_text(encoding="utf-8")) == {"model": "opus"}
+    assert json.loads(Path(second["backup"]).read_text(encoding="utf-8")) == {"model": "sonnet"}

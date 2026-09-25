@@ -151,6 +151,30 @@ def _merge_event(groups: Any, *, command: str, args: tuple[str, ...], matcher: b
     return result, owned
 
 
+def _private_backup(path: Path, content: bytes) -> Path:
+    """A new ``settings.json.bak-<UTC time>`` readable by the user only; an earlier backup is never replaced."""
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    for attempt in range(1000):
+        backup = path.with_name(f"{path.name}.bak-{stamp}" + (f".{attempt}" if attempt else ""))
+        try:
+            descriptor = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(descriptor, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return backup
+    raise DomainError(
+        "work_claude_settings_backup_unavailable",
+        f"No free backup name beside {path}, so it was left unchanged.",
+        status=409,
+        details={"path": str(path)},
+    )
+
+
 def _invalid(path: Path, reason: str) -> DomainError:
     return DomainError(
         "work_claude_settings_invalid",
@@ -223,10 +247,7 @@ def merge_claude_code_settings(home: str | Path, *, pb: str | None = None) -> di
     backup = ""
     if changed:
         if existed:
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            backup_path = path.with_name(f"{path.name}.bak-{stamp}")
-            shutil.copyfile(target, backup_path)
-            backup = str(backup_path)
+            backup = str(_private_backup(path, target.read_bytes()))
         atomic_write_json(target, settings)
     return {
         "path": str(path),

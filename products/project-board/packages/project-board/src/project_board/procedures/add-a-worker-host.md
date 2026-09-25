@@ -476,7 +476,8 @@ missing, and changes nothing on a second run. Older Problem Board entries are
 brought up to date in place: a bare `pb` becomes the full path, and a
 `StopFailure` matcher that covered only `rate_limit` gains every other stopping
 error. Before it writes, it keeps a copy of the file as
-`settings.json.bak-<UTC time>`. A `settings.json` that is a symlink stays one,
+`settings.json.bak-<UTC time>`, readable by the user only, and never replaces
+an earlier backup. A `settings.json` that is a symlink stays one,
 and the file it points to is what changes. Its output, `claude_code_settings`,
 lists what it added, updated and kept, the backup and the undo command (copy the
 backup back). A status line that already runs something else is left as it is
