@@ -44,10 +44,16 @@ pull request. This keeps review moving while preserving the full gate:
    `PB_TEST_POSTGRES_DSN` and `PROBLEM_BOARD_HOST_PYTHON` unset. Record the wall
    time, result counts, expected skips, and `--durations=20`.
 2. **Before merge:** use a disposable PostgreSQL database and an installed
-   Problem Board host interpreter, then run the whole suite with `-n auto`
-   and no marker exclusion. This run includes the environment-backed checks
-   and every test marked `slow`; it runs while the reviewer reads the diff and
-   must be green before merge.
+   Problem Board host interpreter, then run the whole suite with `-n 8` and no
+   marker exclusion. This run includes the environment-backed checks and every
+   test marked `slow`; it runs while the reviewer reads the diff and must be
+   green before merge.
+
+The PostgreSQL tests create independent asyncpg pools. Eight workers fit the
+default 100-connection budget of the platform suite's disposable database. A
+larger complete-tier worker count needs a test database configured with at
+least ten connections per worker plus headroom; `-n auto` remains the default
+for the fast gate, where PostgreSQL tests are skipped.
 
 Relay tests model elapsed time with an injected clock, event, or retry
 schedule. A test that genuinely requires elapsed wall time carries
@@ -162,7 +168,7 @@ $AE/products/connection-hub/packages/connection-hub/src:\
 $AE/products/connection-hub/packages/connection-hub-cli/src:\
 $PROJECT_BOARD" \
   <ai-app chat-processor python3.11> -m pytest "$PB/tests" \
-    -q -rs -n auto --durations=20
+    -q -rs -n 8 --durations=20
 ```
 
 The fast run skips PostgreSQL and the two installed-host checks with their exact

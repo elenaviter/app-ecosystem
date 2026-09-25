@@ -813,6 +813,8 @@ def test_testing_procedure_separates_the_fast_pr_gate_from_the_merge_gate() -> N
     assert "Before merge" in testing
     assert "disposable PostgreSQL database" in testing
     assert "PROBLEM_BOARD_HOST_PYTHON" in testing
+    assert "`-n 8`" in testing
+    assert "default 100-connection budget" in testing
     assert "injected clock, event, or retry schedule" in testing
     assert "@pytest.mark.slow" in testing
     assert "--durations=20" in testing
