@@ -48,9 +48,23 @@ def remote(tmp_path: Path) -> Path:
     return bare
 
 
-def _set_up(workspace: Path, alias: str, url: Path, branch: str = "") -> None:
+def _shell(name: str) -> str:
+    executable = shutil.which(name)
+    if executable is None:
+        pytest.skip(f"needs {name}")
+    return executable
+
+
+def _set_up(
+    workspace: Path,
+    alias: str,
+    url: Path,
+    branch: str = "",
+    *,
+    shell: str = "bash",
+) -> None:
     subprocess.run(
-        ["bash", "-euc", _setup_commands()],
+        [_shell(shell), "-euc", _setup_commands()],
         check=True,
         env={"WORKSPACE": str(workspace), "ALIAS": alias, "URL": str(url), "BRANCH": branch, "PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "SSH_CONFIG": "/dev/null"},
     )
@@ -223,9 +237,15 @@ def _alias_host(tmp_path: Path, remote: Path) -> dict[str, str]:
     }
 
 
-def _run(env: dict[str, str], workspace: Path, url: str) -> subprocess.CompletedProcess:
+def _run(
+    env: dict[str, str],
+    workspace: Path,
+    url: str,
+    *,
+    shell: str = "bash",
+) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["bash", "-euc", _setup_commands()],
+        [_shell(shell), "-euc", _setup_commands()],
         env={**env, "WORKSPACE": str(workspace), "ALIAS": "applications", "URL": url, "BRANCH": ""},
         capture_output=True,
         text=True,
@@ -246,17 +266,39 @@ def test_a_clone_through_the_host_s_ssh_alias_matches_the_declared_url(tmp_path,
                           capture_output=True, text=True).stdout.strip() == "github-applications:kdcube/applications.git"
 
 
-def test_a_new_clone_uses_the_host_s_ssh_alias(tmp_path, remote):
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+def test_a_new_clone_uses_the_host_s_ssh_alias(tmp_path, remote, shell):
     env = _alias_host(tmp_path, remote)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    result = _run(env, workspace, "git@github.com:kdcube/applications.git")
+    result = _run(
+        env,
+        workspace,
+        "git@github.com:kdcube/applications.git",
+        shell=shell,
+    )
 
     assert result.returncode == 0, result.stderr
     origin = subprocess.run(["git", "-C", str(workspace / "applications"), "config", "--get", "remote.origin.url"],
                             env=env, capture_output=True, text=True).stdout.strip()
     assert origin == "github-applications:kdcube/applications.git"
+
+
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+def test_the_default_ssh_config_may_be_unset_under_nounset(tmp_path, remote, shell):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = _run(
+        {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"},
+        workspace,
+        str(remote),
+        shell=shell,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (workspace / "applications" / ".git").is_dir()
 
 
 def test_another_repository_behind_the_alias_is_still_refused(tmp_path, remote):
