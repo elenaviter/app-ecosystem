@@ -19,6 +19,9 @@ OPERATOR_NOTIFY_KINDS = frozenset(
     {"question", "blocked", "decision", "delivery_failed"}
 )
 OPERATOR_RECIPIENTS = frozenset({"operator", "owner"})
+# W313 step 5: the project's acting coordinator, whoever holds the role when
+# the mail is sent. The board resolves it; a client never resolves it locally.
+COORDINATOR_RECIPIENT = "coordinator"
 
 
 def require_operator_mail_kind(kind: str) -> str:
@@ -42,6 +45,7 @@ def require_operator_mail_kind(kind: str) -> str:
 
 
 __all__ = [
+    "COORDINATOR_RECIPIENT",
     "OPERATOR_MAIL_KINDS",
     "OPERATOR_NOTIFY_KINDS",
     "OPERATOR_RECIPIENTS",
