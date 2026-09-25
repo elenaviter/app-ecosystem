@@ -92,6 +92,29 @@ def test_expire_removes_whole_hours_by_name_and_prunes_empty_days(tmp_path, monk
     assert not (tmp_path / "events" / "codex-api" / "2026").exists()
 
 
+def test_expire_enforces_record_and_byte_bounds_with_oldest_hours_first(tmp_path):
+    store = _store(tmp_path)
+
+    removed = store.expire(
+        cutoff=_at(1),
+        max_records_per_agent=2,
+        max_bytes_per_agent=10_000,
+    )
+
+    assert removed == {"partitions": 1, "records": 1}
+    assert store.find("event_a", agents=["codex-api"], within_days=36500) is None
+    assert store.find("event_b", agents=["codex-api"], within_days=36500) is not None
+    assert store.find("event_c", agents=["codex-api"], within_days=36500) is not None
+
+    removed = store.expire(
+        cutoff=_at(1),
+        max_records_per_agent=10,
+        max_bytes_per_agent=1,
+    )
+    assert removed["records"] == 3
+    assert list((tmp_path / "events").rglob("*.json")) == []
+
+
 @pytest.fixture
 def field(tmp_path: Path) -> SharedFieldStore:
     store = SharedFieldStore(tmp_path / "shared-field")
@@ -149,7 +172,11 @@ def test_flat_events_from_before_w287_move_into_agent_and_hour_folders(field):
 
     result = maintenance.migrate_flat_events(field, "project-one")
 
-    assert result == {"state": "complete", "moved": {"codex-api": 2, "claude-docs": 1}}
+    assert result == {
+        "state": "complete",
+        "moved": {"codex-api": 2, "claude-docs": 1},
+        "unreadable": 0,
+    }
     assert not list(legacy.glob("*.json"))
     assert (legacy / "codex-api" / "2026" / "09" / "21" / "08" / "20260921T080000.000000Z_event_001.json").is_file()
     assert [row["summary"] for row in field.list_events("project-one")][:3] == ["old 0", "old 1", "old 2"]

@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
 from ..contract.errors import DomainError
-from .io import atomic_write_json, component, exclusive_lock, read_json, utc_now
+from .io import component, exclusive_lock, utc_now
+from .operation_store import OperationStore
 
 
 LOCAL_OPERATION_SCHEMA = "problem-board.local-operation.v1"
@@ -29,9 +30,11 @@ class LocalOperationLedger:
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).expanduser().resolve()
+        self.store = OperationStore(self.root)
 
     def _path(self, operation_id: str) -> Path:
-        return self.root / f"{component(operation_id, field='operation_id')}.json"
+        clean = component(operation_id, field="operation_id")
+        return self.store.find(clean) or self.store.pending_path(clean)
 
     def _record_lock(self, operation_id: str) -> Path:
         return self.root / "locks" / f"{component(operation_id, field='operation_id')}.lock"
@@ -55,7 +58,7 @@ class LocalOperationLedger:
                 "A local operation needs distinct ordered steps.",
             )
         with exclusive_lock(self._record_lock(operation_id)):
-            existing = read_json(self._path(operation_id), required=False)
+            existing = self.store.read(operation_id, required=False)
             if existing:
                 if (
                     existing.get("schema") != LOCAL_OPERATION_SCHEMA
@@ -87,11 +90,12 @@ class LocalOperationLedger:
                 "created_at": now,
                 "updated_at": now,
             }
-            atomic_write_json(self._path(operation_id), record)
+            self.store.write(record)
             return record
 
     def read(self, operation_id: str) -> dict[str, Any]:
-        record = read_json(self._path(operation_id))
+        record = self.store.read(operation_id)
+        assert record is not None
         if record.get("schema") != LOCAL_OPERATION_SCHEMA:
             raise DomainError(
                 "field_operation_schema_invalid",
@@ -207,21 +211,11 @@ class LocalOperationLedger:
     def find_by_step_value(self, step_name: str, field: str, value: str) -> dict[str, Any] | None:
         clean_step = component(step_name, field="step")
         clean_field = component(field, field="step_field")
-        expected = str(value or "")
-        if not self.root.is_dir():
-            return None
-        for path in sorted(self.root.glob("*.json"), reverse=True):
-            record = read_json(path, required=False)
-            if record.get("schema") != LOCAL_OPERATION_SCHEMA:
-                continue
-            for step in record.get("steps") or []:
-                if str(step.get("name") or "") != clean_step:
-                    continue
-                intent = step.get("intent") if isinstance(step.get("intent"), Mapping) else {}
-                result = step.get("result") if isinstance(step.get("result"), Mapping) else {}
-                if str(intent.get(clean_field) or result.get(clean_field) or "") == expected:
-                    return record
-        return None
+        return self.store.find_by_step_value(
+            clean_step,
+            clean_field,
+            str(value or ""),
+        )
 
     def _update_step(
         self,
@@ -342,7 +336,7 @@ class LocalOperationLedger:
                 record["completed_at"] = now
             else:
                 record.pop("completed_at", None)
-            atomic_write_json(self._path(operation_id), record)
+            self.store.write(record)
             return record
 
 

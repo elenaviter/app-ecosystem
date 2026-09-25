@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from project_board.client import local_state_maintenance as maintenance
+from project_board.client.local_store import last_read_summaries
 from project_board.client.store import SharedFieldStore
 
 
@@ -105,3 +106,34 @@ def test_reconciliation_counts_only_the_states_in_flight_of_a_live_mailbox(field
     field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
 
     assert "processed" not in listed and "quarantine" not in listed
+
+
+def test_detached_sessions_expire_but_active_sessions_are_kept(field):
+    field.attach_session(PROJECT, worker_name=WORKER, session_id="old-session")
+    field.detach_session(PROJECT, worker_name=WORKER, session_id="old-session")
+    old = field._session_path(PROJECT, WORKER, "old-session")
+    row = json.loads(old.read_text())
+    row["detached_at"] = "2026-01-01T00:00:00Z"
+    old.write_text(json.dumps(row))
+    field.attach_session(PROJECT, worker_name=WORKER, session_id="live-session")
+
+    removed = maintenance.apply_session_retention(
+        field,
+        now=datetime(2026, 9, 25, tzinfo=timezone.utc),
+    )
+
+    assert removed == {"removed": 1, "warnings": 0}
+    assert not old.exists()
+    assert field._session_path(PROJECT, WORKER, "live-session").is_file()
+
+
+def test_session_listing_reports_its_bounded_current_state_read(field):
+    field.attach_session(PROJECT, worker_name=WORKER, session_id="one")
+    field.attach_session(PROJECT, worker_name=WORKER, session_id="two")
+
+    assert len(field.list_sessions(PROJECT, worker_name=WORKER)) == 2
+    summary = last_read_summaries(WORKER)["sessions"]
+    assert summary["op"] == "list"
+    assert summary["range"] == "pending/"
+    assert summary["partitions"] == 1
+    assert summary["records"] == 2

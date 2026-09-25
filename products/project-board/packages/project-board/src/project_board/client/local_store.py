@@ -328,7 +328,7 @@ class PartitionedStore:
                             if not ids.is_file():
                                 continue
                             read.opened(agent, f"{year.name}-{month.name}-{day.name}", 1)
-                            for line in ids.read_text(encoding="utf-8").splitlines():
+                            for line in reversed(ids.read_text(encoding="utf-8").splitlines()):
                                 parts = line.split()
                                 if len(parts) == 2 and parts[0] == record_id:
                                     folder = day / parts[1]
@@ -345,25 +345,73 @@ class PartitionedStore:
 
     # -- retention -----------------------------------------------------------
 
-    def expire(self, *, cutoff: datetime) -> dict[str, int]:
-        """Remove hour folders that ended before ``cutoff``, then empty day folders."""
+    def expire(
+        self,
+        *,
+        cutoff: datetime,
+        max_bytes_per_agent: int = 0,
+        max_records_per_agent: int = 0,
+    ) -> dict[str, int]:
+        """Enforce age and size bounds by removing whole hour folders.
+
+        Retention inspects folder names and file metadata only. It never opens
+        a record body. Once records older than ``cutoff`` are gone, the oldest
+        remaining hour folders are removed until both optional per-agent
+        bounds hold (W287, LS2).
+        """
 
         removed = {"partitions": 0, "records": 0}
+        byte_limit = max(0, int(max_bytes_per_agent))
+        record_limit = max(0, int(max_records_per_agent))
         for agent in self.agents():
+            inventory: list[tuple[Path, datetime, list[str], int]] = []
             with self.reading("retention") as read:
-                for hour, start in list(self.hours_newest_first(agent)):
-                    if start + timedelta(hours=1) > cutoff:
-                        continue
-                    names = [n for n in os.listdir(hour) if n.endswith(".json")]
+                for hour, start in reversed(list(self.hours_newest_first(agent))):
+                    names = [name for name in os.listdir(hour) if name.endswith(".json")]
+                    size = 0
+                    for name in names:
+                        try:
+                            size += (hour / name).stat().st_size
+                        except FileNotFoundError:
+                            continue
                     read.opened(agent, start.strftime("%Y-%m-%dT%H"), len(names))
+                    inventory.append((hour, start, names, size))
+
+                retained: list[tuple[Path, datetime, list[str], int]] = []
+                total_records = 0
+                total_bytes = 0
+                for hour, start, names, size in inventory:
+                    if start + timedelta(hours=1) <= cutoff:
+                        shutil.rmtree(hour)
+                        removed["partitions"] += 1
+                        removed["records"] += len(names)
+                        continue
+                    retained.append((hour, start, names, size))
+                    total_records += len(names)
+                    total_bytes += size
+
+                while retained and (
+                    (record_limit and total_records > record_limit)
+                    or (byte_limit and total_bytes > byte_limit)
+                ):
+                    hour, _start, names, size = retained.pop(0)
                     shutil.rmtree(hour)
+                    total_records -= len(names)
+                    total_bytes -= size
                     removed["partitions"] += 1
                     removed["records"] += len(names)
+            _rebuild_changed_day_indexes(self.agent_root(agent), inventory)
             _prune_empty_days(self.agent_root(agent))
         return removed
 
 
-def rebuild_day_index(day: Path, *, store: str = "", agent: str = "") -> int:
+def rebuild_day_index(
+    day: Path,
+    *,
+    store: str = "",
+    agent: str = "",
+    announce: bool = True,
+) -> int:
     """Rewrite a day's ``ids`` file from the record names in its hour folders."""
 
     lines = [
@@ -373,10 +421,14 @@ def rebuild_day_index(day: Path, *, store: str = "", agent: str = "") -> int:
         if name.endswith(".json") and "_" in name
     ]
     atomic_write_text(day / IDS_FILE, "".join(f"{line}\n" for line in lines))
-    logger.warning(
-        "relay store index rebuilt worker=%s store=%s day=%s records=%d",
-        agent or day.parent.parent.parent.name, store, "-".join((day.parent.parent.name, day.parent.name, day.name)), len(lines),
-    )
+    if announce:
+        logger.warning(
+            "relay store index rebuilt worker=%s store=%s day=%s records=%d",
+            agent or day.parent.parent.parent.name,
+            store,
+            "-".join((day.parent.parent.name, day.parent.name, day.name)),
+            len(lines),
+        )
     return len(lines)
 
 
@@ -405,6 +457,22 @@ def _prune_empty_days(agent_root: Path) -> None:
                     _rmdir(day)
             _rmdir(month)
         _rmdir(year)
+
+
+def _rebuild_changed_day_indexes(
+    agent_root: Path,
+    inventory: list[tuple[Path, datetime, list[str], int]],
+) -> None:
+    """Refresh indexes only for days whose inventoried hours disappeared."""
+
+    days = {hour.parent for hour, _start, _names, _size in inventory if not hour.exists()}
+    for day in sorted(days):
+        if day.is_dir() and _numbered(day, 2):
+            rebuild_day_index(
+                day,
+                agent=agent_root.name,
+                announce=False,
+            )
 
 
 def _rmdir(path: Path) -> None:

@@ -109,7 +109,7 @@ def test_flat_rows_from_before_2b_move_into_the_layout_with_their_lease(field):
 
     result = maintenance.migrate_flat_outbox(field)
 
-    assert result == {"moved": {WORKER: 4}, "unreadable": {}}
+    assert result == {"state": "complete", "moved": {WORKER: 4}, "unreadable": {}}
     assert not list(flat.glob("*/*.json"))
     agent = field.control / "projects" / PROJECT / "outbox" / WORKER
     assert json.loads((agent / "leased" / "outbox_flat_leased.json").read_text())["lease"]["relay_id"] == "relay-01"
@@ -168,10 +168,20 @@ def test_unreadable_flat_rows_are_quarantined_and_the_migration_ends(field):
             "project_ref": PROJECT_REF, "state": "sent", "created_at": "2026-09-22T08:00:00Z",
         }))
 
-    result = maintenance.migrate_flat_outbox(field, batch_size=batch)
+    totals = {"moved": {}, "unreadable": {}}
+    while True:
+        result = maintenance.migrate_flat_outbox(field, batch_size=batch)
+        for family in ("moved", "unreadable"):
+            for agent, count in result[family].items():
+                totals[family][agent] = totals[family].get(agent, 0) + count
+        if result["state"] == "complete":
+            break
 
-    assert result["moved"] == {WORKER: 2}
-    assert sum(result["unreadable"].values()) == batch + 5
+    assert totals["moved"] == {WORKER: 2}
+    assert sum(totals["unreadable"].values()) == batch + 5
     assert not list(flat.glob("*.json"))
     assert len(list((field.control / "outbox" / ".legacy-unreadable" / "sent").glob("*.json"))) == batch + 5
     assert field.read_outbox_record("outbox_good_1")["state"] == "sent"
+    assert json.loads(
+        (field._project_dir(PROJECT) / "outbox" / WORKER / ".migration.json").read_text()
+    )["state"] == "complete"

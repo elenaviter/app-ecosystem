@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -34,6 +33,7 @@ from ..contract.mailbox_reconciliation_contract import (
     normalize_receipt,
 )
 from .io import atomic_write_json, exclusive_lock, read_json, utc_now
+from .local_store import PartitionedStore
 from .reconciliation_publication import (
     PRUNABLE_PUBLICATION_STATES,
     TERMINAL_PUBLICATION_STATES,
@@ -50,6 +50,8 @@ LOCAL_MARKER_SCHEMA = "problem-board.local-mailbox-reconciliation-marker.v1"
 STORE = "mail-reconciliation"
 PENDING = "pending"
 MARKER = "marker.json"
+MAX_BYTES_PER_AGENT = 50 * 1024 * 1024
+MAX_RECORDS_PER_AGENT = 50_000
 
 
 def receipt_carries_information(receipt: Mapping[str, Any]) -> bool:
@@ -122,28 +124,25 @@ def recover_unpublished_receipts(
     """
 
     clean_worker = str(worker_name or "").strip().lower()
-    root = agent_root(field, project_id, clean_worker) / PENDING
-    started = time.monotonic()
-    recovered = batches = settled = examined = 0
-    for path in sorted(root.glob("*.json")) if root.is_dir() else ():
-        examined += 1
-        record = read_json(path, required=False)
-        if not record:
-            continue
-        receipt = normalize_receipt(record.get("receipt") or {})
-        if receipt["reporter_worker_name"] != clean_worker:
-            continue
-        if not publication_is_queued(record):
-            record = queue_publication(field, project_id, worker_name=clean_worker, record_path=path)
-            recovered += 1
-            batches += len((record.get("publication") or {}).get("outbox_ids") or [])
-        if str(settle_if_terminal(field, project_id, worker_name=clean_worker, path=path).get("publication", {}).get("state") or "") in TERMINAL_PUBLICATION_STATES:
-            settled += 1
-    if examined:
-        logger.info(
-            "relay store read worker=%s store=%s op=startup_recovery range=pending/ partitions=1 records=%d ms=%d",
-            clean_worker, STORE, examined, int((time.monotonic() - started) * 1000),
-        )
+    history = PartitionedStore(store_root(field, project_id), store=STORE)
+    root = history.agent_root(clean_worker) / PENDING
+    paths = sorted(root.glob("*.json")) if root.is_dir() else []
+    recovered = batches = settled = 0
+    with history.reading("startup_recovery") as read:
+        read.opened_pending(clean_worker, len(paths))
+        for path in paths:
+            record = read_json(path, required=False)
+            if not record:
+                continue
+            receipt = normalize_receipt(record.get("receipt") or {})
+            if receipt["reporter_worker_name"] != clean_worker:
+                continue
+            if not publication_is_queued(record):
+                record = queue_publication(field, project_id, worker_name=clean_worker, record_path=path)
+                recovered += 1
+                batches += len((record.get("publication") or {}).get("outbox_ids") or [])
+            if str(settle_if_terminal(field, project_id, worker_name=clean_worker, path=path).get("publication", {}).get("state") or "") in TERMINAL_PUBLICATION_STATES:
+                settled += 1
     return {"receipts_recovered": recovered, "publication_batches": batches, "receipts_settled": settled}
 
 
@@ -191,34 +190,79 @@ def apply_receipt_retention(
     current = now or datetime.now(timezone.utc)
     cutoff = current - timedelta(days=MAILBOX_RECONCILIATION_RETENTION_DAYS)
     root = store_root(field, project_id)
-    totals = {"partitions_removed": 0, "receipts_removed": 0, "receipts_kept_refused": 0}
+    totals = {
+        "partitions_removed": 0,
+        "receipts_removed": 0,
+        "receipts_kept_refused": 0,
+        "size_bound_warnings": 0,
+    }
     if not root.is_dir():
         return totals
+    history = PartitionedStore(root, store=STORE)
     for agent_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
-        started = time.monotonic()
-        visited: list[str] = []
-        records = 0
-        for hour_dir, hour_start in _hour_partitions(agent_dir):
-            if hour_start + timedelta(hours=1) > cutoff:
-                continue
-            names = [name for name in os.listdir(hour_dir) if name.endswith(".json")]
-            visited.append(hour_start.strftime("%Y-%m-%dT%H"))
-            records += len(names)
-            if all(_publication_of(name) in PRUNABLE_PUBLICATION_STATES for name in names):
-                shutil.rmtree(hour_dir)
-                totals["partitions_removed"] += 1
-                totals["receipts_removed"] += len(names)
-            else:
-                totals["receipts_kept_refused"] += sum(
-                    1 for name in names if _publication_of(name) not in PRUNABLE_PUBLICATION_STATES
+        inventory: list[tuple[Path, datetime, list[str], int]] = []
+        with history.reading("retention") as read:
+            for hour_dir, hour_start in _hour_partitions(agent_dir):
+                names = [name for name in os.listdir(hour_dir) if name.endswith(".json")]
+                read.opened(
+                    agent_dir.name,
+                    hour_start.strftime("%Y-%m-%dT%H"),
+                    len(names),
                 )
-        _remove_empty_date_folders(agent_dir)
-        if visited:
-            logger.info(
-                "relay store read worker=%s store=%s op=retention range=%s..%s partitions=%d records=%d ms=%d",
-                agent_dir.name, STORE, visited[0], visited[-1], len(visited), records,
-                int((time.monotonic() - started) * 1000),
+                size = 0
+                for name in names:
+                    try:
+                        size += (hour_dir / name).stat().st_size
+                    except FileNotFoundError:
+                        continue
+                inventory.append((hour_dir, hour_start, names, size))
+                if hour_start + timedelta(hours=1) > cutoff:
+                    continue
+                if all(_publication_of(name) in PRUNABLE_PUBLICATION_STATES for name in names):
+                    shutil.rmtree(hour_dir)
+                    totals["partitions_removed"] += 1
+                    totals["receipts_removed"] += len(names)
+                else:
+                    totals["receipts_kept_refused"] += sum(
+                        1 for name in names if _publication_of(name) not in PRUNABLE_PUBLICATION_STATES
+                    )
+        retained = [item for item in inventory if item[0].is_dir()]
+        retained_records = sum(len(item[2]) for item in retained)
+        retained_bytes = sum(item[3] for item in retained)
+        for hour_dir, hour_start, names, size in retained:
+            if (
+                retained_records <= MAX_RECORDS_PER_AGENT
+                and retained_bytes <= MAX_BYTES_PER_AGENT
+            ):
+                break
+            # Refused evidence has not reached the service. Keep it and make
+            # the pressure visible rather than silently deleting it.
+            if not all(
+                _publication_of(name) in PRUNABLE_PUBLICATION_STATES
+                for name in names
+            ):
+                continue
+            shutil.rmtree(hour_dir)
+            retained_records -= len(names)
+            retained_bytes -= size
+            totals["partitions_removed"] += 1
+            totals["receipts_removed"] += len(names)
+        if (
+            retained_records > MAX_RECORDS_PER_AGENT
+            or retained_bytes > MAX_BYTES_PER_AGENT
+        ):
+            totals["size_bound_warnings"] += 1
+            logger.error(
+                "relay store bound reached worker=%s store=%s records=%d bytes=%d "
+                "record_limit=%d byte_limit=%d reason=refused-evidence-retained",
+                agent_dir.name,
+                STORE,
+                retained_records,
+                retained_bytes,
+                MAX_RECORDS_PER_AGENT,
+                MAX_BYTES_PER_AGENT,
             )
+        _remove_empty_date_folders(agent_dir)
     return totals
 
 
@@ -231,7 +275,9 @@ def store_root(field: Any, project_id: str) -> Path:
 
 
 def agent_root(field: Any, project_id: str, worker_name: str) -> Path:
-    return store_root(field, project_id) / str(worker_name or "").strip().lower()
+    return PartitionedStore(store_root(field, project_id), store=STORE).agent_root(
+        worker_name
+    )
 
 
 def pending_path(field: Any, project_id: str, worker_name: str, receipt_id: str) -> Path:
@@ -360,6 +406,8 @@ def _require_reporter(receipt: Mapping[str, Any], worker_name: str) -> str:
 __all__ = [
     "LOCAL_MARKER_SCHEMA",
     "LOCAL_RECEIPT_RECORD_SCHEMA",
+    "MAX_BYTES_PER_AGENT",
+    "MAX_RECORDS_PER_AGENT",
     "STORE",
     "agent_root",
     "apply_receipt_retention",

@@ -82,9 +82,14 @@ from .mail_attachments import (
     verified_attachment,
 )
 from .local_wake import notify_worker_watch
+from .mail_history import MailHistoryStore
+from .idempotency_store import IdempotencyStore
+from .journal_receipt_store import JournalReceiptStore
+from .scope_lease_store import ScopeLeaseStore
 from .projection import build_projection
 from .plan_storage import BucketedPlanStore
 from .local_store import PartitionedStore, new_record_id
+from .assignment_store import AssignmentStore
 from .outbox_store import OutboxStore
 from .outbox_layout import (
     OUTBOX_FOLDERS,
@@ -288,6 +293,7 @@ MAX_MAIL_HOLD_SECONDS = 3600
 # independent retries. After that it leaves the active inbox so healthy mail
 # keeps flowing, while the original envelope and sender remain inspectable.
 MAX_MAIL_RECEIVE_FAILURES = 3
+MAX_MAIL_QUARANTINE_RECORDS = 1000
 # Retry a Codex queue submission that has not succeeded yet. Once the queue
 # accepts it, the wake stays outstanding for model acknowledgement without
 # enqueueing another copy.
@@ -720,6 +726,21 @@ class SharedFieldStore:
     def _project_lock_context(self, project_id: str):
         return exclusive_lock(self._project_lock(project_id))
 
+    def _assignments(self, project_id: str) -> AssignmentStore:
+        return AssignmentStore(self._project_dir(project_id) / "assignments")
+
+    def _mail_history(self) -> MailHistoryStore:
+        return MailHistoryStore(self.control)
+
+    def _idempotency(self) -> IdempotencyStore:
+        return IdempotencyStore(self.control)
+
+    def _journal_receipts(self) -> JournalReceiptStore:
+        return JournalReceiptStore(self.control)
+
+    def _scope_leases(self, project_id: str) -> ScopeLeaseStore:
+        return ScopeLeaseStore(self._project_dir(project_id) / "scope-leases")
+
     def create_project(
         self,
         *,
@@ -755,14 +776,9 @@ class SharedFieldStore:
             atomic_write_json(path, record)
             for relative in (
                 "assignments",
-                "mail/ignored",
                 "sessions",
-                "journals",
                 "events",
-                "scope-leases/active",
-                "scope-leases/settled",
-                "idempotency/mail",
-                "idempotency/assignment-report",
+                "scope-leases",
             ):
                 (path.parent / relative).mkdir(parents=True, exist_ok=True, mode=0o700)
             self._record_event_unlocked(
@@ -1204,14 +1220,13 @@ class SharedFieldStore:
         row["content_hash"] = content_hash(
             {key: value for key, value in row.items() if key != "received_at"}
         )
-        path = (
-            self._project_dir(clean_project)
-            / "assignments"
-            / f"{component(parsed_assignment.object_id)}.json"
-        )
+        assignments = self._assignments(clean_project)
         with exclusive_lock(self._project_lock(clean_project)):
             self.read_project(clean_project)
-            current = read_json(path, required=False)
+            current = assignments.read(
+                parsed_assignment.object_id,
+                worker_name=str(row["worker_name"]),
+            ) or {}
             current_version = int(current.get("ownership_version") or 0)
             if current_version > ownership_version:
                 raise DomainError(
@@ -1253,9 +1268,9 @@ class SharedFieldStore:
                     if key != "received_at"
                 )
                 if refreshed:
-                    atomic_write_json(path, row)
+                    assignments.write(row)
                 return {**row, "replayed": True, "refreshed": refreshed}
-            atomic_write_json(path, row)
+            assignments.write(row)
         return {**row, "replayed": False, "refreshed": False}
 
     def send_assignment_notice(
@@ -1402,10 +1417,9 @@ class SharedFieldStore:
     def list_assignments(
         self, project_id: str, *, work_ref: str = ""
     ) -> list[dict[str, Any]]:
-        rows = json_records(
-            self._project_dir(component(project_id, field="project_id"))
-            / "assignments"
-        )
+        rows = self._assignments(
+            component(project_id, field="project_id")
+        ).list_pending()
         if work_ref:
             identity_ref = plan_node_identity_ref(work_ref)
             rows = [
@@ -1783,12 +1797,10 @@ class SharedFieldStore:
                 ):
                     continue
                 parsed = parse_ref(str(row.get("assignment_ref") or ""))
-                path = (
-                    self._project_dir(clean_project)
-                    / "assignments"
-                    / f"{component(parsed.object_id)}.json"
+                self._assignments(clean_project).remove(
+                    parsed.object_id,
+                    worker_name=clean_worker,
                 )
-                path.unlink(missing_ok=True)
                 for issue_path in self._assignment_reconciliation_issue_paths(
                     clean_project, row
                 ):
@@ -3815,7 +3827,7 @@ class SharedFieldStore:
 
         worker = self.read_worker(sender)
         clean = str(worker.get("worker_name") or "")
-        return self._mail_idempotency_path("", clean, idempotency_key).exists()
+        return bool(self._read_mail_idempotency("", clean, idempotency_key))
 
     def record_relay_transport_state(
         self,
@@ -5265,10 +5277,12 @@ class SharedFieldStore:
     ) -> list[dict[str, Any]]:
         clean_project = component(project_id, field="project_id")
         clean_worker = component(worker_name, field="worker_name").lower()
-        rows = [
-            self._session_with_presence(row)
-            for row in json_records(self._session_root(clean_project, clean_worker))
-        ]
+        root = self._session_root(clean_project, clean_worker)
+        sessions = PartitionedStore(root.parent, store="sessions")
+        with sessions.reading("list") as read:
+            stored = json_records(root)
+            read.opened_pending(clean_worker, len(stored))
+        rows = [self._session_with_presence(row) for row in stored]
         if not include_detached:
             rows = [row for row in rows if row.get("state") != "detached"]
         ordered = sorted(
@@ -5286,7 +5300,35 @@ class SharedFieldStore:
         """Which message a delivered control became, keyed by its command ref."""
 
         token = content_hash({"command_ref": str(command_ref or "")})
-        return self._mail_root(project_id, worker_name) / "by-control" / f"{token}.json"
+        found = self._mail_history().find(
+            project_id=project_id,
+            family="mail-by-control",
+            agent=worker_name,
+            record_id=token,
+        )
+        return found or self._mail_history().legacy_path(
+            project_id=project_id,
+            family="mail-by-control",
+            agent=worker_name,
+            record_id=token,
+        )
+
+    def _write_mail_control_pointer(
+        self,
+        project_id: str,
+        worker_name: str,
+        command_ref: str,
+        row: Mapping[str, Any],
+    ) -> Path:
+        token = content_hash({"command_ref": str(command_ref or "")})
+        return self._mail_history().write(
+            project_id=project_id,
+            family="mail-by-control",
+            agent=worker_name,
+            record_id=token,
+            row=row,
+            slug="control-pointer",
+        )
 
     def _mail_lock(self, project_id: str, worker_name: str) -> Path:
         if not str(project_id or "").strip():
@@ -5298,18 +5340,46 @@ class SharedFieldStore:
             return self._mail_root("", worker_name) / "ignored"
         return self._project_dir(project_id) / "mail" / "ignored"
 
-    def _mail_idempotency_path(self, project_id: str, sender: str, key: str) -> Path:
-        token = content_hash({"sender": sender, "key": key})
-        if not str(project_id or "").strip():
-            return (
-                self.control
-                / "workers"
-                / component(sender, field="sender").lower()
-                / "idempotency"
-                / "mail"
-                / f"{token}.json"
-            )
-        return self._project_dir(project_id) / "idempotency" / "mail" / f"{token}.json"
+    @staticmethod
+    def _mail_idempotency_token(sender: str, key: str) -> str:
+        return content_hash({"sender": sender, "key": key})
+
+    def _read_mail_idempotency(
+        self, project_id: str, sender: str, key: str
+    ) -> dict[str, Any] | None:
+        clean_sender = component(sender, field="sender").lower()
+        return self._mail_history().read(
+            project_id=project_id,
+            family="mail-idempotency",
+            agent=clean_sender,
+            record_id=self._mail_idempotency_token(clean_sender, key),
+        )
+
+    def _write_mail_idempotency(
+        self,
+        project_id: str,
+        sender: str,
+        key: str,
+        row: Mapping[str, Any],
+    ) -> Path:
+        clean_sender = component(sender, field="sender").lower()
+        return self._mail_history().write(
+            project_id=project_id,
+            family="mail-idempotency",
+            agent=clean_sender,
+            record_id=self._mail_idempotency_token(clean_sender, key),
+            row=row,
+            slug="mail-idempotency",
+        )
+
+    def _remove_mail_idempotency(self, project_id: str, sender: str, key: str) -> bool:
+        clean_sender = component(sender, field="sender").lower()
+        return self._mail_history().remove(
+            project_id=project_id,
+            family="mail-idempotency",
+            agent=clean_sender,
+            record_id=self._mail_idempotency_token(clean_sender, key),
+        )
 
     def _mail_record_unlocked(
         self, project_id: str, worker_name: str, message_ref: str
@@ -5319,22 +5389,45 @@ class SharedFieldStore:
             return {}
         root = self._mail_root(project_id, worker_name)
         name = f"{component(parsed.object_id)}.json"
-        for state in ("inbox", "leased", "processed", "quarantine"):
+        for state in ("inbox", "leased", "quarantine"):
             row = read_json(root / state / name, required=False)
             if row:
                 return row
-        return read_json(
-            self._mail_ignored_root(project_id, worker_name) / name,
-            required=False,
+        for family in ("mail-processed", "mail-ignored"):
+            row = self._mail_history().read(
+                project_id=project_id,
+                family=family,
+                agent=worker_name,
+                record_id=parsed.object_id,
+            )
+            if row:
+                return row
+        return {}
+
+    @staticmethod
+    def _operator_response_token(message_ref: str) -> str:
+        return content_hash({"message_ref": str(message_ref or "")})
+
+    def _read_operator_response(
+        self, worker_name: str, message_ref: str
+    ) -> dict[str, Any] | None:
+        return self._mail_history().read(
+            project_id="",
+            family="operator-responses",
+            agent=worker_name,
+            record_id=self._operator_response_token(message_ref),
         )
 
-    def _operator_response_path(self, worker_name: str, message_ref: str) -> Path:
-        token = content_hash({"message_ref": str(message_ref or "")})
-        return (
-            self.control
-            / "operator-responses"
-            / component(worker_name, field="worker_name").lower()
-            / f"{token}.json"
+    def _write_operator_response(
+        self, worker_name: str, message_ref: str, row: Mapping[str, Any]
+    ) -> Path:
+        return self._mail_history().write(
+            project_id="",
+            family="operator-responses",
+            agent=worker_name,
+            record_id=self._operator_response_token(message_ref),
+            row=row,
+            slug="operator-response",
         )
 
     def _team_alias(self, project_id: str, worker_name: str) -> str:
@@ -5619,18 +5712,16 @@ class SharedFieldStore:
                 self.read_project(clean_project)
             else:
                 self.read_worker(clean_recipient)
-            receipt_path = self._mail_idempotency_path(clean_project, clean_sender, key)
-            receipt = read_json(receipt_path, required=False)
-            receipt_source_path = receipt_path
+            receipt = self._read_mail_idempotency(clean_project, clean_sender, key)
+            receipt_source_key = key
             if not receipt:
                 for alias in alias_keys:
-                    candidate_path = self._mail_idempotency_path(
+                    candidate = self._read_mail_idempotency(
                         clean_project, clean_sender, alias
                     )
-                    candidate = read_json(candidate_path, required=False)
                     if candidate:
                         receipt = candidate
-                        receipt_source_path = candidate_path
+                        receipt_source_key = alias
                         break
             if receipt:
                 stored_identity_hash = str(
@@ -5670,11 +5761,17 @@ class SharedFieldStore:
                     )
                 if replay_identity_hash and (
                     stored_identity_hash != replay_identity_hash
-                    or receipt_source_path != receipt_path
+                    or receipt_source_key != key
                 ):
                     receipt = dict(receipt)
                     receipt["idempotency_identity_hash"] = replay_identity_hash
-                    atomic_write_json(receipt_path, receipt)
+                    self._write_mail_idempotency(
+                        clean_project, clean_sender, key, receipt
+                    )
+                    if receipt_source_key != key:
+                        self._remove_mail_idempotency(
+                            clean_project, clean_sender, receipt_source_key
+                        )
                 return {**receipt, "replayed": True}
             sender_row = read_json(self._worker_path(clean_sender), required=False)
             recipient_row = read_json(self._worker_path(clean_recipient), required=False)
@@ -5714,16 +5811,26 @@ class SharedFieldStore:
             if status == "pending":
                 destination = self._mail_root(clean_project, clean_recipient) / "inbox" / f"{message_id}.json"
             else:
-                destination = self._mail_ignored_root(
-                    clean_project, clean_recipient
-                ) / f"{message_id}.json"
-            atomic_write_json(destination, envelope)
+                destination = None
+            if destination is not None:
+                atomic_write_json(destination, envelope)
+            else:
+                self._mail_history().write(
+                    project_id=clean_project,
+                    family="mail-ignored",
+                    agent=clean_recipient,
+                    record_id=message_id,
+                    row=envelope,
+                    slug=status,
+                )
             command_ref = str(clean_payload.get("command_ref") or "")
             if command_ref:
                 # A discard names the control, not the message: this pointer
                 # answers it with one read instead of a mailbox scan (W287, LS3).
-                atomic_write_json(
-                    self._mail_control_pointer(clean_project, clean_recipient, command_ref),
+                self._write_mail_control_pointer(
+                    clean_project,
+                    clean_recipient,
+                    command_ref,
                     {
                         "schema": "problem-board.mail-control-pointer.v1",
                         "command_ref": command_ref,
@@ -5739,10 +5846,13 @@ class SharedFieldStore:
                 "delivery_status": status,
                 "content_hash": envelope["content_hash"],
                 "request_hash": request_hash,
+                "created_at": now,
             }
             if replay_identity_hash:
                 result["idempotency_identity_hash"] = replay_identity_hash
-            atomic_write_json(receipt_path, result)
+            self._write_mail_idempotency(
+                clean_project, clean_sender, key, result
+            )
             if status == "pending":
                 notify_worker_watch(self.root, clean_recipient)
             if clean_project:
@@ -5888,10 +5998,9 @@ class SharedFieldStore:
             if clean_project:
                 self.read_project(clean_project)
             self.read_worker(clean_sender)
-            receipt_path = self._mail_idempotency_path(
+            receipt = self._read_mail_idempotency(
                 clean_project, clean_sender, key
             )
-            receipt = read_json(receipt_path, required=False)
             if receipt:
                 if receipt.get("request_hash") != request_hash:
                     raise DomainError(
@@ -5961,8 +6070,9 @@ class SharedFieldStore:
                 and mail["kind"] == "reply"
                 and mail["reply_to"]
             ):
-                atomic_write_json(
-                    self._operator_response_path(clean_sender, mail["reply_to"]),
+                self._write_operator_response(
+                    clean_sender,
+                    mail["reply_to"],
                     {
                         "worker_name": clean_sender,
                         "message_ref": mail["reply_to"],
@@ -5980,8 +6090,11 @@ class SharedFieldStore:
                 "delivery_status": "queued",
                 "content_hash": row["content_hash"],
                 "request_hash": request_hash,
+                "created_at": message_created_at,
             }
-            atomic_write_json(receipt_path, result)
+            self._write_mail_idempotency(
+                clean_project, clean_sender, key, result
+            )
             if clean_project:
                 self._record_event_unlocked(
                     clean_project,
@@ -6051,10 +6164,12 @@ class SharedFieldStore:
             raise DomainError("field_mail_ref_invalid", "Expected a work:mail reference.")
         name = f"{component(parsed.object_id)}.json"
         root = self._mail_root(clean_project, clean_worker)
+        mail_project = clean_project
         if clean_project and not (root / "leased" / name).exists():
             worker_root = self._mail_root("", clean_worker)
             if (worker_root / "leased" / name).exists():
                 root = worker_root
+                mail_project = ""
         source = root / "leased" / name
         with exclusive_lock(root / ".mail.lock"):
             row = read_json(source, required=False)
@@ -6126,15 +6241,20 @@ class SharedFieldStore:
 
     def _recover_expired_mail(self, project_id: str, worker_name: str) -> None:
         root = self._mail_root(project_id, worker_name)
-        for path in sorted((root / "leased").glob("*.json")):
-            row = read_json(path)
-            lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
-            expires_at = str(lease.get("expires_at") or "")
-            if not expires_at or parse_utc(expires_at) <= datetime.now(timezone.utc):
-                row.update(state="pending", delivery_status="redelivered", updated_at=utc_now())
-                row.pop("lease", None)
-                atomic_write_json(path, row)
-                os.replace(path, root / "inbox" / path.name)
+        clean_worker = component(worker_name, field="worker_name").lower()
+        reads = PartitionedStore(root, store="mailbox")
+        with reads.reading("lease-recovery") as read:
+            paths = sorted((root / "leased").glob("*.json"))
+            read.opened_pending(clean_worker, len(paths))
+            for path in paths:
+                row = read_json(path)
+                lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
+                expires_at = str(lease.get("expires_at") or "")
+                if not expires_at or parse_utc(expires_at) <= datetime.now(timezone.utc):
+                    row.update(state="pending", delivery_status="redelivered", updated_at=utc_now())
+                    row.pop("lease", None)
+                    atomic_write_json(path, row)
+                    os.replace(path, root / "inbox" / path.name)
 
     def pull_mail(
         self,
@@ -6174,11 +6294,12 @@ class SharedFieldStore:
         root = self._mail_root(clean_project, clean_worker)
         (root / "inbox").mkdir(parents=True, exist_ok=True, mode=0o700)
         (root / "leased").mkdir(parents=True, exist_ok=True, mode=0o700)
-        (root / "processed").mkdir(parents=True, exist_ok=True, mode=0o700)
         claimed: list[dict[str, Any]] = []
         with exclusive_lock(root / ".mail.lock"):
             self._recover_expired_mail(clean_project, clean_worker)
             sources = sorted((root / "inbox").glob("*.json"))
+            with PartitionedStore(root, store="mailbox").reading("receive") as read:
+                read.opened_pending(clean_worker, len(sources))
             take = max(0, min(int(limit), 100))
             claimed_paths: list[Path] = []
             limited_by = ""
@@ -6484,6 +6605,19 @@ class SharedFieldStore:
             if isinstance(previous.get("report"), Mapping):
                 failure["report"] = dict(previous["report"])
             quarantined = attempts >= max(1, int(maximum_attempts))
+            quarantine = root / "quarantine"
+            if quarantined and not (quarantine / source.name).is_file():
+                quarantine_count = sum(1 for _ in quarantine.glob("*.json"))
+                if quarantine_count >= MAX_MAIL_QUARANTINE_RECORDS:
+                    quarantined = False
+                    _LOGGER.error(
+                        "relay store bound reached worker=%s store=mail-quarantine "
+                        "records=%d limit=%d message_ref=%s",
+                        clean_worker,
+                        quarantine_count,
+                        MAX_MAIL_QUARANTINE_RECORDS,
+                        message_ref,
+                    )
             state = "quarantined" if quarantined else "retry_pending"
             row.pop("lease", None)
             row.update(
@@ -6782,21 +6916,25 @@ class SharedFieldStore:
                 if path.is_dir()
             )
         rows: list[dict[str, Any]] = []
-        for root in roots:
-            for path in sorted((root / "quarantine").glob("*.json")):
-                row = read_json(path)
-                rows.append(
-                    {
-                        "message_ref": str(row.get("message_ref") or ""),
-                        "project_ref": str(row.get("project_ref") or ""),
-                        "sender": str(row.get("sender") or ""),
-                        "sender_identity": dict(row.get("sender_identity") or {}),
-                        "subject": str(row.get("subject") or ""),
-                        "quarantined_at": str(row.get("quarantined_at") or ""),
-                        "quarantine_reason": dict(row.get("quarantine_reason") or {}),
-                        "receive_failure": dict(row.get("receive_failure") or {}),
-                    }
-                )
+        reads = PartitionedStore(self.control / ".read-metrics", store="mail-quarantine")
+        with reads.reading("list") as read:
+            for root in roots:
+                paths = sorted((root / "quarantine").glob("*.json"))
+                read.opened_pending(clean_worker, len(paths))
+                for path in paths:
+                    row = read_json(path)
+                    rows.append(
+                        {
+                            "message_ref": str(row.get("message_ref") or ""),
+                            "project_ref": str(row.get("project_ref") or ""),
+                            "sender": str(row.get("sender") or ""),
+                            "sender_identity": dict(row.get("sender_identity") or {}),
+                            "subject": str(row.get("subject") or ""),
+                            "quarantined_at": str(row.get("quarantined_at") or ""),
+                            "quarantine_reason": dict(row.get("quarantine_reason") or {}),
+                            "receive_failure": dict(row.get("receive_failure") or {}),
+                        }
+                    )
         return sorted(rows, key=lambda row: row["quarantined_at"], reverse=True)
 
     def inspect_mail_delivery(
@@ -6820,27 +6958,27 @@ class SharedFieldStore:
         root = self._mail_root(clean_project, clean_worker)
         name = f"{component(parsed.object_id)}.json"
         with exclusive_lock(root / ".mail.lock"):
-            for state in ("inbox", "leased", "processed", "quarantine"):
+            for state in ("inbox", "leased", "quarantine"):
                 path = root / state / name
                 if path.is_file():
                     return {"mailbox_state": state, **read_json(path)}
-            ignored = self._mail_ignored_root(clean_project, clean_worker) / name
-            if ignored.is_file():
-                return {"mailbox_state": "ignored", **read_json(ignored)}
+            for state, family in (
+                ("processed", "mail-processed"),
+                ("ignored", "mail-ignored"),
+            ):
+                row = self._mail_history().read(
+                    project_id=clean_project,
+                    family=family,
+                    agent=clean_worker,
+                    record_id=parsed.object_id,
+                )
+                if row:
+                    return {"mailbox_state": state, **row}
         raise DomainError(
             "field_mail_not_found",
             "The addressed mailbox does not contain this message.",
             status=404,
             details={"message_ref": message_ref, "worker_name": clean_worker},
-        )
-
-    def _handled_path(self, worker_name: str, message_id: str) -> Path:
-        return (
-            self.control
-            / "workers"
-            / component(worker_name, field="worker_name").lower()
-            / "handled"
-            / f"{component(message_id)}.json"
         )
 
     def record_handling(
@@ -6871,31 +7009,47 @@ class SharedFieldStore:
             return
         if parsed.kind != "mail":
             return
-        path = self._handled_path(worker_name, parsed.object_id)
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        previous = read_json(path, required=False) or {}
+        clean_worker = component(worker_name, field="worker_name").lower()
+        message_id = component(parsed.object_id)
+        previous = self._mail_history().read(
+            project_id="",
+            family="handled",
+            agent=clean_worker,
+            record_id=message_id,
+        ) or {}
         entries = list(previous.get("entries") or [])
+        now = utc_now()
         entries.append(
             {
                 "action": str(action or ""),
                 "detail": bounded_text(detail, field="detail", maximum=2000),
-                "at": utc_now(),
+                "at": now,
             }
         )
-        atomic_write_json(
-            path,
-            {
+        self._mail_history().write(
+            project_id="",
+            family="handled",
+            agent=clean_worker,
+            record_id=message_id,
+            row={
                 "schema": FIELD_SCHEMA,
                 "message_ref": message_ref,
-                "worker_name": component(worker_name, field="worker_name").lower(),
+                "worker_name": clean_worker,
                 "entries": entries[-20:],
-                "updated_at": utc_now(),
+                "created_at": str(previous.get("created_at") or now),
+                "updated_at": now,
             },
+            slug="handled",
         )
 
     def prior_handling(self, *, worker_name: str, message_id: str) -> dict[str, Any]:
         """What this worker already did with this message, or an empty record."""
-        return read_json(self._handled_path(worker_name, message_id), required=False) or {}
+        return self._mail_history().read(
+            project_id="",
+            family="handled",
+            agent=component(worker_name, field="worker_name").lower(),
+            record_id=component(message_id),
+        ) or {}
 
     def leased_correlation(self, project_id: str, *, worker_name: str, message_ref: str) -> str:
         """The correlation id of a message this worker currently holds, or "".
@@ -6981,11 +7135,13 @@ class SharedFieldStore:
         # the operator's messages to this session came back three times before
         # anyone noticed they could not be acknowledged at all.
         name = f"{component(parsed.object_id)}.json"
+        mail_project = clean_project
         root = self._mail_root(clean_project, clean_worker)
         if clean_project and not (root / "leased" / name).exists():
             worker_root = self._mail_root("", clean_worker)
             if (worker_root / "leased" / name).exists():
                 root = worker_root
+                mail_project = ""
         source = root / "leased" / name
         with exclusive_lock(root / ".mail.lock"):
             row = read_json(source, required=False)
@@ -7012,7 +7168,12 @@ class SharedFieldStore:
                             "state": str(returned.get("delivery_status") or ""),
                         },
                     )
-                settled = read_json(root / "processed" / source.name, required=False)
+                settled = self._mail_history().read(
+                    project_id=mail_project,
+                    family="mail-processed",
+                    agent=clean_worker,
+                    record_id=parsed.object_id,
+                )
                 if settled:
                     raise DomainError(
                         "field_mail_already_settled",
@@ -7039,11 +7200,9 @@ class SharedFieldStore:
                 str(sender_identity.get("kind") or "") == "user"
                 and str(row.get("kind") or "") in {"request", "reply"}
             ):
-                response = read_json(
-                    self._operator_response_path(
-                        clean_worker, str(row.get("message_ref") or "")
-                    ),
-                    required=False,
+                response = self._read_operator_response(
+                    clean_worker,
+                    str(row.get("message_ref") or ""),
                 )
                 expected_correlation = str(row.get("correlation_id") or "")
                 if not response or str(response.get("correlation_id") or "") != expected_correlation:
@@ -7068,9 +7227,15 @@ class SharedFieldStore:
                 settled_at=utc_now(),
                 updated_at=utc_now(),
             )
-            destination = root / "processed" / source.name
-            atomic_write_json(source, row)
-            os.replace(source, destination)
+            self._mail_history().write(
+                project_id=mail_project,
+                family="mail-processed",
+                agent=clean_worker,
+                record_id=parsed.object_id,
+                row=row,
+                slug=outcome,
+            )
+            source.unlink(missing_ok=True)
         self.record_handling(
             worker_name=clean_worker,
             message_ref=message_ref,
@@ -7173,19 +7338,25 @@ class SharedFieldStore:
                 states = (
                     ("inbox", "leased", "processed", "ignored")
                     if message_id
-                    else ("inbox", "leased", "ignored")
+                    else ("inbox", "leased")
                 )
                 for state in states:
-                    folder = (
-                        self._mail_ignored_root(project_id, clean_worker)
-                        if state == "ignored"
-                        else root / state
-                    )
-                    candidates = (
-                        [folder / f"{component(message_id)}.json"]
-                        if message_id
-                        else sorted(folder.glob("*.json"))
-                    )
+                    if state in {"processed", "ignored"}:
+                        family = f"mail-{state}"
+                        path = self._mail_history().find(
+                            project_id=project_id,
+                            family=family,
+                            agent=clean_worker,
+                            record_id=component(message_id),
+                        )
+                        candidates = [path] if path is not None else []
+                    else:
+                        folder = root / state
+                        candidates = (
+                            [folder / f"{component(message_id)}.json"]
+                            if message_id
+                            else sorted(folder.glob("*.json"))
+                        )
                     for path in candidates:
                         row = read_json(path, required=False)
                         if not row or str(row.get("recipient") or "").lower() != clean_worker:
@@ -7229,11 +7400,15 @@ class SharedFieldStore:
                         discarded_at=now,
                         updated_at=now,
                     )
-                    destination = self._mail_ignored_root(
-                        project_id, clean_worker
-                    ) / source.name
-                    atomic_write_json(source, row)
-                    os.replace(source, destination)
+                    self._mail_history().write(
+                        project_id=project_id,
+                        family="mail-ignored",
+                        agent=clean_worker,
+                        record_id=component(str(row.get("message_id") or message_id)),
+                        row=row,
+                        slug="discarded-by-sender",
+                    )
+                    source.unlink(missing_ok=True)
                     outcome = "discarded_before_receipt"
                 elif found[0] == "ignored":
                     outcome = "already_discarded"
@@ -7966,43 +8141,82 @@ class SharedFieldStore:
                     except OSError:
                         pass
 
+            # Rows from the pre-W287 archive move into pending before they are
+            # inspected. Reconciliation then reads in-flight work only (LS3).
             for address_root in sorted(archive_root.glob("*")):
                 if not address_root.is_dir():
                     continue
                 for path in sorted(address_root.glob("*.json")):
-                    undeliverable_records_examined += 1
                     row = read_json(path, required=False)
-                    if not row or isinstance(row.get("failure_notice"), Mapping):
+                    if not row:
                         continue
-                    failure = (
-                        dict(row.get("recipient_failure") or {})
-                        if isinstance(row.get("recipient_failure"), Mapping)
-                        else {}
+                    message_id = str(row.get("message_id") or path.stem)
+                    pending = self._mail_history().migrate_pending(
+                        project_id=clean_project,
+                        family="mail-undeliverable",
+                        agent=address_root.name,
+                        record_id=message_id,
+                        row=row,
                     )
-                    if not bool(failure.get("notify_sender", True)):
-                        row["failure_notice"] = {
-                            "delivery_status": "not_required",
-                            "reason": "The archived record had already left the active mailbox.",
-                        }
-                        row["failure_notice_state"] = "not_required"
-                        row["updated_at"] = utc_now()
-                        atomic_write_json(path, row)
-                        continue
-                    if str(row.get("failure_notice_state") or "") == "reporting":
-                        try:
-                            report_age = (
-                                datetime.now(timezone.utc)
-                                - parse_utc(str(row.get("updated_at") or ""))
-                            ).total_seconds()
-                        except (DomainError, TypeError, ValueError):
-                            report_age = 301
-                        if report_age <= 300:
-                            continue
-                    row["failure_notice_state"] = "reporting"
-                    row["failure_notice_reporter"] = reporter
+                    path.unlink(missing_ok=True)
+                    if pending != path:
+                        path = pending
+
+            for path, row in self._mail_history().pending(
+                project_id=clean_project,
+                family="mail-undeliverable",
+            ):
+                undeliverable_records_examined += 1
+                address = path.parent.parent.name
+                message_id = str(row.get("message_id") or path.stem)
+                if isinstance(row.get("failure_notice"), Mapping):
+                    self._mail_history().settle_pending(
+                        project_id=clean_project,
+                        family="mail-undeliverable",
+                        agent=address,
+                        record_id=message_id,
+                        row=row,
+                        source=path,
+                        slug=str(row.get("state") or "undeliverable"),
+                    )
+                    continue
+                failure = (
+                    dict(row.get("recipient_failure") or {})
+                    if isinstance(row.get("recipient_failure"), Mapping)
+                    else {}
+                )
+                if not bool(failure.get("notify_sender", True)):
+                    row["failure_notice"] = {
+                        "delivery_status": "not_required",
+                        "reason": "The archived record had already left the active mailbox.",
+                    }
+                    row["failure_notice_state"] = "not_required"
                     row["updated_at"] = utc_now()
-                    atomic_write_json(path, row)
-                    moved.append((path, row))
+                    self._mail_history().settle_pending(
+                        project_id=clean_project,
+                        family="mail-undeliverable",
+                        agent=address,
+                        record_id=message_id,
+                        row=row,
+                        source=path,
+                        slug=str(row.get("state") or "undeliverable"),
+                    )
+                    continue
+                if str(row.get("failure_notice_state") or "") == "reporting":
+                    try:
+                        report_age = (
+                            datetime.now(timezone.utc)
+                            - parse_utc(str(row.get("updated_at") or ""))
+                        ).total_seconds()
+                    except (DomainError, TypeError, ValueError):
+                        report_age = 301
+                    if report_age <= 300:
+                        continue
+                row["failure_notice_state"] = "reporting"
+                row["failure_notice_reporter"] = reporter
+                row["updated_at"] = utc_now()
+                atomic_write_json(path, row)
+                moved.append((path, row))
 
         failure_notices: list[dict[str, Any]] = []
         report_failures: list[dict[str, Any]] = []
@@ -8081,7 +8295,15 @@ class SharedFieldStore:
                     current["failure_notice_state"] = "delivered"
                     current.pop("failure_notice_error", None)
                     current["updated_at"] = utc_now()
-                    atomic_write_json(archive_path, current)
+                    self._mail_history().settle_pending(
+                        project_id=clean_project,
+                        family="mail-undeliverable",
+                        agent=archive_path.parent.parent.name,
+                        record_id=str(current.get("message_id") or archive_path.stem),
+                        row=current,
+                        source=archive_path,
+                        slug=str(current.get("state") or "undeliverable"),
+                    )
             failure_notices.append(
                 {
                     "source_message_ref": str(
@@ -8226,13 +8448,11 @@ class SharedFieldStore:
             ),
             "created_at": str(entry.get("recorded_at") or utc_now()),
         }
-        receipt_path = (
-            self._project_dir(clean_project)
-            / "journals"
-            / f"{parsed_entry.object_id}.json"
-        )
         with exclusive_lock(self._project_lock(clean_project)):
-            existing = read_json(receipt_path, required=False)
+            existing = self._journal_receipts().read(
+                clean_project,
+                parsed_entry.object_id,
+            )
             if existing:
                 identity = {
                     "entry_ref": row["entry_ref"],
@@ -8269,7 +8489,11 @@ class SharedFieldStore:
                 },
             )
             row["event_ref"] = str(event.get("event_ref") or "")
-            atomic_write_json(receipt_path, row)
+            self._journal_receipts().write(
+                clean_project,
+                parsed_entry.object_id,
+                row,
+            )
             return row
 
     def read_journal_receipt(
@@ -8286,17 +8510,16 @@ class SharedFieldStore:
             raise DomainError(
                 "field_journal_ref_invalid", "Expected a work:journal reference."
             )
-        row = read_json(
-            self._project_dir(clean_project)
-            / "journals"
-            / f"{parsed_entry.object_id}.json",
-            required=False,
+        return self._journal_receipts().read(
+            clean_project,
+            parsed_entry.object_id,
         )
-        return dict(row) if row else None
 
     def list_journals(self, project_id: str, *, work_ref: str = "") -> list[dict[str, Any]]:
-        rows = json_records(self._project_dir(component(project_id, field="project_id")) / "journals")
-        return [row for row in rows if not work_ref or row.get("work_ref") == work_ref]
+        return self._journal_receipts().list(
+            component(project_id, field="project_id"),
+            work_ref=work_ref,
+        )
 
     def _record_event_unlocked(
         self,
@@ -8364,6 +8587,8 @@ class SharedFieldStore:
         return self._record_event_unlocked(clean_project, **kwargs)
 
     EVENT_RETENTION_DAYS = 30
+    EVENT_MAX_BYTES_PER_AGENT = 100 * 1024 * 1024
+    EVENT_MAX_RECORDS_PER_AGENT = 50_000
 
     def _events(self, project_id: str) -> PartitionedStore:
         """Project events, partitioned by actor and hour (W287)."""
@@ -8425,16 +8650,14 @@ class SharedFieldStore:
         normalized = sorted({_relative_scope(value) for value in scopes})
         if not normalized:
             raise DomainError("field_scope_required", "At least one source scope is required.")
-        root = self._project_dir(clean_project) / "scope-leases"
-        with exclusive_lock(root / ".scope-leases.lock"):
+        leases = self._scope_leases(clean_project)
+        with exclusive_lock(leases.lock):
             now_dt = datetime.now(timezone.utc)
             active: list[dict[str, Any]] = []
-            for path in sorted((root / "active").glob("*.json")):
-                row = read_json(path)
+            for path, row in leases.active():
                 if parse_utc(str(row.get("expires_at") or "")) <= now_dt:
                     row.update(state="expired", settled_at=utc_now())
-                    atomic_write_json(path, row)
-                    os.replace(path, root / "settled" / path.name)
+                    leases.settle(path, row)
                 else:
                     active.append(row)
             conflicts = [
@@ -8466,7 +8689,7 @@ class SharedFieldStore:
                 "leased_at": utc_now(),
                 "expires_at": _future(min(max(int(ttl_seconds), 30), 86_400)),
             }
-            atomic_write_json(root / "active" / f"{lease_id}.json", row)
+            leases.write_active(row)
             return row
 
     def release_scope_lease(
@@ -8481,15 +8704,21 @@ class SharedFieldStore:
         if parsed.kind != "lease":
             raise DomainError("field_lease_ref_invalid", "Expected a work:lease reference.")
         clean_project = component(project_id, field="project_id")
-        root = self._project_dir(clean_project) / "scope-leases"
-        source = root / "active" / f"{component(parsed.object_id)}.json"
-        with exclusive_lock(root / ".scope-leases.lock"):
-            row = read_json(source)
+        clean_worker = component(worker_name, field="worker_name").lower()
+        leases = self._scope_leases(clean_project)
+        with exclusive_lock(leases.lock):
+            active = leases.read_active(clean_worker, component(parsed.object_id))
+            if active is None:
+                raise DomainError(
+                    "field_scope_lease_missing",
+                    "The active source-scope lease does not exist.",
+                    status=404,
+                )
+            source, row = active
             if row.get("worker_name") != component(worker_name, field="worker_name").lower():
                 raise DomainError("field_lease_owner_mismatch", "Only the lease owner may release this scope.", status=403)
             row.update(state=str(outcome or "released"), settled_at=utc_now())
-            atomic_write_json(source, row)
-            os.replace(source, root / "settled" / source.name)
+            leases.settle(source, row)
             return row
 
     # How long an assignee may be silent before a working item stops counting
@@ -8862,13 +9091,18 @@ class SharedFieldStore:
         crash between queueing and remembering must not publish twice.
         """
 
-        receipt_path = (
-            self._event_idempotency_path(worker_name, idempotency_key)
+        receipt_token = (
+            self._idempotency().event_token(worker_name, idempotency_key)
             if str(idempotency_key or "").strip()
-            else None
+            else ""
         )
-        if receipt_path is not None:
-            prior = read_json(receipt_path, required=False)
+        if receipt_token:
+            prior = self._idempotency().read(
+                project_id="",
+                family="event-idempotency",
+                agent=worker_name,
+                record_id=receipt_token,
+            )
             if prior:
                 return {**prior, "replayed": True}
         clean_project = component(project_id, field="project_id")
@@ -8902,19 +9136,52 @@ class SharedFieldStore:
             "created_at": utc_now(),
         }
         self._outbox.write_pending(row)
-        if receipt_path is not None:
-            atomic_write_json(receipt_path, row)
+        if receipt_token:
+            self._idempotency().write(
+                project_id="",
+                family="event-idempotency",
+                agent=worker_name,
+                record_id=receipt_token,
+                row=row,
+            )
         return row
 
     def _event_idempotency_path(self, worker_name: str, key: str) -> Path:
         clean = component(worker_name, field="worker_name").lower()
-        token = content_hash({"worker": clean, "key": str(key)})
-        return self.control / "workers" / clean / "idempotency" / "events" / f"{token}.json"
+        token = self._idempotency().event_token(clean, key)
+        found = self._idempotency().family("", "event-idempotency").find(
+            agent=clean,
+            record_id=token,
+            legacy_paths=[
+                self.control
+                / "workers"
+                / clean
+                / "idempotency"
+                / "events"
+                / f"{token}.json"
+            ],
+        )
+        return found or (
+            self.control
+            / "workers"
+            / clean
+            / "idempotency"
+            / "events"
+            / f"{token}.json"
+        )
 
     def service_event_receipt_exists(self, *, worker_name: str, idempotency_key: str) -> bool:
         """Whether an event under this worker's key was queued."""
 
-        return self._event_idempotency_path(worker_name, idempotency_key).is_file()
+        token = self._idempotency().event_token(worker_name, idempotency_key)
+        return bool(
+            self._idempotency().read(
+                project_id="",
+                family="event-idempotency",
+                agent=worker_name,
+                record_id=token,
+            )
+        )
 
     def _watch_attachment_path(self, worker_name: str) -> Path:
         clean = component(worker_name, field="worker_name").lower()
@@ -8988,27 +9255,6 @@ class SharedFieldStore:
         self._outbox.write_pending(row)
         return row
 
-    def _assignment_report_receipt_path(
-        self,
-        project_id: str,
-        assignment_id: str,
-        ownership_version: int,
-        report_key: str = "",
-    ) -> Path:
-        identity = {
-            "assignment_id": assignment_id,
-            "ownership_version": int(ownership_version),
-        }
-        if report_key:
-            identity["report_key"] = str(report_key)
-        token = content_hash(identity)
-        return (
-            self._project_dir(project_id)
-            / "idempotency"
-            / "assignment-report"
-            / f"{token}.json"
-        )
-
     def _assignment_report_receipt_paths(
         self,
         project_id: str,
@@ -9016,34 +9262,33 @@ class SharedFieldStore:
         assignment_ref: str,
         ownership_version: int,
         report_key: str = "",
+        worker_name: str = "",
     ) -> list[Path]:
         parsed = parse_ref(assignment_ref)
-        stable_path = self._assignment_report_receipt_path(
-            project_id,
+        current = self._idempotency().assignment_token(
             parsed.object_id,
             ownership_version,
             report_key,
         )
-        root = stable_path.parent
-        paths = [stable_path]
-        for path in sorted(root.glob("*.json")):
-            if path == stable_path:
-                continue
-            row = read_json(path, required=False)
-            if not row:
-                continue
-            try:
-                row_ref = parse_ref(str(row.get("assignment_ref") or ""))
-            except DomainError:
-                continue
-            if (
-                row_ref.kind == "assignment"
-                and row_ref.object_id == parsed.object_id
-                and int(row.get("ownership_version") or 0)
-                == int(ownership_version)
-            ):
-                paths.append(path)
-        return paths
+        legacy = self._idempotency().assignment_token(
+            parsed.object_id,
+            ownership_version,
+        )
+        found: list[Path] = []
+        for token, aliases in (
+            (current, (legacy,) if legacy != current else ()),
+            (legacy, ()),
+        ):
+            path = self._idempotency().find(
+                project_id=project_id,
+                family="assignment-report-idempotency",
+                agent=worker_name or "-",
+                record_id=token,
+                legacy_record_ids=aliases,
+            )
+            if path is not None and path not in found:
+                found.append(path)
+        return found
 
     def enqueue_assignment_report(
         self,
@@ -9075,11 +9320,6 @@ class SharedFieldStore:
                 "field_assignment_ref_invalid",
                 "Expected a work:assignment reference.",
             )
-        path = (
-            self._project_dir(clean_project)
-            / "assignments"
-            / f"{component(parsed.object_id)}.json"
-        )
         try:
             version = int(ownership_version)
         except (TypeError, ValueError) as exc:
@@ -9157,19 +9397,22 @@ class SharedFieldStore:
                 "source_event_ref": payload["source_event_ref"],
             }
         )
-        receipt_path = self._assignment_report_receipt_path(
-            clean_project,
+        receipt_token = self._idempotency().assignment_token(
             parsed.object_id,
             version,
             report_key,
         )
         with exclusive_lock(self._project_lock(clean_project)):
-            assignment = read_json(path, required=False)
+            assignment = self._assignments(clean_project).read(
+                parsed.object_id,
+                worker_name=clean_worker,
+            ) or {}
             receipt_paths = self._assignment_report_receipt_paths(
                 clean_project,
                 assignment_ref=requested_assignment_ref,
                 ownership_version=version,
                 report_key=report_key,
+                worker_name=clean_worker,
             )
             receipts = [
                 (candidate_path, receipt)
@@ -9227,8 +9470,15 @@ class SharedFieldStore:
                     "state": normalized_state,
                     "source_event_ref": payload["source_event_ref"],
                     "request_hash": request_hash,
+                    "worker_name": clean_worker,
                 }
-                atomic_write_json(receipt_path, canonical_receipt)
+                self._idempotency().write(
+                    project_id=clean_project,
+                    family="assignment-report-idempotency",
+                    agent=clean_worker,
+                    record_id=receipt_token,
+                    row=canonical_receipt,
+                )
                 return {**canonical_receipt, "replayed": True}
             prior_receipt = next(
                 (
@@ -9304,8 +9554,15 @@ class SharedFieldStore:
                 "request_hash": request_hash,
                 "local_assignment_current": local_assignment_current,
                 "created_at": created_at,
+                "worker_name": clean_worker,
             }
-            atomic_write_json(receipt_path, result)
+            self._idempotency().write(
+                project_id=clean_project,
+                family="assignment-report-idempotency",
+                agent=clean_worker,
+                record_id=receipt_token,
+                row=result,
+            )
         return {**result, "replayed": False}
 
     def _leased_project_report_message(
@@ -9343,7 +9600,12 @@ class SharedFieldStore:
                     status=409,
                     details={"message_ref": message_ref},
                 )
-            if read_json(root / "processed" / filename, required=False):
+            if self._mail_history().read(
+                project_id=clean_project,
+                family="mail-processed",
+                agent=clean_worker,
+                record_id=parsed_message.object_id,
+            ):
                 raise DomainError(
                     "field_mail_already_settled",
                     "The project report request was already settled.",
@@ -9433,6 +9695,48 @@ class SharedFieldStore:
             / f"{component(report.object_id)}.json"
         )
 
+    def _read_project_report_receipt(
+        self,
+        project_id: str,
+        *,
+        worker_name: str,
+        report_ref: str,
+    ) -> dict[str, Any] | None:
+        report = parse_ref(report_ref)
+        if report.kind != "report":
+            raise DomainError(
+                "field_project_report_ref_invalid",
+                "Expected a work:report reference.",
+            )
+        return self._idempotency().read(
+            project_id=project_id,
+            family="project-report-idempotency",
+            agent=worker_name,
+            record_id=component(report.object_id),
+        )
+
+    def _write_project_report_receipt(
+        self,
+        project_id: str,
+        *,
+        worker_name: str,
+        report_ref: str,
+        row: Mapping[str, Any],
+    ) -> Path:
+        report = parse_ref(report_ref)
+        if report.kind != "report":
+            raise DomainError(
+                "field_project_report_ref_invalid",
+                "Expected a work:report reference.",
+            )
+        return self._idempotency().write(
+            project_id=project_id,
+            family="project-report-idempotency",
+            agent=worker_name,
+            record_id=component(report.object_id),
+            row=row,
+        )
+
     def enqueue_project_report_publish(
         self,
         project_id: str,
@@ -9517,10 +9821,11 @@ class SharedFieldStore:
                 lease_owner=lease_owner,
             )
             report_ref = str(command["report_ref"])
-            receipt_path = self._project_report_receipt_path(
-                clean_project, report_ref=report_ref
+            receipt = self._read_project_report_receipt(
+                clean_project,
+                worker_name=clean_worker,
+                report_ref=report_ref,
             )
-            receipt = read_json(receipt_path, required=False)
             created_at = str((receipt or {}).get("created_at") or utc_now())
             manifest = [
                 {
@@ -9598,8 +9903,14 @@ class SharedFieldStore:
                 "created_at": created_at,
                 "attachment_count": len(attachment_files),
                 "delivery_status": "queued",
+                "worker_name": clean_worker,
             }
-            atomic_write_json(receipt_path, result)
+            self._write_project_report_receipt(
+                clean_project,
+                worker_name=clean_worker,
+                report_ref=report_ref,
+                row=result,
+            )
         self.record_handling(
             worker_name=clean_worker,
             message_ref=message_ref,
@@ -9698,10 +10009,11 @@ class SharedFieldStore:
                     **failure,
                 }
             )
-            receipt_path = self._project_report_receipt_path(
-                clean_project, report_ref=report_ref
+            receipt = self._read_project_report_receipt(
+                clean_project,
+                worker_name=clean_worker,
+                report_ref=report_ref,
             )
-            receipt = read_json(receipt_path, required=False)
             if receipt:
                 if receipt.get("request_hash") != request_hash:
                     raise DomainError(
@@ -9731,8 +10043,15 @@ class SharedFieldStore:
                 "message_ref": message_ref,
                 "request_hash": request_hash,
                 "delivery_status": "queued",
+                "created_at": utc_now(),
+                "worker_name": clean_worker,
             }
-            atomic_write_json(receipt_path, result)
+            self._write_project_report_receipt(
+                clean_project,
+                worker_name=clean_worker,
+                report_ref=report_ref,
+                row=result,
+            )
         self.record_handling(
             worker_name=clean_worker,
             message_ref=message_ref,
@@ -10294,9 +10613,9 @@ class SharedFieldStore:
             if key and worker_name:
                 try:
                     project_id = parse_ref(project_ref).object_id if project_ref else ""
-                    self._mail_idempotency_path(
+                    self._remove_mail_idempotency(
                         project_id, worker_name, key
-                    ).unlink(missing_ok=True)
+                    )
                 except DomainError:
                     pass
             return
@@ -10318,6 +10637,7 @@ class SharedFieldStore:
                     assignment_ref=assignment_ref,
                     ownership_version=ownership_version,
                     report_key=report_key,
+                    worker_name=str(row.get("worker_name") or ""),
                 )
             except (DomainError, TypeError, ValueError):
                 return
@@ -10337,16 +10657,28 @@ class SharedFieldStore:
                 parsed = parse_ref(value)
             except DomainError:
                 continue
-            for family in ("project-report", "assignment-report"):
-                path = (
-                    self._project_dir(component(parse_ref(project_ref).object_id))
-                    / "idempotency"
-                    / family
-                    / f"{component(parsed.object_id)}.json"
+            if parsed.kind != "report":
+                continue
+            try:
+                project_id = component(parse_ref(project_ref).object_id)
+            except DomainError:
+                return
+            receipt = self._idempotency().read(
+                project_id=project_id,
+                family="project-report-idempotency",
+                agent=str(row.get("worker_name") or "-"),
+                record_id=component(parsed.object_id),
+            )
+            if receipt and str(receipt.get("outbox_id") or "") == str(
+                row.get("outbox_id") or ""
+            ):
+                self._idempotency().remove(
+                    project_id=project_id,
+                    family="project-report-idempotency",
+                    agent=str(row.get("worker_name") or "-"),
+                    record_id=component(parsed.object_id),
                 )
-                if path.exists():
-                    path.unlink()
-                    return
+            return
 
 
 __all__ = [

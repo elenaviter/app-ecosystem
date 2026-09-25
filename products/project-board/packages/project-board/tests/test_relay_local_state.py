@@ -20,6 +20,7 @@ import pytest
 
 from project_board.client import local_state_maintenance as maintenance
 from project_board.client import reconciliation_receipts as receipts
+from project_board.client.local_store import last_read_summaries
 from project_board.client.outbox_store import OutboxStore, state_of_name
 from project_board.client.reconciliation_publication import OUTBOX_KIND
 from project_board.client.store import SharedFieldStore
@@ -128,6 +129,25 @@ def test_a_run_that_archived_mail_keeps_a_receipt_until_it_is_published(field):
     assert finished.name.startswith("20260923T200000Z_20260923T200004Z_published_")
 
 
+def test_empty_receipt_recovery_reports_the_pending_read(field):
+    recovered = receipts.recover_unpublished_receipts(
+        field,
+        PROJECT,
+        worker_name=WORKER,
+    )
+
+    assert recovered == {
+        "receipts_recovered": 0,
+        "publication_batches": 0,
+        "receipts_settled": 0,
+    }
+    read = last_read_summaries(WORKER)[receipts.STORE]
+    assert read["store"] == receipts.STORE
+    assert read["op"] == "startup_recovery"
+    assert read["range"] == "pending/"
+    assert read["partitions"] == 1 and read["records"] == 0
+
+
 def test_a_refused_publication_is_filed_as_refused_and_retention_keeps_it(field):
     refused = _receipt(receipt_id="mailbox-reconciliation_20260801T100000Z_c3d4", started_at="2026-08-01T10:00:00Z", archived=1)
     receipts.record_receipt(field, PROJECT, worker_name=WORKER, receipt=refused)
@@ -150,8 +170,17 @@ def test_a_refused_publication_is_filed_as_refused_and_retention_keeps_it(field)
 
     result = receipts.apply_receipt_retention(field, PROJECT, now=datetime(2026, 9, 24, tzinfo=timezone.utc))
 
-    assert result == {"partitions_removed": 1, "receipts_removed": 1, "receipts_kept_refused": 1}
+    assert result == {
+        "partitions_removed": 1,
+        "receipts_removed": 1,
+        "receipts_kept_refused": 1,
+        "size_bound_warnings": 0,
+    }
     assert kept.is_file() and not removable.exists()
+    read = last_read_summaries(WORKER)[receipts.STORE]
+    assert read["op"] == "retention"
+    assert read["range"] == "2026-08-01T10..2026-08-01T11"
+    assert read["partitions"] == 2 and read["records"] == 2
 
 
 def test_receipt_retention_decides_from_names_without_opening_a_receipt(field, monkeypatch):
@@ -165,6 +194,82 @@ def test_receipt_retention_decides_from_names_without_opening_a_receipt(field, m
 
     monkeypatch.setattr(receipts, "read_json", no_reads)
     assert receipts.apply_receipt_retention(field, PROJECT, now=datetime(2026, 9, 24, tzinfo=timezone.utc))["receipts_removed"] == 1
+
+
+def test_published_receipts_are_bounded_by_count(field, monkeypatch):
+    stored: list[Path] = []
+    for hour in (10, 11):
+        receipt = _receipt(
+            receipt_id=f"mailbox-reconciliation_20260923T{hour:02d}0000Z_b{hour}",
+            started_at=f"2026-09-23T{hour:02d}:00:00Z",
+            archived=1,
+        )
+        path = receipts.partition_path(
+            field,
+            PROJECT,
+            WORKER,
+            receipt,
+            publication="published",
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"receipt": receipt}), encoding="utf-8")
+        stored.append(path)
+    monkeypatch.setattr(receipts, "MAX_RECORDS_PER_AGENT", 1)
+    monkeypatch.setattr(receipts, "MAX_BYTES_PER_AGENT", 1024 * 1024)
+
+    result = receipts.apply_receipt_retention(
+        field,
+        PROJECT,
+        now=datetime(2026, 9, 24, tzinfo=timezone.utc),
+    )
+
+    assert result["partitions_removed"] == 1
+    assert result["receipts_removed"] == 1
+    assert not stored[0].exists() and stored[1].is_file()
+
+
+def test_legacy_undeliverable_replay_preserves_newer_pending_state(field):
+    newer = {
+        "message_id": "mail_crash_replay",
+        "recipient": WORKER,
+        "state": "recipient_not_found",
+        "created_at": "2026-09-24T23:00:00Z",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "failure_notice_state": "reporting",
+        "migration_generation": "newer-pending",
+    }
+    pending = field._mail_history().write_pending(
+        project_id=PROJECT,
+        family="mail-undeliverable",
+        agent=WORKER,
+        record_id="mail_crash_replay",
+        row=newer,
+    )
+    legacy = (
+        field._project_dir(PROJECT)
+        / "mail"
+        / "undeliverable"
+        / WORKER
+        / "mail_crash_replay.json"
+    )
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(
+        json.dumps(
+            {
+                **newer,
+                "failure_notice_state": "",
+                "migration_generation": "older-legacy",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
+
+    assert not legacy.exists()
+    preserved = json.loads(pending.read_text(encoding="utf-8"))
+    assert preserved["migration_generation"] == "newer-pending"
+    assert preserved["failure_notice_state"] == "reporting"
 
 
 def test_settled_outbox_rows_expire_and_rows_in_flight_never_do(field):
