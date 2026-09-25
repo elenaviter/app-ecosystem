@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.25.2"
+    assert package["revision"] == "2026.09.25.3"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1114,3 +1114,12 @@ def test_the_coordinator_role_is_handed_over_with_its_note_and_addressed_as_a_ro
     assert "Rule 8 covers work items. The coordinator role itself moves by" in collaboration
     skill = _words(_read("SKILL.md"))
     assert "Mail for whoever coordinates goes to `--recipient coordinator`" in skill
+
+
+def test_a_routed_item_carries_its_dependencies_from_the_filing_call() -> None:
+    # Operator ruling, 2026-09-25: six items went out without dependencies and
+    # their order lived only in one coordinator's head.
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "5. Set the new item's dependencies in the same call. `depends_on` lists the `identity_ref` of every item that must land first" in coordinator
+    assert 'goes in the description as "Related:"' in coordinator
+    assert "Recheck both directions when you rescope an item or split out a step." in coordinator
