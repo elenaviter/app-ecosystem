@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.25.1"
+    assert package["revision"] == "2026.09.25.2"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1069,3 +1069,28 @@ def test_project_environment_is_the_final_workspace_setup_step() -> None:
     assert "read the environment page that the same `pb worker context` result names as `project_environment_ref`" in reference
     assert "Build and prove the environment from that page before interpreting a test failure" in reference
     assert "The team adds the setup or correction to the project page" in reference
+
+
+def test_the_coordinator_role_is_handed_over_with_its_note_and_addressed_as_a_role() -> None:
+    # W313 step 6: when to hand over, what the note contains, what the
+    # successor does first, and the role address.
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "## Hand the coordinator role over, and take it back" in _read("references/coordinator.md")
+    assert "`--recipient coordinator` with `--project-ref`" in coordinator
+    assert "pb coordinate project.coordinator.note.write" in coordinator
+    for section in (
+        "runtime_windows", "merge_queue", "operator_waits", "promised_notifications",
+        "blocked_on", "research_owners", "onboarding_checks", "integrators",
+    ):
+        assert f"`{section}`" in coordinator
+    assert "Every section is required, `none` when there is nothing" in coordinator
+    assert "press **Make coordinator** on the successor" in coordinator
+    assert "The note then says `not_supplied`" in coordinator
+    assert "pb coordinate project.coordinator.get --object-ref <project-ref>" in coordinator
+    assert "marked `redirected_from`" in coordinator
+    assert "presses **Make worker** on you" in coordinator
+    assert "on this team that is an agent on dev-main" in coordinator
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "Rule 8 covers work items. The coordinator role itself moves by" in collaboration
+    skill = _words(_read("SKILL.md"))
+    assert "Mail for whoever coordinates goes to `--recipient coordinator`" in skill
