@@ -262,7 +262,7 @@ pb setup \
   --endpoint <problem_board MCP endpoint of the deployment> \
   --tenant <tenant> --platform-project <project> \
   --host-id <host-id> --host-label "<label>" \
-  --allow-root /home/<user>/workspaces
+  --allow-root /home/<user>/.kdcube/pb/workspaces
 pb host configure --allow-peer-worker '<step 0 decision: * or one worker name per flag>'
 chmod 700 ~/.kdcube
 pb source use-code \
@@ -642,9 +642,9 @@ environment. The session reads and writes its workspace and the user's `pb`
 state, and does not stop to ask for each command, because nobody approves each command:
 
 ```bash
-tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/workspaces/<workspace> && \
+tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/.kdcube/pb/workspaces/<alias> && \
   export PATH=\$HOME/.local/node/bin:\$HOME/.local/bin:\$PATH && \
-  claude --add-dir \$HOME/workspaces/<workspace> --add-dir \$HOME/.kdcube --dangerously-skip-permissions \
+  claude --add-dir \$HOME/.kdcube/pb/workspaces/<alias> --add-dir \$HOME/.kdcube --dangerously-skip-permissions \
     --disallowedTools AskUserQuestion; exec bash'"
 ```
 

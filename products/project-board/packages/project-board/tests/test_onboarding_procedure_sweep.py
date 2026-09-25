@@ -7,6 +7,7 @@ hit was a step the procedure did not name. These pins keep the steps named.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from project_board.client.procedures import source_package_path
@@ -72,7 +73,10 @@ def test_16_device_login_is_proven_live_and_the_tunnel_is_the_fallback():
 
 def test_u4_agent_workspaces_live_under_kdcube():
     # Operator ruling, 2026-09-25: "i do not want this in user folder."
-    assert "~/workspaces" not in HOST
+    # Every spelling of the old home-folder root: ~/, $HOME/ (escaped in tmux), /home/<user>/.
+    assert re.findall(r"(?:~|\$HOME|/home/<user>)/workspaces", HOST) == []
+    assert "--allow-root /home/<user>/.kdcube/pb/workspaces" in HOST
+    assert "cd \\$HOME/.kdcube/pb/workspaces/<alias>" in HOST
     assert "mkdir -p ~/.kdcube/pb/workspaces && chmod 700 ~/.kdcube/pb/workspaces" in HOST
     assert "--add-dir ~/.kdcube/pb/workspaces/<alias>" in HOST
     assert "An existing host keeps its old folders until a planned move." in HOST
