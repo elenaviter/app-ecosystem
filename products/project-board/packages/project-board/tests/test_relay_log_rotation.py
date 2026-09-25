@@ -19,6 +19,9 @@ from project_board.client.relay_logging import (
     rotating_relay_handler,
 )
 from project_board.client.relay_service import RelayService
+from project_board.client.release_install import active_python
+from project_board.client.relay_source import client_release_root
+from relay_helpers import make_host
 
 
 def _service(tmp_path: Path, *, system: str) -> RelayService:
@@ -38,6 +41,29 @@ def _service(tmp_path: Path, *, system: str) -> RelayService:
         source_root=tmp_path / "client-source",
         module_entrypoint=True,
     )
+
+
+def test_default_relay_definition_uses_the_host_current_environment(
+    tmp_path: Path,
+) -> None:
+    host, _identity, _channel = make_host(tmp_path)
+
+    service = RelayService.create(host.path, system="Linux", home=tmp_path)
+
+    assert service.executable == active_python(client_release_root(host.path))
+    assert service.program_arguments[0].endswith(
+        "/releases/current/venv/bin/python"
+    )
+
+
+def test_relay_install_requires_an_active_release_environment(tmp_path: Path) -> None:
+    service = _service(tmp_path, system="Linux")
+
+    with pytest.raises(DomainError) as failure:
+        service.install()
+
+    assert failure.value.code == "work_client_release_environment_missing"
+    assert not service.definition_path.exists()
 
 
 def test_oversized_legacy_log_is_rotated_and_bounded_on_start(tmp_path: Path) -> None:

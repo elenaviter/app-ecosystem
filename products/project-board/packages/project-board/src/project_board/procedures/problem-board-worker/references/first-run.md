@@ -61,6 +61,13 @@ ways to install it, and the operator names which applies to this machine:
 
 Neither path reads a repository checkout at run time, and both end with
 `pb procedure install`, which puts this skill on the machine.
+Both paths create one complete environment below
+`~/.kdcube/client-runtime/tools/problem-board/releases/<release-id>/venv` and
+atomically select it through `releases/current`. The generated
+`~/.local/bin/pb` launcher executes that current environment. The owning
+switch updates every configured target receipt and every installed relay as one
+host transaction. The rollback, retention, and migration contract is in
+[runtime actions](runtime-actions.md#one-complete-host-release).
 
 For a team host, ask for both repository paths and full commits, then propose
 the source install and selector from [runtime actions](runtime-actions.md).
@@ -87,9 +94,10 @@ python3 \
 ```
 
 Installing a command and a procedure changes the user's machine, so ask before
-either command. Use only the targets they run. The source installer creates the
-isolated client interpreter and guarded launcher, resolving all six
-first-party distributions in one `pip install` invocation.
+either command. Use only the targets they run. The source installer creates and
+smokes the first release environment, makes it current, and installs launcher
+version 2. Its one `pip install` invocation resolves all six first-party
+distributions and their third-party dependencies.
 The repositories are inputs to the clean exports and never become runtime
 import paths. After selection, `pb source status` reports the composite release
 ID, both full commits, all six package trees, and the source loaded by the
@@ -101,17 +109,17 @@ The `project-board` distribution is published to the package index, and the
 operator names the approved version. Propose, and run it after they approve:
 
 ```bash
-python3 -m venv "$HOME/.local/share/project-board"
-"$HOME/.local/share/project-board/bin/python" -m pip install "project-board==<version>"
-"$HOME/.local/share/project-board/bin/pb" source use-release --expect-version <version>
-"$HOME/.local/share/project-board/bin/pb" procedure install --target codex --target claude-code
+python3 -m venv "$HOME/.local/share/project-board-bootstrap"
+"$HOME/.local/share/project-board-bootstrap/bin/python" -m pip install "project-board==<version>"
+"$HOME/.local/share/project-board-bootstrap/bin/pb" status
 ```
 
-`pb source use-release` records the version the host runs and restarts the
-relay once one is installed, so ordinary commands refuse a mismatch between
-the installed package and the recorded selection. `pb source status` then
-names the version. The team host path and this one meet at `pb setup`, which
-the `machine_not_configured` section covers.
+This temporary bootstrap exists to run `pb setup` and the first
+`source use-release` after the target config exists. That source action builds
+and smokes the exact release plus its complete dependency graph, activates it,
+and installs `~/.local/bin/pb`. Verify the launcher and relay as described
+below; the temporary bootstrap may then be deleted. The team host path and
+this one meet at `pb setup`, which the `machine_not_configured` section covers.
 
 ## `machine_not_configured`
 
@@ -131,7 +139,7 @@ When `next.step` is `configure_target`:
 4. Show the one `pb setup` command with their values and run it after they
    approve.
 5. Select the same reviewed source that provided the bootstrap, now that the
-   target configuration exists:
+   target configuration exists. A team host runs the code action:
 
    ```bash
    pb source use-code \
@@ -140,6 +148,17 @@ When `next.step` is `configure_target`:
      --kdcube-repository <kdcube> --kdcube-ref <full-kdcube-commit> \
      --expect-kdcube <full-kdcube-commit>
    pb source status
+   ```
+
+   A published-package host runs the release action through its temporary
+   bootstrap, then uses the generated host launcher:
+
+   ```bash
+   "$HOME/.local/share/project-board-bootstrap/bin/pb" source use-release \
+     --expect-version <version>
+   "$HOME/.local/bin/pb" --version
+   "$HOME/.local/bin/pb" source status
+   "$HOME/.local/bin/pb" procedure install --target codex --target claude-code
    ```
 
 When `next.step` is `install_relay`: say that the relay runs in the background

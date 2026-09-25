@@ -110,8 +110,9 @@ pb procedure show
 pb procedure verify
 ```
 
-The installer creates the isolated host environment and guarded launcher. Its
-one resolver invocation binds `project-board`, both foundations,
+The installer creates and smokes the first complete release environment,
+activates `releases/current`, and installs the inert host launcher. Its one
+resolver invocation binds `project-board`, both foundations,
 `connection-hub`, and `connection-hub-cli` to the App Ecosystem export and
 `kdcube-cli` to the KDCube export; package indexes provide only third-party
 dependencies. Use only the procedure targets present
@@ -124,10 +125,8 @@ a host of a team that builds from source, installs the approved
 `project-board` version from the package index and selects it instead:
 
 ```bash
-python3 -m venv "$HOME/.local/share/project-board"
-"$HOME/.local/share/project-board/bin/python" -m pip install "project-board==<approved-version>"
-"$HOME/.local/share/project-board/bin/pb" source use-release --expect-version <approved-version>
-"$HOME/.local/share/project-board/bin/pb" procedure install --target codex --target claude-code
+python3 -m venv "$HOME/.local/share/project-board-bootstrap"
+"$HOME/.local/share/project-board-bootstrap/bin/python" -m pip install "project-board==<approved-version>"
 ```
 
 Both paths continue at section 3. The skill's
@@ -169,6 +168,18 @@ pb source use-code \
   --kdcube-repository <kdcube> --kdcube-ref <approved-full-kdcube-commit> \
   --expect-kdcube <approved-full-kdcube-commit>
 pb source status
+```
+
+For a published-package host, run the approved `pb setup` command through
+`$HOME/.local/share/project-board-bootstrap/bin/pb`, then install the complete
+release and continue through the generated launcher:
+
+```bash
+"$HOME/.local/share/project-board-bootstrap/bin/pb" source use-release \
+  --expect-version <approved-version>
+"$HOME/.local/bin/pb" --version
+"$HOME/.local/bin/pb" source status
+"$HOME/.local/bin/pb" procedure install --target codex --target claude-code
 ```
 
 Repeat `--allow-root` and `--source-repo` for each approved checkout. Inspect

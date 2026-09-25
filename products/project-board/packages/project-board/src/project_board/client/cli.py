@@ -10,6 +10,7 @@ import signal
 import sys
 import time
 from contextlib import asynccontextmanager
+from importlib import metadata
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
@@ -167,8 +168,20 @@ def _host_config(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _project_board_version() -> str:
+    try:
+        return metadata.version("project-board")
+    except metadata.PackageNotFoundError:
+        return "source"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="problem-board", description="Operate a Problem Board shared field.")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {_project_board_version()}",
+    )
     parser.add_argument(
         "--format",
         choices=FORMATS,
@@ -1421,7 +1434,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     source_commands = source.add_subparsers(dest="source_command", required=True)
     command = source_commands.add_parser(
-        "status", help="Show the selected source, released bootstrap, and running relay source."
+        "status", help="Show the active release environment, target receipt, launcher, and running relay source."
     )
     _host_config(command)
     command = source_commands.add_parser(
@@ -1461,7 +1474,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--wait-seconds", type=float, default=None)
     command = source_commands.add_parser(
         "use-release",
-        help="Select the installed project-board release for pb and the relay, and restart the relay.",
+        help="Install and select an exact project-board release for pb and the relay, and restart the relay.",
     )
     _host_config(command)
     command.add_argument(

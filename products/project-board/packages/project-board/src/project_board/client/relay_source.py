@@ -35,7 +35,12 @@ from typing import Any, Callable, Iterator, Mapping
 from packaging.version import InvalidVersion, Version
 
 from ..contract.errors import DomainError
-from .io import atomic_write_json, exclusive_lock, read_json, utc_now
+from .io import atomic_write_json, read_json, utc_now
+from .release_install import (
+    activation_lock as release_activation_lock,
+    active_release_path as active_installed_release_path,
+    read_installation,
+)
 from .source_manifest import (
     APP_ECOSYSTEM_COMPONENT,
     APP_ECOSYSTEM_SOURCE_PATHS,
@@ -140,7 +145,7 @@ class RelaySourceRelease:
 
 
 def client_source_root(config_path: Path) -> Path:
-    """The per-target source store shared by the command and relay.
+    """The per-target source-selection receipt store.
 
     The former ``relay-source`` directory is deliberately not adopted. Its
     snapshots contain only the old relay entrypoint and application modules,
@@ -148,7 +153,53 @@ def client_source_root(config_path: Path) -> Path:
     packaged command and its Connection Hub dependencies.
     """
 
-    return Path(config_path).parent / SOURCE_ROOT_DIR
+    return Path(config_path).expanduser().resolve().parent / SOURCE_ROOT_DIR
+
+
+def client_runtime_root_for_config(config_path: Path) -> Path | None:
+    selected = Path(config_path).expanduser().resolve()
+    for parent in selected.parents:
+        if parent.name != "client-runtime":
+            continue
+        try:
+            selected.relative_to(parent / "problem-board" / "targets")
+        except ValueError:
+            continue
+        return parent
+    return None
+
+
+def client_release_root(config_path: Path) -> Path:
+    """The host-wide executable release store used by the launcher and relays.
+
+    Installed hosts keep target configs below
+    ``client-runtime/problem-board/targets``. Their command launcher is
+    host-wide, so those targets share the release store below
+    ``client-runtime/tools/problem-board``. Tests and explicit nonstandard
+    configs keep releases beside their selection receipts.
+    """
+
+    selected = Path(config_path).expanduser().resolve()
+    runtime = client_runtime_root_for_config(selected)
+    if runtime is not None:
+        return runtime / "tools" / "problem-board"
+    return client_source_root(selected)
+
+
+def host_target_config_paths(config_path: Path) -> tuple[Path, ...]:
+    """Every target config whose relay consumes the same host release."""
+
+    selected = Path(config_path).expanduser().resolve()
+    runtime = client_runtime_root_for_config(selected)
+    if runtime is None:
+        return (selected,)
+    paths = set(
+        (runtime / "problem-board" / "targets").glob(
+            "*/*/apps/*/hosts/*/relay.json"
+        )
+    )
+    paths.add(selected)
+    return tuple(sorted(path.resolve() for path in paths if path.is_file()))
 
 
 def relay_source_root(config_path: Path) -> Path:
@@ -508,6 +559,11 @@ def export_release(
 
 
 def current_release(root: Path) -> RelaySourceRelease | None:
+    installed = active_installed_release_path(root)
+    if installed is not None:
+        release = read_release(installed)
+        if release is not None:
+            return release
     link = Path(root) / CURRENT_LINK
     if not link.is_symlink():
         return None
@@ -921,7 +977,7 @@ def prepare_release(
 def activation_lock(root: Path) -> Iterator[None]:
     """One activation at a time per host: pin, export, swap, verify and prune under one flock."""
 
-    with exclusive_lock(Path(root) / ".activation.lock"):
+    with release_activation_lock(root):
         yield
 
 
@@ -975,6 +1031,13 @@ def describe_source(
         return {"mode": "unknown", "script": str(script)}
     probe = resolved.parent
     for _ in range(MARKER_SEARCH_DEPTH):
+        installation = read_installation(probe)
+        if installation:
+            source = dict(installation["source"])
+            source["release_id"] = installation["release_id"]
+            source["release_path"] = str(probe)
+            source["environment"] = dict(installation["environment"])
+            return source
         release = read_release(probe)
         if release is not None:
             source: dict[str, Any] = {

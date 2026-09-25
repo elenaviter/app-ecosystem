@@ -158,7 +158,7 @@ two-export install in `add-a-worker-host.md`, run:
 
 ```bash
 PB_TEST_POSTGRES_DSN=<disposable-pgvector-dsn> \
-PROBLEM_BOARD_HOST_PYTHON=<problem-board-venv>/bin/python \
+PROBLEM_BOARD_HOST_PYTHON=<problem-board-release-root>/releases/current/venv/bin/python \
 PYTHONPATH="\
 $KD:\
 $KD/kdcube_cli/src:\

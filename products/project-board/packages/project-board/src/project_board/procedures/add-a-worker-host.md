@@ -50,8 +50,8 @@ Everything else the host agent does over its own SSH session. The operator's
 own terminal on the host is needed only for the password in step 6.
 
 The machine's administrator installs `tmux` (step 0) and, on a host set up
-before the user installer, removes the old root-owned `/opt` install once the
-relay service runs from the user install (after step 6). Both need `sudo`.
+before release environments, removes an old root-owned `/opt` install after
+the migration proof in step 13. Both need `sudo`.
 
 **Every operator step states, in the step, why a person is required and what it
 commits them to afterwards.** An operator step exists because of an identity or
@@ -63,8 +63,11 @@ a password, so it says so before they type one.
 ```text
 new host
 └── /home/<user>/                      the Linux user that runs the agents
-    ├── .local/bin/pb                  guarded project-board launcher
-    ├── .kdcube/client-runtime/tools/problem-board-venv/   isolated bootstrap
+    ├── .local/bin/pb                  inert current-release launcher
+    ├── .kdcube/client-runtime/tools/problem-board/
+    │   └── releases/
+    │       ├── current -> <release-id>                  atomic host selection
+    │       └── <release-id>/venv/                       complete release environment
     ├── .kdcube/          (700)        selectors, snapshots, relay state, logs, mailboxes
     ├── src/app-ecosystem, src/kdcube          public clones the client is built from, read only
     ├── .ssh/deploy_<repo>{,.pub}      one deploy key per repository
@@ -74,15 +77,16 @@ new host
         └── <workspace-2>/             another agent, its own clones
 ```
 
-**The client source is selected once per target.** The released `project-board`
-bootstrap reads one selector shared by ordinary `pb` commands and the relay.
-It selects either the exact installed release or an immutable code snapshot
-exported from reviewed App Ecosystem and KDCube commits. Agent workspaces are
-never a runtime source. The selector moves only by
+**The client release is selected once per host.** `releases/current` selects
+one complete environment used by `~/.local/bin/pb` and every relay definition
+on the host. Each target retains its own source-action receipt, so status can
+show which approved released version or App Ecosystem plus KDCube commits were
+applied for that target. Agent workspaces are build workspaces rather than
+runtime import paths. The host release moves only by
 [step 13](#13-update-the-selected-client-source).
 
 **What the install brings, and what it does not.** Steps 2 to 6 install, for
-one Linux user: the guarded `pb` launcher, the isolated client environment
+one Linux user: the inert `pb` launcher, the current client release environment
 (`project-board` with its Connection Hub client and foundation packages), the
 worker procedure package for Claude Code and Codex, and the user relay service.
 They do not install Problem Board itself, which is an app on the KDCube
@@ -195,8 +199,10 @@ python3 \
   --kdcube-source-root "$KDCUBE_EXPORT"
 ```
 
-The source installer owns the isolated environment and guarded user launcher.
-Its one resolver invocation binds `project-board`, `app-foundation`,
+The source installer calls the same release builder as later source switches.
+It creates `releases/<release-id>/venv`, resolves and smokes the complete
+candidate, atomically moves `releases/current`, and installs launcher version
+2. Its one resolver invocation binds `project-board`, `app-foundation`,
 `service-foundation`, `connection-hub`, and `connection-hub-cli` to the App
 Ecosystem export and `kdcube-cli` to the KDCube export; package indexes provide
 only third-party dependencies. Do not use
@@ -204,13 +210,13 @@ only third-party dependencies. Do not use
 another login user rather than sharing one credential-bearing runtime between
 users.
 
-A host set up before this installer may still hold a root-owned environment
-under `/opt`, with a launcher in `/usr/local/bin`. The agent user cannot update
-it. Install for the user as above. The relay service still runs the old
-environment until it is installed again from this user install in step 6, so
-the old environment stays in place until then. After step 6 it is unused, and
-the machine's administrator removes the `/opt` environment and its
-`/usr/local/bin/pb` launcher, which needs `sudo`.
+A host set up before release environments may still hold either a root-owned
+environment under `/opt` or the user-owned
+`~/.kdcube/client-runtime/tools/problem-board-venv`. Install the current source
+as above. The relay service continues its existing process until step 6 writes
+the stable `releases/current/venv/bin/python` definition and verifies its
+startup record. The exact proof required before either old environment is
+removed is in [step 13](#migrate-an-existing-host).
 
 ## 3. Configure `pb` for the user that runs the agents
 
@@ -357,7 +363,7 @@ by file permissions, readable by that user's agents).
 **Host agent** checks it, then installs the relay:
 
 ```bash
-PB_PYTHON="$HOME/.kdcube/client-runtime/tools/problem-board-venv/bin/python"   # step 2 installed it here
+PB_PYTHON="$HOME/.kdcube/client-runtime/tools/problem-board/releases/current/venv/bin/python"
 "$PB_PYTHON" -c 'import keyring; keyring.set_password("pb-probe","p","x"); print(keyring.get_password("pb-probe","p")=="x"); keyring.delete_password("pb-probe","p")'
 pb relay-service install
 pb relay-service status        # installed: true, running: true
@@ -369,9 +375,8 @@ The first machine found a unit `pb` wrote with a quoted path, which systemd
 refuses. A selected client source without that fix must be advanced through
 step 13 first.
 
-On a host that still holds the old root-owned `/opt` install (step 2), the
-relay now runs from the user install, so the machine's administrator removes
-that install here.
+An existing host keeps its former `/opt` or `problem-board-venv` install until
+the complete step 13 migration proof has passed for every configured target.
 
 ## 7. Give the host access to exactly the approved repositories
 
@@ -504,7 +509,7 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/workspa
   who attaches sees `?` for every box character, and each mouse movement arrives
   in the agent's input box as text (`94;29M97;29M...`). tmux carries both, and
   Claude Code recognizes it. `-u` forces UTF-8.
-- **`~/.local/bin` comes before `/usr/local/bin`.** The guarded `pb` launcher from
+- **`~/.local/bin` comes before `/usr/local/bin`.** The inert `pb` launcher from
   step 2 lives in `~/.local/bin`. A host set up before that launcher existed may
   still have an old `/usr/local/bin/pb`, and the session must not run it.
 - **`--disallowedTools AskUserQuestion`** keeps the session from stopping on an
@@ -749,11 +754,11 @@ this host because either action restarts the shared relay. The installed
 worker procedure's `references/runtime-actions.md`, found with
 `pb procedure show`, owns that agreement and verification sequence.
 
-### Migrate A Host That Still Runs `pb` From A Checkout
+### Migrate An Existing Host
 
-Keep the checkout at its working revision until its relay interpreter can load
-the source package. Read `program_arguments[0]` from `pb relay-service status`;
-it identifies the environment the installer must update:
+Keep the checkout and the former `problem-board-venv` available while creating
+the first complete release environment. This same sequence migrates a checkout
+launcher, a user-owned permanent venv, or the older root-owned `/opt` install:
 
 ```bash
 APP_REPOSITORY=/home/<user>/src/app-ecosystem
@@ -766,27 +771,28 @@ test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMM
 test "$(git -C "$KDCUBE_REPOSITORY" rev-parse "$KDCUBE_COMMIT^{commit}")" = "$KDCUBE_COMMIT"
 git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
 git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT" | tar -x -C "$KDCUBE_EXPORT"
-PB_VENV=$(dirname "$(dirname "<relay-python>")")
 python3 \
   "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
   --source-root "$APP_EXPORT" \
-  --kdcube-source-root "$KDCUBE_EXPORT" \
-  --venv "$PB_VENV"
-"<relay-python>" -c 'import json; from project_board.client.source_control import installed_release_source; print(json.dumps(installed_release_source(), sort_keys=True))'
-"<relay-python>" -m project_board.client.entrypoint source use-code \
+  --kdcube-source-root "$KDCUBE_EXPORT"
+"$HOME/.local/bin/pb" --version
+"$HOME/.local/bin/pb" relay-service install
+"$HOME/.local/bin/pb" source use-code \
   --repository "$APP_REPOSITORY" --ref "$APP_COMMIT" \
   --expect "$APP_COMMIT" \
   --kdcube-repository "$KDCUBE_REPOSITORY" --kdcube-ref "$KDCUBE_COMMIT" \
   --expect-kdcube "$KDCUBE_COMMIT"
-"<relay-python>" -m project_board.client.entrypoint source status
+"$HOME/.local/bin/pb" source status
 ```
 
-The verification line proves the installed bootstrap is isolated and reports
-its package version. `source use-code` selects both reviewed commits as one
-release and restarts the relay. Confirm snapshot mode, the release ID, both
-commits, all six tree IDs, and a matching relay startup record. Then install
-the procedure and only then
-fast-forward the shared checkout to the carve that imports `project_board`:
+The installer builds and smokes the candidate before moving
+`releases/current`. Reinstalling the relay service once changes its definition
+from the former interpreter to the stable
+`releases/current/venv/bin/python` path. `source use-code` then records both
+reviewed commits as one composite release and performs the verified restart.
+
+Install the procedure, then inspect status for every target configured on this
+host:
 
 ```bash
 pb procedure install --target claude-code --target codex
@@ -794,10 +800,23 @@ pb procedure verify
 pb source status
 ```
 
-`pb source status` separately reports the released bootstrap, selected source,
-and running relay source. All three facts remain visible after the terminal
-that performed the change exits. A failed relay verification restores the
-previous selector and source.
+The migration is complete when each target reports all of these facts:
+
+1. `launcher.version` is `2`, `launcher.current` is true, and
+   `active_release.environment.path` is below
+   `releases/<release-id>/venv`;
+2. `relay.program_arguments[0]` ends in
+   `releases/current/venv/bin/python`;
+3. every target receipt and every `relay.startup_record.source` name the same
+   snapshot release ID, both commits, and all six package tree IDs;
+4. `pb procedure verify` succeeds through `~/.local/bin/pb`.
+
+After every target passes those checks, no launcher or relay service consumes
+`~/.kdcube/client-runtime/tools/problem-board-venv`; the host agent may delete
+that directory. A root-owned `/opt` install and `/usr/local/bin/pb` may likewise
+be removed by the machine administrator. A failed build leaves the former
+client and relay running. A failed relay startup restores the previous current
+release, every target receipt, the launcher, and every installed relay.
 
 ### Restart the agent sessions after an update
 
@@ -814,7 +833,7 @@ Runs on: the host, and GitHub in the operator's browser (deleting deploy keys).
   (`tmux kill-session -t <agent-name>`).
 - The host's access to one repository: delete its deploy key in that repository.
 - The whole host: detach every agent, run `pb relay-service uninstall` and
-  remove the guarded `pb` launcher and its isolated client environment for each
+  remove the inert `pb` launcher and its release store for each
   user, delete the deploy keys on GitHub, then remove that user's Problem Board
   state after retaining any required audit material.
 

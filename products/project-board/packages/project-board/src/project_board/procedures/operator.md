@@ -44,12 +44,14 @@ python3 \
   --kdcube-source-root "$KDCUBE_EXPORT"
 pb procedure install --target codex --target claude-code
 pb procedure verify
-"$HOME/.kdcube/client-runtime/tools/problem-board-venv/bin/python" -c 'import json; from project_board.client.source_control import installed_release_source; print(json.dumps(installed_release_source(), sort_keys=True))'
+"$HOME/.local/bin/pb" --version
+"$HOME/.local/bin/pb" source status
 ```
 
-The source installer creates the isolated environment and guarded launcher,
-and resolves all six first-party distributions from both exports in one pip
-operation. Use only the coding runtime targets present on this host.
+The source installer creates and smokes a complete release environment,
+activates `releases/current`, installs the inert launcher, and resolves all six
+first-party distributions from both exports in one pip operation. Use only the
+coding runtime targets present on this host.
 `app-foundation` owns the generic MCP and Data Bus clients, `connection-hub`
 owns the host-neutral
 Connection Hub contracts, `connection-hub-cli` owns profiles and native

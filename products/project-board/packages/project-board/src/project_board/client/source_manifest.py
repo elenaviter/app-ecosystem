@@ -30,6 +30,17 @@ CLIENT_SOURCE_PATHS = tuple(
     for component in (APP_ECOSYSTEM_COMPONENT, KDCUBE_COMPONENT)
     for path in SOURCE_PATHS_BY_COMPONENT[component]
 )
+SOURCE_IMPORTS_BY_PATH = {
+    "products/project-board/packages/project-board": "project_board",
+    "packages/app-foundation": "app_foundation",
+    "packages/service-foundation": "service_foundation",
+    "products/connection-hub/packages/connection-hub": "connection_hub",
+    "products/connection-hub/packages/connection-hub-cli": "connection_hub_cli",
+    "app/ai-app/src/kdcube-ai-app/kdcube_cli": "kdcube_cli",
+}
+CLIENT_SOURCE_IMPORTS = tuple(
+    SOURCE_IMPORTS_BY_PATH[path] for path in CLIENT_SOURCE_PATHS
+)
 IDENTITY_SCHEMA = "project-board.client-source-identity.v1"
 
 
@@ -167,10 +178,12 @@ def component_named(
 __all__ = [
     "APP_ECOSYSTEM_COMPONENT",
     "APP_ECOSYSTEM_SOURCE_PATHS",
+    "CLIENT_SOURCE_IMPORTS",
     "CLIENT_SOURCE_PATHS",
     "KDCUBE_COMPONENT",
     "KDCUBE_SOURCE_PATHS",
     "SOURCE_PATHS_BY_COMPONENT",
+    "SOURCE_IMPORTS_BY_PATH",
     "SourceComponent",
     "component_from_record",
     "component_named",

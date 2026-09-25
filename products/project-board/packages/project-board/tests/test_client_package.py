@@ -6,7 +6,10 @@ import pkgutil
 import tomllib
 from pathlib import Path
 
+import pytest
+
 import project_board.client
+from project_board.client import cli
 from project_board.client.entrypoint import _top_level_command
 from project_board.client.first_run import _client_source
 from project_board.client.procedures import (
@@ -39,6 +42,29 @@ def test_distribution_installs_the_pb_console_script() -> None:
 
     assert metadata["project"]["scripts"]["pb"] == "project_board.client.entrypoint:main"
     assert _top_level_command(["--format", "brief", "worker", "receive"]) == "worker"
+
+
+def test_pb_version_is_a_config_free_release_smoke(capsys) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        cli.build_parser().parse_args(["--version"])
+
+    assert stopped.value.code == 0
+    assert capsys.readouterr().out.startswith("problem-board ")
+
+
+def test_pb_version_works_from_source_without_installed_distribution_metadata(
+    capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing(_distribution: str) -> str:
+        raise cli.metadata.PackageNotFoundError("project-board")
+
+    monkeypatch.setattr(cli.metadata, "version", missing)
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.build_parser().parse_args(["--version"])
+
+    assert stopped.value.code == 0
+    assert capsys.readouterr().out == "problem-board source\n"
 
 
 def test_test_extra_installs_the_parallel_runner() -> None:
@@ -79,7 +105,7 @@ def test_worker_procedure_revision_records_its_exact_content() -> None:
         source_revision_ledger_path().read_text(encoding="utf-8")
     )
 
-    assert package["revision"] == "2026.09.25.5"
+    assert package["revision"] == "2026.09.25.6"
     assert ledger[package["revision"]] == package["source_digest"]
 
 
@@ -104,7 +130,10 @@ def test_worker_procedure_owns_released_and_code_source_guidance() -> None:
     assert "scripts/install_from_source.py" in runtime
     assert '--source-root "$APP_EXPORT"' in runtime
     assert '--kdcube-source-root "$KDCUBE_EXPORT"' in runtime
-    assert "both full commits and the tree id of every exported package" in runtime_words
+    assert "both full commits and the tree ID of every exported package" in runtime_words
+    assert "releases/current/venv/bin/pb" in runtime
+    assert "launcher version 2" in runtime_words
+    assert "retain the three most recently activated complete environments" in runtime_words
     assert "`client.pinned: false`" in runtime
     assert "does not rewrite the per-target source selector" in runtime_words
 

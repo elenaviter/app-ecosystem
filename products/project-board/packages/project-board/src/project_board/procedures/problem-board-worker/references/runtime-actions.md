@@ -20,8 +20,8 @@ live that has never executed.
 | Widget `src/` | the same refresh, or `kdcube bundle reload <bundle-id> --commit <approved-sha> --expect <approved-sha>` for the widget's bundle; the pipeline builds `dist/`, and the reload returns before that build finishes | editing `src/` alone, building widgets by hand, or reading the reload receipt as the widget being live |
 | Descriptor content (`bundles.yaml`) | `bundle config apply` or `bundle reload <bundle-id>` | `refresh`, which preserves `$WORKDIR/config` |
 | An app under `apps/` | `activation.commit: <approved-sha>` on the app's entry in the staged descriptor (the proc reads it on reload and restart), then `kdcube bundle reload <bundle-id> --commit <approved-sha> --expect <approved-sha>`: the proc loads that commit's subtree from the repository's object store as a verified snapshot, the receipt's `Loaded:` lines name the commit, and a restart or rebuild loads the same commit from the descriptor | a reload without `--commit`, which stages whatever the checkout holds at that instant; a reload at a commit the descriptor does not name, which a restart undoes |
-| A released Problem Board host client | install the exact approved `project-board` version, then run `pb source use-release --expect-version <version>`; the source action records the version and restarts the relay when it is installed | upgrading the package alone, because the recorded version remains unchanged and ordinary commands refuse the mismatch |
-| A committed Problem Board client under development | install the six first-party distributions together from clean App Ecosystem and KDCube exports, then run `pb source use-code` with both repository paths, refs, and full approved commits; it exports those six packages as one composite release, atomically selects them for the command and relay, restarts the installed relay, and accepts only the new process's matching startup record | independent installs, an editable install, a live-checkout launcher, or selecting only one repository or the relay |
+| A released Problem Board host client | `pb source use-release --expect-version <version>` builds a new release environment, resolves that version's complete dependency graph, smokes its `pb --version` and imports, atomically activates it, and verifies the restarted relay | upgrading a permanent bootstrap environment, which leaves the launcher and relay on a different dependency set |
+| A committed Problem Board client under development | `pb source use-code` with both repository paths, refs, and full approved commits exports all six first-party packages, resolves them together inside the composite release environment, smokes it, atomically activates it, and accepts only the restarted relay's matching startup record | independent installs, an editable install, a live-checkout launcher, or selecting only one repository or the relay |
 | The already selected Problem Board relay source | `pb relay-service restart`. A relay restart is host-local and reloads the recorded source without advancing it | a bundle reload; a restart cannot select a newer checkout or package version |
 | The worker procedure package inside `project-board` | `pb procedure install`, run by the coordinator on the host after the selected release or code commit carries the new revision | editing package source, which installed sessions never read |
 
@@ -48,20 +48,61 @@ relay. Use this path for tests and diagnosis. Use `pb source use-code` only
 when the operator or coordinator has approved moving the host's pinned source
 to two reviewed commits.
 
-`pb source status` separates three facts: the released bootstrap installed on
-the host, the exact selected version or composite release, and the source
-reported by the running relay. A code selector names both full commits and the
-tree id of every exported package. A running relay observes a new selector only when restarted;
-the source command performs that restart and rolls the selector back when the
-new process does not report the expected source.
+## One Complete Host Release
 
-## Cut Over A Host That Still Runs The Checkout Client
+One host runs one Project Board client release. Every complete release lives at
+`~/.kdcube/client-runtime/tools/problem-board/releases/<release-id>/` and owns
+its source identity, `venv`, first-party packages, and resolved third-party
+dependencies. `releases/current` is the one atomic host pointer. The generated
+`~/.local/bin/pb` launcher contains no selection logic: launcher version 2 sets
+`PROBLEM_BOARD_INVOKED_PB` and executes
+`releases/current/venv/bin/pb`. Every relay service definition executes the
+same stable `current/venv/bin/python` path.
 
-The package family must exist in the relay interpreter before a shared checkout
-stops providing `pb`. Read `program_arguments[0]` from `pb relay-service
-status`; it is the relay interpreter. Prepare clean exports from the approved
-App Ecosystem and KDCube commits, then install every first-party distribution
-in one resolution:
+Each target keeps its own `selection.json` receipt. A host switch writes the
+same selected source to every configured target receipt; those files are
+synchronized evidence rather than independent selectors. This division lets
+`pb --config <target>` report durable evidence while the launcher and every
+relay on the host use one complete dependency set.
+
+A switch has four phases under one host activation lock:
+
+1. export or identify the candidate, create its `venv`, resolve the complete
+   dependency graph, run candidate `pb --version` and `pip check`, and import
+   the candidate-owned CLI, relay, authorization, Connection Hub, and
+   foundation modules with checkout import paths removed; source builds also
+   import every package named by the source manifest;
+2. stop every installed relay whose definition uses the host's stable current
+   path;
+3. atomically move `releases/current`, write every configured target receipt,
+   and install the inert launcher;
+4. restart every installed relay and accept the switch only when every new
+   startup record names the candidate source, then retain the three most
+   recently activated complete environments.
+
+A build or smoke failure occurs before relays stop and leaves `current`, every
+receipt, the launcher, and all running relays unchanged. A stop, activation,
+restart, or startup-record failure restores the exact previous current release,
+each target's previous receipt or absence of one, and the previous launcher,
+then restarts and verifies every former relay. If a candidate relay cannot be
+stopped, rollback reports that failure and does not move `current` while that
+process could still load modules from it. Pruning begins only after every relay
+has verified the activation.
+
+`pb source status` reports the active release ID and path, environment commands,
+launcher path and version, this target's receipt, the source loaded by the
+command, and every discovered host relay's status. A code receipt names both
+full commits and the tree ID of every exported package.
+
+## Move An Existing Host To Release Environments
+
+An existing host may run either a checkout client or the former long-lived
+`~/.kdcube/client-runtime/tools/problem-board-venv`. Keep that source and
+environment in place while preparing clean exports from approved App Ecosystem
+and KDCube commits. The source installer invokes the same release builder as
+`source use-code` and `source use-release`: it builds and smokes a complete
+candidate before activating `releases/current`, then replaces the user launcher
+with launcher version 2.
 
 ```bash
 APP_REPOSITORY=<app-ecosystem>
@@ -75,36 +116,40 @@ test "$(git -C "$KDCUBE_REPOSITORY" rev-parse "$KDCUBE_COMMIT^{commit}")" = "$KD
 git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
 git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT" | tar -x -C "$KDCUBE_EXPORT"
 
-PB_VENV=$(dirname "$(dirname "<relay-python>")")
 python3 \
   "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
   --source-root "$APP_EXPORT" \
-  --kdcube-source-root "$KDCUBE_EXPORT" \
-  --venv "$PB_VENV"
-"<relay-python>" -c 'import json; from project_board.client.source_control import installed_release_source; print(json.dumps(installed_release_source(), sort_keys=True))'
-"<relay-python>" -m project_board.client.entrypoint source use-code \
+  --kdcube-source-root "$KDCUBE_EXPORT"
+"$HOME/.local/bin/pb" --version
+"$HOME/.local/bin/pb" relay-service install
+"$HOME/.local/bin/pb" source use-code \
   --repository "$APP_REPOSITORY" --ref "$APP_COMMIT" \
   --expect "$APP_COMMIT" \
   --kdcube-repository "$KDCUBE_REPOSITORY" --kdcube-ref "$KDCUBE_COMMIT" \
   --expect-kdcube "$KDCUBE_COMMIT"
-"<relay-python>" -m project_board.client.entrypoint source status
+"$HOME/.local/bin/pb" source status
 ```
 
-Before fast-forwarding the old checkout:
+The relay service install is required once during this migration because its
+old definition names the former interpreter. Every later source switch keeps
+the same `releases/current/venv/bin/python` service command and performs its own
+verified restart.
 
-1. verify that the installed-source line reports `mode: released` and the
-   expected package version;
-2. verify `source.mode: snapshot`, the release ID, both full commits, all six
-   package trees, and the restarted relay's matching startup record with the
-   same interpreter's `source status`;
-3. verify that the guarded user launcher created by the source installer enters
-   that same environment, then install and verify the worker procedure from the
-   selected snapshot;
-4. only then fast-forward or remove the checkout implementation.
+Before fast-forwarding a checkout or deleting
+`problem-board-venv`, verify all of these facts for every configured target:
 
-`use-code` performs the coordinated relay restart. The fast-forward follows
-the successful source verification so the command remains available
-throughout the cutover.
+1. `launcher.version` is `2`, `launcher.current` is true, and the active
+   environment is below `releases/<release-id>/venv`;
+2. `relay.program_arguments[0]` is the stable
+   `releases/current/venv/bin/python` path;
+3. the target receipt and relay startup record name the same released version
+   or composite source, including both commits and all six package trees for a
+   code release;
+4. `pb procedure verify` succeeds from the new launcher.
+
+At that point the former venv has no launcher or service consumer and may be
+deleted. The source checkout remains a build input for future reviewed
+`use-code` actions; it is never an import path for the running client.
 
 ## Relay Restart Is Host-Local
 

@@ -32,12 +32,13 @@ python3 \
   --expect-kdcube "$KDCUBE_COMMIT"
 ```
 
-The source installer creates the isolated client environment and guarded user
-launcher. Its one `pip install` invocation resolves all six first-party
-distributions from the two clean exports; only third-party dependencies come
-from package indexes. Neither checkout is an import path. `pb source status`
-reports one release ID, both repository commits, every selected package tree,
-and the source reported by the supervised relay.
+The source installer creates and smokes one complete release environment and
+installs an inert user launcher for `releases/current`. Its one `pip install`
+invocation resolves all six first-party distributions from the two clean
+exports together with their third-party dependencies. Neither checkout is an
+import path. `pb source status` reports the active release and environment,
+launcher version, target receipt, both repository commits, every selected
+package tree, and the source reported by the supervised relay.
 
 ## Package contents
 
@@ -57,9 +58,9 @@ the contract.
 
 ## Select host source
 
-A published distribution remains a supported independent source. After an
-approved package upgrade, make that exact version authoritative and restart
-the relay with:
+A published distribution remains a supported independent source. Install and
+smoke its complete release environment, make it current, and verify the relay
+restart with:
 
 ```bash
 pb source use-release --expect-version 2026.09.23.0158
@@ -82,10 +83,11 @@ The code release is exported from Git objects and verified blob by blob. It
 contains `project-board`, `app-foundation`, `service-foundation`,
 `connection-hub`, and `connection-hub-cli` from the App Ecosystem commit, plus
 `kdcube-cli` from the KDCube commit. Their named commits and package trees form
-one path-independent release ID. The selector is
-shared by the `pb` bootstrap and relay; an installed relay is restarted and
-must report that source before the selection succeeds. A failed start restores
-the previous selector.
+one path-independent release ID. One host-wide `releases/current` pointer is
+shared by the `pb` launcher and every relay definition; each target keeps its
+source-action receipt. An installed relay must report the candidate source
+before the switch succeeds. A failed start restores the previous current
+release and target receipt.
 
 Running `python -m project_board.client.entrypoint` with checkout package paths
 on `PYTHONPATH` is an explicit development process. It does not change the
