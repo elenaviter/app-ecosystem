@@ -87,7 +87,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.25.10"
+    assert package["revision"] == "2026.09.25.11"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -971,33 +971,48 @@ def test_every_activation_is_addressed_to_the_approved_commit_and_its_receipt_is
     assert "Every activation is addressed to a commit" in coordinator
     assert "whatever it holds at that instant. The\nlist is what makes that survivable" not in coordinator
     assert "the approved commit per tree" in coordinator
-    assert "`kdcube bundle reload <bundle-id> --commit <sha> --expect\n   <sha>`" in coordinator
-    assert "**check\n   the receipt against the approved candidate**" in coordinator
+    assert "`git -C <deploy-worktree> checkout --detach <sha>` and `kdcube bundle reload <bundle-id>`" in " ".join(coordinator.split())
+    assert "**check the receipt against the approved candidate**" in " ".join(coordinator.split())
     assert "A receipt that names another commit is a failed\n   activation: report it as failed, with both commits" in coordinator
     assert coordinator.index("the receipt against the approved candidate") < coordinator.index("5. **Verify the deployed artifact, never the commit.**")
     # The preflight stays, as evidence and explicitly not the guarantee.
     assert "neither is the\n   guarantee" in coordinator
-    assert "then `kdcube bundle reload <bundle-id> --commit <approved-sha> --expect <approved-sha>`" in actions
-    assert "a reload without `--commit`, which stages whatever the checkout holds at that instant" in actions
+    assert "`git -C <deploy-worktree> checkout --detach <approved-sha>`, then `kdcube bundle reload <bundle-id>`" in actions
+    assert "a reload of an app whose path is a working checkout, which stages whatever that checkout holds at that instant" in actions
 
 
-def test_an_app_activation_writes_its_commit_where_a_restart_reads_it():
-    """W202, procedure 2026.09.24.3: a reload's commit is not durable, so the
-    descriptor's activation.commit carries it across a restart or rebuild."""
+def test_an_app_deploys_from_its_deploy_worktree_never_from_a_working_checkout():
+    """W202, procedure 2026.09.25.11: since the 2026-09-25 23:23Z window every
+    app loads from a deploy worktree that nobody edits, checked out at the
+    approved commit; web requests, the Data Bus workers and a restart all read
+    it. activation.commit is not the guarantee: a restart and the Data Bus
+    workers ignore it (W333)."""
 
     coordinator = (PROCEDURE_ROOT / "references" / "coordinator.md").read_text(encoding="utf-8")
     actions = (PROCEDURE_ROOT / "references" / "runtime-actions.md").read_text(encoding="utf-8")
 
     step = coordinator[coordinator.index("4. **Execute**"):coordinator.index("5. **Verify the deployed artifact")]
-    assert "set `activation.commit: <sha>`" in step
-    assert "then reload at the same sha. The proc reads that staged file" in step
-    assert "config apply" not in step, "window 13: apply copies descriptors in, a staged edit needs none"
-    assert "a reload without `--commit` re-activates the pinned commit, never\n   the tree" in step
-    assert "guards the entry the day the\n   pin is removed" in step
-    assert "(`durable: false`)" in step and "silently undoes the activation" in step
-    assert step.index("activation.commit") < step.index("**check")
-    assert "`activation.commit: <approved-sha>` on the app's entry in the staged descriptor (the proc reads it on reload and restart), then `kdcube bundle reload" in actions
-    assert "a reload at a commit the descriptor does not name, which a restart undoes" in actions
+    assert "The working checkouts are never an app's path" in step
+    assert "a restart and the\n   Data Bus workers ignore it (W333)" in step
+    assert "set `activation.commit" not in step and "--commit <sha>" not in step
+    assert step.index("checkout --detach") < step.index("**check")
+    assert "`git -C <deploy-worktree> rev-parse HEAD` is the commit on disk" in " ".join(step.split())
+    app_row = next(line for line in actions.splitlines() if line.startswith("| An app under `apps/`"))
+    assert "**deploy worktree**" in app_row and "is the app's only path" in app_row
+    assert "`kdcube bundle <bundle-id> --tenant <t> --project <p> --local-path <container-path>`" in app_row
+    assert "which a restart and the Data Bus workers ignore, so it is not the guarantee until W333 lands" in app_row
+    assert "--commit" not in app_row
+    # Review on #153: a leftover activation block still wins a commitless
+    # reload in the web proc, so the entry carries none and the receipt says so.
+    assert "carries **no `activation` block** (neither `commit` nor `require_commit`)" in app_row
+    assert "`Loaded: mounted tree at head <approved-sha>, clean`" in app_row
+    assert "`--local-path`, which keeps an existing `activation` block" in app_row
+    flat = " ".join(step.split())
+    assert "remove any `activation` block, `commit` or `require_commit`" in flat
+    assert flat.index("remove any `activation` block") < flat.index("checkout --detach")
+    assert "a `Loaded: snapshot of` line is a failed activation" in flat
+    widget_row = next(line for line in actions.splitlines() if line.startswith("| Widget `src/`"))
+    assert "--commit" not in widget_row and "the app deploy below" in widget_row
 
 
 def test_the_worker_host_path_holds_on_a_host_that_has_none_of_it():
