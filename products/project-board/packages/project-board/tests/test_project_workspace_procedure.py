@@ -285,6 +285,22 @@ def test_a_new_clone_uses_the_host_s_ssh_alias(tmp_path, remote, shell):
     assert origin == "github-applications:kdcube/applications.git"
 
 
+@pytest.mark.parametrize("shell", ("bash", "zsh"))
+def test_the_default_ssh_config_may_be_unset_under_nounset(tmp_path, remote, shell):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = _run(
+        {"PATH": "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"},
+        workspace,
+        str(remote),
+        shell=shell,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (workspace / "applications" / ".git").is_dir()
+
+
 def test_another_repository_behind_the_alias_is_still_refused(tmp_path, remote):
     env = _alias_host(tmp_path, remote)
     workspace = tmp_path / "workspace"

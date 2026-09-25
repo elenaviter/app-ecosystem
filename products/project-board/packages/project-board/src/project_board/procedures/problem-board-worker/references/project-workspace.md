@@ -56,7 +56,7 @@ For each entry, with `WORKSPACE` from the output's `workspace`, and `ALIAS`,
 ```bash
 resolve_host() {
   local named
-  if [ -n "$SSH_CONFIG" ]; then
+  if [ -n "${SSH_CONFIG:-}" ]; then
     named=$(ssh -F "$SSH_CONFIG" -G "$1" 2>/dev/null | awk '$1 == "hostname" {print $2; exit}')
   else
     named=$(ssh -G "$1" 2>/dev/null | awk '$1 == "hostname" {print $2; exit}')
