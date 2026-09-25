@@ -238,7 +238,8 @@ The reaction, in order:
 1. Read the item named by `work_ref`, by key:
    `pb coordinate project.plan.item --object-ref <project-ref>
    --payload-json '{"item_key":"<Wn>"}'`.
-2. Report `working` (it sets Working), then do what the acceptance lines say.
+2. Report `working` (it sets Working), settle the notice's lease at once (no
+   lease outlives an hour; the row carries the work), then do the acceptance lines.
 3. Commit what you wrote, by explicit path, as you finish it.
 4. For a `completed` report, provide `--review-look-at` with concrete steps
    the reviewer can perform and `--review-could-not-verify` with what remains
@@ -251,7 +252,6 @@ The reaction, in order:
    leaving and re-entering Review requires both statements.
 5. Report `completed` with `pb worker report` against the exact
    `assignment_ref` and `ownership_version` from the notice.
-6. Settle the notice's lease once.
 
 `working` and `blocked` are progress reports; `completed` and `refused` are
 terminal. State plus `source_event_ref` identifies one immutable report: an
