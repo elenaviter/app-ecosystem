@@ -8,7 +8,9 @@ the value is what the runtime writes about itself, never inferred.
 
 - **Codex** appends a ``turn_context`` record to the session's rollout file
   at every turn; its ``payload`` names the ``model`` and the reasoning
-  ``effort`` (and ``summary``) the turn runs with.
+  ``effort`` the turn runs with, and repeats both under
+  ``collaboration_mode.settings`` (``model``, ``reasoning_effort``).
+  Verified on a codex-cli 0.154.0 rollout on dev-main, 2026-09-25.
 - **Claude Code** hands its status line command a JSON with ``model``
   (``id``, ``display_name``), ``effort.level`` only for a model that supports
   effort, and ``thinking.enabled`` (2.1.282, read from the shipped binary on
@@ -105,17 +107,25 @@ def runtime_model_from_codex(
 ) -> dict[str, Any] | None:
     """A Codex ``turn_context`` payload as the model record.
 
-    Codex writes the effort as ``effort``; ``reasoning_effort`` (its config
-    key) is read too, so a rename in either direction still reports.
+    ``payload.effort`` and ``payload.model`` first; the collaboration mode's
+    ``settings.reasoning_effort`` and ``settings.model`` (and a top-level
+    ``reasoning_effort``) are read when those are missing, so a rename in
+    either direction still reports.
     """
 
     if not isinstance(turn_context, Mapping):
         return None
+    mode = turn_context.get("collaboration_mode")
+    settings = mode.get("settings") if isinstance(mode, Mapping) else None
+    settings = settings if isinstance(settings, Mapping) else {}
     effort = turn_context.get("effort")
-    if effort in (None, ""):
-        effort = turn_context.get("reasoning_effort")
+    for fallback in (turn_context.get("reasoning_effort"), settings.get("reasoning_effort")):
+        if effort not in (None, ""):
+            break
+        effort = fallback
+    model = turn_context.get("model") or settings.get("model")
     return _runtime_model(
-        model=turn_context.get("model"),
+        model=model,
         effort=effort,
         source=SOURCE_CODEX_ROLLOUT,
         observed_at=observed_at,

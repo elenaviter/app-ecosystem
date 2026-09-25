@@ -26,10 +26,21 @@ from project_board.client.runtime_model import (
 SESSION = "01a08da1-ee31-70a2-bf8d-8a08d55bdcf7"
 
 
-def _turn_context(model: str, effort: str | None, *, at: str, key: str = "effort") -> str:
-    payload = {"cwd": "...", "approval_policy": "never", "sandbox_policy": {"mode": "danger-full-access"}, "model": model, "summary": "auto"}
-    if effort is not None:
-        payload[key] = effort
+# The newest real turn_context line of a codex-cli 0.154.0 session on dev-main
+# (2026-09-25, paths redacted by codex-main).
+REAL_TURN_CONTEXT = {"type": "turn_context", "payload": {"cwd": "...", "workspace_roots": ["..."], "model": "gpt-5.6-sol", "collaboration_mode": {"mode": "default", "settings": {"model": "gpt-5.6-sol", "reasoning_effort": "ultra", "developer_instructions": None}}, "effort": "ultra", "summary": "auto"}}
+
+
+def _turn_context(model: str, effort: str | None, *, at: str) -> str:
+    payload = json.loads(json.dumps(REAL_TURN_CONTEXT["payload"]))
+    payload["model"] = model
+    payload["collaboration_mode"]["settings"]["model"] = model
+    if effort is None:
+        payload.pop("effort")
+        payload["collaboration_mode"]["settings"]["reasoning_effort"] = None
+    else:
+        payload["effort"] = effort
+        payload["collaboration_mode"]["settings"]["reasoning_effort"] = effort
     return json.dumps({"timestamp": at, "type": "turn_context", "payload": payload})
 
 
@@ -44,6 +55,15 @@ def _rollout(tmp_path, lines: list[str], *, filler: int = 0):
     body.append(json.dumps({"timestamp": "2026-09-25T15:41:00.000Z", "type": "event_msg", "payload": {"type": "agent_message", "message": "done"}}))
     path.write_text("\n".join(body) + "\n", encoding="utf-8")
     return path
+
+
+def test_the_real_codex_turn_context_reads_model_and_effort():
+    record = runtime_model_from_codex(REAL_TURN_CONTEXT["payload"], observed_at="2026-09-25T15:40:00Z")
+    assert record["model"] == "gpt-5.6-sol" and record["effort"] == "ultra"
+    # Only the collaboration mode names them: still read.
+    settings_only = {"collaboration_mode": {"settings": {"model": "gpt-5.6-sol", "reasoning_effort": "high"}}}
+    assert runtime_model_from_codex(settings_only)["effort"] == "high"
+    assert runtime_model_from_codex(settings_only)["model"] == "gpt-5.6-sol"
 
 
 def test_codex_reads_the_newest_turn_context_in_the_rollout_tail(tmp_path):
