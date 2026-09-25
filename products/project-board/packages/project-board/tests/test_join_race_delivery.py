@@ -13,6 +13,7 @@ re-stamped on resync and skew between hosts cannot decide it.
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -182,7 +183,9 @@ def test_immediate_board_read_that_confirms_absence_refuses_in_one_cycle():
 )
 def test_failed_immediate_read_defers_not_linked_controls_and_continues_batch(
     heartbeat_error,
+    caplog,
 ):
+    caplog.set_level(logging.DEBUG, logger=relay_module.__name__)
     field, clock = Field(), Clock()
     items = [_welcome(), _second_welcome()]
     client = Client(items, heartbeat_error=heartbeat_error)
@@ -195,6 +198,16 @@ def test_failed_immediate_read_defers_not_linked_controls_and_continues_batch(
     assert result["controls_refused"] == 0
     assert client.calls == ["control.pull", "worker.heartbeat"]
     assert field.attempted == [item["ref"] for item in items]
+    deferred = [
+        record.getMessage()
+        for record in caplog.records
+        if "control remains deferred after attendance read" in record.getMessage()
+    ]
+    assert len(deferred) == 2
+    assert all(
+        any(item["ref"] in message for message in deferred)
+        for item in items
+    )
 
 
 def test_authoritative_absence_uses_one_attendance_read_for_the_batch():
