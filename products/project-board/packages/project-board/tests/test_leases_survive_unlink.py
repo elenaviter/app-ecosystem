@@ -63,6 +63,11 @@ def test_a_lease_held_across_an_unlink_is_listed_read_and_settled(field):
 
     listed = field.list_worker_mail_leases(WORKER, lease_owner=owner)
     assert [lease["message_ref"] for lease in listed["items"]] == [message_ref]
+    reread = field.read_worker_mail_lease(
+        PROJECT, worker_name=WORKER, message_ref=message_ref, lease_id=lease_id, lease_owner=owner,
+    )
+    assert reread["message_ref"] == message_ref
+    assert reread["lease"]["lease_id"] == lease_id
     settled = field.settle_mail(
         PROJECT, worker_name=WORKER, message_ref=message_ref, lease_id=lease_id,
         lease_owner=owner, outcome="acknowledged", summary="Done before the unlink.",
