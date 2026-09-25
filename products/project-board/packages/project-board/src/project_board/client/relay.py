@@ -3911,6 +3911,63 @@ class ProblemBoardRelaySupervisor:
 
         await asyncio.gather(*(reconcile(channel) for channel in channels))
 
+    def _publish_wake_hold(
+        self,
+        field: SharedFieldStore,
+        channel: WorkerChannelConfig,
+        *,
+        state: str,
+        until: str,
+        pending: int,
+    ) -> bool:
+        """A wake held for an agent's usage limit, or its end, as a project event (W26).
+
+        The same notification-path event the board already shows on the
+        worker card (W182), never mail. A worker that attends no project has
+        no card to show it on, so nothing is published; the log line stays.
+        """
+
+        try:
+            worker = field.read_worker(channel.worker_name)
+        except DomainError:
+            return False
+        refs = [str(ref) for ref in (worker.get("attended_project_refs") or []) if str(ref or "")]
+        if not refs:
+            return False
+        project_id = refs[0].rsplit(":", 1)[-1]
+        alias = str(worker.get("worker_alias") or channel.worker_name)
+        summary = (
+            f"{alias}: wake held until {until}: its runtime reports a usage limit, "
+            f"{pending} message(s) waiting"
+            if state == "wake_deferred"
+            else f"{alias}: wake no longer held (held until {until})"
+        )
+        try:
+            field.enqueue_service_event(
+                project_id,
+                worker_name=channel.worker_name,
+                kind=ProblemBoardHostRelayAdapter.NOTICE_EVENT_KIND,
+                summary=summary,
+                source_event_ref=f"relay:wake-hold:{channel.worker_name}:{until}:{state}",
+                metadata={
+                    "notice": "notification_path",
+                    "state": state,
+                    "incident_kind": "usage_limit",
+                    "since": until if state == "wake_deferred" else "",
+                    "until": until,
+                    "pending_messages": pending,
+                    "runtime_kind": channel.runtime_kind,
+                    "runtime_session_id": channel.runtime_session_id,
+                    "worker_alias": alias,
+                    "reported_by": "relay",
+                },
+                idempotency_key=f"wake-hold:{channel.worker_name}:{until}:{state}",
+            )
+            return True
+        except DomainError:
+            logger.debug("Could not queue the wake-hold event for %s.", channel.worker_name, exc_info=True)
+            return False
+
     async def _notify_available_input(
         self, host: HostRelayConfig, channel: WorkerChannelConfig
     ) -> dict[str, Any] | None:
@@ -3960,13 +4017,30 @@ class ProblemBoardRelaySupervisor:
                     deferred_until,
                     len(pending_refs),
                 )
+                # W26 line 8: the coordinator sees why the agent is quiet, as a
+                # state on its worker card, not only in this host's log.
+                self._publish_wake_hold(
+                    field,
+                    channel,
+                    state="wake_deferred",
+                    until=deferred_until,
+                    pending=len(pending_refs),
+                )
             return {
                 **(queue_reconciliation or {}),
                 "wake_deferred": True,
                 "wake_deferred_until": deferred_until,
                 "reason": "agent_rate_limited",
             }
-        self._limit_wake_deferrals.pop(channel.worker_name, None)
+        held_until = self._limit_wake_deferrals.pop(channel.worker_name, None)
+        if held_until:
+            self._publish_wake_hold(
+                field,
+                channel,
+                state="wake_resumed",
+                until=held_until,
+                pending=len(pending_refs),
+            )
         subscription = (
             dict(listener.get("subscription") or {})
             if isinstance(listener.get("subscription"), Mapping)
