@@ -418,6 +418,7 @@ class RelayService:
             result = _run(
                 ["launchctl", "bootout", self._launchd_target()], check=False
             )
+            self._wait_for_launchd_unload()
         else:
             result = _run(
                 ["systemctl", "--user", "stop", self.service_id], check=False
