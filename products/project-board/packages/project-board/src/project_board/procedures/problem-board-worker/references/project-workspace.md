@@ -131,3 +131,17 @@ which alias and why.
 A repository you cannot clone or fetch (no deploy key on this host, no
 access): tell the operator by name, with its alias and URL, and go on with the
 rest. The operator adds the key or the access, and you clone it then.
+
+## 4. Set up the project's development environment
+
+After every reachable repository is present, read the environment page that
+the same `pb worker context` result names as `project_environment_ref`. Its
+`local_project_environment` is the resolved file in the journal checkout. The
+page owns this project's interpreters, virtual environments, source overlays,
+test commands, fixtures, and machine-owned system packages.
+
+Build and prove the environment from that page before interpreting a test
+failure. When the context has no environment-page ref, or a command needs an
+undeclared dependency, tell the coordinator exactly what is missing. The team
+adds the setup or correction to the project page, so the next worker starts
+from the prepared answer.

@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.21"
+    assert package["revision"] == "2026.09.25.1"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1062,3 +1062,10 @@ def test_an_assignment_notice_is_settled_after_working_not_after_completion() ->
     assert "**A lease is held for at most an hour, renewals included** (`MAX_MAIL_HOLD_SECONDS`, 3600)." in delivery
     assert "`field_mail_held_too_long`" in delivery
     assert "An assignment notice is settled right after `working` is accepted" in delivery
+
+
+def test_project_environment_is_the_final_workspace_setup_step() -> None:
+    reference = _words(_read("references/project-workspace.md"))
+    assert "read the environment page that the same `pb worker context` result names as `project_environment_ref`" in reference
+    assert "Build and prove the environment from that page before interpreting a test failure" in reference
+    assert "The team adds the setup or correction to the project page" in reference
