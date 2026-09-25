@@ -33,20 +33,39 @@ The short version a user follows, and what they hand their setup agent, is
 - **Operator**: the person who owns the Problem Board project.
 - **Host agent**: an agent with an SSH session on the new host, acting for the
   operator. A person can do every host-agent step too.
+- **Either**: the host agent, or a person instead of it.
+- **Machine administrator**: whoever holds `sudo` on the machine. Only system
+  packages and root-owned files need them.
 
-The operator does only what needs their identity or a secret:
+Every step, in the order it happens:
 
-| step | operator action |
-|---|---|
-| 1 | give the host agent an SSH login to the machine |
-| 5 | log the coding agent in with the account it should use |
-| 6 | type the credential store password once per boot (until W258) |
-| 7 | add each deploy key on GitHub |
-| 9 | accept bypass mode for the agent sessions |
-| 11 | approve each agent's Card, with a code, in a browser on any device |
-| 12 | add the agents to the project |
+| step | who | what | why that person |
+|---|---|---|---|
+| 0 | **operator** decides, host agent proposes | one proposal: host id and label, Linux user, **the project the agents join**, one workspace per agent, agent names, runtimes and accounts, who approves the Cards, and whose mail may reach the agents | these are the operator's choices; nothing changes before approval |
+| 1 | **operator** | an SSH login to the machine for the host agent | only the operator holds that access |
+| 1 | either | check Python, git, other users, home folder permissions, `tmux` | routine |
+| 1 | **machine administrator** | install `tmux` when it is missing | a system package needs `sudo` |
+| 2 to 4 | either | install and configure `pb` from the approved commits, the worker procedure, and user services that survive logout | routine |
+| 5 | either | install the coding agent runtimes in the user's home | routine |
+| 5 | **operator** (or the account owner) | log each runtime in with the account it should use | it is their account |
+| 6 | **operator** | type the credential store password once per boot (until W258) | the password is theirs to keep |
+| 6 | either | install the relay service | routine |
+| after 6 | **machine administrator** | on a host set up before the user installer, remove the root-owned `/opt` install | removing root-owned files needs `sudo` |
+| 7 | either | one deploy key per repository **on the project card**, and the operator sheet | routine |
+| 7 | **operator** | add each deploy key on GitHub | only a repository admin can grant access |
+| 8 | either | one empty workspace per agent | routine |
+| 9 | host agent | start one `tmux` session per agent | routine |
+| 9 | **operator** decides, host agent presses the key | accept bypass mode for the agent sessions | it is the operator's risk decision |
+| 10 | the agent, inside its session | enroll and report the profile to authorize | routine |
+| 11 | **operator** | approve each agent's Card, with a code, in a browser on any device | the agent acts in the operator's name |
+| 11 | host agent | tell each approved agent to start listening | routine |
+| 12 | **operator** | add the agents to the project | who works on the project is the operator's decision |
+| 12 | the agent | set up its workspace from the project record: clone each repository on the card | the project card, not the host, names the repositories |
+| 12 | **operator** approves each check, the coordinator runs it | the seven checks, then a first small item | the operator decides when an agent is part of the team |
+| 13 | either | move the selected client source, restart the relay and the sessions | a coordinated runtime action |
+| 14 | either, with the **operator** for GitHub | retire an agent or the host, delete its deploy keys | routine; only an admin deletes a key |
 
-Everything else the host agent does over its own SSH session. The operator's
+The host agent does everything else over its own SSH session. The operator's
 own terminal on the host is needed only for the password in step 6.
 
 The machine's administrator installs `tmux` (step 0) and, on a host set up
@@ -70,7 +89,7 @@ new host
     │       └── <release-id>/venv/                       complete release environment
     ├── .kdcube/          (700)        selectors, snapshots, relay state, logs, mailboxes
     ├── src/app-ecosystem, src/kdcube          public clones the client is built from, read only
-    ├── .ssh/deploy_<repo>{,.pub}      one deploy key per repository
+    ├── .ssh/deploy_<alias>{,.pub}     one deploy key per repository on the project card
     ├── .config/systemd/user/kdcube-problem-board-relay-*.service
     └── workspaces/       (700)
         ├── <workspace-1>/             one agent, its own clones
@@ -109,7 +128,7 @@ before anything changes:
 |---|---|---|
 | host id and label | `spark1`, "spark1 (Linux, headless)" | the machine's name on the board. "The agents on a host agree before a relay restart" is per host id. |
 | Linux user that runs the agents | `lena` | owns the keys, the relay and the credential store |
-| **repositories the agents may work on** | see the table below | the most important decision: each gets a deploy key with write access and a clone in every workspace. The agents reach nothing else through Problem Board. |
+| **the project the agents join** | `Quickstart works` | its project card lists the repositories (alias, URL, role). Step 7 gives this host a deploy key for exactly those, and step 12 clones them into each agent's workspace. The agents reach nothing else through Problem Board. Which repositories a project uses is decided on its card, not per host (W304 finding 15). |
 | workspaces, one per agent | `~/workspaces/space001`, `space002` | each agent edits only its own clones |
 | agent names | `claude-ops@spark1`, `claude-app@spark1` | display names on the board. The board addresses a worker by a stable generated name. |
 | runtime of each agent | `claude-code` for both, or one of each | an agent session is described by its runtime, provider account, and session ID. Its stable worker address remains runtime plus session ID; an account change is recorded and reported. One host can run Claude Code and Codex agents side by side, each in its own workspace. Needing another runtime means adding another agent. |
@@ -118,13 +137,18 @@ before anything changes:
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 | **teammates who may write to these agents** | `*`, any agent that shares a project with them, or named workers such as the coordinator | the host's receiver policy (`receiver_policy.allowed_peer_workers`), set in step 3. A new host accepts mail from no teammate until it is set, so the coordinator cannot reach the new agents. The board already lets only an agent in a shared project address them, so `*` means "my project teammates". It grants no access to anything: it decides whose mail reaches these agents. The operator's own messages reach them either way. |
 
-The repository table, used by steps 2, 7 and 8:
+**Repositories are not a host decision.** They belong to the project: the
+operator sets them on the project card (Team, project card, repositories), and
+every host whose agents attend the project follows that list. To read it, the
+host agent asks the operator, or reads it from the board as any agent already
+attending the project does:
 
-| local name | GitHub `owner/repo` | private | what the agents do there |
-|---|---|---|---|
-| `applications` | `kdcube/applications` | yes | Problem Board and the other apps |
-| `app-ecosystem` | `elenaviter/app-ecosystem` | no | Connection Hub and foundation packages |
-| `kdcube` | `kdcube/kdcube` | no | KDCube platform and SDK |
+```bash
+pb worker context --project-ref <project> --format brief | grep '^repositories\['
+```
+
+Adding or removing a repository for the project is a change to the card; each
+host then gains or loses a deploy key at step 7.
 
 ## 1. Give the host agent access to the host
 
@@ -382,7 +406,7 @@ step 13 first.
 An existing host keeps its former `/opt` or `problem-board-venv` install until
 the complete step 13 migration proof has passed for every configured target.
 
-## 7. Give the host access to exactly the approved repositories
+## 7. Give the host access to exactly the project's repositories
 
 Runs on: the host (keys, verification), and GitHub in the operator's browser (adding each key).
 
@@ -391,29 +415,38 @@ itself. A personal key would reach every repository its owner can reach, and
 removing it would cut off every machine using it. Deleting a deploy key revokes
 exactly this host's access to exactly that repository.
 
-**Host agent**, for each repository in the step 0 table:
+The list is the **project card's**, read now (step 0 says how), never a copy
+kept on the host: a host copy goes stale when the card changes, and on
+2026-09-24 a helper followed a stale list (W304 findings 3 and 15). Write the
+card's entries for this session only, one per line, the card's `alias` and the
+`owner/repo` of its URL, tab-separated:
 
 ```bash
-ssh-keygen -q -t ed25519 -N "" -C "<host-id> deploy key: <local-name>" -f ~/.ssh/deploy_<local-name>
-cat >> ~/.ssh/config <<'CONFIG'
-Host github-<local-name>
-  HostName github.com
-  User git
-  IdentityFile ~/.ssh/deploy_<local-name>
-  IdentitiesOnly yes
-CONFIG
+REPOS=$(mktemp)
+printf '%s\t%s\n' <alias-1> <owner/repo-1> <alias-2> <owner/repo-2> > "$REPOS"   # the card's entries
+```
+
+**Host agent**, for each entry. The key and its SSH alias are named by the
+card's `alias`, because the worker's workspace setup clones through
+`github-<alias>` whenever that alias exists (project-workspace reference):
+
+```bash
+while IFS=$'\t' read -r alias repo; do
+  [ -f ~/.ssh/deploy_$alias ] && continue
+  ssh-keygen -q -t ed25519 -N "" -C "<host-id> deploy key: $alias" -f ~/.ssh/deploy_$alias
+  printf '\nHost github-%s\n  HostName github.com\n  User git\n  IdentityFile ~/.ssh/deploy_%s\n  IdentitiesOnly yes\n' "$alias" "$alias" >> ~/.ssh/config
+done < "$REPOS"
 chmod 600 ~/.ssh/config
 ```
 
 Then it prints the **operator sheet**: for each repository, the page to open, the
-title and the key to paste. Keep the step 0 table in `~/.kdcube/repositories.tsv`
-(local name, `owner/repo`, one per line, tab-separated), and run:
+title and the key to paste:
 
 ```bash
-while IFS=$'\t' read -r name repo; do
+while IFS=$'\t' read -r alias repo; do
   printf '\n### %s\n\nPage: https://github.com/%s/settings/keys\nTitle: %s agents\nAllow write access: yes\nKey:\n\n    %s\n' \
-    "$name" "$repo" "$(hostname -s)" "$(cat ~/.ssh/deploy_$name.pub)"
-done < ~/.kdcube/repositories.tsv
+    "$alias" "$repo" "$(hostname -s)" "$(cat ~/.ssh/deploy_$alias.pub)"
+done < "$REPOS"
 ```
 
 **Operator**, for each block of the sheet: open the page, **Add deploy key**,
@@ -424,44 +457,42 @@ that repository. Merging into the default branch stays governed by review.
 **Host agent** verifies each:
 
 ```bash
-while IFS=$'\t' read -r name repo; do
-  printf '%s: ' "$name"; git ls-remote "github-$name:$repo.git" HEAD >/dev/null 2>&1 && echo ok || echo REFUSED
-done < ~/.kdcube/repositories.tsv
+while IFS=$'\t' read -r alias repo; do
+  printf '%s: ' "$alias"; git ls-remote "github-$alias:$repo.git" HEAD >/dev/null 2>&1 && echo ok || echo REFUSED
+done < "$REPOS"
+rm -f "$REPOS"
 ```
 
-Rules: one key per repository per host user. Another user on the machine who
-runs agents gets their own keys. The private key never leaves the host. Public
-keys are not secret: the sheet can be sent by any channel.
+Rules: one key per repository per host user; every agent of that user shares
+it. Another user on the machine who runs agents gets their own keys. The
+private key never leaves the host. Public keys are not secret: the sheet can be
+sent by any channel.
+
+**When the card changes later**, the next workspace setup tells the operator
+which repository an agent cannot reach, by alias and URL (step 12). The host
+agent then runs this step for that entry alone. A repository removed from the
+card keeps its key until the operator deletes it (step 14).
 
 [Worked example: the first machine's sheet](#worked-example-spark1-2026-09-22).
 
-## 8. Give each agent its own workspace and clones
+## 8. Give each agent its own workspace
 
 Runs on: the host.
 
-**Host agent:**
+**Host agent** creates one empty folder per agent, readable only by this user.
+It clones nothing: the agent clones the project's repositories into it when it
+attends the project (step 12), at the branch the card declares, so a workspace
+always matches the card it serves.
 
 ```bash
 mkdir -p ~/workspaces && chmod 700 ~/workspaces
-for w in <workspace-1> <workspace-2>; do
-  mkdir -p ~/workspaces/$w
-  while IFS=$'\t' read -r name repo; do
-    [ -d ~/workspaces/$w/$name ] || git clone -q "github-$name:$repo.git" ~/workspaces/$w/$name
-  done < ~/.kdcube/repositories.tsv
-done
+for w in <workspace-1> <workspace-2>; do mkdir -p ~/workspaces/$w; done
 sudo -u <another-user> ls ~/workspaces     # must be: Permission denied
 ```
 
-If step 7 is not finished yet, a public repository clones over HTTPS and a
-private one from a bundle made on a machine that has it (`git bundle create
-x.bundle main`, then `git clone x.bundle <name>` and
-`git -C <name> checkout -B main origin/main`). A bundle carries everything that
-machine has on `main`, including commits not yet pushed. Either way, point
-`origin` at the alias so pushing works once the key is added:
-
-```bash
-git -C <name> remote set-url origin "github-<name>:<owner>/<repo>.git"
-```
+Step 9 starts each agent in its workspace, and enrolling there (step 10)
+records that folder as its workspace, which is how `pb worker context` tells
+it where its clones go.
 
 ## 9. Start the agent sessions
 
@@ -713,6 +744,12 @@ the worker procedure's project-workspace reference says:
 - it clones each listed repository, the journal repository (role `journal`) included, into `<workspace>/<alias>` at its declared branch;
 - it fetches and fast-forwards any it already has;
 - it tells the operator by name about any it cannot reach.
+
+A repository it cannot reach has no deploy key on this host yet, usually
+because the card gained it after step 7. The host agent runs step 7 for that
+one entry, the operator adds the key, and the agent runs its workspace setup
+again. Nothing is cloned by hand: a clone the card does not list is not the
+project's.
 
 The workspace holding each listed alias at its branch is the proof. Joining a
 project sends the agent no welcome message yet (W304 finding 37, pending): the

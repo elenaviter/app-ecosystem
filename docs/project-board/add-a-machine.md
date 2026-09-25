@@ -34,7 +34,7 @@ Numbers in the first column are the steps of
 
 | Step | Who | What happens | Why that person |
 |---|---|---|---|
-| 0. Agree the plan | **You** decide, your agent proposes | One proposal: the machine's name on the board, the Linux user, the **repositories**, one workspace per agent, the **agent names**, the coding-agent account, **who may write to your agents**, and worker or coordinator Cards. Nothing changes before you approve it. | These are your choices. The repositories are everything the agents can reach. |
+| 0. Agree the plan | **You** decide, your agent proposes | One proposal: the machine's name on the board, the Linux user, **the project the agents join**, one workspace per agent, the **agent names**, the coding-agent account, **who may write to your agents**, and worker or coordinator Cards. Nothing changes before you approve it. | These are your choices. The project card's repositories are everything the agents can reach. |
 | 1. Access to the machine | **You** | Give your agent an SSH key and the user the agents run as. | Only you hold that access. |
 | 1. Check the machine | Either | Python, git, sudo, other users, home folder permissions, and `tmux`. | Routine. |
 | 1. Install `tmux` if missing | **The machine's administrator** | `apt install tmux` or `dnf install tmux`. | A system package needs admin rights. |
@@ -44,9 +44,9 @@ Numbers in the first column are the steps of
 | 6. Unlock the password store | **You** | [Unlock the password store](#4-unlock-the-machines-password-store-and-keep-that-password). Again after every reboot. | The password is yours to keep. |
 | 6. Install the relay | Either | The service that connects this machine's agents to the board. | Routine. |
 | After 6. Remove an old `/opt` install | **The machine's administrator** | Only on a machine set up before the user installer, once the relay runs from the user install: the root-owned environment under `/opt` and its `/usr/local/bin/pb`. | Removing root-owned files needs admin rights. |
-| 7. Make the deploy keys | Either | One key per repository, and a sheet of what to paste where. | Routine. |
+| 7. Make the deploy keys | Either | One key per repository on the project card, and a sheet of what to paste where. | Routine. |
 | 7. Add the keys on GitHub | **You** | [Add the deploy keys](#2-add-the-deploy-keys-on-github). | Only a repository admin can grant access. |
-| 8. Workspaces | Either | One folder per agent with its own clones. | Routine. |
+| 8. Workspaces | Either | One empty folder per agent. Each agent clones the project's repositories into it when it joins (step 12). | Routine. |
 | 9. Usage and watch settings | Your agent | The machine reports each agent's usage, and the moment a limit stops it, to the agent's card, and keeps each agent listening. Installing the procedure sets this up in the machine's Claude Code settings, keeps a copy of the previous settings, and changes nothing else. | Routine. Without it the card says "limit not reported". |
 | 9. Start the agents | Your agent | One `tmux` session per agent, named after it. | Routine. |
 | 9. Accept bypass mode | **You** decide, your agent presses the key | A one-time warning that the agents run commands without asking each time. | It is your risk decision. |
@@ -54,6 +54,7 @@ Numbers in the first column are the steps of
 | 11. Approve each agent | **You** | [Approve each agent](#5-approve-each-agent): your agent gives you a code or a link, you approve the pre-ticked access and add anything else you want. | The agent acts in your name. |
 | 11. Tell each agent it is approved | Your agent | A line typed into each agent's session, so it starts listening for mail. | Routine. |
 | 12. Add the agents to the project | **You** | [Add the agents to your project](#6-add-the-agents-to-your-project). | Who works on your project is your decision. |
+| 12. Set up each workspace | Each new agent | Clones every repository on the project card into its folder, and tells you by name about any it cannot reach yet, so your agent can add that key (step 7 again). | The project card, not the machine, names the repositories. |
 | 12. Prove each agent works in the team | **You** approve each check, your agent runs it | Seven checks, one at a time: wakes without help, replies to your agent, replies to your inbox message, knows its team and project, talks to another agent, writes to your inbox, and reaches your phone through Telegram, with your answer, sent from the board, coming back. | You decide when an agent is part of the team. |
 | 12. First work | **You** approve, your agent assigns | One small item per new agent, reviewed by an agent on another machine. | Routine, step by step with you. |
 | Afterwards | **You**, any time | [Watch or talk to an agent](#watch-or-talk-to-an-agent). | It is your team. |
@@ -64,7 +65,9 @@ Numbers in the first column are the steps of
 
 - The machine reachable over SSH, and a key that logs in as the user your agents
   will run as.
-- Admin rights on each repository you want the agents to work in.
+- The project the agents will join, with its repositories set on its project card
+  (Team, project card). The agents work in exactly those.
+- Admin rights on each of those repositories.
 - A coding-agent account (Claude Code or Codex) for the agents on that machine.
 
 ## 1. Tell your agent to set it up
@@ -77,14 +80,15 @@ repo:app-ecosystem/products/project-board/packages/project-board/src/project_boa
 
 SSH: ssh -i <key> <user>@<host>
 Host name on the board: <short name>
-Repositories the agents may work in:
-  <local name>  <github owner/repo>
-  <local name>  <github owner/repo>
+Project the agents join: <project name>
 Agents: <name-1>, <name-2>
 ```
 
-**Repositories are the important choice.** Each one you name gets a clone for
-each agent and write access from that machine. The agents reach nothing else.
+**The project's repositories are the important choice**, and you make it on the
+project card, not per machine. Each repository on the card gets a deploy key on
+that machine and a clone in each agent's workspace. The agents reach nothing
+else. Adding a repository to the card later reaches every machine the same way:
+the agents report it as unreachable, and your agent asks you for one more key.
 
 Your agent replies with what it plans to do, and asks before it changes
 anything. It comes back with the deploy keys for step 2.
@@ -218,12 +222,12 @@ reach the agent, which suits a tab you leave open or a screen you share.
 
 ## What your agents can reach there
 
-- The repositories you named, and nothing else on the machine.
+- The repositories on the project card, and nothing else on the machine.
 - The board, as you: they act for your account until a project can have more
   than one owner.
 - They run without asking permission for each command, because nobody is
-  watching that screen. That is why the repository list is the decision that
-  matters.
+  watching that screen. That is why the project card's repository list is the
+  decision that matters.
 
 ## Who may write to your agents
 

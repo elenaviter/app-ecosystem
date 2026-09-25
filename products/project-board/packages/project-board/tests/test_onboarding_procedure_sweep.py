@@ -60,3 +60,36 @@ def test_37_the_welcome_on_joining_is_named_as_pending():
 
 def test_25_33_43_the_watch_and_its_guard_are_the_agent_s_own():
     assert "keeps its own inbox watch and the guard prompt that renews it" in HOST
+
+
+def test_15_repositories_and_deploy_keys_come_from_the_project_card():
+    # W304 finding 15 (operator direction under finding 14): the repositories
+    # are a project property, so step 0 no longer asks for them, and a host
+    # gains keys and clones for exactly the project card's list.
+    step0 = HOST[HOST.index("## 0. Decide before starting"):HOST.index("## 1. Give the host agent")]
+    assert "repositories the agents may work on" not in step0
+    assert "the project the agents join" in step0
+    assert "Repositories are not a host decision." in step0
+    assert "repositories.tsv" not in HOST
+    step7 = HOST[HOST.index("## 7. "):HOST.index("## 8. ")]
+    assert "The list is the **project card's**, read now" in step7
+    assert "named by the card's `alias`" in step7
+    step8 = HOST[HOST.index("## 8. "):HOST.index("## 9. ")]
+    assert "git clone" not in step8
+    step12 = HOST[HOST.index("## 12. "):HOST.index("## 13. ")]
+    assert "The host agent runs step 7 for that one entry" in step12
+    assert "Repositories the agents may work in" not in GUIDE
+    assert "Project the agents join: <project name>" in GUIDE
+    assert "you make it on the project card, not per machine" in GUIDE
+
+
+def test_every_step_has_an_owner_in_both_tables():
+    # W304 "Who does what": both documents name an owner for every step.
+    table = HOST[HOST.index("## Who does what"):HOST.index("## What you end up with")]
+    for number in (*range(0, 2), "2 to 4", *range(5, 15)):
+        assert f"| {number} |" in table, number
+    for owner in ("**operator**", "either", "**machine administrator**", "host agent"):
+        assert owner in table, owner
+    guide = GUIDE[GUIDE.index("## Who does what"):GUIDE.index("## What you need first")]
+    for number in ("| 0.", "| 1.", "| 5.", "| 6.", "| 7.", "| 8.", "| 9.", "| 10.", "| 11.", "| 12."):
+        assert number in guide, number
