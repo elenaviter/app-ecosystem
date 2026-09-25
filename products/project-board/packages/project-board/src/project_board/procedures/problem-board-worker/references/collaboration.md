@@ -495,8 +495,8 @@ of yours and in the team of `pb worker context`, where the operator and the
 coordinator look before routing (coordinator, Route, step 0), while mail about
 it reaches only whoever reads that mail (W330, operator, 2026-09-25). The
 line rides the relay's next heartbeat, which every worker Card already holds,
-so it shows within about a minute; `pb worker info` without arguments says
-`on_board = True` once the board has it.
+so it shows within about two minutes (the idle heartbeat ceiling); `pb worker
+info` without arguments says `on_board = True` once the board has it.
 
 ## Rule 7. A question about how the team collaborates is decided in rounds
 

@@ -3396,7 +3396,7 @@ def _worker_info_command(args: Any, field: Any, identity: Any) -> dict[str, Any]
                 ("Cleared on the board." if not text else "The board shows this line on every card of this agent.")
                 if on_board
                 else (
-                    "Recorded. The relay sends it with its next heartbeat, within about a minute; "
+                    "Recorded. The relay sends it with its next heartbeat, within about two minutes; "
                     "run pb worker info again to see on_board = True."
                 )
             )

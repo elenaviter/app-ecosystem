@@ -62,7 +62,7 @@ def test_set_publish_show_clear_and_the_team_reads_it(tmp_path, monkeypatch):
     recorded = _cli(identity, "info", LINE)
     assert recorded["info_text"] == LINE
     assert recorded["on_board"] is False
-    assert "within about a minute" in recorded["rule"]
+    assert "within about two minutes" in recorded["rule"]
 
     asyncio.run(adapter.poll_attendances_once())
     assert _heartbeats(board)[-1]["worker_info"] == {"text": LINE}
@@ -89,6 +89,8 @@ def test_set_publish_show_clear_and_the_team_reads_it(tmp_path, monkeypatch):
     [
         (("info", "first\nsecond"), "field_worker_info_multiline"),
         (("info", "x" * 201), "field_worker_info_too_long"),
+        (("info", "tab\there"), "field_worker_info_control_character"),
+        (("info", "nul\x00here"), "field_worker_info_control_character"),
         (("info", "   "), "field_worker_info_arguments"),
         (("info", "text", "--clear"), "field_worker_info_arguments"),
     ],
@@ -120,3 +122,26 @@ def test_a_worker_on_no_project_publishes_it_on_the_discovery_heartbeat(tmp_path
     asyncio.run(adapter.poll_attendances_once())
     assert _heartbeats(board)[-1]["worker_info"] == {"text": LINE}
     assert _cli(identity, "info")["on_board"] is True
+
+
+def test_a_board_without_the_field_gets_one_forced_heartbeat_per_line_not_one_per_cycle(tmp_path, monkeypatch):
+    """Review on #152: an old board never answers with info_text, so the line stays
+    unacknowledged; it may force one heartbeat, then the relay's pacing holds."""
+
+    def heartbeats_over_ten_cycles(*, linked: bool, line: str | None) -> int:
+        host, identity, field, config = _fresh_host(tmp_path / f"{linked}-{line is not None}")
+        monkeypatch.setenv("PROBLEM_BOARD_CONFIG", str(host.path))
+        board = Board(identity.worker_name, linked=linked)  # never returns info_text
+        adapter = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board)
+        asyncio.run(adapter.poll_attendances_once())
+        if line is not None:
+            _cli(identity, "info", line)
+        before = len(_heartbeats(board))
+        for _ in range(10):
+            asyncio.run(adapter.poll_attendances_once())
+        return len(_heartbeats(board)) - before
+
+    for linked in (True, False):
+        baseline = heartbeats_over_ten_cycles(linked=linked, line=None)
+        with_line = heartbeats_over_ten_cycles(linked=linked, line=LINE)
+        assert with_line <= baseline + 1, (linked, baseline, with_line)

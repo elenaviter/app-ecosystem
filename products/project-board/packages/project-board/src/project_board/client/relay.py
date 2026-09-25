@@ -3334,19 +3334,35 @@ class ProblemBoardHostRelayAdapter:
         return await self._publish_worker(reconcile_ceiling_seconds=interval)
 
     def _worker_info(self) -> tuple[dict[str, Any], bool]:
-        """The worker's local info line (W330) and whether the board has yet to store it."""
+        """The worker's local info line (W330) and whether it may make a heartbeat due.
+
+        A line the board has not acknowledged forces one heartbeat per change
+        of text, not one per cycle: against a board without the field no
+        answer ever acknowledges it, and forcing every cycle would undo the
+        heartbeat pacing (review on app-ecosystem#152). The key still rides
+        every paced heartbeat, so an upgraded board stores it on the next one.
+        """
 
         info = self.field.worker_info(self.config.worker_name)
-        pending = bool(info) and info.get("published_text") != str(info.get("text") or "")
+        text = str(info.get("text") or "")
+        # sent_text lives in the worker's local record, not on this adapter:
+        # the supervisor polls each project through a fresh child adapter.
+        pending = (
+            bool(info)
+            and info.get("published_text") != text
+            and info.get("sent_text") != text
+        )
         return info, pending
 
-    @staticmethod
-    def _add_worker_info(payload: dict[str, Any], info: Mapping[str, Any]) -> None:
+    def _add_worker_info(self, payload: dict[str, Any], info: Mapping[str, Any]) -> None:
         # W330: the worker's own line rides every heartbeat once it was ever
         # set; an empty text clears it on the board, and a worker that never
         # set one sends no key, so the board keeps what it has.
         if info:
-            payload["worker_info"] = {"text": str(info.get("text") or "")}
+            text = str(info.get("text") or "")
+            payload["worker_info"] = {"text": text}
+            if info.get("sent_text") != text:
+                self.field.mark_worker_info_sent(self.config.worker_name, text)
 
     def _acknowledge_worker_info(self, info: Mapping[str, Any], result: Mapping[str, Any]) -> None:
         """Stop forcing heartbeats once the board answers with the same line."""
