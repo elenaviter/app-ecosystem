@@ -1858,6 +1858,13 @@ class ProblemBoardHostRelayAdapter:
                         # No authoritative board snapshot arrived. The one
                         # batch read already logged why; keep this lease
                         # eligible for a later cycle and continue with peers.
+                        logger.debug(
+                            "Problem Board control remains deferred after attendance "
+                            "read control=%s kind=%s worker=%s",
+                            command_ref,
+                            kind,
+                            self.config.worker_name,
+                        )
                         counts["controls_deferred"] += 1
                         continue
                 await self._refuse_malformed_control(
