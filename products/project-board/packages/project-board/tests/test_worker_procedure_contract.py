@@ -9,6 +9,8 @@ if-this-read-that line each, and the package manifest ships them.
 
 from __future__ import annotations
 
+import re
+
 import json
 from pathlib import Path
 
@@ -829,7 +831,7 @@ def test_operator_input_goes_through_the_board_not_a_terminal_prompt() -> None:
     # telegram." The skill points at the rule, the collaboration reference
     # carries it, and first-run names the launch flag.
     skill = _words(_read("SKILL.md"))
-    assert "Ask for her input this way, never in a terminal prompt (collaboration Rule 11)" in skill
+    assert "Ask for their input this way, never in a terminal prompt (collaboration Rule 11)" in skill
     collaboration = _words(_read("references/collaboration.md"))
     assert "Rule 11. The operator is asked on the board, and on Telegram when it is urgent" in collaboration
     assert "send it as mail to `operator` in the project conversation" in collaboration
@@ -1139,20 +1141,20 @@ def test_the_coordinator_reference_opens_with_what_the_coordinator_is_for() -> N
     coordinator = _words(raw)
     for phrase in (
         "The coordinator works for the operator.",
-        "You speak to the operator; she should not have to ask.",
+        "You speak to the operator; the operator should not have to ask.",
         "The operator is your principal.",
-        "A previous coordinator stops directing her and answers only mail addressed to it by name.",
-        "Keep her informed unasked",
+        "A previous coordinator stops directing the operator and answers only mail addressed to it by name.",
+        "Keep the operator informed unasked",
         "ask with a notifying kind (`decision`, `question`, `blocked`)",
-        "Answer every message she sends through the board with a correlated reply before continuing.",
+        "Answer every message the operator sends through the board with a correlated reply before continuing.",
         "situation, then verdict",
         "Name items by key and title, never a bare number.",
         "You drive the team; you do not wait for it.",
         "Ask the worker; do not infer from files.",
         "tell that worker first, then the operator",
-        "The runtime is hers; the mechanics are yours.",
+        "The runtime is the operator's; the mechanics are yours.",
         "No runtime window (reload, refresh, client switch) without the operator's go.",
-        "Do not ask her about the mechanics.",
+        "Do not ask the operator about the mechanics.",
         "[Worker budgets](#worker-budgets)",
     ):
         assert phrase in coordinator, phrase
@@ -1167,3 +1169,22 @@ def test_the_coordinator_reference_opens_with_what_the_coordinator_is_for() -> N
         "When you hold the coordinator role (home or acting), read its first "
         "section, What the coordinator is for, before anything else"
     ) in skill
+
+
+GENDERED_PRONOUNS = re.compile(r"\b(she|her|hers|herself|he|him|his|himself)\b", re.IGNORECASE)
+QUOTED = re.compile(r'"[^"\n]*"|\u201c[^\u201d\n]*\u201d|`[^`\n]*`')
+
+
+def test_the_procedure_names_no_gender_for_the_operator_or_anyone() -> None:
+    # Operator, 2026-09-25: "i hope she is not part of procedure. because
+    # operator can be also he." The procedure says "the operator" or
+    # "they"; a quoted ruling stays verbatim, so text inside quotation marks
+    # and inline code is exempt. The check covers the class, every file of the
+    # package, not the lines fixed when it was found.
+    package = source_package()
+    found = []
+    for relative in [package["entrypoint"], *package["references"]]:
+        for number, line in enumerate(_read(relative).splitlines(), 1):
+            for match in GENDERED_PRONOUNS.finditer(QUOTED.sub("", line)):
+                found.append(f"{relative}:{number}: {match.group(0)!r} in {line.strip()[:100]}")
+    assert found == [], "\n".join(found)
