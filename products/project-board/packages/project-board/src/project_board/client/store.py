@@ -675,6 +675,21 @@ def _team_limit_state(value: Any) -> dict[str, str]:
     }
 
 
+def _timestamp_before(earlier: str, later: str) -> bool:
+    """Whether ISO-8601 ``earlier`` is strictly before ``later``; False when either does not parse."""
+
+    try:
+        first = datetime.fromisoformat(str(earlier).replace("Z", "+00:00"))
+        second = datetime.fromisoformat(str(later).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if first.tzinfo is None:
+        first = first.replace(tzinfo=timezone.utc)
+    if second.tzinfo is None:
+        second = second.replace(tzinfo=timezone.utc)
+    return first < second
+
+
 class SharedFieldStore:
     """Canonical project state shared directly by local workers.
 
@@ -1277,6 +1292,7 @@ class SharedFieldStore:
         assignment: Mapping[str, Any],
         recipient: str,
         sender_identity: Mapping[str, Any] | None = None,
+        evidence_at: str = "",
     ) -> dict[str, Any]:
         """Create one URI-only inbox notice for an assignment ownership version."""
 
@@ -1384,6 +1400,7 @@ class SharedFieldStore:
             idempotency_key=(
                 f"assignment-notice:{assignment_id}:{ownership_version}"
             ),
+            evidence_at=evidence_at,
             idempotency_alias_keys=(
                 f"assignment-notice:{assignment_ref}:{ownership_version}",
                 f"assignment-notice:{legacy_assignment_ref}:{ownership_version}",
@@ -5411,8 +5428,18 @@ class SharedFieldStore:
                 return str(member.get("worker_alias") or "").strip()
         return ""
 
-    def resolve_mail_recipient(self, project_id: str, recipient: str) -> dict[str, Any]:
-        """Resolve a stable address before selecting a transport."""
+    def resolve_mail_recipient(
+        self, project_id: str, recipient: str, *, evidence_at: str = ""
+    ) -> dict[str, Any]:
+        """Resolve a stable address before selecting a transport.
+
+        ``evidence_at`` is when the board created the message being delivered
+        (W304, 2026-09-25 14:06Z join race): a link the board committed after
+        this host last observed the worker's attendance is newer evidence than
+        the local record, so the local "not linked" refuses only when it was
+        observed at or after that time. An unlink or retirement observed later
+        still wins.
+        """
 
         address = str(recipient or "").strip().lower()
         if address in {"operator", "owner"}:
@@ -5462,16 +5489,23 @@ class SharedFieldStore:
             attends = project_ref in {
                 str(value) for value in row.get("attended_project_refs") or []
             }
-            attendance_observed = bool(
-                str(row.get("attendances_observed_at") or "").strip()
+            observed_at = str(row.get("attendances_observed_at") or "").strip()
+            attendance_observed = bool(observed_at)
+            local_is_older = bool(
+                evidence_at and observed_at and _timestamp_before(observed_at, evidence_at)
             )
             if (
                 project_ref
                 and attendance_observed
                 and not attends
+                and not local_is_older
                 and str(row.get("pool_status") or "active").lower() != "retired"
             ):
                 directory[worker_name] = {**row, "pool_status": "not_linked"}
+            elif project_ref and attendance_observed and not attends and local_is_older:
+                # The board linked this worker after the last observation:
+                # deliver, and let the relay refresh the attendance now.
+                directory[worker_name] = {**row, "attendance_lagging": True}
             else:
                 directory[worker_name] = row
         resolved = resolve_mail_recipient(
@@ -5481,7 +5515,12 @@ class SharedFieldStore:
             directory_updated_at=str(directory_record.get("updated_at") or ""),
         )
         route = "local" if resolved.worker_name in local_workers else "remote"
-        return {**resolved.as_mapping(), "route": route}
+        lagging = bool((directory.get(resolved.worker_name) or {}).get("attendance_lagging"))
+        return {
+            **resolved.as_mapping(),
+            "route": route,
+            **({"attendance_lagging": True} if lagging else {}),
+        }
 
     @staticmethod
     def _require_work_ref_shape(work_ref: str) -> None:
@@ -5581,6 +5620,7 @@ class SharedFieldStore:
         idempotency_identity: Mapping[str, Any] | None = None,
         idempotency_alias_keys: Sequence[str] = (),
         idempotency_identity_aliases: Sequence[Mapping[str, Any]] = (),
+        evidence_at: str = "",
     ) -> dict[str, Any]:
         clean_project = (
             component(project_id, field="project_id")
@@ -5588,7 +5628,7 @@ class SharedFieldStore:
             else ""
         )
         clean_sender = component(sender, field="sender").lower()
-        resolution = self.resolve_mail_recipient(clean_project, recipient)
+        resolution = self.resolve_mail_recipient(clean_project, recipient, evidence_at=evidence_at)
         if resolution["route"] != "local":
             raise DomainError(
                 "field_mail_route_mismatch",
@@ -5838,6 +5878,9 @@ class SharedFieldStore:
                 "recipient_state": reach.get("state"),
                 "recipient_pending_messages": reach.get("pending_messages"),
                 **({"body_advisory": advisory} if advisory else {}),
+                # Delivered on the board's newer link: the relay refreshes
+                # this worker's attendance now (W304 join race).
+                **({"attendance_lagging": True} if resolution.get("attendance_lagging") else {}),
             }
 
     def enqueue_remote_mail(
@@ -7386,6 +7429,11 @@ class SharedFieldStore:
         command ref is the idempotency key, so a relay crash between local write
         and remote acknowledgement cannot create a second local message.
         """
+
+        # When the board created this control: a link it committed after this
+        # host last observed the recipient's attendance is newer evidence than
+        # the local record (W304 join race).
+        evidence_at = str(control.get("created_at") or "")
         command_ref = bounded_text(
             control.get("ref") or control.get("command_ref"),
             field="command_ref",
@@ -7638,6 +7686,7 @@ class SharedFieldStore:
                 assignment=assignment_receipt,
                 recipient=recipient,
                 sender_identity=sender_identity,
+                evidence_at=evidence_at,
             )
         delivered = self.send_mail(
             parsed_project.object_id if parsed_project is not None else "",
@@ -7652,6 +7701,7 @@ class SharedFieldStore:
             reply_to=reply_to,
             idempotency_key=f"control:{command_ref}",
             sender_identity=sender_identity,
+            evidence_at=evidence_at,
         )
         if control_kind == "mail" and kind == "delivery_failed":
             failure = dict(message_payload.get("payload") or {}).get("delivery_failure")

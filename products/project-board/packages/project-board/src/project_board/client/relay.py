@@ -1703,6 +1703,10 @@ class ProblemBoardHostRelayAdapter:
             try:
                 await self._fetch_attachments(item)
                 receipt = self.field.materialize_control(item)
+                if receipt.get("attendance_lagging"):
+                    # Delivered on the board's newer link (W304 join race):
+                    # read the attendance now, not at the next idle poll.
+                    self._attendance_cache["initialized"] = False
             except DomainError as exc:
                 if exc.code == "field_project_not_materialized":
                     # Not a refusal: the project's materialize control has not
