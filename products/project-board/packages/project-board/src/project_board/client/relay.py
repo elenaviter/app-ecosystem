@@ -68,6 +68,8 @@ from .relay_failures import (
 )
 from .local_state_maintenance import run_local_state_maintenance
 from .local_store import last_read_summaries
+from .outbox_drain import RelayOutboxDrainServer
+from .outbox_store import OutboxStore
 from .store import WAKE_OVERDUE_GRACE_SECONDS, SharedFieldStore, _seconds_since
 
 
@@ -597,6 +599,7 @@ class ProblemBoardHostRelayAdapter:
         trace: RelayActivityTrace | None = None,
         runtime_account_reader: Callable[[], Awaitable[Mapping[str, Any]]] | None = None,
         runtime_account_error_state: dict[str, str] | None = None,
+        outbox_drain_lock: asyncio.Lock | None = None,
     ) -> None:
         self.config = config
         self.field = field
@@ -658,6 +661,10 @@ class ProblemBoardHostRelayAdapter:
             if runtime_account_error_state is not None
             else {"code": ""}
         )
+        # Child attendance adapters and the beside-cycle drain share this
+        # lock, so one worker never sends two outbox rows concurrently through
+        # the same Card channel.
+        self._outbox_drain_lock = outbox_drain_lock
         # The LOCAL journal mapping gap this cycle found, if any, so a journal
         # view in the same cycle refuses with the cause instead of "unbound".
         self._journal_mapping_gap: dict[str, Any] | None = None
@@ -2427,7 +2434,31 @@ class ProblemBoardHostRelayAdapter:
             return False
 
     async def _flush_outbox(
-        self, *, kinds: set[str] | None = None
+        self,
+        *,
+        kinds: set[str] | None = None,
+        project_ref: str | None = None,
+    ) -> dict[str, int]:
+        with self._trace_stage(
+            "attendance.outbox",
+            operation="outbox.flush",
+        ):
+            if self._outbox_drain_lock is None:
+                return await self._flush_outbox_unlocked(
+                    kinds=kinds,
+                    project_ref=project_ref,
+                )
+            async with self._outbox_drain_lock:
+                return await self._flush_outbox_unlocked(
+                    kinds=kinds,
+                    project_ref=project_ref,
+                )
+
+    async def _flush_outbox_unlocked(
+        self,
+        *,
+        kinds: set[str] | None = None,
+        project_ref: str | None = None,
     ) -> dict[str, int]:
         counts = {
             "outbox_sent": 0,
@@ -2439,9 +2470,13 @@ class ProblemBoardHostRelayAdapter:
             relay_id=self.config.relay_id,
             worker_name=self.config.worker_name,
             project_ref=(
-                f"work:project:{self.config.project_id}"
-                if self.config.project_id
-                else ""
+                project_ref
+                if project_ref is not None
+                else (
+                    f"work:project:{self.config.project_id}"
+                    if self.config.project_id
+                    else ""
+                )
             ),
             limit=20,
             kinds=kinds,
@@ -2999,11 +3034,15 @@ class ProblemBoardHostRelayAdapter:
                 heartbeat_payload["store_reads"] = store_reads_delta
             await self._add_runtime_account(heartbeat_payload)
             try:
-                heartbeat_response = await self.client.action(
-                    object_ref="work:worker:self",
-                    action="worker.heartbeat",
-                    payload=heartbeat_payload,
-                )
+                with self._trace_stage(
+                    "attendance.heartbeat",
+                    operation="worker.heartbeat",
+                ):
+                    heartbeat_response = await self.client.action(
+                        object_ref="work:worker:self",
+                        action="worker.heartbeat",
+                        payload=heartbeat_payload,
+                    )
             except DomainError as exc:
                 if exc.code != "work_worker_not_linked":
                     raise
@@ -3070,7 +3109,11 @@ class ProblemBoardHostRelayAdapter:
                 assignment_notices_reconciled,
                 assignment_reconciliation_issues,
             ) = self._reconcile_assignments(heartbeat_result)
-        controls = await self._pull_controls()
+        with self._trace_stage(
+            "attendance.controls",
+            operation="control.pull",
+        ):
+            controls = await self._pull_controls()
         self._report_dead_notification_path()
         outbox = await self._flush_outbox()
         return {
@@ -3237,9 +3280,13 @@ class ProblemBoardHostRelayAdapter:
                 heartbeat_payload: dict[str, Any] = {"availability": "available"}
                 if discovery_session_delta is not None:
                     heartbeat_payload["agent_sessions"] = discovery_session_delta
-                discovery, republished = await self._heartbeat_with_republish(
-                    heartbeat_payload
-                )
+                with self._trace_stage(
+                    "attendance.heartbeat",
+                    operation="worker.heartbeat.discovery",
+                ):
+                    discovery, republished = await self._heartbeat_with_republish(
+                        heartbeat_payload
+                    )
                 if (
                     republished is not None
                     and republished["remote"].get("pool_status") == "limbo"
@@ -3251,7 +3298,11 @@ class ProblemBoardHostRelayAdapter:
                     signature=session_signature,
                 )
                 self._record_attendance_observation(discovery)
-        direct_controls = await self._pull_controls(project_ref="")
+        with self._trace_stage(
+            "attendance.controls",
+            operation="control.pull.discovery",
+        ):
+            direct_controls = await self._pull_controls(project_ref="")
         attendances = [
             dict(item)
             for item in self._attendance_cache.get("items") or []
@@ -3278,6 +3329,7 @@ class ProblemBoardHostRelayAdapter:
                 trace=self._trace,
                 runtime_account_reader=self._runtime_account_reader,
                 runtime_account_error_state=self._runtime_account_error_state,
+                outbox_drain_lock=self._outbox_drain_lock,
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
@@ -3513,7 +3565,6 @@ class ProblemBoardRelaySupervisor:
     """One machine process multiplexing independently authorized workers."""
 
     adapter_id = "problem-board-host"
-
     def __init__(
         self,
         *,
@@ -3554,6 +3605,10 @@ class ProblemBoardRelaySupervisor:
         self._listener_signature_cache: dict[
             str, tuple[tuple[int, int, int] | None, tuple]
         ] = {}
+        # A ready outbox signature wakes the ordinary cycle once. If pacing or
+        # authorization leaves the same row pending, the next wait observes it
+        # as the baseline instead of spinning until the channel is due.
+        self._local_outbox_ready_signatures: dict[str, tuple] = {}
         self._expected_open_failure_signatures: dict[
             str, tuple[str, str, str]
         ] = {}
@@ -3571,6 +3626,25 @@ class ProblemBoardRelaySupervisor:
         # request and a cycle drain claiming a later one overlap, and the
         # later operation can run first.
         self._coordinate_drain_locks: dict[str, asyncio.Lock] = {}
+        # The cycle and the outbox side server share one lock per worker. The
+        # filesystem claim is also exclusive, but this keeps one Card channel
+        # from carrying concurrent sends in either restart order.
+        self._outbox_drain_locks: dict[str, asyncio.Lock] = {}
+        self._outbox_server = RelayOutboxDrainServer(
+            config_path=self.config_path,
+            pacing=self._pacing,
+            session_for=lambda worker_name: self._sessions.get(worker_name),
+            session_matches=lambda host, channel, session: self._session_matches(
+                host,
+                channel,
+                session,
+                require_card=True,
+            ),
+            drain_lock=self._outbox_drain_lock,
+            log=logger,
+        )
+        # Kept as one shared view for channel shutdown and focused relay tests.
+        self._outbox_draining = self._outbox_server.draining
 
     def _is_retryable(self, error: BaseException) -> bool:
         if (
@@ -4309,6 +4383,9 @@ class ProblemBoardRelaySupervisor:
                 runtime_account_reader=lambda: read_runtime_account(
                     channel.runtime_kind
                 ),
+                outbox_drain_lock=self._outbox_drain_lock(
+                    channel.worker_name
+                ),
             )
         except BaseException as exc:
             await stack.aclose()
@@ -4399,13 +4476,18 @@ class ProblemBoardRelaySupervisor:
         # A drain beside the cycle may be using this session's client. Closing
         # marks the session so no new drain starts; the running one finishes
         # its request and writes the response before the client closes.
-        side_drain = self._coordinate_draining.get(worker_name)
-        if (
-            side_drain is not None
-            and not side_drain.done()
-            and side_drain is not asyncio.current_task()
-        ):
-            await asyncio.gather(side_drain, return_exceptions=True)
+        side_drains = [
+            task
+            for task in (
+                self._coordinate_draining.get(worker_name),
+                self._outbox_draining.get(worker_name),
+            )
+            if task is not None
+            and not task.done()
+            and task is not asyncio.current_task()
+        ]
+        if side_drains:
+            await asyncio.gather(*side_drains, return_exceptions=True)
         logger.info(
             "Problem Board relay channel lifecycle event=stopping worker_name=%s "
             "channel_identity=%s replacement_epoch=%d",
@@ -4452,6 +4534,12 @@ class ProblemBoardRelaySupervisor:
         lock = self._coordinate_drain_locks.get(worker_name)
         if lock is None:
             lock = self._coordinate_drain_locks[worker_name] = asyncio.Lock()
+        return lock
+
+    def _outbox_drain_lock(self, worker_name: str) -> asyncio.Lock:
+        lock = self._outbox_drain_locks.get(worker_name)
+        if lock is None:
+            lock = self._outbox_drain_locks[worker_name] = asyncio.Lock()
         return lock
 
     async def _drain_coordinate_for_worker(
@@ -4993,9 +5081,10 @@ class ProblemBoardRelaySupervisor:
             raise
 
     async def aclose(self) -> None:
-        # Stop serving coordinate requests before any session closes, so no
-        # drain uses a client that is being torn down.
+        # Stop side servers before any session closes, so no drain starts on a
+        # client that is being torn down.
         await self.stop_coordinate_server()
+        await self.stop_outbox_server()
         await self.stop_local_state_maintenance()
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)
@@ -5066,21 +5155,27 @@ class ProblemBoardRelaySupervisor:
         """
 
         control = field_root / ".problem-board"
-        signature: list[tuple] = []
-        for relative in ("outbox/pending", "operator-responses"):
-            directory = control / relative
-            try:
-                entries = sorted(directory.iterdir())
-            except OSError:
-                signature.append((relative, None))
-                continue
+        signature: list[tuple] = [
+            (
+                "outbox-ready",
+                OutboxStore(control).ready_signature(worker_names=worker_names),
+            )
+        ]
+        response_directory = control / "operator-responses"
+        try:
+            response_entries = sorted(response_directory.iterdir())
+        except OSError:
+            signature.append(("operator-responses", None))
+        else:
             newest = 0
-            for entry in entries:
+            for entry in response_entries:
                 try:
                     newest = max(newest, entry.stat().st_mtime_ns)
                 except OSError:
                     continue
-            signature.append((relative, len(entries), newest))
+            signature.append(
+                ("operator-responses", len(response_entries), newest)
+            )
         signature.append(
             (
                 "coordinate",
@@ -5123,12 +5218,32 @@ class ProblemBoardRelaySupervisor:
         """Wake on work raised on this machine, the way push wakes on the board."""
 
         coordinate_queue = CoordinateQueue(field_root)
+        outbox = OutboxStore(field_root / ".problem-board")
         if coordinate_queue.has_ready_work(worker_names=worker_names):
+            return True
+        outbox_key = str(field_root.expanduser().resolve())
+        ready_signature = outbox.ready_signature(worker_names=worker_names)
+        if (
+            ready_signature
+            and self._local_outbox_ready_signatures.get(outbox_key, ())
+            != ready_signature
+        ):
+            self._local_outbox_ready_signatures[outbox_key] = ready_signature
             return True
         initial = self._local_work_signature(
             field_root,
             worker_names=worker_names,
         )
+        # Close the check-to-baseline race: a row that became the baseline is
+        # already work and must not wait for a second change.
+        ready_signature = outbox.ready_signature(worker_names=worker_names)
+        if (
+            ready_signature
+            and self._local_outbox_ready_signatures.get(outbox_key, ())
+            != ready_signature
+        ):
+            self._local_outbox_ready_signatures[outbox_key] = ready_signature
+            return True
         loop = asyncio.get_running_loop()
         deadline = loop.time() + max(0.0, float(timeout_seconds))
         while True:
@@ -5140,6 +5255,9 @@ class ProblemBoardRelaySupervisor:
                 field_root,
                 worker_names=worker_names,
             ) != initial:
+                self._local_outbox_ready_signatures[outbox_key] = (
+                    outbox.ready_signature(worker_names=worker_names)
+                )
                 return True
 
     @staticmethod
@@ -5329,6 +5447,7 @@ class ProblemBoardRelaySupervisor:
         stopping = bool(stop_task is not None and stop_task in done and stop_task.result())
         if stopping:
             await self.stop_coordinate_server()
+            await self.stop_outbox_server()
         return stopping
 
     # -- local-state housekeeping, beside the channel cycle -------------------
@@ -5373,6 +5492,17 @@ class ProblemBoardRelaySupervisor:
                     exc_info=True,
                 )
             await asyncio.sleep(self.LOCAL_STATE_MAINTENANCE_INTERVAL_SECONDS)
+
+    # -- outbox rows, served beside the channel cycle -----------------------
+
+    def _ensure_outbox_server(self) -> None:
+        self._outbox_server.ensure_started()
+
+    async def stop_outbox_server(self) -> None:
+        await self._outbox_server.stop()
+
+    def serve_outbox_once(self) -> list[str]:
+        return self._outbox_server.serve_once()
 
     # -- coordinate requests, served beside the channel cycle -----------------
 
@@ -5491,6 +5621,7 @@ class ProblemBoardRelaySupervisor:
 
     async def _poll_once_body(self) -> dict[str, Any]:
         self._ensure_coordinate_server()
+        self._ensure_outbox_server()
         with self._trace.stage("host.load", operation="relay.config"):
             host = HostRelayConfig.load(self.config_path)
         self._ensure_local_state_maintenance(host.field_root)
