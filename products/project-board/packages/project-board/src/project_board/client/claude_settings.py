@@ -38,6 +38,10 @@ STATUS_ARGS = ("worker", "limit-state")
 STOP_FAILURE_ARGS = ("worker", "limit-state", "--source", "stop-failure")
 STOP_ARGS = ("worker", "stop-guard")
 LAUNCHER_READ_LIMIT = 4096
+# The stable ``pb`` that re-executed a selected release (W304, fable-pub's
+# trace): in the release process argv[0] is the release's code_entrypoint.py,
+# which names no executable, so the entry point hands its own path down here.
+INVOKED_PB_ENV = "PROBLEM_BOARD_INVOKED_PB"
 
 
 def _executable(candidate: str | None) -> str | None:
@@ -75,6 +79,10 @@ def pb_command(argv0: str | None = None, *, which: Callable[[str], str | None] =
     """
 
     running = _executable(sys.argv[0] if argv0 is None else argv0)
+    if running is None and argv0 is None:
+        # A selected release runs as a .py script; the pb that launched it
+        # recorded its own path before the exec.
+        running = _executable(os.environ.get(INVOKED_PB_ENV))
     on_path = _executable(which("pb") or "")
     if running and on_path and _launches(on_path, running):
         return on_path
