@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -3580,13 +3581,22 @@ def _worker_command(args: Any) -> dict[str, Any]:
             pid=os.getpid(),
             runtime_session_id=identity.runtime_session_id,
         )
-        for event in worker_watch_events(
-            field,
-            worker_name=identity.worker_name,
-            check_interval_seconds=interval,
-            coalesce_seconds=coalesce,
-        ):
-            print(json.dumps(event, ensure_ascii=True, sort_keys=True), flush=True)
+        # A watch replaced by a newer one is stopped with SIGTERM (the Claude
+        # Code guard does it every cycle). That is its normal end: exit 0 and
+        # print nothing, since every stdout line is an event, so the harness
+        # does not report each replaced watch as failed (W182, operator
+        # 2026-09-25: "script failed (exit 144)" on every guard).
+        previous = signal.signal(signal.SIGTERM, _end_replaced_watch)
+        try:
+            for event in worker_watch_events(
+                field,
+                worker_name=identity.worker_name,
+                check_interval_seconds=interval,
+                coalesce_seconds=coalesce,
+            ):
+                print(json.dumps(event, ensure_ascii=True, sort_keys=True), flush=True)
+        finally:
+            signal.signal(signal.SIGTERM, previous)
     if args.worker_command == "detach":
         return {
             "worker": identity.worker_name,
@@ -4108,6 +4118,13 @@ def _worker_command(args: Any) -> dict[str, Any]:
             repository_journal_ref=args.repository_journal_ref,
         )
     raise ValueError(f"unsupported worker command: {args.worker_command}")
+
+
+def _end_replaced_watch(signum: int, frame: Any) -> None:
+    """SIGTERM ends a watch cleanly: status 0, no output (W182)."""
+
+    del signum, frame
+    raise SystemExit(0)
 
 
 def _whoami_channel(args: Any, identity: WorkerSessionIdentity) -> dict[str, Any]:
