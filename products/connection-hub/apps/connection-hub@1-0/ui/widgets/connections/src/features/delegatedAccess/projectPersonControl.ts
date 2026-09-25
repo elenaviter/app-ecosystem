@@ -21,6 +21,47 @@ export type ProjectControlCoordinates =
   | ProjectPersonControlCoordinates
   | ProjectInvitationControlCoordinates;
 
+export interface ControlCardGetRequest {
+  operation: 'project_person_control_get' | 'control_card_get';
+  data: Record<string, string>;
+}
+
+export function controlCardGetRequest({
+  controlId,
+  projectRef,
+  targetSubject,
+  invitationRef,
+}: {
+  controlId: string;
+  projectRef?: string;
+  targetSubject?: string;
+  invitationRef?: string;
+}): ControlCardGetRequest {
+  if (projectRef && invitationRef) {
+    return {
+      operation: 'project_person_control_get',
+      data: {
+        project_ref: projectRef,
+        invitation_ref: invitationRef,
+        control_id: controlId,
+      },
+    };
+  }
+  if (projectRef && targetSubject) {
+    return {
+      operation: 'project_person_control_get',
+      data: {
+        project_ref: projectRef,
+        target_subject: targetSubject,
+      },
+    };
+  }
+  return {
+    operation: 'control_card_get',
+    data: { control_id: controlId },
+  };
+}
+
 function clean(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }

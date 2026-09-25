@@ -347,6 +347,27 @@ async def test_pending_invitation_card_has_no_person_identity_or_raw_email() -> 
 
 
 @pytest.mark.asyncio
+async def test_pending_create_rejects_missing_email_with_structured_error() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host)
+
+    result = await lifecycle.create(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        invitation_ref=INVITATION_REF,
+        target_email=" ",
+        request_id="request-missing-email",
+    )
+
+    assert result == {
+        "ok": False,
+        "error": "project_invitation_binding_email_missing",
+        "status": 400,
+    }
+    assert host.records == {}
+
+
+@pytest.mark.asyncio
 async def test_pending_create_is_idempotent_for_the_same_email_and_conflicts_for_another() -> (
     None
 ):

@@ -62,6 +62,9 @@ from connection_hub.delegated_credentials.project_authorization import (
 from connection_hub.delegated_credentials.project_invitation_claim import (
     PROJECT_INVITATION_BINDING_PROVENANCE,
 )
+from connection_hub.delegated_credentials.project_invitation_binding import (
+    ProjectInvitationBindingError,
+)
 
 
 AuthorityFromRecord = Callable[[Any], CardAuthority]

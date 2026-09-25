@@ -1,7 +1,10 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
 import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
-import type { ProjectControlCoordinates } from './projectPersonControl';
+import {
+  controlCardGetRequest,
+  type ProjectControlCoordinates,
+} from './projectPersonControl';
 import type {
   DelegatedAccessCreateResult,
   DelegatedAccessGrantOption,
@@ -77,17 +80,15 @@ export const loadControlCard = createAsyncThunk<
   'delegatedAccess/loadControlCard',
   async ({ controlId, projectRef, targetSubject, invitationRef }, { rejectWithValue }) => {
     try {
-      const projectControl = Boolean(projectRef && (targetSubject || invitationRef));
+      const request = controlCardGetRequest({
+        controlId,
+        projectRef,
+        targetSubject,
+        invitationRef,
+      });
       const res = await postOp<ControlCardGetResult>(
-        projectControl ? 'project_person_control_get' : 'control_card_get',
-        projectControl
-          ? {
-              project_ref: projectRef,
-              ...(targetSubject ? { target_subject: targetSubject } : {}),
-              ...(invitationRef ? { invitation_ref: invitationRef } : {}),
-              control_id: controlId,
-            }
-          : { control_id: controlId },
+        request.operation,
+        request.data,
       );
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to load the Control Card'));
       if (!res?.access) return rejectWithValue('Connection Hub returned no editable Card');

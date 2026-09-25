@@ -147,9 +147,9 @@ test('an embedded access-card summon refreshes authority before opening its edit
 test('an exact Control Card reuses the Card editor without joining the agent-card list', () => {
   const slice = source('src/features/delegatedAccess/delegatedAccessSlice.ts')
   assert.match(slice, /focusedCard\?: DelegatedAccessRecord/)
-  assert.match(slice, /const projectControl = Boolean\(projectRef && \(targetSubject \|\| invitationRef\)\)/)
-  assert.match(slice, /projectControl \? 'project_person_control_get' : 'control_card_get'/)
-  assert.match(slice, /\.\.\.\(invitationRef \? \{ invitation_ref: invitationRef \} : \{\}\)/)
+  assert.match(slice, /const request = controlCardGetRequest\(/)
+  assert.match(slice, /request\.operation/)
+  assert.match(slice, /request\.data/)
   assert.match(slice, /projectPersonControl \? 'project_person_control_update' : 'delegated_access_update'/)
   assert.match(slice, /projectPersonControl \? 'project_person_control_revoke' : 'delegated_access_revoke'/)
   assert.match(slice, /state\.focusedCard = action\.payload\.access/)
