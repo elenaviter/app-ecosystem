@@ -363,6 +363,13 @@ class RelayService:
     def install(self) -> dict[str, Any]:
         """Write the stable current-release definition and start it."""
 
+        if self.module_entrypoint and not self.executable.is_file():
+            raise DomainError(
+                "work_client_release_environment_missing",
+                "Install and activate a Project Board release before installing "
+                "the relay service.",
+                details={"python": str(self.executable)},
+            )
         return self._install_definition()
 
     def _install_definition(self) -> dict[str, Any]:

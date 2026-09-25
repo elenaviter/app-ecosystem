@@ -52,6 +52,21 @@ def test_pb_version_is_a_config_free_release_smoke(capsys) -> None:
     assert capsys.readouterr().out.startswith("problem-board ")
 
 
+def test_pb_version_works_from_source_without_installed_distribution_metadata(
+    capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing(_distribution: str) -> str:
+        raise cli.metadata.PackageNotFoundError("project-board")
+
+    monkeypatch.setattr(cli.metadata, "version", missing)
+
+    with pytest.raises(SystemExit) as stopped:
+        cli.build_parser().parse_args(["--version"])
+
+    assert stopped.value.code == 0
+    assert capsys.readouterr().out == "problem-board source\n"
+
+
 def test_test_extra_installs_the_parallel_runner() -> None:
     metadata = tomllib.loads(
         (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")

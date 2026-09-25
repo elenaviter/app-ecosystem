@@ -168,12 +168,19 @@ def _host_config(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _project_board_version() -> str:
+    try:
+        return metadata.version("project-board")
+    except metadata.PackageNotFoundError:
+        return "source"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="problem-board", description="Operate a Problem Board shared field.")
     parser.add_argument(
         "--version",
         action="version",
-        version=f"%(prog)s {metadata.version('project-board')}",
+        version=f"%(prog)s {_project_board_version()}",
     )
     parser.add_argument(
         "--format",

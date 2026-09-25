@@ -126,7 +126,7 @@ def test_a_release_environment_resolves_and_smokes_a_new_dependency(
     assert source["release_id"] == release_id
 
 
-def test_default_published_smoke_does_not_require_retired_package_families(
+def test_default_published_smoke_uses_the_candidate_owned_runtime_contract(
     tmp_path: Path,
 ) -> None:
     project_board = _wheel(
@@ -139,7 +139,9 @@ def test_default_published_smoke_does_not_require_retired_package_families(
                 "def main():\n"
                 "    print(f\"problem-board {version('project-board')}\")\n"
                 "    return 0\n"
-            )
+            ),
+            "project_board/client/__init__.py": "",
+            "project_board/client/release_smoke.py": "CONTRACT = 'candidate'\n",
         },
         scripts={"pb": "project_board:main"},
     )
@@ -153,7 +155,101 @@ def test_default_published_smoke_does_not_require_retired_package_families(
         expected_project_board_version="2.0",
     )
 
-    assert installed["environment"]["imports"] == ["project_board"]
+    assert installed["environment"]["imports"] == [
+        "project_board.client.release_smoke"
+    ]
+
+
+def test_broken_noncurrent_complete_environment_is_rebuilt(tmp_path: Path) -> None:
+    project_board = _wheel(
+        tmp_path,
+        distribution="project-board",
+        version="2.1",
+        files={
+            "project_board/__init__.py": (
+                "from importlib.metadata import version\n"
+                "def main():\n"
+                "    print(f\"problem-board {version('project-board')}\")\n"
+                "    return 0\n"
+            ),
+            "project_board/client/__init__.py": "",
+            "project_board/client/release_smoke.py": "CONTRACT = 'candidate'\n",
+        },
+        scripts={"pb": "project_board:main"},
+    )
+    root = tmp_path / "client"
+    release_id = "e" * 64
+    first = release_install.install_release_environment(
+        root=root,
+        release_id=release_id,
+        requirements=(project_board,),
+        source={"mode": "released", "version": "2.1"},
+        base_python=Path(sys.executable),
+        expected_project_board_version="2.1",
+    )
+    pb = Path(first["environment"]["pb"])
+    pb.write_text("#!/bin/sh\nexit 23\n", encoding="utf-8")
+    pb.chmod(0o755)
+
+    rebuilt = release_install.install_release_environment(
+        root=root,
+        release_id=release_id,
+        requirements=(project_board,),
+        source={"mode": "released", "version": "2.1"},
+        base_python=Path(sys.executable),
+        expected_project_board_version="2.1",
+    )
+
+    assert rebuilt["reused"] is False
+    clean_environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"PYTHONHOME", "PYTHONPATH"}
+    }
+    assert subprocess.run(
+        (str(rebuilt["environment"]["pb"]), "--version"),
+        check=True,
+        capture_output=True,
+        text=True,
+        env=clean_environment,
+    ).stdout.strip() == "problem-board 2.1"
+
+
+def test_smoke_import_cannot_be_satisfied_by_the_release_working_directory(
+    tmp_path: Path,
+) -> None:
+    project_board = _wheel(
+        tmp_path,
+        distribution="project-board",
+        version="2.2",
+        files={
+            "project_board/__init__.py": (
+                "from importlib.metadata import version\n"
+                "def main():\n"
+                "    print(f\"problem-board {version('project-board')}\")\n"
+                "    return 0\n"
+            )
+        },
+        scripts={"pb": "project_board:main"},
+    )
+    root = tmp_path / "client"
+    release_id = "f" * 64
+    release = release_install.release_path(root, release_id)
+    release.mkdir(parents=True)
+    (release / "cwd_only.py").write_text("VALUE = 'not installed'\n", encoding="utf-8")
+
+    with pytest.raises(release_install.ReleaseInstallError) as failure:
+        release_install.install_release_environment(
+            root=root,
+            release_id=release_id,
+            requirements=(project_board,),
+            source={"mode": "released", "version": "2.2"},
+            base_python=Path(sys.executable),
+            smoke_imports=("cwd_only",),
+            expected_project_board_version="2.2",
+        )
+
+    assert failure.value.code == "work_client_release_install_failed"
 
 
 def test_failed_smoke_keeps_the_previous_release_active(tmp_path: Path) -> None:

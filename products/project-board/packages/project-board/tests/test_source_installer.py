@@ -72,6 +72,18 @@ def test_source_installer_resolves_all_first_party_packages_in_one_pip_call(
     release_id = "a" * 64
     environment = release_root / "releases" / release_id / "venv"
     calls: list[dict[str, object]] = []
+    lock_events: list[tuple[str, Path]] = []
+
+    class _Lock:
+        def __init__(self, root: Path) -> None:
+            self.root = root
+
+        def __enter__(self):
+            lock_events.append(("enter", self.root))
+
+        def __exit__(self, exc_type, exc, traceback):
+            del exc_type, exc, traceback
+            lock_events.append(("exit", self.root))
 
     def install_release_environment(**kwargs):
         calls.append(kwargs)
@@ -99,6 +111,11 @@ def test_source_installer_resolves_all_first_party_packages_in_one_pip_call(
         "prune_installed_releases",
         lambda root, keep: [],
     )
+    monkeypatch.setattr(
+        installer._RELEASE_INSTALL,
+        "activation_lock",
+        lambda root: _Lock(root),
+    )
 
     result = installer.install(
         source_root=source_root,
@@ -112,7 +129,14 @@ def test_source_installer_resolves_all_first_party_packages_in_one_pip_call(
     assert len(calls) == 1
     assert calls[0]["requirements"] == packages
     assert calls[0]["base_python"] == Path("/usr/bin/python3")
-    assert calls[0]["smoke_imports"] == installer.CLIENT_SOURCE_IMPORTS
+    assert calls[0]["smoke_imports"] == (
+        *installer.CLIENT_SOURCE_IMPORTS,
+        *installer._RELEASE_INSTALL.DEFAULT_IMPORT_SMOKE,
+    )
+    assert lock_events == [
+        ("enter", release_root),
+        ("exit", release_root),
+    ]
     assert result["release_id"] == release_id
     assert result["installed_source"]["mode"] == "snapshot"
     assert Path(str(result["command"])).read_text(encoding="utf-8").startswith(
@@ -151,6 +175,67 @@ def test_source_installer_replaces_only_an_owned_launcher_by_default(tmp_path: P
     )
     assert str(pb_command) in launcher.read_text(encoding="utf-8")
     assert 'PROBLEM_BOARD_INVOKED_PB="$0"' in launcher.read_text(encoding="utf-8")
+
+
+def test_source_installer_restores_an_absent_launcher_when_activation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    installer = _installer_module()
+    source_root, kdcube_source_root, _packages = _source_exports(
+        installer, tmp_path / "source"
+    )
+    release_root = tmp_path / "release-root"
+    command_dir = tmp_path / "bin"
+    release_id = "c" * 64
+    activations: list[str] = []
+
+    monkeypatch.setattr(
+        installer._RELEASE_INSTALL,
+        "source_release_id",
+        lambda _sources: release_id,
+    )
+    monkeypatch.setattr(
+        installer._RELEASE_INSTALL,
+        "install_release_environment",
+        lambda **_kwargs: {
+            "environment": {
+                "python": str(release_root / "candidate" / "python"),
+                "pb": str(release_root / "candidate" / "pb"),
+            }
+        },
+    )
+
+    def activate(_root: Path, identity: str) -> str:
+        activations.append(identity)
+        return "" if identity else release_id
+
+    def fail_launcher(*, command_dir: Path, pb_command: Path, force: bool) -> Path:
+        del pb_command, force
+        launcher = command_dir / "pb"
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        launcher.write_text("candidate launcher\n", encoding="utf-8")
+        raise RuntimeError("launcher write failed")
+
+    monkeypatch.setattr(
+        installer._RELEASE_INSTALL,
+        "activate_installed_release",
+        activate,
+    )
+    monkeypatch.setattr(installer, "_install_launcher", fail_launcher)
+
+    with pytest.raises(RuntimeError, match="launcher write failed"):
+        installer.install(
+            source_root=source_root,
+            kdcube_source_root=kdcube_source_root,
+            release_root=release_root,
+            command_dir=command_dir,
+            base_python=Path("/usr/bin/python3"),
+            force_launcher=False,
+        )
+
+    assert activations == [release_id, ""]
+    assert not (command_dir / "pb").exists()
 
 
 def test_the_inert_launcher_executes_current_and_records_its_own_path(

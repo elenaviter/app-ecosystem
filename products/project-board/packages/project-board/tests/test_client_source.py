@@ -222,15 +222,24 @@ def test_client_source_never_inherits_the_old_relay_only_store(tmp_path: Path) -
 def test_installed_targets_keep_receipts_but_share_the_host_release_store(
     tmp_path: Path,
 ) -> None:
-    config = (
+    target_root = (
         tmp_path
         / ".kdcube"
         / "client-runtime"
         / "problem-board"
         / "targets"
         / "dev"
-        / "relay.json"
+        / "tenant__project"
+        / "apps"
+        / "problem-board@1-0"
+        / "hosts"
     )
+    config = target_root / "host-one" / "relay.json"
+    other_config = target_root / "host-two" / "relay.json"
+    config.parent.mkdir(parents=True)
+    other_config.parent.mkdir(parents=True)
+    config.write_text("{}\n", encoding="utf-8")
+    other_config.write_text("{}\n", encoding="utf-8")
 
     assert relay_source.client_source_root(config) == config.parent / "client-source"
     assert relay_source.client_release_root(config) == (
@@ -240,6 +249,7 @@ def test_installed_targets_keep_receipts_but_share_the_host_release_store(
         / "tools"
         / "problem-board"
     )
+    assert relay_source.host_target_config_paths(config) == (config, other_config)
 
 
 def test_legacy_single_repository_selection_remains_readable(tmp_path: Path) -> None:
@@ -471,7 +481,7 @@ def test_released_selection_accepts_pep440_equivalent_version_spelling(
 
     assert receipt["selected"]["version"] == "2026.9.22.2241"
     assert receipt["installation"]["environment"]["imports"] == [
-        "project_board"
+        "project_board.client.release_smoke"
     ]
     assert controller.launcher.is_file()
     assert str(release_install.active_pb(controller.root)) in controller.launcher.read_text(
@@ -615,6 +625,8 @@ class _Service:
         self.definition_path.parent.mkdir(parents=True, exist_ok=True)
         self.definition_path.write_text("bootstrap", encoding="utf-8")
         self.startup_state = startup_state
+        self.running = True
+        self.stops = 0
         self.restarts = 0
 
     def definition_uses_bootstrap(self) -> bool:
@@ -622,7 +634,13 @@ class _Service:
 
     def restart(self) -> dict[str, object]:
         self.restarts += 1
+        self.running = True
         return {"running": True}
+
+    def stop(self) -> dict[str, object]:
+        self.stops += 1
+        self.running = False
+        return {"running": False}
 
     def await_source(
         self, expected: dict[str, object], *, since: str, wait_seconds: float
@@ -635,7 +653,7 @@ class _Service:
         return {"state": "source_mismatch", "observed": {"mode": "released"}}
 
     def status(self) -> dict[str, object]:
-        return {"installed": True, "running": True}
+        return {"installed": True, "running": self.running}
 
 
 def test_code_selection_is_verified_by_restarted_relay(tmp_path: Path) -> None:
@@ -663,9 +681,10 @@ def test_code_selection_is_verified_by_restarted_relay(tmp_path: Path) -> None:
 
     assert receipt["state"] == "activated"
     assert receipt["selected"]["commit"] == commit
+    assert service.stops == 1
     assert service.restarts == 1
     assert receipt["installation"]["environment"]["imports"] == list(
-        CLIENT_SOURCE_IMPORTS
+        (*CLIENT_SOURCE_IMPORTS, *release_install.DEFAULT_IMPORT_SMOKE)
     )
     selected = relay_source.read_selection(controller.root)
     assert selected["mode"] == "snapshot" and selected["commit"] == commit
@@ -766,6 +785,7 @@ def test_failed_code_start_restores_released_selection(tmp_path: Path) -> None:
     selected = relay_source.read_selection(controller.root)
     assert selected == {}
     assert release_install.active_release_id(controller.root) == ""
+    assert not controller.launcher.exists()
 
 
 def test_failed_rollback_is_reported_as_failed(tmp_path: Path) -> None:
@@ -799,3 +819,129 @@ def test_failed_rollback_is_reported_as_failed(tmp_path: Path) -> None:
         )
 
     assert failure.value.details["rollback"]["state"] == "restore_failed"
+
+
+def test_host_switch_updates_and_restarts_every_target(tmp_path: Path) -> None:
+    first_config = tmp_path / "targets" / "one" / "relay.json"
+    second_config = tmp_path / "targets" / "two" / "relay.json"
+    first = _Service(tmp_path / "services" / "one")
+    second = _Service(tmp_path / "services" / "two")
+    controller = ClientSourceController(
+        first_config,
+        service=first,
+        host_services={second_config: second},
+        release_source={"mode": "released", "version": "2026.9.22.2200"},
+    )
+
+    receipt = controller.use_release(
+        expect_version="2026.9.22.2201",
+        wait_seconds=0,
+    )
+
+    assert receipt["state"] == "activated"
+    assert first.stops == second.stops == 1
+    assert first.restarts == second.restarts == 1
+    assert {item["config"] for item in receipt["host_relays"]} == {
+        str(first_config.resolve()),
+        str(second_config.resolve()),
+    }
+    for config in (first_config, second_config):
+        assert relay_source.read_selection(
+            relay_source.client_source_root(config)
+        )["version"] == "2026.9.22.2201"
+
+
+def test_relay_stop_failure_does_not_move_the_host_release(tmp_path: Path) -> None:
+    class _StopFails(_Service):
+        def stop(self) -> dict[str, object]:
+            self.stops += 1
+            return {"running": True}
+
+    config = tmp_path / "target" / "relay.json"
+    service = _StopFails(tmp_path / "service")
+    controller = ClientSourceController(
+        config,
+        service=service,
+        release_source={"mode": "released", "version": "2026.9.22.2200"},
+    )
+
+    with pytest.raises(DomainError) as failure:
+        controller.use_release(
+            expect_version="2026.9.22.2201",
+            wait_seconds=0,
+        )
+
+    assert failure.value.code == "work_client_source_activation_failed"
+    assert failure.value.details["rollback"]["state"] == "restored"
+    assert release_install.active_release_id(controller.root) == ""
+    assert relay_source.read_selection(controller.selection_root) == {}
+    assert not controller.launcher.exists()
+    assert service.stops == 1
+    assert service.restarts == 1
+
+
+def test_host_switch_failure_restores_release_receipts_and_launcher(
+    tmp_path: Path,
+) -> None:
+    first_config = tmp_path / "targets" / "one" / "relay.json"
+    second_config = tmp_path / "targets" / "two" / "relay.json"
+    first = _Service(tmp_path / "services" / "one")
+    second = _Service(
+        tmp_path / "services" / "two", startup_state="source_mismatch"
+    )
+    root = relay_source.client_release_root(first_config)
+    previous_id = release_install.published_release_id("2026.9.22.2200")
+    previous_selection = relay_source.released_selection(
+        "2026.9.22.2200", selected_at="2026-09-25T00:00:00Z"
+    )
+    source_control.install_release_environment(
+        root=root,
+        release_id=previous_id,
+        requirements=("unused",),
+        source=previous_selection,
+        base_python=Path("/usr/bin/python3"),
+    )
+    release_install.activate_installed_release(root, previous_id)
+    prior_receipts: dict[Path, dict[str, object]] = {}
+    for config in (first_config, second_config):
+        prior_receipts[config] = relay_source.write_selection(
+            relay_source.client_source_root(config), previous_selection
+        )
+
+    launcher = tmp_path / "bin" / "pb"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text(
+        "#!/bin/sh\n"
+        f"# {release_install.LAUNCHER_MARKER}\n"
+        "# prior launcher content\n"
+        f'exec {release_install.active_pb(root)} "$@"\n',
+        encoding="utf-8",
+    )
+    launcher.chmod(0o700)
+    prior_launcher = launcher.read_bytes()
+
+    controller = ClientSourceController(
+        first_config,
+        service=first,
+        host_services={second_config: second},
+        release_source=previous_selection,
+        launcher=launcher,
+    )
+
+    with pytest.raises(DomainError) as failure:
+        controller.use_release(
+            expect_version="2026.9.22.2201",
+            wait_seconds=0,
+        )
+
+    assert failure.value.code == "work_client_source_activation_failed"
+    assert failure.value.details["rollback"]["state"] == "restored"
+    assert release_install.active_release_id(root) == previous_id
+    assert launcher.read_bytes() == prior_launcher
+    assert launcher.stat().st_mode & 0o777 == 0o700
+    assert first.stops == second.stops == 2
+    assert first.restarts == second.restarts == 2
+    for config, previous in prior_receipts.items():
+        assert relay_source.read_selection(
+            relay_source.client_source_root(config)
+        ) == previous

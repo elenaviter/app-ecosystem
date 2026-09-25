@@ -56,6 +56,16 @@ def test_default_relay_definition_uses_the_host_current_environment(
     )
 
 
+def test_relay_install_requires_an_active_release_environment(tmp_path: Path) -> None:
+    service = _service(tmp_path, system="Linux")
+
+    with pytest.raises(DomainError) as failure:
+        service.install()
+
+    assert failure.value.code == "work_client_release_environment_missing"
+    assert not service.definition_path.exists()
+
+
 def test_oversized_legacy_log_is_rotated_and_bounded_on_start(tmp_path: Path) -> None:
     path = tmp_path / "logs" / "relay.stderr.log"
     path.parent.mkdir()

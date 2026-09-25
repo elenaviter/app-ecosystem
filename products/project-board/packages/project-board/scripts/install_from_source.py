@@ -130,7 +130,7 @@ def _launcher_path(*, command_dir: Path, pb_command: Path, force: bool) -> Path:
         raise SystemExit(f"{exc}; use --force-launcher after reviewing it.") from exc
 
 
-def install(
+def _install_locked(
     *,
     source_root: Path,
     kdcube_source_root: Path,
@@ -159,11 +159,15 @@ def install(
             requirements=packages,
             source=source,
             base_python=base_python,
-            smoke_imports=CLIENT_SOURCE_IMPORTS,
+            smoke_imports=(
+                *CLIENT_SOURCE_IMPORTS,
+                *_RELEASE_INSTALL.DEFAULT_IMPORT_SMOKE,
+            ),
         )
     except _RELEASE_INSTALL.ReleaseInstallError as exc:
         raise SystemExit(f"{exc.code}: {exc}") from exc
     pb_command = _RELEASE_INSTALL.active_pb(release_root)
+    launcher_snapshot = _RELEASE_INSTALL.snapshot_launcher(command_dir / "pb")
     _launcher_path(
         command_dir=command_dir,
         pb_command=pb_command,
@@ -183,6 +187,7 @@ def install(
         )
     except BaseException:
         _RELEASE_INSTALL.activate_installed_release(release_root, previous)
+        _RELEASE_INSTALL.restore_launcher(launcher_snapshot)
         raise
     pruned = _RELEASE_INSTALL.prune_installed_releases(
         release_root,
@@ -199,6 +204,26 @@ def install(
         "installed_source": source,
         "ready": True,
     }
+
+
+def install(
+    *,
+    source_root: Path,
+    kdcube_source_root: Path,
+    release_root: Path,
+    command_dir: Path,
+    base_python: Path,
+    force_launcher: bool,
+) -> dict[str, object]:
+    with _RELEASE_INSTALL.activation_lock(release_root):
+        return _install_locked(
+            source_root=source_root,
+            kdcube_source_root=kdcube_source_root,
+            release_root=release_root,
+            command_dir=command_dir,
+            base_python=base_python,
+            force_launcher=force_launcher,
+        )
 
 
 def main() -> int:

@@ -35,10 +35,10 @@ from typing import Any, Callable, Iterator, Mapping
 from packaging.version import InvalidVersion, Version
 
 from ..contract.errors import DomainError
-from .io import atomic_write_json, exclusive_lock, read_json, utc_now
+from .io import atomic_write_json, read_json, utc_now
 from .release_install import (
+    activation_lock as release_activation_lock,
     active_release_path as active_installed_release_path,
-    default_release_root,
     read_installation,
 )
 from .source_manifest import (
@@ -156,6 +156,19 @@ def client_source_root(config_path: Path) -> Path:
     return Path(config_path).expanduser().resolve().parent / SOURCE_ROOT_DIR
 
 
+def client_runtime_root_for_config(config_path: Path) -> Path | None:
+    selected = Path(config_path).expanduser().resolve()
+    for parent in selected.parents:
+        if parent.name != "client-runtime":
+            continue
+        try:
+            selected.relative_to(parent / "problem-board" / "targets")
+        except ValueError:
+            continue
+        return parent
+    return None
+
+
 def client_release_root(config_path: Path) -> Path:
     """The host-wide executable release store used by the launcher and relays.
 
@@ -167,15 +180,26 @@ def client_release_root(config_path: Path) -> Path:
     """
 
     selected = Path(config_path).expanduser().resolve()
-    parents = selected.parents
-    if (
-        len(parents) >= 4
-        and parents[1].name == "targets"
-        and parents[2].name == "problem-board"
-        and parents[3].name == "client-runtime"
-    ):
-        return default_release_root(parents[3].parent.parent)
+    runtime = client_runtime_root_for_config(selected)
+    if runtime is not None:
+        return runtime / "tools" / "problem-board"
     return client_source_root(selected)
+
+
+def host_target_config_paths(config_path: Path) -> tuple[Path, ...]:
+    """Every target config whose relay consumes the same host release."""
+
+    selected = Path(config_path).expanduser().resolve()
+    runtime = client_runtime_root_for_config(selected)
+    if runtime is None:
+        return (selected,)
+    paths = set(
+        (runtime / "problem-board" / "targets").glob(
+            "*/*/apps/*/hosts/*/relay.json"
+        )
+    )
+    paths.add(selected)
+    return tuple(sorted(path.resolve() for path in paths if path.is_file()))
 
 
 def relay_source_root(config_path: Path) -> Path:
@@ -953,7 +977,7 @@ def prepare_release(
 def activation_lock(root: Path) -> Iterator[None]:
     """One activation at a time per host: pin, export, swap, verify and prune under one flock."""
 
-    with exclusive_lock(Path(root) / ".activation.lock"):
+    with release_activation_lock(root):
         yield
 
 
