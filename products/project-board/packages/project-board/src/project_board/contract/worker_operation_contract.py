@@ -127,6 +127,38 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:admin",),
     },
+    # Coordinator handover (W313): several agents may carry the coordinator
+    # label; the holder record says which one acts now. Moving it is the
+    # operator's decision, so the three writes are people-only on the board.
+    "project.coordinator.get": {
+        "description": (
+            "Read who holds the project's coordinator role now, the home "
+            "coordinator, and whether the home coordinator is available."
+        ),
+        "grants": ("work:observe",),
+    },
+    "project.coordinator.hand_over": {
+        "description": (
+            "Hand the acting coordinator role to one attending agent, which "
+            "also gains the coordinator label; the home coordinator keeps its "
+            "label."
+        ),
+        "grants": ("work:admin",),
+    },
+    "project.coordinator.return": {
+        "description": (
+            "Return the acting coordinator role to the home coordinator; "
+            "labels stay as they are."
+        ),
+        "grants": ("work:admin",),
+    },
+    "project.coordinator.set_away": {
+        "description": (
+            "Mark the home coordinator away or back, which the board reads as "
+            "unavailable whatever its session reports."
+        ),
+        "grants": ("work:admin",),
+    },
     "plan.item.update": {
         "description": "Update one plan item under its current revision; new attachment refs must be staged uploads.",
         "grants": ("work:coordinate",),
@@ -376,6 +408,10 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.people.invite",
         "project.people.set_role",
         "project.people.card.update",
+        "project.coordinator.get",
+        "project.coordinator.hand_over",
+        "project.coordinator.return",
+        "project.coordinator.set_away",
         "review.accept",
         "review.return",
         "review.cancel",
