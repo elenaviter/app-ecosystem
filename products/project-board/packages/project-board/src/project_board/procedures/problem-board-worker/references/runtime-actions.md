@@ -68,8 +68,9 @@ A switch has four phases under one host activation lock:
 
 1. export or identify the candidate release;
 2. create its `venv`, resolve the complete dependency graph, run candidate
-   `pb --version`, and import every first-party runtime package with checkout
-   import paths removed;
+   `pb --version`, and import its entry package with checkout import paths
+   removed; source builds also import every package named by the source
+   manifest;
 3. atomically move `releases/current` and write the target receipt, then restart
    the installed relay from the stable current path;
 4. accept the switch only when the new relay's startup record names the

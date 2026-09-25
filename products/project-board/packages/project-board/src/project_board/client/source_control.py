@@ -25,6 +25,7 @@ from .relay_source import (
     write_selection,
 )
 from .release_install import (
+    DEFAULT_IMPORT_SMOKE,
     ReleaseInstallError,
     activate_installed_release,
     active_pb,
@@ -41,6 +42,7 @@ from .release_install import (
     validate_launcher,
 )
 from .source_manifest import (
+    CLIENT_SOURCE_IMPORTS,
     CLIENT_SOURCE_PATHS as INSTALL_SOURCE_PATHS,
     component_records,
     normalise_components,
@@ -240,6 +242,7 @@ class ClientSourceController:
                     release.path / relative for relative in INSTALL_SOURCE_PATHS
                 ),
                 source=selected,
+                smoke_imports=CLIENT_SOURCE_IMPORTS,
             )
             receipt = {
                 "schema": "project-board.client-source-activation.v1",
@@ -308,6 +311,7 @@ class ClientSourceController:
         requirements: tuple[str | Path, ...],
         source: Mapping[str, Any],
         expected_project_board_version: str = "",
+        smoke_imports: tuple[str, ...] = DEFAULT_IMPORT_SMOKE,
     ) -> dict[str, Any]:
         try:
             return install_release_environment(
@@ -316,6 +320,7 @@ class ClientSourceController:
                 requirements=requirements,
                 source=source,
                 base_python=self.base_python,
+                smoke_imports=smoke_imports,
                 expected_project_board_version=expected_project_board_version,
             )
         except ReleaseInstallError as exc:

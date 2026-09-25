@@ -112,6 +112,7 @@ def test_source_installer_resolves_all_first_party_packages_in_one_pip_call(
     assert len(calls) == 1
     assert calls[0]["requirements"] == packages
     assert calls[0]["base_python"] == Path("/usr/bin/python3")
+    assert calls[0]["smoke_imports"] == installer.CLIENT_SOURCE_IMPORTS
     assert result["release_id"] == release_id
     assert result["installed_source"]["mode"] == "snapshot"
     assert Path(str(result["command"])).read_text(encoding="utf-8").startswith(

@@ -19,6 +19,7 @@ from project_board.client import (
 from project_board.client.source_control import ClientSourceController
 from project_board.client.source_manifest import (
     APP_ECOSYSTEM_SOURCE_PATHS,
+    CLIENT_SOURCE_IMPORTS,
     KDCUBE_SOURCE_PATHS,
 )
 from project_board.contract.errors import DomainError
@@ -52,7 +53,12 @@ def _complete_candidate_environment(
                 "project_board_version": kwargs.get(
                     "expected_project_board_version", ""
                 ),
-                "imports": [],
+                "imports": list(
+                    kwargs.get(
+                        "smoke_imports",
+                        release_install.DEFAULT_IMPORT_SMOKE,
+                    )
+                ),
             },
             "launcher_version": release_install.LAUNCHER_VERSION,
         }
@@ -464,6 +470,9 @@ def test_released_selection_accepts_pep440_equivalent_version_spelling(
     )
 
     assert receipt["selected"]["version"] == "2026.9.22.2241"
+    assert receipt["installation"]["environment"]["imports"] == [
+        "project_board"
+    ]
     assert controller.launcher.is_file()
     assert str(release_install.active_pb(controller.root)) in controller.launcher.read_text(
         encoding="utf-8"
@@ -655,6 +664,9 @@ def test_code_selection_is_verified_by_restarted_relay(tmp_path: Path) -> None:
     assert receipt["state"] == "activated"
     assert receipt["selected"]["commit"] == commit
     assert service.restarts == 1
+    assert receipt["installation"]["environment"]["imports"] == list(
+        CLIENT_SOURCE_IMPORTS
+    )
     selected = relay_source.read_selection(controller.root)
     assert selected["mode"] == "snapshot" and selected["commit"] == commit
     assert selected["release_id"] == receipt["selected"]["release_id"]

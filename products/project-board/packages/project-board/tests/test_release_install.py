@@ -126,6 +126,36 @@ def test_a_release_environment_resolves_and_smokes_a_new_dependency(
     assert source["release_id"] == release_id
 
 
+def test_default_published_smoke_does_not_require_retired_package_families(
+    tmp_path: Path,
+) -> None:
+    project_board = _wheel(
+        tmp_path,
+        distribution="project-board",
+        version="2.0",
+        files={
+            "project_board/__init__.py": (
+                "from importlib.metadata import version\n"
+                "def main():\n"
+                "    print(f\"problem-board {version('project-board')}\")\n"
+                "    return 0\n"
+            )
+        },
+        scripts={"pb": "project_board:main"},
+    )
+
+    installed = release_install.install_release_environment(
+        root=tmp_path / "client",
+        release_id="d" * 64,
+        requirements=(project_board,),
+        source={"mode": "released", "version": "2.0"},
+        base_python=Path(sys.executable),
+        expected_project_board_version="2.0",
+    )
+
+    assert installed["environment"]["imports"] == ["project_board"]
+
+
 def test_failed_smoke_keeps_the_previous_release_active(tmp_path: Path) -> None:
     root = tmp_path / "client"
     previous_id = "b" * 64
