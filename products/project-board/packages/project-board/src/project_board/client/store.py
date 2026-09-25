@@ -663,6 +663,17 @@ def _contains_identity(actual: Any, expected: Any) -> bool:
     return actual == expected
 
 
+def _team_limit_state(value: Any) -> dict[str, str]:
+    """The bounded limit a team row keeps: the board already validated it."""
+
+    if not isinstance(value, Mapping) or not str(value.get("kind") or "").strip():
+        return {}
+    return {
+        key: str(value.get(key) or "")
+        for key in ("kind", "reached", "resets_at", "observed_at", "source")
+    }
+
+
 class SharedFieldStore:
     """Canonical project state shared directly by local workers.
 
@@ -7671,6 +7682,9 @@ class SharedFieldStore:
                         "host_kind": str(member.get("host_kind") or ""),
                         "pool_status": str(member.get("pool_status") or ""),
                         "presence": str(member.get("presence") or ""),
+                        # W26 line 7: a teammate's usage limit as its runtime
+                        # last reported it; empty means not reported.
+                        "limit_state": _team_limit_state(member.get("limit_state")),
                     }
                 )
             record = {"schema": FIELD_SCHEMA, "project_id": clean_id, "members": rows, "updated_at": utc_now()}
