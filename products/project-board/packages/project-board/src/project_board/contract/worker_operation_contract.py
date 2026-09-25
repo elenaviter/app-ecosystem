@@ -167,6 +167,13 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:admin",),
     },
+    "project.coordinator.note.write": {
+        "description": (
+            "The agent holding the coordinator role writes its part of the "
+            "next handover note; the next hand-over or return carries it."
+        ),
+        "grants": ("work:coordinate",),
+    },
     "project.coordinator.make_worker": {
         "description": (
             "Make the acting coordinator a worker again: the role back to the "
@@ -430,6 +437,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.coordinator.set_away",
         "project.coordinator.make",
         "project.coordinator.make_worker",
+        "project.coordinator.note.write",
         "review.accept",
         "review.return",
         "review.cancel",
