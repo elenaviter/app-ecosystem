@@ -804,6 +804,48 @@ class ProblemBoardHostRelayAdapter:
         except DomainError:
             return None
 
+    async def _read_attendance_for_deferred_control(self) -> str:
+        """Read attendance immediately after a cached not-linked result.
+
+        The control is already leased, so waiting for the next supervisor poll
+        adds the idle interval to a just-linked worker's welcome. Reuse the
+        discovery heartbeat in this cycle. A failed optimization leaves the
+        control deferred and cannot abort the rest of its leased batch.
+        """
+
+        # This is a best-effort latency read; no failure may strand its batch.
+        try:
+            discovery, republished = await self._heartbeat_with_republish(
+                {"availability": "available"}
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Problem Board immediate attendance read failed; controls remain "
+                "deferred worker=%s error=%s",
+                self.config.worker_name,
+                str(getattr(exc, "code", "") or type(exc).__name__),
+                exc_info=True,
+            )
+            return "unavailable"
+        if (
+            republished is not None
+            and republished["remote"].get("pool_status") == "limbo"
+        ):
+            return "limbo"
+        self._record_project_heartbeat("")
+        self._record_attendance_observation(discovery)
+        refreshed = (
+            "attendances" in discovery
+            and bool(self._attendance_cache.get("initialized"))
+        )
+        if not refreshed:
+            logger.warning(
+                "Problem Board immediate attendance read returned no current "
+                "snapshot; controls remain deferred worker=%s",
+                self.config.worker_name,
+            )
+        return "refreshed" if refreshed else "unavailable"
+
     def _record_attendance_observation(self, value: Mapping[str, Any]) -> None:
         own = value.get("self")
         if isinstance(own, Mapping):
@@ -1517,6 +1559,7 @@ class ProblemBoardHostRelayAdapter:
             "plan_commands_applied": 0,
             "plan_commands_refused": 0,
         }
+        attendance_refresh_state: str | None = None
         for item in items:
             if not isinstance(item, Mapping):
                 continue
@@ -1764,40 +1807,59 @@ class ProblemBoardHostRelayAdapter:
                     )
                     counts["controls_deferred"] += 1
                     continue
-                if exc.code == "field_worker_not_linked" and not self._defer_until_attendance_read(command_ref):
-                    # A board read completed after the deferral. When it lists
-                    # this control's project, the host record is what lags:
-                    # write the board's attendance and deliver now.
-                    receipt = self._materialize_after_board_read(item)
-                    if receipt is not None:
-                        await self._settle_leased_control(
-                            command_ref,
-                            action="control.acknowledge",
-                            kind=kind,
-                            payload={
-                                "lease_id": lease_id,
-                                "lease_owner": self.config.relay_id,
-                                "result_summary": str(receipt.get("delivery_status") or "materialized"),
-                                "result_ref": str(receipt.get("message_ref") or ""),
-                            },
-                        )
-                        counts["controls_materialized"] += 1
+                if exc.code == "field_worker_not_linked":
+                    should_defer = self._defer_until_attendance_read(command_ref)
+                    if should_defer:
+                        if attendance_refresh_state is None:
+                            attendance_refresh_state = (
+                                await self._read_attendance_for_deferred_control()
+                            )
+                        if attendance_refresh_state == "limbo":
+                            logger.warning(
+                                "Problem Board stopped the leased control batch because "
+                                "the worker entered limbo worker=%s",
+                                self.config.worker_name,
+                            )
+                            counts["controls_deferred"] += 1
+                            break
+                        if attendance_refresh_state == "refreshed":
+                            # Every item was leased before this one batch read,
+                            # so the same authoritative snapshot resolves every
+                            # cached not-linked result in the pull.
+                            self._attendance_cache.get(
+                                "not_linked_deferrals", {}
+                            ).pop(command_ref, None)
+                            should_defer = False
+                    if not should_defer:
+                        # The board lists the control's project when the local
+                        # host record is what lags. Synchronize that attendance
+                        # and deliver the already-leased control.
+                        receipt = self._materialize_after_board_read(item)
+                        if receipt is not None:
+                            await self._settle_leased_control(
+                                command_ref,
+                                action="control.acknowledge",
+                                kind=kind,
+                                payload={
+                                    "lease_id": lease_id,
+                                    "lease_owner": self.config.relay_id,
+                                    "result_summary": str(
+                                        receipt.get("delivery_status")
+                                        or "materialized"
+                                    ),
+                                    "result_ref": str(
+                                        receipt.get("message_ref") or ""
+                                    ),
+                                },
+                            )
+                            counts["controls_materialized"] += 1
+                            continue
+                    if should_defer:
+                        # No authoritative board snapshot arrived. The one
+                        # batch read already logged why; keep this lease
+                        # eligible for a later cycle and continue with peers.
+                        counts["controls_deferred"] += 1
                         continue
-                elif exc.code == "field_worker_not_linked":
-                    # W304 join race: this host's attendance record may predate
-                    # a link the board has already committed. Refuse only after
-                    # an attendance read that completed after this first
-                    # refusal still says "not linked"; until then the lease
-                    # expires and the control plane offers the control again.
-                    logger.warning(
-                        "Problem Board control deferred until the attendance is read "
-                        "from the board control=%s kind=%s worker=%s",
-                        command_ref,
-                        kind,
-                        self.config.worker_name,
-                    )
-                    counts["controls_deferred"] += 1
-                    continue
                 await self._refuse_malformed_control(
                     command_ref=command_ref,
                     kind=kind,
