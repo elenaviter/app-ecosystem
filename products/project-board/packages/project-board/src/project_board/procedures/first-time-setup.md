@@ -119,6 +119,10 @@ dependencies. Use only the procedure targets present
 on the host. Installation, source selection, and procedure installation change
 the user's machine, so the operator approves them. The repository checkouts
 are never runtime import paths.
+After this first installation, `pb source use-code` owns code-source updates.
+The bootstrap installer recognizes an installed stable-current relay definition
+and directs the operator to that host transaction; see the installed worker
+procedure's `references/runtime-actions.md`.
 
 A machine that joins a board as a user of a published release, rather than as
 a host of a team that builds from source, installs the approved

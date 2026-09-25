@@ -84,10 +84,12 @@ A build or smoke failure occurs before relays stop and leaves `current`, every
 receipt, the launcher, and all running relays unchanged. A stop, activation,
 restart, or startup-record failure restores the exact previous current release,
 each target's previous receipt or absence of one, and the previous launcher,
-then restarts and verifies every former relay. If a candidate relay cannot be
-stopped, rollback reports that failure and does not move `current` while that
-process could still load modules from it. Pruning begins only after every relay
-has verified the activation.
+then attempts to restart and verify every former relay; one failed restart does
+not prevent the remaining relays from being attempted, and the rollback receipt
+lists every failure. If a candidate relay cannot be stopped, rollback reports
+that failure and does not move `current` while that process could still load
+modules from it. Pruning begins only after every relay has verified the
+activation.
 
 `pb source status` reports the active release ID and path, environment commands,
 launcher path and version, this target's receipt, the source loaded by the
@@ -134,6 +136,12 @@ The relay service install is required once during this migration because its
 old definition names the former interpreter. Every later source switch keeps
 the same `releases/current/venv/bin/python` service command and performs its own
 verified restart.
+
+On a host that already has relay definitions using `releases/current`,
+`~/.local/bin/pb source use-code` owns every later code-source change. The
+bootstrap installer detects those installed current-path relay units and exits
+before building or activating a candidate, directing the operator to the
+host-wide source transaction instead.
 
 Before fast-forwarding a checkout or deleting
 `problem-board-venv`, verify all of these facts for every configured target:

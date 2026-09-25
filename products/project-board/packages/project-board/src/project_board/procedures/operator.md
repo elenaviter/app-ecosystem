@@ -52,6 +52,10 @@ The source installer creates and smokes a complete release environment,
 activates `releases/current`, installs the inert launcher, and resolves all six
 first-party distributions from both exports in one pip operation. Use only the
 coding runtime targets present on this host.
+After that first installation, `pb source use-code` is the host-wide update
+path. The bootstrap installer recognizes an installed stable-current relay
+definition and directs the operator to that transaction; the complete contract
+is in the worker procedure's `references/runtime-actions.md`.
 `app-foundation` owns the generic MCP and Data Bus clients, `connection-hub`
 owns the host-neutral
 Connection Hub contracts, `connection-hub-cli` owns profiles and native
