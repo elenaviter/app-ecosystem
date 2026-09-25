@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -16,7 +17,10 @@ from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     NamedServiceSelection,
 )
-from connection_hub.delegated_credentials.cards.service import CardCommitFailed
+from connection_hub.delegated_credentials.cards.service import (
+    CardCommitFailed,
+    CardConflict,
+)
 from connection_hub.delegated_credentials.catalog.models import CatalogDocument
 from connection_hub.delegated_credentials.controls.project_invitation import (
     PROJECT_INVITATION_CONTROL_AUDIT_PROVENANCE,
@@ -77,6 +81,8 @@ class _Host:
         self.update_calls: list[dict[str, Any]] = []
         self.fail_persist_id = ""
         self.fail_forget_id = ""
+        self.forget_barrier: asyncio.Barrier | None = None
+        self._write_lock = asyncio.Lock()
 
     async def _load_record_any_state(self, access_id, *, grantor_subject):
         return self.records.get((grantor_subject, access_id))
@@ -158,8 +164,10 @@ class _Host:
         if record.access_id == self.fail_persist_id:
             raise CardCommitFailed("planned_test_failure")
         key = (record.grantor_subject, record.access_id)
-        assert key not in self.records
-        self.records[key] = (record, CARD_STATE_ACTIVE)
+        async with self._write_lock:
+            if key in self.records:
+                raise CardConflict("card_revision_conflict", current_revision=1)
+            self.records[key] = (record, CARD_STATE_ACTIVE)
 
     async def _control_card_public_view(
         self,
@@ -219,9 +227,18 @@ class _Host:
     async def _forget_record(self, record, *, revoked_record):
         if record.access_id == self.fail_forget_id:
             raise CardCommitFailed("planned_test_failure")
+        if self.forget_barrier is not None:
+            await self.forget_barrier.wait()
         key = (record.grantor_subject, record.access_id)
-        assert self.records[key][0] is record
-        self.records[key] = (revoked_record, revoked_record.state)
+        async with self._write_lock:
+            current = self.records.get(key)
+            if current is None or current[0] is not record:
+                revision = current[0].card_revision if current is not None else 0
+                raise CardConflict(
+                    "card_revision_conflict",
+                    current_revision=revision,
+                )
+            self.records[key] = (revoked_record, revoked_record.state)
 
     async def notify_change(self, subject, *, action, access=None, access_id=""):
         del access, access_id
@@ -576,7 +593,7 @@ async def test_bind_repairs_a_failure_after_live_control_creation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bind_repairs_a_failure_after_my_card_creation() -> None:
+async def test_a_failed_claim_creates_no_person_authority_and_retry_repairs() -> None:
     host = _Host()
     lifecycle = _lifecycle(host)
     created = await _create(lifecycle)
@@ -590,6 +607,21 @@ async def test_bind_repairs_a_failure_after_my_card_creation() -> None:
         control_id=pending_id,
         request_id="request-bind",
     )
+    live_identity = ProjectPersonControlIdentity.build(
+        project_ref=PROJECT_REF,
+        target_subject=PERSON,
+    )
+    my_identity = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF,
+        person_subject=PERSON,
+    )
+    assert failed["error"] == "project_invitation_binding_not_committed"
+    assert (
+        live_identity.project_subject,
+        live_identity.control_id,
+    ) not in host.records
+    assert (PERSON, my_identity.my_card_id) not in host.records
+
     host.fail_forget_id = ""
     repaired = await lifecycle.bind(
         actor_subject=PERSON,
@@ -597,6 +629,109 @@ async def test_bind_repairs_a_failure_after_my_card_creation() -> None:
         invitation_ref=INVITATION_REF,
         control_id=pending_id,
         request_id="request-bind-retry",
+    )
+
+    assert repaired["ok"] is True
+    assert repaired["bound"] is True
+    assert host.records[(live_identity.project_subject, live_identity.control_id)][1] == (
+        CARD_STATE_ACTIVE
+    )
+    assert host.records[(PERSON, my_identity.my_card_id)][1] == CARD_STATE_ACTIVE
+    assert host.records[(live_identity.project_subject, pending_id)][1] == (
+        CARD_STATE_REVOKED
+    )
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_binders_leave_authority_only_for_the_claim_winner() -> None:
+    host = _Host()
+    created = await _create(_lifecycle(host))
+    pending_id = created["control_card"]["access_id"]
+    other_person = "platform-user-3"
+    first = _lifecycle(host, resolver=_BindingResolver(person=PERSON))
+    second = _lifecycle(host, resolver=_BindingResolver(person=other_person))
+    host.forget_barrier = asyncio.Barrier(2)
+
+    results = await asyncio.gather(
+        first.bind(
+            actor_subject=PERSON,
+            project_ref=PROJECT_REF,
+            invitation_ref=INVITATION_REF,
+            control_id=pending_id,
+            request_id="request-bind-first",
+        ),
+        second.bind(
+            actor_subject=other_person,
+            project_ref=PROJECT_REF,
+            invitation_ref=INVITATION_REF,
+            control_id=pending_id,
+            request_id="request-bind-second",
+        ),
+    )
+
+    applied = [result for result in results if result.get("ok") is True]
+    refused = [result for result in results if result.get("ok") is not True]
+    assert len(applied) == len(refused) == 1
+    assert refused[0]["error"] == "project_invitation_binding_claim_conflict"
+    winner = applied[0]["binding"]["person_subject"]
+    loser = other_person if winner == PERSON else PERSON
+    winner_control = ProjectPersonControlIdentity.build(
+        project_ref=PROJECT_REF,
+        target_subject=winner,
+    )
+    winner_my = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF,
+        person_subject=winner,
+    )
+    loser_control = ProjectPersonControlIdentity.build(
+        project_ref=PROJECT_REF,
+        target_subject=loser,
+    )
+    loser_my = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF,
+        person_subject=loser,
+    )
+    assert (winner_control.project_subject, winner_control.control_id) in host.records
+    assert (winner, winner_my.my_card_id) in host.records
+    assert (loser_control.project_subject, loser_control.control_id) not in host.records
+    assert (loser, loser_my.my_card_id) not in host.records
+
+
+@pytest.mark.asyncio
+async def test_revoke_winning_the_claim_race_leaves_no_person_authority() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host)
+    created = await _create(lifecycle)
+    pending_id = created["control_card"]["access_id"]
+    revoked = asyncio.Event()
+    original_forget = host._forget_record
+
+    async def revoke_first(record, *, revoked_record):
+        marker = revoked_record.provenance.get(
+            PROJECT_INVITATION_BINDING_PROVENANCE
+        )
+        if marker is not None:
+            await revoked.wait()
+        await original_forget(record, revoked_record=revoked_record)
+        if marker is None:
+            revoked.set()
+
+    host._forget_record = revoke_first
+    bind_result, revoke_result = await asyncio.gather(
+        lifecycle.bind(
+            actor_subject=PERSON,
+            project_ref=PROJECT_REF,
+            invitation_ref=INVITATION_REF,
+            control_id=pending_id,
+            request_id="request-bind-race",
+        ),
+        lifecycle.revoke(
+            actor_subject=ADMIN,
+            project_ref=PROJECT_REF,
+            invitation_ref=INVITATION_REF,
+            control_id=pending_id,
+            request_id="request-revoke-race",
+        ),
     )
 
     live_identity = ProjectPersonControlIdentity.build(
@@ -607,16 +742,10 @@ async def test_bind_repairs_a_failure_after_my_card_creation() -> None:
         project_ref=PROJECT_REF,
         person_subject=PERSON,
     )
-    assert failed["error"] == "project_invitation_binding_not_committed"
-    assert repaired["ok"] is True
-    assert repaired["bound"] is False
-    assert host.records[(live_identity.project_subject, live_identity.control_id)][1] == (
-        CARD_STATE_ACTIVE
-    )
-    assert host.records[(PERSON, my_identity.my_card_id)][1] == CARD_STATE_ACTIVE
-    assert host.records[(live_identity.project_subject, pending_id)][1] == (
-        CARD_STATE_REVOKED
-    )
+    assert revoke_result["ok"] is True
+    assert bind_result["error"] == "project_invitation_binding_claim_conflict"
+    assert (live_identity.project_subject, live_identity.control_id) not in host.records
+    assert (PERSON, my_identity.my_card_id) not in host.records
 
 
 @pytest.mark.asyncio

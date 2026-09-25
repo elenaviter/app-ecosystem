@@ -431,11 +431,12 @@ paths:
         Resolves current invitation evidence through the descriptor-named
         application provider, requires the evidence to match the exact project,
         invitation, pending control id, signed-in person, and stored email
-        digest, then creates the deterministic live per-person Control Card and
-        a full initial My Card from the reviewed pending selection. The pending
-        Card is consumed as a revoked audited revision. Exact retries are
-        idempotent and repair a partially committed transition; unrelated live
-        Cards conflict.
+        digest, then claims the pending Card with a compare-and-swap revoked
+        revision before creating person-side authority. The winning claim may
+        create the deterministic live per-person Control Card, a full initial
+        My Card from the reviewed pending selection, and the identity edge.
+        Exact retries repair person-side writes after a successful claim;
+        unrelated live Cards conflict.
       operationId: project_person_control_bind_invitation
       x-kdcube-result-alias: project_person_control_bind_invitation
       parameters:
@@ -464,7 +465,8 @@ paths:
         before writing. Only untouched revision 1 is writable; an exact replay
         returns the seeded Card and every conflicting replay or user-edited
         Card is refused. The Control Card carries exactly one immutable origin,
-        `migration` or `project_creation`. An ordinary new person starts empty.
+        `migration` or `project_creation`. Every newly created My Card otherwise
+        starts with the current Control Card selection and remains person-narrowable.
       operationId: project_person_my_card_seed
       x-kdcube-result-alias: project_person_my_card_seed
       parameters:

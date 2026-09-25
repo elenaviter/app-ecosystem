@@ -134,7 +134,7 @@ of an ordinary user's right to edit their own Agent Card.
 | `manual` | A script, service, or external automation whose operator copies a bearer. | `delegated_access_create`. | The raw bearer is returned once and is not retained. The record keeps `session_id` and `last_four` for revocation and identification. |
 | `agent` | An agent with deterministic identity `kdcube-agent:<app>:<agent>`, usable from a hosted runtime or as an external MCP caller. | Demand-driven consent, or descriptor synchronization for a resident agent whose Card selects from a Control Card. | Every Agent Card retains its reusable access token server-side. The hosted runtime presents it for resident calls; an external instance presents the same Card credential over the network. List views expose non-secret metadata. |
 | `oauth` | An external OAuth/MCP client. | Automatically on initial token issuance and every refresh rotation. | Current access- and refresh-token handles are retained server-side so revoke can invalidate both. They are never returned by list. |
-| `project-person` | A signed-in person's positive My Card selection for one project identity edge. | Created with the administrator-reviewed pending selection when an invitation is bound; direct membership creation starts empty and the approved migration/project-creation origins may seed it once. The person may later narrow it within the current project and catalog ceilings. | None. It is durable and person-owned, but the platform session supplies identity; the Card retains no bearer, refresh token, session, or expiry. |
+| `project-person` | A signed-in person's positive My Card selection for one project identity edge. | Created with the current Control Card selection for both direct membership and invitation binding. Approved migration/project-creation origins may replace the untouched initial selection once. The person may later narrow it within the current project and catalog ceilings. | None. It is durable and person-owned, but the platform session supplies identity; the Card retains no bearer, refresh token, session, or expiry. |
 | `control` | A reusable authorization rule linked to one or more caller Cards. | An owner-scoped `control_card_create`, normally initiated by the application that will link it. | None. It has no delegate, bearer, refresh token, session, or expiry. |
 
 An OAuth client and an agent are both delegated callers. Hosted execution keeps
@@ -1441,20 +1441,22 @@ application that owns the canonical membership record.
 
 Creating a new per-person Control Card also creates a stable project identity
 edge and a durable, credential-free My Card in the person's Card partition.
+The new My Card starts with the Control Card's current selection and the person
+may narrow it afterward.
 The edge marker records stable project, person, Control Card, and My Card
 coordinates; authorization resolves both current Card revisions from durable
 storage instead of trusting the marker's initial revisions. Repeating create
 repairs a missing companion My Card without creating another identity.
 
-An ordinary new person starts with an empty positive selection. Two explicit
-project lifecycle origins may seed that untouched My Card once: `migration`
-preserves an existing person's prior selection during cutover, and
-`project_creation` establishes the new project's creator with the project's
-full administrator selection. The create request may declare one origin. It is
-recorded immutably on the Control Card, and the seed marker records which origin
-was consumed. The seed reconciles against the active catalog and intersects
-every selection dimension with the current Control Card before committing.
-Changing either request after the first seed is a conflict.
+Two explicit project lifecycle origins may replace an untouched My Card's
+initial selection once: `migration` preserves an existing person's prior
+selection during cutover, and `project_creation` establishes the new project's
+creator with the project's reviewed administrator selection. The create request
+may declare one origin. It is recorded immutably on the Control Card, and the
+seed marker records which origin was consumed. The seed reconciles against the
+active catalog and intersects every selection dimension with the current
+Control Card before committing. Changing either request after the first seed is
+a conflict.
 
 #### Pending invitations
 
@@ -1494,24 +1496,29 @@ Card. Missing, stale, malformed, cross-project, cross-invitation,
 wrong-person, and wrong-email evidence fails closed before person authority is
 created.
 
-One successful bind performs a one-way identity transition:
+One successful bind performs a one-way identity transition. The first durable
+write is the claim: a compare-and-swap revokes the pending Card and records its
+binding and audit evidence. Only the request that wins that claim can create
+person-side authority:
 
 ```text
 pending invitation Control Card (project + invitation)
+  -> pending Card atomically claimed as revoked with binding and audit evidence
   -> deterministic live Control Card (project + person), same reviewed selection
   -> person-owned My Card, full same reviewed selection
   -> current project identity edge linking those two live Cards
-  -> pending Card committed as revoked with binding and audit evidence
 ```
 
 The full initial My Card makes the invitation's reviewed capabilities usable as
-soon as the person joins; it differs intentionally from ordinary direct member
-creation, whose My Card starts empty. The person may narrow My Card afterward.
-An exact bind retry returns the same stable Cards and preserves that later
-narrowing. The transition records the same non-secret binding marker on the
-live Control Card, My Card, and consumed pending Card. A retry repairs a failure
-after any earlier durable step; a pre-existing live Control Card without that
-exact marker is an identity conflict and is never adopted.
+soon as the person joins, matching the direct-member rule that a new My Card
+starts equal to its Control Card. The person may narrow My Card afterward. A
+concurrent bind or revoke competes on the same pending Card revision, so exactly
+one transition wins and a losing bind creates no person authority. An exact bind
+retry returns the same stable Cards and preserves later narrowing. The
+transition records the same non-secret binding marker on the live Control Card,
+My Card, and consumed pending Card. A retry after a durable claim repairs any
+missing live Control Card, My Card, or identity edge; a pre-existing live Control
+Card without that exact marker is an identity conflict and is never adopted.
 
 Every governed operation still evaluates the active catalog first, then the
 current live per-person Control Card, then the current My Card. Consuming an

@@ -21,7 +21,6 @@ from connection_hub.delegated_credentials.cards.model import (
     PROJECT_PERSON_SELECTION_SOURCE,
     CardAuthority,
     ControlCardBinding,
-    NamedServiceSelection,
 )
 from connection_hub.delegated_credentials.cards.service import replace_state
 from connection_hub.delegated_credentials.catalog.authorization import (
@@ -286,10 +285,9 @@ def new_project_person_my_card(
 ) -> CardAuthority:
     """Create the person's positive selection under one Control Card.
 
-    Most project-person Cards start empty and are seeded by their owning
-    lifecycle. Invitation redemption supplies the already reviewed Control
-    Card as ``initial_selection`` so the invited person's first My Card is
-    exactly what the administrator granted.
+    Every project-person Card starts equal to its Control Card. The person may
+    narrow that positive selection afterward; the Control Card and active
+    catalog remain ceilings at every operation.
     """
 
     control_identity = ProjectPersonControlIdentity.from_authority(control_card)
@@ -298,18 +296,17 @@ def new_project_person_my_card(
         person_subject=control_identity.target_subject,
         control_revision=control_card.card_revision,
     )
-    seed = initial_selection
-    if seed is not None:
-        seed_identity = ProjectPersonControlIdentity.from_authority(seed)
-        if (
-            seed_identity.project_ref != control_identity.project_ref
-            or seed_identity.target_subject != control_identity.target_subject
-            or seed.access_id != control_card.access_id
-            or seed.card_revision != control_card.card_revision
-        ):
-            raise ProjectIdentityLifecycleError(
-                "project_identity_initial_selection_mismatch"
-            )
+    seed = initial_selection or control_card
+    seed_identity = ProjectPersonControlIdentity.from_authority(seed)
+    if (
+        seed_identity.project_ref != control_identity.project_ref
+        or seed_identity.target_subject != control_identity.target_subject
+        or seed.access_id != control_card.access_id
+        or seed.card_revision != control_card.card_revision
+    ):
+        raise ProjectIdentityLifecycleError(
+            "project_identity_initial_selection_mismatch"
+        )
     provenance = {PROJECT_IDENTITY_EDGE_PROVENANCE: identity.marker()}
     for key, value in dict(initial_provenance or {}).items():
         marker_key = clean_text(key)
@@ -330,47 +327,27 @@ def new_project_person_my_card(
         card_revision=identity.initial_my_card_revision,
         catalog_version=control_card.catalog_version,
         state=CARD_STATE_ACTIVE,
-        operations=tuple(seed.operations) if seed is not None else (),
-        resource_grants=(
-            {
-                resource: tuple(grants)
-                for resource, grants in seed.resource_grants.items()
+        operations=tuple(seed.operations),
+        resource_grants={
+            resource: tuple(grants)
+            for resource, grants in seed.resource_grants.items()
+        },
+        resource_operations={
+            resource: tuple(operations)
+            for resource, operations in seed.resource_operations.items()
+        },
+        named_service_operations=seed.named_service_operations,
+        named_services=copy.deepcopy(dict(seed.named_services)),
+        account_scope={
+            provider: {
+                account_id: tuple(claims) for account_id, claims in accounts.items()
             }
-            if seed is not None
-            else {}
-        ),
-        resource_operations=(
-            {
-                resource: tuple(operations)
-                for resource, operations in seed.resource_operations.items()
-            }
-            if seed is not None
-            else {}
-        ),
-        named_service_operations=(
-            seed.named_service_operations
-            if seed is not None
-            else NamedServiceSelection.none()
-        ),
-        named_services=(
-            copy.deepcopy(dict(seed.named_services)) if seed is not None else {}
-        ),
-        account_scope=(
-            {
-                provider: {
-                    account_id: tuple(claims) for account_id, claims in accounts.items()
-                }
-                for provider, accounts in seed.account_scope.items()
-            }
-            if seed is not None
-            else {}
-        ),
+            for provider, accounts in seed.account_scope.items()
+        },
         identity_scope="grantor",
         created_at=created_at,
         expires_at=0,
-        resource_acceptance=(
-            copy.deepcopy(dict(seed.resource_acceptance)) if seed is not None else {}
-        ),
+        resource_acceptance=copy.deepcopy(dict(seed.resource_acceptance)),
         provenance=provenance,
         control_card=ControlCardBinding(
             control_id=identity.control_id,

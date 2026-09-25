@@ -532,37 +532,39 @@ class ProjectPersonControlLifecycle:
                         "pruned": resolved.reconciled.to_public_dict(),
                     }
                 pruned = resolved.reconciled.to_public_dict()
-                record = dataclasses.replace(
-                    record,
-                    operations=tuple(resolved.operations),
-                    resource_grants={
-                        key: tuple(value)
-                        for key, value in resolved.resource_grants.items()
-                    },
-                    resource_operations={
-                        key: tuple(value)
-                        for key, value in resolved.resource_operations.items()
-                    },
-                    named_service_operations=resolved.named_service_operations,
-                    named_services=copy.deepcopy(resolved.named_services),
-                    account_scope={
-                        provider: {
-                            account_id: tuple(claims)
-                            for account_id, claims in accounts.items()
-                        }
-                        for provider, accounts in resolved.account_scope.items()
-                    },
-                    identity_scope=resolved.identity_scope,
-                    properties=resolved.properties,
-                    resource_acceptance=next_resource_acceptance(
-                        resources=resolved.resource_grants,
-                        row_for=lambda resource: self._host._configured_resource(
-                            resource,
-                            config=catalog_config,
+                record = self._record_from_authority(
+                    dataclasses.replace(
+                        self._authority_from_record(record),
+                        operations=tuple(resolved.operations),
+                        resource_grants={
+                            key: tuple(value)
+                            for key, value in resolved.resource_grants.items()
+                        },
+                        resource_operations={
+                            key: tuple(value)
+                            for key, value in resolved.resource_operations.items()
+                        },
+                        named_service_operations=resolved.named_service_operations,
+                        named_services=copy.deepcopy(resolved.named_services),
+                        account_scope={
+                            provider: {
+                                account_id: tuple(claims)
+                                for account_id, claims in accounts.items()
+                            }
+                            for provider, accounts in resolved.account_scope.items()
+                        },
+                        identity_scope=resolved.identity_scope,
+                        properties=resolved.properties,
+                        resource_acceptance=next_resource_acceptance(
+                            resources=resolved.resource_grants,
+                            row_for=lambda resource: self._host._configured_resource(
+                                resource,
+                                config=catalog_config,
+                            ),
+                            catalog_version=catalog_version,
+                            selected_operations=resolved.resource_operations,
                         ),
-                        catalog_version=catalog_version,
-                        selected_operations=resolved.resource_operations,
-                    ),
+                    )
                 )
             authority = bind_project_person_control(
                 materialize_control_snapshot(
