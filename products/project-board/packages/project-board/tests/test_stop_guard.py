@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -115,3 +116,18 @@ def test_only_a_live_watch_process_counts():
         watch.kill()
         watch.wait()
     assert not watch_process_alive(watch.pid)
+
+
+def test_watch_detection_reads_past_an_eighty_column_command(monkeypatch):
+    full_command = f"{sys.executable} " + ("long-prefix/" * 8) + " worker watch"
+    assert "worker watch" not in full_command[:80]
+
+    monkeypatch.setattr(os, "kill", lambda pid, signal: None)
+
+    def run_ps(command, **kwargs):
+        stdout = full_command if "-ww" in command else full_command[:80]
+        return SimpleNamespace(stdout=stdout)
+
+    monkeypatch.setattr(subprocess, "run", run_ps)
+
+    assert watch_process_alive(4242)
