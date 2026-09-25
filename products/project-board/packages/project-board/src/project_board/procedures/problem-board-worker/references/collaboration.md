@@ -539,6 +539,9 @@ a stale version (`work_assignment_version_conflict`), which is the fence that
 keeps two workers from both believing they own the item. A predecessor that
 comes back after its reset reads the item first, like anyone else.
 
+Rule 8 covers work items. The coordinator role itself moves by
+[coordinator](coordinator.md), Hand the coordinator role over, and take it back.
+
 Why: two members proposed this independently on 2026-09-23 (an atomic
 ownership handoff, and a handoff as a decision with an owner), and all four
 adopted the merged form (P12). The ownership version already existed as the
