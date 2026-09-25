@@ -64,8 +64,14 @@ end
 return cjson.encode({status='not_found'})
 """
 
+# The approved authorization stays an opaque JSON string inside Redis: Lua's
+# cjson cannot tell an empty array from an empty object, so decoding and
+# re-encoding it turned a selection like {resource: []} into {resource: {}},
+# and the token step then failed on a "list" that had become an object
+# (claude-app device authorization, 2026-09-25 22:04Z). Python writes and
+# reads it; Lua only moves it.
 _DECIDE_DEVICE_REQUEST = """
--- connection_hub_device_decide_v1
+-- connection_hub_device_decide_v2
 local raw = redis.call('GET', KEYS[1])
 if not raw then
     return 0
@@ -91,7 +97,7 @@ end
 record['state'] = ARGV[2]
 record['approving_subject'] = ARGV[3]
 if ARGV[2] == 'approved' then
-    record['grant'] = cjson.decode(ARGV[4])
+    record['grant'] = ARGV[4]
 else
     record['grant'] = cjson.null
     record['terminal_error'] = ARGV[6]
@@ -102,7 +108,7 @@ return 1
 """
 
 _POLL_DEVICE_REQUEST = """
--- connection_hub_device_poll_v1
+-- connection_hub_device_poll_v2
 local raw = redis.call('GET', KEYS[1])
 if not raw then
     return cjson.encode({status='expired_token', interval=tonumber(ARGV[3])})
@@ -426,6 +432,14 @@ class DeviceGrantStore:
         if not isinstance(payload, Mapping):
             raise GrantStoreUnavailable("device_authorization.poll")
         authorization = payload.get("authorization")
+        if isinstance(authorization, str):
+            # The opaque JSON text Python stored at approval (v2).
+            try:
+                authorization = json.loads(authorization)
+            except Exception as exc:
+                raise GrantStoreUnavailable("device_authorization.poll") from exc
+        # A Mapping is a record approved by the v1 script before this release
+        # rolled out; it is read as before (its device window is minutes).
         if authorization is not None and not isinstance(authorization, Mapping):
             raise GrantStoreUnavailable("device_authorization.poll")
         if isinstance(authorization, Mapping):

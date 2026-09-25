@@ -84,7 +84,7 @@ class FakeRedis:
                 if attempts == 1:
                     self.ttls[keys[1]] = int(args[1])
                 return json.dumps({"status": "not_found"})
-            if "connection_hub_device_decide_v1" in script:
+            if "connection_hub_device_decide_v2" in script:
                 raw = self.values.get(keys[0])
                 if raw is None:
                     return 0
@@ -100,14 +100,14 @@ class FakeRedis:
                 record["state"] = str(args[1])
                 record["approving_subject"] = str(args[2])
                 record["grant"] = (
-                    json.loads(args[3]) if record["state"] == "approved" else None
+                    args[3] if record["state"] == "approved" else None
                 )
                 if record["state"] == "denied":
                     record["terminal_error"] = str(args[5])
                 self.values[keys[0]] = json.dumps(record)
                 await self.delete(keys[1])
                 return 1
-            if "connection_hub_device_poll_v1" in script:
+            if "connection_hub_device_poll_v2" in script:
                 raw = self.values.get(keys[0])
                 default_interval = int(args[2])
                 if raw is None:
@@ -454,3 +454,91 @@ async def test_real_redis_allows_exactly_one_device_code_consumer():
             if keys:
                 await client.delete(*keys)
         await client.aclose()
+
+
+# claude-app device authorization, 2026-09-25 22:04Z: the Card selected a
+# resource with no outer operation. Lua's cjson re-encoded [] as {}, and the
+# token step failed with "resource operation selection must be a list".
+EMPTY_CHOICE_AUTHORIZATION = {
+    "sub": "user-1",
+    "registry_access_id": "aut_claude_app",
+    "scopes": [],
+    "operations": [],
+    "resource_grants": {
+        "https://board.example/mcp/problem_board": ["work:relay"],
+        "https://hub.example/mcp/connection_hub": [],
+    },
+    "resource_operations": {
+        "https://board.example/mcp/problem_board": ["worker.heartbeat"],
+        "https://hub.example/mcp/connection_hub": [],
+    },
+    "delegation_edges": [],
+    "named_services": {},
+}
+
+
+@pytest.mark.asyncio
+async def test_real_redis_returns_the_approved_authorization_exactly_as_stored():
+    redis_url = os.environ.get("REDIS_URL") or ""
+    if not redis_url:
+        pytest.skip("REDIS_URL is not set; real-Redis device Lua is skipped")
+
+    import redis.asyncio as redis_asyncio
+
+    client = redis_asyncio.from_url(redis_url)
+    tenant = f"device-test-{uuid.uuid4().hex[:10]}"
+    project = f"project-{uuid.uuid4().hex[:10]}"
+    prefix = f"{tenant}:{project}:kdcube:oauth:device:"
+    connected = False
+    try:
+        try:
+            await client.ping()
+        except Exception as exc:  # pragma: no cover - environment guard
+            pytest.skip(f"Redis at REDIS_URL is unusable: {exc}")
+        connected = True
+        store = DeviceGrantStore(client, tenant, project, request_ttl=60)
+        issue = await store.create(client_id="client-one", scopes=[], now=100)
+        lookup = await store.read_user_code(issue.user_code, attempt_key="browser", now=101)
+        assert await store.approve(
+            device_digest=lookup.device_digest,
+            user_digest=lookup.user_digest,
+            approving_subject="user-1",
+            authorization=EMPTY_CHOICE_AUTHORIZATION,
+            now=101,
+        ) == "approved"
+
+        polled = await store.poll(device_code=issue.device_code, client_id="client-one", now=105)
+
+        assert polled.status == DEVICE_POLL_APPROVED
+        # Every empty choice is still a list, not an object Lua made of it.
+        assert polled.authorization == EMPTY_CHOICE_AUTHORIZATION
+    finally:
+        if connected:
+            keys = [key async for key in client.scan_iter(match=f"{prefix}*")]
+            if keys:
+                await client.delete(*keys)
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_record_approved_before_this_release_is_still_read():
+    fake, store = _store()
+    issue = await store.create(client_id="client-one", scopes=[], now=100)
+    lookup = await store.read_user_code(issue.user_code, attempt_key="browser", now=101)
+    assert await store.approve(
+        device_digest=lookup.device_digest,
+        user_digest=lookup.user_digest,
+        approving_subject="user-1",
+        authorization={"sub": "user-1", "registry_access_id": "aut_one"},
+        now=101,
+    ) == "approved"
+    # The v1 script stored the grant decoded; its poll returned an object.
+    [key] = [key for key in fake.values if ":request:" in key]
+    record = json.loads(fake.values[key])
+    record["grant"] = json.loads(record["grant"])
+    fake.values[key] = json.dumps(record)
+
+    polled = await store.poll(device_code=issue.device_code, client_id="client-one", now=105)
+
+    assert polled.status == DEVICE_POLL_APPROVED
+    assert polled.authorization == {"sub": "user-1", "registry_access_id": "aut_one"}
