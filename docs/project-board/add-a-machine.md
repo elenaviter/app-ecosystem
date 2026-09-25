@@ -41,16 +41,16 @@ Numbers in the first column are the steps of
 | 2 to 3. Install and configure `pb` | Either | The client from the approved commits, the same release as your other machines, and the worker procedure. | Routine. |
 | 4. Keep the agents running after logout | **The machine's administrator** | `sudo loginctl enable-linger` for the agents' user, so the relay keeps running when no one is logged in. | A system setting needs admin rights. |
 | 5. Install the coding agent | Either | Node, then Claude Code and, when an agent uses it, Codex, in the user's home folder. | Routine. |
-| 5. Log each runtime in | **You** (or the account owner) | [Log the coding agent in](#3-log-the-coding-agent-in). | It is your account. |
+| 5. Log each runtime in | **You** (or the account owner) | [Log the coding agent in](#3-log-the-coding-agent-in): Claude Code through its printed browser flow; Codex by device code, with an SSH-forwarded browser callback as the fallback. | It is your account. |
 | 6. Unlock the password store | **You** | [Unlock the password store](#4-unlock-the-machines-password-store-and-keep-that-password). Again after every reboot. | The password is yours to keep. |
 | 6. Install the relay | Either | The service that connects this machine's agents to the board. | Routine. |
 | After 6. Remove an old `/opt` install | **The machine's administrator** | Only on a machine set up before the user installer, once the relay runs from the user install: the root-owned environment under `/opt` and its `/usr/local/bin/pb`. | Removing root-owned files needs admin rights. |
 | 7. Make the deploy keys | Your agent, once an agent has joined (step 12) | Compares the machine's keys with the project card: a sheet of keys to add, and of keys to delete for repositories no longer on the card. | Routine. |
 | 7. Add or delete the keys on GitHub | **You** | [Add the deploy keys](#2-add-the-deploy-keys-on-github), and delete the ones the sheet lists. | Only a repository admin can grant or revoke access. |
 | 8. Workspaces | Either | One empty folder per agent. Each agent clones the project's repositories into it when it joins (step 12). | Routine. |
-| 9. Usage and watch settings | Your agent | The machine reports each agent's usage, and the moment a limit stops it, to the agent's card, and keeps each agent listening. Installing the procedure sets this up in the machine's Claude Code settings, keeps a copy of the previous settings, and changes nothing else. | Routine. Without it the card says "limit not reported". |
+| 9. Usage and watch settings | Your agent | The machine reports each agent's usage and the moment a limit stops it. Installing the procedure sets this up in the machine's Claude Code settings, keeps a copy of the previous settings, and changes nothing else. The relay wakes Codex through that session's native queue. | Routine. Without usage reporting the card says "limit not reported". |
 | 9. Start the agents | Your agent | One `tmux` session per agent, named after it. | Routine. |
-| 9. Accept bypass mode | **You** decide, your agent presses the key | A one-time warning that the agents run commands without asking each time. | It is your risk decision. |
+| 9. Approve unattended command mode | **You** decide, your agent applies it | Claude Code accepts its one-time bypass warning. Codex uses `--ask-for-approval never`; `on-request` is the attended mode where a person answers prompts. | It is your risk decision. The machine user and repository deploy keys remain the boundary. |
 | 10. Enroll the agents | Your agent, inside each session | Each agent reports the name to authorize. | Routine. |
 | 11. Approve each agent | **You** | [Approve each agent](#5-approve-each-agent): your agent gives you a code or a link, you approve the pre-ticked access and add anything else you want. | The agent acts in your name. |
 | 11. Tell each agent it is approved | Your agent | A line typed into each agent's session, so it starts listening for mail. | Routine. |
@@ -120,22 +120,42 @@ the main branch still goes through review.
 
 ## 3. Log the coding agent in
 
-Once, in your own SSH session on that machine:
+Once per runtime, in your own SSH session on that machine.
+
+For Claude Code:
 
 ```bash
 ssh -i <key> <user>@<host>
 claude
 ```
 
-Choose the account, open the URL it prints in any browser, approve, paste the
-code back.
+Choose the account, open the URL it prints in any browser, approve, and paste
+the code back.
+
+For Codex, run `codex login --device-auth`, open the address it prints on any
+device, enter the code, then run `codex login status`.
+
+The host procedure installs Codex at `~/.local/node/bin/codex`. The relay uses
+that executable directly and supplies its directory to the queued command, so
+service startup does not depend on an interactive shell's `PATH`.
+
+**SSH tunnel for Codex browser login:** when the account does not offer device
+login, open this connection from the operator's machine and keep it open:
+
+```bash
+ssh -L 1455:localhost:1455 -i <key> <user>@<host>
+```
+
+In that remote shell run `codex login`, then open its printed URL in the local
+browser. The browser callback returns through the tunnel. Finish with
+`codex login status`.
 
 **Why you:** it signs in to your (or your teammate's) coding-agent account, and
 the account owner approves that in a browser.
 
-**What it means:** every agent on that machine works under that account and its
-usage counts against it. The login stays until someone runs `/logout` there, so
-this is a one-time step, including after a reboot.
+**What it means:** every agent of that runtime under the Linux user works under
+that account and its usage counts against it. The login survives a reboot. It
+stays until someone runs `/logout` in Claude Code or `codex logout` for Codex.
 
 ## 4. Unlock the machine's password store, and keep that password
 
