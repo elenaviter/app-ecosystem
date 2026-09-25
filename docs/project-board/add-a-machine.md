@@ -44,8 +44,8 @@ Numbers in the first column are the steps of
 | 6. Unlock the password store | **You** | [Unlock the password store](#4-unlock-the-machines-password-store-and-keep-that-password). Again after every reboot. | The password is yours to keep. |
 | 6. Install the relay | Either | The service that connects this machine's agents to the board. | Routine. |
 | After 6. Remove an old `/opt` install | **The machine's administrator** | Only on a machine set up before the user installer, once the relay runs from the user install: the root-owned environment under `/opt` and its `/usr/local/bin/pb`. | Removing root-owned files needs admin rights. |
-| 7. Make the deploy keys | Either | One key per repository on the project card, and a sheet of what to paste where. | Routine. |
-| 7. Add the keys on GitHub | **You** | [Add the deploy keys](#2-add-the-deploy-keys-on-github). | Only a repository admin can grant access. |
+| 7. Make the deploy keys | Your agent, once an agent has joined (step 12) | Compares the machine's keys with the project card: a sheet of keys to add, and of keys to delete for repositories no longer on the card. | Routine. |
+| 7. Add or delete the keys on GitHub | **You** | [Add the deploy keys](#2-add-the-deploy-keys-on-github), and delete the ones the sheet lists. | Only a repository admin can grant or revoke access. |
 | 8. Workspaces | Either | One empty folder per agent. Each agent clones the project's repositories into it when it joins (step 12). | Routine. |
 | 9. Usage and watch settings | Your agent | The machine reports each agent's usage, and the moment a limit stops it, to the agent's card, and keeps each agent listening. Installing the procedure sets this up in the machine's Claude Code settings, keeps a copy of the previous settings, and changes nothing else. | Routine. Without it the card says "limit not reported". |
 | 9. Start the agents | Your agent | One `tmux` session per agent, named after it. | Routine. |
@@ -87,23 +87,31 @@ Agents: <name-1>, <name-2>
 **The project's repositories are the important choice**, and you make it on the
 project card, not per machine. Each repository on the card gets a deploy key on
 that machine and a clone in each agent's workspace. The agents reach nothing
-else. Adding a repository to the card later reaches every machine the same way:
-the agents report it as unreachable, and your agent asks you for one more key.
+else. Changing the card later reaches every machine the same way: your agent
+compares the machine's keys with the card and asks you to add a key for a new
+repository, or to delete one for a repository you removed.
 
 Your agent replies with what it plans to do, and asks before it changes
 anything. It comes back with the deploy keys for step 2.
 
 ## 2. Add the deploy keys on GitHub
 
-Your agent gives you one block per repository. For each: open the page it
-names, **Add deploy key**, paste the key, tick **Allow write access**, **Add
-key**.
+This happens once one of the agents has joined your project, because your
+agent reads the repositories from the project card through that agent. It gives
+you one block per repository:
+
+- **GRANT**: open the page it names, **Add deploy key**, paste the key, tick
+  **Allow write access**, **Add key**.
+- **REVOKE**, for a repository you removed from the card: open that
+  repository's deploy keys, delete the key with the title and fingerprint it
+  names, and tell your agent, which then removes the key from the machine. The
+  agents' copies of that repository stay, so no unfinished work is lost.
 
 **Why you:** only a repository admin can grant a machine access to it. Your
 agent can create the key, but it cannot give itself the permission.
 
 **What it means:** that machine can read and push branches in exactly the
-repositories you list, and in nothing else. Deleting the key in a repository
+repositories on the project card, and in nothing else. Deleting the key in a repository
 takes that machine's access to it away and changes nothing else. Merging into
 the main branch still goes through review.
 
