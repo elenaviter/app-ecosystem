@@ -3,7 +3,7 @@ id: project-board.worker-reference.coordinator
 title: Accept, Route, Reload, Refresh
 summary: The coordinator's checklist for review decisions, capacity-aware routing, teammate setup, shared project knowledge, and runtime actions, placed where each act happens so the rule is present when it is applied.
 tags: [procedure, problem-board, coordinator, review, routing, runtime]
-keywords: [what the coordinator is for, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, bundles.template.yaml, bundle reload, refresh --build, widget build states, verify the artifact, what loaded]
+keywords: [what the coordinator is for, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, bundles.template.yaml, bundle reload, refresh --build, widget build states, verify the artifact, what loaded]
 see_also:
   - runtime-actions.md
   - test-window.md
@@ -123,8 +123,36 @@ successor inherits none of that.
 The coordinator treats every worker's usable token budget as routing state.
 The evidence is the usage and limit line on its worker card, reported through
 `pb worker limit-state`, together with what the worker reports and what the
-operator says. When that evidence says a worker is running short, the
-coordinator acts without waiting to be asked:
+operator says. At project start, and whenever hosts, workers, capabilities or
+accounts change, keep a small routing inventory in the project's facts or
+environment page:
+
+- for each host, the machine-local resources and capabilities, and the workers
+  that can act as hands on that host;
+- the workers that share a provider account or quota, grouped as one quota
+  pool, with its reset time when known. Their limits are coupled, not
+  independent capacity. Record `Not known yet` instead of assuming that two
+  workers have independent limits.
+
+Use only this routing heuristic:
+
+1. **Locality required?** Route work that requires a machine-local resource to
+   a worker with hands on that host. Reserve scarce host-local workers and
+   enough of their quota pool for that work; do not spend the last capable
+   local worker on portable work.
+2. **Independent quota available?** Route portable work, including review,
+   research and planning, to another host or an independent quota pool first,
+   subject to the skills and access the work needs.
+3. **Reset soon enough?** When a host-local worker or its quota pool is running
+   short and the reset is not soon enough for the work, replan before
+   exhaustion. Move unstarted portable work, leave the scarce worker only the
+   cheap or locality-required steps it can finish, and hand over the exact
+   branch and head. If the work can safely wait for an imminent reset, wait
+   instead of churning ownership.
+
+Do not build a scheduler or assign token scores. The routing inventory and
+these three questions are the whole rule. When the evidence says a worker or
+quota pool is running short, the coordinator acts without waiting to be asked:
 
 1. Move its unstarted work to a worker with budget left. Release and reassign
    owned work through the normal assignment operations, and hand over the
