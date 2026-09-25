@@ -682,7 +682,7 @@ tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'cd \$HOME/.kdcube
 
 ```bash
 tmux -u new-session -d -s <agent-name> -x 220 -y 55 "bash -lc 'export PATH=\$HOME/.local/node/bin:\$HOME/.local/bin:\$PATH && \
-  codex -C \$HOME/workspaces/<workspace> \
+  codex -C \$HOME/.kdcube/pb/workspaces/<alias> \
     --sandbox danger-full-access --ask-for-approval never --search \
     --add-dir \$HOME/.kdcube; exec bash'"
 ```
