@@ -112,7 +112,15 @@ class RelayOutboxDrainServer:
                         "Problem Board outbox server pass failed",
                         exc_info=True,
                     )
-                await asyncio.to_thread(wake.wait, self.SAFETY_PROBE_SECONDS)
+                try:
+                    await asyncio.to_thread(wake.wait, self.SAFETY_PROBE_SECONDS)
+                except asyncio.CancelledError:
+                    # asyncio.run() cancels tasks before it shuts down the
+                    # default executor. Release the listener's worker thread
+                    # here as well as in stop(), or loop shutdown waits out the
+                    # complete safety-probe interval.
+                    notify_relay_outbox(host.field_root)
+                    raise
 
     def serve_once(self) -> list[str]:
         """Start one bounded ready-row drain per eligible worker channel."""
