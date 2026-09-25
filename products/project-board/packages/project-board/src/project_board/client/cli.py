@@ -67,6 +67,7 @@ from ..contract.worker_identity import WorkerSessionIdentity
 from .card_refusal import with_actionable_refusal
 from .stop_guard import stop_guard_decision
 from .worker_watch import worker_watch_events
+from .runtime_model import runtime_model_from_claude_statusline
 from .limit_state import (
     limit_state_from_claude_statusline,
     limit_state_from_claude_stop_failure,
@@ -4757,6 +4758,14 @@ def _limit_state_command(args: argparse.Namespace, *, stdin: Any = None) -> int:
                 identity = None
             if identity is not None:
                 field.record_runtime_limit_state(identity.worker_name, state)
+                # W327: the same status line names the model and its effort.
+                model = (
+                    runtime_model_from_claude_statusline(payload, observed_at=observed_at)
+                    if args.source != "stop-failure"
+                    else None
+                )
+                if model:
+                    field.record_runtime_model(identity.worker_name, model)
     except DomainError as exc:
         print(f"limit state not recorded: {exc.code}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - the status line must never break on this
