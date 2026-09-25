@@ -127,13 +127,13 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
         encoding="utf-8",
     )
     (tmp_path / "alpha").write_text(
-        "OK\nrepositories[0].alias = applications\nrepositories[0].url = git@github.com:kdcube/applications.git\n"
+        "OK\nproject_on_this_host = True\nrepositories[0].alias = applications\nrepositories[0].url = git@github.com:kdcube/applications.git\n"
         "repositories[1].alias = reachable\nrepositories[1].url = git@github.com:owner/reachable.git\n"
         "repositories[2].alias = clash\nrepositories[2].url = git@github.com:owner/clash-a.git\n",
         encoding="utf-8",
     )
     (tmp_path / "beta").write_text(
-        "OK\nrepositories[0].alias = kdcube\nrepositories[0].url = https://github.com/kdcube/kdcube\n"
+        "OK\nproject_on_this_host = True\nrepositories[0].alias = kdcube\nrepositories[0].url = https://github.com/kdcube/kdcube\n"
         "repositories[1].alias = betaonly\nrepositories[1].url = git@github.com:owner/betaonly.git\n"
         "repositories[2].alias = clash\nrepositories[2].url = git@github.com:owner/clash-b.git\n",
         encoding="utf-8",
@@ -181,3 +181,56 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
     second = run()
     assert (keys / "config").read_text(encoding="utf-8").count("Host github-applications") == 1
     assert "### GRANT applications" in second and "### REVOKE removed" in second and "REVOKE betaonly" not in second
+
+
+
+def _stopped_run(tmp_path, pb_script: str) -> tuple[int, str]:
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    keys = tmp_path / "keys"
+    keys.mkdir(exist_ok=True, mode=0o700)
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "host deploy key: needed owner/needed",
+                    "-f", str(keys / "deploy_needed")], check=True)
+    (bin_dir / "pb").write_text(pb_script, encoding="utf-8")
+    (bin_dir / "pb").chmod(0o755)
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin", "HOME": str(tmp_path),
+           "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host"}
+    done = subprocess.run(["bash", "-c", _step7_script()], env=env, capture_output=True, text=True, timeout=60)
+    return done.returncode, done.stdout + done.stderr
+
+
+def test_15_step_7_stops_before_any_grant_or_revoke_when_collection_fails(tmp_path):
+    # ae#120 review (codex-ui): without fail-closed collection a failed list,
+    # or one failed context of two, left an empty or partial card and the
+    # script revoked keys valid projects still needed.
+    import shutil
+
+    import pytest
+
+    if not (shutil.which("ssh-keygen") and shutil.which("bash")):
+        pytest.skip("needs ssh-keygen and bash")
+    (tmp_path / "list").write_text(
+        "OK\n--- a@host (claude-code-aaa)\nruntime claude-code · pool active\nattends: work:project:alpha\n"
+        "--- b@host (codex-bbb)\nruntime codex · pool active\nattends: work:project:beta\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "card").write_text(
+        "OK\nproject_on_this_host = True\nrepositories[0].alias = needed\nrepositories[0].url = git@github.com:owner/needed.git\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "absent").write_text("OK\nproject_on_this_host = False\n", encoding="utf-8")
+    two = f"case \"$2\" in list) cat {tmp_path / 'list'};; context) case \"$*\" in *work:project:alpha*) cat {tmp_path / 'card'};; *) "
+    cases = {
+        "list fails": "#!/bin/sh\n[ \"$2\" = list ] && exit 1\nexit 0\n",
+        "one context of two fails": "#!/bin/sh\n" + two + "exit 3;; esac;; esac\n",
+        "a project not on the host yet": "#!/bin/sh\n" + two + f"cat {tmp_path / 'absent'};; esac;; esac\n",
+    }
+    for index, (name, script) in enumerate(cases.items()):
+        case_dir = tmp_path / f"case{index}"
+        case_dir.mkdir()
+        code, output = _stopped_run(case_dir, script)
+        assert code != 0, name
+        assert "STOP:" in output and "Nothing granted or revoked." in output, (name, output)
+        assert "REVOKE" not in output and "GRANT" not in output, (name, output)

@@ -433,7 +433,12 @@ agent of the user, so a key stays while any attended project needs it:
 - **What it keeps:** a key pair and its `Host github-<alias>` SSH block are
   each repaired on their own, so an interrupted run completes on the next one.
   A `Host github-<alias>` block that points elsewhere is refused, not
-  overwritten. Clones are never deleted: a repository leaving the card loses
+  overwritten.
+- **What stops it:** the cards are collected first, and any failure (the list
+  or a project's context failing, a project not yet on this host, no attended
+  project at all) prints `STOP: ...` and exits nonzero before any grant or
+  revoke line: a partial card would revoke keys a project still needs. The
+  script runs in a subshell, so a stop does not end the SSH session. Clones are never deleted: a repository leaving the card loses
   this host's credential, not an agent's unfinished work.
 
 The key and its SSH alias are named by the card's `alias`, because the worker's
@@ -444,22 +449,32 @@ workspace setup clones through `github-<alias>` whenever that alias exists
 
 ```bash
 # Input: HOST_ID. The projects are every one an agent of this Linux user attends on this host.
+( set -euo pipefail
 KEYS=${KEYS:-$HOME/.ssh}; SSH_CONFIG=${SSH_CONFIG:-$KEYS/config}
 touch "$SSH_CONFIG"; chmod 600 "$SSH_CONFIG"
-CARD=$(mktemp)
-pb worker list --format brief </dev/null |
+CARD=$(mktemp); RAW=$(mktemp); trap 'rm -f "$CARD" "$RAW"' EXIT
+stop() { echo "STOP: $1. Nothing granted or revoked." >&2; exit 1; }
+# Collect every attended card first, and stop on any failure: a partial card
+# would revoke keys a project still needs.
+LIST=$(pb worker list --format brief </dev/null) || stop "pb worker list failed"
+[ "$(printf '%s\n' "$LIST" | head -n1)" = OK ] || stop "pb worker list did not answer OK"
+ATTENDED=$(printf '%s\n' "$LIST" |
   awk '/^--- /{name=$NF; gsub(/[()]/, "", name)} /^runtime /{kind=$2} /^attends: /{print kind "\t" name "\t" $2}' |
-  sort -u -k3,3 |
-  while IFS=$'\t' read -r kind name project; do
-    pb worker context --runtime-kind "$kind" --runtime-session-id "${name#"$kind"-}" \
-        --project-ref "$project" --format brief </dev/null |
-      awk -F' = ' '$1 ~ /^repositories\[[0-9]+\]\.alias$/ {a=$2} $1 ~ /^repositories\[[0-9]+\]\.url$/ {print a "\t" $2}'
-  done |
-  while IFS=$'\t' read -r alias url; do
-    repo=${url%.git}; repo=${repo#*github.com[:/]}
-    if [ "$repo" = "${url%.git}" ]; then echo "SKIP $alias: $url is not a GitHub URL" >&2; continue; fi
-    printf '%s\t%s\n' "$alias" "$repo"
-  done | sort -u > "$CARD"
+  sort -u -k3,3)
+[ -n "$ATTENDED" ] || stop "no agent of this Linux user attends a project on this host"
+while IFS=$'\t' read -r kind name project; do
+  CTX=$(pb worker context --runtime-kind "$kind" --runtime-session-id "${name#"$kind"-}" \
+      --project-ref "$project" --format brief </dev/null) || stop "pb worker context failed for $project"
+  [ "$(printf '%s\n' "$CTX" | head -n1)" = OK ] || stop "pb worker context did not answer OK for $project"
+  printf '%s\n' "$CTX" | grep -qx 'project_on_this_host = True' || stop "$project is not on this host yet"
+  printf '%s\n' "$CTX" |
+    awk -F' = ' '$1 ~ /^repositories\[[0-9]+\]\.alias$/ {a=$2} $1 ~ /^repositories\[[0-9]+\]\.url$/ {print a "\t" $2}' >> "$RAW"
+done <<< "$ATTENDED"
+while IFS=$'\t' read -r alias url; do
+  repo=${url%.git}; repo=${repo#*github.com[:/]}
+  if [ "$repo" = "${url%.git}" ]; then echo "SKIP $alias: $url is not a GitHub URL" >&2; continue; fi
+  printf '%s\t%s\n' "$alias" "$repo"
+done < "$RAW" | sort -u > "$CARD"
 for alias in $(cut -f1 "$CARD" | uniq -d); do
   echo "CONFLICT alias $alias names different repositories in the attended projects: $(grep "^$alias	" "$CARD" | cut -f2 | tr '\n' ' ')Left unchanged." >&2
 done
@@ -496,7 +511,7 @@ for pub in "$KEYS"/deploy_*.pub; do
     "$alias" "$(awk '$NF ~ /\// {print $NF; exit} {print "not recorded in the key; the one github-'"$alias"' reached"}' "$pub")" "$HOST_ID" "$(ssh-keygen -lf "$pub" | awk '{print $2}')" \
     "$KEYS/deploy_$alias" "$pub" "$alias" "$SSH_CONFIG"
 done
-rm -f "$CARD"
+)
 ```
 
 **Operator**, for each **GRANT** block: open the page, **Add deploy key**,
