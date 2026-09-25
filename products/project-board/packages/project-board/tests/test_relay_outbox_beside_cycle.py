@@ -174,6 +174,29 @@ def test_sender_before_relay_and_relay_before_sender_each_send_once(tmp_path):
     assert len(client.calls) == 2
 
 
+def test_event_loop_cancellation_releases_the_listener_thread(tmp_path, monkeypatch):
+    host, _identity, _channel = make_host(tmp_path)
+    supervisor = relay.ProblemBoardRelaySupervisor(
+        config_path=host.path,
+        connector=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(supervisor._outbox_server, "SAFETY_PROBE_SECONDS", 2.0)
+
+    async def scenario():
+        supervisor._ensure_outbox_server()
+        await _wait_for_socket(
+            local_wake.relay_outbox_wake_socket_path(host.field_root)
+        )
+        server = supervisor._outbox_server.task
+        assert server is not None
+        server.cancel()
+        await asyncio.gather(server, return_exceptions=True)
+
+    started = time.monotonic()
+    asyncio.run(scenario())
+    assert time.monotonic() - started < 1.0
+
+
 def test_outbox_leaves_while_an_attendance_step_is_blocked(tmp_path):
     host, _identity, channel = make_host(tmp_path)
     supervisor = relay.ProblemBoardRelaySupervisor(

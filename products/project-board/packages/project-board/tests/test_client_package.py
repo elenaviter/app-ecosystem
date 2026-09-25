@@ -41,6 +41,15 @@ def test_distribution_installs_the_pb_console_script() -> None:
     assert _top_level_command(["--format", "brief", "worker", "receive"]) == "worker"
 
 
+def test_test_extra_installs_the_parallel_runner() -> None:
+    metadata = tomllib.loads(
+        (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    test_dependencies = metadata["project"]["optional-dependencies"]["test"]
+    assert "pytest-xdist>=3.8,<4" in test_dependencies
+
+
 def test_pb_automation_uses_direct_mcp_and_data_bus_transports() -> None:
     sources = {
         path.name: path.read_text(encoding="utf-8")

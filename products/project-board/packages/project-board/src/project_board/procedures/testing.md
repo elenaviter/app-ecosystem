@@ -1,9 +1,12 @@
 ---
 id: app-ecosystem.project-board.procedure.testing
 title: Test The Problem Board Bundle
-summary: Defines offline package, provider, shared-field, knowledge, widget, descriptor, and later live verification.
+summary: >-
+  Defines the fast pre-PR and complete pre-merge gates for the Problem Board
+  package, provider, shared field, knowledge, widgets, descriptors, and live
+  verification.
 tags: [procedure, testing, bundle, problem-board]
-keywords: [pytest, bundle suite, typecheck, MCP, browser proof]
+keywords: [pytest, pytest-xdist, parallel tests, slow tier, bundle suite, typecheck, MCP, browser proof]
 see_also:
   - ./live-acceptance.md
   - repo:app-ecosystem/docs/project-board/topology-and-flows.md
@@ -30,6 +33,34 @@ knowledge graph and SQLite rebuild
 knowledge audience, surface, and stdio-MCP tests
 ```
 
+## Two Gates
+
+A change becomes reviewable after its touched-area tests and the fast full run
+are green. The complete environment-backed tier blocks merge, not opening the
+pull request. This keeps review moving while preserving the full gate:
+
+1. **Before a pull request:** run the touched test files, then the whole
+   Problem Board application suite with `-n auto -m "not slow"`. Leave
+   `PB_TEST_POSTGRES_DSN` and `PROBLEM_BOARD_HOST_PYTHON` unset. Record the wall
+   time, result counts, expected skips, and `--durations=20`.
+2. **Before merge:** use a disposable PostgreSQL database and an installed
+   Problem Board host interpreter, then run the whole suite with `-n 8` and no
+   marker exclusion. This run includes the environment-backed checks and every
+   test marked `slow`; it runs while the reviewer reads the diff and must be
+   green before merge.
+
+The PostgreSQL tests create independent asyncpg pools. Eight workers fit the
+default 100-connection budget of the platform suite's disposable database. A
+larger complete-tier worker count needs a test database configured with at
+least ten connections per worker plus headroom; `-n auto` remains the default
+for the fast gate, where PostgreSQL tests are skipped.
+
+Relay tests model elapsed time with an injected clock, event, or retry
+schedule. A test that genuinely requires elapsed wall time carries
+`@pytest.mark.slow`, which keeps it out of the pre-PR run and puts it in the
+complete pre-merge tier. A short timeout that only bounds an event wait is a
+safety ceiling, not a reason to sleep until that timeout.
+
 ## Run The Package Suite
 
 The package suite imports the platform and the surrounding products, so the
@@ -46,6 +77,7 @@ AE=<app-ecosystem checkout>
 PB=<applications checkout>/playground/domain-solution/apps/problem-board@1-0
 PROJECT_BOARD=$AE/products/project-board/packages/project-board/src
 
+unset PB_TEST_POSTGRES_DSN PROBLEM_BOARD_HOST_PYTHON
 PYTHONPATH="\
 $KD:\
 $KD/kdcube_cli/src:\
@@ -54,16 +86,20 @@ $AE/packages/service-foundation/src:\
 $AE/products/connection-hub/packages/connection-hub/src:\
 $AE/products/connection-hub/packages/connection-hub-cli/src:\
 $PROJECT_BOARD" \
-  <ai-app chat-processor python3.11> -m pytest "$PB/tests" -q -rs
+  <ai-app chat-processor python3.11> -m pytest "$PB/tests" \
+    -q -rs -n auto -m "not slow" --durations=20
 ```
 
 The interpreter is the ai-app chat-processor environment, which carries the
 platform's third-party dependencies and not necessarily what the overlays
-declare. A bare system Python will fail on those before it reaches any Problem
-Board code. Before the suite, run the dependency preflight with the same
-interpreter over the six overlays' `pyproject.toml` files. It names the first
-declared distribution the interpreter lacks in one sentence, and every line it
-prints names the interpreter it asked, because the answer differs per host:
+declare. It also needs the Project Board `test` extra, where `pytest-xdist` is
+declared; verify that `<interpreter> -c "import xdist"` succeeds before using
+`-n auto`. A bare system Python will fail on the platform dependencies before
+it reaches any Problem Board code. Before the suite, run the dependency
+preflight with the same interpreter over the six overlays' `pyproject.toml`
+files. It names the first declared distribution the interpreter lacks in one
+sentence, and every line it prints names the interpreter it asked, because the
+answer differs per host:
 
 ```bash
 <ai-app chat-processor python3.11> "$AE/products/project-board/packages/project-board/src/project_board/procedures/dependency_preflight.py" \
@@ -116,10 +152,12 @@ transitive dependencies work without the platform while still testing the
 standalone `kdcube-cli` distribution that Connection Hub requires.
 
 Two additional checks run against a real installed host interpreter when the
-caller names it explicitly. After the clean two-export install in
-`add-a-worker-host.md`, run the same suite with:
+caller names it explicitly. The complete pre-merge tier also supplies the
+disposable PostgreSQL DSN from the platform suite procedure. After the clean
+two-export install in `add-a-worker-host.md`, run:
 
 ```bash
+PB_TEST_POSTGRES_DSN=<disposable-pgvector-dsn> \
 PROBLEM_BOARD_HOST_PYTHON=<problem-board-venv>/bin/python \
 PYTHONPATH="\
 $KD:\
@@ -129,13 +167,14 @@ $AE/packages/service-foundation/src:\
 $AE/products/connection-hub/packages/connection-hub/src:\
 $AE/products/connection-hub/packages/connection-hub-cli/src:\
 $PROJECT_BOARD" \
-  <ai-app chat-processor python3.11> -m pytest "$PB/tests" -q -rs
+  <ai-app chat-processor python3.11> -m pytest "$PB/tests" \
+    -q -rs -n 8 --durations=20
 ```
 
-The ordinary overlay run skips those two installed-host checks with the exact
-missing variable as its reason. The post-install run must execute them. A
-failure naming a module rather than an assertion is a gap in the named source
-or installed closure, not a product result.
+The fast run skips PostgreSQL and the two installed-host checks with their exact
+missing variables as reasons. The complete run must execute them. A failure
+naming a module rather than an assertion is a gap in the named source or
+installed closure, not a product result.
 
 The provider suite must build the complete schema tree, verify that every
 cataloged action is available only on a compatible object-ref kind, and
