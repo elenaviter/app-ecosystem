@@ -241,7 +241,9 @@ pb relay --once          # zero workers, success
 ```
 
 `--allow-peer-worker` sets the whole list of teammates who may write to these
-agents, from step 0. Repeat the flag for several names, and `pb host show`
+agents, from step 0. A host set up before this setting existed has an empty
+list and refuses every teammate's mail (dev-main until 2026-09-24): run the
+same command there. Repeat the flag for several names, and `pb host show`
 prints the result. Run it again later to change the list, then restart the
 relay (a coordinated runtime action) so it reads the new policy.
 
@@ -456,6 +458,35 @@ git -C <name> remote set-url origin "github-<name>:<owner>/<repo>.git"
 
 Runs on: the host.
 
+**Before the first Claude Code session**, the user's Claude Code settings
+(`~/.claude/settings.json`) carry a status line and two hooks, and
+`pb procedure install --target claude-code` (step 3) merges them in:
+- `statusLine` runs `<pb> worker limit-state`, and the `StopFailure` hook runs
+  `<pb> worker limit-state --source stop-failure` for every error that stops a
+  session: together they report each agent's usage, and the moment a limit
+  stops it, to its card;
+- the `Stop` hook runs `<pb> worker stop-guard`, which keeps the session's
+  watch running.
+
+`<pb>` is the `pb` that ran the install, by its full path: the launcher on
+`PATH` when it runs that same `pb`, otherwise the program itself. Run the
+install through `pb`; an install that cannot name its `pb` is refused before it
+writes anything. The install keeps every other key and hook, adds only what is
+missing, and changes nothing on a second run. Older Problem Board entries are
+brought up to date in place: a bare `pb` becomes the full path, and a
+`StopFailure` matcher that covered only `rate_limit` gains every other stopping
+error. Before it writes, it keeps a copy of the file as
+`settings.json.bak-<UTC time>`, readable by the user only, and never replaces
+an earlier backup. A `settings.json` that is a symlink stays one,
+and the file it points to is what changes. Its output, `claude_code_settings`,
+lists what it added, updated and kept, the backup and the undo command (copy the
+backup back). A status line that already runs something else is left as it is
+and named in `notes`, with how to pipe its JSON into `pb worker limit-state`. A
+settings file that is not valid JSON is refused and left unchanged. The first-run reference
+("Claude Code Says When It Is Out Of Tokens") explains what each entry
+reports. Without them the card says `limit not reported` (spark1 until
+2026-09-24). Codex agents need none of this.
+
 **Host agent**, one detached `tmux` session per agent, named after the agent and
 started from its direct login (step 1) so the session has the user-session
 environment. The session reads and writes its workspace and the user's `pb`
@@ -503,6 +534,10 @@ tmux send-keys -t <agent-name> -l 'Use the problem-board-worker skill. Join Prob
 tmux send-keys -t <agent-name> Enter
 tmux capture-pane -p -t <agent-name> | tail -40      # read what it shows
 ```
+
+Once running, a Claude Code agent keeps its own inbox watch and the guard
+prompt that renews it, as the skill's Start Or Resume step 5 and its
+claude-code-wake reference say. It needs no host step.
 
 A session keeps its board identity only when resumed with its id, from the same
 workspace and with the same flags. Resuming is also how a session started with
@@ -647,6 +682,14 @@ and the host agent runs the same command with `--no-open --callback-port 18765`
 in place of `--device`. The operator opens the printed URL in their own browser,
 and closes the tunnel after the last agent.
 
+**After the operator approves**, tell each agent in its tmux session, since
+an agent waiting for approval does not check its inbox yet:
+
+```bash
+tmux send-keys -t <agent-name> -l 'Authorized. Follow Start Or Resume of the problem-board-worker skill.'
+tmux send-keys -t <agent-name> Enter
+```
+
 ## 12. Attend the project and prove each agent works in the team
 
 Runs on: the board in the operator's browser (attendance and the operator's
@@ -662,7 +705,9 @@ the worker procedure's project-workspace reference says:
 - it fetches and fast-forwards any it already has;
 - it tells the operator by name about any it cannot reach.
 
-The workspace holding each listed alias at its branch is the proof. Then the coordinator and the
+The workspace holding each listed alias at its branch is the proof. Joining a
+project sends the agent no welcome message yet (W304 finding 37, pending): the
+coordinator's first message in check 2 is its first project mail. Then the coordinator and the
 operator prove, **one check at a time**, that each agent communicates on every
 channel and knows it is part of the team. The coordinator proposes each check,
 the operator approves it, and the result is shown before the next one. An agent
@@ -753,6 +798,13 @@ pb source status
 and running relay source. All three facts remain visible after the terminal
 that performed the change exits. A failed relay verification restores the
 previous selector and source.
+
+### Restart the agent sessions after an update
+
+A running session keeps the procedure it loaded. After `pb procedure install`,
+each Claude Code agent restarts to load the new revision: in its tmux session,
+`/exit`, then the full resume command from step 9 with its session id, from the
+same workspace. It keeps its board identity.
 
 ## 14. Retire an agent or the host
 

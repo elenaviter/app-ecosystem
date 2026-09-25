@@ -260,10 +260,12 @@ session, and the board names it:
 Why every error: on 2026-09-23 a worker ran out of credits and its card said
 nothing, because the hook matched `rate_limit` only.
 
-A user who already has a status line command keeps it and pipes the same JSON
-into `pb worker limit-state` from it. The settings are the user's: propose the
-lines, and the user adds them, with the full path to `pb` when the session's
-`PATH` may not include it.
+`pb procedure install --target claude-code` merges these lines, and the Stop
+hook below, into the user's settings with this host's full path to `pb`: it
+keeps every other key, keeps a copy of the file before it writes, changes
+nothing on a second run, and reports what it did. A user who already has a
+status line command keeps it: the install names it and leaves it, and the user
+pipes the same JSON into `pb worker limit-state` from it.
 
 Verify on each host where a Claude Code worker runs: after the next response
 in the worker session, the status line shows `usage ok (...)` and the worker's
@@ -287,8 +289,8 @@ When the session is an attending worker and no `pb worker watch` runs for it,
 the hook blocks the stop once and names the exact commands that re-arm the
 watch. Every other Claude Code session on the host, a detached worker, a stop
 that already followed a block, and any failure inside the hook end normally.
-The settings are the user's: propose the lines, and the user adds them, with
-the full path to `pb` when the session's `PATH` may not include it.
+`pb procedure install --target claude-code` adds this hook with the lines
+above.
 
 Verify once per host: stop the watch in a worker session and end a turn. The
 turn continues with the hook's re-arm message.
