@@ -329,6 +329,11 @@ section says.
 
 ## Route
 
+0. Read the candidates' info lines before routing: the `info_text` of each
+   member in `pb worker context`, the first line on each card. Why: an agent
+   publishes there what the operator told it about itself (not to be used
+   actively, reviews only), and routing past it spends a quota or a session
+   the operator reserved.
 1. Need, then discussion with the candidates, then decision, then route. A
    route carries the intention and the acceptance, not the engineering
    constraints. The assigned worker decides how.
