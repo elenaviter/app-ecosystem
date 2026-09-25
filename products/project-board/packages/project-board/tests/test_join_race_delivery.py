@@ -1,12 +1,13 @@
 """Mail sent right after a link reaches the new agent (W304, join race, 2026-09-25 14:06Z).
 
 The board linked codex-coord and issued its welcome at 14:06:37; the relay
-refused it at 14:06:41 as "not linked", because the host's record of the
-worker's attendance was observed at about 14:03, before the link. The next
-attendance poll came at 14:07:47. Newest evidence wins now: the local
-"not linked" refuses only when it was observed at or after the message was
-created, and a delivery made on the board's newer link asks the relay to
-read the attendance at once.
+refused it at 14:06:41 as "not linked", from a host record that predated the
+link. The next attendance poll came at 14:07:47. The first "not linked" for a
+control now defers it and forces an attendance read from the board; the
+refusal stands only when a read that completed after that deferral still says
+"not linked". Only this relay's monotonic clock orders the two, so a stale
+snapshot re-stamped on resync and skew between hosts cannot decide it
+(codex-ui review of ae#139).
 """
 
 from __future__ import annotations
@@ -14,122 +15,149 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-import pytest
-
 from project_board.client import relay as relay_module
-from project_board.client.io import content_hash
-from project_board.client.store import SharedFieldStore
 from project_board.contract.errors import DomainError
-from relay_helpers import make_host
 
-PROJECT_ID = "quickstart-works-mttfmgqu"
-PROJECT_REF = f"work:project:{PROJECT_ID}"
-COORDINATOR = "claude-code-dfd0d696-82d2-4bec-8a9c-d94493ec63a5"
+WORKER = "claude-code-new"
 
 
-def _host(tmp_path, *, observed_at: str, attends: bool):
-    host, identity, _channel = make_host(tmp_path)
-    field = SharedFieldStore(host.field_root)
-    field.register_worker(
-        worker_name=identity.worker_name,
-        runtime_kind=identity.runtime_kind,
-        runtime_session_id=identity.runtime_session_id,
-        capabilities=[],
-        authority_label="connection-hub:test",
-    )
-    field.listen_worker(identity.worker_name)
-    field.create_project(project_id=PROJECT_ID, title="Quickstart works", goal="Onboard agents.", owner="operator")
-    field.sync_worker_attendances(identity.worker_name, [PROJECT_REF] if attends else [])
-    # Pin when this host last observed the worker's attendance.
-    path = field._worker_path(identity.worker_name)  # noqa: SLF001 - the evidence under test
-    row = __import__("json").loads(path.read_text(encoding="utf-8"))
-    row["attendances_observed_at"] = observed_at
-    path.write_text(__import__("json").dumps(row), encoding="utf-8")
-    return identity, field
-
-
-def _welcome(recipient: str, *, created_at: str, number: int = 1) -> dict:
-    payload = {"mail": {"kind": "request", "subject": "You joined Quickstart works as worker", "body": "Welcome."}}
+def _welcome(created_at: str = "2026-09-25T14:06:37Z") -> dict:
     return {
-        "ref": f"work:control:command_{number:032d}",
+        "ref": "work:control:command_welcome",
         "kind": "mail",
-        "project_ref": PROJECT_REF,
-        "recipient": recipient,
-        "sender": COORDINATOR,
-        "subject": "You joined Quickstart works as worker",
-        "payload": payload,
-        "payload_hash": content_hash(payload),
+        "project_ref": "work:project:quickstart-works-mttfmgqu",
+        "sender": "claude-code-coordinator",
+        "recipient": WORKER,
+        "payload": {"mail": {"kind": "request", "subject": "You joined", "body": "Welcome."}},
         "created_at": created_at,
     }
 
 
-def test_a_welcome_created_after_the_last_observation_is_delivered(tmp_path):
-    identity, field = _host(tmp_path, observed_at="2026-09-25T14:03:00Z", attends=False)
-    receipt = field.materialize_control(_welcome(identity.worker_name, created_at="2026-09-25T14:06:37Z"))
-    assert receipt["delivery_status"] == "pending"
-    assert receipt["attendance_lagging"] is True
+class Clock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
 
 
-def test_an_assignment_right_after_the_link_is_delivered_too(tmp_path):
-    identity, field = _host(tmp_path, observed_at="2026-09-25T14:03:00Z", attends=False)
-    receipt = field.send_assignment_notice(
-        PROJECT_ID,
-        assignment={
-            "assignment_ref": "work:assignment:20260925T140640000000Z:assignment_0123456789abcdef0123456789abcdef:first-task",
-            "ownership_version": 1,
-            "identity_ref": "work:plan:node:20260925T140000Z:w999:first-task",
-        },
-        recipient=identity.worker_name,
-        sender_identity=None,
-        evidence_at="2026-09-25T14:06:40Z",
-    )
-    assert receipt["delivery_status"] == "pending"
+class Field:
+    """A host whose record of the worker says "not linked" until the board is read."""
+
+    def __init__(self):
+        self.linked = False
+        self.delivered = []
+
+    def materialize_control(self, item):
+        if not self.linked:
+            raise DomainError("field_worker_not_linked", "The addressed worker is not linked to this project.", status=403)
+        self.delivered.append(item["ref"])
+        return {"delivery_status": "pending", "message_ref": "work:mail:welcome"}
+
+    def sync_worker_attendances(self, worker_name, project_refs):
+        self.linked = "work:project:quickstart-works-mttfmgqu" in project_refs
 
 
-def test_an_unlink_observed_after_the_message_still_refuses(tmp_path):
-    identity, field = _host(tmp_path, observed_at="2026-09-25T14:08:00Z", attends=False)
-    with pytest.raises(DomainError) as refused:
-        field.materialize_control(_welcome(identity.worker_name, created_at="2026-09-25T14:06:37Z"))
-    assert refused.value.code == "field_worker_not_linked"
+class Client:
+    def __init__(self, items):
+        self.items = items
+        self.calls = []
+
+    async def action(self, *, object_ref, action, payload):
+        self.calls.append(action)
+        if action == "control.pull":
+            return {"lease_id": "lease-1", "items": list(self.items)}
+        return {"applied": True}
 
 
-def test_a_message_without_a_creation_time_keeps_the_local_answer(tmp_path):
-    identity, field = _host(tmp_path, observed_at="2026-09-25T14:03:00Z", attends=False)
-    control = _welcome(identity.worker_name, created_at="")
-    with pytest.raises(DomainError) as refused:
-        field.materialize_control(control)
-    assert refused.value.code == "field_worker_not_linked"
-
-
-def test_the_relay_reads_the_attendance_at_once_after_such_a_delivery():
+def _adapter(field, client, clock):
     adapter = relay_module.ProblemBoardHostRelayAdapter.__new__(relay_module.ProblemBoardHostRelayAdapter)
     adapter.config = SimpleNamespace(
-        project_id=PROJECT_ID, relay_id="relay-1", worker_name="claude-code-new",
+        project_id="quickstart-works-mttfmgqu", relay_id="relay-1", worker_name=WORKER,
         reconcile_ceiling_seconds=30, allow_session_resume_view=False,
         allowed_control_kinds=("mail", "request", "reply"), max_control_bytes=65536,
         allowed_peer_workers=("*",),
     )
     adapter._attendance_cache = {"initialized": True, "items": []}
-    calls = []
-
-    class Client:
-        async def action(self, *, object_ref, action, payload):
-            calls.append(action)
-            if action == "control.pull":
-                return {"lease_id": "lease-1", "items": [_welcome("claude-code-new", created_at="2026-09-25T14:06:37Z")]}
-            return {"applied": True}
-
-    class Field:
-        def materialize_control(self, item):
-            return {"delivery_status": "pending", "message_ref": "work:mail:x", "attendance_lagging": True}
-
-    adapter.client = Client()
-    adapter.field = Field()
+    adapter._monotonic = clock
+    adapter.client = client
+    adapter.field = field
 
     async def no_attachments(item):
         return None
 
     adapter._fetch_attachments = no_attachments
-    counts = asyncio.run(adapter._pull_controls())
-    assert counts["controls_materialized"] == 1
-    assert adapter._attendance_cache["initialized"] is False
+    return adapter
+
+
+def _board_read(adapter, *, linked: bool, field: Field):
+    """The relay's attendance read from the board, as poll_attendances_once records it.
+
+    Only the relay's cache changes here: the host record (``field.linked``)
+    is written later in the cycle, after the control pull, which is the
+    ordering a retry has to survive.
+    """
+
+    adapter._record_attendance_observation({"attendances": [{"project_ref": "work:project:quickstart-works-mttfmgqu"}] if linked else []})
+
+
+def test_the_welcome_waits_for_the_board_and_is_delivered_after_the_link_is_read():
+    field, clock = Field(), Clock()
+    client = Client([_welcome()])
+    adapter = _adapter(field, client, clock)
+
+    first = asyncio.run(adapter._pull_controls())
+    assert first["controls_deferred"] == 1 and first.get("controls_refused", 0) == 0
+    assert "control.refuse" not in client.calls
+    assert adapter._attendance_cache["initialized"] is False  # the next cycle reads the board
+
+    clock.now = 101.0
+    _board_read(adapter, linked=True, field=field)
+    clock.now = 102.0
+    second = asyncio.run(adapter._pull_controls())
+    assert second["controls_materialized"] == 1
+    assert field.delivered == ["work:control:command_welcome"]
+    assert adapter._attendance_cache["not_linked_deferrals"] == {}
+
+
+def test_a_stale_absence_resynced_from_cache_does_not_refuse_it():
+    # codex-ui's case: the unchanged pre-link snapshot is rematerialized and
+    # re-stamped locally after the welcome. No board read happened since the
+    # deferral, so the welcome keeps waiting instead of being refused.
+    field, clock = Field(), Clock()
+    client = Client([_welcome()])
+    adapter = _adapter(field, client, clock)
+    asyncio.run(adapter._pull_controls())
+    clock.now = 150.0
+    # A local resync (no board answer) touches nothing the decision reads.
+    field.linked = False
+    again = asyncio.run(adapter._pull_controls())
+    assert again["controls_deferred"] == 1
+    assert "control.refuse" not in client.calls
+
+
+def test_an_unlink_the_board_confirms_after_the_deferral_refuses():
+    field, clock = Field(), Clock()
+    client = Client([_welcome()])
+    adapter = _adapter(field, client, clock)
+    asyncio.run(adapter._pull_controls())
+    clock.now = 110.0
+    _board_read(adapter, linked=False, field=field)
+    clock.now = 111.0
+    final = asyncio.run(adapter._pull_controls())
+    assert final["controls_refused"] == 1
+    assert "control.refuse" in client.calls
+
+
+def test_the_message_clock_decides_nothing():
+    # Opposing skew: a control stamped far in the future or the past is
+    # handled the same way, because no host's wall clock is compared.
+    for stamp in ("2099-01-01T00:00:00Z", "2001-01-01T00:00:00Z", ""):
+        field, clock = Field(), Clock()
+        client = Client([_welcome(created_at=stamp)])
+        adapter = _adapter(field, client, clock)
+        assert asyncio.run(adapter._pull_controls())["controls_deferred"] == 1
+        clock.now = 101.0
+        _board_read(adapter, linked=True, field=field)
+        clock.now = 102.0
+        assert asyncio.run(adapter._pull_controls())["controls_materialized"] == 1
