@@ -593,6 +593,10 @@ def _application_policy_refusal(
 
 ACCESS_SOURCE_MANUAL = "manual"
 ACCESS_SOURCE_OAUTH = "oauth"
+# The Card lever (W313 step 2) records who applied which profile on the
+# revision it wrote, like the project-person control audit.
+AUTHORIZATION_PROFILE_AUDIT_PROVENANCE = "authorization_profile_audit"
+AUTHORIZATION_PROFILE_AUDIT_SCHEMA = "connection_hub.authorization_profile.audit.v1"
 # A per-agent delegated grant: the consenting user grants a hosted agent
 # (a "Delegated By KDCube" entity, keyed by a deterministic client_id) access to
 # a resource. Unlike a MANUAL automation (which mints its own random client), the
@@ -4009,6 +4013,171 @@ class AutomationAccessService:
             properties=selected_properties,
             reconciled=reconciled,
         )
+
+    async def apply_authorization_profile(
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        profile: str,
+        expected_card_revision: int | None = None,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        """Re-apply a descriptor authorization profile to an existing Card, in place.
+
+        W313 step 2, the Card lever: one action gives an agent's Card the
+        coordinator operation set, and one returns it to the default worker
+        set, instead of revoking the Card and consenting a new one (which
+        changed the access id and the agent's principal). The selection is the
+        one first consent would propose for that profile (``worker`` is the
+        declared worker list, never the Card's earlier grants), computed for
+        each Card resource that declares the profile; a resource that does not
+        declare it keeps its selection. The save goes through
+        ``update_access``, so ownership, the administrator preset, the revision
+        precondition and pruning apply unchanged, and the new revision carries
+        an audit of who applied which profile, from which revision.
+        """
+
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        refusal = _delegate_mutation_refusal(user)
+        if refusal is not None:
+            return refusal
+        access_id = _clean(access_id)
+        name = _clean(profile).lower()
+        if not access_id:
+            return {"ok": False, "error": "delegated_access_requires_access_id"}
+        if not name:
+            return {"ok": False, "error": "delegated_access_profile_required"}
+        try:
+            existing = await self._load_record(access_id, grantor_subject=grantor_subject)
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_cards_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        if existing is None:
+            return {"ok": False, "error": "delegated_access_not_found"}
+        if existing.grantor_subject != grantor_subject:
+            return {"ok": False, "error": "delegated_access_not_owned"}
+        if _clean(existing.source) != ACCESS_SOURCE_OAUTH:
+            # A profile is what an OAuth consent proposes; other families
+            # (manual, agent, control, project person) have their own editors.
+            return {
+                "ok": False,
+                "error": "delegated_access_profile_requires_oauth_card",
+                "status": 409,
+                "source": _clean(existing.source),
+            }
+        try:
+            active = await self._active_catalog()
+            catalog_config = await self._catalog_config(
+                active, owner_subject=grantor_subject
+            )
+        except CatalogUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_catalog_unavailable",
+                "reason": getattr(exc, "reason", "") or str(exc),
+                "retryable": True,
+                "status": 503,
+            }
+        from connection_hub.delegated_credentials.oauth.consent import (
+            requested_card_selection,
+        )
+
+        resource_grants = {
+            key: list(values or ()) for key, values in (existing.resource_grants or {}).items()
+        }
+        resource_operations = {
+            key: list(values or ()) for key, values in (existing.resource_operations or {}).items()
+        }
+        applied: list[dict[str, Any]] = []
+        available: set[str] = set()
+        for resource in list(resource_grants):
+            row = self._configured_resource(resource, config=catalog_config)
+            if row is None:
+                continue
+            declared = {
+                _clean(getattr(item, "name", "")).lower(): item
+                for item in (getattr(row, "authorization_profiles", ()) or ())
+            }
+            available.update(key for key in declared if key)
+            chosen = declared.get(name)
+            if chosen is None:
+                continue
+            selection = requested_card_selection(
+                [_clean(getattr(chosen, "scope", ""))],
+                config=catalog_config,
+                resource=resource,
+            )
+            selected_grants = dict(selection.get("resource_grants") or {})
+            selected_operations = dict(selection.get("resource_operations") or {})
+            if not selected_grants:
+                continue
+            # The proposal is keyed by the declared selector; a legacy Card
+            # key (a concrete URL) is replaced by it, as a save would store it.
+            resource_grants.pop(resource, None)
+            resource_operations.pop(resource, None)
+            for key, values in selected_grants.items():
+                resource_grants[key] = list(values)
+                resource_operations[key] = list(selected_operations.get(key) or ())
+                applied.append(
+                    {
+                        "resource": key,
+                        "scope": _clean(getattr(chosen, "scope", "")),
+                        "operations": list(selected_operations.get(key) or ()),
+                    }
+                )
+        if not applied:
+            return {
+                "ok": False,
+                "error": "delegated_access_profile_not_declared",
+                "status": 409,
+                "profile": name,
+                "available_profiles": sorted(available),
+            }
+        before_operations = {
+            key: list(values or ()) for key, values in (existing.resource_operations or {}).items()
+        }
+        occurred_at = int(time.time())
+
+        def _stamp_profile_audit(previous: Any, candidate: Any) -> Any:
+            audit = {
+                "schema": AUTHORIZATION_PROFILE_AUDIT_SCHEMA,
+                "action": "profile_applied",
+                "profile": name,
+                "applied": applied,
+                "actor_subject": grantor_subject,
+                "request_id": _clean(request_id),
+                "occurred_at": occurred_at,
+                "before_revision": int(getattr(previous, "card_revision", 0) or 0),
+                "after_revision": int(getattr(candidate, "card_revision", 0) or 0),
+                "before_operations": before_operations,
+                "after_operations": {
+                    key: list(values or ())
+                    for key, values in (getattr(candidate, "resource_operations", None) or {}).items()
+                },
+            }
+            provenance = dict(getattr(candidate, "provenance", None) or {})
+            provenance[AUTHORIZATION_PROFILE_AUDIT_PROVENANCE] = audit
+            return replace_fields(candidate, provenance=provenance)
+
+        result = await self.update_access(
+            user,
+            access_id=access_id,
+            resource_grants=resource_grants,
+            resource_operations=resource_operations,
+            expected_card_revision=expected_card_revision,
+            _record_transform=_stamp_profile_audit,
+        )
+        if result.get("ok"):
+            result = {**result, "profile": name, "applied": applied}
+        return result
 
     async def update_access(
         self,

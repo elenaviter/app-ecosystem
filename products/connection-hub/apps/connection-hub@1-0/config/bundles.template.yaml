@@ -51,6 +51,8 @@ bundles:
                 visibility: *default_visibility
               delegated_access_update:
                 visibility: *default_visibility
+              delegated_access_apply_profile:
+                visibility: *default_visibility
               delegated_invocation_policy_set:
                 visibility: *default_visibility
               delegated_access_renew:
