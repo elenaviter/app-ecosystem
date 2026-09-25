@@ -18,6 +18,7 @@ from project_board.client.relay_source import (
 from project_board.client.relay_logging import (
     configure_relay_logging as configure_relay_file_logging,
 )
+from project_board.client.claude_settings import INVOKED_PB_ENV
 from project_board.client.render import render_envelope
 from project_board.client.source_control import effective_selection, source_matches
 from project_board.contract.errors import DomainError
@@ -135,6 +136,12 @@ def main() -> int:
     except DomainError as exc:
         return _render_startup_error(exc, argv)
     if selected is not None:
+        # The release runs as a script, so its argv[0] names no executable;
+        # hand it the pb that launched it, for the hooks that must name this
+        # host's pb by path (W304: pb procedure install through the launcher).
+        invoked = os.path.abspath(sys.argv[0])
+        if not invoked.endswith(".py"):
+            os.environ[INVOKED_PB_ENV] = invoked
         os.execv(selected[0], list(selected))
         return 1
     return int(cli.main())

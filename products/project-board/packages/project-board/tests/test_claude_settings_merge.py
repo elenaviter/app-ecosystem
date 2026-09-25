@@ -277,3 +277,47 @@ def test_the_backup_is_private_and_an_earlier_one_is_kept(tmp_path, monkeypatch)
     assert first["backup"] != second["backup"]
     assert json.loads(Path(first["backup"]).read_text(encoding="utf-8")) == {"model": "opus"}
     assert json.loads(Path(second["backup"]).read_text(encoding="utf-8")) == {"model": "sonnet"}
+
+
+# -- W304 (fable-pub's trace, 2026-09-25): pb procedure install through the
+#    host launcher. The versioned entry point re-executes the selected release
+#    as a .py script, so argv[0] in the release names no executable. --
+
+
+def test_a_selected_release_names_the_launcher_the_stable_pb_recorded(tmp_path, monkeypatch):
+    stable = _executable(tmp_path / "venv" / "bin" / "pb", "#!/bin/sh\n")
+    launcher = _executable(tmp_path / "bin" / "pb", f'#!/bin/sh\nexec {stable} "$@"\n')
+    release = tmp_path / "releases" / "abc" / "code_entrypoint.py"
+    monkeypatch.setattr(sys, "argv", [str(release), "procedure", "install"])
+    monkeypatch.setenv("PROBLEM_BOARD_INVOKED_PB", str(stable))
+    assert pb_command(which=lambda name: str(launcher)) == str(launcher)
+
+
+def test_without_the_record_a_selected_release_is_still_refused(tmp_path, monkeypatch):
+    release = tmp_path / "releases" / "abc" / "code_entrypoint.py"
+    monkeypatch.setattr(sys, "argv", [str(release), "procedure", "install"])
+    monkeypatch.delenv("PROBLEM_BOARD_INVOKED_PB", raising=False)
+    with pytest.raises(DomainError) as refused:
+        pb_command(which=lambda name: None)
+    assert refused.value.code == "work_claude_settings_pb_unresolved"
+
+
+def test_the_entry_point_records_the_stable_pb_before_it_executes_the_release(tmp_path, monkeypatch):
+    from project_board.client import entrypoint
+
+    stable = _executable(tmp_path / "venv" / "bin" / "pb", "#!/bin/sh\n")
+    release = tmp_path / "releases" / "abc" / "code_entrypoint.py"
+    monkeypatch.setattr(sys, "argv", [str(stable), "procedure", "install", "--target", "claude-code"])
+    monkeypatch.delenv("PROBLEM_BOARD_INVOKED_PB", raising=False)
+    monkeypatch.setattr(entrypoint, "_selected_command", lambda argv, **_: (sys.executable, str(release), *argv))
+    executed = {}
+
+    def fake_execv(path, args):
+        executed.update(path=path, args=args, recorded=entrypoint.os.environ.get("PROBLEM_BOARD_INVOKED_PB"))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(entrypoint.os, "execv", fake_execv)
+    with pytest.raises(SystemExit):
+        entrypoint.main()
+    assert executed["args"][1] == str(release)
+    assert executed["recorded"] == str(stable)
