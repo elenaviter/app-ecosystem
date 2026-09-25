@@ -762,6 +762,48 @@ class ProblemBoardHostRelayAdapter:
     def _record_session_report(self, *, project_ref: str, signature: str) -> None:
         self._session_report_signatures[project_ref] = signature
 
+    def _defer_until_attendance_read(self, command_ref: str) -> bool:
+        """Whether a "not linked" refusal waits for a fresher attendance read (W304 join race).
+
+        The local record is the only evidence at hand, and it can predate a
+        link the board committed seconds ago (the relay re-stamps an unchanged
+        cached snapshot, so its time says nothing about the link). The first
+        refusal of a control forces a read from the board and defers; the
+        refusal stands only once a read that completed after that first
+        refusal still says "not linked". Both moments are this relay's own
+        monotonic clock, so no two hosts' clocks are ever compared.
+        """
+
+        deferrals = self._attendance_cache.setdefault("not_linked_deferrals", {})
+        first = deferrals.get(command_ref)
+        if first is None:
+            deferrals[command_ref] = self._monotonic()
+            self._attendance_cache["initialized"] = False
+            return True
+        read_at = self._attendance_cache.get("board_read_monotonic")
+        if read_at is not None and read_at > first:
+            deferrals.pop(command_ref, None)
+            return False
+        self._attendance_cache["initialized"] = False
+        return True
+
+    def _materialize_after_board_read(self, item: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Deliver on the board's own attendance when it lists the control's project, else None."""
+
+        project_ref = str(item.get("project_ref") or "")
+        board_refs = [
+            str(entry.get("project_ref") or "")
+            for entry in self._attendance_cache.get("items") or []
+            if isinstance(entry, Mapping) and entry.get("project_ref")
+        ]
+        if not project_ref or project_ref not in board_refs:
+            return None
+        try:
+            self.field.sync_worker_attendances(self.config.worker_name, board_refs)
+            return self.field.materialize_control(item)
+        except DomainError:
+            return None
+
     def _record_attendance_observation(self, value: Mapping[str, Any]) -> None:
         own = value.get("self")
         if isinstance(own, Mapping):
@@ -798,6 +840,9 @@ class ProblemBoardHostRelayAdapter:
             elif self._attendance_cache.get("attendance_revision_observed"):
                 snapshot_is_current = False
             if snapshot_is_current:
+                # When the board last answered with the attendance, on this
+                # relay's clock (W304 join race).
+                self._attendance_cache["board_read_monotonic"] = self._monotonic()
                 self._attendance_cache["initialized"] = True
                 self._attendance_cache["items"] = [
                     dict(item)
@@ -1703,6 +1748,7 @@ class ProblemBoardHostRelayAdapter:
             try:
                 await self._fetch_attachments(item)
                 receipt = self.field.materialize_control(item)
+                self._attendance_cache.get("not_linked_deferrals", {}).pop(command_ref, None)
             except DomainError as exc:
                 if exc.code == "field_project_not_materialized":
                     # Not a refusal: the project's materialize control has not
@@ -1715,6 +1761,40 @@ class ProblemBoardHostRelayAdapter:
                         requested_project_ref or "direct",
                         command_ref,
                         kind,
+                    )
+                    counts["controls_deferred"] += 1
+                    continue
+                if exc.code == "field_worker_not_linked" and not self._defer_until_attendance_read(command_ref):
+                    # A board read completed after the deferral. When it lists
+                    # this control's project, the host record is what lags:
+                    # write the board's attendance and deliver now.
+                    receipt = self._materialize_after_board_read(item)
+                    if receipt is not None:
+                        await self._settle_leased_control(
+                            command_ref,
+                            action="control.acknowledge",
+                            kind=kind,
+                            payload={
+                                "lease_id": lease_id,
+                                "lease_owner": self.config.relay_id,
+                                "result_summary": str(receipt.get("delivery_status") or "materialized"),
+                                "result_ref": str(receipt.get("message_ref") or ""),
+                            },
+                        )
+                        counts["controls_materialized"] += 1
+                        continue
+                elif exc.code == "field_worker_not_linked":
+                    # W304 join race: this host's attendance record may predate
+                    # a link the board has already committed. Refuse only after
+                    # an attendance read that completed after this first
+                    # refusal still says "not linked"; until then the lease
+                    # expires and the control plane offers the control again.
+                    logger.warning(
+                        "Problem Board control deferred until the attendance is read "
+                        "from the board control=%s kind=%s worker=%s",
+                        command_ref,
+                        kind,
+                        self.config.worker_name,
                     )
                     counts["controls_deferred"] += 1
                     continue
