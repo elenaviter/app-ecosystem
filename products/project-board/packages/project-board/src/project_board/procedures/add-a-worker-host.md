@@ -432,8 +432,14 @@ agent of the user, so a key stays while any attended project needs it:
   conflict. Nothing on GitHub changes without the operator.
 - **What it keeps:** a key pair and its `Host github-<alias>` SSH block are
   each repaired on their own, so an interrupted run completes on the next one.
-  A `Host github-<alias>` block that points elsewhere is refused, not
-  overwritten.
+  Whether a block already serves `github-<alias>` is asked of `ssh -G`, so a
+  block written with several names, a pattern or another case counts; one
+  that resolves elsewhere or without this key is refused, not overwritten.
+- **When the card moves an alias to another repository:** the key made for the
+  old repository is retired (`retired_<alias>_<time>`) and a new pair is made,
+  because GitHub accepts a deploy key on one repository only and the old one
+  still grants the old repository. The revoke block names the old repository
+  and fingerprint, and repeats until the retired files are removed.
 - **What stops it:** the cards are collected first, and any failure (the list
   or a project's context failing, a project not yet on this host, no attended
   project at all) prints `STOP: ...` and exits nonzero before any grant or
@@ -478,19 +484,37 @@ done < "$RAW" | sort -u > "$CARD"
 for alias in $(cut -f1 "$CARD" | uniq -d); do
   echo "CONFLICT alias $alias names different repositories in the attended projects: $(grep "^$alias	" "$CARD" | cut -f2 | tr '\n' ' ')Left unchanged." >&2
 done
+recorded_repo() {  # the owner/repo a key was made for, from its comment
+  awk '$NF ~ /\// {print $NF; exit}' "$1"
+}
+revoke_block() {  # $1 alias  $2 repository  $3 public key  $4 files to remove  $5 why
+  printf '\n### REVOKE %s (%s)\n\nRepository: %s\nFind the deploy key titled "%s agents" with fingerprint %s and delete it.\nThen, on the host: rm %s. The clone stays for any unfinished work.\n' \
+    "$1" "$5" "$2" "$HOST_ID" "$(ssh-keygen -lf "$3" </dev/null | awk '{print $2}')" "$4"
+}
 ensure_key() {  # key pair and SSH alias, each repaired on its own
-  local alias=$1 repo=$2 key="$KEYS/deploy_$1" host file
+  local alias=$1 repo=$2 key="$KEYS/deploy_$1" host was retired
+  if [ -f "$key.pub" ]; then
+    was=$(recorded_repo "$key.pub")
+    if [ -n "$was" ] && [ "$was" != "$repo" ]; then
+      # The card moved this alias to another repository. GitHub accepts one
+      # deploy key per repository, and the old one still grants the old
+      # repository, so the pair is retired and a new one made.
+      retired="$KEYS/retired_${alias}_$(date -u +%Y%m%dT%H%M%SZ)"
+      mv "$key" "$retired"; mv "$key.pub" "$retired.pub"
+    fi
+  fi
   [ -f "$key" ] || ssh-keygen -q -t ed25519 -N "" -C "$HOST_ID deploy key: $alias $repo" -f "$key" </dev/null
   [ -f "$key.pub" ] || echo "$(ssh-keygen -y -f "$key" </dev/null | cut -d' ' -f1,2) $HOST_ID deploy key: $alias $repo" > "$key.pub"
-  if grep -qx "Host github-$alias" "$SSH_CONFIG"; then
-    host=$(ssh -F "$SSH_CONFIG" -G "github-$alias" </dev/null | awk '$1=="hostname"{print $2; exit}')
-    file=$(ssh -F "$SSH_CONFIG" -G "github-$alias" </dev/null | awk '$1=="identityfile"{print $2; exit}')
-    if [ "$host" != github.com ] || [ "$(realpath -m "$file")" != "$(realpath -m "$key")" ]; then
-      echo "CONFLICT github-$alias in $SSH_CONFIG points at $host with $file, not github.com with $key. Left unchanged." >&2
-      return 1
-    fi
-  else
+  # What github-<alias> resolves to, however the config spells its Host line
+  # (a pattern, several names, another case): itself means no block matches.
+  host=$(ssh -F "$SSH_CONFIG" -G "github-$alias" </dev/null | awk '$1=="hostname"{print $2; exit}')
+  if [ "$host" = "github-$alias" ]; then
     printf '\n# problem-board deploy key\nHost github-%s\n  HostName github.com\n  User git\n  IdentityFile %s\n  IdentitiesOnly yes\n' "$alias" "$key" >> "$SSH_CONFIG"
+  elif [ "$host" != github.com ] || ! ssh -F "$SSH_CONFIG" -G "github-$alias" </dev/null |
+      awk '$1=="identityfile"{print $2}' | while read -r file; do realpath -m "$file"; done |
+      grep -qx "$(realpath -m "$key")"; then
+    echo "CONFLICT github-$alias in $SSH_CONFIG resolves to $host without $key. Left unchanged." >&2
+    return 1
   fi
 }
 cut -f1 "$CARD" | uniq -u | while read -r alias; do
@@ -507,9 +531,13 @@ for pub in "$KEYS"/deploy_*.pub; do
   [ -e "$pub" ] || continue
   alias=${pub##*/deploy_}; alias=${alias%.pub}
   cut -f1 "$CARD" | grep -qx "$alias" && continue
-  printf '\n### REVOKE %s (on no attended project'"'"'s card)\n\nRepository: %s\nFind the deploy key titled "%s agents" with fingerprint %s and delete it.\nThen, on the host: rm %s %s, and delete the "Host github-%s" block from %s. The clone stays for any unfinished work.\n' \
-    "$alias" "$(awk '$NF ~ /\// {print $NF; exit} {print "not recorded in the key; the one github-'"$alias"' reached"}' "$pub")" "$HOST_ID" "$(ssh-keygen -lf "$pub" | awk '{print $2}')" \
-    "$KEYS/deploy_$alias" "$pub" "$alias" "$SSH_CONFIG"
+  revoke_block "$alias" "$(recorded_repo "$pub" || true)" "$pub" \
+    "${pub%.pub} $pub, and the \"Host github-$alias\" block in $SSH_CONFIG" "on no attended project's card"
+done
+for pub in "$KEYS"/retired_*.pub; do
+  [ -e "$pub" ] || continue
+  alias=${pub##*/retired_}; alias=${alias%_*}
+  revoke_block "$alias" "$(recorded_repo "$pub" || true)" "$pub" "${pub%.pub} $pub" "the card moved this alias to another repository"
 done
 )
 ```

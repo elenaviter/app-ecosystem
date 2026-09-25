@@ -234,3 +234,76 @@ def test_15_step_7_stops_before_any_grant_or_revoke_when_collection_fails(tmp_pa
         assert code != 0, name
         assert "STOP:" in output and "Nothing granted or revoked." in output, (name, output)
         assert "REVOKE" not in output and "GRANT" not in output, (name, output)
+
+
+
+def test_15_step_7_retires_a_moved_alias_and_reads_host_blocks_through_ssh(tmp_path):
+    # ae#120 review (codex-ui): an alias retargeted to another repository left
+    # the old repository's key authorized, and an exact-line match missed a
+    # valid Host block written with several names or another case.
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if not (shutil.which("ssh-keygen") and shutil.which("ssh") and shutil.which("bash")):
+        pytest.skip("needs ssh-keygen, ssh and bash")
+    keys = tmp_path / "keys"
+    keys.mkdir(mode=0o700)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (tmp_path / "list").write_text(
+        "OK\n--- a@host (claude-code-aaa)\nruntime claude-code · pool active\nattends: work:project:alpha\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "alpha").write_text(
+        "OK\nproject_on_this_host = True\n"
+        "repositories[0].alias = moved\nrepositories[0].url = git@github.com:owner/new-home.git\n"
+        "repositories[1].alias = multi\nrepositories[1].url = git@github.com:owner/multi.git\n"
+        "repositories[2].alias = bad\nrepositories[2].url = git@github.com:owner/bad.git\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "pb").write_text(
+        f"#!/bin/sh\ncase \"$2\" in list) cat {tmp_path / 'list'};; context) cat {tmp_path / 'alpha'};; esac\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "git").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    for tool in ("pb", "git"):
+        (bin_dir / tool).chmod(0o755)
+    for name, comment in (("deploy_moved", "host deploy key: moved owner/old-home"), ("deploy_multi", "host deploy key: multi owner/multi")):
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(keys / name)], check=True)
+    old_fingerprint = subprocess.run(
+        ["ssh-keygen", "-lf", str(keys / "deploy_moved.pub")], capture_output=True, text=True, check=True
+    ).stdout.split()[1]
+    (keys / "config").write_text(
+        f"host github-multi github-other\n    hostname github.com\n    identityfile {keys / 'deploy_multi'}\n\n"
+        "Host github-b*\n  HostName gitlab.com\n",
+        encoding="utf-8",
+    )
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+        "HOME": str(tmp_path), "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host",
+    }
+
+    def run() -> str:
+        done = subprocess.run(["bash", "-c", _step7_script()], env=env, capture_output=True, text=True, timeout=60)
+        return done.stdout + done.stderr
+
+    first = run()
+    # The moved alias: the old pair is retired and revoked on the old repository,
+    # and a new pair is granted on the new one.
+    assert "### REVOKE moved (the card moved this alias to another repository)" in first
+    assert "Repository: owner/old-home" in first and old_fingerprint in first
+    assert "### GRANT moved" in first and "https://github.com/owner/new-home/settings/keys" in first
+    assert list(keys.glob("retired_moved_*.pub"))
+    new_fingerprint = subprocess.run(
+        ["ssh-keygen", "-lf", str(keys / "deploy_moved.pub")], capture_output=True, text=True, check=True
+    ).stdout.split()[1]
+    assert new_fingerprint != old_fingerprint
+    # A lower-case, several-name block is ours: nothing is appended for it.
+    config = (keys / "config").read_text(encoding="utf-8")
+    assert "Host github-multi\n" not in config
+    # A pattern block that sends the alias elsewhere is refused.
+    assert "CONFLICT github-bad" in first and "resolves to gitlab.com" in first
+    # The retired key keeps being named until its files are removed.
+    assert "### REVOKE moved (the card moved this alias to another repository)" in run()
