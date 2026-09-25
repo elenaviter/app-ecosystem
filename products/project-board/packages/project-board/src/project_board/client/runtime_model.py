@@ -23,17 +23,22 @@ reported". The record rides the listener session next to ``limit_state``.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Mapping
 
 from .limit_state import (
-    CODEX_TAIL_BYTES,
     SOURCE_CLAUDE_STATUSLINE,
     SOURCE_CODEX_ROLLOUT,
-    _tail_lines,
     _utc,
     codex_rollout_path,
 )
+
+# A turn writes its turn_context once, then any amount of output after it: on
+# 2026-09-25 the newest one sat 578,867 bytes before the end of a live
+# rollout. The reader walks back in chunks until it finds one, up to a bound.
+TURN_CONTEXT_CHUNK_BYTES = 256 * 1024
+TURN_CONTEXT_SCAN_BYTES = 16 * 1024 * 1024
 
 MODEL_TEXT_LIMIT = 128
 EFFORT_TEXT_LIMIT = 32
@@ -74,16 +79,51 @@ def _runtime_model(
 # --------------------------------------------------------------------------- Codex
 
 
+def _lines_backwards(
+    path: Path, *, chunk_bytes: int, scan_bytes: int
+):
+    """The file's lines, newest first, reading back in chunks up to ``scan_bytes``.
+
+    A line cut at the scan bound is not yielded, so a partial record is never
+    parsed as a whole one.
+    """
+
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        floor = max(0, position - max(chunk_bytes, scan_bytes))
+        carry = b""
+        while position > floor:
+            start = max(floor, position - chunk_bytes)
+            handle.seek(start)
+            block = handle.read(position - start) + carry
+            position = start
+            pieces = block.split(b"\n")
+            # The first piece may continue in the previous chunk.
+            carry = pieces[0]
+            for piece in reversed(pieces[1:]):
+                if piece.strip():
+                    yield piece.decode("utf-8", errors="replace")
+        if position == 0 and carry.strip():
+            yield carry.decode("utf-8", errors="replace")
+
+
 def read_codex_turn_context(
     path: Path | str,
     *,
-    tail_bytes: int = CODEX_TAIL_BYTES,
+    chunk_bytes: int = TURN_CONTEXT_CHUNK_BYTES,
+    scan_bytes: int = TURN_CONTEXT_SCAN_BYTES,
 ) -> tuple[str, dict[str, Any]] | None:
-    """The newest ``turn_context`` payload in a rollout, with its timestamp."""
+    """The newest ``turn_context`` payload in a rollout, with its timestamp.
+
+    Read backwards from the end in chunks, so a long turn after the newest
+    context does not hide it, and bounded, so a huge rollout costs at most
+    ``scan_bytes`` per cycle.
+    """
 
     file = Path(path)
     try:
-        for line in _tail_lines(file, tail_bytes=tail_bytes):
+        for line in _lines_backwards(file, chunk_bytes=chunk_bytes, scan_bytes=scan_bytes):
             if '"turn_context"' not in line:
                 continue
             try:
@@ -218,8 +258,10 @@ def session_with_runtime_model(
     """The listener session row with the runtime's own model record on it.
 
     Codex is read from its rollout on this host; Claude Code's record is what
-    ``pb worker limit-state`` recorded from the status line. Nothing reported
-    leaves the row without the field.
+    ``pb worker limit-state`` recorded from the status line. A Codex read that
+    finds nothing (no context in the scanned range, an unreadable file) keeps
+    the last value recorded for this worker, never clears it: a miss is not a
+    change of model. Nothing ever reported leaves the row without the field.
     """
 
     row = dict(session)
@@ -230,7 +272,7 @@ def session_with_runtime_model(
             record = codex_runtime_model(runtime_session_id, sessions_root=sessions_root)
         except Exception:  # noqa: BLE001 - an unreadable rollout is no record, not a failed cycle
             record = None
-    elif isinstance(recorded, Mapping) and recorded:
+    if not record and isinstance(recorded, Mapping) and recorded:
         record = {key: value for key, value in recorded.items() if key != "recorded_at"}
     if record:
         row["runtime_model"] = dict(record)

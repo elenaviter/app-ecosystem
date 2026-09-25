@@ -3366,20 +3366,28 @@ class ProblemBoardHostRelayAdapter:
         listener = self.field.worker_listener_session(self.config.worker_name)
         if listener is None:
             return []
-        return [
-            session_with_runtime_model(
-                session_with_limit_state(
-                    listener,
-                    runtime_kind=self.config.runtime_kind,
-                    runtime_session_id=self.config.runtime_session_id,
-                    now=utc_now(),
-                    recorded=self.field.runtime_limit_state(self.config.worker_name),
-                ),
+        recorded_model = self.field.runtime_model(self.config.worker_name)
+        row = session_with_runtime_model(
+            session_with_limit_state(
+                listener,
                 runtime_kind=self.config.runtime_kind,
                 runtime_session_id=self.config.runtime_session_id,
-                recorded=self.field.runtime_model(self.config.worker_name),
-            )
-        ]
+                now=utc_now(),
+                recorded=self.field.runtime_limit_state(self.config.worker_name),
+            ),
+            runtime_kind=self.config.runtime_kind,
+            runtime_session_id=self.config.runtime_session_id,
+            recorded=recorded_model,
+        )
+        # Codex: what the rollout said is the last known value, so a later
+        # read that misses keeps it. Written only when it changes.
+        model = row.get("runtime_model")
+        if model and str(self.config.runtime_kind or "").lower() == "codex":
+            try:
+                self.field.record_runtime_model(self.config.worker_name, model)
+            except DomainError:
+                pass
+        return [row]
 
     async def poll_once(self) -> dict[str, Any]:
         cycle = self._trace.start_cycle()
