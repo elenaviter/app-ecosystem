@@ -74,11 +74,11 @@ def test_15_repositories_and_deploy_keys_come_from_the_project_card():
     step7 = HOST[HOST.index("## 7. "):HOST.index("## 8. ")]
     assert "**The project card decides, in both directions**" in step7
     assert "named by the card's `alias`" in step7
-    assert "a **revoke** block for each key this procedure made whose repository is no longer on the card" in step7
+    assert "a **revoke** block for each key this procedure made whose alias is on no attended project's card" in step7
     step8 = HOST[HOST.index("## 8. "):HOST.index("## 9. ")]
     assert "git clone" not in step8
     step12 = HOST[HOST.index("## 12. "):HOST.index("## 13. ")]
-    assert "The host agent runs step 7's reconciliation with this agent's session" in step12
+    assert "The host agent runs step 7's reconciliation on this host" in step12
     assert "Repositories the agents may work in" not in GUIDE
     assert "Project the agents join: <project name>" in GUIDE
     assert "you make it on the project card, not per machine" in GUIDE
@@ -103,10 +103,12 @@ def _step7_script() -> str:
 
 
 def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
-    # ae#120 review (codex-ui): keys were only ever added, a removed
-    # repository kept its write key, and an existing key skipped a lost SSH
-    # block forever. The published script is run as written, with a fake pb
-    # (the attended card) and a fake git (no network).
+    # ae#120 reviews (codex-ui): keys were only ever added, a removed
+    # repository kept its write key, an existing key skipped a lost SSH block
+    # forever, and reconciling one project revoked a key another attended
+    # project still needed (keys are shared by every agent of the user). The
+    # published script is run as written, with a fake pb (two attending
+    # agents, two cards) and a fake git (no network).
     import shutil
     import subprocess
 
@@ -118,17 +120,30 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
     keys.mkdir(mode=0o700)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    (tmp_path / "context").write_text(
-        "OK\n"
-        "repositories[0].alias = applications\n"
-        "repositories[0].url = git@github.com:kdcube/applications.git\n"
-        "repositories[1].alias = kdcube\n"
-        "repositories[1].url = https://github.com/kdcube/kdcube\n"
-        "repositories[2].alias = reachable\n"
-        "repositories[2].url = git@github.com:owner/reachable.git\n",
+    (tmp_path / "list").write_text(
+        "OK\n--- a@host (claude-code-aaa)\nruntime claude-code · pool active\nattends: work:project:alpha\n"
+        "--- b@host (codex-bbb)\nruntime codex · pool active\nattends: work:project:beta\n"
+        "--- idle@host (claude-code-ccc)\nruntime claude-code · pool active\n",
         encoding="utf-8",
     )
-    (bin_dir / "pb").write_text(f"#!/bin/sh\ncat {tmp_path / 'context'}\n", encoding="utf-8")
+    (tmp_path / "alpha").write_text(
+        "OK\nrepositories[0].alias = applications\nrepositories[0].url = git@github.com:kdcube/applications.git\n"
+        "repositories[1].alias = reachable\nrepositories[1].url = git@github.com:owner/reachable.git\n"
+        "repositories[2].alias = clash\nrepositories[2].url = git@github.com:owner/clash-a.git\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "beta").write_text(
+        "OK\nrepositories[0].alias = kdcube\nrepositories[0].url = https://github.com/kdcube/kdcube\n"
+        "repositories[1].alias = betaonly\nrepositories[1].url = git@github.com:owner/betaonly.git\n"
+        "repositories[2].alias = clash\nrepositories[2].url = git@github.com:owner/clash-b.git\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "pb").write_text(
+        "#!/bin/sh\n"
+        f"case \"$2\" in list) cat {tmp_path / 'list'};; context) case \"$*\" in "
+        f"*work:project:alpha*) cat {tmp_path / 'alpha'};; *work:project:beta*) cat {tmp_path / 'beta'};; esac;; esac\n",
+        encoding="utf-8",
+    )
     (bin_dir / "git").write_text(
         "#!/bin/sh\n[ \"$1\" = ls-remote ] && case \"$2\" in github-reachable:*) exit 0;; esac\nexit 1\n",
         encoding="utf-8",
@@ -138,14 +153,14 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
     keygen = lambda name, comment: subprocess.run(  # noqa: E731
         ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(keys / name)], check=True
     )
-    keygen("deploy_removed", "host deploy key: removed owner/removed")  # no longer on the card
+    keygen("deploy_removed", "host deploy key: removed owner/removed")  # on no attended card
+    keygen("deploy_betaonly", "host deploy key: betaonly owner/betaonly")  # only project beta needs it
     keygen("deploy_applications", "old")  # the SSH block was lost
     (keys / "deploy_applications.pub").unlink()  # and so was the public half
     (keys / "config").write_text("Host github-kdcube\n  HostName example.com\n  IdentityFile /elsewhere\n", encoding="utf-8")
     env = {
         "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
-        "HOME": str(tmp_path), "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"),
-        "AGENT_KIND": "claude-code", "AGENT_SESSION": "session", "PROJECT": "work:project:p", "HOST_ID": "host",
+        "HOME": str(tmp_path), "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host",
     }
 
     def run() -> str:
@@ -156,10 +171,13 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
     assert "### GRANT applications" in first and "Page: https://github.com/kdcube/applications/settings/keys" in first
     assert "ok reachable" in first
     assert "CONFLICT github-kdcube" in first and "Left unchanged." in first
-    assert "### REVOKE removed (no longer on the project card)" in first and "Repository: owner/removed" in first
+    assert "CONFLICT alias clash names different repositories" in first
+    assert "### REVOKE removed (on no attended project's card)" in first and "Repository: owner/removed" in first
+    # A key only the other attended project needs is kept.
+    assert "REVOKE betaonly" not in first and "### GRANT betaonly" in first
     config = (keys / "config").read_text(encoding="utf-8")
     assert config.count("Host github-applications") == 1 and "HostName example.com" in config
     assert (keys / "deploy_applications.pub").read_text(encoding="utf-8").endswith("host deploy key: applications kdcube/applications\n")
     second = run()
     assert (keys / "config").read_text(encoding="utf-8").count("Host github-applications") == 1
-    assert "### GRANT applications" in second and "### REVOKE removed" in second
+    assert "### GRANT applications" in second and "### REVOKE removed" in second and "REVOKE betaonly" not in second
