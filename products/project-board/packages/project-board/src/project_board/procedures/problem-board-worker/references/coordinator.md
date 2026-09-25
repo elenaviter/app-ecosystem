@@ -249,6 +249,13 @@ section says.
    the reader has to make.
 4. Search the plan before filing. A finding that already has an item gets a
    note on that item.
+5. Set the new item's dependencies in the same call. `depends_on` lists the
+   `identity_ref` of every item that must land first; an item that is related
+   but does not block goes in the description as "Related:". Recheck both
+   directions when you rescope an item or split out a step. Why: on
+   2026-09-25 six items (W318 to W323) went out with none, and the order
+   (W322 needs W323, W318 needs W313) lived only in one coordinator's head,
+   which a context reset or a hand-over loses.
 
 ### Bind every repository the work touches when you assign
 
