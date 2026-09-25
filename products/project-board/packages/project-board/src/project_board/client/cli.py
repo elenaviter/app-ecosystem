@@ -3575,19 +3575,22 @@ def _worker_command(args: Any) -> dict[str, Any]:
         coalesce = max(0.0, min(float(args.coalesce_seconds), 5.0))
         if args.once:
             return probe_worker_input(field, worker_name=identity.worker_name)
-        # The Stop hook reads this to tell a running watch from none (W182).
-        field.record_watch_attachment(
-            str(field.read_worker(identity.worker_name).get("worker_name") or identity.worker_name),
-            pid=os.getpid(),
-            runtime_session_id=identity.runtime_session_id,
-        )
         # A watch replaced by a newer one is stopped with SIGTERM (the Claude
         # Code guard does it every cycle). That is its normal end: exit 0 and
         # print nothing, since every stdout line is an event, so the harness
         # does not report each replaced watch as failed (W182, operator
-        # 2026-09-25: "script failed (exit 144)" on every guard).
+        # 2026-09-25: "script failed (exit 144)" on every guard). The handler
+        # is in place before the attachment says this watch runs, so no
+        # SIGTERM sent on that record can find the default handler
+        # (codex-ui review of ae#137).
         previous = signal.signal(signal.SIGTERM, _end_replaced_watch)
         try:
+            # The Stop hook reads this to tell a running watch from none (W182).
+            field.record_watch_attachment(
+                str(field.read_worker(identity.worker_name).get("worker_name") or identity.worker_name),
+                pid=os.getpid(),
+                runtime_session_id=identity.runtime_session_id,
+            )
             for event in worker_watch_events(
                 field,
                 worker_name=identity.worker_name,
