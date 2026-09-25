@@ -219,6 +219,66 @@ def test_restart_reloads_launchd_definition_before_kickstart(
     assert result["restarted"] is True
 
 
+def test_stop_waits_for_launchd_xpcproxy_to_unload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    service = _service(tmp_path, system="Darwin")
+    calls: list[list[str]] = []
+    print_calls = 0
+    sleeps: list[float] = []
+
+    def fake_run(command, *, check=True):
+        nonlocal print_calls
+        calls.append(list(command))
+        operation = command[1]
+        if operation == "print":
+            print_calls += 1
+            returncode = 0 if print_calls == 1 else 3
+            stdout = "state = xpcproxy" if returncode == 0 else ""
+        else:
+            returncode = 0
+            stdout = ""
+        return subprocess.CompletedProcess(
+            command, returncode, stdout=stdout, stderr=""
+        )
+
+    monkeypatch.setattr(relay_service, "_run", fake_run)
+    monkeypatch.setattr(
+        relay_service.time, "sleep", lambda seconds: sleeps.append(seconds)
+    )
+    monkeypatch.setattr(RelayService, "status", lambda self: {"running": False})
+
+    result = service.stop()
+
+    assert [command[1] for command in calls] == ["bootout", "print", "print"]
+    assert sleeps == [relay_service.LAUNCHD_UNLOAD_POLL_SECONDS]
+    assert result["running"] is False
+
+
+def test_stop_reports_launchd_unload_timeout(tmp_path: Path, monkeypatch) -> None:
+    service = _service(tmp_path, system="Darwin")
+    clock = iter([0.0, relay_service.LAUNCHD_UNLOAD_WAIT_SECONDS])
+
+    def fake_run(command, *, check=True):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="state = xpcproxy" if command[1] == "print" else "",
+            stderr="",
+        )
+
+    monkeypatch.setattr(relay_service, "_run", fake_run)
+    monkeypatch.setattr(relay_service.time, "monotonic", lambda: next(clock))
+
+    with pytest.raises(DomainError) as failure:
+        service.stop()
+
+    assert failure.value.code == "work_relay_service_stop_timeout"
+    assert failure.value.details["waited_seconds"] == (
+        relay_service.LAUNCHD_UNLOAD_WAIT_SECONDS
+    )
+
+
 def test_restart_reports_persistent_launchd_bootstrap_error(
     tmp_path: Path, monkeypatch
 ) -> None:
