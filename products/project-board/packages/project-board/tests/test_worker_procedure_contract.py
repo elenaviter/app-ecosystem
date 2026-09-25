@@ -85,7 +85,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.24.20"
+    assert package["revision"] == "2026.09.24.21"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -843,7 +843,11 @@ def test_coordinator_rebalances_work_when_a_worker_runs_short_on_tokens() -> Non
     assert "hand over the exact branch and head" in coordinator
     assert "only work it can finish cheaply" in coordinator
     assert "Apply the same rule to the coordinator" in coordinator
-    assert "W313 is the planned durable coordinator handover mechanism" in coordinator
+    assert "project.coordinator.hand_over" in coordinator
+    assert "project.coordinator.return" in coordinator
+    assert "project reports route to that holder" in coordinator
+    assert "where those operations are not live" in coordinator
+    assert "W313 is the planned durable coordinator handover mechanism" not in coordinator
     assert "The runtime reported the worker's current token capacity" in operator
     assert (
         "[the coordinator reference]"

@@ -78,10 +78,17 @@ coordinator acts without waiting to be asked:
    budget runs low, and prefer workers with enough budget when routing work.
 
 This keeps work finishable. A worker that exhausts its budget mid-task strands
-its branch and working context. W313 is the planned durable coordinator
-handover mechanism; until it lands, the current coordinator is the sole holder
-of routing decisions and open coordination threads, so it preserves enough
-budget to carry them.
+its branch and working context. On deployments with the coordinator-holder
+operations, the operator runs `project.coordinator.hand_over` before the acting
+coordinator's budget is exhausted and `project.coordinator.return` after the
+threads above are handed back. The durable holder record names the acting
+coordinator: project reports route to that holder, and every attending worker
+sees it in the heartbeat's `coordinator` block. `expected_until` is a reminder,
+so the operator still performs the return.
+
+On a deployment where those operations are not live, reserve enough budget in
+the current coordinator to carry routing decisions and open coordination
+threads through the next runtime upgrade.
 
 ## Set a teammate up to work
 
