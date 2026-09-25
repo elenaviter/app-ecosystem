@@ -400,12 +400,12 @@ was the right rule applied to the wrong case.
 
 ## Reload, refresh, restart
 
-Every activation is addressed to a commit: a bundle reload with
-`--commit <sha> --expect <sha>`, a refresh from clean exports of named commits,
-a client switch with `pb source use-code --expect`. The list below decides which
-commit that is and proves it is the one that loaded. A reload without a commit
-stages the working tree at that instant, whatever it holds, so it serves only a
-descriptor-only change.
+Every activation is addressed to a commit: an app reload from its deploy
+worktree checked out at that commit, a refresh from clean exports of named
+commits, a client switch with `pb source use-code --expect`. The list below
+decides which commit that is and proves it is the one that loaded. An app whose
+path is a working checkout stages that tree at the instant of the reload,
+whatever it holds, so no app's path is ever a working checkout.
 
 1. **Read the dashboard first**, and act on each row. The row says what a
    worker is about to change and `git status` says what has changed. A
@@ -450,23 +450,20 @@ descriptor-only change.
    file, so edit the live descriptor by locating the bundle id, never by the
    first match of a block.
 4. **Execute** the action `runtime-actions.md` names for the tree, at the
-   announced commit: `kdcube bundle reload <bundle-id> --commit <sha> --expect
-   <sha>`, `kdcube refresh --build` from exports of the announced commits,
-   `pb source use-code` with `--expect` and `--expect-kdcube`. For an app, first
-   write the commit where a restart reads it: set `activation.commit: <sha>` on
-   the app's entry in the staged `config/bundles.yaml` (located by bundle id),
-   then reload at the same sha. The proc reads that staged file on a reload and
-   on a restart, so no apply step sits between them. Why: a reload's commit
-   lives only in the running proc (`durable: false`), and a restart or rebuild
-   loads the descriptor's `activation.commit`, or the mutable tree when there
-   is none, so without this a restart silently undoes the activation. With the
-   pin set, a reload without `--commit` re-activates the pinned commit, never
-   the tree, and `activation.require_commit: true` guards the entry the day the
-   pin is removed: then a commitless reload is refused. Then **check
-   the receipt against the approved candidate**: the reload's `Loaded:`
-   commit, the relay's first stamped line (`source=snapshot`,
-   `app_ecosystem=<sha>`), and the commits the refresh exported each equal
-   the announced commit. A receipt that names another commit is a failed
+   announced commit: for an app, `git -C <deploy-worktree> checkout --detach
+   <sha>` and then `kdcube bundle reload <bundle-id>`; `kdcube refresh --build`
+   from exports of the announced commits; `pb source use-code` with `--expect`
+   and `--expect-kdcube`. Why the deploy worktree: it is the app's only path,
+   read by web requests, the Data Bus workers and a restart alike, and nobody
+   edits it, so the commit checked out there is what every process loads and a
+   restart keeps it. The working checkouts are never an app's path. The
+   descriptor's `activation.commit` is not the guarantee: a restart and the
+   Data Bus workers ignore it (W333), and the 2026-09-25 23:23Z window removed
+   it. Then **check the receipt against the approved candidate**: the loaded
+   path and commit in the chat-proc log for an app (`git -C <deploy-worktree>
+   rev-parse HEAD` is the commit on disk, the log line is what loaded), the
+   relay's first stamped line (`source=snapshot`, `app_ecosystem=<sha>`), and
+   the commits the refresh exported each equal the announced commit. A receipt that names another commit is a failed
    activation: report it as failed, with both commits, and stop there. A bundle
    reload returns before the widget build finishes, and a widget has three
    states after a reload: build pending, no build because the signature was
