@@ -1,15 +1,33 @@
 package:
   id: project-board
-  ref: "2026.09.23.0158"
+  ref: "2026.09.26.2205"
   description: |
-    First working client release. The distribution installs `pb`, owns the
-    complete host client and worker procedure, and supplies the shared
-    contract imported by the server. A per-target selector binds both the
-    command and supervised relay to either this exact package version or one
-    verified App Ecosystem commit containing every imported package.
+    The Problem Board client installs from the package index as one chain of
+    four packages at one version: project-board, app-foundation,
+    service-foundation and connection-hub[client]. It needs no KDCube package
+    and no Connection Hub command line (W322 Step 1). A source install takes
+    one App Ecosystem commit; a release built before this one (App Ecosystem
+    plus KDCube) stays readable and keeps its id.
+
+    Changes since the last published release (2026.9.22.2100):
+    - A pb version switch installs the whole release: a per-release
+      environment, a launcher with no logic, and a verified relay restart;
+      rollback restores the previous release (W323).
+    - A new agent is reached before it attends a project: mail without a
+      project goes through the board to an agent that attends none, by its
+      exact stable name, and approval wakes the session (W304).
+    - pb worker listen checks its own runtime's installed procedure and names
+      the install command first when it is missing or stale (W304 U8).
+    - pb host configure --remove-disabled-channels (W304).
+    - Each worker reads project state from its own workspace clone (W343);
+      an agent's workspace is <agent root>/<alias> (W262).
+    - Device sign-in for a browserless host (--device), and a second person
+      can approve (W257).
+    - The worker procedure ships with the client and is public; the host
+      procedure covers onboarding end to end (W340, W304).
 
 components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.09.23.0158"
+    version: "2026.09.26.2205"

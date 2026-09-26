@@ -1,15 +1,19 @@
 package:
   id: app-foundation
-  ref: "2026.09.22.2029"
+  ref: "2026.09.26.2205"
   description: |
-    First published release of the implementation candidate: the shared
-    contracts, MCP and data-bus integration, and native secret custody
-    that Connection Hub, its CLI and the Problem Board client all build
-    on. Published so those clients can be installed from an index instead
-    of copied from a checkout.
+    Released together with service-foundation, connection-hub and
+    project-board at one version, so the Problem Board client installs from
+    the package index as one dependency chain with no KDCube package (W322).
+
+    Changes since 2026.09.22.2029:
+    - Data Bus client: a reconnect presents the credential that is valid at
+      reconnect time, not the one captured when the client started (W265).
+    - Data Bus client: a refused upgrade during a platform restart is reported
+      as a transport failure, so the caller retries instead of giving up.
 
 components:
   python_package:
     id: app-foundation
     path: packages/app-foundation
-    version: "2026.09.22.2029"
+    version: "2026.09.26.2205"
