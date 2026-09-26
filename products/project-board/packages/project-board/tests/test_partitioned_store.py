@@ -415,3 +415,19 @@ def test_a_lookup_by_id_logs_at_debug_and_a_listing_at_info(tmp_path, caplog):
     [line] = [r.getMessage() for r in caplog.records if " op=lookup " in r.getMessage()]
     assert " key=event_a" in line
     assert last_read_summaries("codex-api")["events"]["key"] == "event_a"
+
+
+def test_per_cycle_in_flight_reads_log_at_debug_and_still_reach_the_heartbeat(tmp_path, caplog):
+    """W287 switch, 2026-09-26: outbox in-flight listings at INFO wrote ~1,100 lines a minute."""
+
+    from project_board.client.outbox_store import OutboxStore
+
+    outbox = OutboxStore(tmp_path / "control")
+    root = outbox.agent_root("work:project:one", "codex-api")
+    (root / "pending").mkdir(parents=True)
+    with caplog.at_level(logging.INFO, logger=local_store.__name__):
+        for folder in ("pending", "leased"):
+            list(outbox.in_flight(folder, project_ref="work:project:one"))
+    assert [r.getMessage() for r in caplog.records if r.getMessage().startswith("relay store read")] == []
+    assert last_read_summaries("codex-api")["outbox"]["op"] == "leased-list"
+    assert local_store.PER_CYCLE_OPS >= {"lookup", "pending-list", "leased-list"}
