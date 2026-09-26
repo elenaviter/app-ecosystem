@@ -423,6 +423,14 @@ class ProjectPersonControlLifecycle:
             request_id=f"{request_id}:viewer",
         )
         edits_in_project = not isinstance(admin, dict)
+        if isinstance(admin, dict) and int(admin.get("status") or 0) >= 500:
+            # The policy could not answer: say so, never "an admin decides it"
+            # (review on app-ecosystem#190).
+            return {
+                "can_edit": False,
+                "edit_in_project": False,
+                "reason": str(admin.get("error") or "project_person_control_authorization_unavailable"),
+            }
         return {
             "can_edit": False,
             "edit_in_project": edits_in_project,
