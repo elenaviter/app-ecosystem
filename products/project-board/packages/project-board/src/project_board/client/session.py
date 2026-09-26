@@ -525,6 +525,22 @@ def pull_worker_input(
             }
         )
     project_refs = list(worker.get("attended_project_refs") or [])
+    observed_projects = listener.get("observed_project_refs")
+    if isinstance(observed_projects, list):
+        for dropped in sorted(set(observed_projects) - set(project_refs)):
+            # Unlinked (or removed) since the last receive: the agent is told,
+            # not left to notice a missing project line (rehearsal gap 7).
+            signals.append(
+                {
+                    "kind": "project.attendance_ended",
+                    "project_ref": dropped,
+                    "message": (
+                        f"This agent no longer attends {dropped}: its mail and work are "
+                        "no longer yours. Stop work there and ask your owner or the "
+                        "coordinator before doing anything more for it."
+                    ),
+                }
+            )
     remaining = max(1, min(int(limit), 100))
     items: list[dict[str, Any]] = []
     projects: list[dict[str, Any]] = []
@@ -1042,6 +1058,7 @@ def pull_worker_input(
             control_refs=control_refs,
             observed_control_plane_state=control_plane_state,
             wake_id=wake_id,
+            observed_project_refs=project_refs,
         )
         result = response_document(
             response_items=items,

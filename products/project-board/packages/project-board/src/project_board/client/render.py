@@ -203,6 +203,12 @@ def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
             f"NOTE: {total_held - len(items)} held lease(s) are not in this batch. "
             + _cmd(["pb", "worker", "leases"], flags)
         )
+    # A signal is produced once (an unlink, a control-plane change); brief
+    # output is the only place the agent sees it.
+    for signal in result.get("signals") or []:
+        if isinstance(signal, Mapping):
+            lines.append(f"SIGNAL {signal.get('kind') or 'unknown'}:")
+            lines.extend(_flatten({k: v for k, v in signal.items() if k != "kind"}, prefix="  "))
     for issue in result.get("delivery_issues") or []:
         lines.append("DELIVERY ISSUE:")
         lines.extend(_flatten(issue, prefix="  "))
@@ -325,7 +331,12 @@ def _render_inspect(result: Mapping[str, Any]) -> list[str]:
             session.get("inbox_check_interval_seconds"),
         ),
         f"last_inbox_check_at: {session.get('last_inbox_check_at')}",
-        f"subscription: adapter {subscription.get('adapter')} · state {subscription.get('state')} · wake delivery {subscription.get('wake_delivery_state')}",
+        f"subscription: adapter {subscription.get('adapter')} · state {subscription.get('state')} · wake delivery "
+        + (
+            "n/a (session-owned watch)"
+            if subscription.get("adapter") == "session-owned-watch"
+            else str(subscription.get("wake_delivery_state"))
+        ),
     ]
     if session.get("inbox_check_state") == "stale":
         lines.append("NOTE: inbox checks are stale. For a Claude Code worker this means its watch has stopped.")

@@ -250,9 +250,13 @@ prompt tool, so every question for the operator goes through the board
 (collaboration Rule 11):
 
 ```bash
-claude --disallowedTools AskUserQuestion
-claude --resume <session-uuid> --disallowedTools AskUserQuestion
+cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude \
+  --add-dir "$HOME/.kdcube" \
+  --dangerously-skip-permissions \
+  --disallowedTools AskUserQuestion
 ```
+
+That is the official start command for every agent; `claude --resume <session-uuid>` with the same flags resumes one. A person follows [enroll an agent](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/enroll-an-agent.md), which also gives the Codex command.
 
 The flag applies to that one session, and the user's other Claude Code
 sessions keep their prompts. A session that is already running picks it up on

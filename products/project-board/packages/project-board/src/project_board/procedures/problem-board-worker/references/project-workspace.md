@@ -167,8 +167,9 @@ test commands, fixtures, and machine-owned system packages.
 setup, facts and environment pages were read at; when the host reads them from
 a copy that lags its integration branch, `project_setup_issues` names the lag.
 
-Build and prove the environment from that page before interpreting a test
-failure. When the context has no environment-page ref, or a command needs an
+Onboarding does not build it: build and prove the environment from that page
+on demand, before the first test or build you run, and before interpreting a
+test failure. When the context has no environment-page ref, or a command needs an
 undeclared dependency, tell the coordinator exactly what is missing. The team
 adds the setup or correction to the project page, so the next worker starts
 from the prepared answer.

@@ -33,9 +33,9 @@ IDENTITY = WorkerSessionIdentity.create("claude-code", "22222222-2222-4222-8222-
 
 
 def test_the_default_is_the_first_root_and_the_alias_else_the_name():
-    assert host_config.default_working_directory(["/w/root"], alias="lehrwerk", worker_name="claude-code-x") == "/w/root/lehrwerk"
+    assert host_config.default_working_directory(["/w/root"], alias="agent-one", worker_name="claude-code-x") == "/w/root/agent-one"
     assert host_config.default_working_directory(["/w/root"], alias="", worker_name="claude-code-x") == "/w/root/claude-code-x"
-    assert host_config.default_working_directory([], alias="lehrwerk", worker_name="x") == ""
+    assert host_config.default_working_directory([], alias="agent-one", worker_name="x") == ""
 
 
 def test_a_session_started_in_a_shared_checkout_gets_its_own_folder_under_the_root(tmp_path):
@@ -47,10 +47,10 @@ def test_a_session_started_in_a_shared_checkout_gets_its_own_folder_under_the_ro
 
     channel = host_config.enroll_worker_channel(
         host.path, identity=IDENTITY, profile="problem-board-claude-one", authorized=True,
-        worker_alias="lehrwerk", working_directory=str(shared),
+        worker_alias="agent-one", working_directory=str(shared),
     )
 
-    assert channel.working_directory == str(root.resolve() / "lehrwerk")
+    assert channel.working_directory == str(root.resolve() / "agent-one")
     assert channel.working_directory != str(shared)
 
 
@@ -72,13 +72,13 @@ def test_context_names_the_host_root_folder_for_an_agent_with_none_recorded(tmp_
     root = tmp_path / "workspaces"
     root.mkdir()
     config = host_config.HostRelayConfig.load(_host(tmp_path, [str(root)]).path)
-    channel = SimpleNamespace(working_directory="", worker_alias="lehrwerk", worker_name="claude-code-x")
+    channel = SimpleNamespace(working_directory="", worker_alias="agent-one", worker_name="claude-code-x")
 
     field = SimpleNamespace(_project_path=lambda _project_id: tmp_path / "no-project-record", worker_board_record=lambda _name: {})
 
     context = cli._worker_project_context(config, field, "work:project:one", channel=channel)  # noqa: SLF001
 
-    assert context["workspace"] == str(root.resolve() / "lehrwerk")
+    assert context["workspace"] == str(root.resolve() / "agent-one")
     assert context["workspace_source"] == "host_root"
     assert "workspace_note" not in context
 
@@ -92,7 +92,7 @@ def test_context_with_no_approved_root_says_so_and_names_no_folder(tmp_path):
         repository_mapping=config.repository_mapping,
     )
     field = SimpleNamespace(_project_path=lambda _project_id: tmp_path / "no-project-record", worker_board_record=lambda _name: {})
-    channel = SimpleNamespace(working_directory="", worker_alias="lehrwerk", worker_name="claude-code-x")
+    channel = SimpleNamespace(working_directory="", worker_alias="agent-one", worker_name="claude-code-x")
 
     context = cli._worker_project_context(config, field, "work:project:one", channel=channel)  # noqa: SLF001
 
@@ -114,10 +114,10 @@ def test_the_host_setting_names_the_agent_root_and_it_wins_over_the_first_work_r
 
     channel = host_config.enroll_worker_channel(
         host.path, identity=IDENTITY, profile="problem-board-claude-one", authorized=True,
-        worker_alias="lehrwerk", working_directory=str(first / "somewhere"),
+        worker_alias="agent-one", working_directory=str(first / "somewhere"),
     )
     # A folder under another work root is not this agent's workspace either.
-    assert channel.working_directory == str(agents.resolve() / "lehrwerk")
+    assert channel.working_directory == str(agents.resolve() / "agent-one")
 
 
 def test_the_configure_command_takes_the_agent_workspace_root():
@@ -131,12 +131,12 @@ def test_context_says_plainly_when_the_recorded_folder_is_outside_the_agent_root
     config = host_config.HostRelayConfig.load(_host(tmp_path, [str(root)]).path)
     field = SimpleNamespace(_project_path=lambda _project_id: tmp_path / "no-project-record", worker_board_record=lambda _name: {})
     channel = SimpleNamespace(
-        working_directory=str(tmp_path / "shared-kdcube-checkout"), worker_alias="lehrwerk", worker_name="claude-code-x",
+        working_directory=str(tmp_path / "shared-kdcube-checkout"), worker_alias="agent-one", worker_name="claude-code-x",
     )
 
     context = cli._worker_project_context(config, field, "work:project:one", channel=channel)  # noqa: SLF001
 
-    assert context["workspace"] == str(root.resolve() / "lehrwerk")
+    assert context["workspace"] == str(root.resolve() / "agent-one")
     assert context["workspace_source"] == "host_root"
     assert "is outside the host's agent workspace root" in context["workspace_note"]
     assert "it is not your workspace" in context["workspace_note"]
@@ -181,19 +181,50 @@ def test_listen_report_and_enrollment_refuse_a_recorded_folder_outside_the_root(
     # Recorded before the host had an agent root: under an approved root, outside the agent root.
     channel = host_config.enroll_worker_channel(
         host.path, identity=IDENTITY, profile="problem-board-claude-one", authorized=True,
-        worker_alias="lehrwerk", working_directory=str(shared),
+        worker_alias="agent-one", working_directory=str(shared),
     )
     host_config.update_host_config(host.path, agent_workspace_root=str(root))
     config = host_config.HostRelayConfig.load(host.path)
 
     workspace, source, note = host_config.agent_workspace(
-        config, recorded=str(shared), alias="lehrwerk", worker_name=channel.worker_name,
+        config, recorded=str(shared), alias="agent-one", worker_name=channel.worker_name,
     )
-    assert workspace == str(root.resolve() / "lehrwerk") and source == "host_root"
+    assert workspace == str(root.resolve() / "agent-one") and source == "host_root"
     assert "it is not your workspace" in note
 
     again = host_config.enroll_worker_channel(
         host.path, identity=IDENTITY, profile="problem-board-claude-one", authorized=True,
-        worker_alias="lehrwerk", working_directory=str(shared),
+        worker_alias="agent-one", working_directory=str(shared),
     )
-    assert again.working_directory == str(root.resolve() / "lehrwerk"), "enrollment follows the same answer"
+    assert again.working_directory == str(root.resolve() / "agent-one"), "enrollment follows the same answer"
+
+
+def test_an_alias_with_an_at_sign_is_its_own_folder_name(tmp_path):
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    assert host_config.default_working_directory(
+        [str(root)], alias="claude-app@host1", worker_name="claude-code-x"
+    ) == str(root / "claude-app@host1")
+
+
+def test_a_recorded_folder_that_no_longer_exists_gives_way_to_the_alias_folder(tmp_path):
+    # Rehearsal, 2026-09-26: listen kept a folder the agent had created and deleted.
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    config = host_config.HostRelayConfig.load(_host(tmp_path, [str(root)]).path)
+    gone = root / "old-name"
+    workspace, source, note = host_config.agent_workspace(
+        config, recorded=str(gone), alias="claude-app@host1", worker_name="claude-code-x",
+    )
+    assert workspace == str(root / "claude-app@host1") and source == "host_root"
+    assert "no longer exists" in note
+    # The agent's own folder, not created yet, is kept.
+    own = str(root / "claude-app@host1")
+    assert host_config.agent_workspace(config, recorded=own, alias="claude-app@host1", worker_name="x")[:2] == (own, "recorded")
+
+
+def test_a_folder_name_must_start_with_a_letter_or_digit(tmp_path):
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    for alias in ("@host1", "-agent", ".agent"):
+        assert host_config.default_working_directory([str(root)], alias=alias, worker_name="claude-code-x") == str(root / "claude-code-x"), alias

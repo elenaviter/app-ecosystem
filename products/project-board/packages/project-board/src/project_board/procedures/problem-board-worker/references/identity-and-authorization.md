@@ -144,3 +144,8 @@ while preserving the worker, credential binding, direct conversation, and
 attributed history. Retirement closes participation for that stable worker;
 the separately owned Connection Hub Card remains reviewable until the owner
 revokes it.
+
+An unlinked agent is told once: the next `pb worker receive` prints
+`SIGNAL project.attendance_ended` with the project ref, and `pb worker context`
+for that project reports `attending: false`. Stop work there, and ask the owner
+or the coordinator before doing anything more for it.

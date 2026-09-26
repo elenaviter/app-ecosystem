@@ -661,6 +661,8 @@ settings file that is not valid JSON is refused and left unchanged. The first-ru
 reports. Without them the card says `limit not reported` (spark1 until
 2026-09-24). Codex agents need none of this.
 
+A person enrolling one agent by hand follows [enroll an agent](./enroll-an-agent.md): three steps, the commands, nothing more. The start scripts below hold the same commands for a host that runs its agents unattended.
+
 **Host agent**, first, one start script per agent in `~/.local/bin`, holding its
 workspace and every flag, so a start or a restart is one short command and no
 flag can be lost. A long command pasted by hand gets cut: on 2026-09-24 both
