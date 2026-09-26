@@ -64,9 +64,10 @@ def _private_names() -> frozenset[str]:
             pytest.fail(f"{PRIVATE_NAMES_FILE} is required and not set")
         pytest.skip(f"no private names list: set {PRIVATE_NAMES_FILE}")
     names = frozenset(
-        line.strip().lower()
+        # A name may carry a trailing `# note`; underscores count as hyphens.
+        line.split("#", 1)[0].strip().lower().replace("_", "-")
         for line in Path(location).expanduser().read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
+        if line.split("#", 1)[0].strip()
     )
     assert names, f"{PRIVATE_NAMES_FILE} lists no names"
     return names
@@ -101,7 +102,8 @@ def _names_in(line: str, names: frozenset[str]) -> list[str]:
     for pattern in OWN_ADDRESS:
         line = pattern.sub(" ", line)
     found = []
-    for word in WORD.findall(line.lower()):
+    # `quickstart_works` is the same name as `quickstart-works`.
+    for word in WORD.findall(line.lower().replace("_", "-")):
         parts = word.split("-")
         for start in range(len(parts)):
             for end in range(start + 1, len(parts) + 1):
@@ -154,6 +156,7 @@ def test_the_name_check_finds_a_listed_name_inside_an_alias_and_a_path() -> None
     assert _names_in("agent-zq-probe@host-two", names) == ["zq", "zq-probe"]
     assert _names_in("~/.kdcube/pb/workspaces/ZQ-Probe/applications", names) == ["zq", "zq-probe"]
     assert _names_in("zqx-prober and probe-zqx", names) == []
+    assert _names_in("the zq_probe folder", names) == ["zq", "zq-probe"]
     # The placeholders the public pages use are plain words.
     assert _names_in("agent-one@host-two, my-agent, maintainer-host, agent-user", names) == []
     # The repository's own address is not a private name.
@@ -169,9 +172,9 @@ def test_without_the_private_list_the_check_skips_and_a_required_run_fails(monke
     with pytest.raises(pytest.fail.Exception):
         _private_names()
     listed = tmp_path / "names.txt"
-    listed.write_text("# a comment\n\nZQ-Probe\n", encoding="utf-8")
+    listed.write_text("# a comment\n\nZQ-Probe\nzq_other   # a note\n", encoding="utf-8")
     monkeypatch.setenv(PRIVATE_NAMES_FILE, str(listed))
-    assert _private_names() == frozenset({"zq-probe"})
+    assert _private_names() == frozenset({"zq-probe", "zq-other"})
 
 
 def test_no_public_page_names_this_hosts_endpoint() -> None:
