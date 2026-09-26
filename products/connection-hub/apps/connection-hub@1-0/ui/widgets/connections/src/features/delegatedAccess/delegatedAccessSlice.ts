@@ -10,6 +10,10 @@ import {
   projectAgentCardRecord,
   type ProjectAgentCardTarget,
 } from './projectAgentCard';
+import {
+  projectControlCardRecord,
+  type ProjectControlCardTarget,
+} from './projectControlCard';
 import type {
   DelegatedAccessCreateResult,
   DelegatedAccessGrantOption,
@@ -104,7 +108,9 @@ export const loadControlCard = createAsyncThunk<
       if (res.access.state && res.access.state !== 'active') {
         return rejectWithValue('This Control Card is revoked. Linked callers remain closed until the application links an active Card.');
       }
-      return res;
+      return request.operation === 'project_control_card_get'
+        ? { ...res, access: projectControlCardRecord(res.access) }
+        : res;
     } catch (e) {
       return rejectWithValue(message(e));
     }
@@ -229,6 +235,8 @@ export interface UpdateDelegatedAccessArgs {
   projectPersonControl?: ProjectControlCoordinates;
   /** W319: save another person's agent Card through the project path. */
   projectAgentCard?: ProjectAgentCardTarget;
+  /** W260: a project's Control Card opened through its project saves there too. */
+  projectControlCard?: ProjectControlCardTarget;
 }
 
 /** Edit a manual automation IN PLACE — the card keeps its access_id/client_id,
@@ -257,6 +265,7 @@ export const updateDelegatedAccess = createAsyncThunk<
       properties,
       projectPersonControl,
       projectAgentCard,
+      projectControlCard,
     },
     { rejectWithValue },
   ) => {
@@ -266,12 +275,17 @@ export const updateDelegatedAccess = createAsyncThunk<
           ? 'project_person_control_update'
           : projectAgentCard
             ? 'project_agent_card_update'
-            : 'delegated_access_update',
+            : projectControlCard
+              ? 'project_control_card_update'
+              : 'delegated_access_update',
         {
           ...(projectAgentCard
             ? { access_id: projectAgentCard.accessId, project_ref: projectAgentCard.projectRef }
             : {}),
-          ...(projectAgentCard ? {} : projectPersonControl
+          ...(!projectAgentCard && !projectPersonControl && projectControlCard
+            ? { control_id: projectControlCard.controlId, project_ref: projectControlCard.projectRef }
+            : {}),
+          ...(projectAgentCard || (!projectPersonControl && projectControlCard) ? {} : projectPersonControl
             ? projectPersonControl.kind === 'person'
               ? {
                   project_ref: projectPersonControl.projectRef,
