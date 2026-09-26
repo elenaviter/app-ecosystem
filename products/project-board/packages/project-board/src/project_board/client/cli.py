@@ -314,6 +314,14 @@ def build_parser() -> argparse.ArgumentParser:
     peers = command.add_mutually_exclusive_group()
     peers.add_argument("--allow-peer-worker", action="append")
     peers.add_argument("--deny-all-peers", action="store_true")
+    command.add_argument(
+        "--remove-disabled-channels",
+        action="store_true",
+        help=(
+            "Remove the relay channel rows of detached or retired sessions "
+            "(state disabled). Active and pending channels are kept."
+        ),
+    )
     command.add_argument("--max-control-bytes", type=int)
     command.add_argument(
         "--allow-session-resume-view",
@@ -1903,6 +1911,9 @@ def _host_command(args: Any) -> dict[str, Any]:
     if args.host_command == "configure":
         repositories = parse_source_repositories(args.set_source_repo)
         peer_workers = [] if args.deny_all_peers else args.allow_peer_worker
+        before = {
+            channel.worker_name for channel in HostRelayConfig.load(path).workers
+        }
         updated = update_host_config(
             path,
             endpoint=args.endpoint,
@@ -1919,8 +1930,14 @@ def _host_command(args: Any) -> dict[str, Any]:
             idle_reconcile_ceiling_seconds=args.idle_poll_interval,
             create_missing_journal_home=args.create_missing_journal_home,
             agent_workspace_root=args.agent_workspace_root,
+            remove_disabled_channels=bool(getattr(args, "remove_disabled_channels", False)),
         )
-        return _host_view(updated)
+        view = _host_view(updated)
+        if getattr(args, "remove_disabled_channels", False):
+            view["removed_channels"] = sorted(
+                before - {channel.worker_name for channel in updated.workers}
+            )
+        return view
     if args.host_command == "relay-fault":
         config = HostRelayConfig.load(path)
         selected_worker = str(getattr(args, "worker", "") or "").strip().lower()
