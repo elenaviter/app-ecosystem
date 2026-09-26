@@ -1389,5 +1389,6 @@ def test_the_kdcube_profile_verifies_with_the_platform_attestations():
     before = " ".join(profile[profile.index("### The host `kdcube` CLI is current"):profile.index("## Execute (coordinator step 5)")].split())
     assert "A CLI older than the platform's attestation commits prints no \"Source Attestation\" section" in before
     assert "`git -C <kdcube checkout> rev-parse HEAD` equals it" in before
+    assert "`git -C <kdcube checkout> status --porcelain --untracked-files=no` is empty (tracked changes only" in before
     # The hand checks it replaces are gone.
     assert "`dist/` inside the container carries the new source" not in words

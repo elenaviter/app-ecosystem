@@ -146,8 +146,10 @@ platform. A CLI older than the platform's attestation commits prints no
 reads like missing evidence rather than an old tool (dev-main 2026-09-26: an
 editable install from a checkout 45 commits behind). **Before the window:**
 the CLI's source is at the platform commit the window releases (for an
-editable install, `git -C <kdcube checkout> rev-parse HEAD` equals it; for a
-package, its version is that release), and `kdcube bundle status <bundle-id>
+editable install, `git -C <kdcube checkout> rev-parse HEAD` equals it and
+`git -C <kdcube checkout> status --porcelain --untracked-files=no` is empty (tracked changes only: an operator's untracked files do not change the installed CLI), since a dirty
+checkout is the same risk as a stale one; for a package, its version is that
+release), and `kdcube bundle status <bundle-id>
 --live --workdir <workdir>` on an app already loaded prints a "Source
 Attestation" line. Advance the CLI first when either fails.
 
