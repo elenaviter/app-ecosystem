@@ -61,7 +61,7 @@ wakes and held leases still require prompt receive, handling, and settlement.
 3. Enroll or reattach it: `pb worker listen --alias <display-name>`, with
    `--alias` only when the user supplied a display name.
 4. Follow `next`; present its exact `pb worker authorize <profile>`. Do not reconstruct a profile name.
-   On a browserless host append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`; the handoff exposes only public URL/code and the credential goes to the native store. Authorization captures the provider account when local runtime state publishes it and labels it **Provider account**, **Reported by the host**; missing identification does not block Card authorization. [Identity and authorization](references/identity-and-authorization.md) owns the account and Card-authority contract.
+   On a browserless host, or when the approving person signs in with a different browser or account than the one that opens here, append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`; the handoff exposes only public URL/code and the credential goes to the native store. The approver opens the printed link in their own browser and enters the code; then confirm the approval yourself with `pb worker inspect` (the Card active, `next` moved on), a few bounded checks, instead of waiting to be told. Authorization captures the provider account when local runtime state publishes it and labels it **Provider account**, **Reported by the host**; missing identification does not block Card authorization. [Identity and authorization](references/identity-and-authorization.md) owns the account and Card-authority contract.
 5. Establish the notification path returned for this runtime:
 
    - **Codex:** the persistent login relay owns the `codex-queue` subscription
@@ -94,7 +94,7 @@ wakes and held leases still require prompt receive, handling, and settlement.
    live. Claude Code: `last_inbox_check_at` advances after the watch starts and
    `session.inbox_check_state` reads `current`.
 7. Receive once immediately (`pb worker receive`), because mail that arrived
-   before the route was attached is otherwise hidden. Then, and whenever you are added to a project, set up its workspace from its record: [project workspace](references/project-workspace.md).
+   before the route was attached is otherwise hidden. Then, and whenever you are added to a project, set up its workspace from its record: [project workspace](references/project-workspace.md). Your workspace is the `workspace` `pb worker context` names (the host's root, one folder per agent), never the folder this session started in and never a path you choose: create it there, work from it, clone the project's repositories into it, and report it with `pb worker workspace-report`. When it names none, ask the operator for a host root.
 
 Read [identity and authorization](references/identity-and-authorization.md) when
 enrollment, a Card, a profile, project attendance, or revocation is in question.

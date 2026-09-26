@@ -36,11 +36,17 @@ Each entry has an `alias`, a `url`, a `role` (`work`, `journal` or
 `artifact`), and an optional `branch` and `path`.
 
 - **`alias`** names the folder: the repository lives at `<workspace>/<alias>`,
-  where `<workspace>` is the `workspace` field of the same output: the folder
-  this session enrolled from, which the host procedure makes your own. When it
-  is empty, the output says so: run `pb worker listen` from your workspace
-  folder once, and read again. Two entries with the same URL are two folders,
-  one per alias.
+  where `<workspace>` is the `workspace` field of the same output: your own
+  folder, the one this session enrolled from when it lies inside the host's
+  agent workspace root, else `<agent workspace root>/<your alias>`
+  (`workspace_source: host_root`). The root is the host's setting (`pb host
+  configure --agent-workspace-root`, inside an approved work root), else
+  the alphabetically first approved work root. Create it if it does not exist yet and work from it. Never the
+  folder a session happened to start in, and never a path you choose: on
+  2026-09-26 an agent started in a shared checkout was handed that checkout.
+  When the output names no workspace, the host approves no root: ask the
+  operator to add one. Two entries with the same URL are two folders, one per
+  alias.
 - **`branch`** is the branch you work on. Without it, you use the branch the
   remote checks out by default.
 - **`path`** is the part of the repository the project uses, for example the

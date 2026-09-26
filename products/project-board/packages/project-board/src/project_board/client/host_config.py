@@ -55,6 +55,21 @@ def _required(value: Any, field: str) -> str:
     return text
 
 
+def _agent_root(value: str, allowed_roots: Sequence[Any]) -> str:
+    """The configured agent workspace root, which must lie inside an approved work root."""
+
+    if not value:
+        return ""
+    root = _absolute(value, "agent_workspace.root")
+    if not any(is_inside(root, str(item)) for item in allowed_roots or []):
+        raise DomainError(
+            "work_relay_config_invalid",
+            "agent_workspace.root must lie inside an approved work root.",
+            details={"agent_workspace_root": str(root)},
+        )
+    return str(root)
+
+
 def _absolute(value: Any, field: str) -> Path:
     path = Path(_required(value, field)).expanduser()
     if not path.is_absolute():
@@ -248,6 +263,16 @@ class HostRelayConfig:
     # W262: (alias, read_root, read_ref) for each alias whose map entry names
     # the never-edited worktree the project's setup is read from.
     source_read_roots: tuple[tuple[str, str, str], ...] = ()
+    # W262: where each agent's own workspace lives, one folder per agent
+    # (``pb host configure --agent-workspace-root``); unset, the first approved
+    # work root. See ``agent_workspace_root``.
+    agent_workspace_root: str = ""
+
+    @property
+    def effective_agent_workspace_root(self) -> str:
+        """The configured agent workspace root, else the first approved work root."""
+
+        return self.agent_workspace_root or (self.allowed_roots[0] if self.allowed_roots else "")
 
     def repository_mapping(self) -> dict[str, Any]:
         """The repository map entries, read roots included, for ``RepositoryMap``."""
@@ -322,6 +347,8 @@ class HostRelayConfig:
             )
         state_root_value = str(connection_hub.get("state_root") or "").strip()
         state_root = _absolute(state_root_value, "connection_hub.state_root") if state_root_value else None
+        agent_workspace = value.get("agent_workspace") if isinstance(value.get("agent_workspace"), Mapping) else {}
+        agent_root_value = str(agent_workspace.get("root") or "").strip()
         journal_root_value = str(journal.get("root") or "").strip()
         journal_root = _absolute(journal_root_value, "journal_workspace.root") if journal_root_value else None
         repositories = journal.get("source_repositories") or {}
@@ -422,6 +449,7 @@ class HostRelayConfig:
                     for alias, url in repository_urls.items()
                 )
             ),
+            agent_workspace_root=_agent_root(agent_root_value, roots),
         )
         approved_roots = [Path(root) for root in result.allowed_roots]
         for alias, repository in (
@@ -697,6 +725,7 @@ def update_host_config(
     reconcile_ceiling_seconds: int | None = None,
     idle_reconcile_ceiling_seconds: int | None = None,
     create_missing_journal_home: bool | None = None,
+    agent_workspace_root: str | Path | None = None,
 ) -> HostRelayConfig:
     """Apply one explicit, non-secret host configuration revision."""
 
@@ -773,6 +802,21 @@ def update_host_config(
             value["journal_workspace"]["create_missing_home"] = bool(
                 create_missing_journal_home
             )
+        if agent_workspace_root is not None:
+            if not str(agent_workspace_root).strip():
+                # An empty value clears the setting: the first approved root again.
+                value.pop("agent_workspace", None)
+            else:
+                chosen = _absolute(str(agent_workspace_root), "agent_workspace.root")
+                if not any(is_inside(chosen, root) for root in value.get("allowed_roots") or []):
+                    raise DomainError(
+                        "work_agent_workspace_root_outside_allowed_roots",
+                        "The agent workspace root must lie inside an approved work root "
+                        "(`pb host configure --add-allow-root <path>` first).",
+                        status=400,
+                        details={"agent_workspace_root": str(chosen)},
+                    )
+                value["agent_workspace"] = {"root": str(chosen)}
         value["updated_at"] = utc_now()
         updated = HostRelayConfig.from_mapping(value, path=path)
         atomic_write_json(path, value)
@@ -793,6 +837,67 @@ def resolve_host_config_path(value: str | Path | None = None) -> Path:
         "work_relay_config_required",
         "Problem Board has no default machine configuration. Run the setup procedure first.",
     )
+
+
+_SAFE_FOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def is_inside(path: str | Path, root: str | Path) -> bool:
+    """Whether ``path`` resolves to ``root`` or below it (``..`` and links resolved)."""
+
+    try:
+        resolved = Path(path).expanduser().resolve()
+        base = Path(root).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return resolved == base or resolved.is_relative_to(base)
+
+
+def default_working_directory(allowed_roots: Sequence[str], *, alias: str, worker_name: str) -> str:
+    """An agent's own workspace when none is recorded: ``<root>/<alias>``.
+
+    The first root given, one folder per agent: its alias when that is one safe
+    folder name, else its stable name. Never the directory a session happened
+    to start in: a Claude Code agent started in a shared checkout was handed
+    that checkout (operator, 2026-09-26: "it had to be a dedicated
+    workspace"). Empty when there is no root, or when no name stays inside it.
+    """
+
+    roots = [str(root) for root in allowed_roots if str(root).strip()]
+    if not roots:
+        return ""
+    root = Path(roots[0])
+    for name in (str(alias or "").strip(), str(worker_name or "").strip()):
+        if name and _SAFE_FOLDER.fullmatch(name) and name not in {".", ".."}:
+            candidate = root / name
+            if is_inside(candidate, root) and candidate.resolve() != root.resolve():
+                return str(candidate)
+    return ""
+
+
+def agent_workspace(
+    config: "HostRelayConfig", *, recorded: str, alias: str, worker_name: str
+) -> tuple[str, str, str]:
+    """This agent's workspace, how it was chosen, and a plain note when a recorded folder is refused.
+
+    One answer for ``listen``, ``context``, ``workspace-report`` and
+    enrollment (W262): a recorded folder inside the host's agent workspace
+    root is kept; any other recorded folder is not the workspace, and the
+    agent's own folder under the root is named instead.
+    """
+
+    root = config.effective_agent_workspace_root
+    recorded = str(recorded or "").strip()
+    if recorded and (not root or is_inside(recorded, root)):
+        return recorded, "recorded", ""
+    derived = default_working_directory([root] if root else [], alias=alias, worker_name=worker_name)
+    note = (
+        f"The folder this session recorded ({recorded}) is outside the host's agent "
+        f"workspace root ({root}); it is not your workspace."
+        if recorded and root
+        else ""
+    )
+    return derived, ("host_root" if derived else ""), note
 
 
 def enroll_worker_channel(
@@ -835,26 +940,23 @@ def enroll_worker_channel(
             worker_alias or (existing.worker_alias if existing else "")
         )
         requested_working_directory = str(working_directory or "").strip()
-        selected_working_directory = (
+        requested_path = (
             str(Path(requested_working_directory).expanduser().resolve())
             if requested_working_directory
-            else existing.working_directory
-            if existing
             else ""
         )
-        if selected_working_directory:
-            selected_path = Path(selected_working_directory)
-            approved_roots = [Path(root) for root in config.allowed_roots]
-            if not any(
-                selected_path == root or selected_path.is_relative_to(root)
-                for root in approved_roots
-            ):
-                # Enrollment may be invoked from a utility checkout outside
-                # the approved work roots. Keep listening, but do not retain
-                # that directory as a future launch location.
-                selected_working_directory = (
-                    existing.working_directory if existing else ""
-                )
+        agent_root = config.effective_agent_workspace_root
+        # The folder a session enrolls from counts only inside the host's agent
+        # workspace root; otherwise the recorded one is checked the same way,
+        # and failing both, the agent's own folder under the root (W262).
+        candidate = (
+            requested_path
+            if requested_path and agent_root and is_inside(requested_path, agent_root)
+            else (existing.working_directory if existing else "")
+        )
+        selected_working_directory, _source, _note = agent_workspace(
+            config, recorded=candidate, alias=alias, worker_name=identity.worker_name
+        )
         channel = WorkerChannelConfig(
             runtime_kind=identity.runtime_kind,
             runtime_session_id=identity.runtime_session_id,

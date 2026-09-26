@@ -32,6 +32,9 @@ from .authorization import (
     inspect_profile_metadata,
 )
 from .host_config import (
+    agent_workspace,
+    default_working_directory,
+    is_inside,
     HOST_CONFIG_SCHEMA,
     HostRelayConfig,
     enroll_worker_channel,
@@ -337,6 +340,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--create-missing-journal-home",
         action=argparse.BooleanOptionalAction,
         default=None,
+    )
+    command.add_argument(
+        "--agent-workspace-root",
+        default=None,
+        help=(
+            "Absolute LOCAL folder (~ allowed) inside an approved work root, holding one "
+            "workspace per agent (<root>/<alias>). An empty value clears it; unset, the "
+            "alphabetically first approved work root is used, so set it explicitly."
+        ),
     )
 
     relay_fault = host_commands.add_parser(
@@ -1901,6 +1913,7 @@ def _host_command(args: Any) -> dict[str, Any]:
             reconcile_ceiling_seconds=args.poll_interval,
             idle_reconcile_ceiling_seconds=args.idle_poll_interval,
             create_missing_journal_home=args.create_missing_journal_home,
+            agent_workspace_root=args.agent_workspace_root,
         )
         return _host_view(updated)
     if args.host_command == "relay-fault":
@@ -3455,11 +3468,18 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
             "This host holds no repository list for the project yet: the relay writes it on its next poll.",
             details={"project_ref": project_ref},
         )
-    workspace = str(getattr(config.worker(identity), "working_directory", "") or "")
+    recorded = config.worker(identity)
+    workspace, _source, _note = agent_workspace(
+        config,
+        recorded=str(getattr(recorded, "working_directory", "") or ""),
+        alias=str(getattr(recorded, "worker_alias", "") or ""),
+        worker_name=identity.worker_name,
+    )
     if not workspace:
         raise DomainError(
             "field_workspace_unknown",
-            "This session enrolled before its folder was recorded: run `pb worker listen` from your workspace folder.",
+            "The host approves no work root, so this agent has no workspace: ask the operator to add one "
+            "(`pb host configure --add-allow-root <path>`).",
         )
     report = build_workspace_report(
         Path(workspace),
@@ -3676,6 +3696,16 @@ def _worker_command(args: Any) -> dict[str, Any]:
             "authorization": profile,
             "listening": listening,
         }
+        if channel.working_directory:
+            # W262: this agent's own workspace under the host's agent root.
+            # Its sessions start there; a session started elsewhere still
+            # works from it, never from where it was started.
+            result["workspace"] = channel.working_directory
+            if not is_inside(Path.cwd(), channel.working_directory):
+                result["workspace_note"] = (
+                    f"Your workspace is {channel.working_directory}: create it if needed, work "
+                    "from it, and start this agent's sessions there. Never choose another folder."
+                )
         if getattr(args, "alias", None) and channel.worker_alias and channel.worker_alias != previous_alias:
             # W304 U6: the board keeps an existing alias on every publish, so
             # a rename is a request the relay carries on the next heartbeat.
@@ -4463,18 +4493,30 @@ def _worker_project_context(
     # The folder this session enrolled from (`pb worker listen`), which the
     # host procedure makes the agent's own workspace. Repositories are set up
     # inside it, one folder per alias (W304 finding 39).
-    workspace = str(getattr(channel, "working_directory", "") or "")
+    workspace, workspace_source, outside_note = agent_workspace(
+        config,
+        recorded=str(getattr(channel, "working_directory", "") or ""),
+        alias=str(getattr(channel, "worker_alias", "") or ""),
+        worker_name=str(getattr(channel, "worker_name", "") or ""),
+    )
     return {
         "project_ref": project_ref,
         "project_on_this_host": on_host,
         "workspace": workspace,
+        "workspace_source": workspace_source,
+        **(
+            {"workspace_note": f"{outside_note} Work from {workspace}: create it if needed, clone the project's repositories into it, and start this agent's sessions there."}
+            if outside_note and workspace
+            else {}
+        ),
         **(
             {}
             if workspace
             else {
                 "workspace_note": (
-                    "This session enrolled before its folder was recorded: run "
-                    "`pb worker listen` from your workspace folder to record it."
+                    "The host approves no work root, so this agent has no workspace: ask the "
+                    "operator to add one (`pb host configure --add-allow-root <path>`). Never "
+                    "choose a folder yourself."
                 )
             }
         ),
