@@ -65,6 +65,11 @@ changes image contents only.
   initialize answers 401 with its challenge when the stack is healthy).
 - The rebuild is the operator's runtime action. Ask with the exact command and
   wait, do not run it unprompted.
+- After a refresh, confirm the containers are up (`docker compose ps` in the
+  runtime's docker directory) whatever the refresh printed. If they are not,
+  run `kdcube start --tenant <t> --project <p> --path "$REPO"` and report the
+  refresh output: a refresh stops the stack first, and a CLI without the fix
+  for a failed image receipt (kdcube#304) ended there with the stack down.
 
 Detail for the local operator flow, with the environment variables spelled
 out: the CLI cheat sheet in the deployment repository that hosts your
