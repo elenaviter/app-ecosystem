@@ -74,7 +74,9 @@ def test_16_device_login_is_proven_live_and_the_tunnel_is_the_fallback():
 def test_u4_agent_workspaces_live_under_kdcube():
     # Operator ruling, 2026-09-25: "i do not want this in user folder."
     # Every spelling of the old home-folder root: ~/, $HOME/ (escaped in tmux), /home/<user>/.
-    assert re.findall(r"(?:~|\$HOME|/home/<user>)/workspaces", HOST) == []
+    # The move section names the old folders on purpose; nothing else may.
+    outside_move = HOST.split("### Move an existing agent to the workspace root", 1)[0] + HOST.split("## 10. Enroll each agent", 1)[1]
+    assert re.findall(r"(?:~|\$HOME|/home/<user>)/workspaces", outside_move) == []
     assert "--allow-root /home/<user>/.kdcube/pb/workspaces" in HOST
     assert 'W="$HOME/.kdcube/pb/workspaces/<alias>"' in HOST
     assert "mkdir -p ~/.kdcube/pb/workspaces && chmod 700 ~/.kdcube/pb/workspaces" in HOST
@@ -404,3 +406,51 @@ def test_35_each_agent_starts_and_resumes_from_one_script_with_every_flag(tmp_pa
     assert "The session id is the agent's stable name without its `claude-code-` or `codex-` prefix." in words
     assert "**Restart an agent**" in HOST and "Resume as <agent-name>: Start Or Resume." in HOST
     assert "Agents that must not reach each other run as separate host users." in words
+
+
+def test_u4_move_keeps_conversation_memory_and_worktrees_and_rolls_back(tmp_path):
+    # Operator ruling 2026-09-26 (W304 decision 4): existing agents move to the
+    # new root, conversations included. The scripts are run here as written.
+    import subprocess
+
+    raw = (PROCEDURES / "add-a-worker-host.md").read_text(encoding="utf-8")
+    section = raw.split("### Move an existing agent to the workspace root", 1)[1].split("## 10. Enroll each agent", 1)[0]
+    move, rollback = re.findall(r"```bash\n(.*?)\n```", section, re.S)
+    assert "mv \"$PO\" \"$PN\"" in move and move.index('mv "$PO" "$PN"') < move.index('mv "$OLD" "$NEW"')
+    home = tmp_path / "home"
+    old = home / "workspaces" / "space009"
+    env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_NOSYSTEM": "1"}
+    run = lambda *args, **kw: subprocess.run(args, env=env, check=True, capture_output=True, text=True, **kw)
+    shared = home / "src" / "repo"
+    run("git", "init", "-q", str(shared))
+    run("git", "-C", str(shared), "commit", "-q", "--allow-empty", "-m", "init")
+    run("git", "-C", str(shared), "worktree", "add", "-q", str(old / "repo"), "-b", "a")
+    run("git", "clone", "-q", str(shared), str(old / "clone"))
+    run("git", "-C", str(old / "clone"), "worktree", "add", "-q", str(old / "worktrees" / "w2"), "-b", "x")
+    enc = lambda path: str(path).replace("/", "-").replace(".", "-")
+    projects = home / ".claude" / "projects"
+    (projects / enc(old) / "memory").mkdir(parents=True)
+    (projects / enc(old) / "sid-1.jsonl").write_text("{}\n")
+    (projects / enc(old) / "memory" / "MEMORY.md").write_text("- a fact\n")
+    values = f"A=ag ALIAS=al SID=sid-1\nOLD={old}\n"
+    fill = lambda script: re.sub(r"A=<agent-name> ALIAS=<alias> SID=<session-id>\nOLD=<[^\n]*>\n", values, script)
+    run("bash", "-c", fill(move))
+    new = home / ".kdcube" / "pb" / "workspaces" / "al"
+    assert not old.exists() and not (projects / enc(old)).exists()
+    assert (projects / enc(new) / "memory" / "MEMORY.md").read_text() == "- a fact\n"
+    assert (projects / enc(new) / "sid-1.jsonl").exists()
+    for tree, branch in (("repo", "a"), ("worktrees/w2", "x")):
+        assert run("git", "-C", str(new / tree), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == branch
+    for checkout in (shared, new / "clone"):
+        listing = run("git", "-C", str(checkout), "worktree", "list").stdout
+        assert str(old) not in listing and "prunable" not in listing
+    # A second run refuses: the new place is taken.
+    assert subprocess.run(["bash", "-c", fill(move)], env=env, capture_output=True, text=True).returncode != 0
+
+    run("bash", "-c", fill(rollback).replace("# same A, ALIAS, SID, OLD, NEW, enc, PO, PN as above",
+                                             fill(move).split("[ -d \"$OLD\" ]", 1)[0].split("( set -eu", 1)[1]))
+    assert old.exists() and not new.exists()
+    assert (projects / enc(old) / "memory" / "MEMORY.md").exists() and not (projects / enc(new)).exists()
+    assert run("git", "-C", str(old / "repo"), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "a"
+    assert str(new) not in run("git", "-C", str(shared), "worktree", "list").stdout
