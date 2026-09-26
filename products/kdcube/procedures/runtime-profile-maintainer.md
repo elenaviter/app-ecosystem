@@ -4,7 +4,7 @@ title: "KDCube Maintainer Runtime Profile"
 summary: "The commands for a runtime of kind kdcube that this team maintains: which action makes a change live by the tree it is in (platform refresh with package selectors, bundle reload, descriptor apply, app deploy worktree), the order when a change moves board operations, and how each action's receipt proves it loaded the commit its ref names."
 status: current
 tags: [procedure, kdcube, maintainer, runtime, runtime-profile, refresh, reload, deploy]
-keywords: [runtime profile, kind kdcube, releases, kdcube refresh, --build, maintainer-local-python-package, bundle reload, bundle config apply, bundles.yaml, bundles.template.yaml, deploy worktree, activation block, --local-path, widget dist, eviction count, board operations, receipt names the commit]
+keywords: [runtime profile, kind kdcube, releases, relative gitdir, no git evidence, kdcube refresh, --build, maintainer-local-python-package, bundle reload, bundle config apply, bundles.yaml, bundles.template.yaml, deploy worktree, activation block, --local-path, widget dist, eviction count, board operations, receipt names the commit]
 see_also:
   - ./maintainer-rebuild.md
   - ./platform-suite.md
@@ -110,6 +110,34 @@ descriptor is behind it deploys and cannot run. Identical blocks sit under
 different bundle ids in that file, so edit the live descriptor by locating the
 bundle id, never by the first match of a block.
 
+### A deploy worktree the container can read
+
+The receipt's git evidence comes from inside the container, which sees the
+deploy worktree at its bundle path (`/bundles/...`), not at the host path.
+`git worktree add` writes an **absolute host path** into the worktree's `.git`
+file (`gitdir: /Users/.../<checkout>/.git/worktrees/<name>`), which does not
+exist in the container, so the reload loads the tree but its receipt reads
+`(no git evidence: bundle_path_not_a_repository)` and names no commit
+(W262 line 4 proof, dev-main 2026-09-26). Give every deploy worktree a
+**relative** gitdir, which resolves on the host and in the container alike as
+long as the checkout's `.git` is mounted beside it at the same relative place:
+
+- git 2.48 or later: `git -C <checkout> worktree add --relative-paths
+  <deploy-worktree> <sha>`, or for an existing one `git -C <checkout> worktree
+  repair --relative-paths <deploy-worktree>`.
+- Before 2.48 (dev-main runs 2.43): after `git worktree add`, rewrite the
+  worktree's `.git` file with the path relative to the worktree:
+  `printf 'gitdir: %s\n' "$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], sys.argv[2]))' <checkout>/.git/worktrees/<name> <deploy-worktree>)" > <deploy-worktree>/.git`.
+  The checkout's own back-link (`<checkout>/.git/worktrees/<name>/gitdir`)
+  stays a host path, which only the host reads, and `git status` on the host
+  stays clean.
+
+**Check before the window**, for each deploy worktree the window moves:
+`head -1 <deploy-worktree>/.git` starts with `gitdir: ../`, never
+`gitdir: /`, and `git -C <deploy-worktree> rev-parse HEAD` answers on the
+host. A worktree that fails either is fixed before the window, not after its
+receipt comes back without evidence.
+
 ## Execute (coordinator step 5)
 
 Execute the action the table names for the tree, at the commit the ref names:
@@ -144,7 +172,9 @@ against old modules. That happened on 2026-09-25: the board failed with
 Then **check the receipt against the approved candidate**: for an app the
 reload's line reads `Loaded: mounted tree at head <sha>, clean`, a
 `Loaded: snapshot of` line is a failed activation because a pin is still in
-effect, and `git -C <deploy-worktree> rev-parse HEAD` is the commit on disk;
+effect, a `Loaded: mounted tree` line with `(no git evidence: ...)` is a failed
+proof because it names no commit (fix the worktree's gitdir, above, and reload
+again), and `git -C <deploy-worktree> rev-parse HEAD` is the commit on disk;
 the commits the refresh exported each equal the announced commit. Compare both
 with the approved candidate before anything else. A receipt that names another
 commit is a failed activation: report it as failed, with both commits, and
