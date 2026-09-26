@@ -405,9 +405,33 @@ class ResolverBackedProjectAuthorizationPort:
         if actor is None:
             return self._deny(request, "project_actor_membership_missing")
         if actor.role.lower() not in self._administrative_roles:
+            # The operator's rule (W260, 2026-09-26): a project admin (an
+            # administrative role) does anything to any person's Control Card,
+            # their own included; anyone else reads their own and nothing more.
+            # A person's Control Card is decided by an admin, in the board's
+            # Team > People.
+            own = request.target_subject == request.actor_subject
+            if own and request.operation == PROJECT_PERSON_CONTROL_READ:
+                return ProjectAuthorizationDecision.allow(
+                    request,
+                    delegable_grants=actor.delegable_grants,
+                    evidence={
+                        "authorization_source": "project_membership_resolver",
+                        "actor_membership": actor.to_public_dict(),
+                        "target_membership": actor.to_public_dict(),
+                        "own_card": True,
+                    },
+                )
             return self._deny(
                 request,
-                "project_actor_role_not_administrative",
+                (
+                    "project_person_control_decided_by_admin"
+                    if own and request.operation in {
+                        PROJECT_PERSON_CONTROL_UPDATE,
+                        PROJECT_PERSON_CONTROL_REVOKE,
+                    }
+                    else "project_actor_role_not_administrative"
+                ),
                 evidence={"actor_membership": actor.to_public_dict()},
             )
 

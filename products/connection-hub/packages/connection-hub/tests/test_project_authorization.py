@@ -9,6 +9,7 @@ import pytest
 from connection_hub.delegated_credentials.project_authorization import (
     PROJECT_INVITATION_CONTROL_CREATE,
     PROJECT_PERSON_CONTROL_CREATE,
+    PROJECT_PERSON_CONTROL_READ,
     PROJECT_PERSON_CONTROL_REVOKE,
     PROJECT_PERSON_CONTROL_UPDATE,
     ProjectAuthorizationDecision,
@@ -380,3 +381,61 @@ async def test_mismatched_membership_evidence_is_a_named_denial() -> None:
 
     assert not decision.allowed
     assert decision.reason == "project_membership_project_ref_mismatch"
+
+
+# -- the operator's rule for a person's own Control Card (W260, 2026-09-26) --
+
+
+def _own(subject: str, operation: str) -> ProjectAuthorizationRequest:
+    return ProjectAuthorizationRequest.build(
+        actor_subject=subject,
+        project_ref=PROJECT_REF,
+        target_subject=subject,
+        operation=operation,
+        request_id="request-own",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_member_reads_their_own_control_card_and_nothing_else() -> None:
+    member = _membership(TARGET, role="member", grants=("work:review",))
+    port = _port(_MembershipResolver({(PROJECT_REF, TARGET): member}))
+
+    own = await port.authorize_project_person_control(_own(TARGET, PROJECT_PERSON_CONTROL_READ))
+    assert own.allowed is True
+    assert own.delegable_grants == ("work:review",)
+    assert own.evidence["own_card"] is True
+
+    other = ProjectAuthorizationRequest.build(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=ADMIN,
+        operation=PROJECT_PERSON_CONTROL_READ, request_id="request-other",
+    )
+    refused = await port.authorize_project_person_control(other)
+    assert refused.allowed is False and refused.reason == "project_actor_role_not_administrative"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", [PROJECT_PERSON_CONTROL_UPDATE, PROJECT_PERSON_CONTROL_REVOKE])
+async def test_a_members_own_control_card_is_decided_by_an_admin(operation) -> None:
+    member = _membership(TARGET, role="member")
+    port = _port(_MembershipResolver({(PROJECT_REF, TARGET): member}))
+    refused = await port.authorize_project_person_control(_own(TARGET, operation))
+    assert refused.allowed is False and refused.reason == "project_person_control_decided_by_admin"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", [PROJECT_PERSON_CONTROL_READ, PROJECT_PERSON_CONTROL_UPDATE, PROJECT_PERSON_CONTROL_REVOKE])
+async def test_a_project_admin_does_anything_to_their_own_control_card(operation) -> None:
+    """The board's Team > People writes an admin's own Card under that admin's session."""
+
+    admin = _membership(ADMIN, role="admin", grants=("work:admin",))
+    port = _port(_MembershipResolver({(PROJECT_REF, ADMIN): admin}))
+    allowed = await port.authorize_project_person_control(_own(ADMIN, operation))
+    assert allowed.allowed is True and allowed.delegable_grants == ("work:admin",)
+
+
+@pytest.mark.asyncio
+async def test_a_person_who_is_not_a_member_reads_nothing() -> None:
+    port = _port(_MembershipResolver({}))
+    refused = await port.authorize_project_person_control(_own(TARGET, PROJECT_PERSON_CONTROL_READ))
+    assert refused.allowed is False and refused.reason == "project_actor_membership_missing"

@@ -208,18 +208,10 @@ class ProjectPersonControlLifecycle:
         operation: str,
         request_id: str,
     ) -> tuple[ProjectAuthorizationRequest, ProjectAuthorizationDecision] | dict[str, Any]:
-        if (
-            operation in {
-                PROJECT_PERSON_CONTROL_UPDATE,
-                PROJECT_PERSON_CONTROL_REVOKE,
-            }
-            and str(actor_subject or "").strip() == str(target_subject or "").strip()
-        ):
-            return {
-                "ok": False,
-                "error": "project_person_control_target_write_denied",
-                "status": 403,
-            }
+        # Changing one's own project Control Card is decided by the policy
+        # port like any other change: a project admin may (their own included),
+        # anyone else is refused there (W260, the operator's rule of
+        # 2026-09-26).
         try:
             request = ProjectAuthorizationRequest.build(
                 actor_subject=actor_subject,
@@ -396,7 +388,50 @@ class ProjectPersonControlLifecycle:
             project_ref=project_ref,
             target_subject=target_subject,
         )
-        return await self._view(identity=identity, decision=decision)
+        view = await self._view(identity=identity, decision=decision)
+        if view.get("ok") is True:
+            view["viewer"] = await self._viewer(
+                actor_subject=actor_subject,
+                project_ref=project_ref,
+                target_subject=target_subject,
+                request_id=request_id,
+            )
+        return view
+
+    async def _viewer(
+        self,
+        *,
+        actor_subject: str,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """What this viewer may do with the Card they are reading (W260).
+
+        A person's Control Card is changed only in the project's own editor
+        (the board's Team > People), which keeps the board's decision the one
+        source of truth; here it is read-only for everyone. A project admin
+        is told to edit it there, anyone else that an admin decides it. The
+        policy port answers, with the same question an edit would ask.
+        """
+
+        admin = await self._authorize(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            operation=PROJECT_PERSON_CONTROL_UPDATE,
+            request_id=f"{request_id}:viewer",
+        )
+        edits_in_project = not isinstance(admin, dict)
+        return {
+            "can_edit": False,
+            "edit_in_project": edits_in_project,
+            "reason": (
+                "project_person_control_edited_in_project"
+                if edits_in_project
+                else "project_person_control_decided_by_admin"
+            ),
+        }
 
     async def create(
         self,

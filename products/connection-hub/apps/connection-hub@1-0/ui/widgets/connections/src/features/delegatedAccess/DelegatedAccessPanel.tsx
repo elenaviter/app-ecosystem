@@ -153,6 +153,7 @@ import {
 } from './oauthConsent';
 import {
   accessCardFocusRequest,
+  projectPersonControlNotice,
   findAccessCardFocus,
   matchesAccessCardFocus,
   unavailableAccessCardMessage,
@@ -1047,6 +1048,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const {
     items,
     focusedCard,
+    focusedViewer,
     grantOptions,
     resources,
     issuedToken,
@@ -1823,9 +1825,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Editing is about the grants, expiry about the credential: one never
   // blocks the other.
   const editButton = (item: DelegatedAccessRecord, compact = false) => (
-    <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
-      {compact ? 'Edit' : <>Edit</>}
-    </button>
+    // W260: a project-held person Control Card is changed only in the
+    // project's editor (Team > People); here it is read only for everyone.
+    projectPersonControlCoordinates(item) ? null : (
+      <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
+        {compact ? 'Edit' : <>Edit</>}
+      </button>
+    )
   );
   // Two ways back for a credential: prolong keeps the one the client holds
   // and extends it (only while it still exists); reissue mints a new manual
@@ -3027,6 +3033,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
+    if (projectPersonControlCoordinates(item)) {
+      setEditActionError(projectPersonControlNotice(focusedViewer));
+      return;
+    }
     const initialProblems = editSaveProblems(item);
     if (initialProblems.length) {
       setEditActionError(initialProblems
@@ -5684,7 +5694,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       {accessCardFocus && accessCardFocusState === 'unavailable' ? (
         <div className="error" role="alert">
           <strong>Card unavailable.</strong>{' '}
-          {unavailableAccessCardMessage(accessCardFocus)}
+          {unavailableAccessCardMessage(accessCardFocus, delegatedAccessError)}
+        </div>
+      ) : null}
+      {focusedCard && projectPersonControlCoordinates(focusedCard) && accessCardFocusState === 'resolved' ? (
+        <div className="notice project-person-control-readonly" role="status">
+          {projectPersonControlNotice(focusedViewer)}{' '}
+          {focusedViewer?.edit_in_project && focusedCard.manage_url ? (
+            <a href={focusedCard.manage_url} target="_top" rel="noopener">Open Team &gt; People</a>
+          ) : null}
         </div>
       ) : null}
 

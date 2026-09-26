@@ -446,9 +446,19 @@ export interface DelegatedAccessCreateResult {
   };
 }
 
+/** W260: what the viewer may do with a project-held person Control Card. It is
+ *  never edited here: the project's own editor (Team > People) changes it. */
+export interface ProjectPersonControlViewer {
+  can_edit: boolean;
+  /** A project admin: the Card is edited in the project's editor. */
+  edit_in_project?: boolean;
+  reason?: string;
+}
+
 export interface ControlCardGetResult {
   ok?: boolean;
   access?: DelegatedAccessRecord;
+  viewer?: ProjectPersonControlViewer;
   control_card?: DelegatedAccessRecord;
   authority?: Record<string, unknown>;
   error?: string;
