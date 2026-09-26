@@ -3176,7 +3176,8 @@ class ProblemBoardHostRelayAdapter:
         )
         worker_info, info_pending = self._worker_info()
         alias_request, alias_pending = self._alias_request()
-        heartbeat_sent = force_heartbeat or session_delta is not None or files_changed or info_pending or alias_pending or (
+        workspace_report, report_pending = self._workspace_report(project_ref)
+        heartbeat_sent = force_heartbeat or session_delta is not None or files_changed or info_pending or alias_pending or report_pending or (
             self._project_heartbeat_wait(
                 project_ref=project_ref,
                 sessions=agent_sessions,
@@ -3201,6 +3202,8 @@ class ProblemBoardHostRelayAdapter:
                 heartbeat_payload["store_reads"] = store_reads_delta
             self._add_worker_info(heartbeat_payload, worker_info)
             self._add_alias_request(heartbeat_payload, alias_request)
+            self._add_project_record(heartbeat_payload, project_ref)
+            self._add_workspace_report(heartbeat_payload, project_ref, workspace_report)
             await self._add_runtime_account(heartbeat_payload)
             try:
                 with self._trace_stage(
@@ -3249,6 +3252,7 @@ class ProblemBoardHostRelayAdapter:
             heartbeat_result = _object_result(heartbeat_response)
             self._acknowledge_worker_info(worker_info, heartbeat_result)
             self._acknowledge_alias_request(alias_request, heartbeat_result)
+            self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
             self._record_attendance_observation(heartbeat_result)
             self._materialize_attended_project(heartbeat_result)
             journal_workspace = self._reconcile_journal_binding(heartbeat_result)
@@ -3379,6 +3383,77 @@ class ProblemBoardHostRelayAdapter:
         stored = str(result.get("info_text") or "")
         if stored == str(info.get("text") or ""):
             self.field.mark_worker_info_published(self.config.worker_name, stored)
+
+    @staticmethod
+    def _project_id_of(project_ref: str) -> str:
+        try:
+            parsed = parse_ref(project_ref)
+        except DomainError:
+            return ""
+        return parsed.object_id if parsed.kind == "project" else ""
+
+    def _add_project_record(self, payload: dict[str, Any], project_ref: str) -> None:
+        """W337: which project record this host holds, so the card can say it arrived.
+
+        The relay writes the record (team, repositories) from the heartbeat
+        answer; this reports the revision it holds and when it arrived. No
+        record yet sends no key: the board shows it as missing.
+        """
+
+        project_id = self._project_id_of(project_ref)
+        if not project_id:
+            return
+        try:
+            record = self.field.read_project_repositories(project_id)
+        except DomainError:
+            return
+        revision = int(record.get("revision") or 0)
+        if revision > 0:
+            payload["project_record"] = {
+                "revision": revision,
+                "received_at": str(record.get("received_at") or ""),
+            }
+
+    def _workspace_report(self, project_ref: str) -> tuple[dict[str, Any], bool]:
+        """The agent's workspace report for this project (W337) and whether it may make a heartbeat due.
+
+        The W330 rule: an unacknowledged report forces one heartbeat per
+        change, recorded in the worker's local record, never one per cycle.
+        """
+
+        project_id = self._project_id_of(project_ref)
+        if not project_id:
+            return {}, False
+        entry = self.field.workspace_report(self.config.worker_name, project_id)
+        signature = str(entry.get("signature") or "")
+        pending = (
+            bool(signature)
+            and entry.get("published_signature") != signature
+            and entry.get("sent_signature") != signature
+        )
+        return entry, pending
+
+    def _add_workspace_report(self, payload: dict[str, Any], project_ref: str, entry: Mapping[str, Any]) -> None:
+        report = entry.get("report") if entry else None
+        signature = str((entry or {}).get("signature") or "")
+        if not isinstance(report, Mapping) or not signature:
+            return
+        payload["workspace_report"] = {**dict(report), "signature": signature}
+        if entry.get("sent_signature") != signature:
+            self.field.mark_workspace_report_sent(
+                self.config.worker_name, self._project_id_of(project_ref), signature
+            )
+
+    def _acknowledge_workspace_report(
+        self, project_ref: str, entry: Mapping[str, Any], result: Mapping[str, Any]
+    ) -> None:
+        """Stop forcing heartbeats once the board answers with the same report."""
+
+        signature = str((entry or {}).get("signature") or "")
+        if signature and str(result.get("workspace_report_signature") or "") == signature:
+            self.field.mark_workspace_report_published(
+                self.config.worker_name, self._project_id_of(project_ref), signature
+            )
 
     def _alias_request(self) -> tuple[dict[str, Any], bool]:
         """The agent's own alias request not yet answered, and whether it may make a heartbeat due (W304 U6).

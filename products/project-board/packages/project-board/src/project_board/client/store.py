@@ -4195,6 +4195,68 @@ class SharedFieldStore:
             row["info"] = {**dict(info), "published_text": text, "published_at": utc_now()}
             atomic_write_json(path, row)
 
+    def set_workspace_report(
+        self, worker_name: str, project_id: str, report: Mapping[str, Any], *, signature: str
+    ) -> dict[str, Any]:
+        """Record the agent's report on its project workspace for the relay to publish (W337)."""
+
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        clean_project = component(project_id, field="project_id")
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            reports = dict(row.get("workspace_reports") or {})
+            previous = reports.get(clean_project) if isinstance(reports.get(clean_project), Mapping) else {}
+            reports[clean_project] = {
+                "report": dict(report),
+                "signature": signature,
+                "sent_signature": previous.get("sent_signature"),
+                "published_signature": previous.get("published_signature"),
+                "published_at": str(previous.get("published_at") or ""),
+            }
+            row["workspace_reports"] = reports
+            row["updated_at"] = utc_now()
+            row["revision"] = int(row.get("revision") or 0) + 1
+            atomic_write_json(path, row)
+            return dict(reports[clean_project])
+
+    def workspace_report(self, worker_name: str, project_id: str) -> dict[str, Any]:
+        """The agent's last workspace report for one project and what the board acknowledged, or empty."""
+
+        try:
+            worker = self.read_worker(worker_name)
+            clean_project = component(project_id, field="project_id")
+        except DomainError:
+            return {}
+        recorded = (worker.get("workspace_reports") or {}).get(clean_project)
+        return dict(recorded) if isinstance(recorded, Mapping) else {}
+
+    def _mark_workspace_report(self, worker_name: str, project_id: str, signature: str, **fields: Any) -> None:
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        clean_project = component(project_id, field="project_id")
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            reports = dict(row.get("workspace_reports") or {})
+            entry = reports.get(clean_project)
+            if not isinstance(entry, Mapping) or str(entry.get("signature") or "") != signature:
+                return
+            reports[clean_project] = {**dict(entry), **fields}
+            row["workspace_reports"] = reports
+            atomic_write_json(path, row)
+
+    def mark_workspace_report_sent(self, worker_name: str, project_id: str, signature: str) -> None:
+        """A heartbeat carried this report: it forces no further heartbeat (the W330 rule)."""
+
+        self._mark_workspace_report(worker_name, project_id, signature, sent_signature=signature)
+
+    def mark_workspace_report_published(self, worker_name: str, project_id: str, signature: str) -> None:
+        """The board stored this exact report."""
+
+        self._mark_workspace_report(
+            worker_name, project_id, signature, published_signature=signature, published_at=utc_now()
+        )
+
     def request_worker_alias(self, worker_name: str, alias: str) -> dict[str, Any]:
         """Record the agent's own rename for the relay to carry to the board (W304 U6).
 
@@ -7986,6 +8048,8 @@ class SharedFieldStore:
         return {
             "revision": int(record.get("revision") or 0),
             "repositories": list(record.get("repositories") or []),
+            # When this host wrote that revision: the project record's arrival (W337).
+            "received_at": str(record.get("updated_at") or ""),
         }
 
     def read_project_team(self, project_id: str) -> list[dict[str, Any]]:

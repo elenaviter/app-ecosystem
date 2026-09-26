@@ -136,6 +136,19 @@ A repository you cannot clone or fetch (no deploy key on this host, no
 access): tell the operator by name, with its alias and URL, and go on with the
 rest. The operator adds the key or the access, and you clone it then.
 
+Then tell the board what your workspace holds, so the project card shows it
+next to your name:
+
+```bash
+pb worker workspace-report
+```
+
+It checks `<workspace>/<alias>` for every listed repository: `verified` when
+it is a checkout of the listed URL and the remote answers, `unreachable` with
+the reason otherwise. The relay carries it on its next heartbeat. Run it again
+after any clone, re-clone or new key, and whenever the repository list changes
+(add `--project-ref` when you attend several projects).
+
 ## 4. Set up the project's development environment
 
 After every reachable repository is present, read the environment page that
