@@ -934,6 +934,10 @@ agent's Card in Connection Hub and stores its credential on the host.
 The prompt above makes the agent run `pb worker whoami` and
 `pb worker listen --alias <agent-name>`. It reports its stable worker name and
 the profile to authorize (`problem-board-claude-…`).
+Renaming an agent later is the same command with the new name, run in its
+session. The relay carries the new name on the next heartbeat, and the later
+of it and the operator's pencil on the agent's card wins. `pb worker whoami`
+shows the board's answer as `board_alias`.
 
 Identify an agent session with three facts: its coding provider, the provider
 account reported by its host, and its native resumable session ID. Problem

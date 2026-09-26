@@ -3175,7 +3175,8 @@ class ProblemBoardHostRelayAdapter:
             or project_ref in self._assignment_files_signatures
         )
         worker_info, info_pending = self._worker_info()
-        heartbeat_sent = force_heartbeat or session_delta is not None or files_changed or info_pending or (
+        alias_request, alias_pending = self._alias_request()
+        heartbeat_sent = force_heartbeat or session_delta is not None or files_changed or info_pending or alias_pending or (
             self._project_heartbeat_wait(
                 project_ref=project_ref,
                 sessions=agent_sessions,
@@ -3199,6 +3200,7 @@ class ProblemBoardHostRelayAdapter:
             if store_reads_delta is not None:
                 heartbeat_payload["store_reads"] = store_reads_delta
             self._add_worker_info(heartbeat_payload, worker_info)
+            self._add_alias_request(heartbeat_payload, alias_request)
             await self._add_runtime_account(heartbeat_payload)
             try:
                 with self._trace_stage(
@@ -3246,6 +3248,7 @@ class ProblemBoardHostRelayAdapter:
                 self._store_reads_signatures[project_ref] = store_reads_signature
             heartbeat_result = _object_result(heartbeat_response)
             self._acknowledge_worker_info(worker_info, heartbeat_result)
+            self._acknowledge_alias_request(alias_request, heartbeat_result)
             self._record_attendance_observation(heartbeat_result)
             self._materialize_attended_project(heartbeat_result)
             journal_workspace = self._reconcile_journal_binding(heartbeat_result)
@@ -3377,6 +3380,43 @@ class ProblemBoardHostRelayAdapter:
         if stored == str(info.get("text") or ""):
             self.field.mark_worker_info_published(self.config.worker_name, stored)
 
+    def _alias_request(self) -> tuple[dict[str, Any], bool]:
+        """The agent's own alias request not yet answered, and whether it may make a heartbeat due (W304 U6).
+
+        Like the info line (W330): it rides every heartbeat until the board
+        answers for this request, and forces one heartbeat per request, never
+        one per cycle, because a board without the field never answers.
+        """
+
+        request = self.field.worker_alias_request(self.config.worker_name)
+        if not request or request.get("result"):
+            return {}, False
+        return request, not request.get("sent")
+
+    def _add_alias_request(self, payload: dict[str, Any], request: Mapping[str, Any]) -> None:
+        if not request:
+            return
+        payload["worker_alias_request"] = {
+            "alias": str(request.get("alias") or ""),
+            "requested_at": str(request.get("requested_at") or ""),
+        }
+        if not request.get("sent"):
+            self.field.mark_worker_alias_request_sent(
+                self.config.worker_name, str(request.get("requested_at") or "")
+            )
+
+    def _acknowledge_alias_request(self, request: Mapping[str, Any], result: Mapping[str, Any]) -> None:
+        """Keep the board's answer for this request: applied, superseded or refused."""
+
+        answer = result.get("worker_alias_result") if isinstance(result, Mapping) else None
+        if not request or not isinstance(answer, Mapping):
+            return
+        if str(answer.get("requested_at") or "") != str(request.get("requested_at") or ""):
+            return
+        self.field.record_worker_alias_result(
+            self.config.worker_name, str(request.get("requested_at") or ""), dict(answer)
+        )
+
     async def _heartbeat_with_republish(
         self, payload: Mapping[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -3494,10 +3534,12 @@ class ProblemBoardHostRelayAdapter:
                 sessions=sessions,
             )
             worker_info, info_pending = self._worker_info()
+            alias_request, alias_pending = self._alias_request()
             discovery_heartbeat_sent = (
                 not self._attendance_cache.get("initialized")
                 or discovery_session_delta is not None
                 or info_pending
+                or alias_pending
                 or self._discovery_heartbeat_wait(sessions) <= 0
             )
             if discovery_heartbeat_sent:
@@ -3505,6 +3547,7 @@ class ProblemBoardHostRelayAdapter:
                 if discovery_session_delta is not None:
                     heartbeat_payload["agent_sessions"] = discovery_session_delta
                 self._add_worker_info(heartbeat_payload, worker_info)
+                self._add_alias_request(heartbeat_payload, alias_request)
                 with self._trace_stage(
                     "attendance.heartbeat",
                     operation="worker.heartbeat.discovery",
@@ -3523,6 +3566,7 @@ class ProblemBoardHostRelayAdapter:
                     signature=session_signature,
                 )
                 self._acknowledge_worker_info(worker_info, discovery)
+                self._acknowledge_alias_request(alias_request, discovery)
                 self._record_attendance_observation(discovery)
         with self._trace_stage(
             "attendance.controls",
