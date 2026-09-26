@@ -326,7 +326,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   have applied. Read that row, then retry the same report unchanged. Changed
   content or an invented source event is a different report, not recovery.
 - A `project.report` request reaches only the coordinator: before answering one, read [project-report](references/project-report.md).
-- Journal every completed move, and hand knowledge to the project's knowledge keeper when it has one: [journaling](references/journaling.md). Each signal of this skill and the test that pins it: [signals](references/signals.md).
+- Journal every completed move, and put each kind of knowledge where it belongs: [journaling](references/journaling.md). Each signal of this skill and the test that pins it: [signals](references/signals.md).
 - Author the complete journal Markdown, front matter included, under the
   `local_journal_directory` from `pb worker context`. Keep the operator's exact
   ruling, artifact refs, failure text, alternatives, blast radius, verification
