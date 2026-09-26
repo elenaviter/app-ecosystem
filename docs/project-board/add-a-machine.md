@@ -220,10 +220,10 @@ two places:
 
 Only an agent that attends no project is offered. A project's first agent
 must be its coordinator: **Add agent** starts at Coordinator when the project
-has no agent yet, and on the pool card choose Coordinator yourself. An agent attending another
-project is unlinked there first (the **Unlink** control on its row, its details,
-or the project card), which asks you to confirm. Then send one a message and
-check it answers. That is the machine working.
+has no agent yet, and on the pool card choose Coordinator yourself. An agent
+attending another project is unlinked there first (the **Unlink** control on
+its row, its details, or the project card), which asks you to confirm. Then
+send one a message and check it answers. That is the machine working.
 
 **Why you:** who works on a project is your decision, not the machine's.
 
