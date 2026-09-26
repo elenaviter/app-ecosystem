@@ -40,9 +40,18 @@ client = [
     "mcp==2.0.0",
     "platformdirs>=4,<5",
 ]
+# The tests cover the caller layer too, so they need the client extra's
+# packages; a clean `pip install -e .[test]` (the publish workflow) must be
+# enough to run them.
 test = [
     "pytest>=8,<10",
     "pytest-asyncio>=0.23,<2",
+    "app-foundation[mcp,native-secrets]>=2026.09.26.2205,<2027",
+    "filelock>=3.16,<4",
+    "httpx2>=2.5,<3",
+    "keyring>=25,<26",
+    "mcp==2.0.0",
+    "platformdirs>=4,<5",
 ]
 
 [project.urls]
