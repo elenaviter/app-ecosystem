@@ -46,7 +46,12 @@ For each piece selected for release:
 1. Update its release record with the exact version and changes.
 2. Update each published package's `pyproject.toml`, import `__version__`, and
    README to the same authored version.
-3. Run the piece's complete tests. `connection-hub` runs
+3. Run the piece's complete tests the way the publish workflow runs them: a
+   fresh virtual environment, `pip install -e "<path>[test]"` with its
+   dependencies from the package index, and no source overlay on
+   `PYTHONPATH`. A source overlay supplies packages the published extras may
+   not declare; on 2026-09-26 it hid a `connection-hub` test failure that
+   stopped that release in CI. `connection-hub` runs
    `products/connection-hub/packages/connection-hub/tests`;
    `connection-hub-cli` runs
    `products/connection-hub/packages/connection-hub-cli/tests`;

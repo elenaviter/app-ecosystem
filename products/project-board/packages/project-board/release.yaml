@@ -1,6 +1,6 @@
 package:
   id: project-board
-  ref: "2026.09.26.2205"
+  ref: "2026.09.26.2220"
   description: |
     The Problem Board client installs from the package index as one chain of
     four packages at one version: project-board, app-foundation,
@@ -30,4 +30,4 @@ components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.09.26.2205"
+    version: "2026.09.26.2220"

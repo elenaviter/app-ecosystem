@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "connection-hub-cli"
-version = "2026.09.26.2205"
+version = "2026.09.26.2220"
 description = "KDCube host setup, credential custody, and MCP client integration for Connection Hub."
 readme = "README.md"
 license = "MIT"
@@ -20,8 +20,8 @@ classifiers = [
     "Topic :: Security",
 ]
 dependencies = [
-    "app-foundation[mcp,native-secrets]>=2026.09.26.2205,<2027",
-    "connection-hub[client]>=2026.09.26.2205,<2027",
+    "app-foundation[mcp,native-secrets]>=2026.09.26.2220,<2027",
+    "connection-hub[client]>=2026.09.26.2220,<2027",
     "filelock>=3.16,<4",
     "httpx2>=2.5,<3",
     "json5>=0.12,<1",
