@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlencode
 
-from connection_hub.server_side_login.model import LoginAttempt, VerifiedIdentity
+from connection_hub.server_side_login.model import LoginAttempt, VerifiedIdentity, email_verified_claim
 from connection_hub.server_side_login.protocols import IdTokenVerifier, UpstreamRejected
 
 DISCOVERY_PATH = "/.well-known/openid-configuration"
@@ -230,14 +230,11 @@ class OidcCodeFlow:
         subject = str(claims.get("sub") or "").strip()
         if not subject:
             raise UpstreamRejected("subject_missing", "the ID token carries no subject")
-        email_verified = claims.get("email_verified")
-        if isinstance(email_verified, str):
-            email_verified = email_verified.strip().lower() == "true"
         return VerifiedIdentity(
             provider=self._config.provider,
             subject=subject,
             email=str(claims.get("email") or "").strip(),
-            email_verified=bool(email_verified),
+            email_verified=email_verified_claim(claims.get("email_verified")),
             name=str(
                 claims.get("name")
                 or claims.get("preferred_username")

@@ -213,6 +213,14 @@ class PlatformTokenAuthenticator:
                     "source": "platform_token_authenticator",
                 },
             }
+            # The provider's verdict on the email, only when the login knows
+            # it: the session merge is presence-based, so an absent key keeps
+            # a stored verdict and a present one replaces it. Without this
+            # line no request ever carried the flag into the session (W260,
+            # 2026-09-26: the user record held true, the session null).
+            verified = getattr(user, "email_verified", None)
+            if isinstance(verified, bool):
+                user_data["email_verified"] = verified
             return await session_factory(context, user_type, user_data)
         except Exception as exc:
             if self._authentication_errors and isinstance(
