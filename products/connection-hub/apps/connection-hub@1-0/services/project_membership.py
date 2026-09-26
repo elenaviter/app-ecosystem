@@ -10,6 +10,11 @@ from connection_hub.bundle_operations import (
     normalize_bundle_operation_result,
 )
 from connection_hub.delegated_credentials.named_service_policy import clean_text
+from connection_hub.delegated_credentials.project_agent_card_access import (
+    AgentCardAuthorizationError,
+    AgentCardDecision,
+    RefusingAgentCardAuthorizationPort,
+)
 from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
@@ -94,6 +99,76 @@ class BundleOperationProjectMembershipResolver:
                 else {}
             ),
         )
+
+
+DEFAULT_AGENT_CARD_OPERATION = "project_agent_card_authorize"
+
+
+class BundleOperationAgentCardAuthorizer:
+    """Ask the project host whether this person may open or change an agent's Card (W319).
+
+    Request-bound like the membership question: the host answers for the
+    person whose session made the Connection Hub call.
+    """
+
+    def __init__(
+        self,
+        *,
+        bundle_id: str,
+        operation: str = DEFAULT_AGENT_CARD_OPERATION,
+        caller: BundleOperationCaller = call_bundle_operation,
+    ) -> None:
+        self._bundle_id = clean_text(bundle_id)
+        self._operation = clean_text(operation) or DEFAULT_AGENT_CARD_OPERATION
+        self._caller = caller
+
+    async def authorize_agent_card(
+        self, *, access_id: str, project_ref: str, action: str
+    ) -> AgentCardDecision:
+        try:
+            response = await self._caller(
+                bundle_id=self._bundle_id,
+                operation=self._operation,
+                data={"access_id": access_id, "project_ref": project_ref, "action": action},
+            )
+        except Exception as exc:
+            raise AgentCardAuthorizationError("project_agent_card_provider_unavailable") from exc
+        if not isinstance(response, Mapping):
+            raise AgentCardAuthorizationError("project_agent_card_provider_response_invalid")
+        try:
+            response = normalize_bundle_operation_result(self._operation, response)
+        except BundleOperationResultError as exc:
+            raise AgentCardAuthorizationError(exc.reason) from exc
+        if response.get("ok") is not True:
+            reason = _refusal_reason(response) or "project_agent_card_provider_refused"
+            return AgentCardDecision(
+                allowed=False, reason=reason, access_id=access_id, project_ref=project_ref, action=action
+            )
+        return AgentCardDecision.from_mapping(response.get("decision"))
+
+
+def descriptor_agent_card_port(
+    entrypoint: Any,
+    *,
+    caller: BundleOperationCaller = call_bundle_operation,
+) -> BundleOperationAgentCardAuthorizer | RefusingAgentCardAuthorizationPort:
+    """The agent Card question goes to the project membership provider's bundle.
+
+    ``project_membership.provider.agent_card_operation`` names the operation;
+    without a provider bundle it fails closed.
+    """
+
+    props = getattr(entrypoint, "bundle_props", None)
+    raw = props.get("project_membership") if isinstance(props, Mapping) else None
+    provider = raw.get("provider") if isinstance(raw, Mapping) else None
+    bundle_id = clean_text(provider.get("bundle_id")) if isinstance(provider, Mapping) else ""
+    if not bundle_id:
+        return RefusingAgentCardAuthorizationPort("project_agent_card_provider_not_configured")
+    return BundleOperationAgentCardAuthorizer(
+        bundle_id=bundle_id,
+        operation=clean_text(provider.get("agent_card_operation")) or DEFAULT_AGENT_CARD_OPERATION,
+        caller=caller,
+    )
 
 
 class RefusingProjectAuthorizationPort:
