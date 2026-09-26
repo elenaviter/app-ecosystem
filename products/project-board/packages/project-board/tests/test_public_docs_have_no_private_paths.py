@@ -328,3 +328,42 @@ def test_the_scan_reads_every_tracked_text_file() -> None:
     assert any(name.endswith(".py") and "/tests/" in name for name in files)
     assert any(name.endswith("pyproject.toml") for name in files)
     assert not any("/node_modules/" in name for name in files)
+
+
+def _tracked_symlinks() -> list[tuple[str, str]]:
+    """(path, target) for every symlink git tracks (mode 120000)."""
+
+    try:
+        listed = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "ls-files", "-s", "-z"],
+            capture_output=True, check=True, timeout=60,
+        ).stdout.decode("utf-8").split("\0")
+    except (OSError, subprocess.SubprocessError):
+        if _required():
+            pytest.fail("not a git checkout: the tracked files cannot be listed")
+        pytest.skip("not a git checkout: the tracked files cannot be listed")
+    links = []
+    for row in listed:
+        meta, _, name = row.partition("\t")
+        if meta.startswith("120000 "):
+            object_id = meta.split()[1]
+            target = subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "cat-file", "blob", object_id],
+                capture_output=True, check=True, timeout=60,
+            ).stdout.decode("utf-8", errors="replace")
+            links.append((name, target))
+    return links
+
+
+def test_no_tracked_symlink_points_outside_the_repository() -> None:
+    # A node_modules symlink into another host's home folder was committed on
+    # 2026-09-26: `.gitignore` said `node_modules/`, which matches only a
+    # directory, and the name scan skips symlinks. A tracked link is only
+    # ever relative and inside the repository; its target is never printed.
+    found = []
+    for name, target in _tracked_symlinks():
+        resolved = (REPO_ROOT / name).parent / target
+        inside = os.path.normpath(resolved).startswith(os.path.normpath(REPO_ROOT) + os.sep)
+        if target.startswith(("/", "~")) or not inside:
+            found.append(name)
+    assert not found, "tracked symlinks that leave the repository:\n" + "\n".join(found)
