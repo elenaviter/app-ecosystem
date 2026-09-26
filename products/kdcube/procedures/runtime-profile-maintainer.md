@@ -4,7 +4,7 @@ title: "KDCube Maintainer Runtime Profile"
 summary: "The commands for a runtime of kind kdcube that this team maintains: which action makes a change live by the tree it is in (platform refresh with package selectors, bundle reload, descriptor apply, app deploy worktree), the order when a change moves board operations, and how each action's receipt proves it loaded the commit its ref names."
 status: current
 tags: [procedure, kdcube, maintainer, runtime, runtime-profile, refresh, reload, deploy]
-keywords: [runtime profile, kind kdcube, releases, relative gitdir, no git evidence, kdcube refresh, --build, maintainer-local-python-package, bundle reload, bundle config apply, bundles.yaml, bundles.template.yaml, deploy worktree, activation block, --local-path, widget dist, eviction count, board operations, receipt names the commit]
+keywords: [runtime profile, kind kdcube, releases, kdcube info, bundle status --live, pb source status, MATCH MISMATCH UNKNOWN, relative gitdir, no git evidence, kdcube refresh, --build, maintainer-local-python-package, bundle reload, bundle config apply, bundles.yaml, bundles.template.yaml, deploy worktree, activation block, --local-path, widget dist, eviction count, board operations, receipt names the commit]
 see_also:
   - ./maintainer-rebuild.md
   - ./platform-suite.md
@@ -138,6 +138,19 @@ long as the checkout's `.git` is mounted beside it at the same relative place:
 host. A worktree that fails either is fixed before the window, not after its
 receipt comes back without evidence.
 
+### The host `kdcube` CLI is current
+
+The attestations below are printed by the host's `kdcube` CLI, not by the
+platform. A CLI older than the platform's attestation commits prints no
+"Source Attestation" section and no per-service comparison at all, which
+reads like missing evidence rather than an old tool (dev-main 2026-09-26: an
+editable install from a checkout 45 commits behind). **Before the window:**
+the CLI's source is at the platform commit the window releases (for an
+editable install, `git -C <kdcube checkout> rev-parse HEAD` equals it; for a
+package, its version is that release), and `kdcube bundle status <bundle-id>
+--live --workdir <workdir>` on an app already loaded prints a "Source
+Attestation" line. Advance the CLI first when either fails.
+
 ## Execute (coordinator step 5)
 
 Execute the action the table names for the tree, at the commit the ref names:
@@ -187,19 +200,50 @@ broke. The receipt does not tell them apart, only the verification below does.
 
 ## Verify in the running artifact (coordinator step 6)
 
-- **Bundle:** the eviction count plus one symbol or behaviour the change
-  introduced, asked of the running process. A bundle reload reports how many
-  modules it evicted; that count is about the bundle and says nothing about
-  platform packages, so a reload never applies a change to one of them.
-- **Widget:** `dist/` inside the container carries the new source, after the
-  build ends.
-- **Descriptor:** `bundle status` on the running catalog.
-- **Platform refresh:** exit 0 plus "every container started" is not
-  verification: verify against the containers and an unauthenticated probe of
-  the endpoint the change touched.
+Verify with the platform's attestations, which compare versions and symbols,
+never timestamps (W31). Run all three after every window that moved anything,
+for the tenant and project's workdir
+(`~/.kdcube/kdcube-runtime/<tenant>__<project>`):
 
-Say what loaded (coordinator step 7): the eviction count or the restarted
-containers, the ref, the commit it named, and the commit range.
+1. **Platform containers:** `kdcube info --workdir <workdir>` (add `--json`
+   for a script). For each
+   running service it compares the configured image, the latest recorded
+   build and the running container's image ID, and the selected platform
+   source version with the one recorded for the running image. A service
+   whose source is not the commit the refresh released, or that reads
+   `UNKNOWN` (an image built before the receipts existed, or one this CLI did
+   not build or pull), is a failed proof.
+2. **Each app the window moved**, at least `problem-board@1-0` and
+   `connection-hub@1-0` when they moved: `kdcube bundle status <bundle-id>
+   --live --json --workdir <workdir>`. It compares the staged descriptor's
+   commit with the commit chat-proc prepared and with the commit embedded in
+   the published widget (`descriptor.commit`, `chat-proc.source.commit`,
+   `widget.source.commit`). **`MATCH`** is the proof; **`MISMATCH`** (the
+   command exits nonzero) or **`UNKNOWN`** (evidence missing, for example a
+   widget build still running) is a stop: report the fields and values it
+   names and do not call the window done. **A descriptor-only apply** (a
+   config change with the commit unchanged) is not proven by `MATCH`, which
+   compares commits: when the change touches `delegated_catalog`, run
+   `kdcube bundle catalog check --workdir <workdir>`, and otherwise read the changed config value
+   back from the running bundle and name it.
+3. **The Problem Board host client**, on each host whose client moved:
+   `pb source status`, and the relay's first stamped startup line
+   (`source=snapshot`, `app_ecosystem=<sha>`, `kdcube=<sha>`): both equal the
+   commits the client switch released.
+
+These replace the hand checks this section used to prescribe (a symbol asked
+of the process, `dist/` read inside the container): the attestations read the
+same evidence from what is running and name what they compared. A reload's
+eviction count is still no proof of anything outside the bundle: it says
+nothing about platform packages, so a reload never applies a change to one.
+For a change whose effect the attestations cannot see (a behaviour, an
+endpoint), also probe that endpoint unauthenticated or ask the running process,
+and name what you asked.
+
+Say what loaded (coordinator step 7): per repository the ref, the commit it
+named, and the commit range; the attestation results (`MATCH` per bundle, the
+source per service, the client commits); and the eviction count or the
+restarted containers.
 
 ## Who clears a refresh
 
