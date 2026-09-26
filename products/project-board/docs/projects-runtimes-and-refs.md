@@ -1,3 +1,20 @@
+---
+id: project-board-projects-runtimes-and-refs
+title: Projects, Runtimes And Refs
+summary: The three kinds of Problem Board project and what each declares - its instructions, repositories and runtimes - so one worker procedure serves them all.
+tags:
+  - project-board
+  - projects
+  - runtimes
+keywords:
+  - project record
+  - runtime profile
+  - repository refs
+see_also:
+  - ./README.md
+  - ./concepts.md
+---
+
 # Projects, Runtimes And Refs
 
 Problem Board serves three kinds of project (operator, 2026-09-22):
