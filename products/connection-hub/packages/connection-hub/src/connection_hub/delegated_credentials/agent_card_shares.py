@@ -22,7 +22,8 @@ from __future__ import annotations
 import time
 from typing import Any, Mapping
 
-from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE
+from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT, CARD_KIND_AUTOMATION
+from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE, PROJECT_PERSON_SELECTION_SOURCE
 from connection_hub.delegated_credentials.cards.store import (
     CardStorageError,
     subject_hash_for,
@@ -44,6 +45,33 @@ def _person(user: Mapping[str, Any]) -> str:
         if value and value != "anonymous" and not value.startswith("integration:"):
             return value
     return ""
+
+
+def _agent_card(card: Any) -> bool:
+    """An agent's Card: delegated to an agent client, never a person's own or a Control Card.
+
+    A Problem Board worker's Card is an ``automation`` Card, like a person's
+    My Card; what tells them apart is who it is delegated to. A worker's Card
+    names an ``integration:`` client, a My Card names the person themselves
+    (review on app-ecosystem#165: a shared edit acts without the project host,
+    so nothing else may ever be shared).
+    """
+    if card is None:
+        return False
+    kind = str(getattr(card, "card_kind", "") or "")
+    delegate = str(getattr(card, "delegate_subject", "") or "")
+    return (
+        kind in {CARD_KIND_AGENT, CARD_KIND_AUTOMATION}
+        and delegate.startswith("integration:")
+        and delegate != str(getattr(card, "grantor_subject", "") or "")
+        and str(getattr(card, "source", "") or "") != PROJECT_PERSON_SELECTION_SOURCE
+    )
+
+
+def _shareable(card: Any) -> bool:
+    return _agent_card(card) and (
+        str(getattr(card, "state", CARD_STATE_ACTIVE) or CARD_STATE_ACTIVE) == CARD_STATE_ACTIVE
+    )
 
 
 def _refused(error: str, message: str, status: int) -> dict[str, Any]:
@@ -105,6 +133,8 @@ class AgentCardShares:
             return _refused("agent_card_share_grantee_invalid", "Name the person to share with.", 400)
         if grantee == owner:
             return _refused("agent_card_share_grantee_is_owner", "The owner already has the agent.", 400)
+        if not _agent_card(card):
+            return _refused("agent_card_share_not_an_agent", "Only an agent's Card is shared.", 400)
         if str(getattr(card, "state", CARD_STATE_ACTIVE) or CARD_STATE_ACTIVE) != CARD_STATE_ACTIVE:
             return _refused("agent_card_share_card_not_active", "A revoked agent cannot be shared.", 409)
         share = {
@@ -192,7 +222,7 @@ class AgentCardShares:
             return None
         if share.get("level") in SHARE_LEVELS:
             card = await self._owned_card(clean_text(share.get("grantor_subject")), access_id)
-            if card is None or str(getattr(card, "state", CARD_STATE_ACTIVE)) != CARD_STATE_ACTIVE:
+            if not _shareable(card):
                 return None
         return _public(share)
 

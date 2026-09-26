@@ -11,7 +11,11 @@ import asyncio
 from datetime import datetime, timezone
 
 from connection_hub.delegated_credentials.agent_card_shares import AgentCardShares
-from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT
+from connection_hub.delegated_credentials.cards.identity import (
+    CARD_KIND_AGENT,
+    CARD_KIND_AUTOMATION,
+    CARD_KIND_CONNECTOR,
+)
 from connection_hub.delegated_credentials.cards.model import CardAuthority
 from connection_hub.delegated_credentials.cards.store import (
     BundleStorageDelegatedCardStore,
@@ -29,11 +33,12 @@ BORIS = {"user_id": "boris", "roles": ["kdcube:role:registered"], "permissions":
 MO = {"user_id": "mo", "roles": ["kdcube:role:registered"], "permissions": []}
 
 
-def _store(tmp_path, *, state="active"):
+def _store(tmp_path, *, state="active", card_kind=CARD_KIND_AUTOMATION, delegate="integration:claude-code:boris",
+           source="oauth"):
     store = BundleStorageDelegatedCardStore(tmp_path)
     authority = CardAuthority(
-        access_id=ACCESS, client_id="client-1", grantor_subject="boris", delegate_subject="agent-1",
-        source="agent", card_kind=CARD_KIND_AGENT, card_revision=1, created_at=1_900_000_000,
+        access_id=ACCESS, client_id="client-1", grantor_subject="boris", delegate_subject=delegate,
+        source=source, card_kind=card_kind, card_revision=1, created_at=1_900_000_000,
         expires_at=4_000_000_000, label="claude-ops", state=state,
     )
 
@@ -178,3 +183,34 @@ def test_the_host_cannot_answer_shared_edit(tmp_path):
     refused = _run(ProjectAgentCardAccess(Host(), Port({("", "write"): forged})).update(
         ADA, access_id=ACCESS, project_ref="", resource_grants={}))
     assert refused["error"] == "project_agent_card_write_denied"
+
+
+def test_only_an_agent_card_is_shared_and_a_share_of_another_card_grants_nothing(tmp_path):
+    """Review on app-ecosystem#165: shared_edit acts without the project host.
+
+    A Problem Board worker's Card (automation, delegated to an integration
+    client) and a resident agent's Card are shared; a person's My Card
+    (automation, delegated to the person) and a connector Card are not.
+    """
+
+    shared = AgentCardShares(_store(tmp_path / "resident", card_kind=CARD_KIND_AGENT, source="agent"))
+    assert _run(shared.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="view"))["ok"] is True
+
+    for name, kwargs in {
+        "my-card": dict(delegate="boris"),  # delegated to the person themselves
+        "connector": dict(card_kind=CARD_KIND_CONNECTOR),
+    }.items():
+        store = _store(tmp_path / name, **kwargs)
+        refused = _run(AgentCardShares(store).share(BORIS, access_id=ACCESS, grantee_subject="ada", level="edit"))
+        assert refused["error"] == "agent_card_share_not_an_agent", name
+
+        # A share record for such a Card, however it got there, grants nothing.
+        _run(store.write_share(
+            subject_hash=subject_hash_for("boris"), access_id=ACCESS, grantee_hash=subject_hash_for("ada"),
+            share={"access_id": ACCESS, "grantor_subject": "boris", "grantee_subject": "ada", "level": "edit"},
+        ))
+        shares = AgentCardShares(store)
+        assert _run(shares.share_for("ada", ACCESS)) is None, name
+        denied = _run(ProjectAgentCardAccess(Host(), Port(), shares=shares).update(
+            ADA, access_id=ACCESS, project_ref="", resource_grants={}))
+        assert denied["ok"] is False and denied["error"] == "work_agent_card_write_denied", name

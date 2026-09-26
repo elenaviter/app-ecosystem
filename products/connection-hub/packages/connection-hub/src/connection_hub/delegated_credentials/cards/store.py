@@ -34,7 +34,6 @@ from connection_hub.delegated_credentials.cards.model import (
 )
 from connection_hub.delegated_credentials.durable_io import (
     DurableStorageError,
-    delete_file,
     list_child_names,
     read_json_or_none,
     write_json_atomic,
@@ -274,8 +273,8 @@ class BundleStorageDelegatedCardStore:
     # -- Shares (W319): the owner shares one Card with a named person --------
     #
     # The share next to the Card is the authority; the grantee index only
-    # finds it. A share is written Card-side first and removed Card-side
-    # first, so an unshare takes effect before the index is cleaned.
+    # finds it. A share is written Card-side first; an unshare rewrites the
+    # Card-side record as revoked, so it takes effect at once.
 
     def share_path(self, *, subject_hash: str, access_id: str, grantee_hash: str) -> pathlib.Path:
         return (
@@ -323,12 +322,6 @@ class BundleStorageDelegatedCardStore:
             self.grantee_share_path(grantee_hash=grantee_hash, access_id=access_id),
             {"access_id": access_id, "grantor_hash": validated_subject_hash(subject_hash)},
         )
-
-    async def delete_share(self, *, subject_hash: str, access_id: str, grantee_hash: str) -> None:
-        await delete_file(
-            self.share_path(subject_hash=subject_hash, access_id=access_id, grantee_hash=grantee_hash)
-        )
-        await delete_file(self.grantee_share_path(grantee_hash=grantee_hash, access_id=access_id))
 
     async def list_shared_with(self, *, grantee_hash: str) -> list[dict]:
         """The index entries for one person: which Card, under which owner partition."""
