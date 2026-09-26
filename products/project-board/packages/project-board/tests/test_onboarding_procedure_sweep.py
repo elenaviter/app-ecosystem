@@ -537,3 +537,16 @@ def test_15_step_7_matches_a_home_relative_identity_file_and_still_reports_anoth
     assert "CONFLICT github-other" in output and "ok other" not in output
     config = (keys / "config").read_text(encoding="utf-8")
     assert all(config.count(f"Host github-{alias}") == 1 for alias in aliases)
+
+
+def test_u2_a_new_host_can_install_a_published_release():
+    # W304 U2: the host procedure offered only exact source commits, so a
+    # machine that only runs agents had no published route to follow.
+    step0 = HOST[HOST.index("## 0. Decide before starting"):HOST.index("## 1. Give the host agent")]
+    assert "**how the client is installed**" in step0
+    step2 = HOST[HOST.index("## 2. "):HOST.index("## 3. ")]
+    assert '-m pip install "project-board==<approved-version>"' in step2
+    assert "pb source use-release --expect-version <approved-version>" in step2
+    assert "problem-board-worker/references/first-run.md" in step2
+    step3 = HOST[HOST.index("## 3. "):HOST.index("## 4. ")]
+    assert "pb source use-release --expect-version <approved-version>" in step3
