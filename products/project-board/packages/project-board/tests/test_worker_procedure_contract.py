@@ -1414,7 +1414,8 @@ def test_a_review_is_routed_in_the_turn_it_arrives():
     # 2026-09-26: W15 waited in Review for hours with the coordinator as default
     # reviewer while its last check needed the operator's browser.
     coordinator = " ".join(_read("references/coordinator.md").split())
-    assert "**Route a review in the turn it arrives.**" in coordinator
+    assert "Route a review in the turn it arrives.**" in coordinator
+    assert "board mail of kind `decision`, so it reaches their Telegram" in coordinator
     assert "whenever `review.look_at` or `review.could_not_verify` needs a person's browser or account" in coordinator
     assert "tell the operator at once with a notifying kind (`blocked`)" in coordinator
     assert "never mention it only inside a longer list" in coordinator
