@@ -450,6 +450,31 @@ def limit_windows_line(state: Mapping[str, Any] | None) -> str:
     )
 
 
+def usage_windows_line(state: Mapping[str, Any] | None) -> str:
+    """Every reported window with its use and when it resets (W351).
+
+    `week 65% resets 09-29 10:00Z · 5 h 23% resets 09-26 23:00Z`, nearest its
+    limit first, whatever the limit kind: a coordinator routes by these
+    figures (the operator's per-pool caps), including for an agent that is
+    already limited. Empty when no window carries a figure.
+    """
+
+    if not isinstance(state, Mapping):
+        return ""
+    windows = [
+        window
+        for window in state.get("windows") or []
+        if isinstance(window, Mapping) and window.get("used_percent") is not None
+    ]
+    windows.sort(key=lambda window: -float(window["used_percent"]))
+    parts = []
+    for window in windows:
+        resets = str(window.get("resets_at") or "")
+        when = f" resets {resets[5:10]} {resets[11:16]}Z" if len(resets) >= 16 else ""
+        parts.append(f"{window_length_label(window)} {round(float(window['used_percent']))}%{when}")
+    return " · ".join(parts)
+
+
 def _reached_label(state: Mapping[str, Any]) -> str:
     reached = str(state.get("reached") or "")
     for window in state.get("windows") or []:
@@ -538,5 +563,6 @@ __all__ = [
     "read_codex_rate_limits",
     "session_with_limit_state",
     "unknown_state",
+    "usage_windows_line",
     "wake_deferred_until",
 ]

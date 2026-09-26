@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import pkgutil
 import tomllib
 from pathlib import Path
@@ -105,8 +106,16 @@ def test_worker_procedure_revision_records_its_exact_content() -> None:
         source_revision_ledger_path().read_text(encoding="utf-8")
     )
 
-    assert package["revision"] == "2026.09.26.18"
-    assert ledger[package["revision"]] == package["source_digest"]
+    assert package["revision"] == "2026.09.26.19"
+    # The merger sets the revision (coordinator.md, Merge): an author's head
+    # whose content is not recorded yet skips; the merger's run after the bump
+    # commit sets PB_REQUIRE_REVISION_RECORDED=1 and fails on a mismatch, the
+    # same rule as test_worker_procedure_contract.
+    assert package["revision"] in ledger
+    if ledger[package["revision"]] != package["source_digest"]:
+        if os.environ.get("PB_REQUIRE_REVISION_RECORDED", "").strip() == "1":
+            pytest.fail(f"the package content changed under revision {package['revision']}")
+        pytest.skip("procedure changed; the merger sets the revision")
 
 
 def test_worker_procedure_owns_released_and_code_source_guidance() -> None:
