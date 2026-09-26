@@ -97,6 +97,14 @@ def record_id_of(name: str) -> str:
     return rest.split(SLUG_SEPARATOR, 1)[0]
 
 
+# Reads a relay makes on every cycle or wake, of in-flight folders or one id.
+# At INFO they flood the rotating relay log: lookups did on 2026-09-24, and
+# the outbox's in-flight listings did at the W287 switch (about 1,100 lines a
+# minute on spark1, 2026-09-26). They log at DEBUG; their last summary still
+# reaches the heartbeat. Listings of history, recovery and retention stay INFO.
+PER_CYCLE_OPS = frozenset({"lookup", "pending", "pending-list", "leased-list", "lease-recovery"})
+
+
 def _project_of(root: Path) -> str:
     """The project a store root lies under (``.../projects/<id>/...``), or ""."""
 
@@ -307,7 +315,7 @@ class PartitionedStore:
                     args.append(summary["removed"])
                 with _LAST_READS_LOCK:
                     _LAST_READS[(agent, self.store)] = summary
-                logger.log(logging.DEBUG if op == "lookup" else logging.INFO, message, *args)
+                logger.log(logging.DEBUG if op in PER_CYCLE_OPS else logging.INFO, message, *args)
 
     def hours_newest_first(self, agent: str, *, not_before: datetime | None = None) -> Iterator[tuple[Path, datetime]]:
         """Hour folders of one agent, newest first, by folder name only."""

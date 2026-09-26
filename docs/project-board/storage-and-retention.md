@@ -177,9 +177,7 @@ The heartbeat's `store_reads` summary carries the same fields. It rides on the
 next project heartbeat when the last read of a store changed; a read that
 differs only in `ms` or `at` is not sent again.
 
-Exact keyed lookups log at debug level to avoid flooding the relay log; their
-latest summary still appears in the heartbeat. Listings, recovery and
-retention log at info level.
+Reads the relay makes on every cycle or wake log at debug level: exact keyed lookups and in-flight folder listings (`lookup`, `pending`, `pending-list`, `leased-list`, `lease-recovery`). At info they flooded the rotating relay log, lookups on 2026-09-24 and the outbox in-flight listings at the W287 switch (about 1,100 lines a minute). Their latest summary still appears in the heartbeat. Listings of history, startup recovery and retention log at info level.
 
 Two tests in `tests/test_relay_local_state.py` guard startup and the cycle
 against a large history: one over 50,000 flat pre-partition records, one over
