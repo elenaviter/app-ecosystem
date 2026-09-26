@@ -463,7 +463,15 @@ whatever it holds, so no app's path is ever a working checkout.
    restart keeps it. The working checkouts are never an app's path. The
    descriptor's `activation.commit` is not the guarantee: a restart and the
    Data Bus workers ignore it (W333), and the 2026-09-25 23:23Z window removed
-   it. Then **check the receipt against the approved candidate**: for an app
+   it. **When one window refreshes the platform and moves an app**, check the
+   app's deploy worktree out at its approved commit **before** `kdcube refresh
+   --build`, then refresh. The refresh restarts the process, and the process
+   loads the app from its path at startup. A bundle reload afterwards evicts the
+   bundle but not submodules already cached, so the process can run new code
+   against old modules. That happened on 2026-09-25: the board failed with
+   `ImportError: card_delegable_grants` from 11:23 to 11:27Z, until a restart
+   (W304 U3).
+   Then **check the receipt against the approved candidate**: for an app
    the reload's line reads `Loaded: mounted tree at head <sha>, clean`, a
    `Loaded: snapshot of` line is a failed activation because a pin is still in
    effect, and `git -C <deploy-worktree> rev-parse HEAD` is the commit on disk;
