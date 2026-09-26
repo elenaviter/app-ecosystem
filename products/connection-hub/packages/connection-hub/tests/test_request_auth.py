@@ -144,3 +144,32 @@ async def test_the_platform_token_authenticator_carries_the_email_verdict_when_k
     [user_data] = seen
     assert user_data.get("email_verified", None) is carried
     assert ("email_verified" in user_data) is (carried is not None)
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("session_id", "carried"), [("bsn_1", "bsn_1"), (None, None), ("  ", None)])
+async def test_the_platform_token_authenticator_names_the_sign_in_it_authenticated(session_id, carried) -> None:
+    """W260: the app session is rebuilt when a request comes from another sign-in."""
+
+    from connection_hub.request_auth import PlatformTokenAuthenticator
+
+    class Manager:
+        async def authenticate_with_both(self, token, id_token):
+            return SimpleNamespace(
+                sub="cognito:user-1", username="u", email="u@example.test", email_verified=True,
+                roles=[], permissions=[], session_id=session_id,
+            )
+
+    seen: list[dict] = []
+
+    async def capture(_context, _user_type, user_data):
+        seen.append(dict(user_data))
+        return SimpleNamespace()
+
+    authenticator = PlatformTokenAuthenticator(
+        auth_manager=Manager(), role_normalizer=lambda user: user, user_type_resolver=lambda roles: "registered",
+    )
+    await authenticator(None, SimpleNamespace(authorization_header="Bearer kst1.t", id_token=None), capture)
+    [user_data] = seen
+    assert user_data.get("platform_session_id") == carried

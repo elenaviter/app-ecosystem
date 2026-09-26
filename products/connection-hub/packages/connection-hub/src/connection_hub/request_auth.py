@@ -221,6 +221,12 @@ class PlatformTokenAuthenticator:
             verified = getattr(user, "email_verified", None)
             if isinstance(verified, bool):
                 user_data["email_verified"] = verified
+            # The platform sign-in this request belongs to. A different one
+            # than the app session was built from rebuilds that session's
+            # facts instead of merging onto an earlier sign-in's (W260).
+            platform_session_id = getattr(user, "session_id", None)
+            if isinstance(platform_session_id, str) and platform_session_id.strip():
+                user_data["platform_session_id"] = platform_session_id.strip()
             return await session_factory(context, user_type, user_data)
         except Exception as exc:
             if self._authentication_errors and isinstance(
