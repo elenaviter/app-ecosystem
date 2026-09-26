@@ -139,6 +139,8 @@ HEARTBEAT_SESSION_FIELDS = (
     "limit_state",
     # W327: the model and reasoning effort the runtime says it runs with.
     "runtime_model",
+    # W334: the wake the relay holds for a limited agent, {since, until, pending}.
+    "wake_hold",
 )
 HEARTBEAT_SUBSCRIPTION_FIELDS = (
     "adapter",
@@ -149,6 +151,29 @@ HEARTBEAT_SUBSCRIPTION_FIELDS = (
     "last_error",
     "revision",
 )
+
+
+def session_with_wake_hold(
+    session: Mapping[str, Any], *, hold: Mapping[str, Any] | None, pending: int
+) -> dict[str, Any]:
+    """The session row with the wake the relay holds for it (W334).
+
+    ``wake_hold`` is ``{since, until, pending}`` while a hold stands and mail
+    is waiting, and ``{}`` otherwise, so every heartbeat states it and a
+    missed one is corrected by the next. ``pending`` is the count now.
+    """
+
+    row = dict(session)
+    if hold and hold.get("since") and int(pending or 0) > 0:
+        row["wake_hold"] = {
+            "since": str(hold.get("since") or ""),
+            "until": str(hold.get("until") or ""),
+            # The board refuses more than a million; a summary need not.
+            "pending": min(int(pending), 1_000_000),
+        }
+    else:
+        row["wake_hold"] = {}
+    return row
 
 
 def _heartbeat_session_projection(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -3541,6 +3566,15 @@ class ProblemBoardHostRelayAdapter:
             runtime_session_id=self.config.runtime_session_id,
             recorded=recorded_model,
         )
+        # W334: the wake the relay holds for this agent, on every attended
+        # project's heartbeat. With no mail left there is nothing held, even
+        # before the delivery loop runs again.
+        hold = self.field.wake_hold(self.config.worker_name)
+        row = session_with_wake_hold(
+            row,
+            hold=hold,
+            pending=self.field.pending_worker_mail_count_snapshot(self.config.worker_name) if hold else 0,
+        )
         # Codex: what the rollout said is the last known value, so a later
         # read that misses keeps it. Written only when it changes.
         model = row.get("runtime_model")
@@ -4265,8 +4299,11 @@ class ProblemBoardRelaySupervisor:
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
+            field.clear_wake_hold(channel.worker_name)
             return None
         if not listener or listener.get("state") == "detached":
+            # Nobody to wake: no hold, so a later attach starts a fresh one (W334 review).
+            field.clear_wake_hold(channel.worker_name)
             return None
         queue_reconciliation = await self._reconcile_session_queue(
             host, channel, listener
@@ -4277,8 +4314,11 @@ class ProblemBoardRelaySupervisor:
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
+            field.clear_wake_hold(channel.worker_name)
             return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
+            # Nothing to wake for, or nobody to wake: no hold (W334).
+            field.clear_wake_hold(channel.worker_name)
             return queue_reconciliation
         # W26: a wake to an agent the runtime says is out of tokens or rate
         # limited only piles up turns it cannot take. It waits for the reset
@@ -4296,6 +4336,8 @@ class ProblemBoardRelaySupervisor:
             now=now,
         )
         if deferred_until:
+            # W334: the card shows the hold from this same decision.
+            field.record_wake_hold(channel.worker_name, until=deferred_until, pending=len(pending_refs))
             if self._limit_wake_deferrals.get(channel.worker_name) != deferred_until:
                 self._limit_wake_deferrals[channel.worker_name] = deferred_until
                 logger.warning(
@@ -4318,6 +4360,12 @@ class ProblemBoardRelaySupervisor:
             else {}
         )
         withheld = wake_withheld_by_reconciliation(queue_reconciliation, subscription)
+        if not withheld:
+            # W334: the wake is eligible again, so a hold ends here and only
+            # here. A wake still withheld by reconciliation keeps its hold.
+            field.clear_wake_hold(channel.worker_name)
+        elif field.wake_hold(channel.worker_name):
+            field.record_wake_hold(channel.worker_name, until="", pending=len(pending_refs))
         if withheld:
             # Every withheld wake is said out loud. On 2026-09-23 Codex
             # sessions sat without a wake for minutes and the log had no line

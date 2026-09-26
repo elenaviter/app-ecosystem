@@ -679,6 +679,9 @@ def _team_limit_state(value: Any) -> dict[str, str]:
     }
 
 
+# W334: the board accepts a held wake's pending count up to this.
+MAX_WAKE_HOLD_PENDING = 1_000_000
+
 class SharedFieldStore:
     """Canonical project state shared directly by local workers.
 
@@ -3150,6 +3153,8 @@ class SharedFieldStore:
                 updated_at=now,
                 revision=int(row.get("revision") or 0) + 1,
             )
+            # A retired worker holds no wake (W334 review).
+            row.pop("wake_hold", None)
             atomic_write_json(path, row)
 
         for session_path in sorted(
@@ -3645,6 +3650,8 @@ class SharedFieldStore:
                 revision=int(listener.get("revision") or 0) + 1,
             )
             row.update(listener=listener, updated_at=now)
+            # A detached session holds no wake; a later attach starts fresh (W334 review).
+            row.pop("wake_hold", None)
             atomic_write_json(path, row)
             return self._session_with_presence(listener)
 
@@ -4109,6 +4116,54 @@ class SharedFieldStore:
             return {}
         recorded = worker.get("runtime_limit_state")
         return dict(recorded) if isinstance(recorded, Mapping) else {}
+
+    # -- W334: a wake the relay holds for a limited agent --------------------
+    #
+    # The delivery loop writes the hold from the same decision that withholds
+    # the wake, and clears it only when the wake is eligible again or there is
+    # no mail to wake for. It lives in the worker's record, not in a relay
+    # process, so a restart keeps it and every project heartbeat reads it.
+
+    def record_wake_hold(self, worker_name: str, *, until: str, pending: int) -> dict[str, Any]:
+        """Hold (or keep holding) the wake: ``since`` stays when the hold began."""
+
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            current = row.get("wake_hold")
+            current = dict(current) if isinstance(current, Mapping) else {}
+            since = str(current.get("since") or "") or utc_now()
+            # The board accepts at most a million; the count is a summary.
+            hold = {"since": since, "until": str(until or current.get("until") or ""), "pending": min(max(0, int(pending)), MAX_WAKE_HOLD_PENDING)}
+            if hold == current:
+                return current
+            row["wake_hold"] = hold
+            atomic_write_json(path, row)
+            return dict(hold)
+
+    def clear_wake_hold(self, worker_name: str) -> None:
+        try:
+            clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        except DomainError:
+            return
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            if not row.get("wake_hold"):
+                return
+            row.pop("wake_hold", None)
+            atomic_write_json(path, row)
+
+    def wake_hold(self, worker_name: str) -> dict[str, Any]:
+        """The held wake, or empty when none is held."""
+
+        try:
+            worker = self.read_worker(worker_name)
+        except DomainError:
+            return {}
+        hold = worker.get("wake_hold")
+        return dict(hold) if isinstance(hold, Mapping) and hold.get("since") else {}
 
     def set_worker_info(self, worker_name: str, text: str) -> dict[str, Any]:
         """Record the worker's one-line info note for the relay to publish (W330).
