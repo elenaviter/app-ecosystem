@@ -214,7 +214,7 @@ def test_the_relay_reports_the_record_and_carries_the_agents_report_once(tmp_pat
     # No record yet: the first project heartbeat names none; its answer writes it.
     asyncio.run(adapter.poll_attendances_once())
     assert "project_record" not in _heartbeats(board)[0]
-    assert field.read_project_repositories("quickstart-works-mttfmgqu")["revision"] == 3
+    assert field.read_project_repositories("demo-project-0a1b2c3d")["revision"] == 3
     assert all("workspace_report" not in payload for payload in _heartbeats(board))
 
     _git("clone", "-q", str(remote), str(workspace / "applications"), cwd=tmp_path)

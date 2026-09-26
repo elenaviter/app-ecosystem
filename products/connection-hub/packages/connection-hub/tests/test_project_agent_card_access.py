@@ -51,7 +51,7 @@ class Host:
 
     async def list_access(self, user):
         self.calls.append(("list_access", dict(user)))
-        return {"ok": True, "items": [{"access_id": ACCESS, "grantor_subject": "boris"}, {"access_id": "aut_other"}]}
+        return {"ok": True, "items": [{"access_id": ACCESS, "grantor_subject": "owner-one"}, {"access_id": "aut_other"}]}
 
     async def grant_options(self, user):
         return [{"grant": "work:relay"}]
@@ -79,7 +79,7 @@ class Host:
 
 
 def _allow(via, action, project_ref=PROJECT):
-    return AgentCardDecision(allowed=True, via=via, grantor_subject="boris", access_id=ACCESS,
+    return AgentCardDecision(allowed=True, via=via, grantor_subject="owner-one", access_id=ACCESS,
                              project_ref=project_ref, action=action, worker_name="claude-code-agent")
 
 
@@ -92,7 +92,7 @@ def test_a_project_admin_opens_the_card_under_the_owners_key_and_may_edit():
     result = asyncio.run(ProjectAgentCardAccess(host, port).get(ADA, access_id=ACCESS, project_ref=PROJECT))
     assert result["ok"] is True and result["item"]["access_id"] == ACCESS
     assert result["access"] == {"via": "project_admin", "can_edit": True, "project_ref": PROJECT, "worker_name": "claude-code-agent"}
-    assert host.calls[0] == ("list_access", {"user_id": "boris", "roles": [], "permissions": []})
+    assert host.calls[0] == ("list_access", {"user_id": "owner-one", "roles": [], "permissions": []})
 
 
 def test_a_platform_admin_reads_but_may_not_edit():
@@ -115,7 +115,7 @@ def test_a_project_admin_changes_the_card_audited_within_what_they_could_delegat
     ))
     assert result["ok"] is True
     name, call = host.calls[-1]
-    assert name == "update_access" and call["user"]["user_id"] == "boris", "stored under the owner"
+    assert name == "update_access" and call["user"]["user_id"] == "owner-one", "stored under the owner"
     assert call["_platform_admin"] is False
     assert call["_delegable_grants"] == ["work:coordinate", "work:relay"], "the acting admin's inventory"
     audit = call["transformed"].provenance[PROJECT_AGENT_CARD_AUDIT_PROVENANCE]
@@ -130,7 +130,7 @@ def test_apply_profile_goes_through_the_same_path_with_the_actor_named():
     ))
     assert result == {"ok": True, "profile": "coordinator"}
     _, call = host.calls[-1]
-    assert call["user"]["user_id"] == "boris" and call["_actor_subject"] == "ada"
+    assert call["user"]["user_id"] == "owner-one" and call["_actor_subject"] == "ada"
     assert call["transformed"].provenance[PROJECT_AGENT_CARD_AUDIT_PROVENANCE]["action"] == "profile_applied"
 
 
@@ -150,7 +150,7 @@ def test_refusals_unavailability_and_bad_requests():
     # Review on app-ecosystem#187: a deployment gap is unavailable, not a denial.
     assert closed["status"] == 503 and closed["reason"] == "not_configured" and closed["retryable"] is True
 
-    delegate = asyncio.run(ProjectAgentCardAccess(host, Port()).get({"user_id": "integration:c:boris"}, access_id=ACCESS, project_ref=PROJECT))
+    delegate = asyncio.run(ProjectAgentCardAccess(host, Port()).get({"user_id": "integration:c:owner-one"}, access_id=ACCESS, project_ref=PROJECT))
     assert delegate["status"] == 401
     blank = asyncio.run(ProjectAgentCardAccess(host, Port()).get(ADA, access_id=" ", project_ref=PROJECT))
     assert blank["status"] == 400
@@ -158,7 +158,7 @@ def test_refusals_unavailability_and_bad_requests():
 
 def test_a_decision_for_another_card_is_not_trusted():
     host = Host()
-    wrong = AgentCardDecision(allowed=True, via="project_admin", grantor_subject="boris", access_id="aut_other", project_ref=PROJECT, action="read")
+    wrong = AgentCardDecision(allowed=True, via="project_admin", grantor_subject="owner-one", access_id="aut_other", project_ref=PROJECT, action="read")
     result = asyncio.run(ProjectAgentCardAccess(host, Port({(PROJECT, "read"): wrong})).get(ADA, access_id=ACCESS, project_ref=PROJECT))
     assert result["status"] == 503 and result["reason"] == "decision_access_id_mismatch"
 
@@ -176,7 +176,7 @@ def test_a_decision_must_name_this_card_and_this_action_and_a_write_must_come_fr
     # Review on app-ecosystem#161: fail closed on a missing or different access_id,
     # a different action, and a write allowed by a via that cannot edit.
     host = Host()
-    missing = AgentCardDecision(allowed=True, via="project_admin", grantor_subject="boris", access_id="",
+    missing = AgentCardDecision(allowed=True, via="project_admin", grantor_subject="owner-one", access_id="",
                                 project_ref=PROJECT, action="read")
     result = asyncio.run(ProjectAgentCardAccess(host, Port({(PROJECT, "read"): missing})).get(ADA, access_id=ACCESS, project_ref=PROJECT))
     assert result["status"] == 503 and result["reason"] == "decision_access_id_mismatch"

@@ -50,7 +50,7 @@ class Client:
 def _adapter(client, *, peers=()):
     adapter = relay_module.ProblemBoardHostRelayAdapter.__new__(relay_module.ProblemBoardHostRelayAdapter)
     adapter.config = SimpleNamespace(
-        project_id="quickstart-works-mttfmgqu",
+        project_id="demo-project-0a1b2c3d",
         relay_id="relay-spark1-claude-ops",
         worker_name="claude-code-a7b7935d-a064-43ec-937e-2b94f1660b68",
         reconcile_ceiling_seconds=30,
@@ -141,7 +141,7 @@ def test_the_sender_sees_its_own_delivery_refused_with_the_reason(tmp_path):
     from project_board.client.store import SharedFieldStore
 
     sender = SENDER
-    project = "quickstart-works-mttfmgqu"
+    project = "demo-project-0a1b2c3d"
     field = SharedFieldStore(tmp_path / "field")
     field.initialize()
     field.register_worker(worker_name=sender, runtime_kind="claude-code", capabilities=[], authority_label="authority:claude-code")

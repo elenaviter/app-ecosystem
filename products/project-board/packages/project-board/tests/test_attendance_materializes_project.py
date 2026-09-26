@@ -18,7 +18,7 @@ from project_board.client.store import SharedFieldStore
 from project_board.client.io import content_hash
 from relay_helpers import make_host
 
-PROJECT_REF = "work:project:quickstart-works-mttfmgqu"
+PROJECT_REF = "work:project:demo-project-0a1b2c3d"
 COORDINATOR = "claude-code-dfd0d696-82d2-4bec-8a9c-d94493ec63a5"
 
 
@@ -125,7 +125,7 @@ def test_a_link_while_the_relay_runs_is_written_on_the_ping(tmp_path):
     board = Board(identity.worker_name, linked=False)
     adapter = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board)
     asyncio.run(adapter.poll_attendances_once())
-    assert not field._project_path("quickstart-works-mttfmgqu").exists()
+    assert not field._project_path("demo-project-0a1b2c3d").exists()
 
     # The operator links the agent: the board pushes project.linked to the relay.
     board.linked = True
@@ -135,7 +135,7 @@ def test_a_link_while_the_relay_runs_is_written_on_the_ping(tmp_path):
     )
     asyncio.run(adapter.poll_attendances_once())
 
-    assert field.read_project("quickstart-works-mttfmgqu")["title"] == "Quickstart works"
+    assert field.read_project("demo-project-0a1b2c3d")["title"] == "Quickstart works"
 
 
 def test_an_agent_whose_session_was_down_at_link_finds_the_mail_on_its_next_receive(tmp_path):
@@ -172,7 +172,7 @@ def test_a_relay_that_starts_after_the_link_writes_the_project_its_team_and_deli
 
     asyncio.run(adapter.poll_attendances_once())
 
-    project = field.read_project("quickstart-works-mttfmgqu")
+    project = field.read_project("demo-project-0a1b2c3d")
     assert project["title"] == "Quickstart works"
     acknowledged = [call for call in board.calls if call["action"] == "control.acknowledge"]
     assert [call["object_ref"] for call in acknowledged] == ["work:control:command_787d5f0bee694d2e967b47b1d8c5bf4e"]

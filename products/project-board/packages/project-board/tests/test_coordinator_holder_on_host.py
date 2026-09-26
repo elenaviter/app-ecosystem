@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from project_board.client.store import SharedFieldStore
 
-PROJECT = "quickstart-works"
+PROJECT = "demo-project"
 
 
 def _view(holder: str, revision: int) -> dict:

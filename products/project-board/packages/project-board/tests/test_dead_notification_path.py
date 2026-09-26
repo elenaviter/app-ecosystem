@@ -77,7 +77,7 @@ def _adapter(runtime_kind: str, reach: dict) -> tuple[object, _Field]:
         worker_name="claude-code-abc",
         worker_alias="fable-pub",
         runtime_session_id="0247bb87-0b0f-4009-aadb-e2df67c509fe",
-        project_id="quickstart-works",
+        project_id="demo-project",
     )
     field = _Field(reach)
     adapter.field = field
@@ -106,7 +106,7 @@ def test_dead_path_queues_one_operator_update_with_the_session_to_wake() -> None
     assert first == {"state": "dead", "since": "2026-09-18T06:52:06Z", "reported": True}
     assert len(field.notes) == 1
     note = field.notes[0]
-    assert note["project_id"] == "quickstart-works"
+    assert note["project_id"] == "demo-project"
     assert note["kind"] == "worker.notification_path"
     assert note["worker_name"] == "claude-code-abc"
     assert note["source_event_ref"] == "relay:" + note["idempotency_key"]

@@ -36,7 +36,7 @@ test('control, manual and person links keep their own paths, and no project mean
   assert.equal(projectAgentCardFocus(focus({ access_id: 'aut_agent' })), null)
   assert.equal(projectAgentCardFocus(focus({ control_card_id: 'ctl', project_ref: 'work:project:one' })), null)
   assert.equal(projectAgentCardFocus(focus({ manual_access_id: 'm', project_ref: 'work:project:one' })), null)
-  assert.equal(projectAgentCardFocus(focus({ access_id: 'a', project_ref: 'p', target_subject: 'boris' })), null)
+  assert.equal(projectAgentCardFocus(focus({ access_id: 'a', project_ref: 'p', target_subject: 'owner-one' })), null)
   assert.equal(projectAgentCardFocus(null), null)
 })
 

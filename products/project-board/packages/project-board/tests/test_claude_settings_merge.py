@@ -20,7 +20,7 @@ from project_board.client import cli
 from project_board.client.claude_settings import STOP_FAILURE_ERRORS, merge_claude_code_settings, pb_command
 from project_board.contract.errors import DomainError
 
-PB = "/home/lena/.local/bin/pb"
+PB = "/home/agent-user/.local/bin/pb"
 ALL_ERRORS = "|".join(STOP_FAILURE_ERRORS)
 
 

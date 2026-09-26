@@ -16,7 +16,7 @@ from project_board.client.store import SharedFieldStore
 from project_board.contract.errors import DomainError
 from relay_helpers import make_host
 
-PROJECT = "work:project:quickstart-works-mttfmgqu"
+PROJECT = "work:project:demo-project-0a1b2c3d"
 OTHER = "work:project:other-project"
 
 

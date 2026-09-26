@@ -29,25 +29,25 @@ from connection_hub.delegated_credentials.project_agent_card_access import (
 from test_project_agent_card_access import ADA, Host, Port
 
 ACCESS = "aut_agent"
-BORIS = {"user_id": "boris", "roles": ["kdcube:role:registered"], "permissions": []}
+OWNER = {"user_id": "owner-one", "roles": ["kdcube:role:registered"], "permissions": []}
 MO = {"user_id": "mo", "roles": ["kdcube:role:registered"], "permissions": []}
 
 
-def _store(tmp_path, *, state="active", card_kind=CARD_KIND_AUTOMATION, delegate="integration:claude-code:boris",
+def _store(tmp_path, *, state="active", card_kind=CARD_KIND_AUTOMATION, delegate="integration:claude-code:owner-one",
            source="oauth"):
     store = BundleStorageDelegatedCardStore(tmp_path)
     authority = CardAuthority(
-        access_id=ACCESS, client_id="client-1", grantor_subject="boris", delegate_subject=delegate,
+        access_id=ACCESS, client_id="client-1", grantor_subject="owner-one", delegate_subject=delegate,
         source=source, card_kind=card_kind, card_revision=1, created_at=1_900_000_000,
         expires_at=4_000_000_000, label="claude-ops", state=state,
     )
 
     async def seed():
         pointer = await store.write_revision(
-            subject_hash=subject_hash_for("boris"), authority=authority,
+            subject_hash=subject_hash_for("owner-one"), authority=authority,
             updated_at=datetime(2026, 9, 26, tzinfo=timezone.utc),
         )
-        await store.advance_current(subject_hash=subject_hash_for("boris"), pointer=pointer)
+        await store.advance_current(subject_hash=subject_hash_for("owner-one"), pointer=pointer)
 
     asyncio.run(seed())
     return store
@@ -59,10 +59,10 @@ def _run(coro):
 
 def test_only_the_owner_shares_lists_and_unshares(tmp_path):
     shares = AgentCardShares(_store(tmp_path))
-    shared = _run(shares.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="view"))
+    shared = _run(shares.share(OWNER, access_id=ACCESS, grantee_subject="ada", level="view"))
     assert shared["ok"] is True and shared["share"]["level"] == "view" and shared["share"]["label"] == "claude-ops"
-    _run(shares.share(BORIS, access_id=ACCESS, grantee_subject="mo", level="edit"))
-    listed = _run(shares.shares(BORIS, access_id=ACCESS))
+    _run(shares.share(OWNER, access_id=ACCESS, grantee_subject="mo", level="edit"))
+    listed = _run(shares.shares(OWNER, access_id=ACCESS))
     assert [(row["grantee_subject"], row["level"]) for row in listed["items"]] == [("ada", "view"), ("mo", "edit")]
 
     for call in (
@@ -79,37 +79,37 @@ def test_bad_share_requests_are_refused_by_name(tmp_path):
     cases = {
         "agent_card_share_level_invalid": dict(grantee_subject="ada", level="admin"),
         "agent_card_share_grantee_invalid": dict(grantee_subject="integration:bot", level="view"),
-        "agent_card_share_grantee_is_owner": dict(grantee_subject="boris", level="view"),
+        "agent_card_share_grantee_is_owner": dict(grantee_subject="owner-one", level="view"),
     }
     for error, kwargs in cases.items():
-        assert _run(shares.share(BORIS, access_id=ACCESS, **kwargs))["error"] == error
-    assert _run(shares.share(BORIS, access_id="../x", grantee_subject="ada", level="view"))["error"] == "agent_card_share_access_id_invalid"
+        assert _run(shares.share(OWNER, access_id=ACCESS, **kwargs))["error"] == error
+    assert _run(shares.share(OWNER, access_id="../x", grantee_subject="ada", level="view"))["error"] == "agent_card_share_access_id_invalid"
     revoked_card = AgentCardShares(_store(tmp_path / "revoked", state="revoked"))
-    assert _run(revoked_card.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="view"))["error"] == "agent_card_share_card_not_active"
+    assert _run(revoked_card.share(OWNER, access_id=ACCESS, grantee_subject="ada", level="view"))["error"] == "agent_card_share_card_not_active"
 
 
 def test_shared_with_me_lists_live_shares_and_revoked_ones(tmp_path):
     shares = AgentCardShares(_store(tmp_path))
-    _run(shares.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="edit"))
+    _run(shares.share(OWNER, access_id=ACCESS, grantee_subject="ada", level="edit"))
     mine = _run(shares.shared_with_me(ADA))
-    assert [(row["access_id"], row["grantor_subject"], row["level"]) for row in mine["items"]] == [(ACCESS, "boris", "edit")]
+    assert [(row["access_id"], row["grantor_subject"], row["level"]) for row in mine["items"]] == [(ACCESS, "owner-one", "edit")]
     assert mine["revoked"] == []
 
-    unshared = _run(shares.unshare(BORIS, access_id=ACCESS, grantee_subject="ada"))
+    unshared = _run(shares.unshare(OWNER, access_id=ACCESS, grantee_subject="ada"))
     assert unshared["removed"] is True
     after = _run(shares.shared_with_me(ADA))
     assert after["items"] == [] and [row["level"] for row in after["revoked"]] == ["revoked"]
-    assert _run(shares.shares(BORIS, access_id=ACCESS))["items"] == [], "the owner's list shows live shares"
-    assert _run(shares.unshare(BORIS, access_id=ACCESS, grantee_subject="ada"))["removed"] is False
+    assert _run(shares.shares(OWNER, access_id=ACCESS))["items"] == [], "the owner's list shows live shares"
+    assert _run(shares.unshare(OWNER, access_id=ACCESS, grantee_subject="ada"))["removed"] is False
     assert _run(shares.shared_with_me(MO)) == {"ok": True, "items": [], "revoked": []}
 
 
 def test_a_stale_index_entry_grants_nothing(tmp_path):
     store = _store(tmp_path)
     shares = AgentCardShares(store)
-    _run(shares.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="edit"))
+    _run(shares.share(OWNER, access_id=ACCESS, grantee_subject="ada", level="edit"))
     # The Card-side record is the authority; the index only finds it.
-    store.share_path(subject_hash=subject_hash_for("boris"), access_id=ACCESS,
+    store.share_path(subject_hash=subject_hash_for("owner-one"), access_id=ACCESS,
                      grantee_hash=subject_hash_for("ada")).unlink()
     assert _run(shares.share_for("ada", ACCESS)) is None
     assert _run(shares.shared_with_me(ADA))["items"] == []
@@ -117,23 +117,23 @@ def test_a_stale_index_entry_grants_nothing(tmp_path):
 
 def test_view_opens_read_only_and_a_change_is_refused_with_the_reason(tmp_path):
     shares = AgentCardShares(_store(tmp_path))
-    _run(shares.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="view"))
+    _run(shares.share(OWNER, access_id=ACCESS, grantee_subject="ada", level="view"))
     host, port = Host(), Port()
     access = ProjectAgentCardAccess(host, port, shares=shares)
 
     opened = _run(access.get(ADA, access_id=ACCESS, project_ref=""))
     assert opened["ok"] is True and opened["access"]["via"] == "shared_view" and opened["access"]["can_edit"] is False
-    assert host.calls[0] == ("list_access", {"user_id": "boris", "roles": [], "permissions": []})
+    assert host.calls[0] == ("list_access", {"user_id": "owner-one", "roles": [], "permissions": []})
 
     refused = _run(access.update(ADA, access_id=ACCESS, project_ref="", resource_grants={}))
     assert refused["ok"] is False and refused["error"] == "agent_card_shared_view_only"
-    assert "boris shares this agent with you to view" in refused["message"]
+    assert "owner-one shares this agent with you to view" in refused["message"]
     assert not any(name == "update_access" for name, _ in host.calls)
 
 
 def test_edit_changes_the_card_under_the_owners_key_audited(tmp_path):
     shares = AgentCardShares(_store(tmp_path))
-    _run(shares.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="edit"))
+    _run(shares.share(OWNER, access_id=ACCESS, grantee_subject="ada", level="edit"))
     host, port = Host(), Port()
     access = ProjectAgentCardAccess(host, port, shares=shares)
 
@@ -142,7 +142,7 @@ def test_edit_changes_the_card_under_the_owners_key_audited(tmp_path):
     changed = _run(access.update(ADA, access_id=ACCESS, project_ref="", resource_grants={"problem_board": ["work:relay"]}))
     assert changed == {"ok": True, "card_revision": 4}
     name, call = host.calls[-1]
-    assert name == "update_access" and call["user"] == {"user_id": "boris", "roles": [], "permissions": []}
+    assert name == "update_access" and call["user"] == {"user_id": "owner-one", "roles": [], "permissions": []}
     audit = call["transformed"].provenance[PROJECT_AGENT_CARD_AUDIT_PROVENANCE]
     assert audit["actor_subject"] == "ada" and audit["via"] == "shared_edit"
     profile = _run(access.apply_profile(ADA, access_id=ACCESS, project_ref="", profile="coordinator"))
@@ -152,23 +152,23 @@ def test_edit_changes_the_card_under_the_owners_key_audited(tmp_path):
 
 def test_an_unshare_takes_effect_at_once_and_says_why(tmp_path):
     shares = AgentCardShares(_store(tmp_path))
-    _run(shares.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="edit"))
+    _run(shares.share(OWNER, access_id=ACCESS, grantee_subject="ada", level="edit"))
     access = ProjectAgentCardAccess(Host(), Port(), shares=shares)
     assert _run(access.get(ADA, access_id=ACCESS, project_ref=""))["ok"] is True
 
-    _run(shares.unshare(BORIS, access_id=ACCESS, grantee_subject="ada"))
+    _run(shares.unshare(OWNER, access_id=ACCESS, grantee_subject="ada"))
     for call in (access.get(ADA, access_id=ACCESS, project_ref=""),
                  access.update(ADA, access_id=ACCESS, project_ref="", resource_grants={})):
         refused = _run(call)
         assert refused["ok"] is False and refused["error"] == "agent_card_share_revoked"
-        assert refused["message"] == "boris no longer shares this agent with you."
+        assert refused["message"] == "owner-one no longer shares this agent with you."
 
 
 def test_a_view_share_does_not_hide_a_project_admins_edit(tmp_path):
     from test_project_agent_card_access import PROJECT, _allow
 
     shares = AgentCardShares(_store(tmp_path))
-    _run(shares.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="view"))
+    _run(shares.share(OWNER, access_id=ACCESS, grantee_subject="ada", level="view"))
     host, port = Host(), Port({(PROJECT, "write"): _allow("project_admin", "write")})
     changed = _run(ProjectAgentCardAccess(host, port, shares=shares).update(
         ADA, access_id=ACCESS, project_ref=PROJECT, resource_grants={}))
@@ -178,7 +178,7 @@ def test_a_view_share_does_not_hide_a_project_admins_edit(tmp_path):
 def test_the_host_cannot_answer_shared_edit(tmp_path):
     from connection_hub.delegated_credentials.project_agent_card_access import AgentCardDecision
 
-    forged = AgentCardDecision(allowed=True, via="shared_edit", grantor_subject="boris", access_id=ACCESS,
+    forged = AgentCardDecision(allowed=True, via="shared_edit", grantor_subject="owner-one", access_id=ACCESS,
                                project_ref="", action="write")
     refused = _run(ProjectAgentCardAccess(Host(), Port({("", "write"): forged})).update(
         ADA, access_id=ACCESS, project_ref="", resource_grants={}))
@@ -194,20 +194,20 @@ def test_only_an_agent_card_is_shared_and_a_share_of_another_card_grants_nothing
     """
 
     shared = AgentCardShares(_store(tmp_path / "resident", card_kind=CARD_KIND_AGENT, source="agent"))
-    assert _run(shared.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="view"))["ok"] is True
+    assert _run(shared.share(OWNER, access_id=ACCESS, grantee_subject="ada", level="view"))["ok"] is True
 
     for name, kwargs in {
-        "my-card": dict(delegate="boris"),  # delegated to the person themselves
+        "my-card": dict(delegate="owner-one"),  # delegated to the person themselves
         "connector": dict(card_kind=CARD_KIND_CONNECTOR),
     }.items():
         store = _store(tmp_path / name, **kwargs)
-        refused = _run(AgentCardShares(store).share(BORIS, access_id=ACCESS, grantee_subject="ada", level="edit"))
+        refused = _run(AgentCardShares(store).share(OWNER, access_id=ACCESS, grantee_subject="ada", level="edit"))
         assert refused["error"] == "agent_card_share_not_an_agent", name
 
         # A share record for such a Card, however it got there, grants nothing.
         _run(store.write_share(
-            subject_hash=subject_hash_for("boris"), access_id=ACCESS, grantee_hash=subject_hash_for("ada"),
-            share={"access_id": ACCESS, "grantor_subject": "boris", "grantee_subject": "ada", "level": "edit"},
+            subject_hash=subject_hash_for("owner-one"), access_id=ACCESS, grantee_hash=subject_hash_for("ada"),
+            share={"access_id": ACCESS, "grantor_subject": "owner-one", "grantee_subject": "ada", "level": "edit"},
         ))
         shares = AgentCardShares(store)
         assert _run(shares.share_for("ada", ACCESS)) is None, name
@@ -225,7 +225,7 @@ def test_an_unconfigured_provider_keeps_a_view_shares_own_refusal(tmp_path):
     )
 
     shares = AgentCardShares(_store(tmp_path))
-    _run(shares.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="view"))
+    _run(shares.share(OWNER, access_id=ACCESS, grantee_subject="ada", level="view"))
     access = ProjectAgentCardAccess(Host(), RefusingAgentCardAuthorizationPort("not_configured"), shares=shares)
     refused = _run(access.update(ADA, access_id=ACCESS, project_ref="", resource_grants={}))
     assert refused["status"] == 403 and refused["error"] == "agent_card_shared_view_only"
