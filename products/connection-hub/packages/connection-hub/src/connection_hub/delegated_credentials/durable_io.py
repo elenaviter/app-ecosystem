@@ -66,6 +66,14 @@ async def list_child_names(path: pathlib.Path) -> list[str]:
     return result
 
 
+async def delete_file(path: pathlib.Path) -> None:
+    """Remove one object; an absent object is already deleted."""
+    try:
+        await asyncio.to_thread(path.unlink, missing_ok=True)
+    except OSError as exc:
+        raise DurableStorageError("delete_failed") from exc
+
+
 async def path_is_file(path: pathlib.Path) -> bool:
     return await asyncio.to_thread(path.is_file)
 

@@ -215,6 +215,7 @@ from .services.project_membership import (
 from connection_hub.delegated_credentials.project_agent_card_access import (
     ProjectAgentCardAccess,
 )
+from connection_hub.delegated_credentials.agent_card_shares import AgentCardShares
 
 BUNDLE_ID = "connection-hub@1-0"
 ENTRYPOINT_NAME = "connection-hub"
@@ -247,6 +248,9 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "project_agent_card_get",
     "project_agent_card_update",
     "project_agent_card_apply_profile",
+    "agent_card_share",
+    "agent_card_unshare",
+    "agent_card_shares",
     "project_person_control_create",
     "project_person_control_update",
     "project_person_control_revoke",
@@ -279,6 +283,8 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "remote_mcp_connector_update_credential",
 })
 CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
+    # W319: read-only, asked by the project host under the person's session.
+    "agent_card_shared_with_me",
     "agent_capabilities",
     "agent_selection_update",
     "authority_provider_validate",
@@ -2661,6 +2667,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_agent_card_get": {"visibility": {"user_types": []}},
                             "project_agent_card_update": {"visibility": {"user_types": []}},
                             "project_agent_card_apply_profile": {"visibility": {"user_types": []}},
+                            "agent_card_share": {"visibility": {"user_types": []}},
+                            "agent_card_unshare": {"visibility": {"user_types": []}},
+                            "agent_card_shares": {"visibility": {"user_types": []}},
+                            "agent_card_shared_with_me": {"visibility": {"user_types": []}},
                             "project_person_control_create": {"visibility": {"user_types": []}},
                             "project_person_control_update": {"visibility": {"user_types": []}},
                             "project_person_control_revoke": {"visibility": {"user_types": []}},
@@ -4166,7 +4176,80 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         return ProjectAgentCardAccess(
             await _automation_access_service(self, request),
             port if port is not None else descriptor_agent_card_port(self),
+            shares=self._agent_card_shares(),
         )
+
+    def _agent_card_shares(self) -> AgentCardShares | None:
+        """An owner's shares of agent Cards, stored next to the Cards (W319 slice 2)."""
+
+        storage_root = self.bundle_storage_root()
+        if storage_root is None:
+            return None
+        return AgentCardShares(BundleStorageDelegatedCardStore(storage_root))
+
+    async def _agent_card_share_call(self, user_id: Optional[str], run: Any) -> Dict[str, Any]:
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        shares = self._agent_card_shares()
+        if shares is None:
+            return {"ok": False, "error": "agent_card_shares_unavailable", "reason": "bundle_storage_unavailable",
+                    "retryable": True, "status": 503}
+        return await run(shares, user)
+
+    @api(method="POST", alias="agent_card_share", route="operations", csrf=True,
+         **_api_visibility("agent_card_share"))
+    async def agent_card_share(self, data: Optional[Dict[str, Any]] = None, request: Any = None,
+                               user_id: Optional[str] = None, fingerprint: Optional[str] = None,
+                               **kwargs: Any) -> Dict[str, Any]:
+        """The owner shares an agent with a named person, at view or edit (W319)."""
+
+        del request, fingerprint
+        payload = _payload(data, **kwargs)
+        return await self._agent_card_share_call(user_id, lambda shares, user: shares.share(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            grantee_subject=str(payload.get("grantee_subject") or "").strip(),
+            level=str(payload.get("level") or "").strip(),
+        ))
+
+    @api(method="POST", alias="agent_card_unshare", route="operations", csrf=True,
+         **_api_visibility("agent_card_unshare"))
+    async def agent_card_unshare(self, data: Optional[Dict[str, Any]] = None, request: Any = None,
+                                 user_id: Optional[str] = None, fingerprint: Optional[str] = None,
+                                 **kwargs: Any) -> Dict[str, Any]:
+        """The owner stops sharing an agent; it takes effect at once (W319)."""
+
+        del request, fingerprint
+        payload = _payload(data, **kwargs)
+        return await self._agent_card_share_call(user_id, lambda shares, user: shares.unshare(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            grantee_subject=str(payload.get("grantee_subject") or "").strip(),
+        ))
+
+    @api(method="POST", alias="agent_card_shares", route="operations", csrf=True,
+         **_api_visibility("agent_card_shares"))
+    async def agent_card_shares(self, data: Optional[Dict[str, Any]] = None, request: Any = None,
+                                user_id: Optional[str] = None, fingerprint: Optional[str] = None,
+                                **kwargs: Any) -> Dict[str, Any]:
+        """The owner lists who an agent is shared with (W319)."""
+
+        del request, fingerprint
+        payload = _payload(data, **kwargs)
+        return await self._agent_card_share_call(user_id, lambda shares, user: shares.shares(
+            user, access_id=str(payload.get("access_id") or "").strip(),
+        ))
+
+    @api(method="POST", alias="agent_card_shared_with_me", route="operations",
+         **_api_visibility("agent_card_shared_with_me"))
+    async def agent_card_shared_with_me(self, data: Optional[Dict[str, Any]] = None, request: Any = None,
+                                        user_id: Optional[str] = None, fingerprint: Optional[str] = None,
+                                        **kwargs: Any) -> Dict[str, Any]:
+        """The agents shared with this person, and the shares their owners revoked (W319)."""
+
+        del data, request, fingerprint, kwargs
+        return await self._agent_card_share_call(user_id, lambda shares, user: shares.shared_with_me(user))
 
     @api(
         method="POST",

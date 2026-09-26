@@ -5,6 +5,10 @@
 // widget then asks for the Card through that project, and Connection Hub asks
 // the board whether this person is the owner, an admin of a project the agent
 // attends now (open and change), or a platform admin (open only).
+//
+// W319 slice 2: an agent its owner shared with the person opens the same way,
+// without a project (the link says `shared=1`); Connection Hub decides the
+// share itself: view opens read-only, edit also changes the Card.
 
 import type { AccessCardFocus } from './accessCardFocus';
 import type { DelegatedAccessRecord, ProjectAgentCardGetResult } from '../../api/types';
@@ -14,12 +18,12 @@ export interface ProjectAgentCardTarget {
   projectRef: string;
 }
 
-/** The project path applies to a plain agent Card link that names a project. */
+/** The project path applies to a plain agent Card link that names a project or a share. */
 export function projectAgentCardFocus(focus: AccessCardFocus | null | undefined): ProjectAgentCardTarget | null {
   if (!focus || focus.controlOnly || focus.manualOnly) return null;
   if (focus.targetSubject || focus.invitationRef) return null;
   const projectRef = (focus.projectRef || '').trim();
-  if (!projectRef) return null;
+  if (!projectRef && !focus.shared) return null;
   return { accessId: focus.accessId, projectRef };
 }
 
@@ -49,7 +53,11 @@ export function projectAgentCardReadOnly(item: DelegatedAccessRecord | null | un
 
 export function projectAgentCardReadOnlyMessage(item: DelegatedAccessRecord | null | undefined): string {
   const via = item?.project_agent_card?.via;
-  return via === 'platform_admin'
-    ? 'A platform admin opens every agent Card but changes one only as an admin of a project the agent attends.'
-    : 'This Card is open to read only.';
+  if (via === 'platform_admin') {
+    return 'A platform admin opens every agent Card but changes one only as an admin of a project the agent attends.';
+  }
+  if (via === 'shared_view') {
+    return 'The owner shares this agent with you to view: you can message it and add it to a project, not change its Card.';
+  }
+  return 'This Card is open to read only.';
 }

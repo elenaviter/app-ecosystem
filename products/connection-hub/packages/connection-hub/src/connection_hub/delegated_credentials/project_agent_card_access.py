@@ -25,7 +25,11 @@ AGENT_CARD_READ = "read"
 AGENT_CARD_WRITE = "write"
 PROJECT_AGENT_CARD_AUDIT_PROVENANCE = "project_agent_card_audit"
 PROJECT_AGENT_CARD_AUDIT_SCHEMA = "connection_hub.project_agent_card_audit.v1"
-EDITING_VIAS = frozenset({"owner", "project_admin"})
+# Who may change a Card: the project host answers owner or project_admin; an
+# owner's edit share is decided here (W319 slice 2) and never by the host.
+HOST_EDITING_VIAS = frozenset({"owner", "project_admin"})
+EDITING_VIAS = HOST_EDITING_VIAS | {"shared_edit"}
+SHARED_VIEW_ONLY = "agent_card_shared_view_only"
 
 
 class AgentCardAuthorizationError(Exception):
@@ -99,9 +103,11 @@ def _subject(user: Mapping[str, Any]) -> str:
 class ProjectAgentCardAccess:
     """Read or change one agent Card for a person the project host authorizes."""
 
-    def __init__(self, host: Any, port: AgentCardAuthorizationPort | None) -> None:
+    def __init__(self, host: Any, port: AgentCardAuthorizationPort | None, shares: Any = None) -> None:
         self._host = host
         self._port = port
+        # W319 slice 2: the owner's share, decided here, where the grant lives.
+        self._shares = shares
 
     async def _authorize(
         self, user: Mapping[str, Any], *, access_id: str, project_ref: str, action: str
@@ -112,9 +118,24 @@ class ProjectAgentCardAccess:
         access_id = clean_text(access_id)
         if not access_id:
             return {"ok": False, "error": "project_agent_card_requires_access_id", "status": 400}
+        share = await self._share(actor, access_id)
+        level = str((share or {}).get("level") or "")
+        if level == "edit" or (level == "view" and action == AGENT_CARD_READ):
+            return AgentCardDecision(
+                allowed=True,
+                via=f"shared_{level}",
+                grantor_subject=str(share["grantor_subject"]),
+                access_id=access_id,
+                project_ref=clean_text(project_ref),
+                action=action,
+                evidence={"share": dict(share)},
+            )
+        # A view share cannot change the Card, but the person may also be an
+        # admin of a project the agent attends: the project host still answers.
+        refusal = self._share_refusal(share, action)
         if self._port is None:
-            return {"ok": False, "error": "project_agent_card_authorization_unavailable",
-                    "reason": "authorization_port_not_configured", "retryable": True, "status": 503}
+            return refusal or {"ok": False, "error": "project_agent_card_authorization_unavailable",
+                               "reason": "authorization_port_not_configured", "retryable": True, "status": 503}
         try:
             decision = await self._port.authorize_agent_card(
                 access_id=access_id, project_ref=clean_text(project_ref), action=action
@@ -128,6 +149,8 @@ class ProjectAgentCardAccess:
         if not isinstance(decision, AgentCardDecision):
             return {"ok": False, "error": "project_agent_card_authorization_invalid", "retryable": True, "status": 503}
         if not decision.allowed:
+            if refusal is not None:
+                return refusal
             refused = {"ok": False, "error": decision.reason or "project_agent_card_denied", "status": 403}
             if decision.message:
                 refused["message"] = decision.message
@@ -141,10 +164,34 @@ class ProjectAgentCardAccess:
         if decision.action != action:
             return {"ok": False, "error": "project_agent_card_authorization_invalid",
                     "reason": "decision_action_mismatch", "retryable": True, "status": 503}
-        if action == AGENT_CARD_WRITE and decision.via not in EDITING_VIAS:
+        if action == AGENT_CARD_WRITE and decision.via not in HOST_EDITING_VIAS:
             return {"ok": False, "error": "project_agent_card_write_denied",
                     "reason": "decision_via_cannot_edit", "status": 403}
         return decision
+
+    async def _share(self, actor: str, access_id: str) -> Mapping[str, Any] | None:
+        if self._shares is None:
+            return None
+        try:
+            return await self._shares.share_for(actor, access_id)
+        except Exception:  # noqa: BLE001 - an unreadable share grants nothing; the host still answers
+            return None
+
+    @staticmethod
+    def _share_refusal(share: Mapping[str, Any] | None, action: str) -> dict[str, Any] | None:
+        """Why a share does not allow this action, told to the person (W319)."""
+
+        if not share:
+            return None
+        owner = str(share.get("grantor_subject") or "the owner")
+        if share.get("level") == "revoked":
+            return {"ok": False, "error": "agent_card_share_revoked", "status": 403,
+                    "message": f"{owner} no longer shares this agent with you."}
+        if share.get("level") == "view" and action == AGENT_CARD_WRITE:
+            return {"ok": False, "error": SHARED_VIEW_ONLY, "status": 403,
+                    "message": f"{owner} shares this agent with you to view: you can message it and add it "
+                               "to a project, not change its Card."}
+        return None
 
     @staticmethod
     def _owner_user(decision: AgentCardDecision) -> dict[str, Any]:

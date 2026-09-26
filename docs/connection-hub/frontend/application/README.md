@@ -256,6 +256,23 @@ account at call time.
   explicit exemption inventory. Explicit token and authenticated internal
   calls keep their existing request proof. Manual named-service access accepts the exact
   `named_service_operations[resource][namespace][]` selector.
+- `project_agent_card_get`, `project_agent_card_update`,
+  `project_agent_card_apply_profile` (operations, W319) — open and change an
+  agent's Card as someone other than its owner. The project host
+  (`project_agent_card_authorize`) answers for the owner, a project admin, and
+  a platform admin (read only); an owner's share is decided here. Every
+  change is written under the owner's storage key with the acting person in a
+  `project_agent_card_audit` provenance entry.
+- `agent_card_share`, `agent_card_unshare`, `agent_card_shares` (operations,
+  W319) — the owner shares an agent's Card with a named person at `view`
+  (open read-only) or `edit` (also change it, and apply a profile such as
+  coordinator), stops sharing, and lists the shares. The share is stored next
+  to the Card (`cards/<access_id>/shares/`); an unshare leaves a `revoked`
+  record, so it takes effect at once and the person is told why.
+- `agent_card_shared_with_me` (operation, CSRF-exempt read, W319) — the
+  agents shared with the signed-in person, and the shares revoked since;
+  the project host reads it under the person's session for their pool. A
+  widget link with `shared=1` opens a shared Card without a project.
 - `email_accounts_status`, `email_connect_app_password`, `email_disconnect_account`
   (operations) — older iCloud-only email integration surface.
 - `connections_settings` (widget) — the React/Redux settings UI.

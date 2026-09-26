@@ -145,3 +145,54 @@ def test_the_operations_pass_the_person_and_the_body_to_the_project_path(monkeyp
 
 def test_a_decision_needs_its_owner():
     assert AgentCardDecision.from_mapping({"allowed": False}).allowed is False
+
+
+SHARE_OPERATIONS = ("agent_card_share", "agent_card_unshare", "agent_card_shares")
+
+
+def test_the_share_operations_are_posts_and_only_the_read_is_csrf_exempt():
+    module = _entrypoint_module()
+    for alias in (*SHARE_OPERATIONS, "agent_card_shared_with_me"):
+        method = getattr(getattr(module.ConnectionHubEntrypoint, alias), "__bundle_api_method__")
+        assert method.alias == alias and method.http_method == "POST"
+    assert set(SHARE_OPERATIONS) <= module.CSRF_PROTECTED_OPERATION_ALIASES
+    assert "agent_card_shared_with_me" in module.CSRF_EXEMPT_POST_OPERATION_ALIASES
+    assert "agent_card_shared_with_me" not in module.CSRF_PROTECTED_OPERATION_ALIASES
+
+
+def test_the_share_operations_pass_the_person_and_fail_closed_without_storage(monkeypatch):
+    module = _entrypoint_module()
+    calls = []
+
+    class Shares:
+        async def share(self, user, **kwargs):
+            calls.append(("share", user, kwargs))
+            return {"ok": True}
+
+        async def unshare(self, user, **kwargs):
+            calls.append(("unshare", user, kwargs))
+            return {"ok": True}
+
+        async def shares(self, user, **kwargs):
+            calls.append(("shares", user, kwargs))
+            return {"ok": True}
+
+        async def shared_with_me(self, user):
+            calls.append(("shared_with_me", user, {}))
+            return {"ok": True}
+
+    monkeypatch.setattr(module, "_platform_user_payload", lambda *a, **kw: {"user_id": "boris"})
+    instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    monkeypatch.setattr(module.ConnectionHubEntrypoint, "_agent_card_shares", lambda _self: Shares())
+    E = module.ConnectionHubEntrypoint
+    asyncio.run(E.agent_card_share(instance, data={"access_id": " aut_a ", "grantee_subject": "ada", "level": "edit"}))
+    asyncio.run(E.agent_card_unshare(instance, data={"access_id": "aut_a", "grantee_subject": "ada"}))
+    asyncio.run(E.agent_card_shares(instance, data={"access_id": "aut_a"}))
+    asyncio.run(E.agent_card_shared_with_me(instance, data={}))
+    assert [name for name, *_ in calls] == ["share", "unshare", "shares", "shared_with_me"]
+    assert calls[0][2] == {"access_id": "aut_a", "grantee_subject": "ada", "level": "edit"}
+    assert all(user == {"user_id": "boris"} for _, user, _ in calls)
+
+    monkeypatch.setattr(module.ConnectionHubEntrypoint, "_agent_card_shares", lambda _self: None)
+    down = asyncio.run(E.agent_card_shared_with_me(instance, data={}))
+    assert down["ok"] is False and down["error"] == "agent_card_shares_unavailable"
