@@ -1348,6 +1348,20 @@ def test_the_kdcube_maintainer_profile_holds_the_runtime_actions():
     assert "are in that runtime's profile, never on this page" in actions
     assert "A reload without a commit stages the working tree" not in actions
 
+def test_the_board_descriptor_is_synced_by_the_committed_tool_before_the_reload():
+    """W353: the board's live descriptor entry was hand-synced twice by scratch
+    scripts; the profile names the committed tool, where it runs in a window,
+    and the catalog check after it."""
+
+    words = _words(_profile())
+    step = words[words.index("**The board's descriptor entry**"):words.index("**The platform:**")]
+    assert "after the deploy worktree checkout and any `kdcube refresh`, and before `kdcube bundle reload problem-board@1-0`" in step
+    assert "playground/domain-solution/tools/sync_board_descriptor.py" in step
+    assert "--apply" in step
+    assert "After the reload run `kdcube bundle catalog check --workdir <workdir>`." in step
+    assert "never by hand-editing the entry" in step
+
+
 def test_delegation_is_not_free_and_its_reason_is_stated():
     """Operator 2026-09-25: delegate only when net positive; no polling; independent pools first."""
 
