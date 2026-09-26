@@ -169,3 +169,28 @@ def test_an_allowed_decision_must_name_the_owner():
         assert exc.reason == "project_agent_card_decision_grantor_missing"
     else:
         raise AssertionError("an allowed decision without an owner must be refused")
+
+
+def test_a_decision_must_name_this_card_and_this_action_and_a_write_must_come_from_an_editor():
+    # Review on app-ecosystem#161: fail closed on a missing or different access_id,
+    # a different action, and a write allowed by a via that cannot edit.
+    host = Host()
+    missing = AgentCardDecision(allowed=True, via="project_admin", grantor_subject="boris", access_id="",
+                                project_ref=PROJECT, action="read")
+    result = asyncio.run(ProjectAgentCardAccess(host, Port({(PROJECT, "read"): missing})).get(ADA, access_id=ACCESS, project_ref=PROJECT))
+    assert result["status"] == 503 and result["reason"] == "decision_access_id_mismatch"
+
+    other_action = _allow("project_admin", "read")
+    result = asyncio.run(ProjectAgentCardAccess(host, Port({(PROJECT, "write"): other_action})).update(
+        ADA, access_id=ACCESS, project_ref=PROJECT, resource_grants={"problem_board": ["work:relay"]},
+    ))
+    assert result["status"] == 503 and result["reason"] == "decision_action_mismatch"
+
+    reader = _allow("platform_admin", "write")
+    for call in (
+        lambda access: access.update(ROOT, access_id=ACCESS, project_ref=PROJECT, resource_grants={"problem_board": ["work:relay"]}),
+        lambda access: access.apply_profile(ROOT, access_id=ACCESS, project_ref=PROJECT, profile="coordinator"),
+    ):
+        refused = asyncio.run(call(ProjectAgentCardAccess(host, Port({(PROJECT, "write"): reader}))))
+        assert refused["status"] == 403 and refused["reason"] == "decision_via_cannot_edit"
+    assert not any(name in {"update_access", "apply_authorization_profile"} for name, _ in host.calls)

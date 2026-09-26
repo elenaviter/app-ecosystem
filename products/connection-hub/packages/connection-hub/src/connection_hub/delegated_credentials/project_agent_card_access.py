@@ -34,6 +34,7 @@ class AgentCardAuthorizationError(Exception):
         self.reason = reason
 
 
+
 @dataclass(frozen=True)
 class AgentCardDecision:
     """The project host's answer for one Card, one action, one person."""
@@ -131,9 +132,18 @@ class ProjectAgentCardAccess:
             if decision.message:
                 refused["message"] = decision.message
             return refused
-        if decision.access_id and decision.access_id != access_id:
+        # The answer must be about this Card and this action, and a write must
+        # come from the owner or a project admin; anything else fails closed
+        # (review on app-ecosystem#161).
+        if decision.access_id != access_id:
             return {"ok": False, "error": "project_agent_card_authorization_invalid",
                     "reason": "decision_access_id_mismatch", "retryable": True, "status": 503}
+        if decision.action != action:
+            return {"ok": False, "error": "project_agent_card_authorization_invalid",
+                    "reason": "decision_action_mismatch", "retryable": True, "status": 503}
+        if action == AGENT_CARD_WRITE and decision.via not in EDITING_VIAS:
+            return {"ok": False, "error": "project_agent_card_write_denied",
+                    "reason": "decision_via_cannot_edit", "status": 403}
         return decision
 
     @staticmethod
