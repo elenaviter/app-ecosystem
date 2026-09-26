@@ -247,6 +247,12 @@ note or mail thread can carry the immediate conversation; its journal link
 makes the resulting knowledge available to the whole team and to later
 sessions.
 
+**Where knowledge goes.** Project state and rulings go in the project
+journal. Practice that helps any coordinator or worker goes in this procedure,
+through a change request. Private agent memory holds only that agent's
+personal preferences. Why: knowledge kept in one agent's memory is lost to
+every other agent and to that agent's successor (operator, 2026-09-26).
+
 ### Starting a project
 
 The journal accumulates from the first day. When the journal home is bound at
@@ -516,6 +522,16 @@ tree, which stages whatever it holds at that instant.
    commit it named, the commit range, and, for
    each worker whose commits rode along, that they did. Clear your dashboard
    row. A worker asking "what did that release" is asking for this line.
+
+**New operations reach an agent only through the project Control Card.** A
+project's Control Card caps every agent Card in the project (AND), and a Card
+Refresh is capped by it too. After new operations reach the catalog, a project
+admin ticks them on the project Control Card in Connection Hub first, and
+only then refreshes Cards. A refusal that names the Control Card
+(`work_worker_operation_withheld_by_control_card`) means exactly that step is
+missing: re-consent and re-publishing the catalog do not help. Why: on
+2026-09-26 a coordinator refresh after new operations reached the catalog
+changed nothing until they were ticked on the project Control Card.
 
 A LaunchAgent or systemd unit is host service configuration: `pb relay-service
 install` is typed by an agent after the operator approves it, so it is theirs
