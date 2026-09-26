@@ -3369,6 +3369,10 @@ class SharedFieldStore:
                 "detached_at": "",
                 "revision": int(previous.get("revision") or 0) + 1,
             }
+            if isinstance(previous.get("observed_project_refs"), list):
+                # Kept across listen, or an unlink between two receives is
+                # never told: every session start runs listen (rehearsal gap 7).
+                listener["observed_project_refs"] = list(previous["observed_project_refs"])
             row.update(listener=listener, updated_at=now)
             atomic_write_json(path, row)
             return self._session_with_presence(listener)

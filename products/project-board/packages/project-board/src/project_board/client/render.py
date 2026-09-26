@@ -203,6 +203,12 @@ def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
             f"NOTE: {total_held - len(items)} held lease(s) are not in this batch. "
             + _cmd(["pb", "worker", "leases"], flags)
         )
+    # A signal is produced once (an unlink, a control-plane change); brief
+    # output is the only place the agent sees it.
+    for signal in result.get("signals") or []:
+        if isinstance(signal, Mapping):
+            lines.append(f"SIGNAL {signal.get('kind') or 'unknown'}:")
+            lines.extend(_flatten({k: v for k, v in signal.items() if k != "kind"}, prefix="  "))
     for issue in result.get("delivery_issues") or []:
         lines.append("DELIVERY ISSUE:")
         lines.extend(_flatten(issue, prefix="  "))
