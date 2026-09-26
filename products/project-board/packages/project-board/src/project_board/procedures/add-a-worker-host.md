@@ -140,6 +140,7 @@ before anything changes:
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 | **teammates who may write to these agents** | `*` (the default), any agent that shares a project with them, or named workers such as the coordinator | the host's receiver policy (`receiver_policy.allowed_peer_workers`). `pb setup` writes `*` (operator ruling, 2026-09-26); step 3 narrows it only when the operator chose named workers or none. The board lets an agent in a shared project address them, and, while one of them attends no project, anyone who knows its exact stable name (never its alias) may send it a request, reply or ping; so `*` means "my project teammates, and whoever knows a new agent's id before it joins". It grants no access to anything: it decides whose mail reaches these agents. The operator's own messages reach them either way. |
+| **how the client is installed** | a published `project-board` version (for example `2026.9.26.1900`), or exact App Ecosystem and KDCube commits | step 2. A published release is one version from the package index, the default for a machine that only runs agents; exact commits are for a machine of the team that builds Problem Board, or before a release is published (W304 U2). |
 | **GitHub identity for pull requests** | a machine account such as `kdcube-agents`, with write on the project's repositories | agents open their own pull requests and post review verdicts with `gh`. Deploy keys (step 7) only push branches. Which identity signs in, and with what access, is the operator's decision. |
 
 **Repositories are not a host decision.** They belong to the project: the
@@ -195,6 +196,26 @@ client state, and workspaces must lock down.
 ## 2. Install The Pinned `pb` Bootstrap For The Agent User
 
 Runs on: the host.
+
+Two routes install the same client. Step 0 decides which (W304 U2):
+
+- **A published release** (the default for a machine that only runs agents):
+  the operator names an approved `project-board` version on the package
+  index, and the host installs that version, nothing else:
+
+  ```bash
+  python3 -m venv "$HOME/.local/share/project-board-bootstrap"
+  "$HOME/.local/share/project-board-bootstrap/bin/python" -m pip install "project-board==<approved-version>"
+  ```
+
+  Step 3 then runs `pb setup` through
+  `"$HOME/.local/share/project-board-bootstrap/bin/pb"` and selects the
+  release with `pb source use-release --expect-version <approved-version>`
+  instead of `pb source use-code`. What each route means and what
+  `pb source status` reports after it is in the skill's
+  [first run](problem-board-worker/references/first-run.md) reference.
+- **Exact source commits** (a machine of the team that builds Problem Board,
+  or before a release is published), below.
 
 **Host agent**, logged in as the user who will run the agents, first clones the
 two source repositories the client is built from. Both are public, and these
@@ -266,6 +287,8 @@ pb setup \
   --allow-root /home/<user>/.kdcube/pb/workspaces
 pb host show     # receiver_policy.allowed_peer_workers: ["*"] unless step 0 chose otherwise
 chmod 700 ~/.kdcube
+# A published release (step 2's first route) replaces the next command with:
+#   pb source use-release --expect-version <approved-version>
 pb source use-code \
   --repository /home/<user>/src/app-ecosystem \
   --ref <approved-full-commit> \
