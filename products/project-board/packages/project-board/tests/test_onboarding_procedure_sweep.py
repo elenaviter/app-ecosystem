@@ -476,3 +476,64 @@ def test_u4_move_keeps_conversation_memory_and_worktrees_and_rolls_back(tmp_path
     assert (projects / enc(old) / "memory" / "MEMORY.md").exists() and not (projects / enc(new)).exists()
     assert run("git", "-C", str(old / "repo"), "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "a"
     assert str(new) not in run("git", "-C", str(shared), "worktree", "list").stdout
+
+
+def test_15_step_7_matches_a_home_relative_identity_file_and_still_reports_another_key(tmp_path):
+    # W350: `ssh -G` prints IdentityFile as written, so a hand-written block
+    # spelled ~/, $HOME/ or ${HOME}/ never matched the absolute key path and was
+    # a CONFLICT on every run. The same block naming another key still is one.
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if not (shutil.which("ssh-keygen") and shutil.which("ssh") and shutil.which("bash")):
+        pytest.skip("needs ssh-keygen, ssh and bash")
+    keys = tmp_path / "keys"
+    keys.mkdir(mode=0o700)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (tmp_path / "list").write_text(
+        "OK\n--- a@host (claude-code-aaa)\nruntime claude-code · pool active\nattends: work:project:alpha\n",
+        encoding="utf-8",
+    )
+    aliases = ("tilde", "home", "braced", "other")
+    (tmp_path / "alpha").write_text(
+        "OK\nproject_on_this_host = True\n"
+        + "".join(
+            f"repositories[{index}].alias = {alias}\nrepositories[{index}].url = git@github.com:owner/{alias}.git\n"
+            for index, alias in enumerate(aliases)
+        ),
+        encoding="utf-8",
+    )
+    (bin_dir / "pb").write_text(
+        f"#!/bin/sh\ncase \"$2\" in list) cat {tmp_path / 'list'};; context) cat {tmp_path / 'alpha'};; esac\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "git").write_text("#!/bin/sh\n[ \"$1\" = ls-remote ] && exit 0\nexit 1\n", encoding="utf-8")
+    (bin_dir / "realpath").write_text("#!/bin/sh\nexit 64\n", encoding="utf-8")
+    for tool in ("pb", "git", "realpath"):
+        (bin_dir / tool).chmod(0o755)
+    spelled = {
+        "tilde": "~/keys/deploy_tilde",
+        "home": "$HOME/keys/deploy_home",
+        "braced": "${HOME}/keys/deploy_braced",
+        "other": "~/keys/some_other_key",
+    }
+    (keys / "config").write_text(
+        "".join(f"Host github-{alias}\n  HostName github.com\n  IdentityFile {path}\n" for alias, path in spelled.items()),
+        encoding="utf-8",
+    )
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+        "HOME": str(tmp_path), "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host",
+    }
+    done = subprocess.run(["bash", "-c", _step7_script()], env=env, capture_output=True, text=True, timeout=60)
+    output = done.stdout + done.stderr
+
+    for alias in ("tilde", "home", "braced"):
+        assert f"ok {alias}" in output, (alias, output)
+        assert f"CONFLICT github-{alias}" not in output, (alias, output)
+    assert "CONFLICT github-other" in output and "ok other" not in output
+    config = (keys / "config").read_text(encoding="utf-8")
+    assert all(config.count(f"Host github-{alias}") == 1 for alias in aliases)
