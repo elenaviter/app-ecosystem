@@ -27,6 +27,7 @@ from .io import (
     utc_now,
 )
 from .journal_search import JournalDocument, JournalSearchIndex
+from .project_setup import PROJECT_SETUP_FILE, read_project_setup
 
 
 # The page holding a project's standing facts, at the root of its journal home.
@@ -353,6 +354,10 @@ class JournalWorkspace:
         reference, path = self.repositories.resolve(str(binding["journal_home_ref"]))
         return binding, reference, path
 
+    def _local_file(self, ref: str) -> str:
+        _, path = self.repositories.resolve(ref, require_directory=False)
+        return str(path)
+
     def context(self, project_ref: str) -> dict[str, Any]:
         binding, home_ref, journal_home = self._bound(project_ref)
         project_artifact = ""
@@ -369,8 +374,16 @@ class JournalWorkspace:
         has_facts = facts.is_file()
         environment = journal_home / PROJECT_ENVIRONMENT_FILE
         has_environment = environment.is_file()
+        # The project's declared setup: its instructions file and runtimes
+        # (W262). By hand in the journal home until the Control Card holds it.
+        setup = read_project_setup(
+            journal_home / PROJECT_SETUP_FILE,
+            setup_ref=self._portable_child(home_ref, PurePosixPath(PROJECT_SETUP_FILE)),
+            resolve=self._local_file,
+        )
         return {
             **binding,
+            **setup,
             "local_journal_home": str(journal_home),
             "local_journal_directory": str(journal_directory),
             "project_facts_ref": (

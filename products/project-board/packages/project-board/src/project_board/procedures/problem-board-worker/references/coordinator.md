@@ -163,7 +163,19 @@ Use only this routing heuristic:
    instead of churning ownership.
 
 Do not build a scheduler or assign token scores. The routing inventory and
-these three questions are the whole rule. When the evidence says a worker or
+these three questions are the whole rule.
+
+**Delegation is not free** (operator, 2026-09-25). Every subagent's reasoning
+spends its provider account's quota, and workers that share an account spend
+one coupled pool. A coordinator delegates, to a subagent or to another worker,
+only when the parallel work is net positive after the overhead of briefing it,
+reviewing what comes back and settling it. It does not wait on a delegate with
+repeated short empty checks or status polls: it ends the turn and is woken by
+the result. Portable work goes first to an independent, less used quota pool,
+and the workers with hands on a host are kept for the work only they can do
+there. Why: a delegation that costs more to brief and check than it saves
+spends the same shared budget twice, and a coordinator polling its delegates
+runs that budget down while nothing moves. When the evidence says a worker or
 quota pool is running short, the coordinator acts without waiting to be asked:
 
 1. Move its unstarted work to a worker with budget left. Release and reassign
@@ -419,7 +431,18 @@ decides which commit that is and proves it is the one that loaded. An app whose
 path is a working checkout stages that tree at the instant of the reload,
 whatever it holds, so no app's path is ever a working checkout.
 
-1. **Read the dashboard first**, and act on each row. The row says what a
+1. **Integrate onto the named ref first.** The action releases a ref the
+   project names for that runtime (`pb worker context`, `runtimes[].actions[].from_ref`),
+   never a working tree. Before anything else, bring the commits that are to
+   go live onto that ref, reviewed, and push it where the runtime's machine can
+   fetch it; then fetch it on that machine and note the commit it names. On
+   one machine this is the same step: the integrator's checkout is not the
+   ref until it is pushed and fetched. On several machines, workers push their
+   branches, the coordinator integrates them onto the ref, and each runtime's
+   machine fetches that ref, so no machine loads another machine's working
+   tree. The steps below decide nothing a working tree holds: they check that
+   the commit the ref names is the one to release, and prove it loaded.
+2. **Read the dashboard first**, and act on each row. The row says what a
    worker is about to change and `git status` says what has changed. A
    `source_in_flight` row with targets under the tree you are about to
    stage, and a tree that is dirty anywhere, holds the action until that
@@ -433,7 +456,7 @@ whatever it holds, so no app's path is ever a working checkout.
    me and a `reload` row says please stage me, and a coordinator that
    treats every row as a hold is blocked by the request asking it to
    proceed.
-2. **Announce** the action, the tree, the approved commit per tree (full
+3. **Announce** the action, the tree, the approved commit per tree (full
    sha: that commit, not the tree, is what the action loads), and what it
    releases (a worker may
    have published the activation it asks for as a `reload` row with
@@ -452,7 +475,7 @@ whatever it holds, so no app's path is ever a working checkout.
    is allowed only when its dashboard row and `git status` both show nothing
    of that worker's under the tree being staged, and the announcement records
    the missing answer and that reason.
-3. **Immediately before**: `git status --porcelain` on the tree and a
+4. **Immediately before**: `git status --porcelain` on the tree and a
    `pb worker receive`. Both are evidence about that moment and neither is the
    guarantee: the tree can change between the check and the staging, and the
    guarantee is an activation addressed to a commit. When the range touches
@@ -461,7 +484,7 @@ whatever it holds, so no app's path is ever a working checkout.
    and cannot run. Identical blocks sit under different bundle ids in that
    file, so edit the live descriptor by locating the bundle id, never by the
    first match of a block.
-4. **Execute** the action `runtime-actions.md` names for the tree, at the
+5. **Execute** the action `runtime-actions.md` names for the tree, at the
    announced commit: for an app, first read its entry in the staged
    `config/bundles.yaml` (located by bundle id) and remove any `activation`
    block, `commit` or `require_commit`, because a commitless reload still
@@ -494,14 +517,14 @@ whatever it holds, so no app's path is ever a working checkout.
    reload returns before the widget build finishes, and a widget has three
    states after a reload: build pending, no build because the signature was
    unchanged and the artifact is already current, and no build because it
-   broke. The receipt does not tell them apart, only step 5 does.
-5. **Verify the deployed artifact, never the commit.** Bundle: the eviction
+   broke. The receipt does not tell them apart, only step 6 does.
+6. **Verify the deployed artifact, never the commit.** Bundle: the eviction
    count plus one symbol or behaviour the change introduced, asked of the
    running process. Widget: `dist/` inside the container carries the new
    source, after the build ends. Relay: the first stamped line of the new pid
    (`file_descriptor_limit=`, `source=`). Package: `pb procedure verify` on
    the host. Descriptor: `bundle status` on the running catalog.
-6. **Say what loaded**: the pid or eviction count, the commit range, and, for
+7. **Say what loaded**: the pid or eviction count, the commit range, and, for
    each worker whose commits rode along, that they did. Clear your dashboard
    row. A worker asking "what did that release" is asking for this line.
 

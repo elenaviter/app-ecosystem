@@ -87,7 +87,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.3"
+    assert package["revision"] == "2026.09.26.4"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -974,7 +974,7 @@ def test_every_activation_is_addressed_to_the_approved_commit_and_its_receipt_is
     assert "`git -C <deploy-worktree> checkout --detach <sha>` and `kdcube bundle reload <bundle-id>`" in " ".join(coordinator.split())
     assert "**check the receipt against the approved candidate**" in " ".join(coordinator.split())
     assert "A receipt that names another commit is a failed\n   activation: report it as failed, with both commits" in coordinator
-    assert coordinator.index("the receipt against the approved candidate") < coordinator.index("5. **Verify the deployed artifact, never the commit.**")
+    assert coordinator.index("the receipt against the approved candidate") < coordinator.index("6. **Verify the deployed artifact, never the commit.**")
     # The preflight stays, as evidence and explicitly not the guarantee.
     assert "neither is the\n   guarantee" in coordinator
     assert "`git -C <deploy-worktree> checkout --detach <approved-sha>`, then `kdcube bundle reload <bundle-id>`" in actions
@@ -991,7 +991,7 @@ def test_an_app_deploys_from_its_deploy_worktree_never_from_a_working_checkout()
     coordinator = (PROCEDURE_ROOT / "references" / "coordinator.md").read_text(encoding="utf-8")
     actions = (PROCEDURE_ROOT / "references" / "runtime-actions.md").read_text(encoding="utf-8")
 
-    step = coordinator[coordinator.index("4. **Execute**"):coordinator.index("5. **Verify the deployed artifact")]
+    step = coordinator[coordinator.index("5. **Execute**"):coordinator.index("6. **Verify the deployed artifact")]
     assert "The working checkouts are never an app's path" in step
     assert "a restart and the\n   Data Bus workers ignore it (W333)" in step
     assert "set `activation.commit" not in step and "--commit <sha>" not in step
@@ -1230,7 +1230,7 @@ def test_a_window_that_refreshes_and_moves_an_app_checks_the_app_out_first():
     """W304 U3: the refresh loads the app at startup; a later reload keeps cached submodules."""
 
     coordinator = _words(_read("references/coordinator.md"))
-    step = coordinator.split("4. **Execute**", 1)[1].split("5. **Verify", 1)[0]
+    step = coordinator.split("5. **Execute**", 1)[1].split("6. **Verify", 1)[0]
     assert "**When one window refreshes the platform and moves an app**" in step
     assert "check the app's deploy worktree out at its approved commit **before** `kdcube refresh --build`, then refresh" in step
     assert "`ImportError: card_delegable_grants`" in step
@@ -1263,3 +1263,31 @@ def test_runtime_actions_orders_a_platform_rebuild_before_a_board_that_moves_ope
     assert added == set(contract.PROBLEM_BOARD_OPERATION_POLICIES), sorted(
         added ^ set(contract.PROBLEM_BOARD_OPERATION_POLICIES)
     )
+
+
+def test_a_project_declares_its_instructions_and_runtimes_and_actions_release_a_ref():
+    """W262 lines 1-3, 6: project data, not skill text; every action releases a named ref."""
+
+    skill = " ".join(_read("SKILL.md").split())
+    actions = " ".join(_read("references/runtime-actions.md").split())
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    assert "Read the project's instructions file, which `pb worker context` names as `project_instructions_ref`" in skill
+    assert "the commands live in the runtime's profile (`local_profile`), never here, and a project with none has no runtime actions" in skill
+    assert "Every action loads the commit its ref names, never a working tree, and its result names that ref and commit." in skill
+    assert "## Project Runtimes" in _read("references/runtime-actions.md")
+    assert "**A runtime action releases its ref.**" in actions
+    assert "**Its result names what loaded:** the ref, and the commit it named when it loaded." in actions
+    assert "1. **Integrate onto the named ref first.**" in coordinator
+    assert coordinator.index("1. **Integrate onto the named ref first.**") < coordinator.index("2. **Read the dashboard first**")
+    assert "On one machine this is the same step" in coordinator and "On several machines" in coordinator
+
+
+def test_delegation_is_not_free_and_its_reason_is_stated():
+    """Operator 2026-09-25: delegate only when net positive; no polling; independent pools first."""
+
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    assert "**Delegation is not free** (operator, 2026-09-25)." in coordinator
+    assert "only when the parallel work is net positive after the overhead of briefing it, reviewing what comes back and settling it" in coordinator
+    assert "It does not wait on a delegate with repeated short empty checks or status polls" in coordinator
+    assert "Portable work goes first to an independent, less used quota pool" in coordinator
+    assert "Why: a delegation that costs more to brief and check than it saves spends the same shared budget twice" in coordinator

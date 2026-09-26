@@ -53,8 +53,8 @@ wakes and held leases still require prompt receive, handling, and settlement.
 
 ## Start Or Resume
 
-1. Read the repository instructions, the bottom of the current journal
-   chronicle, the entries for the work being resumed, and the project facts page `pb worker context` names (`project_facts_ref`). For the subject of the task, search the plan and the journal (Choose A Relevant Next Action).
+1. Read the project's instructions file, which `pb worker context` names as `project_instructions_ref` (what the project is, its conventions, its repositories and runtimes), then the repository instructions, the bottom of the current journal
+   chronicle, the entries for the work being resumed, and the project facts page `pb worker context` names (`project_facts_ref`). An agent attending several projects reads each project's own file. For the subject of the task, search the plan and the journal (Choose A Relevant Next Action).
 2. Identify this exact runtime session: `pb worker whoami`.
 3. Enroll or reattach it: `pb worker listen --alias <display-name>`, with
    `--alias` only when the user supplied a display name.
@@ -422,12 +422,9 @@ also reach their Telegram. Ask for their input this way, never in a terminal pro
 
 ## Runtime Actions And Test Windows
 
-A bundle reload and an app refresh are coordinated between the workers and
-executed by the coordinator. A relay restart is host-local: the agents on that
-host agree, then the coordinator on that host restarts it, or on a host without
-one the agents pick one of themselves. For a reload or refresh, ask the
-coordinator, naming what you need live and by which tree the change is in:
-another worker may hold an uncommitted patch that a reload would stage and run.
+A project's runtimes (`pb worker context`, `runtimes`) name, per action, who triggers it and the git ref it releases; the commands live in the runtime's profile (`local_profile`), never here, and a project with none has no runtime actions ([runtime-actions](references/runtime-actions.md), Project Runtimes). Every action loads the commit its ref names, never a working tree, and its result names that ref and commit.
+A bundle reload and an app refresh are coordinated between the workers and executed by the coordinator. A relay restart is host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves. For a runtime action, ask the
+coordinator, naming what you need live and the commit, pushed to the ref the action releases.
 A client-source selection is one of these actions ([runtime-actions](references/runtime-actions.md), Client Source
 Selection). A container-local patch is not an action this team has. Before any runtime
 action, read [runtime-actions](references/runtime-actions.md), and for a test

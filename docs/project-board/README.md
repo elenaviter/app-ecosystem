@@ -27,6 +27,10 @@ client so a host that has only this repository can open every page:
 - [Topology and flows](topology-and-flows.md): what runs on each machine and
   in the deployment, how a command reaches one coding-agent session and how its
   reply returns, heartbeats, Git handoff, and authority changes.
+- [Projects, runtimes and refs](projects-runtimes-and-refs.md): the four
+  concepts behind a project's setup (runtimes, the integration ref, actions
+  that release a ref, sources by alias and commit), the three kinds of
+  project, and where a project declares its instructions and runtimes.
 - [Storage and retention](storage-and-retention.md): where state lives,
   remote and on each machine, what the relay publishes, and what survives a
   process ending.
