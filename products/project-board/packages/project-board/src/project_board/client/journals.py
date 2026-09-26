@@ -84,7 +84,9 @@ def parse_source_repositories(values: Iterable[str]) -> dict[str, str]:
     return repositories
 
 
-_READ_REF_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$")
+# Remote and branch each start with a letter or digit: a leading "-" would
+# reach git fetch and checkout as an option.
+_READ_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 
 
 def repository_entry(alias: str, raw: Any) -> tuple[str, str, str]:

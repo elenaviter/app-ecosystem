@@ -326,3 +326,18 @@ def test_a_read_root_outside_the_approved_roots_is_refused(repos, tmp_path):
     with pytest.raises(Exception) as caught:
         host_config.HostRelayConfig.from_mapping(value)
     assert getattr(caught.value, "code", "") == "work_repository_root_not_allowed"
+
+
+def test_a_read_ref_that_could_become_a_git_option_is_refused(tmp_path):
+    import pytest
+    from project_board.client.journals import RepositoryMap
+    from project_board.contract.errors import DomainError
+
+    root = tmp_path / "root"
+    read_root = tmp_path / "read"
+    root.mkdir()
+    read_root.mkdir()
+    for read_ref in ("-x/main", "origin/-x", "--upload-pack=touch/main", "origin/..", "main"):
+        with pytest.raises(DomainError):
+            RepositoryMap.from_mapping({"journals": {"root": str(root), "read_root": str(read_root), "read_ref": read_ref}})
+    RepositoryMap.from_mapping({"journals": {"root": str(root), "read_root": str(read_root), "read_ref": "origin/release-1.2"}})
