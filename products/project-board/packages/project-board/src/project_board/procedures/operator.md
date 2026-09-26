@@ -368,7 +368,7 @@ with **Share** on its pool card (W319):
 | Level | The person may |
 |---|---|
 | view | see it in their pool, marked "shared by <owner>"; message it and read their own exchange with it; get its answers to their messages; open its Card read-only |
-| edit | all of view, plus change its Card and make it coordinator |
+| edit | all of view, plus change its Card (so a project admin's **Make coordinator** can raise it) |
 
 - The owner's own conversation with the agent stays private; a person reads
   only the messages they sent and the answers addressed to them.
