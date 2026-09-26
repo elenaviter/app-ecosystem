@@ -10,9 +10,10 @@ export function renderOperationGroups<T>(
 ): ReactNode {
   const groups = groupOperations(items, groupOf, declared);
   if (!groups) return items.map(render);
+  // A real group box with a heading, so assistive technology names it.
   return groups.map((group) => (
     <div className="operation-group" key={`group:${group.key || '__other'}`} role="group" aria-label={group.label}>
-      <div className="operation-group__label">{group.label}</div>
+      <h5 className="operation-group__label">{group.label}</h5>
       {group.items.map(render)}
     </div>
   ));

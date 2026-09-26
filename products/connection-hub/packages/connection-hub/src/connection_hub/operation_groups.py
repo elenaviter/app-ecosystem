@@ -36,14 +36,40 @@ def parse_operation_groups(raw: Any) -> tuple[dict[str, Any], ...]:
     return tuple(row for _order, _index, row in sorted(rows, key=lambda item: (item[0], item[1])))
 
 
-GROUPING_KEYS = frozenset({"group", "operation_groups"})
+def _drop(entry: Any, key: str) -> Any:
+    if not isinstance(entry, Mapping):
+        return entry
+    return {name: value for name, value in entry.items() if name != key}
 
 
-def without_grouping(value: Any) -> Any:
-    """``value`` with every grouping key removed, at any depth (for digests)."""
+def without_grouping(named_services: Any) -> Any:
+    """A ``named_services`` tree without its grouping, for a descriptor digest.
 
-    if isinstance(value, Mapping):
-        return {key: without_grouping(item) for key, item in value.items() if key not in GROUPING_KEYS}
-    if isinstance(value, (list, tuple)):
-        return [without_grouping(item) for item in value]
-    return value
+    Only where the schema puts grouping: ``operation_groups`` on a namespace,
+    ``group`` on a tool entry and on an operation entry. A tool, operation or
+    namespace that is itself named ``group`` is content and stays.
+    """
+
+    if not isinstance(named_services, Mapping):
+        return named_services
+    namespaces = named_services.get("namespaces")
+    if not isinstance(namespaces, Mapping):
+        return dict(named_services)
+    stripped: dict[str, Any] = {}
+    for name, namespace in namespaces.items():
+        namespace = _drop(namespace, "operation_groups")
+        tools = namespace.get("tools") if isinstance(namespace, Mapping) else None
+        if isinstance(tools, Mapping):
+            kept_tools: dict[str, Any] = {}
+            for tool_name, tool in tools.items():
+                tool = _drop(tool, "group")
+                operations = tool.get("operations") if isinstance(tool, Mapping) else None
+                if isinstance(operations, Mapping):
+                    tool = {
+                        **tool,
+                        "operations": {op: _drop(policy, "group") for op, policy in operations.items()},
+                    }
+                kept_tools[tool_name] = tool
+            namespace = {**namespace, "tools": kept_tools}
+        stripped[name] = namespace
+    return {**named_services, "namespaces": stripped}

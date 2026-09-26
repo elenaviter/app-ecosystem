@@ -135,3 +135,17 @@ async def test_the_card_editor_option_carries_each_operations_group_and_the_grou
         "review.approve": "review", "work.report": "work", "project.people.list": "",
     }
     assert [group["group"] for group in option["operation_groups"]] == ["people", "review", "work"]
+
+
+def test_an_operation_or_tool_named_group_is_content_and_changes_the_digest() -> None:
+    # Review of H1: only the schema's grouping keys are stripped, never a
+    # tool or operation that happens to be called "group".
+    def row(grants):
+        named = {"namespaces": {"work": {"tools": {
+            "group": {"grants": ["work:observe"], "operations": {"group": {"grants": grants}}},
+        }}}}
+        return _parse_resources([dict(RESOURCE, named_services=named)])[0]
+
+    assert resource_row_digest(row(["work:observe"])) != resource_row_digest(row(["work:admin"]))
+    kept = without_grouping({"namespaces": {"work": {"tools": {"group": {"group": "x", "operations": {"group": {"group": "y"}}}}}}})
+    assert kept == {"namespaces": {"work": {"tools": {"group": {"operations": {"group": {}}}}}}}
