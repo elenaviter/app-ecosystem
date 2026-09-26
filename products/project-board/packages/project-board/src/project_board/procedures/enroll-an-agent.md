@@ -46,7 +46,8 @@ your own terminal and approve the Card in the browser.
 
 If `pb worker listen` names a different `workspace` (the host sets another
 root, or the alias has characters other than letters, digits, `.`, `_`, `-`,
-`@`), start the agent from that folder from then on.
+`@`), start a fresh session in that folder; an old session resumes only from
+the folder it was started in.
 
 ## 3. Connect it to your project
 

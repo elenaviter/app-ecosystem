@@ -840,7 +840,7 @@ def resolve_host_config_path(value: str | Path | None = None) -> Path:
 
 
 # One folder name: letters, digits, `.`, `_`, `-` and `@` (an alias such as
-# `claude-lehrwerk@elena` is its own folder name); anything else uses the
+# `claude-app@host1` is its own folder name); anything else uses the
 # agent's stable name.
 _SAFE_FOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}")
 
