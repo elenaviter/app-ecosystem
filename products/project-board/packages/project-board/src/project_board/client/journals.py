@@ -30,6 +30,7 @@ from .io import (
 from .journal_search import JournalDocument, JournalSearchIndex
 from .project_setup import PROJECT_SETUP_FILE, read_project_setup
 from .read_roots import DEFAULT_READ_REF, head_commit, read_root_lag
+from .workspace_clone import clone_state
 
 
 # The page holding a project's standing facts, at the root of its journal home.
@@ -151,6 +152,44 @@ class RepositoryMap:
     # named, never fatal.
     read_roots: Mapping[str, Path] = field(default_factory=dict)
     read_refs: Mapping[str, str] = field(default_factory=dict)
+    # W343: the calling worker's own workspace. When set, every alias resolves
+    # to <workspace>/<alias>, the clone project-workspace.md tells the worker
+    # to keep, and nothing else is consulted: no host checkout, no read root.
+    workspace: Path | None = None
+
+    @classmethod
+    def for_workspace(cls, workspace: str | Path) -> "RepositoryMap":
+        """Resolve every alias inside one worker's workspace (W343).
+
+        A worker reads and writes project state only through its own clone of
+        each repository. A clone that is not there is refused on use, naming
+        the folder and the step that creates it; no other checkout stands in.
+        """
+
+        text = str(workspace or "").strip()
+        if not text:
+            raise DomainError(
+                "journal_worker_workspace_missing",
+                "This worker has no workspace, so it has no clone to read the "
+                "project from: the host approves no work root. Ask the operator "
+                "to add one (`pb host configure --add-allow-root <path>`).",
+            )
+        path = Path(text).expanduser()
+        if not path.is_absolute():
+            raise DomainError(
+                "journal_repository_root_invalid",
+                "A worker workspace must be an absolute path.",
+            )
+        return cls(roots={}, workspace=path.resolve())
+
+    def clone(self, alias: str) -> Path | None:
+        """Where the alias lives for this map: the workspace clone, else the mapped root."""
+
+        if self.workspace is not None:
+            if not REPOSITORY_ALIAS_RE.fullmatch(alias) or alias in {".", ".."}:
+                return None
+            return self.workspace / alias
+        return self.roots.get(alias) or self.missing.get(alias)
 
     @classmethod
     def from_mapping(
@@ -235,6 +274,13 @@ class RepositoryMap:
         self, value: str, *, create: bool = False, require_directory: bool = True
     ) -> tuple[RepositoryRef, Path]:
         reference = parse_repository_ref(value)
+        if self.workspace is not None:
+            return reference, self._within(
+                reference,
+                self._workspace_clone(reference.repository),
+                create=create,
+                require_directory=require_directory,
+            )
         root = self.roots.get(reference.repository)
         if root is None and reference.repository in self.missing:
             # Checked again on every use: a checkout cloned after the relay
@@ -261,6 +307,26 @@ class RepositoryMap:
         return reference, self._within(
             reference, root, create=create, require_directory=require_directory
         )
+
+    def _workspace_clone(self, alias: str) -> Path:
+        clone = self.clone(alias)
+        if clone is None:
+            raise DomainError(
+                "journal_repository_unmapped",
+                "The portable ref names no repository folder a workspace can hold.",
+                details={"repository": alias},
+            )
+        if not (clone / ".git").exists():
+            raise DomainError(
+                "journal_repository_root_missing",
+                f"{alias} is not cloned in this worker's workspace at {clone}. "
+                "Clone it there as project-workspace.md step 2 says (the "
+                "repository's URL is on the project card, `pb worker context` "
+                "`repositories`), then run `pb worker workspace-report`. No "
+                "other checkout is read in its place.",
+                details={"alias": alias, "repository": alias, "path": str(clone)},
+            )
+        return clone.resolve()
 
     @staticmethod
     def _within(
@@ -308,6 +374,27 @@ def _list(value: Any) -> tuple[str, ...]:
     if str(value or "").strip():
         return (str(value),)
     return ()
+
+
+WORKER_JOURNALS_DIRECTORY = "workers"
+_WORKER_FOLDER_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,199}")
+
+
+def worker_journal_root(journal_workspace_root: str | Path, worker_name: str) -> Path:
+    """One worker's journal catalog, links and index under the host's journal root (W343).
+
+    Each worker indexes its own clone, so two workers on different commits
+    never share an index built from one of them.
+    """
+
+    name = str(worker_name or "").strip().lower()
+    if not _WORKER_FOLDER_RE.fullmatch(name):
+        raise DomainError(
+            "journal_worker_name_invalid",
+            "A worker's journal folder is named by its stable worker name.",
+            details={"worker_name": name},
+        )
+    return Path(journal_workspace_root).expanduser() / WORKER_JOURNALS_DIRECTORY / name
 
 
 class JournalWorkspace:
@@ -404,9 +491,18 @@ class JournalWorkspace:
         self, value: Mapping[str, Any], *, create_home: bool = False, rebuild: bool = True
     ) -> dict[str, Any]:
         binding = self._binding(value)
-        _, target = self.repositories.resolve(
-            binding["journal_home_ref"], create=create_home
-        )
+        try:
+            _, target = self.repositories.resolve(
+                binding["journal_home_ref"], create=create_home
+            )
+        except DomainError as exc:
+            if exc.code != "journal_repository_root_missing":
+                raise
+            # W343: the binding is kept while the worker's clone is missing, so
+            # `pb worker context` names the missing clone and its step instead
+            # of calling the project unbound.
+            self._record_binding(binding)
+            raise
         artifact_target: Path | None = None
         if binding.get("project_artifact_ref"):
             _, artifact_target = self.repositories.resolve(
@@ -439,6 +535,31 @@ class JournalWorkspace:
             "changed": changed,
             "indexed_entries": indexed,
         }
+
+    def _record_binding(self, binding: Mapping[str, Any]) -> None:
+        self.initialize()
+        with exclusive_lock(self.control / "locks" / "catalog.lock"):
+            catalog = read_json(self.catalog_path)
+            bindings = dict(catalog.get("bindings") or {})
+            if bindings.get(binding["project_ref"]) == dict(binding):
+                return
+            bindings[binding["project_ref"]] = dict(binding)
+            catalog.update(bindings=bindings, updated_at=utc_now())
+            atomic_write_json(self.catalog_path, catalog)
+
+    def clone_stamp(self, project_ref: str) -> dict[str, Any]:
+        """The commit a view of this project's journal was read at, and its clone state (W343)."""
+
+        catalog = read_json(self.catalog_path, required=False) or {}
+        binding = dict((catalog.get("bindings") or {}).get(project_ref) or {})
+        if not binding:
+            return {}
+        alias = parse_repository_ref(str(binding["journal_home_ref"])).repository
+        clone = self.repositories.clone(alias)
+        stamp: dict[str, Any] = {"journal_home_commit": head_commit(clone)}
+        if self.repositories.workspace is not None:
+            stamp["journal_clone"] = clone_state(alias, clone)
+        return stamp
 
     def _bound(
         self,
@@ -497,7 +618,7 @@ class JournalWorkspace:
             )
         return home, str(read_root), []
 
-    def context(self, project_ref: str) -> dict[str, Any]:
+    def context(self, project_ref: str, *, journal_branch: str = "") -> dict[str, Any]:
         binding, home_ref, journal_home = self._bound(project_ref)
         project_artifact = ""
         if binding.get("project_artifact_ref"):
@@ -539,17 +660,28 @@ class JournalWorkspace:
             )
             if lag:
                 issues.append(lag)
-        setup["project_setup_issues"] = issues
         commit_tree = (
-            Path(read_root)
-            if read_root
-            else self.repositories.roots.get(home_ref.repository)
-            or self.repositories.missing.get(home_ref.repository)
+            Path(read_root) if read_root else self.repositories.clone(home_ref.repository)
         )
+        # W343: the worker's own clone, and how current it is. A lag is named
+        # with the step that fixes it; no other checkout is read instead.
+        clone = (
+            clone_state(
+                home_ref.repository,
+                self.repositories.clone(home_ref.repository),
+                branch=journal_branch,
+            )
+            if self.repositories.workspace is not None
+            else {}
+        )
+        if clone.get("action"):
+            issues.append(str(clone["action"]))
+        setup["project_setup_issues"] = issues
         return {
             **binding,
             **setup,
             "journal_home_commit": head_commit(commit_tree),
+            **({"journal_clone": clone} if clone else {}),
             "journal_home_read_root": read_root,
             "local_journal_home": str(journal_home),
             "local_journal_directory": str(journal_directory),
@@ -701,7 +833,15 @@ class JournalWorkspace:
         bindings = self.catalog().get("bindings") or {}
         for project_ref, raw_binding in sorted(bindings.items()):
             binding = dict(raw_binding or {})
-            home_ref, home = self.repositories.resolve(str(binding["journal_home_ref"]))
+            try:
+                home_ref, home = self.repositories.resolve(
+                    str(binding["journal_home_ref"])
+                )
+            except DomainError as exc:
+                if exc.code != "journal_repository_root_missing":
+                    raise
+                issues.append(exc.to_dict())
+                continue
             for path in sorted((home / "journal").glob("**/*.md")):
                 try:
                     document = self._document_from_path(
@@ -1228,4 +1368,5 @@ __all__ = [
     "parse_source_repositories",
     "repository_entries",
     "repository_entry",
+    "worker_journal_root",
 ]

@@ -105,7 +105,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.13"
+    assert package["revision"] == "2026.09.26.14"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {

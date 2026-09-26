@@ -1,9 +1,9 @@
 ---
 id: project-board.skill-reference.project-workspace
 title: Set Up A Project Workspace
-summary: How a worker sets up its workspace for a project it attends, from the project's record on its host, the journal repository included, each repository at its declared branch in a folder named by its alias.
+summary: How a worker sets up its workspace for a project it attends, from the project's record on its host, the journal repository included, each repository at its declared branch in a folder named by its alias, and why every project page and journal entry is read from that clone and nowhere else.
 tags: [procedure, problem-board, worker, workspace, repositories, attendance]
-keywords: [pb worker context, project_on_this_host, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
+keywords: [pb worker context, project_on_this_host, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
 see_also:
   - ./identity-and-authorization.md
   - ./collaboration.md
@@ -159,13 +159,10 @@ after any clone, re-clone or new key, and whenever the repository list changes
 
 After every reachable repository is present, read the environment page that
 the same `pb worker context` result names as `project_environment_ref`. Its
-`local_project_environment` is the resolved file in the journal checkout. The
-page owns this project's interpreters, virtual environments, source overlays,
-test commands, fixtures, and machine-owned system packages.
-
-`journal_home_commit` in the same result says which commit the project's
-setup, facts and environment pages were read at; when the host reads them from
-a copy that lags its integration branch, `project_setup_issues` names the lag.
+`local_project_environment` is the resolved file in your clone of the journal
+repository (step 5). The page owns this project's interpreters, virtual
+environments, source overlays, test commands, fixtures, and machine-owned
+system packages.
 
 Onboarding does not build it: build and prove the environment from that page
 on demand, before the first test or build you run, and before interpreting a
@@ -173,3 +170,29 @@ test failure. When the context has no environment-page ref, or a command needs a
 undeclared dependency, tell the coordinator exactly what is missing. The team
 adds the setup or correction to the project page, so the next worker starts
 from the prepared answer.
+
+## 5. Project state comes from your clone, and nothing else
+
+`pb worker context` reads the project's journal home and every page in it
+(setup, facts, environment, instructions, runtime profiles) from your own
+clone, `<workspace>/<alias>/<path>`, for every worker, coordinator included.
+Your journal entries are written there, `pb worker journal-index` indexes that
+clone into an index of your own, `pb worker journal-search` searches it, and a
+journal view you serve to the board is read from it. No host-wide checkout is
+ever a source, however current it looks: another worker's or a person's
+checkout lags, or carries edits you cannot see, and a page read there looks
+like no page.
+
+- `journal_home_commit` is the commit of your clone that the pages were read
+  at, and `journal_clone` says how current that clone is against
+  `origin/<branch>` (the declared branch, else the remote's default) as last
+  fetched: `current`, `ahead`, `behind`, `diverged` or `no_upstream`. Nothing
+  fetches for you.
+- **Behind:** `project_setup_issues` carries the `journal_clone.action` line,
+  the fetch and fast-forward of step 2. Run it and read the context again.
+- **Missing:** `journal_state` is `unavailable` with
+  `journal_repository_root_missing`, naming the alias and the folder. Clone it
+  as step 2 says, run `pb worker workspace-report`, and read again. Nothing is
+  read in its place.
+- **Diverged:** never force it; tell the coordinator the alias and both
+  commits, as for any fast-forward that fails.

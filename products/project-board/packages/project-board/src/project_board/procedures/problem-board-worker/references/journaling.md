@@ -18,7 +18,9 @@ nothing leaves the next reader (a teammate, a successor coordinator, itself
 after a compaction) to rebuild it from mail. How an entry is authored and
 indexed (front matter, `entry_ref`, `journal-index`) is in the skill's section
 *Work, Report, And Journal*; this page says when to write one and what goes
-where.
+where. The entry is written in, indexed from, and searched in your own clone
+of the journal repository, never a host-wide checkout
+([project-workspace](project-workspace.md), step 5).
 
 ## When to write an entry
 
