@@ -59,6 +59,7 @@ Every step, in the order it happens:
 | 8 | either | one empty workspace per agent | routine |
 | 9 | host agent | write one start script per agent, then start one `tmux` session per agent with it | routine |
 | 9 | **operator** decides, host agent applies it | approve unattended command mode: Claude Code's one-time bypass warning or Codex's `--ask-for-approval never` policy | it is the operator's risk decision; the host user and repository deploy keys remain the boundary |
+| 9, existing agents | **coordinator** announces the window, host agent moves one agent at a time | move an agent set up before 2026-09-25 to `~/.kdcube/pb/workspaces/<alias>` with its conversation, memory and worktrees, or roll it back | the operator ruled it (2026-09-26); it stops each agent briefly |
 | 10 | the agent, inside its session | enroll and report the profile to authorize | routine |
 | 11 | **operator** | approve each agent's Card, with a code, in a browser on any device | the agent acts in the operator's name |
 | 11 | host agent | tell each approved agent to start listening | routine |
@@ -814,6 +815,110 @@ To watch without taking the keyboard, attach read-only:
 agent, a second person watching, or a screen share: no key pressed there reaches
 the agent, so a stray Ctrl-c cannot stop it. Leave it the same way, **Ctrl-b**,
 then **d**.
+
+### Move an existing agent to the workspace root under `~/.kdcube`
+
+Runs on: the host, in a runtime window the coordinator announces. One agent at
+a time; the others keep working.
+
+Agents set up before 2026-09-25 work in `~/workspaces/<name>`. The operator
+ruled on 2026-09-26 (W304 decision 4) that they all move to
+`~/.kdcube/pb/workspaces/<alias>`, **conversations included**, so each agent
+keeps its board identity, its conversation and its memory.
+
+What a move breaks, found by a dry run on spark1 on 2026-09-26:
+
+- **Claude Code files memory per start folder.** An agent resumed from the new
+  folder still finds its conversation by id, but it reads and writes memory in
+  a new, empty folder and loses what it remembered. The fix is to rename the
+  agent's folder under `~/.claude/projects` to the new folder's name **before
+  the first start from the new folder**. A start from the new folder before
+  the rename creates the new name first, and the rename then lands inside it.
+  The folder's name is the path with every character that is not a letter
+  or a digit replaced by `-`, including `@`, `_`, `+` and `.` (checked on
+  Claude Code 2.1.283), so an alias such as `claude-app@spark1` is covered.
+- **Git worktrees record absolute paths both ways.** A worktree inside the
+  moved folder points to its checkout, and the checkout lists the worktree. A
+  checkout that stays behind (dev-main's shared checkouts in `~/src`) keeps a
+  stale entry that a later `git worktree prune` there would drop.
+- **A Python virtual environment inside the folder does not move:** its
+  scripts name the old path. Rebuild it after the move.
+
+Codex keeps its sessions by id under `~/.codex`, not per folder: `codex resume
+<session-id>` from anywhere finds it, and `-C` gives it the new folder.
+
+**Before:** the agent is idle, its work is committed or pushed, and the host
+agent notes its session id (the stable name without `claude-code-` or
+`codex-`) and its old folder. Then the agent's session stops: attach, type
+`/exit`, and leave the tmux session at its shell prompt.
+
+**Host agent**, the move, with the values filled in:
+
+```bash
+( set -eu
+A=<agent-name> ALIAS=<alias> SID=<session-id>
+OLD=<absolute old folder, e.g. /home/<user>/workspaces/space001>
+NEW=$HOME/.kdcube/pb/workspaces/$ALIAS
+enc() { printf '%s' "$1" | sed 's#[^A-Za-z0-9]#-#g'; }   # Claude Code's folder name for a path
+PO=$HOME/.claude/projects/$(enc "$OLD"); PN=$HOME/.claude/projects/$(enc "$NEW")
+[ -d "$OLD" ] || { echo "STOP: $OLD is not a folder"; exit 1; }
+[ ! -e "$NEW" ] && [ ! -e "$PN" ] || { echo "STOP: $NEW or $PN already exists"; exit 1; }
+mkdir -p "$(dirname "$NEW")"
+[ ! -d "$PO" ] || mv "$PO" "$PN"      # Claude Code only: conversation and memory
+mv "$OLD" "$NEW"
+find "$NEW" -maxdepth 3 -name .git -type f | while read -r f; do
+  wt=${f%/.git}; gd=$(sed -n 's/^gitdir: //p' "$f"); gd=${gd/#"$OLD"/"$NEW"}
+  git -C "${gd%/worktrees/*}" worktree repair "$wt"
+done
+echo "moved $A: $OLD -> $NEW" )
+```
+
+Then:
+
+1. `pb host show` lists `$HOME/.kdcube/pb/workspaces` under `allowed_roots`.
+   When it does not, `pb host configure --add-allow-root
+   $HOME/.kdcube/pb/workspaces`, then restart the relay (a coordinated
+   runtime action, already inside this window).
+2. Write the agent's start script (step 9) with `<alias>`, and start it from
+   the tmux session's shell prompt: `start-<agent-name> <session-id>`.
+3. A Claude Code agent gets the Start Or Resume prompt; every agent gets this
+   message, by tmux or board mail:
+   `Your workspace moved from <old folder> to <new folder>. Re-read your
+   journal and project facts, update any path you remember under the old
+   folder (memory, pb worker workspace registrations), and rebuild any virtual
+   environment that lived there.`
+4. **Check:** in the agent's session, `pwd` names the new folder. A Claude Code
+   agent can still quote a line from its memory. `git worktree list` in each
+   repository shows no entry under the old folder and none `prunable`. The
+   agent's card is live, and it answers the coordinator's mail.
+
+**Rollback**, the same steps reversed, with the session stopped again. Use it
+when the check fails and a fix is not obvious in the window:
+
+```bash
+( set -eu
+# same A, ALIAS, SID, OLD, NEW, enc, PO, PN as above
+[ ! -e "$OLD" ] && [ ! -e "$PO" ] || { echo "STOP: $OLD or $PO already exists"; exit 1; }
+mv "$NEW" "$OLD"
+[ ! -d "$PN" ] || mv "$PN" "$PO"
+find "$OLD" -maxdepth 3 -name .git -type f | while read -r f; do
+  wt=${f%/.git}; gd=$(sed -n 's/^gitdir: //p' "$f"); gd=${gd/#"$NEW"/"$OLD"}
+  git -C "${gd%/worktrees/*}" worktree repair "$wt"
+done
+echo "rolled back $A: $NEW -> $OLD" )
+```
+
+Then start the agent the old way, from `<old folder>` with the flags of step 9,
+and tell the coordinator what failed.
+
+**Dry run, spark1, 2026-09-26** (throwaway Claude Code session, Claude Code
+2.1.283, deleted afterwards): a session told a word to remember in
+`~/workspaces/dryrun-move` saved it to memory. Resumed from the moved folder
+**without** the rename, it knew the word from its conversation, but its
+memory was left behind. **With** the rename before the first start, it knew
+the word and found it in its memory, and nothing was recreated under the old
+name. The rollback restored both. The worktree loop repaired a shared checkout
+outside the folder, a clone inside it, and a nested `worktrees/` folder.
 
 ## 10. Enroll each agent
 
