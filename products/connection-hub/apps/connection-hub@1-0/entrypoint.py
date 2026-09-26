@@ -210,7 +210,11 @@ from .services.project_invitation_binding import (
 )
 from .services.project_membership import (
     descriptor_agent_card_port,
+    descriptor_control_card_port,
     descriptor_project_authorization_port,
+)
+from connection_hub.delegated_credentials.project_control_card_access import (
+    ProjectControlCardAccess,
 )
 from connection_hub.delegated_credentials.project_agent_card_access import (
     ProjectAgentCardAccess,
@@ -244,6 +248,8 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "control_card_get",
     "control_card_create",
     "control_card_update",
+    "project_control_card_get",
+    "project_control_card_update",
     "project_person_control_get",
     "project_agent_card_get",
     "project_agent_card_update",
@@ -339,6 +345,55 @@ def _payload(data: Optional[Mapping[str, Any]] = None, **kwargs: Any) -> Dict[st
         if key not in {"request", "alias", "route", "endpoint_alias"} and value is not None:
             merged[key] = value
     return merged
+
+
+def _control_card_changes(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """The Control Card edit fields, read the same way for the creator and the project path."""
+
+    return {
+        "resource_grants": (
+            dict(payload.get("resource_grants") or {})
+            if "resource_grants" in payload
+            else None
+        ),
+        "resource_operations": (
+            dict(payload.get("resource_operations") or {})
+            if "resource_operations" in payload
+            else None
+        ),
+        "named_service_operations": (
+            payload.get("named_service_operations")
+            if "named_service_operations" in payload
+            else None
+        ),
+        "account_scope": (
+            dict(payload.get("account_scope") or {})
+            if "account_scope" in payload
+            else None
+        ),
+        "properties": (
+            dict(payload.get("properties") or {})
+            if "properties" in payload
+            and isinstance(payload.get("properties"), Mapping)
+            else None
+        ),
+        "composition_mode": (
+            str(payload.get("composition_mode") or "").strip()
+            if "composition_mode" in payload
+            else None
+        ),
+        "label": str(payload.get("label") or "").strip() or None,
+        "expected_card_revision": _expected_card_revision(payload),
+        "expected_catalog_version": str(
+            payload.get("expected_catalog_version") or ""
+        ).strip()
+        or None,
+        "accepted_operations": (
+            dict(payload.get("accepted_operations") or {})
+            if "accepted_operations" in payload
+            else None
+        ),
+    }
 
 
 def _expected_card_revision(payload: Mapping[str, Any]) -> Optional[int]:
@@ -2663,6 +2718,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "control_card_get": {"visibility": {"user_types": []}},
                             "control_card_create": {"visibility": {"user_types": []}},
                             "control_card_update": {"visibility": {"user_types": []}},
+                            "project_control_card_get": {"visibility": {"user_types": []}},
+                            "project_control_card_update": {"visibility": {"user_types": []}},
                             "project_person_control_get": {"visibility": {"user_types": []}},
                             "project_agent_card_get": {"visibility": {"user_types": []}},
                             "project_agent_card_update": {"visibility": {"user_types": []}},
@@ -4090,48 +4147,74 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         return await (await _automation_access_service(self, request)).control_card_update(
             user,
             control_id=str(payload.get("control_id") or "").strip(),
-            resource_grants=(
-                dict(payload.get("resource_grants") or {})
-                if "resource_grants" in payload
-                else None
-            ),
-            resource_operations=(
-                dict(payload.get("resource_operations") or {})
-                if "resource_operations" in payload
-                else None
-            ),
-            named_service_operations=(
-                payload.get("named_service_operations")
-                if "named_service_operations" in payload
-                else None
-            ),
-            account_scope=(
-                dict(payload.get("account_scope") or {})
-                if "account_scope" in payload
-                else None
-            ),
-            properties=(
-                dict(payload.get("properties") or {})
-                if "properties" in payload
-                and isinstance(payload.get("properties"), Mapping)
-                else None
-            ),
-            composition_mode=(
-                str(payload.get("composition_mode") or "").strip()
-                if "composition_mode" in payload
-                else None
-            ),
-            label=str(payload.get("label") or "").strip() or None,
-            expected_card_revision=_expected_card_revision(payload),
-            expected_catalog_version=str(
-                payload.get("expected_catalog_version") or ""
-            ).strip()
-            or None,
-            accepted_operations=(
-                dict(payload.get("accepted_operations") or {})
-                if "accepted_operations" in payload
-                else None
-            ),
+            **_control_card_changes(payload),
+        )
+
+    async def _project_control_card_access(self, request: Any) -> ProjectControlCardAccess:
+        """The project path to a project's Control Card (W260): the project host authorizes."""
+
+        port = getattr(self, "control_card_authorization_port", None)
+        return ProjectControlCardAccess(
+            await _automation_access_service(self, request),
+            port if port is not None else descriptor_control_card_port(self),
+        )
+
+    @api(
+        method="POST",
+        alias="project_control_card_get",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_control_card_get"),
+    )
+    async def project_control_card_get(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Open a project's Control Card as its owner, an editor or a member (read), W260."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (await self._project_control_card_access(request)).get(
+            user,
+            control_id=str(payload.get("control_id") or "").strip(),
+            project_ref=str(payload.get("project_ref") or "").strip(),
+        )
+
+    @api(
+        method="POST",
+        alias="project_control_card_update",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_control_card_update"),
+    )
+    async def project_control_card_update(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Change a project's Control Card under its creator's key, audited and bounded by the actor (W260)."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (await self._project_control_card_access(request)).update(
+            user,
+            control_id=str(payload.get("control_id") or "").strip(),
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            request_id=_audit_request_id(request),
+            **_control_card_changes(payload),
         )
 
     @api(

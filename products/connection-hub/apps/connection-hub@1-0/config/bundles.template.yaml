@@ -117,6 +117,10 @@ bundles:
           # W319: "may this person open or change this agent's Card", asked
           # of the same host under the person's session.
           agent_card_operation: "project_agent_card_authorize"
+          # W260: "may this person read or change this project's Control Card",
+          # asked of the same host under the person's session; the host names
+          # the Card's creator, under whose key the Card is stored.
+          control_card_operation: "project_control_card_authorize"
         administrative_roles:
         - owner
         - admin

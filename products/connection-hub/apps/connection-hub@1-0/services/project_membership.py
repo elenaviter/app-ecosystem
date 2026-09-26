@@ -15,6 +15,11 @@ from connection_hub.delegated_credentials.project_agent_card_access import (
     AgentCardDecision,
     RefusingAgentCardAuthorizationPort,
 )
+from connection_hub.delegated_credentials.project_control_card_access import (
+    ControlCardAuthorizationError,
+    ProjectControlCardDecision,
+    RefusingProjectControlCardAuthorizationPort,
+)
 from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
@@ -167,6 +172,77 @@ def descriptor_agent_card_port(
     return BundleOperationAgentCardAuthorizer(
         bundle_id=bundle_id,
         operation=clean_text(provider.get("agent_card_operation")) or DEFAULT_AGENT_CARD_OPERATION,
+        caller=caller,
+    )
+
+
+DEFAULT_CONTROL_CARD_OPERATION = "project_control_card_authorize"
+
+
+class BundleOperationControlCardAuthorizer:
+    """Ask the project host whether this person may read or change the project's Control Card (W260).
+
+    Request-bound like the membership question: the host answers for the
+    person whose session made the Connection Hub call, and names the Card's
+    creator, under whose key the Card is stored.
+    """
+
+    def __init__(
+        self,
+        *,
+        bundle_id: str,
+        operation: str = DEFAULT_CONTROL_CARD_OPERATION,
+        caller: BundleOperationCaller = call_bundle_operation,
+    ) -> None:
+        self._bundle_id = clean_text(bundle_id)
+        self._operation = clean_text(operation) or DEFAULT_CONTROL_CARD_OPERATION
+        self._caller = caller
+
+    async def authorize_project_control_card(
+        self, *, control_id: str, project_ref: str, action: str
+    ) -> ProjectControlCardDecision:
+        try:
+            response = await self._caller(
+                bundle_id=self._bundle_id,
+                operation=self._operation,
+                data={"control_id": control_id, "project_ref": project_ref, "action": action},
+            )
+        except Exception as exc:
+            raise ControlCardAuthorizationError("project_control_card_provider_unavailable") from exc
+        if not isinstance(response, Mapping):
+            raise ControlCardAuthorizationError("project_control_card_provider_response_invalid")
+        try:
+            response = normalize_bundle_operation_result(self._operation, response)
+        except BundleOperationResultError as exc:
+            raise ControlCardAuthorizationError(exc.reason) from exc
+        if response.get("ok") is not True:
+            reason = _refusal_reason(response) or "project_control_card_provider_refused"
+            return ProjectControlCardDecision(
+                allowed=False, reason=reason, control_id=control_id, project_ref=project_ref, action=action
+            )
+        return ProjectControlCardDecision.from_mapping(response.get("decision"))
+
+
+def descriptor_control_card_port(
+    entrypoint: Any,
+    *,
+    caller: BundleOperationCaller = call_bundle_operation,
+) -> BundleOperationControlCardAuthorizer | RefusingProjectControlCardAuthorizationPort:
+    """The project Control Card question goes to the project membership provider's bundle.
+
+    ``project_membership.provider.control_card_operation`` names the operation;
+    without a provider bundle it fails closed.
+    """
+
+    props = getattr(entrypoint, "bundle_props", None)
+    raw = props.get("project_membership") if isinstance(props, Mapping) else None
+    provider = raw.get("provider") if isinstance(raw, Mapping) else None
+    bundle_id = clean_text(provider.get("bundle_id")) if isinstance(provider, Mapping) else ""
+    if not bundle_id:
+        return RefusingProjectControlCardAuthorizationPort("project_control_card_provider_not_configured")
+    return BundleOperationControlCardAuthorizer(
+        bundle_id=bundle_id,
+        operation=clean_text(provider.get("control_card_operation")) or DEFAULT_CONTROL_CARD_OPERATION,
         caller=caller,
     )
 

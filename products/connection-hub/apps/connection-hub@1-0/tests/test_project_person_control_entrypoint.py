@@ -136,6 +136,7 @@ def test_template_names_project_membership_provider() -> None:
             "operation": "project_membership_resolve",
             # W319: the agent Card question goes to the same host.
             "agent_card_operation": "project_agent_card_authorize",
+            "control_card_operation": "project_control_card_authorize",
         },
         "administrative_roles": ["owner", "admin"],
     }
