@@ -4441,6 +4441,7 @@ def _worker_project_context(
         raise DomainError("field_project_ref_invalid", "Expected a work:project reference.")
     on_host = field._project_path(parsed.object_id).exists()
     team = field.read_project_team(parsed.object_id) if on_host else []
+    coordinator = field.read_project_coordinator(parsed.object_id) if on_host else {}
     repositories = (
         field.read_project_repositories(parsed.object_id)
         if on_host
@@ -4487,6 +4488,16 @@ def _worker_project_context(
             for member in team
             if str(member.get("role") or "") == "coordinator"
         ],
+        # Who acts as coordinator now (W313): address coordinator mail and
+        # questions to the holder. Empty until the board reports one.
+        "coordinator": {
+            key: coordinator[key]
+            for key in (
+                "state", "holder", "home", "acting", "since", "expected_until",
+                "home_available", "home_unavailable_reason", "revision",
+            )
+            if key in coordinator
+        },
         "team": team,
         # This worker's own owner and provider account (W304 finding 47).
         "self": _own_board_record(field, channel),
