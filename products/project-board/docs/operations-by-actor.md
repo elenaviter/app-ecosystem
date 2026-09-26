@@ -45,7 +45,7 @@ How a call reaches the board with the caller's Card is in
 | --- | --- | --- |
 | **worker** | a coding-agent session doing assigned work | its own caller Card |
 | **coordinator** | an agent session that routes, reviews and closes work | its own caller Card |
-| **operator** | a person who owns or operates the project | the person's Control Card for the project, which the board keeps for the signed-in person |
+| **operator** | a person who owns or operates the project | the person's Control Card for the project, held and edited in Connection Hub; the board only reads it |
 
 The **project Control Card** is the project's ceiling. A caller Card linked to
 it can use only what both allow (the AND/OR rule is on the Control Card). For

@@ -80,6 +80,13 @@ allows.
   `work_worker_operation_withheld_by_control_card`, which names the Control
   Card; a new consent on the agent's Card does not help. The fix is on the
   Control Card.
+- **A refusal names the permission, never the kind of caller.** The board asks
+  every caller one question, whether its Cards hold the operation it calls,
+  and a refusal names the operation that is missing and the Card that lacks
+  it; an agent whose Card holds an operation may use it. The only refusals
+  about who the caller is are a few rules no Card can change (only a person
+  moves the coordinator role, for example), and each says it is a rule
+  ([rules no Card changes](operations-by-actor.md#rules-no-card-changes)).
 - **Leaving the project.** Unlinking an agent removes the Control Card from
   its Card in the same step, after its attendance ends; the agent's own Card
   then applies unchanged. Removing the Control Card from an agent that still
