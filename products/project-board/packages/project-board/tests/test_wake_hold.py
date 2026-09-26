@@ -137,3 +137,49 @@ def test_every_heartbeat_states_the_hold_and_a_stale_one_never_shows():
     projected = relay._heartbeat_session_projection({**row, "subscription": {"state": "dead"}})
     assert projected["wake_hold"]["pending"] == 3
     assert "wake_hold" not in projected.get("subscription", {})
+
+
+def test_review_on_171_a_detached_worker_holds_nothing_and_a_new_hold_starts_fresh(tmp_path, monkeypatch):
+    host, identity, channel, field = _field(tmp_path)
+    old = field.record_wake_hold(identity.worker_name, until="2026-09-24T00:00:00Z", pending=2)
+
+    # The relay finds nobody to wake: the hold goes, before any other work.
+    class Detached(_Scripted):
+        listener = {"state": "detached", "subscription": {}}
+
+    _decide(monkeypatch, host, channel, Detached)
+    assert field.wake_hold(identity.worker_name) == {}
+
+    class Missing(_Scripted):
+        listener = None
+
+    field.record_wake_hold(identity.worker_name, until="2026-09-24T00:00:00Z", pending=2)
+    _decide(monkeypatch, host, channel, Missing)
+    assert field.wake_hold(identity.worker_name) == {}
+
+    # Reattached and held again: a new since and the new until, never the old ones.
+    _decide(monkeypatch, host, channel, _Scripted)
+    fresh = field.wake_hold(identity.worker_name)
+    assert fresh["until"] == LIMITED["resets_at"] and fresh["since"] >= old["since"]
+    assert fresh["until"] != old["until"]
+
+
+def test_review_on_171_detach_and_retire_drop_the_hold(tmp_path):
+    from project_board.client import session as session_module
+
+    _host, identity, _channel, field = _field(tmp_path)
+    session_module.listen_worker_input(field, worker_name=identity.worker_name)
+    field.record_wake_hold(identity.worker_name, until="2999-01-01T00:00:00Z", pending=1)
+    field.detach_worker_listener(identity.worker_name)
+    assert field.wake_hold(identity.worker_name) == {}
+
+    field.record_wake_hold(identity.worker_name, until="2999-01-01T00:00:00Z", pending=1)
+    field.retire_worker(identity.worker_name, actor="operator", reason="W334 review")
+    assert field.wake_hold(identity.worker_name) == {}
+
+
+def test_review_on_171_pending_is_clamped_to_what_the_board_accepts(tmp_path):
+    _host, identity, _channel, field = _field(tmp_path)
+    assert field.record_wake_hold(identity.worker_name, until="2999-01-01T00:00:00Z", pending=5_000_000)["pending"] == 1_000_000
+    hold = {"since": "2026-09-26T03:00:00Z", "until": "2026-09-26T05:00:00Z", "pending": 1}
+    assert relay.session_with_wake_hold({}, hold=hold, pending=5_000_000)["wake_hold"]["pending"] == 1_000_000

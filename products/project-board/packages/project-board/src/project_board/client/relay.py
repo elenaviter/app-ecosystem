@@ -168,7 +168,8 @@ def session_with_wake_hold(
         row["wake_hold"] = {
             "since": str(hold.get("since") or ""),
             "until": str(hold.get("until") or ""),
-            "pending": int(pending),
+            # The board refuses more than a million; a summary need not.
+            "pending": min(int(pending), 1_000_000),
         }
     else:
         row["wake_hold"] = {}
@@ -4223,8 +4224,11 @@ class ProblemBoardRelaySupervisor:
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
+            field.clear_wake_hold(channel.worker_name)
             return None
         if not listener or listener.get("state") == "detached":
+            # Nobody to wake: no hold, so a later attach starts a fresh one (W334 review).
+            field.clear_wake_hold(channel.worker_name)
             return None
         queue_reconciliation = await self._reconcile_session_queue(
             host, channel, listener
@@ -4235,6 +4239,7 @@ class ProblemBoardRelaySupervisor:
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
+            field.clear_wake_hold(channel.worker_name)
             return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
             # Nothing to wake for, or nobody to wake: no hold (W334).

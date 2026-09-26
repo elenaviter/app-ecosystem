@@ -679,6 +679,9 @@ def _team_limit_state(value: Any) -> dict[str, str]:
     }
 
 
+# W334: the board accepts a held wake's pending count up to this.
+MAX_WAKE_HOLD_PENDING = 1_000_000
+
 class SharedFieldStore:
     """Canonical project state shared directly by local workers.
 
@@ -3150,6 +3153,8 @@ class SharedFieldStore:
                 updated_at=now,
                 revision=int(row.get("revision") or 0) + 1,
             )
+            # A retired worker holds no wake (W334 review).
+            row.pop("wake_hold", None)
             atomic_write_json(path, row)
 
         for session_path in sorted(
@@ -3645,6 +3650,8 @@ class SharedFieldStore:
                 revision=int(listener.get("revision") or 0) + 1,
             )
             row.update(listener=listener, updated_at=now)
+            # A detached session holds no wake; a later attach starts fresh (W334 review).
+            row.pop("wake_hold", None)
             atomic_write_json(path, row)
             return self._session_with_presence(listener)
 
@@ -4127,7 +4134,8 @@ class SharedFieldStore:
             current = row.get("wake_hold")
             current = dict(current) if isinstance(current, Mapping) else {}
             since = str(current.get("since") or "") or utc_now()
-            hold = {"since": since, "until": str(until or current.get("until") or ""), "pending": max(0, int(pending))}
+            # The board accepts at most a million; the count is a summary.
+            hold = {"since": since, "until": str(until or current.get("until") or ""), "pending": min(max(0, int(pending)), MAX_WAKE_HOLD_PENDING)}
             if hold == current:
                 return current
             row["wake_hold"] = hold
