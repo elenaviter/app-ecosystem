@@ -106,7 +106,7 @@ def test_worker_procedure_revision_records_its_exact_content() -> None:
         source_revision_ledger_path().read_text(encoding="utf-8")
     )
 
-    assert package["revision"] == "2026.09.26.18"
+    assert package["revision"] == "2026.09.26.19"
     # The merger sets the revision (coordinator.md, Merge): an author's head
     # whose content is not recorded yet skips; the merger's run after the bump
     # commit sets PB_REQUIRE_REVISION_RECORDED=1 and fails on a mismatch, the

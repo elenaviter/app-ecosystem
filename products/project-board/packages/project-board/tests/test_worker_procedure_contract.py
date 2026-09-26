@@ -142,7 +142,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.18"
+    assert package["revision"] == "2026.09.26.19"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
