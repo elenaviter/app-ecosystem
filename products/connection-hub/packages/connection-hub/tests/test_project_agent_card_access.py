@@ -147,7 +147,8 @@ def test_refusals_unavailability_and_bad_requests():
     none = asyncio.run(ProjectAgentCardAccess(host, None).get(ADA, access_id=ACCESS, project_ref=PROJECT))
     assert none["status"] == 503 and none["reason"] == "authorization_port_not_configured"
     closed = asyncio.run(ProjectAgentCardAccess(host, RefusingAgentCardAuthorizationPort("not_configured")).get(ADA, access_id=ACCESS, project_ref=PROJECT))
-    assert closed["status"] == 403 and closed["error"] == "not_configured"
+    # Review on app-ecosystem#187: a deployment gap is unavailable, not a denial.
+    assert closed["status"] == 503 and closed["reason"] == "not_configured" and closed["retryable"] is True
 
     delegate = asyncio.run(ProjectAgentCardAccess(host, Port()).get({"user_id": "integration:c:boris"}, access_id=ACCESS, project_ref=PROJECT))
     assert delegate["status"] == 401
