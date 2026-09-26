@@ -211,8 +211,17 @@ own later. The approval survives reboots, so this is once per agent.
 
 ## 6. Add the agents to your project
 
-On the board, add each new agent to the project it should work on. Then send one
-a message and check it answers. That is the machine working.
+On the board, add each new agent to the project it should work on, in one of
+two places:
+
+- **Team > Agents > Add agent**: pick the agent and its role (worker or
+  coordinator), then **Add to project**.
+- **The agent's pool card > Add to project**: pick the project and the role.
+
+Only an agent that attends no project is offered. An agent attending another
+project is unlinked there first (the **Unlink** control on its row, its details,
+or the project card), which asks you to confirm. Then send one a message and
+check it answers. That is the machine working.
 
 **Why you:** who works on a project is your decision, not the machine's.
 
