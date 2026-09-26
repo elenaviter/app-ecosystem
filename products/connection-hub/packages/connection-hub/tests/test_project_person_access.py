@@ -1039,3 +1039,57 @@ async def test_target_cannot_revoke_its_project_card() -> None:
     }
     assert host.forget_calls == []
     assert port.requests == []
+
+
+# -- composing the person's Card with the Control Card its project holds (W260) --
+
+
+async def _real_pair():
+    """The Control Card and My Card the lifecycle creates, as production has them."""
+
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle, migration=True)
+    control_identity = ProjectPersonControlIdentity.build(project_ref=PROJECT_REF, target_subject=TARGET)
+    person_identity = ProjectPersonCardIdentity.build(project_ref=PROJECT_REF, person_subject=TARGET)
+    control, _ = host.records[(control_identity.project_subject, control_identity.control_id)]
+    my_card, _ = host.records[(TARGET, person_identity.my_card_id)]
+    return control.authority, my_card.authority
+
+
+@pytest.mark.asyncio
+async def test_the_lifecycle_s_own_cards_compose_through_the_project_held_path() -> None:
+    from connection_hub.delegated_credentials.controls.project_person_composition import (
+        compose_with_project_held_control,
+        project_held_control,
+    )
+
+    control, my_card = await _real_pair()
+    assert project_held_control(my_card) is not None
+    composed = compose_with_project_held_control(my_card, control)
+    assert composed.access_id == my_card.access_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"composition_mode": "or"}, "project_person_control_requires_and"),
+        ({"issuer_ref": "work:project:other"}, None),
+        ({"identity_scope": "delegate"}, "control_card_identity_scope_mismatch"),
+        ({"state": "revoked"}, "control_card_not_active"),
+    ],
+)
+async def test_the_project_held_composition_keeps_the_control_card_guards(change, reason) -> None:
+    """Review on app-ecosystem#162: every caller gets the guards ordinary composition has."""
+
+    from connection_hub.delegated_credentials.controls.effective import ControlCardMismatch
+    from connection_hub.delegated_credentials.controls.project_person_composition import (
+        compose_with_project_held_control,
+    )
+
+    control, my_card = await _real_pair()
+    with pytest.raises(ControlCardMismatch) as refused:
+        compose_with_project_held_control(my_card, dataclasses.replace(control, **change))
+    if reason:
+        assert refused.value.reason == reason

@@ -20,7 +20,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE, CardAuthority
+from connection_hub.delegated_credentials.cards.model import (
+    CARD_STATE_ACTIVE,
+    CardAuthority,
+    authority_is_credentialless,
+)
+from connection_hub.delegated_credentials.controls.model import CONTROL_COMPOSITION_AND
+from connection_hub.delegated_credentials.controls.snapshot import control_snapshot_is_exact
 from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     intersect_card_authority_selection,
@@ -77,6 +83,22 @@ def compose_with_project_held_control(card: CardAuthority, control: CardAuthorit
         raise ControlCardMismatch(str(getattr(exc, "reason", "") or exc) or "project_person_control_invalid") from exc
     if identity.control_id != held.control_id or identity.target_subject != card.grantor_subject:
         raise ControlCardMismatch("control_card_binding_mismatch")
+    # The guards ordinary composition applies, kept here so every caller of
+    # this composition gets them (review on app-ecosystem#162): a Control Card
+    # never carries a credential, is an exact snapshot, only narrows (and),
+    # is issued by the binding's project, and shares the Card's identity scope.
+    if not authority_is_credentialless(control):
+        raise ControlCardMismatch("control_card_has_credential")
+    if not control_snapshot_is_exact(control):
+        raise ControlCardMismatch("control_card_exact_snapshot_required")
+    if (control.composition_mode or CONTROL_COMPOSITION_AND) != CONTROL_COMPOSITION_AND:
+        raise ControlCardMismatch("project_person_control_requires_and")
+    if str(control.issuer_ref or "") != held.project_ref:
+        raise ControlCardMismatch("control_card_issuer_mismatch")
+    card_scope = str(card.identity_scope or "grantor").strip() or "grantor"
+    control_scope = str(control.identity_scope or "grantor").strip() or "grantor"
+    if card_scope != control_scope:
+        raise ControlCardMismatch("control_card_identity_scope_mismatch")
     if control.state != CARD_STATE_ACTIVE:
         raise ControlCardMismatch("control_card_not_active")
     return intersect_card_authority_selection(card, control)
