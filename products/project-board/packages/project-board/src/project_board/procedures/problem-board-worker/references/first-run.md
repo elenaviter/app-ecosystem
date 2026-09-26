@@ -250,9 +250,19 @@ prompt tool, so every question for the operator goes through the board
 (collaboration Rule 11):
 
 ```bash
-claude --disallowedTools AskUserQuestion
-claude --resume <session-uuid> --disallowedTools AskUserQuestion
+cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude \
+  --add-dir "$HOME/.kdcube" \
+  --dangerously-skip-permissions \
+  --disallowedTools AskUserQuestion
 ```
+
+That is the official start command for every agent (operator, 2026-09-26);
+`claude --resume <session-uuid>` with the same flags resumes one. `$ALIAS` is
+the agent's own folder under the workspace root, the `workspace` that
+`pb worker context` names. `--add-dir` lets the session read the client state,
+`--dangerously-skip-permissions` lets it run unattended, and
+`--disallowedTools AskUserQuestion` sends operator questions through the board.
+The Codex equivalent is in add-a-worker-host, step 9.
 
 The flag applies to that one session, and the user's other Claude Code
 sessions keep their prompts. A session that is already running picks it up on

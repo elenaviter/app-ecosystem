@@ -104,7 +104,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.11"
+    assert package["revision"] == "2026.09.26.12"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -863,8 +863,9 @@ def test_operator_input_goes_through_the_board_not_a_terminal_prompt() -> None:
     assert "send it as mail to `operator` in the project conversation" in collaboration
     assert "send it as `question`, `decision` or `blocked`" in collaboration
     first_run = _words(_read("references/first-run.md"))
-    assert "claude --disallowedTools AskUserQuestion" in first_run
-    assert "claude --resume <session-uuid> --disallowedTools AskUserQuestion" in first_run
+    # The official start command carries the flag (operator, 2026-09-26).
+    assert "--disallowedTools AskUserQuestion" in first_run
+    assert "`claude --resume <session-uuid>` with the same flags resumes one" in first_run
 
 
 def test_coordinator_checks_a_silent_worker_instead_of_waiting() -> None:
@@ -1516,3 +1517,16 @@ def test_rehearsing_an_official_flow_gives_no_hints():
     assert "**Rehearsing an official flow gives no hints.**" in coordinator
     assert "the agent uses only the installed client and skill" in coordinator
     assert "then the agent re-reads the skill and continues from it" in coordinator
+
+
+def test_the_official_command_starts_an_agent_session():
+    # Operator, 2026-09-26: every agent session, the coordinator included, starts this way.
+    first_run = " ".join(_read("references/first-run.md").split())
+    command = 'cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude \\ --add-dir "$HOME/.kdcube" \\ --dangerously-skip-permissions \\ --disallowedTools AskUserQuestion'
+    assert command in first_run
+    assert "the `workspace` that `pb worker context` names" in first_run
+    host = " ".join((PROCEDURE_ROOT.parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
+    assert "**The official command to start an agent's session**" in host
+    assert command in host
+    assert 'codex -C "$HOME/.kdcube/pb/workspaces/$ALIAS"' in host
+
