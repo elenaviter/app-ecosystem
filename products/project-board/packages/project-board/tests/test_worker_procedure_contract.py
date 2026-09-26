@@ -104,7 +104,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.10"
+    assert package["revision"] == "2026.09.26.11"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1487,3 +1487,15 @@ def test_journaling_and_signals_are_opened_from_the_skill():
     assert "[journaling](references/journaling.md)" in skill
     assert "[signals](references/signals.md)" in skill
     assert "(repo:app-ecosystem/products/project-board/docs/README.md)" in skill
+
+
+def test_a_second_person_approves_with_the_device_flow_and_the_agent_detects_it():
+    # 2026-09-26: a second person's enrollment opened the first person's browser,
+    # and the agent waited to be told "done".
+    skill = " ".join(_read("SKILL.md").split())
+    assert "or when the approving person signs in with a different browser or account" in skill
+    assert "confirm the approval yourself with `pb worker inspect`" in skill
+    first_run = " ".join(_read("references/first-run.md").split())
+    assert "Use `--device` as well whenever the person approving is not the one signed in" in first_run
+    assert "do not wait to be told \"done\"" in first_run
+

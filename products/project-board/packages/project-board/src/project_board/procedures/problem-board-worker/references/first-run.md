@@ -189,6 +189,15 @@ work with.
   while the host CLI retains the private device code and writes the resulting
   credential to its native store. Do not combine device mode with callback
   flags.
+  Use `--device` as well whenever the person approving is not the one
+  signed in to the browser this host would open: a second person, or
+  another account. A pasted callback link does not work in another browser;
+  the device link and code do. Why: on 2026-09-26 a second person's
+  enrollment opened the first person's browser session.
+  After asking, confirm the approval yourself: `pb worker inspect` shows the
+  Card active and `next` moved past `authorize_profile`. Check a few times at
+  the person's pace, then continue on your own; do not wait to be told
+  "done".
   The same step appears for a worker that used to work and whose credential
   the relay can no longer use (its channel is `pending_authorization`). Then
   the command reconnects the worker to the Card it already has.
