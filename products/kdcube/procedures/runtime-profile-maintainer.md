@@ -192,7 +192,8 @@ never timestamps (W31). Run all three after every window that moved anything,
 for the tenant and project's workdir
 (`~/.kdcube/kdcube-runtime/<tenant>__<project>`):
 
-1. **Platform containers:** `kdcube info` (or `kdcube info --json`). For each
+1. **Platform containers:** `kdcube info --workdir <workdir>` (add `--json`
+   for a script). For each
    running service it compares the configured image, the latest recorded
    build and the running container's image ID, and the selected platform
    source version with the one recorded for the running image. A service
@@ -207,7 +208,11 @@ for the tenant and project's workdir
    `widget.source.commit`). **`MATCH`** is the proof; **`MISMATCH`** (the
    command exits nonzero) or **`UNKNOWN`** (evidence missing, for example a
    widget build still running) is a stop: report the fields and values it
-   names and do not call the window done.
+   names and do not call the window done. **A descriptor-only apply** (a
+   config change with the commit unchanged) is not proven by `MATCH`, which
+   compares commits: when the change touches `delegated_catalog`, run
+   `kdcube bundle catalog check --workdir <workdir>`, and otherwise read the changed config value
+   back from the running bundle and name it.
 3. **The Problem Board host client**, on each host whose client moved:
    `pb source status`, and the relay's first stamped startup line
    (`source=snapshot`, `app_ecosystem=<sha>`, `kdcube=<sha>`): both equal the

@@ -1378,7 +1378,9 @@ def test_the_kdcube_profile_verifies_with_the_platform_attestations():
     profile = _profile()
     section = profile[profile.index("## Verify in the running artifact"):profile.index("## Who clears a refresh")]
     words = " ".join(section.split())
-    assert "`kdcube info`" in words
+    assert "`kdcube info --workdir <workdir>`" in words
+    assert "**A descriptor-only apply** (a config change with the commit unchanged) is not proven by `MATCH`" in words
+    assert "`kdcube bundle catalog check --workdir <workdir>`" in words
     assert "`kdcube bundle status <bundle-id> --live --json --workdir <workdir>`" in words
     assert "`pb source status`" in words
     assert "**`MATCH`** is the proof; **`MISMATCH`** (the command exits nonzero) or **`UNKNOWN`**" in words
