@@ -18,6 +18,11 @@ parts, is compared with it. Without the variable the name check skips; with
 ran. The repository's own public address (its clone URL and its PyPI owner
 line) is public by construction and is removed before the check. Machine
 names are not listed: they open no door (operator, 2026-09-23).
+
+One door is never written anywhere, not even in the private list: the host of
+this machine's selected Problem Board endpoint (a tunnel hostname). The check
+reads it at test time from the `pb` host configuration and refuses it in every
+public page; a failure prints only `file:line`.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -71,6 +77,22 @@ OWN_ADDRESS = (
     re.compile(r"github\.com/[A-Za-z0-9-]+/app-ecosystem\b"),
     re.compile(r"^owner: [A-Za-z0-9-]+$"),
 )
+
+NOT_A_DOOR = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _endpoint_host() -> str:
+    """The host of this machine's selected endpoint, or "" when there is none."""
+
+    try:
+        from project_board.client.host_config import HostRelayConfig, resolve_host_config_path
+
+        endpoint = HostRelayConfig.load(resolve_host_config_path()).endpoint
+    except Exception:  # noqa: BLE001 - no host configuration on this machine
+        return ""
+    host = (urlsplit(endpoint).hostname or "").lower()
+    return "" if host in NOT_A_DOOR else host
+
 
 WORD = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
@@ -150,3 +172,37 @@ def test_without_the_private_list_the_check_skips_and_a_required_run_fails(monke
     listed.write_text("# a comment\n\nZQ-Probe\n", encoding="utf-8")
     monkeypatch.setenv(PRIVATE_NAMES_FILE, str(listed))
     assert _private_names() == frozenset({"zq-probe"})
+
+
+def test_no_public_page_names_this_hosts_endpoint() -> None:
+    host = _endpoint_host()
+    if not host:
+        if os.environ.get(REQUIRE_PRIVATE_NAMES, "").strip() == "1":
+            pytest.fail("no Problem Board host configuration to read the endpoint from")
+        pytest.skip("no Problem Board host configuration on this machine")
+    found = []
+    for path in _public_markdown():
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if host in line.lower():
+                # The line number only: the host must not reach a log either.
+                found.append(f"{path.relative_to(REPO_ROOT)}:{number}")
+    assert not found, "this host's endpoint appears in public pages:\n" + "\n".join(found)
+
+
+def test_the_endpoint_probe_reads_the_host_configuration(monkeypatch, tmp_path) -> None:
+    from project_board.client import host_config
+
+    class Loaded:
+        endpoint = "https://door.example.invalid/mcp/problem-board"
+
+    monkeypatch.setattr(host_config, "resolve_host_config_path", lambda *_: tmp_path / "config.json")
+    monkeypatch.setattr(host_config.HostRelayConfig, "load", classmethod(lambda cls, _path: Loaded()))
+    assert _endpoint_host() == "door.example.invalid"
+    Loaded.endpoint = "http://localhost:8080/mcp"
+    assert _endpoint_host() == ""
+
+    def unconfigured(*_):
+        raise RuntimeError("no configuration")
+
+    monkeypatch.setattr(host_config, "resolve_host_config_path", unconfigured)
+    assert _endpoint_host() == ""
