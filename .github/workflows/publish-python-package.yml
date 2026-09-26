@@ -16,6 +16,9 @@ on:
           - capabilities-foundation
           - economics-foundation
           - project-board
+          # The Problem Board client set, one after another in dependency
+          # order; a failure stops the rest (W364, scripts/release-pb).
+          - pb-set
       expected_version:
         description: Exact committed PEP 440 version
         required: true
@@ -31,6 +34,15 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    # One package, or the pb set in dependency order. max-parallel 1 runs the
+    # set one package at a time in the listed order, and fail-fast cancels the
+    # rest when one fails, so a foundation failure never leaves project-board
+    # published against it (the partial 2026.09.26.2205 set).
+    strategy:
+      max-parallel: 1
+      fail-fast: true
+      matrix:
+        package: ${{ fromJSON(inputs.package == 'pb-set' && '["app-foundation","service-foundation","connection-hub","project-board"]' || format('["{0}"]', inputs.package)) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +53,7 @@ jobs:
       - name: Resolve and verify package
         id: package
         env:
-          PACKAGE_NAME: ${{ inputs.package }}
+          PACKAGE_NAME: ${{ matrix.package }}
           EXPECTED_VERSION: ${{ inputs.expected_version }}
         run: |
           python -m pip install --upgrade pip packaging pyyaml
@@ -129,9 +141,62 @@ jobs:
               output.write(f"version={actual}\n")
           PY
 
+      - name: Wait for first-party dependencies of this version on the index
+        env:
+          PACKAGE_PATH: ${{ steps.package.outputs.path }}
+          EXPECTED_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          # A package of the set depends on the others at this exact version.
+          # The previous job published them; PyPI's simple index serves a new
+          # version some minutes after upload, so wait until pip can fetch it.
+          python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          import tempfile
+          import time
+          import tomllib
+          from pathlib import Path
+
+          from packaging.requirements import Requirement
+          from packaging.version import Version
+
+          first_party = {
+              "app-foundation", "service-foundation", "harness-foundation",
+              "capabilities-foundation", "economics-foundation",
+              "connection-hub", "connection-hub-cli", "project-board",
+          }
+          expected = Version(os.environ["EXPECTED_VERSION"])
+          project = tomllib.loads((Path(os.environ["PACKAGE_PATH"]) / "pyproject.toml").read_text())["project"]
+          declared = list(project.get("dependencies", []))
+          for extra in project.get("optional-dependencies", {}).values():
+              declared.extend(extra)
+          waiting = sorted({
+              Requirement(value).name
+              for value in declared
+              if Requirement(value).name in first_party
+              and any(spec.operator == ">=" and Version(spec.version) == expected for spec in Requirement(value).specifier)
+          })
+          deadline = time.monotonic() + 20 * 60
+          for name in waiting:
+              while True:
+                  with tempfile.TemporaryDirectory() as target:
+                      found = subprocess.run(
+                          [sys.executable, "-m", "pip", "download", "--no-deps", "--no-cache-dir",
+                           "--dest", target, f"{name}=={expected}"],
+                          capture_output=True,
+                      ).returncode == 0
+                  if found:
+                      print(f"{name}=={expected} is on the index")
+                      break
+                  if time.monotonic() > deadline:
+                      raise SystemExit(f"{name}=={expected} is not on the index after 20 minutes")
+                  time.sleep(20)
+          PY
+
       - name: Test package
         env:
-          PACKAGE_NAME: ${{ inputs.package }}
+          PACKAGE_NAME: ${{ matrix.package }}
           PACKAGE_PATH: ${{ steps.package.outputs.path }}
           IMPORT_NAME: ${{ steps.package.outputs.import_name }}
           EXPECTED_VERSION: ${{ steps.package.outputs.version }}
@@ -183,7 +248,7 @@ jobs:
       - name: Preserve release artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.package }}-${{ steps.package.outputs.version }}
+          name: ${{ matrix.package }}-${{ steps.package.outputs.version }}
           path: dist/*
 
       - name: Publish to PyPI
