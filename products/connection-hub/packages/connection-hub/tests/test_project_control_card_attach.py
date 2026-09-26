@@ -37,7 +37,11 @@ from connection_hub.delegated_credentials.project_agent_card_access import (
     ProjectAgentCardAccess,
 )
 from connection_hub.delegated_credentials.project_control_card_access import (
+    CONTROL_CARD_ATTACH,
+    CONTROL_CARD_READ,
+    CONTROL_CARD_WRITE,
     PROJECT_CONTROL_CARD_ATTACH_AUDIT_PROVENANCE,
+    _write_refusal,
     ProjectControlCardAccess,
     ProjectControlCardDecision,
 )
@@ -104,9 +108,11 @@ class ControlPort:
     def __init__(self, *, via="project_admin", allowed=True, grantor=CREATOR):
         self.via, self.allowed, self.grantor = via, allowed, grantor
         self.calls = []
+        self.asked_for = []
 
-    async def authorize_project_control_card(self, *, control_id, project_ref, action):
+    async def authorize_project_control_card(self, *, control_id, project_ref, action, access_id=""):
         self.calls.append(action)
+        self.asked_for.append(access_id)
         if not self.allowed:
             return ProjectControlCardDecision(
                 allowed=False, reason="work_project_control_card_attach_denied", message="Ask an admin.",
@@ -391,3 +397,33 @@ async def test_an_owners_linking_answer_is_never_a_read_or_write(via) -> None:
     ):
         refused = await call
         assert refused["ok"] is False and refused["reason"] == "decision_via_invalid", refused
+
+
+@pytest.mark.asyncio
+async def test_attach_and_detach_name_the_agent_card_to_the_project_host() -> None:
+    # The board answers owner_linking / owner_unlinking only for a named agent
+    # Card (applications#181, claude-app 2026-09-26).
+    agent, control = _cards()
+    service, _ = _service(agent, control)
+    port = ControlPort()
+    access = _access(service, control_port=port)
+    assert (await _attach(service, access, agent))["ok"] is True
+    assert (await access.detach(ADMIN, control_id=CONTROL_ID, project_ref=PROJECT,
+                                access_id=agent.access_id))["ok"] is True
+    await access._authorize(ADMIN, control_id=CONTROL_ID, project_ref=PROJECT, action=CONTROL_CARD_READ)
+    assert port.asked_for == [agent.access_id, agent.access_id, ""]
+
+
+@pytest.mark.parametrize("via", ["owner_linking", "owner_unlinking", "project_member", ""])
+def test_the_write_check_refuses_every_via_but_owner_and_project_admin(via) -> None:
+    # Direct, because the via check before it would hide a widened write set.
+    assert _write_refusal(CONTROL_CARD_WRITE, via) == {
+        "ok": False, "error": "project_control_card_write_denied",
+        "reason": "decision_via_cannot_edit", "status": 403}
+    for other in (CONTROL_CARD_READ, CONTROL_CARD_ATTACH):
+        assert _write_refusal(other, via) is None
+
+
+@pytest.mark.parametrize("via", ["owner", "project_admin"])
+def test_the_write_check_lets_the_owner_and_a_project_admin_edit(via) -> None:
+    assert _write_refusal(CONTROL_CARD_WRITE, via) is None

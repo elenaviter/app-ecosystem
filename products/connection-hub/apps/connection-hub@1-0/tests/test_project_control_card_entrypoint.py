@@ -57,6 +57,22 @@ def test_the_control_card_question_goes_to_the_project_host_under_the_session():
     assert decision.evidence == {"role": "admin", "operation": "project.control.update"}
 
 
+def test_an_attach_question_names_the_agent_card():
+    # The board answers the owner's linking vias only for a named agent Card.
+    module = _membership_module()
+    calls = []
+    attach = {"control_id": "aut_control", "project_ref": "work:project:one", "action": "attach"}
+
+    async def caller(**kwargs):
+        calls.append(kwargs["data"])
+        return {"ok": True, "decision": {"allowed": True, "via": "owner_linking", "grantor_subject": "boris", **attach}}
+
+    port = module.BundleOperationControlCardAuthorizer(bundle_id="problem-board@1-0", caller=caller)
+    asyncio.run(port.authorize_project_control_card(**attach, access_id=" aut_agent "))
+    asyncio.run(port.authorize_project_control_card(**attach))
+    assert calls == [{**attach, "access_id": "aut_agent"}, attach]
+
+
 def test_host_refusals_and_failures():
     module = _membership_module()
 
