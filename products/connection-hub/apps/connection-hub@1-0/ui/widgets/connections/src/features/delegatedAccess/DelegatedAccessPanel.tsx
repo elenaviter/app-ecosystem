@@ -159,6 +159,7 @@ import {
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import { projectPersonControlCoordinates } from './projectPersonControl';
+import { cardOwnerView, readableCardLabel } from './cardLabels';
 import {
   projectAgentCardFocus,
   projectAgentCardUpdateTarget,
@@ -4608,7 +4609,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       const agentLabel = who ? `${who.agent} · ${who.app}` : item.client_id;
       return correlatedCardLabel({ ...item, label: agentLabel });
     }
-    return correlatedCardLabel(item);
+    return correlatedCardLabel({ ...item, label: readableCardLabel(item.label) });
   };
   const cardBadge = (item: DelegatedAccessRecord) => (
     <>
@@ -5354,7 +5355,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               {expiryHint(item)}
                               {renderCardComposition(item, { editing })}
                               <div className="card-fields card-identity-fields">
-                                <CardRuntimeIdentityFields item={item} owner={item.grantor_subject || platformUserId} />
+                                <CardRuntimeIdentityFields item={item} {...cardOwnerView(item.grantor_subject, platformUserId)} />
                               </div>
                               {/* Edit mode keeps the per-claim checkboxes; the
                                   read-only view uses the same labelled rows as
@@ -5516,7 +5517,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
                       {renderCardComposition(item, { editing })}
                       <div className="card-fields card-identity-fields">
-                        <CardRuntimeIdentityFields item={item} owner={item.grantor_subject || platformUserId} />
+                        <CardRuntimeIdentityFields item={item} {...cardOwnerView(item.grantor_subject, platformUserId)} />
                       </div>
                       {accessCardFocus?.accessId === item.access_id
                         && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (

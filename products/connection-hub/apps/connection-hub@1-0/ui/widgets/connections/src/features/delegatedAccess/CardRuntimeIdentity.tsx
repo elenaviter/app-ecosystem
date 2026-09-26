@@ -98,11 +98,13 @@ export function RuntimeIdentityFields({
   </>;
 }
 
-export function CardRuntimeIdentityFields({ item, owner }: {
+export function CardRuntimeIdentityFields({ item, owner, ownerTitle }: {
   item: DelegatedAccessRecord;
   owner: string;
+  /** The owner's id, labelled, on hover (W304 finding 22). */
+  ownerTitle?: string;
 }) {
   return (
-    <RuntimeIdentityFields clientMetadata={item.client_metadata} owner={owner} />
+    <RuntimeIdentityFields clientMetadata={item.client_metadata} owner={owner} ownerTitle={ownerTitle} />
   );
 }

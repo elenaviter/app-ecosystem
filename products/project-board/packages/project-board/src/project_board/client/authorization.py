@@ -23,14 +23,14 @@ def _worker_client_name(
     *,
     coordinator: bool = False,
 ) -> str:
-    identity = channel.worker_identity
-    if channel.worker_alias:
-        identity = (
-            f"{channel.runtime_kind}:{channel.worker_alias}:"
-            f"{channel.runtime_session_id}"
-        )
+    # W304 finding 22: a Card's title leads with who it is (the alias), not
+    # with the tool that registered it; the session id stays, for the exact
+    # address.
     role = "coordinator" if coordinator else "worker"
-    return f"Connection Hub CLI · Problem Board {role} · {identity}"
+    session = f"{channel.runtime_kind}:{channel.runtime_session_id}"
+    if channel.worker_alias:
+        return f"{channel.worker_alias} · Problem Board {role} · {session}"
+    return f"Problem Board {role} · {session}"
 
 
 def _worker_client_metadata(
