@@ -284,7 +284,10 @@ otherwise, set the whole list: `pb host configure --allow-peer-worker <name>`
 (repeat the flag for several names) or `pb host configure --deny-all-peers`.
 A host set up with a client from before 2026-09-26 may still hold an empty
 list and refuse every teammate's mail (dev-main until 2026-09-24): run
-`pb host configure --allow-peer-worker '*'` there. Run it again later to change the list, then restart the
+`pb host configure --allow-peer-worker '*'` there. A host file that has **no**
+`allowed_peer_workers` key at all changes from "nobody" to `*` when the client
+is upgraded, with no command; an explicit empty list (`[]`, what
+`--deny-all-peers` writes) stays "nobody". Run it again later to change the list, then restart the
 relay (a coordinated runtime action) so it reads the new policy.
 
 The procedure is installed after `pb source use-code`, because the selected

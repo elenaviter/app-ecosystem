@@ -54,3 +54,24 @@ def test_a_file_without_the_key_takes_the_default_and_an_explicit_list_is_kept(t
 
     host_config.update_host_config(host.path, allowed_peer_workers=["claude-code-coordinator"])
     assert host_config.HostRelayConfig.load(host.path).allowed_peer_workers == ("claude-code-coordinator",)
+
+
+def test_the_relay_reads_a_missing_key_as_the_default_and_keeps_an_explicit_empty_list(tmp_path):
+    # The relay's own parser follows the host file's rule (review on #155).
+    from project_board.client import relay
+
+    def mapping(**receiver_policy):
+        value = {
+            "schema": "problem-board.host-relay-config.v1",
+            "field_root": str(tmp_path / "field"),
+            "project_id": "project-one",
+            "connection_hub": {"profile": "problem-board-worker"},
+            "worker": {"name": "codex-api", "runtime_kind": "codex", "host": {"id": "host-01", "label": "Host one", "kind": "local"}, "relay_id": "relay-01"},
+        }
+        if receiver_policy:
+            value["receiver_policy"] = receiver_policy
+        return value
+
+    assert relay.RelayConfig.from_mapping(mapping()).allowed_peer_workers == ("*",)
+    assert relay.RelayConfig.from_mapping(mapping(allowed_control_kinds=["ping"])).allowed_peer_workers == ("*",)
+    assert relay.RelayConfig.from_mapping(mapping(allowed_peer_workers=[])).allowed_peer_workers == ()
