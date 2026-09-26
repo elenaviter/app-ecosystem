@@ -552,3 +552,143 @@ async def test_a_refused_publication_names_the_card_fix_and_the_relay_row_counts
     assert result["error"]["code"] == "work_worker_operation_not_granted"
     assert result["fix"] == f"pb worker authorize {channel.profile} --replace-card"
     assert result["permission_group"]
+
+
+def _seed_partitioned_history(field: SharedFieldStore, count: int) -> list[Path]:
+    """``count`` published receipts and ``count`` settled outbox rows, 100 per hour folder."""
+
+    receipt_agent = receipts.agent_root(field, PROJECT, WORKER)
+    outbox = OutboxStore(field.control).partitioned(f"work:project:{PROJECT}")
+    start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    body = json.dumps({"schema": receipts.LOCAL_RECEIPT_RECORD_SCHEMA, "receipt": {}, "publication": {}})
+    row = json.dumps({"kind": OUTBOX_KIND, "state": "sent", "worker_name": WORKER})
+    hours: set[Path] = set()
+    for index in range(count):
+        at = start + timedelta(hours=index // 100, seconds=index % 100)
+        stamp = at.strftime("%Y%m%dT%H%M%SZ")
+        receipt_path = receipt_agent.joinpath(*at.strftime("%Y/%m/%d/%H").split("/"), f"{stamp}_{stamp}_published_mailbox-reconciliation_{index:06d}.json")
+        row_path = outbox.record_path(WORKER, at, f"outbox_{index:06d}", slug=f"sent-{OUTBOX_KIND}")
+        for path, text in ((receipt_path, body), (row_path, row)):
+            if path.parent not in hours:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                hours.add(path.parent)
+            path.write_text(text)
+    return sorted(hours)
+
+
+def test_guard_a_large_partitioned_history_costs_the_cycle_nothing(tmp_path, monkeypatch):
+    """Audit of #126 (claude-ops): the 50,000 guard covered only the flat layout.
+
+    With the history already partitioned, a cycle lists no hour folder and
+    takes about as long over 50,000 receipts and settled rows as over 100.
+    """
+
+    def field_with(count: int, name: str) -> tuple[SharedFieldStore, list[Path]]:
+        store = SharedFieldStore(tmp_path / name)
+        store.initialize(field_id=name)
+        store.register_worker(worker_name=WORKER, runtime_kind="codex", capabilities=[], authority_label=f"authority:{WORKER}")
+        store.create_project(project_id=PROJECT, title="Local state", goal="Keep the relay's local state bounded.", owner="operator")
+        return store, _seed_partitioned_history(store, count)
+
+    small, small_hours = field_with(100, "small")
+    large, large_hours = field_with(50_000, "large")
+    assert len(small_hours) == 2 and len(large_hours) == 1_000
+
+    # Hour folders and the day folders that hold them: listing either walks history.
+    history = {str(path) for hour in small_hours + large_hours for path in (hour, hour.parent)}
+    listed: list[str] = []
+    real_listdir, real_scandir = os.listdir, os.scandir
+
+    def listdir(path=".", *args, **kwargs):
+        if str(path) in history:
+            listed.append(str(path))
+        return real_listdir(path, *args, **kwargs)
+
+    def scandir(path=".", *args, **kwargs):
+        if str(path) in history:
+            listed.append(str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "listdir", listdir)
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    def cycle(field: SharedFieldStore) -> float:
+        started = time.monotonic()
+        field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
+        field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
+        receipts.recover_unpublished_receipts(field, PROJECT, worker_name=WORKER)
+        field._assignee_last_activity(PROJECT)
+        field.pull_outbox(relay_id="relay-01", worker_name=WORKER, limit=20)
+        return time.monotonic() - started
+
+    small_elapsed = cycle(small)
+    large_elapsed = cycle(large)
+
+    assert listed == [], f"a cycle listed {len(listed)} history folders"
+    assert large_elapsed < small_elapsed * 3 + 0.5, (
+        f"a cycle took {large_elapsed:.3f}s over 50,000 partitioned records "
+        f"and {small_elapsed:.3f}s over 100"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_heartbeat_carries_the_last_store_reads_once_per_change(tmp_path):
+    """Audit of #126 (claude-ops): ``store_reads`` on the heartbeat had no test.
+
+    The last read of each store rides on the project heartbeat when it changed.
+    An unchanged read (only its time and duration differ) is not sent again.
+    """
+
+    from project_board.client.local_store import PartitionedStore
+
+    host, identity, channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.register_worker(
+        worker_name=identity.worker_name,
+        worker_alias="worker",
+        worker_identity=identity.worker_identity,
+        runtime_kind=identity.runtime_kind,
+        runtime_session_id=identity.runtime_session_id,
+        capabilities=[],
+        authority_label="connection-hub:test",
+        host_id=host.host_id,
+        host_label=host.host_label,
+        host_kind=host.host_kind,
+        relay_id=host.relay_id,
+    )
+    field.create_project(project_id=PROJECT, title="Local state", goal="Keep the relay's local state bounded.", owner="operator")
+    heartbeats: list[dict] = []
+
+    class Client:
+        connected = True
+
+        async def action(self, *, object_ref, action, payload=None):
+            if action == "worker.heartbeat":
+                heartbeats.append(dict(payload or {}))
+            if action == "control.pull":
+                return {"ok": True, "object": {"lease_id": "lease", "items": []}}
+            return {"ok": True, "object": {"ref": object_ref}}
+
+    adapter = relay.ProblemBoardHostRelayAdapter(
+        config=relay.RelayConfig.from_host_channel(host, channel, project_id=PROJECT),
+        field=field,
+        client=Client(),
+    )
+    outbox = PartitionedStore(field.control / "projects" / PROJECT / "outbox", store="outbox")
+
+    def read(hour: str, records: int) -> None:
+        with outbox.reading("retention") as record:
+            record.opened(identity.worker_name, hour, records)
+
+    read("2026-09-26T03", 4)
+    await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+    read("2026-09-26T03", 4)
+    await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+    read("2026-09-26T04", 6)
+    await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+
+    sent = [beat.get("store_reads") for beat in heartbeats]
+    assert len(sent) == 3 and sent[1] is None
+    first, third = sent[0]["outbox"], sent[2]["outbox"]
+    assert (first["range"], first["records"], first["project"]) == ("2026-09-26T03..2026-09-26T03", 4, PROJECT)
+    assert (third["range"], third["records"], third["removed"]) == ("2026-09-26T04..2026-09-26T04", 6, 0)
