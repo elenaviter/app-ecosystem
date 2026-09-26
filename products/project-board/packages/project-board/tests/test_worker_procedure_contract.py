@@ -104,7 +104,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.7"
+    assert package["revision"] == "2026.09.26.8"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1408,3 +1408,13 @@ def test_the_descriptor_sync_step_ticks_new_operations_on_the_project_control_ca
     profile = " ".join(_profile().split())
     assert "a project admin ticks the new operations on the project Control Card" in profile
     assert "work_worker_operation_withheld_by_control_card" in profile
+
+
+def test_a_review_is_routed_in_the_turn_it_arrives():
+    # 2026-09-26: W15 waited in Review for hours with the coordinator as default
+    # reviewer while its last check needed the operator's browser.
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    assert "**Route a review in the turn it arrives.**" in coordinator
+    assert "whenever `review.look_at` or `review.could_not_verify` needs a person's browser or account" in coordinator
+    assert "tell the operator at once with a notifying kind (`blocked`)" in coordinator
+    assert "never mention it only inside a longer list" in coordinator

@@ -115,6 +115,23 @@ successor inherits none of that.
    missing. Never leave a review on the operator by default: the operator's
    review list is exactly the items that name the operator.
 
+7. **Route a review in the turn it arrives.** A review notice is handled in
+   the turn it arrives, and you decide who reviews:
+   - **yourself**, when you can check everything the item asks;
+   - **another agent**, with `review.assign`;
+   - **the operator**, with `review.assign` and the merge and deploy
+     evidence, whenever `review.look_at` or `review.could_not_verify` needs a
+     person's browser or account. Also send the operator a board mail naming
+     the item, the exact check, and where it now appears (Review Assignments).
+
+   If you cannot route it (for example your Card lacks `review.assign`), tell
+   the operator at once with a notifying kind (`blocked`). Never leave the item
+   waiting, and never mention it only inside a longer list. Why: on 2026-09-26
+   W15 waited from 06:24Z with the coordinator as default reviewer, while its
+   remaining check needed the operator's browser, the operator's Review
+   Assignments list was empty, and the item showed only under the worker's
+   name.
+
 ## Release a stalled assignment
 
 1. `assignment.return` (Release assignment) takes the item `work_ref` from
