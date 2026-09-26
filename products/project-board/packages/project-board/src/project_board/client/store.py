@@ -9388,6 +9388,10 @@ class SharedFieldStore:
         review_look_at: str | None = None,
         review_could_not_verify: str | None = None,
         scope: str = "",
+        review_reviewer: str | None = None,
+        review_merged: str | None = None,
+        review_deploy: str | None = None,
+        review_nothing_to_deploy: bool = False,
     ) -> dict[str, Any]:
         clean_project = component(project_id, field="project_id")
         clean_worker = component(worker_name, field="worker_name").lower()
@@ -9425,7 +9429,15 @@ class SharedFieldStore:
                 "Assignment state must be working, blocked, completed, or refused.",
             )
         review_supplied = review_look_at is not None or review_could_not_verify is not None
-        if review_supplied and normalized_state != "completed":
+        # W326: who reviews, and for a person the integration evidence. These
+        # ride the review; an older board keeps them as extra review fields.
+        routing = _review_routing_fields(
+            reviewer=review_reviewer,
+            merged=review_merged,
+            deploy=review_deploy,
+            nothing_to_deploy=review_nothing_to_deploy,
+        )
+        if (review_supplied or routing) and normalized_state != "completed":
             raise DomainError(
                 "field_review_report_state_invalid",
                 "Review statements belong to a completed assignment report.",
@@ -9454,8 +9466,8 @@ class SharedFieldStore:
         clean_scope = bounded_text(scope, field="scope", maximum=512)
         if clean_scope:
             payload["scope"] = clean_scope
-        if review_supplied:
-            payload["review"] = {
+        if review_supplied or routing:
+            payload["review"] = {} if not review_supplied else {
                 "look_at": bounded_text(
                     review_look_at,
                     field="review.look_at",
@@ -9469,6 +9481,7 @@ class SharedFieldStore:
                     required=True,
                 ),
             }
+            payload["review"].update(routing)
         request = {
                 "assignment_id": parsed.object_id,
                 "ownership_version": version,
@@ -9477,7 +9490,7 @@ class SharedFieldStore:
                 "result_ref": payload["result_ref"],
                 "source_event_ref": payload["source_event_ref"],
         }
-        if review_supplied:
+        if review_supplied or routing:
             request["review"] = payload["review"]
         request_hash = content_hash(request)
         report_key = content_hash(
@@ -10687,3 +10700,35 @@ __all__ = [
     "SESSION_STATES",
     "SharedFieldStore",
 ]
+
+
+def _review_routing_fields(
+    *,
+    reviewer: str | None,
+    merged: str | None,
+    deploy: str | None,
+    nothing_to_deploy: bool,
+) -> dict[str, Any]:
+    """The reviewer and integration evidence a completed report names (W326)."""
+
+    fields: dict[str, Any] = {}
+    clean_reviewer = bounded_text(reviewer or "", field="reviewer", maximum=512)
+    if clean_reviewer:
+        fields["reviewer"] = clean_reviewer
+    commits = [
+        bounded_text(value, field="merged", maximum=200)
+        for value in str(merged or "").replace(",", " ").split()
+        if value.strip()
+    ]
+    clean_deploy = bounded_text(deploy or "", field="deploy", maximum=1000)
+    integration: dict[str, Any] = {}
+    if commits:
+        integration["merged"] = commits
+    if clean_deploy:
+        integration["deploy"] = clean_deploy
+    if nothing_to_deploy:
+        integration["nothing_to_deploy"] = True
+    if integration:
+        fields["integration"] = integration
+    return fields
+

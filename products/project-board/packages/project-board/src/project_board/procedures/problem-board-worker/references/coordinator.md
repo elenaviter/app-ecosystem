@@ -103,6 +103,18 @@ successor inherits none of that.
    `assignment.return` and its reason, then assign. Mail about the decision is
    commentary.
 
+6. **Route reviews (W326).** An item that enters Review with no reviewer
+   named comes to you as the acting coordinator, with a review request in
+   your inbox. Review it yourself, or name who does with `review.assign`
+   (`pb coordinate review.assign --object-ref <project> --payload-json
+   '{"work_ref": "<item ref>", "reviewer": "<stable worker name>"}'`): an
+   agent linked to the project other than the one who did the work, or
+   `operator` with `"integration": {"merged": [...], "deploy": "<window>:
+   <check>"}` (or `"nothing_to_deploy": true`) once it is merged and deployed.
+   The board refuses the operator without that evidence and names what is
+   missing. Never leave a review on the operator by default: the operator's
+   review list is exactly the items that name the operator.
+
 ## Release a stalled assignment
 
 1. `assignment.return` (Release assignment) takes the item `work_ref` from

@@ -131,6 +131,10 @@ def submit_assignment_report(
     review_look_at: str | None,
     review_could_not_verify: str | None,
     wait_seconds: float,
+    review_reviewer: str | None = None,
+    review_merged: str | None = None,
+    review_deploy: str | None = None,
+    review_nothing_to_deploy: bool = False,
     scope: str = "",
     status_command_prefix: Sequence[str] = (),
 ) -> dict[str, Any]:
@@ -147,6 +151,10 @@ def submit_assignment_report(
         source_event_ref=source_event_ref,
         review_look_at=review_look_at,
         review_could_not_verify=review_could_not_verify,
+        review_reviewer=review_reviewer,
+        review_merged=review_merged,
+        review_deploy=review_deploy,
+        review_nothing_to_deploy=review_nothing_to_deploy,
         scope=scope,
     )
     outbox_id = str(queued.get("outbox_id") or "")

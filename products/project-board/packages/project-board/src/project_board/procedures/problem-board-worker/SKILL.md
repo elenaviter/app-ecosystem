@@ -251,7 +251,7 @@ The reaction, in order:
    An item already in Review without the submission marker remains reviewable;
    leaving and re-entering Review requires both statements.
 5. Report `completed` with `pb worker report` against the exact
-   `assignment_ref` and `ownership_version` from the notice.
+   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names who reviews, else the coordinator does (collaboration Rule 6).
 
 `working` and `blocked` are progress reports; `completed` and `refused` are
 terminal. State plus `source_event_ref` identifies one immutable report: an
