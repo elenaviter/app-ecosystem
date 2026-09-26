@@ -32,6 +32,7 @@ DEFAULT_PUBLIC_CLIENT_GRANT_TYPES: tuple[str, ...] = (
     "authorization_code",
     "refresh_token",
 )
+from connection_hub.operation_groups import parse_operation_groups
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,10 @@ class OAuthDelegatedToolConfig:
     label: str
     description: str = ""
     grants: tuple[str, ...] = ()
+    # The operation group the service declares (Review, Work, ...): a Card
+    # editor shows operations under it. Presentation only, so it stays out of
+    # every descriptor digest and never raises catalog drift.
+    group: str = ""
 
 
 @dataclass(frozen=True)
@@ -121,6 +126,9 @@ class OAuthDelegatedResourceConfig:
     resource_selection: bool = False
     selector_type: str = ""
     authorization_profiles: tuple[OAuthDelegatedAuthorizationProfileConfig, ...] = ()
+    # How this resource's operations are grouped for a Card editor (see
+    # parse_operation_groups); presentation only, outside every digest.
+    operation_groups: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -473,7 +481,9 @@ def _parse_tool(item: Any) -> OAuthDelegatedToolConfig | None:
         label=_coerce_str(item.get("label")) or name,
         description=_coerce_str(item.get("description")) or "",
         grants=_coerce_string_tuple(item.get("grants") or item.get("scopes") or item.get("required_grants")),
+        group=_coerce_str(item.get("group")) or "",
     )
+
 
 
 def _parse_capabilities(raw: Any) -> tuple[OAuthDelegatedCapabilityConfig, ...]:
@@ -652,6 +662,7 @@ def _parse_resources(raw: Any) -> tuple[OAuthDelegatedResourceConfig, ...]:
                     item.get("authorization_profiles")
                     or item.get("authorizationProfiles")
                 ),
+                operation_groups=parse_operation_groups(item.get("operation_groups")),
             )
         )
     return tuple(out)
