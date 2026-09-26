@@ -5320,7 +5320,17 @@ class SharedFieldStore:
                         "The message is quarantined; inspect the worker quarantine list.",
                     ),
                 ):
-                    previous = read_json(root / mailbox_state / name, required=False)
+                    if mailbox_state == "processed":
+                        # Settled mail lives in partitioned history since
+                        # W287, not in a processed/ folder (W339).
+                        previous = self._mail_history().read(
+                            project_id=scope,
+                            family="mail-processed",
+                            agent=clean_worker,
+                            record_id=parsed.object_id,
+                        )
+                    else:
+                        previous = read_json(root / mailbox_state / name, required=False)
                     if not previous or str(previous.get("message_ref") or "") != message_ref:
                         continue
                     if mailbox_state == "inbox" and str(
