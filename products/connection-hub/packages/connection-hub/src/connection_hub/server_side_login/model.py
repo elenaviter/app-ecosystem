@@ -71,6 +71,18 @@ class LoginAttempt:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
+def email_verified_claim(value: Any) -> bool | None:
+    """An ``email_verified`` claim as a flag: a bool or a "true"/"false" string; None when absent or unreadable."""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"true", "false"}:
+            return text == "true"
+    return None
+
+
 @dataclass(frozen=True)
 class VerifiedIdentity:
     """What an upstream proved about the person signing in."""
@@ -78,7 +90,9 @@ class VerifiedIdentity:
     provider: str
     subject: str
     email: str = ""
-    email_verified: bool = False
+    # The provider's verdict on ``email``: True, False, or None when the
+    # provider did not say. None is unknown, never "not verified" (W260).
+    email_verified: bool | None = None
     name: str = ""
     claims: Mapping[str, Any] = field(default_factory=dict)
 

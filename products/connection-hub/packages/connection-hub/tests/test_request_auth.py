@@ -105,3 +105,42 @@ async def test_declared_authorization_errors_cross_the_boundary() -> None:
             object(),
             SimpleNamespace(authorization_header="Bearer delegated"),
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("verified", "carried"), [(True, True), (False, False), (None, None)])
+async def test_the_platform_token_authenticator_carries_the_email_verdict_when_known(verified, carried) -> None:
+    """W260: the session's user_data carried every identity field but the email verdict.
+
+    On 2026-09-26 an invited LinkedIn user's bundle record held
+    email_verified true while the app session stayed null, because this
+    authenticator built user_data without the key. A known verdict is carried;
+    an unknown one leaves the key out, so the presence-based session merge
+    keeps what it had.
+    """
+
+    from connection_hub.request_auth import PlatformTokenAuthenticator
+
+    class Manager:
+        async def authenticate_with_both(self, token, id_token):
+            return SimpleNamespace(
+                sub="cognito:user-1", username="person@example.test", email="person@example.test",
+                email_verified=verified, roles=["kdcube:role:registered"], permissions=[],
+            )
+
+    seen: list[dict] = []
+
+    async def capture(_context, _user_type, user_data):
+        seen.append(dict(user_data))
+        return SimpleNamespace(user_data=user_data)
+
+    authenticator = PlatformTokenAuthenticator(
+        auth_manager=Manager(),
+        role_normalizer=lambda user: user,
+        user_type_resolver=lambda roles: "registered",
+    )
+    context = SimpleNamespace(authorization_header="Bearer kst1.token", id_token=None)
+    assert await authenticator(None, context, capture) is not None
+    [user_data] = seen
+    assert user_data.get("email_verified", None) is carried
+    assert ("email_verified" in user_data) is (carried is not None)

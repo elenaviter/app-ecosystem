@@ -22,7 +22,7 @@ from __future__ import annotations
 import hmac
 from typing import Any, Mapping
 
-from connection_hub.server_side_login.model import LoginAttempt, VerifiedIdentity
+from connection_hub.server_side_login.model import LoginAttempt, VerifiedIdentity, email_verified_claim
 from connection_hub.server_side_login.protocols import IdTokenVerifier, UpstreamRejected
 
 GOOGLE_ISSUERS = ("https://accounts.google.com", "accounts.google.com")
@@ -69,7 +69,7 @@ class GoogleIdentityUpstream:
             provider="google",
             subject=subject,
             email=str(claims.get("email") or "").strip(),
-            email_verified=bool(claims.get("email_verified")),
+            email_verified=email_verified_claim(claims.get("email_verified")),
             name=str(claims.get("name") or "").strip(),
             claims=dict(claims),
         )
