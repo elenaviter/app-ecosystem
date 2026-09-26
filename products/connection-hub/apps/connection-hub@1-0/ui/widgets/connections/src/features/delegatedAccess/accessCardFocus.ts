@@ -6,6 +6,8 @@ export interface AccessCardFocus {
   /** W319 slice 2: the owner shared this agent with the person; no project needed. */
   shared?: boolean;
   targetSubject?: string;
+  /** The person's name, as the board shows it, for a Card opened for them. */
+  targetLabel?: string;
   invitationRef?: string;
   resource?: string;
   claims: string[];
@@ -27,6 +29,7 @@ export function accessCardFocusFromParams(get: (key: string) => string): AccessC
   const projectRef = get('project_ref').trim();
   const shared = ['1', 'true'].includes(get('shared').trim().toLowerCase());
   const targetSubject = get('target_subject').trim();
+  const targetLabel = get('target_label').trim();
   const invitationRef = get('invitation_ref').trim();
   return {
     accessId,
@@ -35,6 +38,7 @@ export function accessCardFocusFromParams(get: (key: string) => string): AccessC
     projectRef: projectRef || undefined,
     shared: shared || undefined,
     targetSubject: targetSubject || undefined,
+    targetLabel: targetLabel || undefined,
     invitationRef: invitationRef || undefined,
     resource: resource || undefined,
     claims,
