@@ -419,6 +419,10 @@ MAX_REMOTE_MAIL_BYTES = 64 * 1024
 MAX_MAIL_BYTES = MAX_REMOTE_MAIL_BYTES
 DIRECT_CONTROL_KINDS = {"discard.notice", "ping", "reply", "request"}
 DIRECT_MAIL_KINDS = DIRECT_CONTROL_KINDS | {"delivery_failed"}
+# W304 decision 3: what one worker may send another without a shared project.
+# The board delivers it only to an agent that attends no project, addressed by
+# its exact stable name; the receiving direct mailbox accepts these kinds.
+WORKER_DIRECT_MAIL_KINDS = frozenset({"ping", "reply", "request"})
 LOCAL_WORK_ITEM_STATE_FIELDS = (
     "item_id",
     "item_ref",
@@ -5854,7 +5858,6 @@ class SharedFieldStore:
                 "route": "remote",
                 "pool_status": "active",
             }
-
         local_workers = {
             str(row.get("worker_name") or "").strip().lower(): row
             for row in json_records(self.control / "workers")
@@ -5995,6 +5998,7 @@ class SharedFieldStore:
         reply_to: str = "",
         idempotency_key: str,
         sender_identity: Mapping[str, Any] | None = None,
+        board_routed: bool = False,
         idempotency_identity: Mapping[str, Any] | None = None,
         idempotency_alias_keys: Sequence[str] = (),
         idempotency_identity_aliases: Sequence[Mapping[str, Any]] = (),
@@ -6044,10 +6048,12 @@ class SharedFieldStore:
         reach = self.worker_reachability(clean_recipient)
 
         if not clean_project:
-            if clean_sender != "control-plane":
+            # A worker's direct mail reaches this mailbox only as a control the
+            # board routed (W304 decision 3); a local send cannot write it.
+            if clean_sender != "control-plane" and not board_routed:
                 raise DomainError(
                     "field_project_context_required",
-                    "Worker-to-worker mail requires a shared project.",
+                    "Worker-to-worker mail without a project goes through the board.",
                     status=409,
                 )
             if clean_kind not in DIRECT_MAIL_KINDS:
@@ -6308,11 +6314,18 @@ class SharedFieldStore:
         )
         if requested_recipient in OPERATOR_RECIPIENTS:
             require_operator_mail_kind(clean_kind)
-        if not clean_project and requested_recipient not in {"operator", "owner"}:
+        if (
+            not clean_project
+            and requested_recipient not in {"operator", "owner"}
+            and clean_kind not in WORKER_DIRECT_MAIL_KINDS
+        ):
             raise DomainError(
-                "field_project_context_required",
-                "Worker-to-worker mail requires a shared project.",
+                "field_direct_mail_kind_invalid",
+                "Mail to a worker without a project is a request, reply or "
+                "ping; the board delivers it only to an agent that attends no "
+                "project, addressed by its exact stable name.",
                 status=409,
+                details={"allowed": sorted(WORKER_DIRECT_MAIL_KINDS)},
             )
         key = bounded_text(
             idempotency_key, field="idempotency_key", maximum=512, required=True
@@ -6330,7 +6343,13 @@ class SharedFieldStore:
                 (item or {}).get("filename") or source.name, field="attachment.filename", maximum=512, required=True
             )
             attachment_sources.append((source, Path(filename).name))
-        resolution = self.resolve_mail_recipient(clean_project, requested_recipient)
+        resolution = (
+            # W304 decision 3: without a project the board resolves the exact
+            # stable name and decides; this host's directory is not asked.
+            {"worker_name": requested_recipient, "route": "remote"}
+            if not clean_project and requested_recipient not in {"operator", "owner"}
+            else self.resolve_mail_recipient(clean_project, requested_recipient)
+        )
         if resolution["route"] != "remote":
             raise DomainError(
                 "field_mail_route_mismatch",
@@ -7931,7 +7950,7 @@ class SharedFieldStore:
             control.get("kind"), field="kind", maximum=128, required=True
         )
         if not project_ref:
-            if control_kind not in DIRECT_CONTROL_KINDS:
+            if control_kind not in DIRECT_CONTROL_KINDS and control_kind != "mail":
                 raise DomainError(
                     "field_project_context_required",
                     "This control requires a project mailbox.",
@@ -8151,6 +8170,7 @@ class SharedFieldStore:
             reply_to=reply_to,
             idempotency_key=f"control:{command_ref}",
             sender_identity=sender_identity,
+            board_routed=control_kind == "mail",
         )
         if control_kind == "mail" and kind == "delivery_failed":
             failure = dict(message_payload.get("payload") or {}).get("delivery_failure")

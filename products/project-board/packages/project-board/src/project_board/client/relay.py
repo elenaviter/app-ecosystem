@@ -67,6 +67,7 @@ from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
 from .relay_trace import RelayActivityTrace
 from .relay_admission import is_namespace_handshake_timeout, is_runtime_unavailable
 from .session_delivery import (
+    WAKE_EVENT_KINDS,
     notify_agent_session,
     reconcile_agent_session_queue,
 )
@@ -4122,7 +4123,7 @@ class ProblemBoardRelaySupervisor:
         wake_id: str = "",
         retried: bool = False,
     ) -> dict[str, Any]:
-        if event_kind != "input.available":
+        if event_kind not in WAKE_EVENT_KINDS:
             return {
                 "adapter": "none",
                 "state": "status_only",

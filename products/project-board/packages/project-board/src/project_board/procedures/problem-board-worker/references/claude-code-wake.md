@@ -32,6 +32,16 @@ nothing re-arms it. A bare `pb worker watch` carries no session id in its
 command line, so the guard, which finds watches by that id, can neither
 replace it nor end it (2026-09-26, a coordinator's first watch).
 
+## Before approval
+
+Start the watch right after `pb worker listen`, before `pb worker authorize`.
+A watch runs while the Card waits for approval and reports nothing; when the
+person approves, it reports one `problem_board.inbox_available` event whose
+`signals` hold `control_plane.connected`, and the session goes on to step 5's
+checks without anyone typing into it (W304 finding 24). The relay's session
+notice cannot do this for Claude Code: it has no outside door, and a Codex
+session is woken by its relay's queue instead.
+
 ## The guard
 
 Schedule one recurring guard prompt through Claude Code's scheduled-prompt
