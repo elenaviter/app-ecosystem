@@ -78,10 +78,82 @@ def test_each_repository_is_verified_or_unreachable_with_its_reason(tmp_path):
     # A remote that stops answering is unreachable, with git's own first line.
     shutil.rmtree(remote)
     gone = inspect_repository(workspace, listed[0])
-    assert gone["state"] == "unreachable" and gone["reason"].startswith("remote did not answer")
+    assert gone["state"] == "unreachable" and gone["reason"].startswith("the remote did not answer")
     assert "\n" not in gone["reason"] and len(gone["reason"]) <= 200
     # Without asking the remote, a matching checkout is only cloned.
     assert inspect_repository(workspace, listed[0], verify=False)["state"] == "cloned"
+
+
+def test_a_deploy_key_ssh_alias_matches_the_listed_url(tmp_path):
+    """Review on #168: add-a-worker-host step 7 clones from an SSH alias per deploy key."""
+
+    aliases = {"github-applications": "github.com"}
+    resolve = lambda host: aliases.get(host, host)  # noqa: E731 - ssh -G, injected
+    listed = "git@github.com:kdcube/applications.git"
+    assert comparable_url("github-applications:kdcube/applications.git", resolve_host=resolve) == comparable_url(listed, resolve_host=resolve)
+    assert comparable_url("git@github-applications:kdcube/applications.git", resolve_host=resolve) == "github.com/kdcube/applications"
+    assert comparable_url("ssh://git@github-applications/kdcube/applications.git", resolve_host=resolve) == "github.com/kdcube/applications"
+    # Without the alias resolved it would never match: that was the defect.
+    assert comparable_url("github-applications:kdcube/applications.git") != comparable_url(listed)
+
+    class Git:
+        def __call__(self, args, cwd, timeout):
+            out = {"rev-parse": "true\n", "remote": "github-applications:kdcube/applications.git\n"}.get(args[0], "")
+            return subprocess.CompletedProcess(args, 0, out, "")
+
+    workspace = tmp_path / "workspace"
+    (workspace / "applications").mkdir(parents=True)
+    row = inspect_repository(workspace, {"alias": "applications", "url": listed}, git=Git(), resolve_host=resolve)
+    assert row == {"alias": "applications", "state": "verified", "reason": ""}
+
+
+def test_a_report_never_carries_a_token_a_local_path_or_git_output(tmp_path):
+    """Review on #168: reasons are fixed texts from host/owner/name only."""
+
+    secret = "ghp_SECRETTOKEN123"
+    workspace = tmp_path / "private-workspace"
+    (workspace / "applications").mkdir(parents=True)
+    (workspace / "other").mkdir()
+
+    class Git:
+        def __init__(self, origin, ls_remote_code=0):
+            self.origin, self.code = origin, ls_remote_code
+
+        def __call__(self, args, cwd, timeout):
+            if args[0] == "rev-parse":
+                return subprocess.CompletedProcess(args, 0, "true\n", "")
+            if args[0] == "remote":
+                return subprocess.CompletedProcess(args, 0, self.origin + "\n", "")
+            return subprocess.CompletedProcess(args, self.code, "", f"fatal: https://x:{secret}@github.com denied at {cwd}")
+
+    listed = {"alias": "applications", "url": "https://github.com/kdcube/applications.git"}
+    rows = [
+        inspect_repository(workspace, listed, git=Git(f"https://x-access-token:{secret}@github.com/kdcube/other.git"), resolve_host=None),
+        inspect_repository(workspace, listed, git=Git(f"https://x-access-token:{secret}@github.com/kdcube/applications.git", 128), resolve_host=None),
+        inspect_repository(workspace, {"alias": "other", "url": "/srv/private/applications.git"}, git=Git(str(tmp_path / "somewhere.git")), resolve_host=None),
+        inspect_repository(workspace, {"alias": "missing", "url": listed["url"]}, git=Git(""), resolve_host=None),
+    ]
+    assert [row["state"] for row in rows] == ["unreachable"] * 4
+    assert rows[0]["reason"] == "origin is github.com/kdcube/other, the project lists github.com/kdcube/applications"
+    text = repr(rows)
+    for leaked in (secret, "x-access-token", str(workspace), str(tmp_path), "/srv/private", "fatal:"):
+        assert leaked not in text, leaked
+
+
+def test_git_keeps_batch_mode_and_closed_stdin_under_a_host_ssh_command(monkeypatch, tmp_path):
+    from project_board.client import workspace_report
+
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -i /keys/deploy")
+    monkeypatch.setattr(workspace_report.subprocess, "run", fake_run)
+    workspace_report._run_git(["status"], tmp_path, 1.0)
+    assert seen["env"]["GIT_SSH_COMMAND"] == "ssh -i /keys/deploy -o BatchMode=yes"
+    assert seen["stdin"] is subprocess.DEVNULL and seen["env"]["GIT_TERMINAL_PROMPT"] == "0"
 
 
 class ReportBoard(Board):

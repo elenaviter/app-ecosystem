@@ -31,17 +31,25 @@ MAX_REASON_CHARS = 200
 MAX_REPOSITORIES = 32
 
 GitRunner = Callable[[Sequence[str], Path, float], "subprocess.CompletedProcess[str]"]
+# An SSH host alias to its real host name (review on #168: deploy-key hosts
+# clone from aliases like ``github-applications:owner/name.git``).
+HostResolver = Callable[[str], str]
 
 
 def _run_git(args: Sequence[str], cwd: Path, timeout: float) -> "subprocess.CompletedProcess[str]":
     env = dict(os.environ)
-    # Never wait on a prompt: an agent's report must end on its own.
+    # Never wait on a prompt: an agent's report must end on its own. BatchMode
+    # is added even to an ssh command the host already set.
     env["GIT_TERMINAL_PROMPT"] = "0"
-    env.setdefault("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    ssh = str(env.get("GIT_SSH_COMMAND") or "ssh").strip()
+    if "BatchMode" not in ssh:
+        ssh = f"{ssh} -o BatchMode=yes"
+    env["GIT_SSH_COMMAND"] = ssh
     return subprocess.run(
         ["git", *args],
         cwd=str(cwd),
         env=env,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -49,27 +57,71 @@ def _run_git(args: Sequence[str], cwd: Path, timeout: float) -> "subprocess.Comp
     )
 
 
-def comparable_url(url: str) -> str:
-    """One spelling for a repository URL: host/owner/name, lowercase, without .git."""
+def ssh_hostname(alias: str, *, timeout: float = 5.0) -> str:
+    """The host an SSH alias names, from ``ssh -G`` (the host's own ssh config), or the alias itself."""
+
+    try:
+        result = subprocess.run(
+            ["ssh", "-G", alias],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return alias
+    if result.returncode != 0:
+        return alias
+    for line in result.stdout.splitlines():
+        key, _, value = line.strip().partition(" ")
+        if key.lower() == "hostname" and value.strip():
+            return value.strip()
+    return alias
+
+
+_SCP_FORM = re.compile(r"^(?:[\w.-]+@)?([^:/\s@]+):(?!//)(.+)$")
+_URL_FORM = re.compile(r"^([a-z+]+)://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", re.IGNORECASE)
+
+
+def _remote_parts(url: str, resolve_host: HostResolver | None) -> tuple[str, str] | None:
+    """(host, owner/name) of a remote URL, credentials dropped and SSH aliases resolved; None for a local path."""
 
     text = str(url or "").strip()
-    scp = re.match(r"^[\w.-]+@([^:/]+):(.+)$", text)
-    if scp:
-        host, path = scp.group(1), scp.group(2)
+    match = _URL_FORM.match(text)
+    if match:
+        scheme, host, path = match.group(1).lower(), match.group(2), match.group(3)
+        if scheme == "file":
+            return None
+        if scheme.startswith("ssh") and resolve_host is not None:
+            host = resolve_host(host)
     else:
-        match = re.match(r"^[a-z+]+://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", text, re.IGNORECASE)
+        match = _SCP_FORM.match(text)
         if not match:
-            return text.lower().rstrip("/")
+            return None
         host, path = match.group(1), match.group(2)
+        if resolve_host is not None:
+            host = resolve_host(host)
     path = path.strip("/")
     if path.endswith(".git"):
         path = path[: -len(".git")]
-    return f"{host.lower()}/{path.lower()}"
+    return host.lower(), path.lower()
 
 
-def _one_line(text: str) -> str:
-    line = next((part.strip() for part in str(text or "").splitlines() if part.strip()), "")
-    return line[:MAX_REASON_CHARS]
+def comparable_url(url: str, *, resolve_host: HostResolver | None = None) -> str:
+    """One spelling for a repository URL: host/owner/name, lowercase, without .git or credentials."""
+
+    parts = _remote_parts(url, resolve_host)
+    if parts is None:
+        return str(url or "").strip().rstrip("/")
+    return f"{parts[0]}/{parts[1]}"
+
+
+def _shown(url: str, resolve_host: HostResolver | None) -> str:
+    """What a reason may name about a URL: host/owner/name only, never a local path or a credential."""
+
+    parts = _remote_parts(url, resolve_host)
+    return f"{parts[0]}/{parts[1]}" if parts else "a local path"
 
 
 def inspect_repository(
@@ -79,35 +131,42 @@ def inspect_repository(
     verify: bool = True,
     timeout: float = 15.0,
     git: GitRunner = _run_git,
+    resolve_host: HostResolver | None = ssh_hostname,
 ) -> dict[str, str]:
+    """One repository's state. Reasons are fixed texts: no local path, no raw origin, no git output (review on #168)."""
+
     alias = str(repository.get("alias") or "").strip()
     url = str(repository.get("url") or "").strip()
     folder = workspace / alias
 
     def unreachable(reason: str) -> dict[str, str]:
-        return {"alias": alias, "state": "unreachable", "reason": _one_line(reason)}
+        return {"alias": alias, "state": "unreachable", "reason": reason[:MAX_REASON_CHARS]}
 
     if not folder.is_dir():
-        return unreachable(f"not cloned: {folder} does not exist")
+        return unreachable("not cloned: the workspace has no folder for this alias")
     try:
         inside = git(["rev-parse", "--is-inside-work-tree"], folder, timeout)
         if inside.returncode != 0 or inside.stdout.strip() != "true":
-            return unreachable(f"{folder} is not a git checkout")
+            return unreachable("the alias folder is not a git checkout")
         origin = git(["remote", "get-url", "origin"], folder, timeout)
         if origin.returncode != 0:
-            return unreachable(f"{folder} has no origin remote")
+            return unreachable("the checkout has no origin remote")
         actual = origin.stdout.strip()
-        if comparable_url(actual) != comparable_url(url):
-            return unreachable(f"origin is {actual}, the project lists {url}")
+        if comparable_url(actual, resolve_host=resolve_host) != comparable_url(url, resolve_host=resolve_host):
+            return unreachable(
+                f"origin is {_shown(actual, resolve_host)}, the project lists {_shown(url, resolve_host)}"
+            )
         if not verify:
             return {"alias": alias, "state": "cloned", "reason": ""}
         remote = git(["ls-remote", "--exit-code", "origin", "HEAD"], folder, timeout)
     except subprocess.TimeoutExpired:
         return unreachable(f"git did not answer within {int(timeout)}s")
-    except OSError as exc:
-        return unreachable(f"git could not run: {exc}")
+    except OSError:
+        return unreachable("git could not run on this host")
     if remote.returncode != 0:
-        return unreachable(f"remote did not answer: {_one_line(remote.stderr) or f'exit {remote.returncode}'}")
+        return unreachable(
+            f"the remote did not answer (git exit {remote.returncode}): check this host's key or access"
+        )
     return {"alias": alias, "state": "verified", "reason": ""}
 
 
@@ -120,9 +179,18 @@ def build_workspace_report(
     verify: bool = True,
     timeout: float = 15.0,
     git: GitRunner = _run_git,
+    resolve_host: HostResolver | None = None,
 ) -> dict[str, Any]:
+    if resolve_host is None:
+        cache: dict[str, str] = {}
+
+        def resolve_host(alias: str) -> str:
+            if alias not in cache:
+                cache[alias] = ssh_hostname(alias, timeout=min(5.0, timeout))
+            return cache[alias]
+
     rows = [
-        inspect_repository(workspace, repository, verify=verify, timeout=timeout, git=git)
+        inspect_repository(workspace, repository, verify=verify, timeout=timeout, git=git, resolve_host=resolve_host)
         for repository in list(repositories)[:MAX_REPOSITORIES]
         if str(repository.get("alias") or "").strip()
     ]
@@ -154,4 +222,5 @@ __all__ = [
     "comparable_url",
     "inspect_repository",
     "report_signature",
+    "ssh_hostname",
 ]
