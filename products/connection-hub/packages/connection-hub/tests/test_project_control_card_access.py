@@ -288,16 +288,20 @@ def test_an_editor_asking_for_more_than_they_hold_is_refused_by_name():
     ))
     assert refused["ok"] is False and refused["error"] == "delegated_access_grants_not_delegable"
     assert sorted(refused["grants"]) == ["named_services:use", "slack:post"]
-    # The refusal says the save needs every permission the Card carries.
-    assert "every permission it carries, not only the ones you change" in refused["message"]
+    # The refusal names what the save adds beyond the editor's bound (W296).
+    assert "You cannot add" in refused["message"] and "beyond what you may delegate" in refused["message"]
     assert "named_services:use" in refused["message"] and "slack:post" in refused["message"]
     stored = asyncio.run(service.control_card_get(creator, control_id=control_id))
     assert PROJECT_CONTROL_CARD_AUDIT_PROVENANCE not in (stored["access"].get("provenance") or {})
     assert "slack:post" not in (stored["access"].get("resource_grants") or {}).get(resource, [])
 
 
-def test_an_editor_with_fewer_grants_than_the_card_cannot_save_even_an_unrelated_change():
-    """Review on app-ecosystem#187: the save is checked against every grant the Card carries."""
+def test_an_editor_with_fewer_grants_than_the_card_saves_an_unrelated_change_but_adds_nothing_beyond():
+    """W296 (2026-09-26): a save keeps what the Card carries and refuses only what it adds.
+
+    This replaces the rule of the review on app-ecosystem#187, where an editor
+    bounded below the Card could save no change at all.
+    """
 
     service, creator, control_id, resource = _real_card()
     asyncio.run(service.control_card_update(
@@ -305,13 +309,20 @@ def test_an_editor_with_fewer_grants_than_the_card_cannot_save_even_an_unrelated
     ))
     ada = {"user_id": "ada", "roles": ["kdcube:role:registered"], "permissions": []}
     access = ProjectControlCardAccess(service, _real_port(control_id))
-    refused = asyncio.run(access.update(
+    renamed = asyncio.run(access.update(
         ada, control_id=control_id, project_ref=PROJECT, request_id="req-label", label="Renamed",
     ))
-    assert refused["error"] == "delegated_access_grants_not_delegable"
-    assert "not only the ones you change" in refused["message"]
+    assert renamed.get("ok") is True, renamed
     stored = asyncio.run(service.control_card_get(creator, control_id=control_id))
-    assert stored["access"]["label"] != "Renamed"
+    assert stored["access"]["label"] == "Renamed"
+    assert stored["access"]["resource_grants"][resource] == ["named_services:use", "slack:read"]
+    refused = asyncio.run(access.update(
+        ada, control_id=control_id, project_ref=PROJECT, request_id="req-add",
+        resource_grants={resource: ["named_services:use", "slack:read", "slack:post"]},
+    ))
+    assert refused["error"] == "delegated_access_grants_not_delegable"
+    assert refused["grants"] == ["slack:post"]
+    assert "You cannot add slack:post" in refused["message"]
 
 
 def test_a_control_card_not_held_by_a_project_stays_editable_by_its_creator():
