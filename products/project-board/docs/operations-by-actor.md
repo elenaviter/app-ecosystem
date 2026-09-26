@@ -116,7 +116,8 @@ An agent's Card is also capped by its project's **Control Card** (AND): an
 operation the project Control Card does not include is refused with
 `work_worker_operation_withheld_by_control_card`, which names that Control
 Card, whatever the agent's own Card holds. Re-consent does not help. A project
-admin adds the operation to the project Control Card in Team > People, then the
+admin adds the operation to the project Control Card in Connection Hub (reached
+from Manage project access), then the
 agent's Card is refreshed (Refresh coordinator Card, Make coordinator or Make
 worker). On 2026-09-26 new coordinator operations reached the catalog, and
 `project.coordinator.note.write` stayed refused after Refresh until the operator
@@ -161,11 +162,11 @@ at consent", which sent the team to the catalog.
 | `project.link_worker` | `work:coordinate` | no | yes | yes | Link an idle published worker to this project. | When the project has no Control Card yet, linking its first coordinator creates it, so a person must be a project admin. The Control Card attaches through the project when the caller did not create it (see [Cards](cards.md)). |
 | `project.unlink_worker` | `work:coordinate` | no | yes | yes | End one worker's current project attendance. | The agent's owner unlinks it, or a project admin unlinks any agent; the project's Control Card comes off after the attendance stops (`detach_failed` is retried by unlinking again). See [Cards](cards.md). |
 | `project.coordinator.get` | `work:observe` | no | yes | yes | Read who holds the coordinator role now, the home coordinator, and whether the home coordinator is available. | Workers also get it on every heartbeat as `coordinator`. |
-| `project.coordinator.hand_over` | `work:admin` | no | no | yes | Hand the acting coordinator role to one attending agent, which gains the coordinator label; the home coordinator keeps its label. | A signed-in operator only (owner, operator or admin); an agent Card is refused with `work_human_operator_required`. Revision-fenced. |
-| `project.coordinator.return` | `work:admin` | no | no | yes | Return the acting coordinator role to the home coordinator; labels stay. | Operator only, revision-fenced. |
-| `project.coordinator.set_away` | `work:admin` | no | no | yes | Mark the home coordinator away or back. | Away reads as unavailable whatever the session reports. Operator only. |
-| `project.coordinator.make` | `work:admin` | no | no | yes | Raise an attending agent's Card to the coordinator profile, then hand it the role; both receipts. | Operator only; the Card half needs the Card's grantor. `only` repeats one half. |
-| `project.coordinator.make_worker` | `work:admin` | no | no | yes | Return the role to the home coordinator, then set the agent's Card to the default worker profile; both receipts. | Operator only; refused for the home coordinator's own Card. |
+| `project.coordinator.hand_over` | `work:admin` | no | no | yes | Hand the acting coordinator role to one attending agent, which gains the coordinator label; the home coordinator keeps its label. | A signed-in project admin only (owner included); an agent Card is refused with `work_human_operator_required`. Revision-fenced. |
+| `project.coordinator.return` | `work:admin` | no | no | yes | Return the acting coordinator role to the home coordinator; labels stay. | A project admin only (owner included), revision-fenced. |
+| `project.coordinator.set_away` | `work:admin` | no | no | yes | Mark the home coordinator away or back. | Away reads as unavailable whatever the session reports. A project admin only (owner included). |
+| `project.coordinator.make` | `work:admin` | no | no | yes | Raise an attending agent's Card to the coordinator profile, then hand it the role; both receipts. | A project admin only (owner included); the Card half needs the Card's grantor. `only` repeats one half. |
+| `project.coordinator.make_worker` | `work:admin` | no | no | yes | Return the role to the home coordinator, then set the agent's Card to the default worker profile; both receipts. | A project admin only (owner included); refused for the home coordinator's own Card. |
 | `project.coordinator.note.write` | `work:coordinate` | no | yes | no | The agent holding the coordinator role writes its part of the next handover note. | The holder only (`work_coordinator_note_not_holder`); every section required. |
 | `worker.rename` | `work:coordinate` | no | optional | yes | Change a worker's display alias while retaining its stable identity. |  |
 | `worker.estimate` | `work:relay` | yes | optional | yes | Record or clear until when (UTC) a worker expects to finish what it is on, with a one-line note. | A worker states its own; the owner may state a worker's. The board marks it overdue once the time has passed. |

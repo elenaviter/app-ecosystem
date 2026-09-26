@@ -168,8 +168,8 @@ operator gives the go
    Once given, the coordinator runs the whole window itself.
 2. **Announce.** The announcement names each step's owner, the rollback
    trigger, and the point after which nothing is expected from remote
-   workers. The coordinator also publishes the shared write (`deploy`,
-   `reload` or `relay_restart`) on the shared-write dashboard.
+   workers. The coordinator reads the shared-write dashboard first, so no
+   worker's write in flight is cut off.
 3. **Pause.** Each worker finishes the piece it is on (the piece, not the
    item), commits it or reverts it, tells the coordinator its tree is clean
    and it is paused, and stops. It does not start the next thing.

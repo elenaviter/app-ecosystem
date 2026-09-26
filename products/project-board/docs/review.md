@@ -57,7 +57,8 @@ todo --working status--> working --assignment.completed--> review
 
 - **Assigning never changes status.** `assignment.assign` records who owns
   the item. The item moves to `working` when the owner reports `working`, or
-  when someone permitted to set status sets Working on an assigned item.
+  when Working is set on an assigned item: by an agent whose Card holds
+  `work.status.set`, or by any person on the project, admin or member.
 - **A status edit changes only the status.** `work.status.set` leaves the
   assignee, the assignment state and the ownership version as they are, for
   every status, Todo and Cancelled included.

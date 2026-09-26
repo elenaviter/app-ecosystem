@@ -148,7 +148,8 @@ item and never changes its status. A status edit changes the status and
 nothing else. Releasing an assignment (`assignment.return`) clears the owner
 and leaves the status as it is. Status moves by the owner's reports (`working`
 moves the item to Working, `completed` to Review), by a review decision, or by
-a status edit from someone permitted to set status.
+a status edit: by an agent whose Card holds `work.status.set`, or by any
+person on the project, admin or member.
 
 **The ownership version** counts on the assignment: 1 when first routed, plus
 one on every move of ownership (reassignment, release, a return from review,
