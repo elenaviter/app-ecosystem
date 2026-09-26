@@ -375,6 +375,9 @@ with **Share** on its pool card (W319):
 - Rename, suspend, retire, resume and journal requests stay the owner's.
 - **Stop sharing** takes effect at once. The person's next message or Card
   change is refused with "<owner> no longer shares this agent with you."
+  An answer the agent gives later to a message the person sent while it was
+  shared still reaches them: stopping a share ends what they may do, not the
+  replies to what they already asked.
 - **Adding a shared agent to a project is not available yet.** The project's
   Control Card attaches only to agents its owner holds; the board refuses the
   link by name until the cross-owner Control Card exists. Until then the
