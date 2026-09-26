@@ -105,7 +105,7 @@ def test_worker_procedure_revision_records_its_exact_content() -> None:
         source_revision_ledger_path().read_text(encoding="utf-8")
     )
 
-    assert package["revision"] == "2026.09.26.16"
+    assert package["revision"] == "2026.09.26.17"
     assert ledger[package["revision"]] == package["source_digest"]
 
 
@@ -119,18 +119,19 @@ def test_worker_procedure_owns_released_and_code_source_guidance() -> None:
     runtime_words = " ".join(runtime.split())
 
     assert 'git -C "$APP_REPOSITORY" archive "$APP_COMMIT"' in first_run
-    assert 'git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT"' in first_run
+    # W322 Step 1: the client is App Ecosystem only.
+    assert "KDCUBE_" not in first_run
     assert "scripts/install_from_source.py" in first_run
-    assert "all six first-party distributions" in first_run_words
+    assert "all four first-party distributions" in first_run_words
     assert "one `pip install` invocation" in first_run_words
     assert "This section is the owning definition" in first_run
     assert "pb source use-release --expect-version <version>" in runtime
     assert "pb source use-code" in runtime
-    assert "--kdcube-repository" in runtime
+    assert "--kdcube-repository" not in runtime
     assert "scripts/install_from_source.py" in runtime
     assert '--source-root "$APP_EXPORT"' in runtime
-    assert '--kdcube-source-root "$KDCUBE_EXPORT"' in runtime
-    assert "both full commits and the tree ID of every exported package" in runtime_words
+    assert "--kdcube-source-root" not in runtime
+    assert "the full App Ecosystem commit and the tree ID of every exported package" in runtime_words
     assert "releases/current/venv/bin/pb" in runtime
     assert "launcher version 2" in runtime_words
     assert "retain the three most recently activated complete environments" in runtime_words

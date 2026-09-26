@@ -241,13 +241,9 @@ class ClientSourceController:
         repository: str | Path,
         ref: str,
         expect: str,
-        kdcube_repository: str | Path,
-        kdcube_ref: str,
-        expect_kdcube: str,
         wait_seconds: float,
     ) -> dict[str, Any]:
         repo = Path(repository).expanduser().resolve()
-        kdcube_repo = Path(kdcube_repository).expanduser().resolve()
         installed_services = self._preflight_services()
         with activation_lock(self.root):
             previous = effective_selection(
@@ -260,9 +256,6 @@ class ClientSourceController:
                 app_ecosystem_repository=repo,
                 app_ecosystem_ref=ref,
                 expect_app_ecosystem=expect,
-                kdcube_repository=kdcube_repo,
-                kdcube_ref=kdcube_ref,
-                expect_kdcube=expect_kdcube,
                 root=self.root,
             )
             selected = snapshot_selection(release)
@@ -279,10 +272,7 @@ class ClientSourceController:
                 "selected": selected,
                 "previous": previous,
                 "installation": installation,
-                "repositories": {
-                    "app_ecosystem": str(repo),
-                    "kdcube": str(kdcube_repo),
-                },
+                "repositories": {"app_ecosystem": str(repo)},
                 "checkouts": evidence,
                 # Compatibility fields name the App Ecosystem side of the
                 # composite source for older receipt readers.

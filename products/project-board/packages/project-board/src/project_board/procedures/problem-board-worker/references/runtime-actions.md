@@ -48,7 +48,7 @@ the wrong one reports a fix as live that has never executed.
 | You changed | It reaches the runtime when | Not enough |
 | --- | --- | --- |
 | A released Problem Board host client | `pb source use-release --expect-version <version>` builds a new release environment, resolves that version's complete dependency graph, smokes its `pb --version` and imports, atomically activates it, and verifies the restarted relay | upgrading a permanent bootstrap environment, which leaves the launcher and relay on a different dependency set |
-| A committed Problem Board client under development | `pb source use-code` with both repository paths, refs, and full approved commits exports all six first-party packages, resolves them together inside the composite release environment, smokes it, atomically activates it, and accepts only the restarted relay's matching startup record | independent installs, an editable install, a live-checkout launcher, or selecting only one repository or the relay |
+| A committed Problem Board client under development | `pb source use-code` with the App Ecosystem repository path, ref, and full approved commit exports all four first-party packages, resolves them together inside the release environment, smokes it, atomically activates it, and accepts only the restarted relay's matching startup record | independent installs, an editable install, a live-checkout launcher, or selecting only one repository or the relay |
 | The already selected Problem Board relay source | `pb relay-service restart`. A relay restart is host-local and reloads the recorded source without advancing it | a runtime action such as a reload; a restart cannot select a newer checkout or package version |
 | The worker procedure package inside `project-board` | `pb procedure install`, run by the coordinator on the host after the selected release or code commit carries the new revision | editing package source, which installed sessions never read |
 
@@ -62,7 +62,7 @@ while every test still passes.
 A maintainer may run the client from an App Ecosystem checkout on purpose:
 
 ```bash
-PYTHONPATH=<project-board-src>:<app-foundation-src>:<service-foundation-src>:<connection-hub-src>:<connection-hub-cli-src>:<kdcube-cli-src> \
+PYTHONPATH=<project-board-src>:<app-foundation-src>:<service-foundation-src>:<connection-hub-src> \
   python -m project_board.client.entrypoint status
 ```
 
@@ -120,15 +120,16 @@ activation.
 
 `pb source status` reports the active release ID and path, environment commands,
 launcher path and version, this target's receipt, the source loaded by the
-command, and every discovered host relay's status. A code receipt names both
-full commits and the tree ID of every exported package.
+command, and every discovered host relay's status. A code receipt names the
+full App Ecosystem commit and the tree ID of every exported package (a release
+selected before W322 also names its KDCube commit).
 
 ## Move An Existing Host To Release Environments
 
 An existing host may run either a checkout client or the former long-lived
 `~/.kdcube/client-runtime/tools/problem-board-venv`. Keep that source and
-environment in place while preparing clean exports from approved App Ecosystem
-and KDCube commits. The source installer invokes the same release builder as
+environment in place while preparing a clean export of an approved App
+Ecosystem commit. The source installer invokes the same release builder as
 `source use-code` and `source use-release`: it builds and smokes a complete
 candidate before activating `releases/current`, then replaces the user launcher
 with launcher version 2.
@@ -137,25 +138,17 @@ with launcher version 2.
 APP_REPOSITORY=<app-ecosystem>
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=<kdcube>
-KDCUBE_COMMIT=<approved-full-commit>
-KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
-test "$(git -C "$KDCUBE_REPOSITORY" rev-parse "$KDCUBE_COMMIT^{commit}")" = "$KDCUBE_COMMIT"
 git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
-git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT" | tar -x -C "$KDCUBE_EXPORT"
 
 python3 \
   "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
-  --source-root "$APP_EXPORT" \
-  --kdcube-source-root "$KDCUBE_EXPORT"
+  --source-root "$APP_EXPORT"
 "$HOME/.local/bin/pb" --version
 "$HOME/.local/bin/pb" relay-service install
 "$HOME/.local/bin/pb" source use-code \
   --repository "$APP_REPOSITORY" --ref "$APP_COMMIT" \
-  --expect "$APP_COMMIT" \
-  --kdcube-repository "$KDCUBE_REPOSITORY" --kdcube-ref "$KDCUBE_COMMIT" \
-  --expect-kdcube "$KDCUBE_COMMIT"
+  --expect "$APP_COMMIT"
 "$HOME/.local/bin/pb" source status
 ```
 
@@ -178,8 +171,8 @@ Before fast-forwarding a checkout or deleting
 2. `relay.program_arguments[0]` is the stable
    `releases/current/venv/bin/python` path;
 3. the target receipt and relay startup record name the same released version
-   or composite source, including both commits and all six package trees for a
-   code release;
+   or code source, including the App Ecosystem commit and all four package trees
+   for a code release;
 4. `pb procedure verify` succeeds from the new launcher.
 
 At that point the former venv has no launcher or service consumer and may be
@@ -227,8 +220,8 @@ to touch), and the coordinator honours it or re-announces.
 
 Selecting the client source is a runtime action of the same kind as a relay
 restart, and follows the same agreement on the host. `pb source use-release`
-selects an approved package version and `pb source use-code` selects exact
-App Ecosystem and KDCube commits as one release for both the command and the
+selects an approved package version and `pb source use-code` selects an exact
+App Ecosystem commit as one release for both the command and the
 relay, and either includes the host-local restart the relay needs to observe
 it. A direct checkout invocation is a development process: it must remain
 visibly unpinned and never changes the host selector. Why: the command and

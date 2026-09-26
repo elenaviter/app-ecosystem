@@ -19,8 +19,12 @@ from project_board.client import (
 from project_board.client.source_control import ClientSourceController
 from project_board.client.source_manifest import (
     APP_ECOSYSTEM_SOURCE_PATHS,
+    APP_ECOSYSTEM_SOURCE_PATHS_V1,
     CLIENT_SOURCE_IMPORTS,
+    IDENTITY_SCHEMA_V1,
     KDCUBE_SOURCE_PATHS,
+    normalise_components,
+    release_id_for_components,
 )
 from project_board.contract.errors import DomainError
 
@@ -87,7 +91,9 @@ def _git(repository: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _source_repository(tmp_path: Path) -> tuple[Path, str, tuple[str, ...]]:
+def _source_repository(
+    tmp_path: Path, paths: tuple[str, ...] = APP_ECOSYSTEM_SOURCE_PATHS
+) -> tuple[Path, str, tuple[str, ...]]:
     repository = tmp_path / "app-ecosystem"
     repository.mkdir()
     for args in (
@@ -97,7 +103,6 @@ def _source_repository(tmp_path: Path) -> tuple[Path, str, tuple[str, ...]]:
     ):
         _git(repository, *args)
 
-    paths = APP_ECOSYSTEM_SOURCE_PATHS
     entrypoint = f"{paths[0]}/src/project_board/client/code_entrypoint.py"
     for path in paths:
         source = repository / path / "src"
@@ -111,86 +116,81 @@ def _source_repository(tmp_path: Path) -> tuple[Path, str, tuple[str, ...]]:
     return repository, entrypoint, paths
 
 
-def _kdcube_repository(tmp_path: Path) -> tuple[Path, tuple[str, ...]]:
-    repository = tmp_path / "kdcube"
-    repository.mkdir()
-    for args in (
-        ("init", "-q"),
-        ("config", "user.email", "worker@example.test"),
-        ("config", "user.name", "Worker"),
-    ):
-        _git(repository, *args)
-    for path in KDCUBE_SOURCE_PATHS:
-        source = repository / path / "src"
-        source.mkdir(parents=True)
-        (source / "owned.py").write_text(f"SOURCE = {path!r}\n", encoding="utf-8")
-    (repository / "outside.txt").write_text("not exported\n", encoding="utf-8")
-    _git(repository, "add", ".")
-    _git(repository, "commit", "-qm", "source")
-    return repository, KDCUBE_SOURCE_PATHS
-
-
-def test_code_release_contains_every_client_package_from_both_commits(
+def test_code_release_contains_every_client_package_from_the_app_ecosystem_commit(
     tmp_path: Path,
 ) -> None:
     repository, entrypoint, paths = _source_repository(tmp_path)
     commit = _git(repository, "rev-parse", "HEAD")
-    kdcube_repository, kdcube_paths = _kdcube_repository(tmp_path)
-    kdcube_commit = _git(kdcube_repository, "rev-parse", "HEAD")
     root = tmp_path / "client-source"
 
     release = source_composite.export_client_release(
         app_ecosystem_repository=repository,
         app_ecosystem_ref=commit,
-        kdcube_repository=kdcube_repository,
-        kdcube_ref=kdcube_commit,
         root=root,
     )
 
     assert release.commit == commit
     assert release.entrypoint_path == entrypoint
-    assert release.source_paths == paths + kdcube_paths
+    assert release.source_paths == paths
     assert len(release.release_id) == 64
     assert release.script.read_text(encoding="utf-8") == "print('pinned')\n"
     assert set(release.subtrees) == set(paths)
     assert not (release.path / "outside.txt").exists()
     marker = json.loads((release.path / relay_source.RELEASE_MARKER).read_text())
     assert marker["release_id"] == release.release_id
-    assert marker["source_paths"] == list(paths + kdcube_paths)
-    assert {component["name"] for component in marker["components"]} == {
-        "app_ecosystem",
-        "kdcube",
-    }
+    assert marker["source_paths"] == list(paths)
+    # W322 Step 1: the client is App Ecosystem only.
+    assert [component["name"] for component in marker["components"]] == ["app_ecosystem"]
 
 
-def test_kdcube_commit_changes_the_composite_release_id(tmp_path: Path) -> None:
-    repository, _entrypoint, _paths = _source_repository(tmp_path)
-    commit = _git(repository, "rev-parse", "HEAD")
-    kdcube_repository, kdcube_paths = _kdcube_repository(tmp_path)
-    first_kdcube_commit = _git(kdcube_repository, "rev-parse", "HEAD")
-    first = source_composite.export_client_release(
-        app_ecosystem_repository=repository,
-        app_ecosystem_ref=commit,
-        kdcube_repository=kdcube_repository,
-        kdcube_ref=first_kdcube_commit,
-        root=tmp_path / "client-source",
+def _v1_components() -> list[dict]:
+    """A client identity as W255 recorded it: App Ecosystem with the CLI, and KDCube."""
+
+    return [
+        {
+            "name": "app_ecosystem",
+            "commit": "a" * 40,
+            "subtrees": {path: "b" * 40 for path in APP_ECOSYSTEM_SOURCE_PATHS_V1},
+        },
+        {
+            "name": "kdcube",
+            "commit": "c" * 40,
+            "subtrees": {path: "d" * 40 for path in KDCUBE_SOURCE_PATHS},
+        },
+    ]
+
+
+def test_a_release_built_before_w322_keeps_its_id_and_stays_selectable(tmp_path: Path) -> None:
+    # Hosts hold releases whose identity names KDCube. Their ids must not
+    # change, or status and rollback would lose the release they point at.
+    import hashlib
+
+    components = normalise_components(_v1_components())
+    expected = hashlib.sha256(
+        json.dumps(
+            {
+                "schema": IDENTITY_SCHEMA_V1,
+                "components": [
+                    {"name": c["name"], "commit": c["commit"], "subtrees": dict(sorted(c["subtrees"].items()))}
+                    for c in sorted(_v1_components(), key=lambda value: value["name"])
+                ],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+    ).hexdigest()
+    assert release_id_for_components(components) == expected
+
+    selection = relay_source.write_selection(
+        tmp_path / "client-source",
+        {"mode": "snapshot", "release_id": expected, "components": _v1_components()},
     )
-    owned = kdcube_repository / kdcube_paths[0] / "src" / "owned.py"
-    owned.write_text("SOURCE = 'changed'\n", encoding="utf-8")
-    _git(kdcube_repository, "add", ".")
-    _git(kdcube_repository, "commit", "-qm", "change kdcube")
-    second_kdcube_commit = _git(kdcube_repository, "rev-parse", "HEAD")
-
-    second = source_composite.export_client_release(
-        app_ecosystem_repository=repository,
-        app_ecosystem_ref=commit,
-        kdcube_repository=kdcube_repository,
-        kdcube_ref=second_kdcube_commit,
-        root=tmp_path / "client-source",
-    )
-
-    assert first.commit == second.commit == commit
-    assert first.release_id != second.release_id
+    assert selection["release_id"] == expected
+    assert selection["subtrees"] == {path: "b" * 40 for path in APP_ECOSYSTEM_SOURCE_PATHS_V1}
+    assert relay_source.source_line(
+        {"mode": "snapshot", "release_id": expected, "components": _v1_components()}
+    ).endswith(f"kdcube={'c' * 40}")
 
 
 def test_code_bootstrap_accepts_only_declared_release_sources(tmp_path: Path) -> None:
@@ -209,8 +209,12 @@ def test_code_source_contract_pins_every_runtime_dependency_together() -> None:
 
     assert "products/project-board/packages/project-board" in paths
     assert "products/connection-hub/packages/connection-hub" in paths
-    assert "products/connection-hub/packages/connection-hub-cli" in paths
-    assert "app/ai-app/src/kdcube-ai-app/kdcube_cli" in paths
+    # W322 Step 1: pb needs connection-hub[client], not the command line, and
+    # nothing from KDCube.
+    assert "products/connection-hub/packages/connection-hub-cli" not in paths
+    assert not [path for path in paths if "kdcube" in path]
+    assert "connection_hub_cli" not in CLIENT_SOURCE_IMPORTS
+    assert "kdcube_cli" not in CLIENT_SOURCE_IMPORTS
 
 
 def test_client_source_never_inherits_the_old_relay_only_store(tmp_path: Path) -> None:
@@ -259,7 +263,9 @@ def test_installed_targets_keep_receipts_but_share_the_host_release_store(
 
 
 def test_legacy_single_repository_selection_remains_readable(tmp_path: Path) -> None:
-    repository, entrypoint_path, paths = _source_repository(tmp_path)
+    repository, entrypoint_path, paths = _source_repository(
+        tmp_path, APP_ECOSYSTEM_SOURCE_PATHS_V1
+    )
     commit = _git(repository, "rev-parse", "HEAD")
     root = tmp_path / "client-source"
     release = relay_source.export_release(
@@ -301,11 +307,13 @@ def test_snapshot_selection_requires_every_client_package_tree(tmp_path: Path) -
 
 
 def test_composite_selection_rejects_a_missing_component(tmp_path: Path) -> None:
+    # A v1 App Ecosystem component (with the command line) and no KDCube
+    # component is neither identity.
     root = tmp_path / "client-source"
     component = {
         "name": "app_ecosystem",
         "commit": "a" * 40,
-        "subtrees": {path: "b" * 40 for path in APP_ECOSYSTEM_SOURCE_PATHS},
+        "subtrees": {path: "b" * 40 for path in APP_ECOSYSTEM_SOURCE_PATHS_V1},
     }
 
     with pytest.raises(DomainError) as refusal:
@@ -313,7 +321,9 @@ def test_composite_selection_rejects_a_missing_component(tmp_path: Path) -> None
             root,
             {
                 "mode": "snapshot",
-                "release_id": "c" * 64,
+                "release_id": release_id_for_components(
+                    normalise_components(_v1_components())
+                ),
                 "components": [component],
             },
         )
@@ -325,12 +335,9 @@ def test_composite_selection_rejects_compatibility_field_drift(
     tmp_path: Path,
 ) -> None:
     repository, _entrypoint, _paths = _source_repository(tmp_path)
-    kdcube_repository, _kdcube_paths = _kdcube_repository(tmp_path)
     release = source_composite.export_client_release(
         app_ecosystem_repository=repository,
         app_ecosystem_ref="HEAD",
-        kdcube_repository=kdcube_repository,
-        kdcube_ref="HEAD",
         root=tmp_path / "client-source",
     )
     selection = relay_source.snapshot_selection(release)
@@ -342,7 +349,7 @@ def test_composite_selection_rejects_compatibility_field_drift(
     assert refusal.value.code == "work_client_source_selection_invalid"
 
 
-def test_use_code_cli_requires_and_names_both_repositories() -> None:
+def test_use_code_cli_takes_the_app_ecosystem_commit_alone(tmp_path: Path) -> None:
     parser = cli.build_parser()
     args = parser.parse_args(
         [
@@ -354,49 +361,49 @@ def test_use_code_cli_requires_and_names_both_repositories() -> None:
             "app-ref",
             "--expect-app-ecosystem",
             "a" * 40,
-            "--kdcube-repository",
-            "/kdcube",
-            "--kdcube-ref",
-            "kdcube-ref",
-            "--expect-kdcube",
-            "b" * 40,
         ]
     )
 
     assert args.repository == "/app"
     assert args.ref == "app-ref"
     assert args.expect == "a" * 40
-    assert args.kdcube_repository == "/kdcube"
-    assert args.kdcube_ref == "kdcube-ref"
-    assert args.expect_kdcube == "b" * 40
 
-    with pytest.raises(SystemExit):
-        parser.parse_args(
-            [
-                "source",
-                "use-code",
-                "--repository",
-                "/app",
-                "--ref",
-                "app-ref",
-                "--expect",
-                "a" * 40,
-            ]
-        )
+    # An older procedure that still passes the KDCube arguments is told why.
+    retired = parser.parse_args(
+        [
+            "source",
+            "use-code",
+            "--config",
+            str(tmp_path / "relay.json"),
+            "--repository",
+            "/app",
+            "--ref",
+            "app-ref",
+            "--expect",
+            "a" * 40,
+            "--kdcube-repository",
+            "/kdcube",
+            "--expect-kdcube",
+            "b" * 40,
+        ]
+    )
+    with pytest.raises(DomainError) as refusal:
+        cli._source_command(retired)
+    assert refusal.value.code == "work_client_source_kdcube_retired"
+    assert refusal.value.details["retired_arguments"] == [
+        "--expect-kdcube",
+        "--kdcube-repository",
+    ]
 
 
 def test_one_selection_drives_released_and_code_entrypoints(tmp_path: Path) -> None:
     repository, _code_entrypoint_path, _paths = _source_repository(tmp_path)
     commit = _git(repository, "rev-parse", "HEAD")
-    kdcube_repository, _kdcube_paths = _kdcube_repository(tmp_path)
-    kdcube_commit = _git(kdcube_repository, "rev-parse", "HEAD")
     config = tmp_path / "target" / "relay.json"
     root = relay_source.client_source_root(config)
     release = source_composite.export_client_release(
         app_ecosystem_repository=repository,
         app_ecosystem_ref=commit,
-        kdcube_repository=kdcube_repository,
-        kdcube_ref=kdcube_commit,
         root=root,
     )
     relay_source.activate_release(root, release)
@@ -665,8 +672,6 @@ class _Service:
 def test_code_selection_is_verified_by_restarted_relay(tmp_path: Path) -> None:
     repository, _entrypoint_path, _paths = _source_repository(tmp_path)
     commit = _git(repository, "rev-parse", "HEAD")
-    kdcube_repository, _kdcube_paths = _kdcube_repository(tmp_path)
-    kdcube_commit = _git(kdcube_repository, "rev-parse", "HEAD")
     config = tmp_path / "target" / "relay.json"
     service = _Service(tmp_path)
     controller = ClientSourceController(
@@ -679,9 +684,6 @@ def test_code_selection_is_verified_by_restarted_relay(tmp_path: Path) -> None:
         repository=repository,
         ref="HEAD",
         expect=commit,
-        kdcube_repository=kdcube_repository,
-        kdcube_ref="HEAD",
-        expect_kdcube=kdcube_commit,
         wait_seconds=0,
     )
 
@@ -705,10 +707,9 @@ def test_code_selection_is_verified_by_restarted_relay(tmp_path: Path) -> None:
     )
 
 
-def test_code_selection_refuses_an_unapproved_kdcube_commit(tmp_path: Path) -> None:
+def test_code_selection_refuses_an_unapproved_commit(tmp_path: Path) -> None:
     repository, _entrypoint_path, _paths = _source_repository(tmp_path)
     commit = _git(repository, "rev-parse", "HEAD")
-    kdcube_repository, _kdcube_paths = _kdcube_repository(tmp_path)
     config = tmp_path / "target" / "relay.json"
     controller = ClientSourceController(
         config,
@@ -720,10 +721,7 @@ def test_code_selection_refuses_an_unapproved_kdcube_commit(tmp_path: Path) -> N
         controller.use_code(
             repository=repository,
             ref="HEAD",
-            expect=commit,
-            kdcube_repository=kdcube_repository,
-            kdcube_ref="HEAD",
-            expect_kdcube="f" * 40,
+            expect="f" * 40,
             wait_seconds=0,
         )
 
@@ -736,8 +734,6 @@ def test_code_selection_exports_the_commit_when_worktree_packages_are_deleted(
 ) -> None:
     repository, _entrypoint_path, _paths = _source_repository(tmp_path)
     commit = _git(repository, "rev-parse", "HEAD")
-    kdcube_repository, _kdcube_paths = _kdcube_repository(tmp_path)
-    kdcube_commit = _git(kdcube_repository, "rev-parse", "HEAD")
     shutil.rmtree(repository / "packages")
     shutil.rmtree(repository / "products")
     config = tmp_path / "target" / "relay.json"
@@ -752,9 +748,6 @@ def test_code_selection_exports_the_commit_when_worktree_packages_are_deleted(
         repository=repository,
         ref=commit,
         expect=commit,
-        kdcube_repository=kdcube_repository,
-        kdcube_ref=kdcube_commit,
-        expect_kdcube=kdcube_commit,
         wait_seconds=0,
     )
 
@@ -765,8 +758,6 @@ def test_code_selection_exports_the_commit_when_worktree_packages_are_deleted(
 def test_failed_code_start_restores_released_selection(tmp_path: Path) -> None:
     repository, _entrypoint_path, _paths = _source_repository(tmp_path)
     commit = _git(repository, "rev-parse", "HEAD")
-    kdcube_repository, _kdcube_paths = _kdcube_repository(tmp_path)
-    kdcube_commit = _git(kdcube_repository, "rev-parse", "HEAD")
     config = tmp_path / "target" / "relay.json"
     service = _Service(tmp_path, startup_state="source_mismatch")
     controller = ClientSourceController(
@@ -780,9 +771,6 @@ def test_failed_code_start_restores_released_selection(tmp_path: Path) -> None:
             repository=repository,
             ref="HEAD",
             expect=commit,
-            kdcube_repository=kdcube_repository,
-            kdcube_ref="HEAD",
-            expect_kdcube=kdcube_commit,
             wait_seconds=0,
         )
 
@@ -804,8 +792,6 @@ def test_failed_rollback_is_reported_as_failed(tmp_path: Path) -> None:
 
     repository, _entrypoint_path, _paths = _source_repository(tmp_path)
     commit = _git(repository, "rev-parse", "HEAD")
-    kdcube_repository, _kdcube_paths = _kdcube_repository(tmp_path)
-    kdcube_commit = _git(kdcube_repository, "rev-parse", "HEAD")
     config = tmp_path / "target" / "relay.json"
     controller = ClientSourceController(
         config,
@@ -818,9 +804,6 @@ def test_failed_rollback_is_reported_as_failed(tmp_path: Path) -> None:
             repository=repository,
             ref=commit,
             expect=commit,
-            kdcube_repository=kdcube_repository,
-            kdcube_ref=kdcube_commit,
-            expect_kdcube=kdcube_commit,
             wait_seconds=0,
         )
 

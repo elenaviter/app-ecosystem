@@ -30,7 +30,7 @@ What Problem Board is, who edits which Card, how a person becomes a project admi
 Host setup and relay administration are operator-owned: an agent types
 `pb relay-service install` only after the operator approves it, and restarting
 an installed service is a coordinated runtime action. Selecting a released
-client version or an App Ecosystem plus KDCube source manifest with `pb source` is the same kind of
+client version or an App Ecosystem source commit with `pb source` is the same kind of
 host action because it changes both the command and relay source. When `pb status` is not
 `session_attending` or `pb` is missing, guide the user through setup with
 [first run](references/first-run.md), never inventing a value they own. Connecting agents on another machine follows the add-a-worker-host procedure (`repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/add-a-worker-host.md`) from its step 0, where the operator decides names, repositories and access before anything changes.

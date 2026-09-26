@@ -1,4 +1,8 @@
-"""Build one immutable Project Board client release from all source repositories."""
+"""Build one immutable Project Board client release from its source repositories.
+
+Since W322 Step 1 the client is App Ecosystem only (``CLIENT_COMPONENTS``); a
+future source is another component, not another parameter.
+"""
 
 from __future__ import annotations
 
@@ -25,8 +29,8 @@ from .relay_source import (
 )
 from .source_manifest import (
     APP_ECOSYSTEM_COMPONENT,
+    CLIENT_COMPONENTS,
     CLIENT_SOURCE_PATHS,
-    KDCUBE_COMPONENT,
     SOURCE_PATHS_BY_COMPONENT,
     SourceComponent,
     normalise_components,
@@ -54,24 +58,16 @@ def export_client_release(
     *,
     app_ecosystem_repository: Path,
     app_ecosystem_ref: str,
-    kdcube_repository: Path,
-    kdcube_ref: str,
     root: Path,
     between: Callable[[], None] | None = None,
 ) -> RelaySourceRelease:
-    """Export the complete two-repository client as one verified release."""
+    """Export the complete client as one verified release."""
 
-    repositories = {
-        APP_ECOSYSTEM_COMPONENT: Path(app_ecosystem_repository).resolve(),
-        KDCUBE_COMPONENT: Path(kdcube_repository).resolve(),
-    }
-    refs = {
-        APP_ECOSYSTEM_COMPONENT: app_ecosystem_ref,
-        KDCUBE_COMPONENT: kdcube_ref,
-    }
+    repositories = {APP_ECOSYSTEM_COMPONENT: Path(app_ecosystem_repository).resolve()}
+    refs = {APP_ECOSYSTEM_COMPONENT: app_ecosystem_ref}
     components: list[SourceComponent] = []
     expected: dict[str, str] = {}
-    for name in (APP_ECOSYSTEM_COMPONENT, KDCUBE_COMPONENT):
+    for name in CLIENT_COMPONENTS:
         component, blobs = _export_component(
             name=name, repository=repositories[name], ref=refs[name]
         )
@@ -167,33 +163,21 @@ def prepare_client_release(
     app_ecosystem_repository: Path,
     app_ecosystem_ref: str,
     expect_app_ecosystem: str,
-    kdcube_repository: Path,
-    kdcube_ref: str,
-    expect_kdcube: str,
     root: Path,
     between: Callable[[], None] | None = None,
 ) -> tuple[RelaySourceRelease, dict[str, dict[str, Any]]]:
     """Pin, approve, observe and export every repository in the client source."""
 
-    repositories = {
-        APP_ECOSYSTEM_COMPONENT: Path(app_ecosystem_repository).resolve(),
-        KDCUBE_COMPONENT: Path(kdcube_repository).resolve(),
-    }
-    refs = {
-        APP_ECOSYSTEM_COMPONENT: str(app_ecosystem_ref),
-        KDCUBE_COMPONENT: str(kdcube_ref),
-    }
+    repositories = {APP_ECOSYSTEM_COMPONENT: Path(app_ecosystem_repository).resolve()}
+    refs = {APP_ECOSYSTEM_COMPONENT: str(app_ecosystem_ref)}
     approved = {
         APP_ECOSYSTEM_COMPONENT: _approved_full_commit(
             expect_app_ecosystem, component=APP_ECOSYSTEM_COMPONENT
         ),
-        KDCUBE_COMPONENT: _approved_full_commit(
-            expect_kdcube, component=KDCUBE_COMPONENT
-        ),
     }
     resolved: dict[str, str] = {}
     evidence: dict[str, dict[str, Any]] = {}
-    for name in (APP_ECOSYSTEM_COMPONENT, KDCUBE_COMPONENT):
+    for name in CLIENT_COMPONENTS:
         commit = resolve_commit(repositories[name], refs[name])
         if commit != approved[name]:
             raise DomainError(
@@ -214,8 +198,6 @@ def prepare_client_release(
     release = export_client_release(
         app_ecosystem_repository=repositories[APP_ECOSYSTEM_COMPONENT],
         app_ecosystem_ref=resolved[APP_ECOSYSTEM_COMPONENT],
-        kdcube_repository=repositories[KDCUBE_COMPONENT],
-        kdcube_ref=resolved[KDCUBE_COMPONENT],
         root=root,
         between=between,
     )

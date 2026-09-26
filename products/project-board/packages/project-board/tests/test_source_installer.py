@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -21,42 +22,29 @@ def _installer_module():
     return module
 
 
-def _source_exports(module, root: Path) -> tuple[Path, Path, tuple[Path, ...]]:
+def _source_exports(module, root: Path) -> tuple[Path, tuple[Path, ...]]:
     source_root = root / "app-ecosystem"
-    kdcube_source_root = root / "kdcube"
-    roots = {
-        module.APP_ECOSYSTEM_COMPONENT: source_root,
-        module.KDCUBE_COMPONENT: kdcube_source_root,
-    }
     paths = tuple(
-        roots[component] / relative
-        for component in (
-            module.APP_ECOSYSTEM_COMPONENT,
-            module.KDCUBE_COMPONENT,
-        )
+        source_root / relative
+        for component in module.CLIENT_COMPONENTS
         for relative in module.SOURCE_PATHS_BY_COMPONENT[component]
     )
     for path in paths:
         path.mkdir(parents=True)
-    return source_root, kdcube_source_root, paths
+    return source_root, paths
 
 
 def test_source_installer_names_the_complete_first_party_package_family(tmp_path: Path):
     installer = _installer_module()
-    source_root, kdcube_source_root, expected = _source_exports(
-        installer, tmp_path
-    )
+    source_root, expected = _source_exports(installer, tmp_path)
 
-    assert installer._first_party_packages(
-        source_root, kdcube_source_root
-    ) == expected
+    assert installer._first_party_packages(source_root) == expected
+    # W322 Step 1: App Ecosystem only; no command line, no KDCube.
     assert [path.name for path in expected] == [
         "project-board",
         "app-foundation",
         "service-foundation",
         "connection-hub",
-        "connection-hub-cli",
-        "kdcube_cli",
     ]
 
 
@@ -65,7 +53,7 @@ def test_source_installer_resolves_all_first_party_packages_in_one_pip_call(
     monkeypatch: pytest.MonkeyPatch,
 ):
     installer = _installer_module()
-    source_root, kdcube_source_root, packages = _source_exports(
+    source_root, packages = _source_exports(
         installer, tmp_path / "source"
     )
     release_root = tmp_path / "releases-root"
@@ -119,7 +107,6 @@ def test_source_installer_resolves_all_first_party_packages_in_one_pip_call(
 
     result = installer.install(
         source_root=source_root,
-        kdcube_source_root=kdcube_source_root,
         release_root=release_root,
         command_dir=tmp_path / "bin",
         base_python=Path("/usr/bin/python3"),
@@ -182,7 +169,7 @@ def test_source_installer_restores_an_absent_launcher_when_activation_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     installer = _installer_module()
-    source_root, kdcube_source_root, _packages = _source_exports(
+    source_root, _packages = _source_exports(
         installer, tmp_path / "source"
     )
     release_root = tmp_path / "release-root"
@@ -227,7 +214,6 @@ def test_source_installer_restores_an_absent_launcher_when_activation_fails(
     with pytest.raises(RuntimeError, match="launcher write failed"):
         installer.install(
             source_root=source_root,
-            kdcube_source_root=kdcube_source_root,
             release_root=release_root,
             command_dir=command_dir,
             base_python=Path("/usr/bin/python3"),
@@ -423,9 +409,34 @@ def test_source_installer_refuses_a_migrated_host_before_building(
     ):
         installer.install(
             source_root=tmp_path / "missing-app-source",
-            kdcube_source_root=tmp_path / "missing-kdcube-source",
             release_root=root,
             command_dir=tmp_path / "bin",
             base_python=Path("/usr/bin/python3"),
             force_launcher=False,
         )
+
+
+def test_source_installer_refuses_the_retired_kdcube_source_root(tmp_path: Path):
+    # W322 Step 1: the client needs no KDCube source. An older procedure that
+    # still passes the flag is told why before anything is built.
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--source-root",
+            str(tmp_path / "app-ecosystem"),
+            "--kdcube-source-root",
+            str(tmp_path / "kdcube"),
+            "--release-root",
+            str(tmp_path / "releases"),
+            "--command-dir",
+            str(tmp_path / "bin"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode != 0
+    assert "--kdcube-source-root is retired (W322)" in result.stderr
+    assert not (tmp_path / "releases").exists()
