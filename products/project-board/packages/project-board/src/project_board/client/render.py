@@ -25,6 +25,8 @@ import json
 import shlex
 from typing import Any, Iterable, Mapping, Sequence
 
+from project_board.client.limit_state import limit_state_line
+
 FORMAT_JSON = "json"
 FORMAT_BRIEF = "brief"
 FORMATS = (FORMAT_JSON, FORMAT_BRIEF)
@@ -390,6 +392,7 @@ def _render_worker_list(result: Mapping[str, Any]) -> list[str]:
                 reach.get("last_inbox_check_at") or listener.get("last_inbox_check_at") or "-",
             )
         )
+        lines.append(_worker_limits_line(worker.get("runtime_limit_state")))
         for ref in worker.get("attended_project_refs") or []:
             lines.append(f"attends: {ref}")
         if worker.get("worker_ref"):
@@ -401,6 +404,21 @@ def _render_worker_list(result: Mapping[str, Any]) -> list[str]:
                 "Its session cannot be reached through the board until its guard or its operator restarts it."
             )
     return lines
+
+
+def _worker_limits_line(state: Any) -> str:
+    """What the runtime last said about its usage limits, and when (W26).
+
+    The shared account stops at a set share of its limits, so agents read this
+    before a large step. The JSON carried it all along; the brief list dropped
+    it (2026-09-26). No state is "not reported", never "fine".
+    """
+
+    if not isinstance(state, Mapping) or not state:
+        return "limits: not reported"
+    observed = str(state.get("observed_at") or state.get("recorded_at") or "")
+    when = f" · observed {observed[:10]} {observed[11:16]}Z" if len(observed) >= 16 else ""
+    return f"limits: {limit_state_line(state)}{when}"
 
 
 _RECEIPT_OUTCOMES = ("applied", "refused")
