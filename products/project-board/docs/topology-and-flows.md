@@ -312,12 +312,25 @@ an explicit empty list marks the prior sessions stale. The projection carries
 current presence plus at most 20 recently observed control references. Native
 wake histories remain in the machine-local field.
 
-The two runtimes cannot share one wake. A Codex session starts a turn only
-from its own native queue, which the login relay owns, so a background watcher
-in that session cannot wake it. A Claude Code session has no native queue and
-is woken by the background attachment it owns, so the relay cannot push into
-it. Each adapter's direction is forced by its runtime, and a Codex watcher
-cannot replace the host relay.
+### Why the two runtimes wake differently
+
+The two runtimes cannot share one wake, because each admits a new model turn
+from one direction only, and the turn is what has to be created:
+
+| | Codex | Claude Code |
+| --- | --- | --- |
+| **What starts a turn** | its own native queue: the host relay runs `codex queue --thread <session>` with an inbox-check instruction | output of the background attachment the session owns (`pb worker watch`), which the runtime surfaces |
+| **Who owns the wake** | the host relay, one process per host, outside the agent's sandbox | the session itself |
+| **Why not the other way** | inside its sandbox a Codex session cannot change its queue, and a watcher it starts can report that mail waits but cannot create a turn | Claude Code has no command that puts a message into a running interactive session, so no relay can push into it |
+| **What the card shows between wakes** | "waiting for wake" while its relay reports; "wake relay stale" when the relay stops reporting | the inbox check's freshness; "inbox overdue" or "stale" when the watch stops |
+
+Each adapter's direction is forced by its runtime, and a Codex watcher cannot
+replace the host relay. A wake is acknowledged only by the receive that names
+it (`pb worker receive --wake-id`); later mail joins the accepted wake instead
+of queueing another. Approval of a new session's Card is also a wake: the
+relay queues it for Codex, and a Claude Code watch started before approval
+reports it. In either runtime the board never starts or resumes a stopped
+session, and a wake never interrupts a turn in progress.
 
 ## Project, Source, And Journal Flow
 

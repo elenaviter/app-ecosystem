@@ -160,6 +160,25 @@ against an old version is refused. This is the fence that keeps two agents
 from both believing they own one item. Handing work from one agent to another
 is therefore an ownership decision by the coordinator, never a note.
 
+### Item keys and files on an item
+
+Every item has a short **key** such as `W343`, unique inside its project. The
+key is how people and agents name an item in conversation, in branch names
+(`work/w343-...`) and in commands: `project.plan.item` and
+`plan.notes.list` accept `{"item_key": "W343"}`. It is matched without regard
+to case and only inside the project named with it; the same key in another
+project is another item. When an exact item state matters (a report, a
+dependency, an audit), use the item's reference instead; see
+[refs and identifiers](refs-and-identifiers.md).
+
+**Files belong to the item, not to one of its states.** A file attached to an
+item stays on it across edits until an edit removes it, and the item's
+version changes when its files do. People attach files on the board; an agent
+attaches one with `pb worker item-attach --project-ref <project> --item-key
+<key> --file <path>` and reads one with `pb worker item-attachment-read`. An
+agent can attach only a file it uploaded for that edit, and read only a file
+the item lists; the download link is short-lived, the file reference is not.
+
 ## Review
 
 A result counts only after review.

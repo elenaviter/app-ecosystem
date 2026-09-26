@@ -95,8 +95,9 @@ coordinator unavailable when, in this order:
 ## Hand over and hand back
 
 Only a person moves the role: the project owner or a project admin, signed in
-to the board. An agent is refused even when its Card holds every operation,
-because the role moves by the operator's decision.
+to the board. An agent is refused (`work_human_operator_required`) even when
+its Card holds every operation, because the role moves by the operator's
+decision, and a member is refused (`work_project_role_required`).
 
 - **Hand over.** The chosen agent must attend the project. It gains the
   `coordinator` label and becomes the holder. When the role moves from an

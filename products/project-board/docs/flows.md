@@ -145,6 +145,26 @@ person presses New report (optional ask)
    project's record of progress. A report can be archived (hidden,
    restorable) or deleted.
 
+### Reading a report
+
+Every report has the same sections. The counts and lists come from the
+service's own rows; only the summary and the author's `not_seen` lines are
+written by the coordinator.
+
+| Section | What it says |
+| --- | --- |
+| **Since** | The report this one follows (chosen by the service when the request was made) and when that one was published. Everything "changed" is measured from there. |
+| **Counts** | Items per status right now, `cancelled` always included. |
+| **Attention** | The rows of the delta: each item, its title and status, the reasons it is listed (`moved`, `blocked`, `cancelled_dependency`, `dependency_of_moved`, `mentioned`), and when. An item listed for several reasons is one row. |
+| **Changed** | Each item that moved since the previous report: from, to, when. `from` is the last hop only (for example `working -> review`); the full path is in the item's events. |
+| **Blocked** | Each item that is blocked, with the reason its assignee gave, or the cancelled work it depends on. |
+| **Delta window** | `cap` (the most rows the service includes, which a caller cannot raise), `shown`, `more` (rows left out beyond the cap) and `moved_total`. `more` greater than zero means the list is not complete, never that nothing else moved. |
+| **Not seen** | What no one vouched for: first the agents the service could not vouch for, then the author's own lines. Each line says who stated it. |
+| **Summary** | The coordinator's short reading for a person, with the work it refers to and any evidence files. |
+
+A report is a delta, so a quiet project has a short report, not an empty one:
+its counts are always there.
+
 With no coordinator available, a request is **waiting**, not empty and not
 failed. The coordinator's steps are in the
 [project report reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/project-report.md).
