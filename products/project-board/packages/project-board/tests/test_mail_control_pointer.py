@@ -13,7 +13,6 @@ from pathlib import Path
 
 import pytest
 
-from project_board.client import local_state_maintenance as maintenance
 from project_board.client.store import SharedFieldStore
 
 
@@ -85,7 +84,11 @@ def test_delivery_writes_the_pointer_and_a_discard_reads_it_instead_of_listing(f
 
     pointer = field._mail_control_pointer(PROJECT, WORKER, "work:control:received")
     assert pointer.is_file()
-    assert pointer.parent.name == "by-control"
+    relative = pointer.relative_to(
+        field._project_dir(PROJECT) / "mail-by-control" / WORKER
+    )
+    assert len(relative.parts) == 5
+    assert all(part.isdigit() for part in relative.parts[:4])
 
     listed.clear()
     # One settled, one leased: both were received, and processed/ is never listed.
@@ -126,10 +129,15 @@ def test_a_control_delivered_before_the_pointer_lists_only_the_states_in_flight(
 
 def test_retention_bounds_the_pointers_and_project_less_processed_mail(field):
     _deliver(field, "any", "Any task")
-    (field.control / "workers" / WORKER / "mail").mkdir(parents=True, exist_ok=True)
-    stores = {(store, agent) for store, agent, _directory, _days in maintenance.keyed_stores(field)}
-    assert ("mail-by-control", WORKER) in stores
-    assert ("mail-processed", WORKER) in stores
-    directories = {str(directory) for _store, _agent, directory, _days in maintenance.keyed_stores(field)}
-    assert any(path.endswith(f"workers/{WORKER}/mail/processed") for path in directories)
-    assert any(path.endswith(f"workers/{WORKER}/mail/by-control") for path in directories)
+    field._mail_history().write(
+        project_id="",
+        family="mail-processed",
+        agent=WORKER,
+        record_id="mail_direct",
+        row={"message_id": "mail_direct", "recipient": WORKER, "created_at": "2026-09-25T00:00:00Z"},
+    )
+
+    stores = {store.store: store.root for store in field._mail_history().stores()}
+
+    assert stores["mail-by-control"] == field._project_dir(PROJECT) / "mail-by-control"
+    assert stores["mail-processed"] == field.control / "unscoped" / "mail-processed"

@@ -2655,6 +2655,7 @@ class ProblemBoardHostRelayAdapter:
             "outbox_ignored": 0,
             "outbox_refused": 0,
             "outbox_retried": 0,
+            "reconciliation_publications_refused": 0,
         }
         for row in self.field.pull_outbox(
             relay_id=self.config.relay_id,
@@ -2856,9 +2857,18 @@ class ProblemBoardHostRelayAdapter:
                             if failure_report is not None
                             else {}
                         ),
+                        # A Card whose operation list predates the operation
+                        # is fixed by one command; the row names it (W287).
+                        **actionable_card_refusal(
+                            exc.code,
+                            details,
+                            profile=self.config.connection_hub_profile,
+                        ),
                     },
                 )
                 counts["outbox_refused"] += 1
+                if kind == "mail.reconciliation.publish":
+                    counts["reconciliation_publications_refused"] += 1
                 continue
             remote = _object_result(response)
             disposition = str(remote.get("disposition") or "accepted")

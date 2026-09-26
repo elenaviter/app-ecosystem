@@ -127,9 +127,79 @@ folder. Finished records live in hour folders,
 `<store>/<agent>/<yyyy>/<mm>/<dd>/<hh>/`, and a record's file name starts with
 its UTC time range, so retention removes whole folders by name and a listing
 sorts by time without opening a file. Housekeeping (retention and the one-time
-cleanup of the pre-W287 flat receipt directory) runs in a thread beside the
-relay cycle on its own schedule, and records in the field when retention last
-ran.
+cleanup of pre-W287 flat directories) runs in a thread beside the relay cycle
+on its own schedule, and records in the field when retention last ran.
+Writes append one lookup entry without reading retained history. Background
+housekeeping rebuilds each day index from retained filenames, deduplicates
+stable-key rewrites, and counts the compacted index bytes toward the same
+per-agent cap as record bodies.
+
+### Local store audit
+
+The path keys match each operation's lookup dimensions. `-` is the agent key
+for a project-level record whose API does not take a worker. Byte and record
+caps are per agent. Pending folders contain current work and are bounded by the
+number of operations in flight.
+
+| Store | Path and record key | Pending/read path | Terminal bound | Normal read cost |
+| --- | --- | --- | --- | --- |
+| reconciliation receipts | project, reporter, creation hour, receipt id | reporter `pending/`; marker is overwritten | published: 30 days, 50 MiB, 50,000 records; refused evidence is retained and emits a bound error | recovery reads reporter `pending/` |
+| outbox | project, worker, creation hour, outbox id | worker `pending/` and `leased/` | 30 days, 200 MiB, 100,000 records | claim reads only in-flight rows; id lookup opens one indexed day or encoded hour |
+| service events | project, actor, creation hour, event id | none | 30 days, 100 MiB, 50,000 records | tails open newest hours only; activity reads the newest file name |
+| mail idempotency | project, sender, creation hour, request hash | none | 30 days, 100 MiB, 50,000 records | exact hash lookup inside the retained day indexes |
+| event/report idempotency | project, worker (or `-`), creation hour, request hash | none | 30 days, 50 MiB, 50,000 records | exact hash lookup; assignment compatibility checks two exact hashes |
+| handled mail | unscoped, worker, message id | none | 30 days, 100 MiB, 50,000 records | exact message-id lookup |
+| mailbox inbox and leases | project, recipient, message id | `inbox/` and `leased/` | in-flight work only | receive and lease recovery read these folders only |
+| processed, ignored and control-pointer mail | project, recipient, creation hour, message or control hash | none | 30 days, 100 MiB, 50,000 records | exact message/control lookup; reconciliation never lists it |
+| undeliverable mail | project, original recipient, message id | recipient `pending/` until its sender notice is terminal | 30 days, 100 MiB, 50,000 records | reconciliation reads pending notices only |
+| mail quarantine | project, recipient, message id | `quarantine/` | 1,000 records; overflow remains retryable and emits a bound error | listed only by the quarantine command |
+| source-scope leases | project, worker, lease id | worker `pending/` while active | 30 days, 50 MiB, 50,000 records | conflict checks active pending rows only |
+| journal receipts | project, `-`, entry id | none | 90 days, 100 MiB, 50,000 records | exact entry lookup or newest-hour listing |
+| journal-index operations | `-`, operation id; step pointers use step, field and value hash | `-/pending/` until complete | 30 days, 50 MiB, 25,000 operations | operation and status-by-outbox are exact lookups |
+| assignments | project, worker, assignment id | worker `pending/` | active projection only | observers and sync read pending assignments only |
+| agent sessions | project, worker, session id | mutable current-state rows | detached rows: 90 days; 1,000 rows per worker | bounded current-state listing |
+| worker, project and reconciliation markers | stable identity | one mutable row per identity | overwritten in place | one exact read |
+
+Every partition walk goes through the shared read recorder. It logs one line
+per agent and updates the summary carried by the relay heartbeat:
+
+```text
+relay store read worker=<agent> store=<store> op=<operation> range=<pending/|first-hour..last-hour> partitions=<count> records=<count> ms=<elapsed> [project=<project>] [key=<id>] [removed=<count>]
+```
+
+The trailing fields name the store's other dimensions when they apply:
+
+- `project=`: the project whose tree was read (a store under `projects/<id>/`).
+- `key=`: the id a lookup asked for (a record, an assignment, a lease).
+- `removed=`: records a retention pass removed, for the age and size bounds together; always present on `op=retention`.
+
+The heartbeat's `store_reads` summary carries the same fields. It rides on the
+next project heartbeat when the last read of a store changed; a read that
+differs only in `ms` or `at` is not sent again.
+
+Exact keyed lookups log at debug level to avoid flooding the relay log; their
+latest summary still appears in the heartbeat. Listings, recovery and
+retention log at info level.
+
+Two tests in `tests/test_relay_local_state.py` guard startup and the cycle
+against a large history: one over 50,000 flat pre-partition records, one over
+50,000 records already in hour folders. Each asserts no history folder is
+listed and the time stays bounded.
+
+A refused `mail.reconciliation.publish` row keeps its receipt under `refused`.
+When the refusal is a Card whose operation list predates the operation
+(`work_worker_operation_not_granted`), the settled row's `remote_result` also
+names `permission_group`, `why` and the `fix` command
+(`pb worker authorize <profile> --replace-card`). The relay row counts these
+as `reconciliation_publications_refused`.
+
+Housekeeping migrates legacy history in batches of at most 1,000 records per
+store and agent. A target `<store>/<agent>/.migration.json` records cumulative
+counts and completion. Moving a file is the durable cursor, so a restart
+continues with the files that remain. A normal exact lookup checks one exact
+legacy filename after a partition miss until migration completes; it never
+lists a legacy history directory. Unreadable input moves to
+`.legacy-unreadable/` and remains available for inspection.
 
 The outbox lives per project and agent, under
 `projects/<project>/outbox/<agent>/`: rows in flight in `pending/` and
@@ -143,13 +213,9 @@ folders are removed 30 days after the row was created, per agent. Rows from
 before this layout are moved into it once by housekeeping, and are found by id
 in the old flat folders until then.
 
-Stores the relay reads only by key, never by listing, are bounded by age:
-handled markers, idempotency records, processed mail, undeliverable mail,
-operator responses, settled scope leases and journal-index operations after 30
-days, journal receipts after 90 days. A journal-index lock file goes only once
-its operation record is gone. A record a migration cannot read is moved to a
-`.legacy-unreadable/` folder beside its store, kept for a person, never deleted
-unread.
+The journal-index lock files follow their operation. Housekeeping removes a
+lock after the operation's retained record expires. A migration never deletes
+an unreadable record.
 
 ## Owner And Worker Conversation
 

@@ -10,6 +10,7 @@ at the places that broke them.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import json
 import os
 import time
@@ -17,9 +18,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+from service_foundation.host_relay import HostRelayRuntime
 
 from project_board.client import local_state_maintenance as maintenance
+from project_board.client import relay
 from project_board.client import reconciliation_receipts as receipts
+from project_board.client.local_store import last_read_summaries
 from project_board.client.outbox_store import OutboxStore, state_of_name
 from project_board.client.reconciliation_publication import OUTBOX_KIND
 from project_board.client.store import SharedFieldStore
@@ -28,6 +32,8 @@ from project_board.contract.mailbox_reconciliation_contract import (
     normalize_receipt,
 )
 from project_board.contract.reference_records import reference_for_record
+
+from relay_helpers import make_host
 
 
 WORKER = "codex-api"
@@ -44,12 +50,12 @@ def field(tmp_path: Path) -> SharedFieldStore:
     return store
 
 
-def _receipt(*, receipt_id: str, started_at: str = "2026-09-23T20:00:00Z", archived: int = 0) -> dict:
+def _receipt(*, receipt_id: str, started_at: str = "2026-09-23T20:00:00Z", archived: int = 0, reporter: str = WORKER) -> dict:
     value = {
         "schema": MAILBOX_RECONCILIATION_RECEIPT_SCHEMA,
         "receipt_id": receipt_id,
         "project_ref": f"work:project:{PROJECT}",
-        "reporter_worker_name": WORKER,
+        "reporter_worker_name": reporter,
         "host_id": "host-01",
         "relay_id": "relay-01",
         "started_at": started_at,
@@ -128,6 +134,25 @@ def test_a_run_that_archived_mail_keeps_a_receipt_until_it_is_published(field):
     assert finished.name.startswith("20260923T200000Z_20260923T200004Z_published_")
 
 
+def test_empty_receipt_recovery_reports_the_pending_read(field):
+    recovered = receipts.recover_unpublished_receipts(
+        field,
+        PROJECT,
+        worker_name=WORKER,
+    )
+
+    assert recovered == {
+        "receipts_recovered": 0,
+        "publication_batches": 0,
+        "receipts_settled": 0,
+    }
+    read = last_read_summaries(WORKER)[receipts.STORE]
+    assert read["store"] == receipts.STORE
+    assert read["op"] == "startup_recovery"
+    assert read["range"] == "pending/"
+    assert read["partitions"] == 1 and read["records"] == 0
+
+
 def test_a_refused_publication_is_filed_as_refused_and_retention_keeps_it(field):
     refused = _receipt(receipt_id="mailbox-reconciliation_20260801T100000Z_c3d4", started_at="2026-08-01T10:00:00Z", archived=1)
     receipts.record_receipt(field, PROJECT, worker_name=WORKER, receipt=refused)
@@ -150,8 +175,42 @@ def test_a_refused_publication_is_filed_as_refused_and_retention_keeps_it(field)
 
     result = receipts.apply_receipt_retention(field, PROJECT, now=datetime(2026, 9, 24, tzinfo=timezone.utc))
 
-    assert result == {"partitions_removed": 1, "receipts_removed": 1, "receipts_kept_refused": 1}
+    assert result == {
+        "partitions_removed": 1,
+        "receipts_removed": 1,
+        "receipts_kept_refused": 1,
+        "size_bound_warnings": 0,
+    }
     assert kept.is_file() and not removable.exists()
+    read = last_read_summaries(WORKER)[receipts.STORE]
+    assert read["op"] == "retention"
+    assert read["range"] == "2026-08-01T10..2026-08-01T11"
+    assert read["partitions"] == 2 and read["records"] == 2
+    assert read["removed"] == 1 and read["project"] == PROJECT
+
+
+def test_a_receipt_whose_batch_row_is_gone_is_queued_again_not_stuck_in_pending(field):
+    """Audit of #126 (claude-ops): a missing batch row read as "queued" forever.
+
+    The receipt then stayed in pending/ and every recovery re-read it. Now the
+    row reads as missing, recovery writes it again, and it settles as usual.
+    """
+
+    receipt = _receipt(receipt_id="mailbox-reconciliation_20260801T120000Z_a1b2", started_at="2026-08-01T12:00:00Z", archived=1)
+    receipts.record_receipt(field, PROJECT, worker_name=WORKER, receipt=receipt)
+    outbox = OutboxStore(field.control)
+    pending = [path for path in outbox.in_flight("pending") if json.loads(path.read_text()).get("kind") == OUTBOX_KIND]
+    assert len(pending) == 1
+    pending[0].unlink()  # the row is lost; the receipt still names it
+    assert _publication_rows(field)["pending"] == []
+
+    result = receipts.recover_unpublished_receipts(field, PROJECT, worker_name=WORKER)
+
+    assert result["receipts_recovered"] == 1
+    assert len(_publication_rows(field)["pending"]) == 1, "the missing batch row is written again"
+    _settle(field, "sent")
+    receipts.recover_unpublished_receipts(field, PROJECT, worker_name=WORKER)
+    assert receipts.partition_path(field, PROJECT, WORKER, receipt, publication="published").is_file()
 
 
 def test_receipt_retention_decides_from_names_without_opening_a_receipt(field, monkeypatch):
@@ -165,6 +224,82 @@ def test_receipt_retention_decides_from_names_without_opening_a_receipt(field, m
 
     monkeypatch.setattr(receipts, "read_json", no_reads)
     assert receipts.apply_receipt_retention(field, PROJECT, now=datetime(2026, 9, 24, tzinfo=timezone.utc))["receipts_removed"] == 1
+
+
+def test_published_receipts_are_bounded_by_count(field, monkeypatch):
+    stored: list[Path] = []
+    for hour in (10, 11):
+        receipt = _receipt(
+            receipt_id=f"mailbox-reconciliation_20260923T{hour:02d}0000Z_b{hour}",
+            started_at=f"2026-09-23T{hour:02d}:00:00Z",
+            archived=1,
+        )
+        path = receipts.partition_path(
+            field,
+            PROJECT,
+            WORKER,
+            receipt,
+            publication="published",
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"receipt": receipt}), encoding="utf-8")
+        stored.append(path)
+    monkeypatch.setattr(receipts, "MAX_RECORDS_PER_AGENT", 1)
+    monkeypatch.setattr(receipts, "MAX_BYTES_PER_AGENT", 1024 * 1024)
+
+    result = receipts.apply_receipt_retention(
+        field,
+        PROJECT,
+        now=datetime(2026, 9, 24, tzinfo=timezone.utc),
+    )
+
+    assert result["partitions_removed"] == 1
+    assert result["receipts_removed"] == 1
+    assert not stored[0].exists() and stored[1].is_file()
+
+
+def test_legacy_undeliverable_replay_preserves_newer_pending_state(field):
+    newer = {
+        "message_id": "mail_crash_replay",
+        "recipient": WORKER,
+        "state": "recipient_not_found",
+        "created_at": "2026-09-24T23:00:00Z",
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "failure_notice_state": "reporting",
+        "migration_generation": "newer-pending",
+    }
+    pending = field._mail_history().write_pending(
+        project_id=PROJECT,
+        family="mail-undeliverable",
+        agent=WORKER,
+        record_id="mail_crash_replay",
+        row=newer,
+    )
+    legacy = (
+        field._project_dir(PROJECT)
+        / "mail"
+        / "undeliverable"
+        / WORKER
+        / "mail_crash_replay.json"
+    )
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(
+        json.dumps(
+            {
+                **newer,
+                "failure_notice_state": "",
+                "migration_generation": "older-legacy",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
+
+    assert not legacy.exists()
+    preserved = json.loads(pending.read_text(encoding="utf-8"))
+    assert preserved["migration_generation"] == "newer-pending"
+    assert preserved["failure_notice_state"] == "reporting"
 
 
 def test_settled_outbox_rows_expire_and_rows_in_flight_never_do(field):
@@ -235,8 +370,39 @@ def test_retention_runs_once_an_hour_by_a_fact_kept_in_the_field(field):
     assert maintenance.run_local_state_maintenance(again, now=now + timedelta(minutes=61))["retention"] is not None
 
 
-def test_guard_a_large_history_costs_the_cycle_nothing(field, monkeypatch):
-    """Acceptance 8: 50,000 receipts and 50,000 settled rows, and the cycle reads none."""
+@pytest.mark.asyncio
+async def test_guard_a_large_history_costs_neither_cycles_nor_first_heartbeat(
+    tmp_path, monkeypatch
+):
+    """Acceptance 8: 50,000 receipts and settled rows do not delay startup."""
+
+    host, identity, _channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.register_worker(
+        worker_name=identity.worker_name,
+        worker_alias="worker",
+        worker_identity=identity.worker_identity,
+        runtime_kind=identity.runtime_kind,
+        runtime_session_id=identity.runtime_session_id,
+        capabilities=[],
+        authority_label="connection-hub:test",
+        host_id=host.host_id,
+        host_label=host.host_label,
+        host_kind=host.host_kind,
+        relay_id=host.relay_id,
+    )
+    field.register_worker(
+        worker_name=WORKER,
+        runtime_kind="codex",
+        capabilities=[],
+        authority_label=f"authority:{WORKER}",
+    )
+    field.create_project(
+        project_id=PROJECT,
+        title="Local state",
+        goal="Keep the relay's local state bounded.",
+        owner="operator",
+    )
 
     legacy = field._project_dir(PROJECT) / "mail" / "reconciliation-receipts"
     legacy.mkdir(parents=True)
@@ -262,12 +428,288 @@ def test_guard_a_large_history_costs_the_cycle_nothing(field, monkeypatch):
 
         monkeypatch.setattr(module, "read_json", counted)
 
-    started = time.monotonic()
+    cycle_started = time.monotonic()
     field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
     field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
     activity = field._assignee_last_activity(PROJECT)
-    elapsed = time.monotonic() - started
+    cycle_elapsed = time.monotonic() - cycle_started
 
     assert history_reads == []
     assert WORKER not in activity or activity[WORKER]
-    assert elapsed < 2.0, f"two cycles and one activity read took {elapsed:.2f}s over a 50,000-record history"
+    assert cycle_elapsed < 2.0, (
+        "two cycles and one activity read took "
+        f"{cycle_elapsed:.2f}s over a 50,000-record history"
+    )
+
+    class FirstHeartbeatClient:
+        connected = True
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def action(self, *, object_ref, action, payload=None):
+            self.calls.append(action)
+            if action == "worker.publish":
+                return {
+                    "ok": True,
+                    "object": {"ref": "work:worker:remote", "pool_status": "active"},
+                }
+            if action == "worker.heartbeat":
+                return {
+                    "ok": True,
+                    "object": {
+                        "ref": "work:worker:remote",
+                        "attendances": [],
+                        "host_retirements": [],
+                    },
+                }
+            if action == "control.pull":
+                return {"ok": True, "object": {"lease_id": "lease", "items": []}}
+            return {"ok": True, "object": {"ref": object_ref}}
+
+    client = FirstHeartbeatClient()
+
+    @asynccontextmanager
+    async def connector(_host, _channel, *, replacement_epoch):
+        yield client
+
+    supervisor = relay.ProblemBoardRelaySupervisor(
+        config_path=host.path,
+        connector=connector,
+    )
+    runtime = HostRelayRuntime(adapter=supervisor)
+    startup_started = time.monotonic()
+    try:
+        await runtime.run_once()
+    finally:
+        await supervisor.aclose()
+    startup_elapsed = time.monotonic() - startup_started
+
+    assert "worker.heartbeat" in client.calls
+    assert history_reads == []
+    assert startup_elapsed < 2.0, (
+        "relay startup to first heartbeat took "
+        f"{startup_elapsed:.2f}s over a 50,000-record history"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_publication_names_the_card_fix_and_the_relay_row_counts_it(tmp_path):
+    """Audit of #126 (claude-ops): a refused publication said only its code.
+
+    A Card whose operation list predates ``mail.reconciliation.publish`` is
+    fixed by one command. The settled row names it with this channel's
+    profile, and the relay row counts refused publications apart from the
+    other outbox refusals.
+    """
+
+    from project_board.contract.errors import DomainError
+
+    host, identity, channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.register_worker(
+        worker_name=identity.worker_name,
+        worker_alias="worker",
+        worker_identity=identity.worker_identity,
+        runtime_kind=identity.runtime_kind,
+        runtime_session_id=identity.runtime_session_id,
+        capabilities=[],
+        authority_label="connection-hub:test",
+        host_id=host.host_id,
+        host_label=host.host_label,
+        host_kind=host.host_kind,
+        relay_id=host.relay_id,
+    )
+    field.create_project(project_id=PROJECT, title="Local state", goal="Keep the relay's local state bounded.", owner="operator")
+    receipt = _receipt(receipt_id="mailbox-reconciliation_20260801T130000Z_b2c3", started_at="2026-08-01T13:00:00Z", archived=1, reporter=identity.worker_name)
+    receipts.record_receipt(field, PROJECT, worker_name=identity.worker_name, receipt=receipt)
+
+    class RefusingClient:
+        async def action(self, *, object_ref, action, payload=None):
+            raise DomainError(
+                "work_worker_operation_not_granted",
+                "The Card does not hold this operation.",
+                status=403,
+                details={"operation": OUTBOX_KIND, "reason": "connection_hub_operation_not_granted"},
+            )
+
+    adapter = relay.ProblemBoardHostRelayAdapter(
+        config=relay.RelayConfig.from_host_channel(host, channel, project_id=PROJECT),
+        field=field,
+        client=RefusingClient(),
+    )
+    counts = await adapter._flush_outbox()
+
+    assert counts["outbox_refused"] == 1
+    assert counts["reconciliation_publications_refused"] == 1
+    outbox = OutboxStore(field.control)
+    [path] = [
+        path
+        for path in outbox.settled_paths(project_ref=f"work:project:{PROJECT}", op="test")
+        if state_of_name(path.name) == "refused"
+    ]
+    result = json.loads(path.read_text())["remote_result"]
+    assert result["error"]["code"] == "work_worker_operation_not_granted"
+    assert result["fix"] == f"pb worker authorize {channel.profile} --replace-card"
+    assert result["permission_group"]
+
+
+def _seed_partitioned_history(field: SharedFieldStore, count: int) -> list[Path]:
+    """``count`` published receipts and ``count`` settled outbox rows, 100 per hour folder."""
+
+    receipt_agent = receipts.agent_root(field, PROJECT, WORKER)
+    outbox = OutboxStore(field.control).partitioned(f"work:project:{PROJECT}")
+    start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    body = json.dumps({"schema": receipts.LOCAL_RECEIPT_RECORD_SCHEMA, "receipt": {}, "publication": {}})
+    row = json.dumps({"kind": OUTBOX_KIND, "state": "sent", "worker_name": WORKER})
+    hours: set[Path] = set()
+    for index in range(count):
+        at = start + timedelta(hours=index // 100, seconds=index % 100)
+        stamp = at.strftime("%Y%m%dT%H%M%SZ")
+        receipt_path = receipt_agent.joinpath(*at.strftime("%Y/%m/%d/%H").split("/"), f"{stamp}_{stamp}_published_mailbox-reconciliation_{index:06d}.json")
+        row_path = outbox.record_path(WORKER, at, f"outbox_{index:06d}", slug=f"sent-{OUTBOX_KIND}")
+        for path, text in ((receipt_path, body), (row_path, row)):
+            if path.parent not in hours:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                hours.add(path.parent)
+            path.write_text(text)
+    return sorted(hours)
+
+
+def test_guard_a_large_partitioned_history_costs_the_cycle_nothing(tmp_path, monkeypatch):
+    """Audit of #126 (claude-ops): the 50,000 guard covered only the flat layout.
+
+    With the history already partitioned, a cycle lists no hour folder and
+    takes about as long over 50,000 receipts and settled rows as over 100.
+    """
+
+    def field_with(count: int, name: str) -> tuple[SharedFieldStore, list[Path]]:
+        store = SharedFieldStore(tmp_path / name)
+        store.initialize(field_id=name)
+        store.register_worker(worker_name=WORKER, runtime_kind="codex", capabilities=[], authority_label=f"authority:{WORKER}")
+        store.create_project(project_id=PROJECT, title="Local state", goal="Keep the relay's local state bounded.", owner="operator")
+        return store, _seed_partitioned_history(store, count)
+
+    small, small_hours = field_with(100, "small")
+    large, large_hours = field_with(50_000, "large")
+    assert len(small_hours) == 2 and len(large_hours) == 1_000
+
+    # Hour folders and the day folders that hold them: listing either walks history.
+    history = {str(path) for hour in small_hours + large_hours for path in (hour, hour.parent)}
+    listed: list[str] = []
+    real_listdir, real_scandir = os.listdir, os.scandir
+
+    def listdir(path=".", *args, **kwargs):
+        if str(path) in history:
+            listed.append(str(path))
+        return real_listdir(path, *args, **kwargs)
+
+    def scandir(path=".", *args, **kwargs):
+        if str(path) in history:
+            listed.append(str(path))
+        return real_scandir(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "listdir", listdir)
+    monkeypatch.setattr(os, "scandir", scandir)
+
+    def cycle(field: SharedFieldStore) -> float:
+        started = time.monotonic()
+        field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
+        field.reconcile_project_mailboxes(PROJECT, reporter_worker_name=WORKER)
+        receipts.recover_unpublished_receipts(field, PROJECT, worker_name=WORKER)
+        field._assignee_last_activity(PROJECT)
+        field.pull_outbox(relay_id="relay-01", worker_name=WORKER, limit=20)
+        return time.monotonic() - started
+
+    small_elapsed = cycle(small)
+    large_elapsed = cycle(large)
+
+    assert listed == [], f"a cycle listed {len(listed)} history folders"
+    assert large_elapsed < small_elapsed * 3 + 0.5, (
+        f"a cycle took {large_elapsed:.3f}s over 50,000 partitioned records "
+        f"and {small_elapsed:.3f}s over 100"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_heartbeat_carries_the_last_store_reads_once_per_change(tmp_path):
+    """Audit of #126 (claude-ops): ``store_reads`` on the heartbeat had no test.
+
+    The last read of each store rides on the project heartbeat when it changed.
+    An unchanged read (only its time and duration differ) is not sent again.
+    """
+
+    from project_board.client.local_store import PartitionedStore
+
+    host, identity, channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.register_worker(
+        worker_name=identity.worker_name,
+        worker_alias="worker",
+        worker_identity=identity.worker_identity,
+        runtime_kind=identity.runtime_kind,
+        runtime_session_id=identity.runtime_session_id,
+        capabilities=[],
+        authority_label="connection-hub:test",
+        host_id=host.host_id,
+        host_label=host.host_label,
+        host_kind=host.host_kind,
+        relay_id=host.relay_id,
+    )
+    field.create_project(project_id=PROJECT, title="Local state", goal="Keep the relay's local state bounded.", owner="operator")
+    heartbeats: list[dict] = []
+
+    class Client:
+        connected = True
+
+        async def action(self, *, object_ref, action, payload=None):
+            if action == "worker.heartbeat":
+                heartbeats.append(dict(payload or {}))
+            if action == "control.pull":
+                return {"ok": True, "object": {"lease_id": "lease", "items": []}}
+            return {"ok": True, "object": {"ref": object_ref}}
+
+    adapter = relay.ProblemBoardHostRelayAdapter(
+        config=relay.RelayConfig.from_host_channel(host, channel, project_id=PROJECT),
+        field=field,
+        client=Client(),
+    )
+    outbox = PartitionedStore(field.control / "projects" / PROJECT / "outbox", store="outbox")
+
+    def read(hour: str, records: int) -> None:
+        with outbox.reading("retention") as record:
+            record.opened(identity.worker_name, hour, records)
+
+    read("2026-09-26T03", 4)
+    await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+    read("2026-09-26T03", 4)
+    await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+    read("2026-09-26T04", 6)
+    await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+
+    sent = [beat.get("store_reads") for beat in heartbeats]
+    assert len(sent) == 3 and sent[1] is None
+    first, third = sent[0]["outbox"], sent[2]["outbox"]
+    assert (first["range"], first["records"], first["project"]) == ("2026-09-26T03..2026-09-26T03", 4, PROJECT)
+    assert (third["range"], third["records"], third["removed"]) == ("2026-09-26T04..2026-09-26T04", 6, 0)
+
+
+def test_the_size_bound_removal_is_counted_on_the_retention_line(field, monkeypatch):
+    """Review of #126 (claude-app): the size-bound loop's removals were untested.
+
+    Two published receipts inside the age window, a record bound of one: the
+    older hour folder goes for the bound, and the read summary says so.
+    """
+
+    monkeypatch.setattr(receipts, "MAX_RECORDS_PER_AGENT", 1)
+    for hour in ("10", "11"):
+        receipt = _receipt(receipt_id=f"mailbox-reconciliation_20260923T{hour}0000Z_d{hour}", started_at=f"2026-09-23T{hour}:00:00Z", archived=1)
+        receipts.record_receipt(field, PROJECT, worker_name=WORKER, receipt=receipt)
+        _settle(field, "sent")
+        receipts.recover_unpublished_receipts(field, PROJECT, worker_name=WORKER)
+
+    result = receipts.apply_receipt_retention(field, PROJECT, now=datetime(2026, 9, 24, tzinfo=timezone.utc))
+
+    assert result["partitions_removed"] == 1 and result["receipts_removed"] == 1
+    read = last_read_summaries(WORKER)[receipts.STORE]
+    assert read["op"] == "retention" and read["removed"] == 1

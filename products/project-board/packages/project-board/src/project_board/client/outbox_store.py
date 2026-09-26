@@ -36,6 +36,8 @@ from .outbox_layout import OUTBOX_FOLDERS, OUTBOX_IN_FLIGHT_FOLDERS
 
 
 OUTBOX_TERMINAL_RETENTION_DAYS = 30
+OUTBOX_TERMINAL_MAX_BYTES_PER_AGENT = 200 * 1024 * 1024
+OUTBOX_TERMINAL_MAX_RECORDS_PER_AGENT = 100_000
 ATTACHMENTS = "attachments"
 _PROJECT_PREFIX = "work:project:"
 
@@ -124,10 +126,12 @@ class OutboxStore:
         return path
 
     def in_flight(self, folder: str, *, worker_name: str = "", project_ref: str = "") -> Iterator[Path]:
-        for _ref, root in self.agent_roots(worker_name=worker_name, project_ref=project_ref):
+        for ref, root in self.agent_roots(worker_name=worker_name, project_ref=project_ref):
             directory = root / folder
-            if directory.is_dir():
-                yield from sorted(directory.glob("*.json"))
+            paths = sorted(directory.glob("*.json")) if directory.is_dir() else []
+            with self.partitioned(ref).reading(f"{folder}-list") as read:
+                read.opened_pending(root.name, len(paths))
+            yield from paths
         legacy = self.legacy_root / folder
         if legacy.is_dir():
             yield from sorted(legacy.glob("*.json"))
@@ -346,6 +350,8 @@ def _created(row: Mapping[str, Any]) -> datetime:
 __all__ = [
     "ATTACHMENTS",
     "OUTBOX_TERMINAL_RETENTION_DAYS",
+    "OUTBOX_TERMINAL_MAX_BYTES_PER_AGENT",
+    "OUTBOX_TERMINAL_MAX_RECORDS_PER_AGENT",
     "OutboxStore",
     "project_id_of",
     "state_of_name",

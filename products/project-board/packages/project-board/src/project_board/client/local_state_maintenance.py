@@ -29,9 +29,17 @@ from typing import Any
 
 from ..contract.errors import DomainError
 from ..contract.mailbox_reconciliation_contract import normalize_receipt
+from .assignment_store import AssignmentStore
 from .io import atomic_write_json, exclusive_lock, parse_utc, read_json, utc_now
+from .local_store import PartitionedStore, agent_component
 from .outbox_layout import OUTBOX_TERMINAL_FOLDERS
-from .outbox_store import OUTBOX_TERMINAL_RETENTION_DAYS, OutboxStore
+from .outbox_store import (
+    OUTBOX_TERMINAL_MAX_BYTES_PER_AGENT,
+    OUTBOX_TERMINAL_MAX_RECORDS_PER_AGENT,
+    OUTBOX_TERMINAL_RETENTION_DAYS,
+    OutboxStore,
+)
+from .operation_store import OperationStore
 from .reconciliation_receipts import (
     apply_receipt_retention,
     pending_path,
@@ -51,6 +59,8 @@ LEGACY_CLAIMED = ".legacy-claimed"
 LEGACY_UNREADABLE = ".legacy-unreadable"
 LEGACY_PROGRESS = ".legacy-cleanup.json"
 LEGACY_BATCH_SIZE = 1000
+SESSION_RETENTION_DAYS = 90
+SESSION_MAX_RECORDS_PER_WORKER = 1000
 
 
 def run_local_state_maintenance(field: Any, *, now: datetime | None = None) -> dict[str, Any]:
@@ -59,9 +69,25 @@ def run_local_state_maintenance(field: Any, *, now: datetime | None = None) -> d
     current = now or datetime.now(timezone.utc)
     summary: dict[str, Any] = {"legacy_receipts": {}, "retention": None}
     summary["flat_events"] = {}
+    summary["flat_assignments"] = {}
+    summary["flat_scope_leases"] = {}
+    summary["flat_mail_history"] = field._mail_history().migrate_legacy()
+    summary["flat_idempotency"] = field._idempotency().migrate_legacy()
+    summary["flat_journal_receipts"] = field._journal_receipts().migrate_legacy()
+    summary["flat_operations"] = OperationStore(
+        field.control / "operations" / "journal-index"
+    ).migrate_legacy()
     for project_id in _project_ids(field):
         summary["legacy_receipts"][project_id] = cleanup_legacy_receipts(field, project_id)
         summary["flat_events"][project_id] = migrate_flat_events(field, project_id)
+        with exclusive_lock(field._project_lock(project_id)):
+            summary["flat_assignments"][project_id] = AssignmentStore(
+                field._project_dir(project_id) / "assignments"
+            ).migrate_legacy()
+        with exclusive_lock(field._scope_leases(project_id).lock):
+            summary["flat_scope_leases"][project_id] = field._scope_leases(
+                project_id
+            ).migrate_legacy()
     # After the receipt cleanup, so empty receipts' rows are deleted, not moved.
     summary["flat_outbox"] = migrate_flat_outbox(field)
     state_path = field.control / MAINTENANCE_STATE
@@ -75,10 +101,15 @@ def run_local_state_maintenance(field: Any, *, now: datetime | None = None) -> d
                 for project_id in _project_ids(field)
             },
             "events": {
-                project_id: field._events(project_id).expire(cutoff=event_cutoff)
+                project_id: field._events(project_id).expire(
+                    cutoff=event_cutoff,
+                    max_bytes_per_agent=int(field.EVENT_MAX_BYTES_PER_AGENT),
+                    max_records_per_agent=int(field.EVENT_MAX_RECORDS_PER_AGENT),
+                )
                 for project_id in _project_ids(field)
             },
             "outbox": apply_outbox_retention(field, now=current),
+            "sessions": apply_session_retention(field, now=current),
             "keyed": expire_keyed_stores(field, now=current),
         }
         state.update(
@@ -121,18 +152,19 @@ def cleanup_legacy_receipts(
     started = time.monotonic()
     counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     claimed_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for path in sorted(claimed_root.glob("*.json")):
+    budget = max(1, int(batch_size))
+    claimed = sorted(claimed_root.glob("*.json"))[:budget]
+    for path in claimed:
         _handle_legacy_receipt(field, project_id, path, counts)
-    while legacy.is_dir():
+    budget -= len(claimed)
+    if budget > 0 and legacy.is_dir():
         batch: list[str] = []
         with os.scandir(legacy) as entries:
             for entry in entries:
                 if entry.name.endswith(".json") and entry.is_file(follow_symlinks=False):
                     batch.append(entry.name)
-                    if len(batch) >= batch_size:
+                    if len(batch) >= budget:
                         break
-        if not batch:
-            break
         for name in batch:
             claimed = claimed_root / name
             try:
@@ -142,12 +174,13 @@ def cleanup_legacy_receipts(
             _handle_legacy_receipt(field, project_id, claimed, counts)
         _record_progress(progress_path, progress, base_agents, counts, state="running")
     remaining = sum(1 for _ in claimed_root.glob("*.json"))
+    legacy_remaining = any(legacy.glob("*.json")) if legacy.is_dir() else False
     for directory in (legacy, claimed_root):
         try:
             directory.rmdir()
         except OSError:
             pass
-    state = "complete" if not legacy.exists() and remaining == 0 else "running"
+    state = "complete" if not legacy_remaining and remaining == 0 else "running"
     _record_progress(progress_path, progress, base_agents, counts, state=state)
     elapsed = int((time.monotonic() - started) * 1000)
     for agent, values in sorted(counts.items()):
@@ -178,16 +211,15 @@ def migrate_flat_events(
     events = field._events(project_id)
     started = time.monotonic()
     moved: dict[str, int] = defaultdict(int)
-    while True:
-        batch: list[str] = []
-        with os.scandir(legacy) as entries:
-            for entry in entries:
-                if entry.name.endswith(".json") and entry.is_file(follow_symlinks=False):
-                    batch.append(entry.name)
-                    if len(batch) >= batch_size:
-                        break
-        if not batch:
-            break
+    unreadable = 0
+    batch: list[str] = []
+    with os.scandir(legacy) as entries:
+        for entry in entries:
+            if entry.name.endswith(".json") and entry.is_file(follow_symlinks=False):
+                batch.append(entry.name)
+                if len(batch) >= batch_size:
+                    break
+    if batch:
         with exclusive_lock(field._project_lock(project_id)):
             for name in batch:
                 path = legacy / name
@@ -197,7 +229,7 @@ def migrate_flat_events(
                 if not row:
                     # Kept for a person, never deleted unread (review on W287 2b).
                     _quarantine(path, legacy / LEGACY_UNREADABLE)
-                    moved["-unreadable"] += 1
+                    unreadable += 1
                     continue
                 actor = str(row.get("actor") or row.get("worker_name") or "-")
                 event_id = str(row.get("event_id") or name[:-5])
@@ -207,11 +239,38 @@ def migrate_flat_events(
                     created = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
                 events.write(actor, event_id, created, row, slug=str(row.get("event_ref") or row.get("kind") or "").rsplit(":", 1)[-1])
                 path.unlink()
-                moved[actor.strip().lower()] += 1
+                moved[agent_component(actor)] += 1
+    remaining = any(
+        path for path in legacy.glob("*.json") if not path.name.startswith(".")
+    )
+    state = "running" if remaining else "complete"
     elapsed = int((time.monotonic() - started) * 1000)
-    for agent, count in sorted(moved.items()):
-        logger.info("relay store migrated worker=%s store=events moved=%d ms=%d", agent, count, elapsed)
-    return {"state": "complete", "moved": dict(moved)}
+    for agent in sorted(set(moved) | set(events.agents())):
+        marker = events.agent_root(agent) / ".migration.json"
+        prior = dict(read_json(marker, required=False) or {})
+        atomic_write_json(
+            marker,
+            {
+                "schema": "problem-board.event-store-migration.v1",
+                "state": state,
+                "moved": int(prior.get("moved") or 0) + moved.get(agent, 0),
+                "updated_at": utc_now(),
+            },
+        )
+        if moved.get(agent):
+            logger.info(
+                "relay store migrated worker=%s store=events moved=%d unreadable=0 ms=%d",
+                agent,
+                moved[agent],
+                elapsed,
+            )
+    if unreadable:
+        logger.warning(
+            "relay store migrated worker=- store=events moved=0 unreadable=%d ms=%d",
+            unreadable,
+            elapsed,
+        )
+    return {"state": state, "moved": dict(moved), "unreadable": unreadable}
 
 
 def apply_outbox_retention(field: Any, *, now: datetime | None = None) -> dict[str, int]:
@@ -239,7 +298,11 @@ def apply_outbox_retention(field: Any, *, now: datetime | None = None) -> dict[s
         if not outbox.project_root(project_ref).is_dir():
             continue
         with exclusive_lock(outbox.lock):
-            removed = outbox.partitioned(project_ref).expire(cutoff=cutoff_dt)
+            removed = outbox.partitioned(project_ref).expire(
+                cutoff=cutoff_dt,
+                max_bytes_per_agent=OUTBOX_TERMINAL_MAX_BYTES_PER_AGENT,
+                max_records_per_agent=OUTBOX_TERMINAL_MAX_RECORDS_PER_AGENT,
+            )
         totals["partitions"] += removed["partitions"]
         totals["records"] += removed["records"]
         for _ref, agent_root in outbox.agent_roots(project_ref=project_ref):
@@ -274,6 +337,74 @@ def apply_outbox_retention(field: Any, *, now: datetime | None = None) -> dict[s
             cutoff_dt.strftime("%Y-%m-%dT%H"), len(OUTBOX_TERMINAL_FOLDERS), examined,
             int((time.monotonic() - started) * 1000), totals["flat"],
         )
+    return totals
+
+
+def apply_session_retention(field: Any, *, now: datetime | None = None) -> dict[str, int]:
+    """Bound each worker's current/detached session map.
+
+    Session files are mutable current-state rows rather than append-only
+    history, so they stay keyed directly by session id. Detached rows expire;
+    active rows are never removed. The count cap removes the oldest detached
+    rows first and emits a warning if active rows alone exceed it (LS2).
+    """
+
+    current = now or datetime.now(timezone.utc)
+    cutoff = current - timedelta(days=SESSION_RETENTION_DAYS)
+    totals = {"removed": 0, "warnings": 0}
+    projects = field.control / "projects"
+    for project in sorted(projects.iterdir()) if projects.is_dir() else ():
+        sessions = project / "sessions"
+        session_store = PartitionedStore(sessions, store="sessions")
+        for worker in sorted(sessions.iterdir()) if sessions.is_dir() else ():
+            if not worker.is_dir():
+                continue
+            rows: list[tuple[Path, dict[str, Any], datetime]] = []
+            paths = sorted(worker.glob("*.json"))
+            with session_store.reading("retention") as read:
+                read.opened_pending(worker.name, len(paths))
+                for path in paths:
+                    row = _readable(path)
+                    if not row:
+                        continue
+                    text = str(row.get("detached_at") or row.get("heartbeat_at") or "")
+                    try:
+                        when = parse_utc(text)
+                    except (DomainError, TypeError, ValueError):
+                        when = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                    rows.append((path, row, when))
+            removed = 0
+            for path, row, when in rows:
+                if str(row.get("state") or "") == "detached" and when <= cutoff:
+                    path.unlink(missing_ok=True)
+                    removed += 1
+            retained = [
+                item for item in rows if item[0].is_file()
+            ]
+            detached = sorted(
+                (
+                    item
+                    for item in retained
+                    if str(item[1].get("state") or "") == "detached"
+                ),
+                key=lambda item: item[2],
+            )
+            while len(retained) > SESSION_MAX_RECORDS_PER_WORKER and detached:
+                path, _row, _when = detached.pop(0)
+                path.unlink(missing_ok=True)
+                retained = [item for item in retained if item[0] != path]
+                removed += 1
+            warning = int(len(retained) > SESSION_MAX_RECORDS_PER_WORKER)
+            totals["removed"] += removed
+            totals["warnings"] += warning
+            if warning:
+                logger.error(
+                    "relay store bound reached worker=%s store=sessions records=%d "
+                    "record_limit=%d reason=active-sessions-retained",
+                    worker.name,
+                    len(retained),
+                    SESSION_MAX_RECORDS_PER_WORKER,
+                )
     return totals
 
 
@@ -313,17 +444,15 @@ def migrate_flat_outbox(field: Any, *, batch_size: int = LEGACY_BATCH_SIZE) -> d
     started = time.monotonic()
     moved: dict[str, int] = defaultdict(int)
     unreadable: dict[str, int] = defaultdict(int)
+    marker_counts: dict[tuple[str, str], int] = defaultdict(int)
     for folder in ("pending", "leased", "sent", "refused"):
         directory = root / folder
-        while directory.is_dir():
+        if directory.is_dir():
             with os.scandir(directory) as entries:
                 batch = [
                     entry.name for entry in entries
                     if entry.name.endswith(".json") and entry.is_file(follow_symlinks=False)
                 ][:batch_size]
-            if not batch:
-                break
-            progressed = 0
             with exclusive_lock(outbox.lock):
                 for name in batch:
                     path = directory / name
@@ -333,31 +462,44 @@ def migrate_flat_outbox(field: Any, *, batch_size: int = LEGACY_BATCH_SIZE) -> d
                     if not row.get("outbox_id"):
                         _quarantine(path, unreadable_root)
                         unreadable[str(row.get("worker_name") or "-").lower()] += 1
-                        progressed += 1
                         continue
                     if folder in ("pending", "leased"):
                         outbox.move_in_flight(path, row, folder)
                     else:
                         outbox.settle(path, row)
-                    moved[str(row.get("worker_name") or "-").lower()] += 1
-                    progressed += 1
-            if not progressed:
-                # Nothing moved: another relay took these, or they cannot move.
-                # Stop rather than rescan the same names forever.
-                logger.warning(
-                    "relay store migration stalled store=outbox folder=%s batch=%d: no row moved",
-                    folder, len(batch),
-                )
-                break
-            if len(batch) < batch_size:
-                break
+                    agent = agent_component(str(row.get("worker_name") or "-"))
+                    project_ref = str(row.get("project_ref") or "")
+                    moved[agent] += 1
+                    marker_counts[(project_ref, agent)] += 1
+    remaining = any(
+        path
+        for folder in ("pending", "leased", "sent", "refused")
+        for path in (root / folder).glob("*.json")
+    )
+    state = "running" if remaining else "complete"
+    if state == "complete":
+        for project_ref, agent_root in outbox.agent_roots():
+            if (agent_root / ".migration.json").is_file():
+                marker_counts.setdefault((project_ref, agent_root.name), 0)
+    for (project_ref, agent), count in marker_counts.items():
+        marker = outbox.agent_root(project_ref, agent) / ".migration.json"
+        prior = dict(read_json(marker, required=False) or {})
+        atomic_write_json(
+            marker,
+            {
+                "schema": "problem-board.outbox-store-migration.v1",
+                "state": state,
+                "moved": int(prior.get("moved") or 0) + count,
+                "updated_at": utc_now(),
+            },
+        )
     elapsed = int((time.monotonic() - started) * 1000)
     for agent in sorted(set(moved) | set(unreadable)):
         logger.info(
             "relay store migrated worker=%s store=outbox moved=%d unreadable=%d ms=%d",
             agent, moved.get(agent, 0), unreadable.get(agent, 0), elapsed,
         )
-    return {"moved": dict(moved), "unreadable": dict(unreadable)}
+    return {"state": state, "moved": dict(moved), "unreadable": dict(unreadable)}
 
 
 # Stores read only by key (a message id, a content hash, a lease id), never
@@ -403,7 +545,6 @@ def keyed_stores(field: Any) -> list[tuple[str, str, Path, int]]:
                 found.append(("mail-undeliverable", address.name, address, KEYED_STORE_RETENTION_DAYS))
         found.append(("scope-leases-settled", "-", project / "scope-leases" / "settled", KEYED_STORE_RETENTION_DAYS))
         found.append(("journal-receipts", "-", project / "journals", JOURNAL_RECEIPT_RETENTION_DAYS))
-    found.append(("journal-index-operations", "-", control / "operations" / "journal-index", KEYED_STORE_RETENTION_DAYS))
     return found
 
 
@@ -416,6 +557,25 @@ def expire_keyed_stores(field: Any, *, now: datetime | None = None) -> dict[str,
 
     current = now or datetime.now(timezone.utc)
     totals: dict[str, int] = defaultdict(int)
+    for history in field._mail_history().stores():
+        removed = history.expire(now=current)
+        totals[history.store] += removed["records"]
+    for history in field._idempotency().stores():
+        removed = history.expire(now=current)
+        totals[history.store] += removed["records"]
+    for history in field._journal_receipts().stores():
+        removed = history.expire(now=current)
+        totals[history.store] += removed["records"]
+    for project_id in _project_ids(field):
+        for history in field._scope_leases(project_id).stores():
+            removed = history.expire(now=current)
+            totals[history.store] += removed["records"]
+    operation_retention = OperationStore(
+        field.control / "operations" / "journal-index"
+    ).expire(now=current)
+    totals["journal-index-operations"] += operation_retention["records"]
+    totals["journal-index-operation-pointers"] += operation_retention["pointers"]
+    totals["journal-index-locks"] += operation_retention["locks"]
     for store, agent, directory, days in keyed_stores(field):
         if not directory.is_dir():
             continue
@@ -433,8 +593,6 @@ def expire_keyed_stores(field: Any, *, now: datetime | None = None) -> dict[str,
                         removed += 1
                 except FileNotFoundError:
                     continue
-        if store == "journal-index-operations":
-            removed += _expire_orphan_locks(directory / "locks", cutoff)
         totals[store] += removed
         if removed:
             logger.info(
@@ -443,24 +601,6 @@ def expire_keyed_stores(field: Any, *, now: datetime | None = None) -> dict[str,
                 int((time.monotonic() - started) * 1000), removed,
             )
     return dict(totals)
-
-
-def _expire_orphan_locks(directory: Path, cutoff: float) -> int:
-    removed = 0
-    if not directory.is_dir():
-        return removed
-    for lock in sorted(directory.iterdir()):
-        try:
-            if lock.stat().st_mtime >= cutoff:
-                continue
-        except FileNotFoundError:
-            continue
-        # <operation>.lock and <operation>.execute.lock both belong to <operation>.json.
-        operation = directory.parent / f"{lock.name.split('.', 1)[0]}.json"
-        if not operation.exists():
-            lock.unlink(missing_ok=True)
-            removed += 1
-    return removed
 
 
 def _handle_legacy_receipt(
@@ -571,7 +711,10 @@ def _project_ids(field: Any) -> list[str]:
 __all__ = [
     "OUTBOX_TERMINAL_RETENTION_DAYS",
     "RETENTION_INTERVAL_SECONDS",
+    "SESSION_MAX_RECORDS_PER_WORKER",
+    "SESSION_RETENTION_DAYS",
     "apply_outbox_retention",
+    "apply_session_retention",
     "cleanup_legacy_receipts",
     "expire_keyed_stores",
     "keyed_stores",

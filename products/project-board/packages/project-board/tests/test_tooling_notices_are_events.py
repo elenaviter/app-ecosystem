@@ -15,7 +15,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from project_board.client import local_state_maintenance as maintenance
 from project_board.client import relay as relay_module
 from project_board.client.store import SharedFieldStore
 
@@ -61,8 +60,8 @@ def test_a_keyed_event_is_queued_once_and_its_receipt_says_so(field):
     rows = field.pull_outbox(relay_id="relay", worker_name=WORKER, project_ref=f"work:project:{PROJECT}", limit=10)
     events = [row for row in rows if row["kind"] == "event.publish"]
     assert len(events) == 1 and events[0]["payload"]["kind"] == "worker.notification_path"
-    stores = {(store, agent) for store, agent, _path, _days in maintenance.keyed_stores(field)}
-    assert ("idempotency-events", WORKER) in stores
+    stores = {store.store: store.root for store in field._idempotency().stores()}
+    assert stores["event-idempotency"] == field.control / "unscoped" / "event-idempotency"
 
 
 class _Field:

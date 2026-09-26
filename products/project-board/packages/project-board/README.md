@@ -56,6 +56,11 @@ package tree, and the source reported by the supervised relay.
 The server side stays in its own repository and depends on this package for
 the contract.
 
+What the relay keeps on the host (the outbox, reconciliation receipts, mail,
+leases and markers), how each store is partitioned, its retention bound and the
+`relay store read` log line are in
+[Storage and retention](../../../../docs/project-board/storage-and-retention.md#relay-local-state).
+
 ## Select host source
 
 A published distribution remains a supported independent source. Install and

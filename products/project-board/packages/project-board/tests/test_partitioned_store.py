@@ -8,9 +8,12 @@ dev-main) to keep the newest 25 or 50.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import logging
 import re
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,6 +21,7 @@ import pytest
 
 from project_board.client import local_state_maintenance as maintenance
 from project_board.client import local_store
+from project_board.client.keyed_history import KeyedHistoryStore
 from project_board.client.local_store import PartitionedStore, last_read_summaries
 from project_board.client.store import SharedFieldStore
 
@@ -48,7 +52,7 @@ def test_a_record_lives_in_its_agent_and_hour_and_is_found_by_id(tmp_path):
     assert store.find("event_missing", within_days=36500) is None
 
 
-def test_an_index_line_without_its_record_is_absent_and_the_day_is_reindexed(tmp_path, caplog):
+def test_an_index_line_without_its_record_waits_for_retention_to_compact(tmp_path, caplog):
     store = _store(tmp_path)
     (tmp_path / "events" / "codex-api" / "2026" / "09" / "23" / "11" / "20260923T110500.000000Z_event_b.json").unlink()
 
@@ -57,9 +61,15 @@ def test_an_index_line_without_its_record_is_absent_and_the_day_is_reindexed(tmp
         assert store.find("event_b", agents=["codex-api"], within_days=36500) is None
 
     ids = (tmp_path / "events" / "codex-api" / "2026" / "09" / "23" / "ids").read_text().splitlines()
-    assert ids == ["event_a 10", "event_c 12"]
-    rebuilt = [r for r in caplog.records if "index rebuilt" in r.getMessage()]
-    assert len(rebuilt) == 1
+    assert ids == ["event_a 10", "event_b 11", "event_c 12"]
+    assert not [r for r in caplog.records if "index rebuilt" in r.getMessage()]
+
+    store.expire(cutoff=_at(1), max_bytes_per_agent=10_000)
+
+    assert (tmp_path / "events" / "codex-api" / "2026" / "09" / "23" / "ids").read_text().splitlines() == [
+        "event_a 10",
+        "event_c 12",
+    ]
 
 
 def test_newest_opens_only_the_hours_it_needs_and_logs_the_range_per_agent(tmp_path, caplog):
@@ -80,6 +90,26 @@ def test_newest_opens_only_the_hours_it_needs_and_logs_the_range_per_agent(tmp_p
     assert last_read_summaries("codex-api")["events"]["range"] == "2026-09-23T12..2026-09-23T12"
 
 
+def test_newest_merges_same_hour_agents_before_applying_limit(tmp_path):
+    store = PartitionedStore(tmp_path / "events", store="events")
+    store.write(
+        "z-agent",
+        "older",
+        _at(10, 1),
+        {"event_id": "older", "created_at": _at(10, 1).isoformat()},
+    )
+    store.write(
+        "a-agent",
+        "newer",
+        _at(10, 59),
+        {"event_id": "newer", "created_at": _at(10, 59).isoformat()},
+    )
+
+    assert [row["event_id"] for row in store.newest(op="list", limit=1)] == [
+        "newer"
+    ]
+
+
 def test_expire_removes_whole_hours_by_name_and_prunes_empty_days(tmp_path, monkeypatch):
     store = _store(tmp_path)
     monkeypatch.setattr(local_store, "read_json", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("retention opens no record")))
@@ -90,6 +120,140 @@ def test_expire_removes_whole_hours_by_name_and_prunes_empty_days(tmp_path, monk
     assert sorted(p.name for p in (tmp_path / "events" / "codex-api" / "2026" / "09" / "23").iterdir()) == ["12", "ids"]
     store.expire(cutoff=_at(23))
     assert not (tmp_path / "events" / "codex-api" / "2026").exists()
+
+
+def test_expire_enforces_record_and_byte_bounds_with_oldest_hours_first(tmp_path):
+    store = _store(tmp_path)
+
+    removed = store.expire(
+        cutoff=_at(1),
+        max_records_per_agent=2,
+        max_bytes_per_agent=10_000,
+    )
+
+    assert removed == {"partitions": 1, "records": 1}
+    assert store.find("event_a", agents=["codex-api"], within_days=36500) is None
+    assert store.find("event_b", agents=["codex-api"], within_days=36500) is not None
+    assert store.find("event_c", agents=["codex-api"], within_days=36500) is not None
+
+    removed = store.expire(
+        cutoff=_at(1),
+        max_records_per_agent=10,
+        max_bytes_per_agent=1,
+    )
+    assert removed["records"] == 3
+    assert list((tmp_path / "events").rglob("*.json")) == []
+
+
+def test_retention_compacts_stable_key_rewrites_and_counts_index_bytes(
+    tmp_path,
+):
+    history = KeyedHistoryStore(
+        tmp_path / "history",
+        store="history",
+        retention_days=30,
+    )
+    for minute in range(20):
+        history.write(
+            agent="codex-api",
+            record_id="stable-key",
+            created=_at(10, minute),
+            row={"record_id": "stable-key", "created_at": _at(10, minute).isoformat()},
+        )
+
+    ids = tmp_path / "history" / "codex-api" / "2026" / "09" / "23" / "ids"
+    records = list((tmp_path / "history").rglob("*.json"))
+    assert ids.read_text().splitlines() == ["stable-key 10"] * 20
+    assert len(records) == 1
+
+    compact_size = len("stable-key 10\n".encode("utf-8"))
+    removed = history.partitioned.expire(
+        cutoff=_at(1),
+        max_records_per_agent=1,
+        max_bytes_per_agent=records[0].stat().st_size + compact_size,
+    )
+
+    assert removed == {"partitions": 0, "records": 0}
+    assert ids.read_text().splitlines() == ["stable-key 10"]
+
+    removed = history.partitioned.expire(
+        cutoff=_at(1),
+        max_records_per_agent=1,
+        max_bytes_per_agent=records[0].stat().st_size,
+    )
+
+    assert removed == {"partitions": 1, "records": 1}
+    assert not ids.exists()
+
+
+def test_retention_cannot_replace_an_index_after_a_concurrent_append(
+    tmp_path,
+    monkeypatch,
+):
+    store = PartitionedStore(tmp_path / "events", store="events")
+    store.write(
+        "codex-api",
+        "old-event",
+        _at(10),
+        {"event_id": "old-event", "created_at": _at(10).isoformat()},
+    )
+    rebuild_reached = threading.Event()
+    writer_started = threading.Event()
+    writer_lock_attempted = threading.Event()
+    writer_done = threading.Event()
+    completed_during_rebuild: list[bool] = []
+    original_write = local_store.atomic_write_text
+    original_lock = getattr(local_store, "exclusive_lock", None)
+
+    if original_lock is not None:
+
+        @contextmanager
+        def observe_writer_lock(path):
+            if threading.current_thread().name == "partitioned-writer":
+                writer_lock_attempted.set()
+            with original_lock(path):
+                yield
+
+        monkeypatch.setattr(local_store, "exclusive_lock", observe_writer_lock)
+
+    def write_during_rebuild():
+        assert rebuild_reached.wait(timeout=2)
+        writer_started.set()
+        store.write(
+            "codex-api",
+            "new-event",
+            _at(11),
+            {"event_id": "new-event", "created_at": _at(11).isoformat()},
+        )
+        writer_done.set()
+
+    def pause_rebuild(path, text):
+        rebuild_reached.set()
+        assert writer_started.wait(timeout=2)
+        deadline = time.monotonic() + 2
+        while not writer_done.is_set() and not writer_lock_attempted.is_set():
+            assert time.monotonic() < deadline, (
+                "writer neither completed nor reached the store lock"
+            )
+            time.sleep(0.001)
+        completed_during_rebuild.append(writer_done.is_set())
+        original_write(path, text)
+
+    monkeypatch.setattr(local_store, "atomic_write_text", pause_rebuild)
+    writer = threading.Thread(
+        target=write_during_rebuild,
+        name="partitioned-writer",
+    )
+    writer.start()
+
+    store.expire(cutoff=_at(1), max_bytes_per_agent=10_000)
+    writer.join(timeout=2)
+
+    assert not writer.is_alive()
+    assert completed_during_rebuild == [False]
+    assert store.find(
+        "new-event", agents=["codex-api"], within_days=36500
+    ) is not None
 
 
 @pytest.fixture
@@ -129,6 +293,34 @@ def test_project_events_are_partitioned_and_read_newest_first(field, monkeypatch
     assert activity["codex-api"].startswith(datetime.now(timezone.utc).strftime("%Y-%m-%dT"))
 
 
+def test_delivery_context_reads_new_and_migrated_partitioned_journal_receipts(field):
+    receipts = field._journal_receipts()
+    work_ref = "work:plan:node:20260923T100000Z:w1:one"
+    new = {
+        "entry_id": "new-entry",
+        "work_ref": work_ref,
+        "created_at": "2026-09-23T10:00:00Z",
+    }
+    migrated = {
+        "entry_id": "migrated-entry",
+        "work_ref": work_ref,
+        "created_at": "2026-09-23T11:00:00Z",
+    }
+    receipts.write("project-one", "new-entry", new)
+    legacy = receipts.legacy_path("project-one", "migrated-entry")
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps(migrated))
+
+    result = receipts.migrate_legacy()
+    context = field.project_delivery_context("project-one", work_ref=work_ref)
+
+    assert result["project-one"]["state"] == "complete"
+    assert [row["entry_id"] for row in context["journals"]] == [
+        "new-entry",
+        "migrated-entry",
+    ]
+
+
 def test_a_caller_chosen_event_id_replays_instead_of_duplicating(field):
     first = field.record_event("project-one", event_id="journal-indexed-abc", kind="journal.indexed", summary="indexed", actor="claude-docs")
     again = field.record_event("project-one", event_id="journal-indexed-abc", kind="journal.indexed", summary="indexed", actor="claude-docs")
@@ -149,7 +341,11 @@ def test_flat_events_from_before_w287_move_into_agent_and_hour_folders(field):
 
     result = maintenance.migrate_flat_events(field, "project-one")
 
-    assert result == {"state": "complete", "moved": {"codex-api": 2, "claude-docs": 1}}
+    assert result == {
+        "state": "complete",
+        "moved": {"codex-api": 2, "claude-docs": 1},
+        "unreadable": 0,
+    }
     assert not list(legacy.glob("*.json"))
     assert (legacy / "codex-api" / "2026" / "09" / "21" / "08" / "20260921T080000.000000Z_event_001.json").is_file()
     assert [row["summary"] for row in field.list_events("project-one")][:3] == ["old 0", "old 1", "old 2"]
@@ -209,7 +405,13 @@ def test_a_lookup_by_id_logs_at_debug_and_a_listing_at_info(tmp_path, caplog):
         store.find("event_b", agents=["codex-api"], within_days=36500)
         store.newest(op="list", limit=1)
     ops = [r.getMessage().split(" op=")[1].split(" ")[0] for r in caplog.records if r.getMessage().startswith("relay store read")]
-    assert "lookup" not in ops and ops.count("list") == 1
+    assert "lookup" not in ops and ops == ["list", "list"]
     # The lookup still reaches the heartbeat summary.
     store.find("event_a", agents=["codex-api"], within_days=36500)
     assert last_read_summaries("codex-api")["events"]["op"] == "lookup"
+    # The line and the summary name what the lookup asked for (audit of #126).
+    with caplog.at_level(logging.DEBUG, logger=local_store.__name__):
+        store.find("event_a", agents=["codex-api"], within_days=36500)
+    [line] = [r.getMessage() for r in caplog.records if " op=lookup " in r.getMessage()]
+    assert " key=event_a" in line
+    assert last_read_summaries("codex-api")["events"]["key"] == "event_a"

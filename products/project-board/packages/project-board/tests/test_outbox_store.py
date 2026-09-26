@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from project_board.client import local_state_maintenance as maintenance
+from project_board.client import local_store
 from project_board.client import store as store_module
 from project_board.client.outbox_store import OutboxStore, state_of_name
 from project_board.client.store import SharedFieldStore
@@ -75,6 +76,49 @@ def test_claim_retry_and_settle_move_the_row_and_name_the_outcome(field):
     assert field.worker_outbox_status(worker_name=WORKER, outbox_id=second["outbox_id"])["state"] == "refused"
 
 
+def test_settlement_appends_to_a_large_index_without_reading_or_rewriting_it(
+    field, monkeypatch
+):
+    outbox = OutboxStore(field.control)
+    pending_row = {
+        "outbox_id": "outbox_large_index_guard",
+        "kind": "event.publish",
+        "worker_name": WORKER,
+        "project_ref": PROJECT_REF,
+        "state": "pending",
+        "created_at": "2026-09-25T10:00:00Z",
+    }
+    source = outbox.write_pending(pending_row)
+    ids = outbox.agent_root(PROJECT_REF, WORKER) / "2026" / "09" / "25" / "ids"
+    ids.parent.mkdir(parents=True, exist_ok=True)
+    ids.write_text("".join(f"old_{index:05d} 09\n" for index in range(50_000)))
+    original_inode = ids.stat().st_ino
+    original_size = ids.stat().st_size
+    original_read_text = Path.read_text
+    original_atomic_write_text = local_store.atomic_write_text
+
+    def reject_index_read(path, *args, **kwargs):
+        if path == ids:
+            raise AssertionError("settlement read retained index history")
+        return original_read_text(path, *args, **kwargs)
+
+    def reject_index_rewrite(path, text):
+        if path == ids:
+            raise AssertionError("settlement rewrote retained index history")
+        return original_atomic_write_text(path, text)
+
+    monkeypatch.setattr(Path, "read_text", reject_index_read)
+    monkeypatch.setattr(local_store, "atomic_write_text", reject_index_rewrite)
+
+    target = outbox.settle(source, {**pending_row, "state": "sent"})
+
+    assert target.is_file() and not source.exists()
+    assert ids.stat().st_ino == original_inode
+    assert ids.stat().st_size == original_size + len(
+        "outbox_large_index_guard 10\n".encode("utf-8")
+    )
+
+
 def test_a_claim_never_opens_a_settled_row(field, monkeypatch):
     for index in range(3):
         _event(field, index)
@@ -109,7 +153,7 @@ def test_flat_rows_from_before_2b_move_into_the_layout_with_their_lease(field):
 
     result = maintenance.migrate_flat_outbox(field)
 
-    assert result == {"moved": {WORKER: 4}, "unreadable": {}}
+    assert result == {"state": "complete", "moved": {WORKER: 4}, "unreadable": {}}
     assert not list(flat.glob("*/*.json"))
     agent = field.control / "projects" / PROJECT / "outbox" / WORKER
     assert json.loads((agent / "leased" / "outbox_flat_leased.json").read_text())["lease"]["relay_id"] == "relay-01"
@@ -134,6 +178,11 @@ def test_settled_rows_expire_by_hour_folder_per_agent(field, caplog):
     assert field.read_outbox_record(row["outbox_id"]) is None
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("relay store read") and "op=retention" in r.getMessage()]
     assert any(f"worker={WORKER} store=outbox" in line for line in lines)
+    # Audit of #126 (claude-ops): the line names the project it read and what
+    # retention removed, not only what it opened.
+    [line] = [line for line in lines if f"worker={WORKER} store=outbox " in line]
+    assert line.endswith(f" project={PROJECT} removed=1")
+    assert local_store.last_read_summaries(WORKER)["outbox"]["removed"] == 1
 
 
 def test_refused_mail_is_listed_and_found_for_replay_from_the_layout(field):
@@ -168,10 +217,20 @@ def test_unreadable_flat_rows_are_quarantined_and_the_migration_ends(field):
             "project_ref": PROJECT_REF, "state": "sent", "created_at": "2026-09-22T08:00:00Z",
         }))
 
-    result = maintenance.migrate_flat_outbox(field, batch_size=batch)
+    totals = {"moved": {}, "unreadable": {}}
+    while True:
+        result = maintenance.migrate_flat_outbox(field, batch_size=batch)
+        for family in ("moved", "unreadable"):
+            for agent, count in result[family].items():
+                totals[family][agent] = totals[family].get(agent, 0) + count
+        if result["state"] == "complete":
+            break
 
-    assert result["moved"] == {WORKER: 2}
-    assert sum(result["unreadable"].values()) == batch + 5
+    assert totals["moved"] == {WORKER: 2}
+    assert sum(totals["unreadable"].values()) == batch + 5
     assert not list(flat.glob("*.json"))
     assert len(list((field.control / "outbox" / ".legacy-unreadable" / "sent").glob("*.json"))) == batch + 5
     assert field.read_outbox_record("outbox_good_1")["state"] == "sent"
+    assert json.loads(
+        (field._project_dir(PROJECT) / "outbox" / WORKER / ".migration.json").read_text()
+    )["state"] == "complete"
