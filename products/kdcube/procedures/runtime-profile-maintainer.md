@@ -228,9 +228,10 @@ for the tenant and project's workdir
    compares commits: when the change touches `delegated_catalog`, run
    `kdcube bundle catalog check --workdir <workdir>`, and otherwise read the changed config value
    back from the running bundle and name it.
-   **When it adds operations,** they reach agents only once each project's
-   Control Card includes them: a project Control Card caps every agent Card on
-   the project (AND), and a Card refresh is capped by it too. After the catalog
+   **When it adds operations,** they reach an agent of a project that has a
+   Control Card only once that Control Card includes them: a project Control
+   Card caps every agent Card on the project (AND), and a Card refresh is
+   capped by it too; a project without one gets them on the next refresh. After the catalog
    check passes, a project admin ticks the new operations on the project Control
    Card (Team > People), and only then are agents' Cards refreshed (Refresh
    coordinator Card, Make coordinator or Make worker). Otherwise the operation
