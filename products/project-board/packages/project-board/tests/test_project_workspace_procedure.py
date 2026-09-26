@@ -148,7 +148,7 @@ def test_a_fresh_worker_reads_its_workspace_from_the_context(tmp_path, monkeypat
     monkeypatch.setenv("PROBLEM_BOARD_CONFIG", str(host.path))
     args = cli.build_parser().parse_args(
         ["worker", "context", "--runtime-kind", "claude-code", "--runtime-session-id", identity.runtime_session_id,
-         "--project-ref", "work:project:quickstart-works-mttfmgqu"]
+         "--project-ref", "work:project:demo-project-0a1b2c3d"]
     )
     SharedFieldStore(host_config.HostRelayConfig.load(host.path).field_root).register_worker(
         worker_name=identity.worker_name, runtime_kind="claude-code", capabilities=[], authority_label="authority:test"

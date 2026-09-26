@@ -171,8 +171,8 @@ async def test_any_of_with_one_connected_provider_proceeds_and_names_it() -> Non
 async def test_any_of_with_two_connected_providers_asks_with_labeled_candidates() -> None:
     async def accounts(provider_id: str):
         return [
-            SimpleNamespace(account_id="google_1", email="lena@nestlogic.com", display_name=""),
-            SimpleNamespace(account_id="icloud_1", email="elena.viter@icloud.com", display_name=""),
+            SimpleNamespace(account_id="google_1", email="alex@example.com", display_name=""),
+            SimpleNamespace(account_id="icloud_1", email="sam@example.org", display_name=""),
         ]
 
     resolution = await resolve_tool_requirements(
@@ -189,7 +189,7 @@ async def test_any_of_with_two_connected_providers_asks_with_labeled_candidates(
     assert not resolution.allowed
     assert resolution.denial["error"]["code"] == "account_required"
     labels = [row["label"] for row in resolution.denial["ret"]["candidates"]]
-    assert labels == ["lena@nestlogic.com (google)", "elena.viter@icloud.com (icloud_mail)"]
+    assert labels == ["alex@example.com (google)", "sam@example.org (icloud_mail)"]
 
 
 @pytest.mark.asyncio

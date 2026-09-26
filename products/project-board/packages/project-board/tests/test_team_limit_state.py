@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from project_board.client.store import SharedFieldStore
 
-PROJECT = "quickstart-works"
+PROJECT = "demo-project"
 
 
 def test_team_json_keeps_a_teammates_limit_and_leaves_an_unreported_one_empty(tmp_path):

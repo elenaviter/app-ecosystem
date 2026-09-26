@@ -481,7 +481,7 @@ def account_choice(account: "ConnectedAccount") -> dict[str, Any]:
     """Public, labeled summary of one account for choice lists.
 
     This is what `account_required` candidates carry so chat/MCP clients can
-    render a real selection ("NestLogic — T2AH06VEC"), never bare ids.
+    render a real selection ("Example Org — T00000000"), never bare ids.
     """
     return {
         "account_id": account.account_id,

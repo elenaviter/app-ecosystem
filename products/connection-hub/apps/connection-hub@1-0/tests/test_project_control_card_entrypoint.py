@@ -45,7 +45,7 @@ def test_the_control_card_question_goes_to_the_project_host_under_the_session():
     async def caller(**kwargs):
         calls.append(kwargs)
         return {"ok": True, "decision": {
-            "allowed": True, "via": "project_admin", "grantor_subject": "boris", **REQUEST,
+            "allowed": True, "via": "project_admin", "grantor_subject": "owner-one", **REQUEST,
             "evidence": {"role": "admin", "operation": "project.control.update"},
         }}
 
@@ -53,7 +53,7 @@ def test_the_control_card_question_goes_to_the_project_host_under_the_session():
     decision = asyncio.run(port.authorize_project_control_card(**REQUEST))
     assert calls == [{"bundle_id": "problem-board@1-0", "operation": "project_control_card_authorize",
                       "data": REQUEST}]
-    assert decision.allowed and decision.via == "project_admin" and decision.grantor_subject == "boris"
+    assert decision.allowed and decision.via == "project_admin" and decision.grantor_subject == "owner-one"
     assert decision.evidence == {"role": "admin", "operation": "project.control.update"}
 
 
@@ -65,7 +65,7 @@ def test_an_attach_question_names_the_agent_card():
 
     async def caller(**kwargs):
         calls.append(kwargs["data"])
-        return {"ok": True, "decision": {"allowed": True, "via": "owner_linking", "grantor_subject": "boris", **attach}}
+        return {"ok": True, "decision": {"allowed": True, "via": "owner_linking", "grantor_subject": "owner-one", **attach}}
 
     port = module.BundleOperationControlCardAuthorizer(bundle_id="problem-board@1-0", caller=caller)
     asyncio.run(port.authorize_project_control_card(**attach, access_id=" aut_agent "))
@@ -185,7 +185,7 @@ def test_the_creator_path_reads_the_same_change_fields(monkeypatch):
         return Service()
 
     monkeypatch.setattr(module, "_automation_access_service", service)
-    monkeypatch.setattr(module, "_platform_user_payload", lambda *a, **kw: {"user_id": "boris"})
+    monkeypatch.setattr(module, "_platform_user_payload", lambda *a, **kw: {"user_id": "owner-one"})
     instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
     asyncio.run(module.ConnectionHubEntrypoint.control_card_update(
         instance, data={"control_id": "aut_control", "label": " Board ", "accepted_operations": {"r": ["x"]}}))

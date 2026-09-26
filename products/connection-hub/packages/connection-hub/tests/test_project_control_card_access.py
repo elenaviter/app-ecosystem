@@ -28,7 +28,7 @@ from connection_hub.delegated_credentials.project_control_card_access import (
 
 CONTROL = "aut_control"
 PROJECT = "work:project:one"
-CREATOR = "boris"
+CREATOR = "owner-one"
 
 
 class Port:

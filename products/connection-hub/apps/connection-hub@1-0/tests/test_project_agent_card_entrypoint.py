@@ -44,7 +44,7 @@ def test_the_agent_card_question_goes_to_the_project_host_under_the_session():
     async def caller(**kwargs):
         calls.append(kwargs)
         return {"ok": True, "decision": {
-            "allowed": True, "via": "project_admin", "grantor_subject": "boris",
+            "allowed": True, "via": "project_admin", "grantor_subject": "owner-one",
             "access_id": "aut_a", "project_ref": "work:project:one", "action": "write",
         }}
 
@@ -52,7 +52,7 @@ def test_the_agent_card_question_goes_to_the_project_host_under_the_session():
     decision = asyncio.run(port.authorize_agent_card(access_id="aut_a", project_ref="work:project:one", action="write"))
     assert calls == [{"bundle_id": "problem-board@1-0", "operation": "project_agent_card_authorize",
                       "data": {"access_id": "aut_a", "project_ref": "work:project:one", "action": "write"}}]
-    assert decision.allowed and decision.via == "project_admin" and decision.grantor_subject == "boris"
+    assert decision.allowed and decision.via == "project_admin" and decision.grantor_subject == "owner-one"
 
 
 def test_host_refusals_and_failures():
@@ -181,7 +181,7 @@ def test_the_share_operations_pass_the_person_and_fail_closed_without_storage(mo
             calls.append(("shared_with_me", user, {}))
             return {"ok": True}
 
-    monkeypatch.setattr(module, "_platform_user_payload", lambda *a, **kw: {"user_id": "boris"})
+    monkeypatch.setattr(module, "_platform_user_payload", lambda *a, **kw: {"user_id": "owner-one"})
     instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
     monkeypatch.setattr(module.ConnectionHubEntrypoint, "_agent_card_shares", lambda _self: Shares())
     E = module.ConnectionHubEntrypoint
@@ -191,7 +191,7 @@ def test_the_share_operations_pass_the_person_and_fail_closed_without_storage(mo
     asyncio.run(E.agent_card_shared_with_me(instance, data={}))
     assert [name for name, *_ in calls] == ["share", "unshare", "shares", "shared_with_me"]
     assert calls[0][2] == {"access_id": "aut_a", "grantee_subject": "ada", "level": "edit"}
-    assert all(user == {"user_id": "boris"} for _, user, _ in calls)
+    assert all(user == {"user_id": "owner-one"} for _, user, _ in calls)
 
     monkeypatch.setattr(module.ConnectionHubEntrypoint, "_agent_card_shares", lambda _self: None)
     down = asyncio.run(E.agent_card_shared_with_me(instance, data={}))

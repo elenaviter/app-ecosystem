@@ -28,7 +28,7 @@ def _welcome(created_at: str = "2026-09-25T14:06:37Z") -> dict:
     return {
         "ref": "work:control:command_welcome",
         "kind": "mail",
-        "project_ref": "work:project:quickstart-works-mttfmgqu",
+        "project_ref": "work:project:demo-project-0a1b2c3d",
         "sender": "claude-code-coordinator",
         "recipient": WORKER,
         "payload": {"mail": {"kind": "request", "subject": "You joined", "body": "Welcome."}},
@@ -67,7 +67,7 @@ class Field:
         return {"delivery_status": "pending", "message_ref": "work:mail:welcome"}
 
     def sync_worker_attendances(self, worker_name, project_refs):
-        self.linked = "work:project:quickstart-works-mttfmgqu" in project_refs
+        self.linked = "work:project:demo-project-0a1b2c3d" in project_refs
 
 
 class Client:
@@ -91,7 +91,7 @@ class Client:
 def _adapter(field, client, clock):
     adapter = relay_module.ProblemBoardHostRelayAdapter.__new__(relay_module.ProblemBoardHostRelayAdapter)
     adapter.config = SimpleNamespace(
-        project_id="quickstart-works-mttfmgqu", relay_id="relay-1", worker_name=WORKER,
+        project_id="demo-project-0a1b2c3d", relay_id="relay-1", worker_name=WORKER,
         reconcile_ceiling_seconds=30, allow_session_resume_view=False,
         allowed_control_kinds=("mail", "request", "reply"), max_control_bytes=65536,
         allowed_peer_workers=("*",),
@@ -122,7 +122,7 @@ def _board_read(adapter, *, linked: bool, field: Field):
     ordering a retry has to survive.
     """
 
-    adapter._record_attendance_observation({"attendances": [{"project_ref": "work:project:quickstart-works-mttfmgqu"}] if linked else []})
+    adapter._record_attendance_observation({"attendances": [{"project_ref": "work:project:demo-project-0a1b2c3d"}] if linked else []})
 
 
 def test_link_then_welcome_is_delivered_within_one_relay_cycle():
@@ -130,7 +130,7 @@ def test_link_then_welcome_is_delivered_within_one_relay_cycle():
     client = Client(
         [_welcome()],
         attendances=[
-            {"project_ref": "work:project:quickstart-works-mttfmgqu"}
+            {"project_ref": "work:project:demo-project-0a1b2c3d"}
         ],
     )
     adapter = _adapter(field, client, clock)
