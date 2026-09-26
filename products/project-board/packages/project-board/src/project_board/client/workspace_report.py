@@ -60,9 +60,12 @@ def _run_git(args: Sequence[str], cwd: Path, timeout: float) -> "subprocess.Comp
 def ssh_hostname(alias: str, *, timeout: float = 5.0) -> str:
     """The host an SSH alias names, from ``ssh -G`` (the host's own ssh config), or the alias itself."""
 
+    # An alias is a host name, never an option (review on #168).
+    if not alias or alias.startswith("-"):
+        return alias
     try:
         result = subprocess.run(
-            ["ssh", "-G", alias],
+            ["ssh", "-G", "--", alias],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -81,7 +84,10 @@ def ssh_hostname(alias: str, *, timeout: float = 5.0) -> str:
 
 
 _SCP_FORM = re.compile(r"^(?:[\w.-]+@)?([^:/\s@]+):(?!//)(.+)$")
-_URL_FORM = re.compile(r"^([a-z+]+)://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+)$", re.IGNORECASE)
+# The credentials end at the LAST "@" before the path: a password may contain
+# "@" itself, and splitting at the first one left its tail in the host
+# (review on #168).
+_URL_FORM = re.compile(r"^([a-z+]+)://(?:[^/]*@)?([^/:@]+)(?::\d+)?/(.+)$", re.IGNORECASE)
 
 
 def _remote_parts(url: str, resolve_host: HostResolver | None) -> tuple[str, str] | None:
@@ -148,6 +154,11 @@ def inspect_repository(
         inside = git(["rev-parse", "--is-inside-work-tree"], folder, timeout)
         if inside.returncode != 0 or inside.stdout.strip() != "true":
             return unreachable("the alias folder is not a git checkout")
+        # A folder inside another checkout answers "true" too: it must be the
+        # top of its own checkout (review on #168).
+        top = git(["rev-parse", "--show-toplevel"], folder, timeout)
+        if top.returncode != 0 or Path(top.stdout.strip()).resolve() != folder.resolve():
+            return unreachable("the alias folder is inside another checkout, not a clone of its own")
         origin = git(["remote", "get-url", "origin"], folder, timeout)
         if origin.returncode != 0:
             return unreachable("the checkout has no origin remote")

@@ -98,6 +98,8 @@ def test_a_deploy_key_ssh_alias_matches_the_listed_url(tmp_path):
 
     class Git:
         def __call__(self, args, cwd, timeout):
+            if args[:2] == ["rev-parse", "--show-toplevel"]:
+                return subprocess.CompletedProcess(args, 0, f"{cwd}\n", "")
             out = {"rev-parse": "true\n", "remote": "github-applications:kdcube/applications.git\n"}.get(args[0], "")
             return subprocess.CompletedProcess(args, 0, out, "")
 
@@ -120,6 +122,8 @@ def test_a_report_never_carries_a_token_a_local_path_or_git_output(tmp_path):
             self.origin, self.code = origin, ls_remote_code
 
         def __call__(self, args, cwd, timeout):
+            if args[:2] == ["rev-parse", "--show-toplevel"]:
+                return subprocess.CompletedProcess(args, 0, f"{cwd}\n", "")
             if args[0] == "rev-parse":
                 return subprocess.CompletedProcess(args, 0, "true\n", "")
             if args[0] == "remote":
@@ -255,3 +259,26 @@ def test_a_report_before_the_record_arrived_is_refused_by_name(tmp_path, monkeyp
         _cli(identity, "workspace-report", "--project-ref", PROJECT_REF)
     assert raised.value.code in {"field_project_record_missing", "field_project_not_found"}
     assert isinstance(field, SharedFieldStore)
+
+
+def test_review_on_168_a_password_with_an_at_sign_never_leaks_and_nested_folders_and_option_aliases_are_refused(tmp_path):
+    """A password may contain "@"; an alias may not be an ssh option; a folder must be its own checkout."""
+
+    from project_board.client.workspace_report import ssh_hostname
+
+    leaked = comparable_url("https://user:p@ss@github.com/kdcube/applications.git")
+    assert leaked == "github.com/kdcube/applications"
+    assert "ss@" not in leaked and "p@" not in leaked
+    assert ssh_hostname("-oProxyCommand=touch /tmp/x") == "-oProxyCommand=touch /tmp/x"
+
+    # A real nested folder: a folder inside a parent checkout is not a clone.
+    parent = tmp_path / "workspace"
+    parent.mkdir()
+    subprocess.run(["git", "init", "-q", str(parent)], check=True)
+    (parent / "applications").mkdir()
+    row = inspect_repository(
+        parent, {"alias": "applications", "url": "https://github.com/kdcube/applications.git"}, verify=False, resolve_host=None
+    )
+    assert row["state"] == "unreachable"
+    assert row["reason"] == "the alias folder is inside another checkout, not a clone of its own"
+    assert str(tmp_path) not in row["reason"]
