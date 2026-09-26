@@ -1400,3 +1400,11 @@ def test_a_review_verdict_reaches_the_author_by_board_mail():
     collaboration = _words(_read("references/collaboration.md"))
     assert "the verdict also goes to the author by board mail (the head, the verdict, the link)" in collaboration
     assert "Mail may point at it and carries the verdict" not in collaboration
+
+
+def test_the_descriptor_sync_step_ticks_new_operations_on_the_project_control_card():
+    # W331 (operator, 2026-09-26): a refresh after new operations reached the
+    # catalog did not help until they were ticked on the project Control Card.
+    profile = " ".join(_profile().split())
+    assert "a project admin ticks the new operations on the project Control Card" in profile
+    assert "work_worker_operation_withheld_by_control_card" in profile
