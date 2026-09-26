@@ -79,3 +79,14 @@ def test_simulate_runs_maintenance_on_a_copy_and_leaves_the_field_alone(field, t
     assert result["files_after"] < result["files_before"]
     assert "projects/*/mail" in result["stores_changed"]
     assert not (tmp_path / "sim" / "field" / ".problem-board" / "projects" / PROJECT / "mail" / "reconciliation-receipts").exists()
+
+
+def test_simulate_refuses_a_work_dir_inside_the_field_and_keeps_the_copy_private(field, tmp_path):
+    import pytest
+
+    with pytest.raises(SystemExit):
+        dry.simulate(field.root, field.root / "sim", datetime.now(timezone.utc))
+    assert not (field.root / "sim").exists()
+
+    dry.simulate(field.root, tmp_path / "sim", datetime.now(timezone.utc))
+    assert ((tmp_path / "sim").stat().st_mode & 0o777) == 0o700

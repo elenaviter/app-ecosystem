@@ -321,9 +321,13 @@ def simulate(field_root: Path, work_dir: Path, now: datetime, *, max_passes: int
     from project_board.client.store import SharedFieldStore
 
     target = work_dir / "field"
+    if work_dir.resolve().is_relative_to(field_root.resolve()):
+        raise SystemExit(f"{work_dir} is inside the field; pass a directory outside it")
     if target.exists():
         raise SystemExit(f"{target} exists; pass an empty work directory")
-    work_dir.mkdir(parents=True, exist_ok=True)
+    # The copy holds mail: only this user may read it, wherever the work dir is.
+    work_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(work_dir, 0o700)
     shutil.copytree(field_root, target, symlinks=True)
     field = SharedFieldStore(target)
     before = _store_sizes(field.control)
