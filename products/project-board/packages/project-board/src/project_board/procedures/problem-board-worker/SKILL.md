@@ -423,7 +423,7 @@ also reach their Telegram. Ask for their input this way, never in a terminal pro
 ## Runtime Actions And Test Windows
 
 A project's runtimes (`pb worker context`, `runtimes`) name, per action, who triggers it and the ref it releases in each repository it loads (`releases`); the commands live in the runtime's profile (`local_profile`), never here, and a project with none has no runtime actions ([runtime-actions](references/runtime-actions.md), Project Runtimes). Every action loads, per repository, the commit its ref names, never a working tree, and its result names each repository, ref and commit.
-A bundle reload and an app refresh are coordinated between the workers and executed by the coordinator. A relay restart is host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves. For a runtime action, ask the
+A runtime's reload, refresh or deploy is coordinated between the workers and executed by the coordinator. A relay restart is host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves. For a runtime action, ask the
 coordinator, naming what you need live and the commit, pushed to the ref the action releases.
 A client-source selection is one of these actions ([runtime-actions](references/runtime-actions.md), Client Source
 Selection). A container-local patch is not an action this team has. Before any runtime
