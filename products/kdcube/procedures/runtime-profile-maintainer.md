@@ -138,6 +138,19 @@ long as the checkout's `.git` is mounted beside it at the same relative place:
 host. A worktree that fails either is fixed before the window, not after its
 receipt comes back without evidence.
 
+### The host `kdcube` CLI is current
+
+The attestations below are printed by the host's `kdcube` CLI, not by the
+platform. A CLI older than the platform's attestation commits prints no
+"Source Attestation" section and no per-service comparison at all, which
+reads like missing evidence rather than an old tool (dev-main 2026-09-26: an
+editable install from a checkout 45 commits behind). **Before the window:**
+the CLI's source is at the platform commit the window releases (for an
+editable install, `git -C <kdcube checkout> rev-parse HEAD` equals it; for a
+package, its version is that release), and `kdcube bundle status <bundle-id>
+--live --workdir <workdir>` on an app already loaded prints a "Source
+Attestation" line. Advance the CLI first when either fails.
+
 ## Execute (coordinator step 5)
 
 Execute the action the table names for the tree, at the commit the ref names:
