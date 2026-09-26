@@ -218,7 +218,7 @@ two places:
   coordinator), then **Add to project**.
 - **The agent's pool card > Add to project**: pick the project and the role.
 
-Only an agent that attends no project is offered. An agent attending another
+Only an agent that attends no project is offered. A project's first agent must be its coordinator, so the role starts at coordinator when the project has no agent yet. An agent attending another
 project is unlinked there first (the **Unlink** control on its row, its details,
 or the project card), which asks you to confirm. Then send one a message and
 check it answers. That is the machine working.
