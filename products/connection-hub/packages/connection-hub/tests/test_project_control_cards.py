@@ -1177,3 +1177,96 @@ async def test_live_resolution_reads_a_missing_caller_projection_as_unavailable(
         )
 
     assert missing.value.reason == "card_projection_missing"
+
+
+# -- a Control Card the project holds for the person (W260, 2026-09-26) ------------
+
+
+def _project_held_pair() -> tuple[CardAuthority, CardAuthority]:
+    """A person's Card bound to the Control Card their project holds, stored under the project."""
+
+    from connection_hub.delegated_credentials.controls.project_person import (
+        PROJECT_PERSON_CONTROL_ISSUER_KIND,
+        PROJECT_PERSON_CONTROL_PROPERTY,
+        PROJECT_PERSON_CONTROL_SCHEMA,
+        ProjectPersonControlIdentity,
+    )
+
+    identity = ProjectPersonControlIdentity.build(project_ref=PROJECT_REF, target_subject=OWNER)
+    base = _regular_control()
+    control = dataclasses.replace(
+        base,
+        access_id=identity.control_id,
+        grantor_subject=identity.project_subject,
+        issuer_ref=PROJECT_REF,
+        issuer_kind=PROJECT_PERSON_CONTROL_ISSUER_KIND,
+        properties={
+            **dict(base.properties or {}),
+            PROJECT_PERSON_CONTROL_PROPERTY: {
+                "schema": PROJECT_PERSON_CONTROL_SCHEMA,
+                "project_ref": PROJECT_REF,
+                "target_subject": OWNER,
+                "project_subject": identity.project_subject,
+            },
+        },
+    )
+    return control, _regular_bound_card(control)
+
+
+def test_a_project_held_control_is_named_by_the_binding_and_composes_by_intersection() -> None:
+    from connection_hub.delegated_credentials.controls.project_person_composition import (
+        compose_with_project_held_control,
+        project_held_control,
+    )
+
+    control, card = _project_held_pair()
+    held = project_held_control(card)
+    assert held is not None and held.grantor_subject == control.grantor_subject != card.grantor_subject
+    # Ordinary composition needs one grantor, which is why the bound Card failed closed.
+    with pytest.raises(ControlCardMismatch):
+        effective_card_authority(card, control)
+    effective = compose_with_project_held_control(card, control)
+    assert effective.resource_operations == {RESOURCE: ("object.action.post_message",)}
+    # Any other binding keeps the ordinary path.
+    assert project_held_control(_regular_bound_card(_regular_control())) is None
+
+
+@pytest.mark.asyncio
+async def test_the_my_card_view_resolves_its_project_held_control() -> None:
+    """Operator, 2026-09-26 01:32Z: 'Control Card unavailable ... Control card unresolvable'."""
+
+    control, card = _project_held_pair()
+    service = AutomationAccessService(
+        redis=_Redis(),
+        tenant="tenant",
+        project="project",
+        config=None,
+        grant_store=object(),
+        card_persistence=_Persistence(card, others=(control,)),
+    )
+
+    view = await service._effective_control_view(record_from_card(card))
+
+    assert view["state"] == "active", view
+    assert view["control_authority"]["resource_operations"] == {RESOURCE: ["object.action.post_message"]}
+
+
+@pytest.mark.asyncio
+async def test_live_resolution_composes_a_project_held_control() -> None:
+    """The enforcement path: a Card bound to its project-held Control Card is
+    narrowed by it, not refused for the grantor difference."""
+
+    control, card = _project_held_pair()
+    redis = _Redis()
+    _put_card(redis, card)
+    _put_card(redis, control)
+
+    composition = await resolve_live_grant_composition(
+        redis,
+        tenant="tenant",
+        project="project",
+        access_id=card.access_id,
+    )
+
+    assert composition is not None and composition.control_card == control
+    assert composition.effective_card.resource_operations == {RESOURCE: ("object.action.post_message",)}
