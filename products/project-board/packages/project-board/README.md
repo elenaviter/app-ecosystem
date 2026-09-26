@@ -61,7 +61,7 @@ smoke its complete release environment, make it current, and verify the relay
 restart with:
 
 ```bash
-pb source use-release --expect-version 2026.09.26.2205
+pb source use-release --expect-version 2026.09.26.2220
 ```
 
 The source deployment selects one reviewed App Ecosystem commit:

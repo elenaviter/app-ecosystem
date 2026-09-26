@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-board"
-version = "2026.09.26.2205"
+version = "2026.09.26.2220"
 description = "The Project Board client: the pb command a machine runs to join a board, receive addressed work, and report on it, with the shared contract both sides speak."
 readme = "README.md"
 license = { text = "MIT" }
@@ -17,12 +17,12 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp>=3.9,<4",
-    "app-foundation[data-bus]>=2026.09.26.2205,<2027",
-    "connection-hub[client]>=2026.09.26.2205,<2027",
+    "app-foundation[data-bus]>=2026.09.26.2220,<2027",
+    "connection-hub[client]>=2026.09.26.2220,<2027",
     "mcp==2.0.0",
     "packaging>=23,<27",
     "PyYAML>=6,<7",
-    "service-foundation>=2026.09.26.2205,<2027",
+    "service-foundation>=2026.09.26.2220,<2027",
 ]
 
 [project.optional-dependencies]

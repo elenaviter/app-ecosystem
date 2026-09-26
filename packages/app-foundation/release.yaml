@@ -1,10 +1,15 @@
 package:
   id: app-foundation
-  ref: "2026.09.26.2205"
+  ref: "2026.09.26.2220"
   description: |
     Released together with service-foundation, connection-hub and
     project-board at one version, so the Problem Board client installs from
     the package index as one dependency chain with no KDCube package (W322).
+
+    2026.09.26.2205 has the same content and is on the package index. This
+    version exists because connection-hub's publication at 2205 failed its CI
+    tests, and the four packages are released at one version (PyPI versions
+    are immutable).
 
     Changes since 2026.09.22.2029:
     - Data Bus client: a reconnect presents the credential that is valid at
@@ -16,4 +21,4 @@ components:
   python_package:
     id: app-foundation
     path: packages/app-foundation
-    version: "2026.09.26.2205"
+    version: "2026.09.26.2220"
