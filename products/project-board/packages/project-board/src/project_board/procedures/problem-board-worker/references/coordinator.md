@@ -193,7 +193,13 @@ it, in the order of the act.
 The coordinator treats every worker's usable token budget as routing state.
 The evidence is the usage and limit line on its worker card, reported through
 `pb worker limit-state`, together with what the worker reports and what the
-operator says. At project start, and whenever hosts, workers, capabilities or
+operator says. From the command line, read it for every teammate on every host
+in `pb worker context`: `team[].limit_state.windows[]` carries each window's
+`name`, `used_percent` and `resets_at`, and the brief output prints one
+`team usage:` line per member. `pb worker list` shows the same `usage:` line
+for this host's workers. The operator's caps per quota pool (for example "up
+to 70% of the weekly window") live on the project's facts page, next to the
+pools below; compare the figures against them before routing. At project start, and whenever hosts, workers, capabilities or
 accounts change, keep a small routing inventory in the project's facts or
 environment page:
 
