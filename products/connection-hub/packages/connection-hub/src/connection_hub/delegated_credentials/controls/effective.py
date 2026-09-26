@@ -435,8 +435,20 @@ def effective_card_authority(
         raise ControlCardMismatch("control_card_binding_mismatch")
     if binding.issuer_ref != control.issuer_ref:
         raise ControlCardMismatch("control_card_issuer_mismatch")
-    if card.grantor_subject != control.grantor_subject:
+    # The Control Card is the Card grantor's own, or (W260) the one the
+    # binding names as its holder: a project Control Card another person
+    # created, attached through the project path. Nothing else.
+    holder = str(getattr(binding, "holder_subject", "") or "").strip()
+    if control.grantor_subject != (holder or card.grantor_subject):
         raise ControlCardMismatch("control_card_grantor_mismatch")
+    if (
+        holder
+        and holder != card.grantor_subject
+        and (control.composition_mode or CONTROL_COMPOSITION_AND) != CONTROL_COMPOSITION_AND
+    ):
+        # Another person's Control Card may only narrow this Card, never
+        # contribute authority to it.
+        raise ControlCardMismatch("control_card_foreign_holder_requires_and")
     card_identity_scope = str(card.identity_scope or "grantor").strip() or "grantor"
     control_identity_scope = (
         str(control.identity_scope or "grantor").strip() or "grantor"
@@ -633,6 +645,7 @@ def effective_card_authority(
         issuer_label=control.issuer_label or binding.issuer_label,
         manage_url=control.manage_url or binding.manage_url,
         control_revision=control.card_revision,
+        holder_subject=str(getattr(binding, "holder_subject", "") or ""),
     )
     return dataclasses.replace(
         card,

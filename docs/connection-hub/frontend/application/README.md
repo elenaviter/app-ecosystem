@@ -285,6 +285,34 @@ account at call time.
   - A deployment without a project host answers 503
     `project_control_card_authorization_unavailable` (reason
     `project_control_card_provider_not_configured`), not a denial.
+- **Who edits which Card in a project.** Cards held by a Problem Board project
+  (the project Control Card, each person's Control Card, each agent's project
+  Card) are changed by that Problem Board project's admins (the project's own
+  admin role, not a KDCube user role), reached through the project's Team >
+  People; a member changes only their own My Card, within their Control Card.
+  Every other Control Card keeps its normal editing here. The full Problem Board
+  page comes with the public Problem Board documentation (W340). The mechanics
+  on this side:
+  - `project_person_control_get` (W260) answers `viewer: {can_edit: false,
+    edit_in_project, reason}`: a person's Control Card is read only in this
+    view for everyone. A project admin gets a link to the project's Team >
+    People, where it is edited; a member reads their own
+    (`project_person_control_decided_by_admin` for their own update or
+    revoke); an unanswerable policy says so. A project admin writes any
+    person's Control Card, their own included, through the project path.
+  - `project_control_card_attach`, `project_control_card_detach` (operations,
+    W260) attach or detach a project's Control Card on an agent's Card that
+    another person owns. Two host answers are needed: the project host's
+    `project_control_card_authorize` with action `attach` (it names the
+    Card's creator) and W319's agent answer (it names the owner; a project
+    admin linking an agent that does not attend yet is accepted here and for
+    no other agent-Card change).
+  - The binding then records `holder_subject`, the Control Card's creator, and
+    admission resolves the Control Card under it. Only the project path writes
+    it, a foreign holder requires `and` composition (the Control Card only
+    narrows), and the agent's owner cannot detach or replace it on the plain
+    path (`control_card_held_by_project`). Bindings without a holder keep the
+    rule that the Control Card is the Card grantor's own.
 - `agent_card_share`, `agent_card_unshare`, `agent_card_shares` (operations,
   W319) — the owner shares an agent's Card with a named person at `view`
   (open read-only) or `edit` (also change it, and apply a profile such as

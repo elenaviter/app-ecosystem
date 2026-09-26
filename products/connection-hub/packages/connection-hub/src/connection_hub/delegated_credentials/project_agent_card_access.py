@@ -28,6 +28,11 @@ PROJECT_AGENT_CARD_AUDIT_SCHEMA = "connection_hub.project_agent_card_audit.v1"
 # Who may change a Card: the project host answers owner or project_admin; an
 # owner's edit share is decided here (W319 slice 2) and never by the host.
 HOST_EDITING_VIAS = frozenset({"owner", "project_admin"})
+# W260: a project admin linking an agent that does not attend the project yet
+# (the board holds a pending link for exactly this agent, project and person).
+# It attaches or detaches the project's Control Card and nothing else: no
+# other change to the agent's Card accepts it.
+LINKING_VIA = "project_admin_linking"
 EDITING_VIAS = HOST_EDITING_VIAS | {"shared_edit"}
 SHARED_VIEW_ONLY = "agent_card_shared_view_only"
 
@@ -114,7 +119,13 @@ class ProjectAgentCardAccess:
         self._shares = shares
 
     async def _authorize(
-        self, user: Mapping[str, Any], *, access_id: str, project_ref: str, action: str
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        project_ref: str,
+        action: str,
+        allow_linking: bool = False,
     ) -> AgentCardDecision | dict[str, Any]:
         actor = _subject(user)
         if not actor or actor.startswith("integration:"):
@@ -169,7 +180,8 @@ class ProjectAgentCardAccess:
         if decision.action != action:
             return {"ok": False, "error": "project_agent_card_authorization_invalid",
                     "reason": "decision_action_mismatch", "retryable": True, "status": 503}
-        if action == AGENT_CARD_WRITE and decision.via not in HOST_EDITING_VIAS:
+        editing = HOST_EDITING_VIAS | ({LINKING_VIA} if allow_linking else set())
+        if action == AGENT_CARD_WRITE and decision.via not in editing:
             return {"ok": False, "error": "project_agent_card_write_denied",
                     "reason": "decision_via_cannot_edit", "status": 403}
         return decision

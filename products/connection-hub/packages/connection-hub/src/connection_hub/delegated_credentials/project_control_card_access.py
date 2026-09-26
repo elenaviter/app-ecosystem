@@ -28,7 +28,12 @@ from connection_hub.delegated_credentials.named_service_policy import clean_text
 
 CONTROL_CARD_READ = "read"
 CONTROL_CARD_WRITE = "write"
-CONTROL_CARD_ACTIONS = frozenset({CONTROL_CARD_READ, CONTROL_CARD_WRITE})
+# W260: attach (or detach) the project's Control Card to an agent's Card: the
+# project host decides who may and names the Card's creator.
+CONTROL_CARD_ATTACH = "attach"
+CONTROL_CARD_ACTIONS = frozenset({CONTROL_CARD_READ, CONTROL_CARD_WRITE, CONTROL_CARD_ATTACH})
+PROJECT_CONTROL_CARD_ATTACH_AUDIT_PROVENANCE = "project_control_card_attach_audit"
+PROJECT_CONTROL_CARD_ATTACH_AUDIT_SCHEMA = "connection_hub.project_control_card_attach_audit.v1"
 PROJECT_CONTROL_CARD_AUDIT_PROVENANCE = "project_control_card_audit"
 PROJECT_CONTROL_CARD_AUDIT_SCHEMA = "connection_hub.project_control_card_audit.v1"
 # Who the host may name: the project's owner, a person whose project Card holds
@@ -121,9 +126,16 @@ def _invalid(reason: str) -> dict[str, Any]:
 class ProjectControlCardAccess:
     """Read or change one project's Control Card for a person the project host authorizes."""
 
-    def __init__(self, host: Any, port: ProjectControlCardAuthorizationPort | None) -> None:
+    def __init__(
+        self,
+        host: Any,
+        port: ProjectControlCardAuthorizationPort | None,
+        agent_access: Any = None,
+    ) -> None:
         self._host = host
         self._port = port
+        # W319's agent Card path, which answers for the agent side of an attach.
+        self._agent_access = agent_access
 
     async def _authorize(
         self, user: Mapping[str, Any], *, control_id: str, project_ref: str, action: str
@@ -167,7 +179,7 @@ class ProjectControlCardAccess:
             return _invalid("decision_grantor_missing")
         if decision.via not in READING_VIAS:
             return _invalid("decision_via_invalid")
-        if action == CONTROL_CARD_WRITE and decision.via not in EDITING_VIAS:
+        if action in {CONTROL_CARD_WRITE, CONTROL_CARD_ATTACH} and decision.via not in EDITING_VIAS:
             return {"ok": False, "error": "project_control_card_write_denied",
                     "reason": "decision_via_cannot_edit", "status": 403}
         return decision
@@ -284,3 +296,126 @@ class ProjectControlCardAccess:
             "or an admin who holds these permissions, can save it; or remove them from the Card first."
         )
         return refused
+
+    # -- attaching the project's Control Card to an agent (W260) ----------------
+
+    async def _attach_decisions(
+        self, user: Mapping[str, Any], *, control_id: str, project_ref: str, access_id: str
+    ) -> tuple[ProjectControlCardDecision, Any] | dict[str, Any]:
+        """Both host answers an attach or detach needs, or the first refusal.
+
+        The project host decides the Control Card side (``attach``) and names
+        its creator; W319's agent question decides the agent side and names its
+        owner, and here alone accepts a project admin linking an agent that
+        does not attend the project yet. Detaching widens the agent, so it asks
+        the same two questions.
+        """
+
+        control = await self._authorize(
+            user, control_id=control_id, project_ref=project_ref, action=CONTROL_CARD_ATTACH
+        )
+        if isinstance(control, dict):
+            return control
+        if self._agent_access is None:
+            return {"ok": False, "error": "project_control_card_authorization_unavailable",
+                    "reason": "agent_card_authorization_not_configured", "retryable": True, "status": 503}
+        agent = await self._agent_access._authorize(
+            user, access_id=access_id, project_ref=project_ref, action="write", allow_linking=True
+        )
+        if isinstance(agent, dict):
+            return agent
+        return control, agent
+
+    def _attach_audit(
+        self,
+        user: Mapping[str, Any],
+        control: ProjectControlCardDecision,
+        agent: Any,
+        *,
+        action: str,
+        request_id: str,
+    ):
+        occurred_at = int(time.time())
+        actor = _subject(user)
+
+        def stamp(previous: Any, candidate: Any) -> Any:
+            provenance = dict(getattr(candidate, "provenance", None) or {})
+            provenance[PROJECT_CONTROL_CARD_ATTACH_AUDIT_PROVENANCE] = {
+                "schema": PROJECT_CONTROL_CARD_ATTACH_AUDIT_SCHEMA,
+                "action": action,
+                "actor_subject": actor,
+                "project_ref": control.project_ref,
+                "control_id": control.control_id,
+                "control_holder": control.grantor_subject,
+                "control_via": control.via,
+                "agent_via": str(getattr(agent, "via", "") or ""),
+                "request_id": clean_text(request_id),
+                "occurred_at": occurred_at,
+                "before_revision": int(getattr(previous, "card_revision", 0) or 0),
+                "after_revision": int(getattr(candidate, "card_revision", 0) or 0),
+            }
+            return replace_fields(candidate, provenance=provenance)
+
+        return stamp
+
+    @staticmethod
+    def _agent_owner(agent: Any) -> dict[str, Any]:
+        """Storage identity only: the agent's Card is changed under its owner's key."""
+
+        return {"user_id": str(agent.grantor_subject), "roles": [], "permissions": []}
+
+    async def attach(
+        self,
+        user: Mapping[str, Any],
+        *,
+        control_id: str,
+        project_ref: str,
+        access_id: str,
+        replace_control_id: str = "",
+        expected_card_revision: int | None = None,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        decided = await self._attach_decisions(
+            user, control_id=control_id, project_ref=project_ref, access_id=clean_text(access_id)
+        )
+        if isinstance(decided, dict):
+            return decided
+        control, agent = decided
+        return await self._host.attach_control_card(
+            self._agent_owner(agent),
+            access_id=clean_text(access_id),
+            control_id=control.control_id,
+            expected_card_revision=expected_card_revision,
+            replace_control_id=clean_text(replace_control_id),
+            _control_holder=control.grantor_subject,
+            _record_transform=self._attach_audit(
+                user, control, agent, action="attached", request_id=request_id
+            ),
+        )
+
+    async def detach(
+        self,
+        user: Mapping[str, Any],
+        *,
+        control_id: str,
+        project_ref: str,
+        access_id: str,
+        expected_card_revision: int | None = None,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        decided = await self._attach_decisions(
+            user, control_id=control_id, project_ref=project_ref, access_id=clean_text(access_id)
+        )
+        if isinstance(decided, dict):
+            return decided
+        control, agent = decided
+        return await self._host.detach_control_card(
+            self._agent_owner(agent),
+            access_id=clean_text(access_id),
+            control_id=control.control_id,
+            expected_card_revision=expected_card_revision,
+            _record_transform=self._attach_audit(
+                user, control, agent, action="detached", request_id=request_id
+            ),
+            _through_project=True,
+        )

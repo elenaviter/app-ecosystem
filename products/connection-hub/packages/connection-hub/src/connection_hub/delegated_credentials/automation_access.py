@@ -663,6 +663,30 @@ def _legacy_record_card_kind(
     return CARD_KIND_AUTOMATION
 
 
+def _held_binding_refusal(
+    record: "AutomationAccessRecord", *, caller_is_project: bool
+) -> dict[str, Any] | None:
+    """A project's Control Card on another person's Card stays until the project removes it.
+
+    W260 (review on app-ecosystem#192): a binding that records a holder other
+    than the Card's own grantor was attached through the project, with the
+    project host deciding. Only the project path detaches or replaces it; the
+    Card's owner cannot drop the project's narrowing on the plain path.
+    """
+
+    binding = record.control_card
+    holder = str(getattr(binding, "holder_subject", "") or "") if binding is not None else ""
+    if caller_is_project or not holder or holder == record.grantor_subject:
+        return None
+    return {
+        "ok": False,
+        "error": "control_card_held_by_project",
+        "message": "This Card is narrowed by a project's Control Card; an admin of that project removes it through the project.",
+        "status": 409,
+        "control_card": binding.to_dict(),
+    }
+
+
 def _record_is_credentialless(record: "AutomationAccessRecord") -> bool:
     """The one material difference between a linked Card and a caller Card."""
     return (
@@ -1753,7 +1777,8 @@ class AutomationAccessService:
                 caller, card_authority_from_record(control)
             )
         control = await self._resolve_control_record(
-            binding.control_id, grantor_subject=record.grantor_subject
+            binding.control_id,
+            grantor_subject=binding.holder_subject or record.grantor_subject,
         )
         if control is None:
             return None, None
@@ -6178,12 +6203,21 @@ class AutomationAccessService:
         control_id: str,
         expected_card_revision: int | None = None,
         replace_control_id: str = "",
+        _control_holder: str = "",
+        _record_transform: Callable[[Any, Any], Any] | None = None,
     ) -> dict[str, Any]:
         """Attach or compare-and-replace one current Control Card.
 
         Replacement is one caller-Card revision. It is used when an issuer
         moves an existing binding to a new Control Card without an interval in
         which no rule applies.
+
+        ``_control_holder`` is for the project path only (W260,
+        ``project_control_card_access``): the project host decided the attach
+        and named the Control Card's creator, who holds it; the binding
+        records that holder so the runtime resolves the Control Card under it.
+        No operation passes it from a request, so a caller never names a
+        holder: the plain attach binds only the caller's own Control Card.
         """
 
         grantor_subject = _subject_from_user(user)
@@ -6195,6 +6229,7 @@ class AutomationAccessService:
         selected_access_id = _clean(access_id)
         selected_control_id = _clean(control_id)
         expected_previous_control_id = _clean(replace_control_id)
+        control_holder = _clean(_control_holder) or grantor_subject
         if not selected_access_id or not selected_control_id:
             return {"ok": False, "error": "control_card_binding_invalid", "status": 400}
         try:
@@ -6204,7 +6239,7 @@ class AutomationAccessService:
             )
             control = await self._resolve_control_record(
                 selected_control_id,
-                grantor_subject=grantor_subject,
+                grantor_subject=control_holder,
             )
         except CardUnavailable as exc:
             return {
@@ -6248,6 +6283,9 @@ class AutomationAccessService:
                     "access": record.to_public_dict(),
                     "control_card": await self._effective_control_view(record),
                 }
+            refusal = _held_binding_refusal(record, caller_is_project=bool(_clean(_control_holder)))
+            if refusal is not None:
+                return refusal
             if record.control_card.control_id != expected_previous_control_id:
                 return {
                     "ok": False,
@@ -6263,7 +6301,7 @@ class AutomationAccessService:
                 "retryable": True,
                 "status": 503,
             }
-        if control.grantor_subject != grantor_subject:
+        if control.grantor_subject != control_holder:
             return {"ok": False, "error": "control_card_grantor_mismatch", "status": 403}
         binding = ControlCardBinding(
             control_id=control.access_id,
@@ -6272,6 +6310,8 @@ class AutomationAccessService:
             issuer_label=control.issuer_label,
             manage_url=control.manage_url,
             control_revision=control.card_revision,
+            # Recorded only when the holder is not the Card's own grantor.
+            holder_subject=control_holder if control_holder != grantor_subject else "",
         )
         try:
             effective_card_authority(
@@ -6293,6 +6333,8 @@ class AutomationAccessService:
             card_revision=record.card_revision + 1,
             control_card=binding,
         )
+        if _record_transform is not None:
+            updated = _record_transform(record, updated)
         try:
             await self._persist_record(updated, expected_revision=record.card_revision)
         except CardServingUnavailable as exc:
@@ -6358,8 +6400,15 @@ class AutomationAccessService:
         access_id: str,
         control_id: str,
         expected_card_revision: int | None = None,
+        _record_transform: Callable[[Any, Any], Any] | None = None,
+        _through_project: bool = False,
     ) -> dict[str, Any]:
-        """Unlink the named Control Card so the caller Card applies alone."""
+        """Unlink the named Control Card so the caller Card applies alone.
+
+        A binding whose Control Card another person holds (a project's, W260)
+        is removed only through the project path, which asked the project host
+        (``_through_project``); the agent's owner cannot drop it here.
+        """
 
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
@@ -6403,6 +6452,9 @@ class AutomationAccessService:
             }
         if record.control_card is None:
             return {"ok": True, "detached": False, "access": record.to_public_dict()}
+        refusal = _held_binding_refusal(record, caller_is_project=_through_project)
+        if refusal is not None:
+            return refusal
         if record.control_card.control_id != selected_control_id:
             return {
                 "ok": False,
@@ -6415,6 +6467,8 @@ class AutomationAccessService:
             card_revision=record.card_revision + 1,
             control_card=None,
         )
+        if _record_transform is not None:
+            updated = _record_transform(record, updated)
         try:
             await self._persist_record(updated, expected_revision=record.card_revision)
         except CardServingUnavailable as exc:

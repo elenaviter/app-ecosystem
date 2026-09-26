@@ -1270,3 +1270,42 @@ async def test_live_resolution_composes_a_project_held_control() -> None:
 
     assert composition is not None and composition.control_card == control
     assert composition.effective_card.resource_operations == {RESOURCE: ("object.action.post_message",)}
+
+
+# -- a live call (the path an agent's request takes) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_w260_a_live_call_composes_with_the_holders_control_card_and_only_narrows() -> None:
+    from connection_hub.delegated_credentials.live_grant import (
+        LiveGrantCardError,
+        resolve_live_grant_composition,
+    )
+    LIVE_RESOURCE, live_card = RESOURCE, _card
+
+    redis = _Redis()
+    caller = dataclasses.replace(
+        live_card(), resource_operations={LIVE_RESOURCE: ("object.action.post_message",)},
+    )
+    control = dataclasses.replace(
+        _regular_control(operations=("object.action.upload_file",), composition_mode=CONTROL_COMPOSITION_AND),
+        grantor_subject="creator-of-the-project-card",
+    )
+    bound = dataclasses.replace(caller, control_card=ControlCardBinding(
+        control_id=control.access_id, issuer_ref=control.issuer_ref, issuer_kind=control.issuer_kind,
+        control_revision=control.card_revision, holder_subject="creator-of-the-project-card",
+    ))
+    _put_card(redis, bound)
+    _put_card(redis, control)
+
+    composition = await resolve_live_grant_composition(
+        redis, tenant="tenant", project="project", access_id=caller.access_id,
+    )
+    assert composition is not None and composition.control_card == control
+    # AND: the agent's post_message is not on the Control Card, so it is gone.
+    assert composition.effective_card.resource_operations[LIVE_RESOURCE] == ()
+
+    # The same binding without the recorded holder fails closed, as before.
+    _put_card(redis, dataclasses.replace(bound, control_card=dataclasses.replace(bound.control_card, holder_subject="")))
+    with pytest.raises(LiveGrantCardError):
+        await resolve_live_grant_composition(redis, tenant="tenant", project="project", access_id=caller.access_id)

@@ -176,3 +176,61 @@ def test_the_creator_path_reads_the_same_change_fields(monkeypatch):
     assert seen["control_id"] == "aut_control" and seen["label"] == "Board"
     assert seen["accepted_operations"] == {"r": ["x"]} and seen["resource_grants"] is None
     assert "_delegable_grants" not in seen and "_record_transform" not in seen
+
+
+BINDING_OPERATIONS = ("project_control_card_attach", "project_control_card_detach")
+
+
+def test_attach_and_detach_are_csrf_protected_posts_hidden_from_menus():
+    module = _entrypoint_module()
+    source = (BUNDLE_ROOT / "entrypoint.py").read_text()
+    for alias in BINDING_OPERATIONS:
+        method = getattr(getattr(module.ConnectionHubEntrypoint, alias), "__bundle_api_method__")
+        assert method.alias == alias and method.http_method == "POST"
+        assert alias in module.CSRF_PROTECTED_OPERATION_ALIASES
+        assert f'"{alias}": {{"visibility": {{"user_types": []}}}}' in source
+
+
+def test_no_request_field_names_a_control_card_holder(monkeypatch):
+    """Review condition (claude-main): the holder comes only from the project host's answer."""
+
+    module = _entrypoint_module()
+    calls = []
+
+    class Access:
+        async def attach(self, user, **kwargs):
+            calls.append(("attach", kwargs))
+            return {"ok": True}
+
+        async def detach(self, user, **kwargs):
+            calls.append(("detach", kwargs))
+            return {"ok": True}
+
+    class Service:
+        async def attach_control_card(self, user, **kwargs):
+            calls.append(("plain", kwargs))
+            return {"ok": True}
+
+    async def access(_self, _request):
+        return Access()
+
+    async def service(_self, _request):
+        return Service()
+
+    monkeypatch.setattr(module.ConnectionHubEntrypoint, "_project_control_card_access", access)
+    monkeypatch.setattr(module, "_automation_access_service", service)
+    monkeypatch.setattr(module, "_platform_user_payload", lambda *a, **kw: {"user_id": "admin-a"})
+    monkeypatch.setattr(module, "_audit_request_id", lambda _request: "req-1")
+    instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    forged = {"control_id": "c", "project_ref": "work:project:one", "access_id": "a",
+              "holder_subject": "someone", "_control_holder": "someone", "grantor_subject": "someone"}
+
+    asyncio.run(module.ConnectionHubEntrypoint.project_control_card_attach(instance, data=forged))
+    asyncio.run(module.ConnectionHubEntrypoint.project_control_card_detach(instance, data=forged))
+    asyncio.run(module.ConnectionHubEntrypoint.control_card_attach(instance, data=forged))
+
+    assert [name for name, _ in calls] == ["attach", "detach", "plain"]
+    for _, kwargs in calls:
+        assert not {"holder_subject", "_control_holder", "grantor_subject"} & set(kwargs)
+    assert calls[0][1] == {"control_id": "c", "project_ref": "work:project:one", "access_id": "a",
+                           "expected_card_revision": None, "request_id": "req-1", "replace_control_id": ""}
