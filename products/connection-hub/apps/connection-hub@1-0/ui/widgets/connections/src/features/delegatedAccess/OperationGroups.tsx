@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { groupOperations, type OperationGroupDeclaration } from './operationGroups';
+import { groupOperations, type OperationGroupDeclaration } from './operationGroupsModel';
 
 /** The operations under the service's declared groups; a plain list when it declares none (W260). */
 export function renderOperationGroups<T>(
