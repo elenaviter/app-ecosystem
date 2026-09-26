@@ -85,8 +85,12 @@ def test_context_names_the_host_root_folder_for_an_agent_with_none_recorded(tmp_
 
 def test_context_with_no_approved_root_says_so_and_names_no_folder(tmp_path):
     config = host_config.HostRelayConfig.load(_host(tmp_path, [str(tmp_path)]).path)
-    config = SimpleNamespace(**{**{k: getattr(config, k) for k in ("journal_workspace_root",)},
-                                "allowed_roots": (), "repository_mapping": config.repository_mapping})
+    config = SimpleNamespace(
+        journal_workspace_root=config.journal_workspace_root,
+        allowed_roots=(),
+        effective_agent_workspace_root="",
+        repository_mapping=config.repository_mapping,
+    )
     field = SimpleNamespace(_project_path=lambda _project_id: tmp_path / "no-project-record", worker_board_record=lambda _name: {})
     channel = SimpleNamespace(working_directory="", worker_alias="lehrwerk", worker_name="claude-code-x")
 
@@ -94,3 +98,28 @@ def test_context_with_no_approved_root_says_so_and_names_no_folder(tmp_path):
 
     assert context["workspace"] == ""
     assert "Never choose a folder yourself" in context["workspace_note"]
+
+
+def test_the_host_setting_names_the_agent_root_and_it_wins_over_the_first_work_root(tmp_path):
+    first = tmp_path / "a-work-root"
+    agents = tmp_path / "agents"
+    first.mkdir()
+    agents.mkdir()
+    host = _host(tmp_path, [str(first), str(agents)])
+    assert host_config.HostRelayConfig.load(host.path).effective_agent_workspace_root == str(first.resolve())
+
+    updated = host_config.update_host_config(host.path, agent_workspace_root=str(agents))
+    assert updated.agent_workspace_root == str(agents.resolve())
+    assert host_config.HostRelayConfig.load(host.path).effective_agent_workspace_root == str(agents.resolve())
+
+    channel = host_config.enroll_worker_channel(
+        host.path, identity=IDENTITY, profile="problem-board-claude-one", authorized=True,
+        worker_alias="lehrwerk", working_directory=str(first / "somewhere"),
+    )
+    # A folder under another work root is not this agent's workspace either.
+    assert channel.working_directory == str(agents.resolve() / "lehrwerk")
+
+
+def test_the_configure_command_takes_the_agent_workspace_root():
+    parsed = cli.build_parser().parse_args(["host", "configure", "--agent-workspace-root", "/w/agents"])
+    assert parsed.agent_workspace_root == "/w/agents"

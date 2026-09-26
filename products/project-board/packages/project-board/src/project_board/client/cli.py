@@ -339,6 +339,14 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=None,
     )
+    command.add_argument(
+        "--agent-workspace-root",
+        default=None,
+        help=(
+            "Absolute LOCAL folder holding one workspace per agent (<root>/<alias>). "
+            "Unset, the first approved work root is used."
+        ),
+    )
 
     relay_fault = host_commands.add_parser(
         "relay-fault",
@@ -1902,6 +1910,7 @@ def _host_command(args: Any) -> dict[str, Any]:
             reconcile_ceiling_seconds=args.poll_interval,
             idle_reconcile_ceiling_seconds=args.idle_poll_interval,
             create_missing_journal_home=args.create_missing_journal_home,
+            agent_workspace_root=args.agent_workspace_root,
         )
         return _host_view(updated)
     if args.host_command == "relay-fault":
@@ -3458,7 +3467,7 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
         )
     recorded = config.worker(identity)
     workspace = str(getattr(recorded, "working_directory", "") or "") or default_working_directory(
-        config.allowed_roots,
+        [config.effective_agent_workspace_root] if config.effective_agent_workspace_root else [],
         alias=str(getattr(recorded, "worker_alias", "") or ""),
         worker_name=identity.worker_name,
     )
@@ -3683,6 +3692,16 @@ def _worker_command(args: Any) -> dict[str, Any]:
             "authorization": profile,
             "listening": listening,
         }
+        if channel.working_directory:
+            # W262: this agent's own workspace under the host's agent root.
+            # Its sessions start there; a session started elsewhere still
+            # works from it, never from where it was started.
+            result["workspace"] = channel.working_directory
+            if str(Path.cwd().resolve()) != channel.working_directory:
+                result["workspace_note"] = (
+                    f"Your workspace is {channel.working_directory}: create it if needed, work "
+                    "from it, and start this agent's sessions there. Never choose another folder."
+                )
         if getattr(args, "alias", None) and channel.worker_alias and channel.worker_alias != previous_alias:
             # W304 U6: the board keeps an existing alias on every publish, so
             # a rename is a request the relay carries on the next heartbeat.
@@ -4476,7 +4495,7 @@ def _worker_project_context(
         # No folder recorded: the agent's own folder under the host's first
         # approved root, never the directory this session started in.
         workspace = default_working_directory(
-            config.allowed_roots,
+            [config.effective_agent_workspace_root] if config.effective_agent_workspace_root else [],
             alias=str(getattr(channel, "worker_alias", "") or ""),
             worker_name=str(getattr(channel, "worker_name", "") or ""),
         )

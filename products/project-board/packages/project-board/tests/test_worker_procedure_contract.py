@@ -1506,5 +1506,13 @@ def test_the_workspace_comes_from_the_host_root_never_the_session_folder():
     assert "never the folder this session started in and never a path you choose" in skill
     assert "report it with `pb worker workspace-report`" in skill
     workspace = " ".join(_read("references/project-workspace.md").split())
-    assert "else `<first approved root>/<your alias>` (`workspace_source: host_root`)" in workspace
+    assert "else `<agent workspace root>/<your alias>` (`workspace_source: host_root`)" in workspace
+    assert "`pb host configure --agent-workspace-root`" in workspace
 
+
+def test_rehearsing_an_official_flow_gives_no_hints():
+    # Operator, 2026-09-26: prototyping is guided, a rehearsal is not.
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    assert "**Rehearsing an official flow gives no hints.**" in coordinator
+    assert "the agent uses only the installed client and skill" in coordinator
+    assert "then the agent re-reads the skill and continues from it" in coordinator

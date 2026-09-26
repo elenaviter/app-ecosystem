@@ -248,6 +248,16 @@ class HostRelayConfig:
     # W262: (alias, read_root, read_ref) for each alias whose map entry names
     # the never-edited worktree the project's setup is read from.
     source_read_roots: tuple[tuple[str, str, str], ...] = ()
+    # W262: where each agent's own workspace lives, one folder per agent
+    # (``pb host configure --agent-workspace-root``); unset, the first approved
+    # work root. See ``agent_workspace_root``.
+    agent_workspace_root: str = ""
+
+    @property
+    def effective_agent_workspace_root(self) -> str:
+        """The configured agent workspace root, else the first approved work root."""
+
+        return self.agent_workspace_root or (self.allowed_roots[0] if self.allowed_roots else "")
 
     def repository_mapping(self) -> dict[str, Any]:
         """The repository map entries, read roots included, for ``RepositoryMap``."""
@@ -322,6 +332,8 @@ class HostRelayConfig:
             )
         state_root_value = str(connection_hub.get("state_root") or "").strip()
         state_root = _absolute(state_root_value, "connection_hub.state_root") if state_root_value else None
+        agent_workspace = value.get("agent_workspace") if isinstance(value.get("agent_workspace"), Mapping) else {}
+        agent_root_value = str(agent_workspace.get("root") or "").strip()
         journal_root_value = str(journal.get("root") or "").strip()
         journal_root = _absolute(journal_root_value, "journal_workspace.root") if journal_root_value else None
         repositories = journal.get("source_repositories") or {}
@@ -421,6 +433,9 @@ class HostRelayConfig:
                     (component(str(alias), field="repository alias"), _repository_url(url, alias=str(alias)))
                     for alias, url in repository_urls.items()
                 )
+            ),
+            agent_workspace_root=(
+                str(_absolute(agent_root_value, "agent_workspace.root")) if agent_root_value else ""
             ),
         )
         approved_roots = [Path(root) for root in result.allowed_roots]
@@ -697,6 +712,7 @@ def update_host_config(
     reconcile_ceiling_seconds: int | None = None,
     idle_reconcile_ceiling_seconds: int | None = None,
     create_missing_journal_home: bool | None = None,
+    agent_workspace_root: str | Path | None = None,
 ) -> HostRelayConfig:
     """Apply one explicit, non-secret host configuration revision."""
 
@@ -773,6 +789,10 @@ def update_host_config(
             value["journal_workspace"]["create_missing_home"] = bool(
                 create_missing_journal_home
             )
+        if agent_workspace_root:
+            value["agent_workspace"] = {
+                "root": str(_absolute(str(agent_workspace_root), "agent_workspace.root")),
+            }
         value["updated_at"] = utc_now()
         updated = HostRelayConfig.from_mapping(value, path=path)
         atomic_write_json(path, value)
@@ -859,9 +879,13 @@ def enroll_worker_channel(
             if existing
             else ""
         )
+        agent_root = config.effective_agent_workspace_root
         if selected_working_directory:
             selected_path = Path(selected_working_directory)
-            approved_roots = [Path(root) for root in config.allowed_roots]
+            # An agent works inside the host's agent workspace root (W262); a
+            # folder elsewhere (a shared checkout, a utility folder) is never
+            # kept as its workspace.
+            approved_roots = [Path(agent_root)] if agent_root else []
             if not any(
                 selected_path == root or selected_path.is_relative_to(root)
                 for root in approved_roots
@@ -876,7 +900,7 @@ def enroll_worker_channel(
             # No folder inside an approved root: the agent's own folder under
             # the host's first root, never the directory the session started in.
             selected_working_directory = default_working_directory(
-                config.allowed_roots, alias=alias, worker_name=identity.worker_name
+                [agent_root] if agent_root else [], alias=alias, worker_name=identity.worker_name
             )
         channel = WorkerChannelConfig(
             runtime_kind=identity.runtime_kind,

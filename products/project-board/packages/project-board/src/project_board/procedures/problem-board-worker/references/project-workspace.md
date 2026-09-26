@@ -37,9 +37,10 @@ Each entry has an `alias`, a `url`, a `role` (`work`, `journal` or
 
 - **`alias`** names the folder: the repository lives at `<workspace>/<alias>`,
   where `<workspace>` is the `workspace` field of the same output: your own
-  folder, the one this session enrolled from when it lies inside an approved
-  work root, else `<first approved root>/<your alias>` (`workspace_source:
-  host_root`). Create it if it does not exist yet and work from it. Never the
+  folder, the one this session enrolled from when it lies inside the host's
+  agent workspace root, else `<agent workspace root>/<your alias>`
+  (`workspace_source: host_root`). The root is the host's setting (`pb host
+  configure --agent-workspace-root`), else its first approved work root. Create it if it does not exist yet and work from it. Never the
   folder a session happened to start in, and never a path you choose: on
   2026-09-26 an agent started in a shared checkout was handed that checkout.
   When the output names no workspace, the host approves no root: ask the
