@@ -43,7 +43,12 @@ from .host_config import (
     update_host_config,
 )
 from .diagnostics import host_relay_diagnostics
-from .journals import JournalWorkspace, RepositoryMap, parse_source_repositories
+from .journals import (
+    JournalWorkspace,
+    RepositoryMap,
+    parse_source_repositories,
+    worker_journal_root,
+)
 from .journal_operations import JournalIndexWorkflow
 from .plan_authority import require_plan_item
 from .prose_arguments import (
@@ -2988,10 +2993,7 @@ def _reference_migration_preview(args: Any) -> dict[str, Any]:
         reference_mapping=reference_mapping,
         lease_owner=lease_owner,
     )
-    workspace = JournalWorkspace(
-        config.journal_workspace_root,
-        RepositoryMap.from_mapping(config.repository_mapping()),
-    )
+    workspace = _worker_journals(config, args)
     context = workspace.context(args.project_ref)
     journal_home = Path(str(context["local_journal_home"]))
     git_files = list(
@@ -3168,10 +3170,7 @@ def _references_command(args: Any) -> dict[str, Any]:
 
     if not isinstance(receipt.get("git"), Mapping):
         index = _complete_remote_plan(args)
-        workspace = JournalWorkspace(
-            config.journal_workspace_root,
-            RepositoryMap.from_mapping(config.repository_mapping()),
-        )
+        workspace = _worker_journals(config, args)
         context = workspace.context(args.project_ref)
         git_result = sync_plan(
             Path(str(context["local_journal_home"])),
@@ -3369,10 +3368,7 @@ def _plan_command(args: Any) -> dict[str, Any]:
         if args.source:
             journal_home = Path(str(args.source))
         else:
-            workspace = JournalWorkspace(
-                config.journal_workspace_root,
-                RepositoryMap.from_mapping(config.repository_mapping()),
-            )
+            workspace = _worker_journals(config, args)
             context = workspace.context(args.project_ref)
             journal_home = Path(str(context["local_journal_home"]))
         package = read_plan_export(
@@ -3426,10 +3422,7 @@ def _plan_command(args: Any) -> dict[str, Any]:
         }
 
     index = _complete_remote_plan(args)
-    workspace = JournalWorkspace(
-        config.journal_workspace_root,
-        RepositoryMap.from_mapping(config.repository_mapping()),
-    )
+    workspace = _worker_journals(config, args)
     context = workspace.context(args.project_ref)
     journal_home = Path(str(context["local_journal_home"]))
     if args.plan_command == "drift":
@@ -4324,10 +4317,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
     if args.worker_command == "journal-search":
         if parsed_project is None:
             project_ref = _attended_project_ref(field, identity.worker_name)
-        workspace = JournalWorkspace(
-            config.journal_workspace_root,
-            RepositoryMap.from_mapping(config.repository_mapping()),
-        )
+        workspace = _worker_journals(config, args)
         entries = workspace.search(
             args.query,
             project_ref=project_ref,
@@ -4342,10 +4332,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
         "journal-index-resume",
         "journal-index-status",
     }:
-        workspace = JournalWorkspace(
-            config.journal_workspace_root,
-            RepositoryMap.from_mapping(config.repository_mapping()),
-        )
+        workspace = _worker_journals(config, args)
         workflow = JournalIndexWorkflow(
             field=field,
             workspace=workspace,
@@ -4465,6 +4452,41 @@ def _own_board_record(field: SharedFieldStore, channel: Any) -> dict[str, Any]:
     return record or {"state": "not_received", "note": "The relay stores it from its next heartbeat."}
 
 
+def _journals_in(
+    config: HostRelayConfig, *, worker_name: str, workspace: str
+) -> JournalWorkspace:
+    """One worker's journals: its own workspace clones and its own index (W343).
+
+    Never the host's repository map: each worker reads and writes project
+    state only through its own clone of each repository, the coordinator
+    included, so a host checkout that is behind is never a source.
+    """
+
+    if config.journal_workspace_root is None:
+        raise DomainError(
+            "journal_workspace_unconfigured",
+            "This host has no journal workspace root.",
+        )
+    return JournalWorkspace(
+        worker_journal_root(config.journal_workspace_root, worker_name),
+        RepositoryMap.for_workspace(workspace),
+    )
+
+
+def _worker_journals(config: HostRelayConfig, args: Any) -> JournalWorkspace:
+    """The calling agent session's journals (W343)."""
+
+    identity = _identity(args)
+    channel = config.worker(identity)
+    workspace, _source, _note = agent_workspace(
+        config,
+        recorded=str(getattr(channel, "working_directory", "") or ""),
+        alias=str(getattr(channel, "worker_alias", "") or ""),
+        worker_name=identity.worker_name,
+    )
+    return _journals_in(config, worker_name=identity.worker_name, workspace=workspace)
+
+
 def _worker_project_context(
     config: HostRelayConfig,
     field: SharedFieldStore,
@@ -4491,19 +4513,6 @@ def _worker_project_context(
         if on_host
         else {"revision": 0, "repositories": []}
     )
-    try:
-        journal = JournalWorkspace(
-            config.journal_workspace_root,
-            RepositoryMap.from_mapping(config.repository_mapping(), require_existing=False),
-        ).context(project_ref)
-        journal_state = {"journal_state": "available"}
-    except DomainError as exc:
-        journal = {}
-        journal_state = {
-            "journal_state": "unavailable",
-            "journal_error_code": exc.code,
-            "journal_error": str(exc),
-        }
     # The folder this session enrolled from (`pb worker listen`), which the
     # host procedure makes the agent's own workspace. Repositories are set up
     # inside it, one folder per alias (W304 finding 39).
@@ -4513,6 +4522,35 @@ def _worker_project_context(
         alias=str(getattr(channel, "worker_alias", "") or ""),
         worker_name=str(getattr(channel, "worker_name", "") or ""),
     )
+    # W343: the journal and the project's pages are read from this worker's
+    # own clone of the journal repository, never from a host checkout.
+    journal_branch = next(
+        (
+            str(entry.get("branch") or "")
+            for entry in repositories["repositories"]
+            if str(entry.get("role") or "") == "journal"
+        ),
+        "",
+    )
+    try:
+        journal = _journals_in(
+            config,
+            worker_name=str(getattr(channel, "worker_name", "") or ""),
+            workspace=workspace,
+        ).context(project_ref, journal_branch=journal_branch)
+        journal_state = {"journal_state": "available"}
+    except DomainError as exc:
+        journal = {}
+        journal_state = {
+            "journal_state": "unavailable",
+            "journal_error_code": exc.code,
+            "journal_error": str(exc),
+            **(
+                {"journal_error_details": dict(exc.details)}
+                if exc.details
+                else {}
+            ),
+        }
     return {
         "project_ref": project_ref,
         "project_on_this_host": on_host,

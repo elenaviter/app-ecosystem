@@ -92,7 +92,7 @@ hold the same fields, so only where they are read from changes.
 | Setting | What it gives | Today |
 | --- | --- | --- |
 | **Project instructions** (one file per project) | Every participant reads the same project rules on attending (`project_instructions_ref`), whatever repositories it touches. Repository `AGENTS.md` files keep describing how to work in their code. | `instructions_ref` in `project-setup.json` |
-| **Repositories of the project** | Aliases, so `repo:<alias>/...` resolves to each host's checkout; assignments carry and validate repository plus base commit; each repository's integration ref, from which runtime actions release; a per-host check that the repositories and Git access exist; which repositories are in scope. | assignment bindings and each host's repository map; each runtime action's `releases`: a repository alias and its integration ref |
+| **Repositories of the project** | Aliases, so `repo:<alias>/...` resolves to each worker's own clone, `<workspace>/<alias>`; assignments carry and validate repository plus base commit; each repository's integration ref, from which runtime actions release; a per-host check that the repositories and Git access exist; which repositories are in scope. | assignment bindings and each worker's workspace clones; each runtime action's `releases`: a repository alias and its integration ref |
 | **Additional skills** | Project-specific know-how installed for every participant, such as a runtime profile. | each runtime's `profile_ref`, read from `pb worker context` |
 | **Runtimes** | Where the project's systems run, their actions, who may trigger them, from which ref. | `runtimes` in `project-setup.json` |
 | **Journal home** | Where the project's decisions and history are kept, and where this setup file sits. | a project setting already (`pb worker context`) |
@@ -128,46 +128,46 @@ Every action must name `who` and `releases`: each repository it loads, by alias,
 left out and named in `project_setup_issues`; a missing file gives empty
 fields. Neither ever fails `pb worker context`.
 
-### Where a host reads the project's setup
+### Where a worker reads the project's setup
 
-A host's repository map (`journal_workspace.source_repositories` in the host
-relay config) maps each alias to its checkout. That checkout is where writes
-go, and on a host it is often an operator's working checkout, which cannot
-fast-forward over their uncommitted edits. A setup read there goes stale, and
-a stale setup looks like no setup. So an entry may also name a **read root**:
+Each worker reads its project's setup, and all other project state, from its
+own clone of the repository: `<workspace>/<alias>`, where `<workspace>` is the
+folder `pb worker context` names for that worker and `<alias>` is the
+repository's alias on the project card. That holds for every worker,
+coordinator included, and for every read and write of project state:
 
-```json
-"source_repositories": {
-  "applications": {
-    "root": "/home/<user>/src/applications",
-    "read_root": "/home/<user>/src/.read/applications",
-    "read_ref": "origin/main"
-  },
-  "kdcube": "/home/<user>/src/kdcube"
-}
-```
+- **`pb worker context`** reads `project-setup.json`, `project-facts.md`,
+  `project-environment.md`, the instructions file and each runtime's profile
+  through the worker's clones, and returns `journal_home_commit` (the commit of
+  the worker's clone they were read at) and `journal_clone`: the alias, the
+  folder, and how current the clone is against `origin/<branch>` (the declared
+  branch, else the remote's default) as last fetched: `current`, `ahead`,
+  `behind`, `diverged` or `no_upstream`. The context compares local refs only;
+  it never fetches.
+- **A lag is named, never fatal.** A clone that is behind puts one line in
+  `project_setup_issues` with the fetch and fast-forward that fixes it. A clone
+  that is missing makes `journal_state` `unavailable` with
+  `journal_repository_root_missing`, naming the alias and the folder. In
+  neither case is another checkout read instead.
+- **The journal is the worker's too.** Entries are written in the worker's
+  clone and committed on its branch; `pb worker journal-index` and
+  `pb worker journal-search` use an index of that worker's own, under the
+  host's journal root in `workers/<worker-name>/`; and a journal view the
+  board asks a worker's relay for is read from that clone, with its commit and
+  clone state beside the result.
+- **A relay channel never depends on a clone.** A missing clone is reported
+  for the project whose journal needs it; controls keep flowing.
 
-A plain string is a root only. `read_ref` defaults to `origin/main`; the read
-root must be inside an approved coding root like the root.
+A host-wide checkout is never a source of project state, however current it
+looks: another worker's or a person's checkout lags, or carries edits nobody
+else can see, and a setup read there looks like no setup.
 
-- **Create it once**, a dedicated detached worktree per alias, never edited:
-  `git -C <checkout> worktree add --detach --relative-paths <read-root> origin/main`
-  (before git 2.48, without `--relative-paths`, then rewrite the gitdir links
-  to relative paths as the KDCube runtime profile shows).
-- **Reads go through it.** `pb worker context` reads `project-setup.json`,
-  `project-facts.md`, `project-environment.md`, the instructions file and each
-  runtime's profile through the alias's read root, and returns
-  `journal_home_commit` (the commit they were read at) and
-  `journal_home_read_root`. Without a read root, both come from the root.
-- **A lag is named, never fatal.** When the read root is behind its
-  `read_ref`, missing, or not a git tree, `project_setup_issues` names the
-  alias, the read root, both commits and the reason. The context compares
-  local refs only; it never fetches.
-- **The relay advances it, only when clean.** Its housekeeping, at most every
-  five minutes per alias, fetches the ref's branch and, when
-  `git status --porcelain` is empty, checks the read root out detached at the
-  ref. A dirty tree or a failed fetch is left as it is and logged once per
-  change.
-- **Writes never go there.** Journal entries and every other change are
-  committed on the agent's own branch in its own worktree and land through a
-  pull request; the journal workspace's links and index use the root.
+The host's repository map (`journal_workspace.source_repositories` in the host
+relay config, `pb setup --source-repo`, and its `read_root` and `read_ref`
+entries) is no longer read for project state. It is still parsed, validated
+against the approved roots and shown by `pb host inspect`, so existing host
+configurations keep loading; the relay's housekeeping still advances a
+configured read root, which nothing reads any more. Its removal is tracked as
+a separate change. `source_repository_urls`, which lets the board link
+portable `repo:` refs, is unaffected.
+

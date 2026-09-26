@@ -25,7 +25,12 @@ model turn and sometimes does not. On the notice: start the watch again, then
 
 A watch belongs to the session id in its command line
 (`--runtime-session-id`). Read that field before stopping a watch process, and
-stop only your own.
+stop only your own. Start it exactly as SKILL.md step 5 and the guard below
+show. A plain background shell (`run_in_background`, `&`, `nohup`) is not the
+facility: it has no cap and posts no end notice, so the watch never ends and
+nothing re-arms it. A bare `pb worker watch` carries no session id in its
+command line, so the guard, which finds watches by that id, can neither
+replace it nor end it (2026-09-26, a coordinator's first watch).
 
 ## The guard
 

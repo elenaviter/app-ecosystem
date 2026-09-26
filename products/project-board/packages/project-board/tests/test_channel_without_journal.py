@@ -50,7 +50,7 @@ def test_a_channel_opens_and_the_missing_journal_is_reported_for_its_project(tmp
     config = dataclasses.replace(
         relay.RelayConfig.from_host_channel(host, channel, project_id="project"),
         journal_workspace_root=tmp_path / "journal-workspace",
-        source_repositories={"applications": str(tmp_path / "never-cloned")},
+        workspace=str(tmp_path / "workspace"),
     )
 
     adapter = relay.ProblemBoardHostRelayAdapter(
@@ -72,7 +72,7 @@ def test_a_channel_opens_and_the_missing_journal_is_reported_for_its_project(tmp
     assert gap["state"] == "unmapped"
     assert gap["error_code"] == "journal_repository_root_missing"
     assert gap["repository"] == "applications"
-    missing_path = str((tmp_path / "never-cloned").resolve())
+    missing_path = str((tmp_path / "workspace").resolve() / "applications")
     assert gap["message"] == f"journal unavailable for work:project:project: applications not found at {missing_path}"
 
 
@@ -102,13 +102,13 @@ BINDING = {
 
 
 def _host(tmp_path, checkout):
-    """One host whose source map names a checkout that does not exist yet."""
+    """One host whose worker has not cloned the journal repository into its workspace yet (W343)."""
 
     host, _identity, channel = make_host(tmp_path)
     config = dataclasses.replace(
         relay.RelayConfig.from_host_channel(host, channel, project_id="project"),
         journal_workspace_root=tmp_path / "journal-workspace",
-        source_repositories={"applications": str(checkout)},
+        workspace=str(checkout.parent),
         create_missing_journal_home=True,
     )
     SharedFieldStore(host.field_root).register_worker(
@@ -118,6 +118,13 @@ def _host(tmp_path, checkout):
         authority_label="authority:codex-api",
     )
     return host, config
+
+
+def _clone(checkout):
+    """The worker clones the journal repository into its workspace."""
+
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "docs" / "journal" / "projects" / "project").mkdir(parents=True)
 
 
 def _relay(host, config, events=None):
@@ -132,7 +139,7 @@ def _record(adapter):
 
 
 def test_the_worker_card_hears_once_that_the_journal_is_unavailable_and_once_that_it_is_back(tmp_path):
-    checkout = tmp_path / "later-cloned"
+    checkout = tmp_path / "workspace" / "applications"
     adapter, field = _relay(*_host(tmp_path, checkout))
 
     adapter._reconcile_journal_binding(BINDING)
@@ -146,7 +153,7 @@ def test_the_worker_card_hears_once_that_the_journal_is_unavailable_and_once_tha
     assert unavailable["metadata"]["state"] == "unavailable"
     assert unavailable["metadata"]["path"] == str(checkout.resolve())
 
-    (checkout / "docs" / "journal" / "projects" / "project").mkdir(parents=True)
+    _clone(checkout)
     restored = adapter._reconcile_journal_binding(BINDING)
 
     assert restored.get("state") != "unmapped"
@@ -159,7 +166,7 @@ def test_the_worker_card_hears_once_that_the_journal_is_unavailable_and_once_tha
 
 
 def test_a_relay_restarted_during_the_gap_does_not_report_it_again(tmp_path):
-    checkout = tmp_path / "later-cloned"
+    checkout = tmp_path / "workspace" / "applications"
     host, config = _host(tmp_path, checkout)
     first, field = _relay(host, config)
     first._reconcile_journal_binding(BINDING)
@@ -172,11 +179,11 @@ def test_a_relay_restarted_during_the_gap_does_not_report_it_again(tmp_path):
 
 
 def test_a_journal_that_returns_across_a_restart_is_reported_back(tmp_path):
-    checkout = tmp_path / "later-cloned"
+    checkout = tmp_path / "workspace" / "applications"
     host, config = _host(tmp_path, checkout)
     first, field = _relay(host, config)
     first._reconcile_journal_binding(BINDING)
-    (checkout / "docs" / "journal" / "projects" / "project").mkdir(parents=True)
+    _clone(checkout)
 
     restarted, _field = _relay(host, config, field.events)
     restarted._reconcile_journal_binding(BINDING)
@@ -189,7 +196,7 @@ def test_a_journal_that_returns_across_a_restart_is_reported_back(tmp_path):
 
 
 def test_an_event_queued_before_its_phase_was_written_is_not_queued_again(tmp_path):
-    checkout = tmp_path / "later-cloned"
+    checkout = tmp_path / "workspace" / "applications"
     host, config = _host(tmp_path, checkout)
     first, field = _relay(host, config)
     first._reconcile_journal_binding(BINDING)
@@ -208,11 +215,11 @@ def test_an_event_queued_before_its_phase_was_written_is_not_queued_again(tmp_pa
 
 
 def test_a_close_that_failed_to_queue_is_finished_by_the_next_relay(tmp_path):
-    checkout = tmp_path / "later-cloned"
+    checkout = tmp_path / "workspace" / "applications"
     host, config = _host(tmp_path, checkout)
     first, field = _relay(host, config)
     first._reconcile_journal_binding(BINDING)
-    (checkout / "docs" / "journal" / "projects" / "project").mkdir(parents=True)
+    _clone(checkout)
     first._journal_notice_event = lambda **_values: False
     first._reconcile_journal_binding(BINDING)
     assert _record(first)["close_note"] == "pending"

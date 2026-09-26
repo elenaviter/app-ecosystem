@@ -42,11 +42,23 @@ from ..contract.refs import parse_ref
 from ..contract.worker_identity import WorkerSessionIdentity, normalize_worker_alias
 from ..contract.runtime_account import normalize_runtime_account
 from .io import content_hash, new_id, parse_utc, read_json, utc_now
-from .journals import JournalWorkspace, RepositoryMap, repository_entries, repository_entry
+from .journals import (
+    JournalWorkspace,
+    RepositoryMap,
+    repository_entries,
+    repository_entry,
+    worker_journal_root,
+)
 from .mail_attachments import normalize_attachment_manifest
 from .plan_authority import PLAN_REF_RESOLUTION_SCHEMA
 from ..contract.plan_host import NOTE_VIEW_KIND, PLAN_HOST_CONTROL_KINDS
-from .host_config import DEFAULT_ALLOWED_PEER_WORKERS, HostRelayConfig, WorkerChannelConfig, set_worker_channel_state
+from .host_config import (
+    DEFAULT_ALLOWED_PEER_WORKERS,
+    HostRelayConfig,
+    WorkerChannelConfig,
+    agent_workspace,
+    set_worker_channel_state,
+)
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
 from .runtime_account import read_runtime_account
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
@@ -401,6 +413,10 @@ class RelayConfig:
     source_repository_urls: tuple[tuple[str, str], ...] = ()
     # W262: (alias, read_root, read_ref) per alias with a setup read root.
     source_read_roots: tuple[tuple[str, str, str], ...] = ()
+    # W343: this worker's own workspace, where its clones live. The journal
+    # this channel indexes and serves is read there, never from the host's
+    # repository map.
+    workspace: str = ""
 
     def repository_mapping(self) -> dict[str, Any]:
         return repository_entries(self.source_repositories, self.source_read_roots)
@@ -559,6 +575,7 @@ class RelayConfig:
             source_repository_urls=tuple(
                 sorted((str(alias), str(url)) for alias, url in raw_repository_urls.items() if str(url).strip())
             ),
+            workspace=str(worker.get("working_directory") or "").strip(),
         )
 
     @classmethod
@@ -597,6 +614,12 @@ class RelayConfig:
             allow_session_resume_view=host.allow_session_resume_view,
             source_repository_urls=getattr(host, "source_repository_urls", ()),
             source_read_roots=getattr(host, "source_read_roots", ()),
+            workspace=agent_workspace(
+                host,
+                recorded=channel.working_directory,
+                alias=channel.worker_alias,
+                worker_name=channel.worker_name,
+            )[0],
         )
 
     @classmethod
@@ -622,11 +645,16 @@ class RelayConfig:
     def journal_workspace(self) -> JournalWorkspace | None:
         if self.journal_workspace_root is None:
             return None
+        # W343: this worker's own clones and its own index. A clone that is not
+        # there is reported per project when a journal needs it, and never
+        # keeps a channel closed (W304 D13).
+        try:
+            repositories = RepositoryMap.for_workspace(self.workspace)
+        except DomainError:
+            repositories = RepositoryMap(roots={})
         return JournalWorkspace(
-            self.journal_workspace_root,
-            # A checkout that is not on this machine is reported per project
-            # when a journal needs it, and never keeps a channel closed (W304 D13).
-            RepositoryMap.from_mapping(self.repository_mapping(), require_existing=False),
+            worker_journal_root(self.journal_workspace_root, self.worker_name),
+            repositories,
         )
 
 
@@ -1432,19 +1460,21 @@ class ProblemBoardHostRelayAdapter:
                     else f"journal unavailable for {project_ref}: {exc}"
                 ),
                 "mapped_repositories": sorted(self.journal_workspace.repositories.roots),
+                # W343: the worker's own workspace, where the clone belongs.
+                "workspace": str(self.journal_workspace.repositories.workspace or ""),
             }
             self._journal_mapping_gap = gap
             key = (self.config.relay_id, project_ref, exc.code)
             if key not in _reported_journal_gaps:
                 _reported_journal_gaps.add(key)
                 logger.warning(
-                    "Problem Board %s (code=%s ref=%s mapped=%s); controls still flow, "
-                    "journal views refuse until the checkout exists or "
-                    "`pb host configure --set-source-repo` maps it",
+                    "Problem Board %s (code=%s ref=%s workspace=%s); controls still flow, "
+                    "journal views refuse until the worker clones the repository into "
+                    "its workspace (project-workspace.md step 2)",
                     gap["message"],
                     exc.code,
                     gap["journal_home_ref"],
-                    ",".join(gap["mapped_repositories"]) or "-",
+                    gap["workspace"] or "-",
                 )
             self._report_journal_incident(project_ref, gap)
             return gap
@@ -2082,6 +2112,9 @@ class ProblemBoardHostRelayAdapter:
                     {"entries": entries, "next_cursor": next_cursor}
                 ),
                 "next_cursor": next_cursor,
+                # W343: the clone commit the page was read at, and how current
+                # that clone is.
+                **self.journal_workspace.clone_stamp(project_ref),
             }
         elif mode == "document" and kind == "journal.read":
             result = self.journal_workspace.read_for_project(
@@ -2100,6 +2133,7 @@ class ProblemBoardHostRelayAdapter:
                 "content_hash": str(result.get("content_hash") or ""),
                 "repository_journal_ref": str(result["repository_journal_ref"]),
                 "next_cursor": "",
+                **self.journal_workspace.clone_stamp(project_ref),
             }
         else:
             raise DomainError(

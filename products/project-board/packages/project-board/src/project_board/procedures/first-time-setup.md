@@ -154,6 +154,11 @@ The agent discovers what it can and presents one proposal containing:
 - narrow local roots coding agents may access;
 - portable repository aliases mapped to local checkouts.
 
+A worker never reads project state through that mapping: each worker reads
+its project's pages and journal from its own clone, `<workspace>/<alias>`
+(worker procedure, `references/project-workspace.md`, step 5). The mapping is
+still validated and shown by `pb host inspect`; it serves no project read.
+
 After the user approves that proposal, the setup agent runs one command:
 
 ```bash
