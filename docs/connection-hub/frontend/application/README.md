@@ -313,6 +313,9 @@ account at call time.
     while unlinking it (`owner_unlinking`, accepted by detach only, as part of
     leaving the project). Any other pairing is refused
     (`decision_via_cannot_bind`).
+    The attach and detach questions name the agent Card (`access_id`) beside
+    `control_id`, `project_ref` and `action`, so the host can check that the
+    asker owns that agent; read and write questions do not.
   - The binding then records `holder_subject`, the Control Card's creator, and
     admission resolves the Control Card under it. Only the project path writes
     it, a foreign holder requires `and` composition (the Control Card only
