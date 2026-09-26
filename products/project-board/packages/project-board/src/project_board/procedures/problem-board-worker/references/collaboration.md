@@ -317,6 +317,9 @@ is a verification. One that stops at printing JSON is a report.
    and again after every integration push, which moves the base under every
    open change request. A rebase is pushed with `--force-with-lease` on the
    author's own branch and the new head is named on the change request.
+   The merger may instead test the exact merged tree of heads that are
+   behind, and prove after merging that `main`'s tree equals it
+   (`coordinator.md`, Merge).
 3. **Suites green on the branch head**, both the Python and the widget suites
    where a widget changed, run by the author and stated with counts, rerun on
    every new head. A regression written for a review finding is shown to fail
@@ -361,7 +364,11 @@ is a verification. One that stops at printing JSON is a report.
    client the board app loads through its `local/` aliases, a payload, a
    config or a file shape both read) runs that repository's suite against the
    change's head too, author and reviewer both, before approval, and the
-   counts name both repositories. Why: on 2026-09-26 app-ecosystem#208 moved
+   counts name both repositories. On a head that edits the worker procedure
+   package, `test_package_content_is_recorded_for_its_revision` skips on an
+   author's head with the reason "procedure changed; the merger sets the
+   revision", because authors never bump it (`coordinator.md`, Merge); the
+   author names that skip with the others. Why: on 2026-09-26 app-ecosystem#208 moved
    journal resolution to each worker's own clone, its reviews ran only the
    package suite, and eight board tests failed on main (W352).
 4. **Runtime import path stated and proven** when the change alters what a

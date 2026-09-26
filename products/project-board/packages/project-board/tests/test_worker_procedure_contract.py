@@ -9,10 +9,13 @@ if-this-read-that line each, and the package manifest ships them.
 
 from __future__ import annotations
 
+import os
 import re
 
 import json
 from pathlib import Path
+
+import pytest
 
 from project_board.client.procedures import (
     source_package,
@@ -77,6 +80,36 @@ def test_project_board_owns_its_operational_procedures() -> None:
         assert "id: applications.playground.problem-board.procedure." not in text
 
 
+REQUIRE_REVISION_RECORDED = "PB_REQUIRE_REVISION_RECORDED"
+UNRECORDED_REASON = "procedure changed; the merger sets the revision"
+
+
+def _revision_recorded(package: dict, ledger: dict) -> None:
+    """Fail, or skip on an author's head, when the content is not recorded.
+
+    Authors never bump the revision; the merger sets it at merge time
+    (coordinator.md, Merge). A head whose content differs from its revision's
+    ledger entry therefore skips, and the merger's run after the bump commit
+    sets PB_REQUIRE_REVISION_RECORDED=1, which turns the skip into a failure.
+    """
+
+    revision = package["revision"]
+    recorded = ledger.get(revision)
+    assert recorded is not None, (
+        f"revision {revision} is not in {REVISION_LEDGER.name}; add "
+        f'"{revision}": "{package["source_digest"]}"'
+    )
+    if recorded == package["source_digest"]:
+        return
+    if os.environ.get(REQUIRE_REVISION_RECORDED, "").strip() == "1":
+        pytest.fail(
+            f"the package content changed under revision {revision}; set the next "
+            f"revision in package.json and record "
+            f'"<revision>": "{package["source_digest"]}" in {REVISION_LEDGER.name}'
+        )
+    pytest.skip(UNRECORDED_REASON)
+
+
 def test_package_content_is_recorded_for_its_revision() -> None:
     """A content change under an unchanged revision fails here.
 
@@ -88,24 +121,28 @@ def test_package_content_is_recorded_for_its_revision() -> None:
     changed package needs a new revision and a new ledger line.
     """
 
-    package = source_package()
-    ledger = json.loads(REVISION_LEDGER.read_text(encoding="utf-8"))
-    revision = package["revision"]
-    recorded = ledger.get(revision)
-    assert recorded is not None, (
-        f"revision {revision} is not in {REVISION_LEDGER.name}; add "
-        f'"{revision}": "{package["source_digest"]}"'
+    _revision_recorded(
+        source_package(), json.loads(REVISION_LEDGER.read_text(encoding="utf-8"))
     )
-    assert recorded == package["source_digest"], (
-        f"the package content changed under revision {revision}; bump "
-        f"package.json and record the new digest in {REVISION_LEDGER.name}"
-    )
+
+
+def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger(monkeypatch) -> None:
+    package = {"revision": "2026.01.01.1", "source_digest": "new"}
+    monkeypatch.delenv(REQUIRE_REVISION_RECORDED, raising=False)
+    with pytest.raises(pytest.skip.Exception, match=UNRECORDED_REASON):
+        _revision_recorded(package, {"2026.01.01.1": "old"})
+    monkeypatch.setenv(REQUIRE_REVISION_RECORDED, "1")
+    with pytest.raises(pytest.fail.Exception, match="changed under revision 2026.01.01.1"):
+        _revision_recorded(package, {"2026.01.01.1": "old"})
+    _revision_recorded(package, {"2026.01.01.1": "new"})
+    with pytest.raises(AssertionError, match="is not in"):
+        _revision_recorded(package, {})
 
 
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.17"
+    assert package["revision"] == "2026.09.26.18"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1592,3 +1629,34 @@ def test_a_new_agent_is_reachable_before_it_attends_a_project():
     assert "Start the watch right after `pb worker listen`, before `pb worker authorize`." in wake
     host = " ".join((PROCEDURE_ROOT.parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
     assert "while one of them attends no project, anyone who knows its exact stable name (never its alias) may send it a request, reply or ping" in host
+
+
+def test_the_merger_retargets_a_stacked_change_request_and_proves_the_merged_tree():
+    # W354: a stacked change request merged into its base branch after that
+    # base landed, so its content never reached main; and a merge on a tested
+    # merged tree replaced a rebase round, proven by comparing trees.
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    merge = coordinator[coordinator.index("### Merge"):coordinator.index("## Release a stalled assignment")]
+    assert "Before merging a change request whose base is not the integration branch, retarget it to `main` (`gh pr edit <number> --base main`), or merge it only after its base has merged and it has been retargeted." in merge
+    assert "Never merge a stacked change request into its base branch after that base landed" in merge
+    assert "When approved heads are behind `main`, the merger may test the exact merged tree instead of asking for a rebase" in merge
+    assert "run both repositories' suites on that tree (gate 3)" in merge
+    assert "After merging, prove `main`'s tree equals the tested tree." in merge
+    assert "git rev-parse origin/main^{tree}" in merge
+    collaboration = " ".join(_read("references/collaboration.md").split())
+    gate_2 = collaboration[collaboration.index("2. **Base current:**"):collaboration.index("3. **Suites green")]
+    assert "The merger may instead test the exact merged tree" in gate_2
+    assert "(`coordinator.md`, Merge)" in gate_2
+    # The operator's rule of 2026-09-26 20:45Z: two change requests claimed the
+    # same revision twice in one day, so the merger sets it, never the author.
+    assert "**The merger sets the procedure revision; authors never bump it.**" in merge
+    assert "The merger sets the next revision at merge time, in merge order, with one commit on the merged branch" in merge
+    gate_3 = collaboration[collaboration.index("3. **Suites green"):collaboration.index("4. **Runtime import path")]
+    assert "`test_package_content_is_recorded_for_its_revision` skips on an author's head with the reason \"procedure changed; the merger sets the revision\"" in gate_3
+    assert "`PB_REQUIRE_REVISION_RECORDED=1`" in merge
+    skill = " ".join(_read("SKILL.md").split())
+    assert "leave the revision to the merger" in skill
+    assert "advance the package revision" not in skill
+    agent_worker = " ".join((PROCEDURE_ROOT.parent / "agent-worker.md").read_text(encoding="utf-8").split())
+    assert "The merger sets that revision at merge time, in merge order; an author never bumps it" in agent_worker
+    assert "PB_REQUIRE_REVISION_RECORDED=1" in agent_worker

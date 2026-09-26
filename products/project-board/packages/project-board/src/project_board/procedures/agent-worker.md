@@ -54,7 +54,10 @@ Every change to a file in the package ships under a new `revision` in
 package's revision ledger. Installed copies compare revisions, so an edit
 under an unchanged revision reaches no session that already installed it. The
 package's worker procedure contract test fails on such an edit and prints the
-ledger line to add.
+ledger line to add. The merger sets that revision at merge time, in merge
+order; an author never bumps it, so on an author's head that test skips, and
+the merger's run sets `PB_REQUIRE_REVISION_RECORDED=1` to make it fail
+instead (`problem-board-worker/references/coordinator.md`, Merge).
 
 Inspect source and installed state with:
 

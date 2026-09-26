@@ -432,7 +432,7 @@ A client-source selection is one of these actions ([runtime-actions](references/
 Selection). A container-local patch is not an action this team has. Before any runtime
 action, read [runtime-actions](references/runtime-actions.md), and for a test
 window [test-window](references/test-window.md). A coordinator about to accept,
-route, reload or refresh follows [coordinator](references/coordinator.md). Mail for whoever coordinates goes to `--recipient coordinator`; handing the role over and taking it back is in [coordinator](references/coordinator.md) too. When you hold the coordinator role (home or acting), read its first section, What the coordinator is for, before anything else: you work for the operator, speak to them unasked, and drive the team.
+merge, route, reload or refresh follows [coordinator](references/coordinator.md). Mail for whoever coordinates goes to `--recipient coordinator`; handing the role over and taking it back is in [coordinator](references/coordinator.md) too. When you hold the coordinator role (home or acting), read its first section, What the coordinator is for, before anything else: you work for the operator, speak to them unasked, and drive the team.
 
 ## The Item Is Authoritative, Mail Is Commentary
 
@@ -507,7 +507,7 @@ When an operating failure shows that this skill could lead another agent to
 repeat a mistake, resolve the gap: with clear evidence and a clear owning rule,
 re-read the complete package, find every statement of the concept, rewrite the
 owning rule so no vague, duplicate, or contradictory guidance remains, test the
-contract, advance the package revision, reinstall it, and tell active workers
+contract, leave the revision to the merger, reinstall it, and tell active workers
 to re-read it. With uncertain ownership or policy, create a work item with the
 evidence and ask. A procedure update is a semantic revision of the affected
 contract, never an append-only note, and it carries the rule with one clause of

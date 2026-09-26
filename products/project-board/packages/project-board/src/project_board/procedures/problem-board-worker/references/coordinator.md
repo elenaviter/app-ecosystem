@@ -3,7 +3,7 @@ id: project-board.worker-reference.coordinator
 title: Accept, Route, Reload, Refresh
 summary: The coordinator's checklist for review decisions, capacity-aware routing, teammate setup, shared project knowledge, and runtime actions, placed where each act happens so the rule is present when it is applied.
 tags: [procedure, problem-board, coordinator, review, routing, runtime]
-keywords: [what the coordinator is for, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, integrate onto the ref, runtime profile, receipt names the commit, verify the artifact, what loaded]
+keywords: [what the coordinator is for, merge, stacked change request, retarget base, tested merged tree, HEAD^{tree}, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, integrate onto the ref, runtime profile, receipt names the commit, verify the artifact, what loaded]
 see_also:
   - runtime-actions.md
   - test-window.md
@@ -11,8 +11,8 @@ see_also:
 
 # Accept, Route, Reload, Refresh
 
-Read this when you are about to accept, return or cancel a submission, release
-a stalled assignment, route an item, or reload, refresh or restart the runtime. Each list is the order of
+Read this when you are about to accept, return or cancel a submission, merge a
+change request, release a stalled assignment, route an item, or reload, refresh or restart the runtime. Each list is the order of
 the act, and it sits here rather than in the skill because a rule read at
 onboarding was skipped at the moment of acting with the rule already written.
 
@@ -133,6 +133,45 @@ successor inherits none of that.
    06:24Z with the coordinator as default reviewer, while its remaining check
    needed the operator's browser, the operator's Review Assignments list was
    empty, and the item showed only under the worker's name.
+
+### Merge
+
+The merge gate is collaboration Rule 5. These steps are the merger's part of
+it, in the order of the act.
+
+1. **Read each change request's base before merging it.** Before merging a
+   change request whose base is not the integration branch, retarget it to
+   `main` (`gh pr edit <number> --base main`), or merge it only after its base
+   has merged and it has been retargeted. Never merge a stacked change request
+   into its base branch after that base landed: the merge succeeds, the
+   change request reads merged, and its content never reaches `main`. Why: on
+   2026-09-26 app-ecosystem#203 still had #199's branch as its base when #199
+   had already merged, so #203 landed in that branch; only the tree
+   comparison of step 3 caught it, and #217 carried the branch into `main`.
+2. **A current base, or a tested merged tree.** When approved heads are
+   behind `main`, the merger may test the exact merged tree instead of asking
+   for a rebase: merge the approved heads onto `main` locally, in the merge
+   order, and run both repositories' suites on that tree (gate 3), stating
+   the counts. Record the tested tree (`git rev-parse HEAD^{tree}`). Why: a
+   rebase round costs every author a turn, on 2026-09-26 on a quota-limited
+   pool, and the merged tree is what gate 2 exists to test.
+3. **After merging, prove `main`'s tree equals the tested tree.** Fetch, then
+   compare `git rev-parse origin/main^{tree}` with the tree recorded in step
+   2 (or, for a change request with a current base, with its tested head's
+   tree merged onto the `main` it was tested against). Unequal trees mean
+   something landed that was not tested, or something tested did not land:
+   stop, find which, and repair before any runtime action releases `main`.
+4. **The merger sets the procedure revision; authors never bump it.** A
+   change request that edits the worker procedure package arrives without a
+   revision change (`package.json`, `procedure-revisions.json`, the revision
+   pins in the package's tests). The merger sets the next revision at merge
+   time, in merge order, with one commit on the merged branch, pushed before
+   the merge, and the tested tree of steps 2 and 3 includes that commit. The
+   merger's suite run after that commit sets `PB_REQUIRE_REVISION_RECORDED=1`,
+   so the ledger check that skips on an author's head fails if the revision
+   is not recorded. Why:
+   on 2026-09-26 #207 and #208, then #228 and #229, each claimed the same
+   revision (operator, 2026-09-26 20:45Z).
 
 ## Release a stalled assignment
 
