@@ -86,14 +86,17 @@ def queue_publication(
 
     with exclusive_lock(field._project_lock(project_id)):
         current = read_json(record_path)
+        prior = dict(current.get("publication") or {})
         current["publication"] = {
             "kind": OUTBOX_KIND,
             "outbox_ids": outbox_ids,
             "batch_count": len(publications),
-            "queued_at": str(
-                (current.get("publication") or {}).get("queued_at") or utc_now()
-            ),
+            "queued_at": str(prior.get("queued_at") or utc_now()),
         }
+        # A replayed receipt keeps its count, so the next replay never reuses
+        # an _r<n> id that already names a settled row (review of #175).
+        if prior.get("replays"):
+            current["publication"]["replays"] = int(prior["replays"])
         atomic_write_json(record_path, current)
         return current
 

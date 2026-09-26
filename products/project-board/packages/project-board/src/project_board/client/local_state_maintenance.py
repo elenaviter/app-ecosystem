@@ -40,6 +40,7 @@ from .outbox_store import (
     OutboxStore,
 )
 from .operation_store import OperationStore
+from .reconciliation_replay import replay_refused_receipts
 from .reconciliation_receipts import (
     apply_receipt_retention,
     pending_path,
@@ -69,6 +70,7 @@ def run_local_state_maintenance(field: Any, *, now: datetime | None = None) -> d
     current = now or datetime.now(timezone.utc)
     summary: dict[str, Any] = {"legacy_receipts": {}, "retention": None}
     summary["flat_events"] = {}
+    summary["refused_receipts_replay"] = {}
     summary["flat_assignments"] = {}
     summary["flat_scope_leases"] = {}
     summary["flat_mail_history"] = field._mail_history().migrate_legacy()
@@ -80,6 +82,9 @@ def run_local_state_maintenance(field: Any, *, now: datetime | None = None) -> d
     for project_id in _project_ids(field):
         summary["legacy_receipts"][project_id] = cleanup_legacy_receipts(field, project_id)
         summary["flat_events"][project_id] = migrate_flat_events(field, project_id)
+        summary["refused_receipts_replay"][project_id] = replay_refused_receipts(
+            field, project_id, now=current
+        )
         with exclusive_lock(field._project_lock(project_id)):
             summary["flat_assignments"][project_id] = AssignmentStore(
                 field._project_dir(project_id) / "assignments"

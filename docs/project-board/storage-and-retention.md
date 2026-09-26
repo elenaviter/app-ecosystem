@@ -193,6 +193,15 @@ names `permission_group`, `why` and the `fix` command
 (`pb worker authorize <profile> --replace-card`). The relay row counts these
 as `reconciliation_publications_refused`.
 
+A refused receipt is published again once the Card holds the grant
+(`client/reconciliation_replay.py`). The relay cannot read the Card, so
+housekeeping asks the service:
+
+- **Probe.** At most once an hour per project and agent, the oldest refused receipt is queued again. A refused probe is quiet: a `relay store replay … op=probe outcome=refused` log line, and no board notice.
+- **Batch.** A published probe proves the grant. Up to 100 refused receipts are then queued again on each pass, until none is left.
+
+Replayed batches get new outbox ids (`<content id>_r<n>`), because the content id already names the refused row. Batches the service accepted keep their ids. The per-agent marker `replay.json` keeps the probe's state across restarts, and is removed once nothing refused is left.
+
 Housekeeping migrates legacy history in batches of at most 1,000 records per
 store and agent. A target `<store>/<agent>/.migration.json` records cumulative
 counts and completion. Moving a file is the durable cursor, so a restart
