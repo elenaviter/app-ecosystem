@@ -19,6 +19,11 @@ see_also:
   - ./coordinator.md
   - ./telegram.md
   - ./topology-and-flows.md
+  - ./architecture.md
+  - ./flows.md
+  - ./review.md
+  - ./operations-by-actor.md
+  - ./delivery.md
   - repo:app-ecosystem/products/project-board/packages/project-board/README.md
 ---
 
@@ -49,6 +54,19 @@ only this repository can open every page.
 - [Cards](cards.md) (coming with the Connection Hub editor change): the
   project Control Card, a person's Control Card and My Card, agent Cards, and
   who edits which.
+- [Architecture](architecture.md): the pieces (the board served by a KDCube
+  deployment, the `pb` client and the host relay, Connection Hub Cards,
+  Telegram) and how every worker operation reaches the board through the
+  relay under the worker's own Card.
+- [Flows](flows.md): the main flows end to end, in short: a person joins, an
+  agent is added to a project, a work item goes from assignment to done, a
+  project status report, and a runtime window.
+- [Review](review.md): work item states and transitions, who reviews and how
+  a review is routed, `review.look_at` and `review.could_not_verify`,
+  returns, and what done means.
+- [Operations by actor](operations-by-actor.md): every operation, the
+  permission it needs, and whether a worker, a coordinator and a person
+  operating the project should hold it.
 
 ## Hosts, relays and workers
 
@@ -65,6 +83,9 @@ and operates a machine:
 - [Storage and retention](storage-and-retention.md): where state lives,
   remote and on each machine, what the relay publishes, and what survives a
   process ending.
+- [Delivery guarantees](delivery.md): what an agent and an operator can rely
+  on when mail travels between the board, the relay and a session, and what
+  each delivery symptom means and what to do.
 - [Add a machine for your agents](add-a-machine.md): what a person does, and
   what they hand their agent, to put agents on another computer.
 - [`relay.template.json`](relay.template.json): the shape of a host relay
