@@ -62,12 +62,23 @@ def test_published_route_has_one_resolvable_version_chain() -> None:
 
     project_board_requirements = _requirements(project_board)
     connection_hub_cli_requirements = _requirements(connection_hub_cli)
-    assert str(project_board_requirements["connection-hub-cli"].specifier) == (
+    # W322 Step 1: pb depends on the caller layer in connection-hub, not on the
+    # command line, and so on no KDCube package.
+    assert "connection-hub-cli" not in project_board_requirements
+    assert project_board_requirements["connection-hub"].extras == {"client"}
+    assert str(project_board_requirements["connection-hub"].specifier) == (
         f"<2027,>={RELEASE_VERSION}"
     )
+    client_extra = [
+        Requirement(value).name
+        for value in connection_hub["optional-dependencies"]["client"]
+    ]
+    assert not [name for name in client_extra if name.startswith("kdcube")]
+    assert "connection-hub-cli" not in client_extra
     assert str(connection_hub_cli_requirements["connection-hub"].specifier) == (
         f"<2027,>={RELEASE_VERSION}"
     )
+    assert connection_hub_cli_requirements["connection-hub"].extras == {"client"}
     assert str(connection_hub_cli_requirements["kdcube-cli"].specifier) == (
         f"<2027,>={KDCUBE_CLI_VERSION}"
     )

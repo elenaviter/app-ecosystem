@@ -29,6 +29,17 @@ dependencies = [
 oidc = [
     "PyJWT[crypto]>=2.8,<3",
 ]
+# The caller side (connection_hub.caller): sign-in, profiles and credentials in
+# the native store, and an authenticated MCP connection. Problem Board's pb
+# depends on this extra and needs no KDCube package (W322).
+client = [
+    "app-foundation[mcp,native-secrets]>=2026.09.03.1835,<2027",
+    "filelock>=3.16,<4",
+    "httpx2>=2.5,<3",
+    "keyring>=25,<26",
+    "mcp==2.0.0",
+    "platformdirs>=4,<5",
+]
 test = [
     "pytest>=8,<10",
     "pytest-asyncio>=0.23,<2",

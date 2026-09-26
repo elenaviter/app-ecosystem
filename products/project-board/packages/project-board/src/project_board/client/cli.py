@@ -2011,9 +2011,9 @@ async def _coordinate_direct(
 ) -> dict[str, Any]:
     """Use the original in-process path where native credentials are readable."""
 
-    from connection_hub_cli.cli import build_services
-    from connection_hub_cli.paths import StatePaths
-    from connection_hub_cli.profile_connection import connect_profile_tools
+    from connection_hub.caller.paths import StatePaths
+    from connection_hub.caller.profile_connection import connect_profile_tools
+    from connection_hub.caller.services import build_caller_services
 
     from .mcp_client import ProblemBoardMcpClient, governed_endpoint_identity
 
@@ -2022,7 +2022,7 @@ async def _coordinate_direct(
         if config.connection_hub_state_root is not None
         else StatePaths.default()
     )
-    services = build_services(paths=paths)
+    services = build_caller_services(paths=paths)
     profile = services.profiles.require(channel.profile)
     async with connect_profile_tools(
         profile_name=channel.profile,
@@ -4820,12 +4820,12 @@ def _source_command(args: Any) -> dict[str, Any]:
 
 
 async def _relay(args: Any) -> Any:
-    from connection_hub_cli.cli import build_services
-    from connection_hub_cli.paths import StatePaths
-    from connection_hub_cli.profile_connection import (
+    from connection_hub.caller.paths import StatePaths
+    from connection_hub.caller.profile_connection import (
         connect_profile_tools,
         resolve_profile_bearer,
     )
+    from connection_hub.caller.services import build_caller_services
     from service_foundation.host_relay import HostRelayPolicy, HostRelayRuntime
 
     from app_foundation.data_bus import (
@@ -4864,7 +4864,7 @@ async def _relay(args: Any) -> Any:
                 if host_config.connection_hub_state_root is not None
                 else StatePaths.default()
             )
-            services = build_services(paths=paths)
+            services = build_caller_services(paths=paths)
             profile = services.profiles.require(channel.profile)
             if profile.endpoint.rstrip("/") != host_config.endpoint.rstrip("/"):
                 raise DomainError(
@@ -4993,7 +4993,7 @@ async def _relay(args: Any) -> Any:
             finally:
                 await data_bus.close()
 
-        from connection_hub_cli.errors import UpstreamError
+        from connection_hub.caller.errors import UpstreamError
 
         try:
             from app_foundation.mcp.client import RemoteMcpConnectionError
@@ -5062,7 +5062,7 @@ async def _relay(args: Any) -> Any:
         if config.connection_hub_state_root is not None
         else StatePaths.default()
     )
-    services = build_services(paths=paths)
+    services = build_caller_services(paths=paths)
     profile = services.profiles.require(config.connection_hub_profile)
     governed_endpoint_identity(str(getattr(profile, "endpoint", "") or ""))
     async with connect_profile_tools(

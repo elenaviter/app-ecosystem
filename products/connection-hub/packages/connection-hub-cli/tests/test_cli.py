@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import anyio
 import pytest
 import yaml
+from connection_hub.caller import services as caller_services
 from connection_hub_cli import cli
 from connection_hub_cli.authorization.session import OAuthSessionStore
 from connection_hub_cli.clients.adapters import ClaudeDesktopAdapter
@@ -322,7 +323,7 @@ def test_direct_oauth_install_does_not_require_a_local_native_store(
             "Linux Secret Service is unavailable.",
         )
 
-    monkeypatch.setattr(cli, "NativeCredentialStore", unavailable_store)
+    monkeypatch.setattr(caller_services, "NativeCredentialStore", unavailable_store)
     services = cli.build_services(paths=StatePaths(tmp_path))
     adapter = _OAuthClientAdapter()
     services.client_service.adapters["claude-code"] = adapter
@@ -355,7 +356,7 @@ def test_bridge_install_remains_closed_when_the_native_store_is_unavailable(
             "Linux Secret Service is unavailable.",
         )
 
-    monkeypatch.setattr(cli, "NativeCredentialStore", unavailable_store)
+    monkeypatch.setattr(caller_services, "NativeCredentialStore", unavailable_store)
     services = cli.build_services(paths=StatePaths(tmp_path))
     profile = CallerProfile.create(name="agent", endpoint="https://hub.example/mcp")
     services.profiles.add(profile)

@@ -124,11 +124,11 @@ def inspect_profile_metadata(
     """Inspect non-secret profile metadata without touching native credentials."""
 
     try:
-        from connection_hub_cli.paths import StatePaths
-        from connection_hub_cli.state import ProfileStore
+        from connection_hub.caller.paths import StatePaths
+        from connection_hub.caller.state import ProfileStore
     except ImportError:
         return {
-            "state": "connection_hub_cli_not_installed",
+            "state": "connection_hub_client_not_installed",
             "profile": profile_name,
             "metadata_present": False,
         }
@@ -264,7 +264,7 @@ async def _recover_sibling_profile(
 ) -> tuple[Any, Any] | None:
     """Recover one proved profile after an app-scoped state-root mistake."""
 
-    from connection_hub_cli.paths import StatePaths
+    from connection_hub.caller.paths import StatePaths
 
     matches: list[tuple[Any, Any]] = []
     for root in _sibling_profile_roots(config_path, configured_paths.root):
@@ -367,12 +367,12 @@ async def authorize_worker_profile(
     config = HostRelayConfig.load(path)
     channel = _matching_channel(config, profile_name)
     try:
-        from connection_hub_cli.cli import build_services
-        from connection_hub_cli.paths import StatePaths
+        from connection_hub.caller.paths import StatePaths
+        from connection_hub.caller.services import build_caller_services
     except ImportError as exc:
         raise DomainError(
-            "connection_hub_cli_not_installed",
-            "The Problem Board host command requires Connection Hub CLI.",
+            "connection_hub_client_not_installed",
+            "The Problem Board host command requires the connection-hub[client] package.",
             status=500,
         ) from exc
 
@@ -381,7 +381,7 @@ async def authorize_worker_profile(
         if config.connection_hub_state_root is not None
         else StatePaths.default()
     )
-    services = build_services(paths=paths)
+    services = build_caller_services(paths=paths)
     role = "coordinator" if coordinator else "worker"
     sys.stderr.write(
         f"Authorizing Problem Board {role} "
@@ -403,7 +403,7 @@ async def authorize_worker_profile(
             configured_paths=paths,
             config=config,
             profile_name=profile_name,
-            build_services=build_services,
+            build_services=build_caller_services,
             target_services=services,
         )
         if recovered is not None:

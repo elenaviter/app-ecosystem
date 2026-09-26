@@ -8,7 +8,7 @@ import pytest
 
 import connection_hub_cli.management.secret_export as secret_export_module
 from connection_hub_cli.authorization.pkce import code_challenge
-from connection_hub_cli.errors import AuthorizationError
+from kdcube_cli.management.errors import ManagementCliError
 from connection_hub_cli.management import ManagementSecretTarget, ManagementTarget
 from connection_hub_cli.management.secret_export import (
     BrowserSecretExportService,
@@ -199,7 +199,7 @@ async def test_client_rejects_authorization_url_on_another_origin() -> None:
         )
     ]
 
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         await client.start(request)
 
     assert raised.value.code == "secret_export_response_invalid"
@@ -231,7 +231,7 @@ async def test_client_rejects_unbounded_transaction_expiry() -> None:
         )
     ]
 
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         await client.start(request)
 
     assert raised.value.code == "secret_export_response_invalid"
@@ -292,7 +292,7 @@ async def test_client_rejects_value_for_an_unrequested_target() -> None:
     ]
 
     started = await client.start(request)
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         await client.exchange(
             request,
             started,
@@ -345,7 +345,7 @@ async def test_client_rejects_values_above_protocol_total(monkeypatch) -> None:
         )
     ]
 
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         await client.exchange(
             request,
             start,
@@ -402,7 +402,7 @@ async def test_client_rejects_assurance_downgrade_at_exchange() -> None:
         )
     ]
 
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         await client.exchange(
             request,
             start,
@@ -437,7 +437,7 @@ async def test_client_rejects_stale_approval_evidence() -> None:
         )
     ]
 
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         await client.exchange(
             request,
             start,
@@ -463,7 +463,7 @@ async def test_http_transport_rejects_duplicate_response_fields() -> None:
         transport=httpx2.MockTransport(duplicate),
     )
 
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         await transport.post(url="https://runtime.example/export", payload={})
 
     assert raised.value.code == "secret_export_response_invalid"
@@ -502,7 +502,7 @@ async def test_http_transport_rejects_ambiguous_or_encoded_content(
         transport=httpx2.MockTransport(response),
     )
 
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         await transport.post(url="https://runtime.example/export", payload={})
 
     assert raised.value.code == "secret_export_response_invalid"

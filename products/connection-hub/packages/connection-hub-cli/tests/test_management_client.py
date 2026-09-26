@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from connection_hub_cli.errors import AuthorizationError
+from kdcube_cli.management.errors import ManagementCliError
 from connection_hub_cli.management import (
     APPLICATION_RELOAD,
     DEPLOYMENT_INSPECT,
@@ -164,7 +164,7 @@ def test_secret_requests_are_exact_and_have_no_client_side_value_digest() -> Non
     assert request.request_digest == ""
     assert "write-value-marker" not in repr(request)
 
-    with pytest.raises(AuthorizationError) as empty:
+    with pytest.raises(ManagementCliError) as empty:
         ManagementRequest.secret_write(
             target,
             scope="platform",
@@ -190,7 +190,7 @@ def test_secret_recovery_accepts_only_a_server_digest_and_exact_target() -> None
     assert request.operation == SECRET_METADATA_READ
     assert parsed.request_digest == "a" * 64
     recovery["resource"] = request.target.resource
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         ConsentRecovery.from_mapping(recovery, request=request)
     assert raised.value.code == "management_recovery_request_mismatch"
 
@@ -229,7 +229,7 @@ def test_secret_read_result_is_bound_to_the_exact_target() -> None:
             "value": "read-value-marker",
         },
     )
-    with pytest.raises(AuthorizationError):
+    with pytest.raises(ManagementCliError):
         ManagementResult.from_mapping(wrong, request=request)
 
 
@@ -247,7 +247,7 @@ def test_secret_read_result_is_bound_to_the_exact_target() -> None:
     ],
 )
 def test_request_rejects_non_exact_application_identifiers(application_id: str) -> None:
-    with pytest.raises(AuthorizationError):
+    with pytest.raises(ManagementCliError):
         ManagementRequest.reload(_target(), application_id=application_id)
 
 
@@ -285,13 +285,13 @@ def test_consent_rejects_changed_request_and_foreign_origin() -> None:
     )
     changed = _recovery(request)
     changed["request_digest"] = "0" * 64
-    with pytest.raises(AuthorizationError) as digest:
+    with pytest.raises(ManagementCliError) as digest:
         ConsentRecovery.from_mapping(changed, request=request)
     assert digest.value.code == "management_recovery_request_mismatch"
 
     foreign = _recovery(request)
     foreign["authorization_url"] = "https://attacker.example/approve"
-    with pytest.raises(AuthorizationError) as origin:
+    with pytest.raises(ManagementCliError) as origin:
         ConsentRecovery.from_mapping(foreign, request=request)
     assert origin.value.code == "management_recovery_origin_mismatch"
 
@@ -299,20 +299,20 @@ def test_consent_rejects_changed_request_and_foreign_origin() -> None:
     wrong_path["authorization_url"] = (
         "https://runtime.example.test/api/integrations/management/v1/deployment"
     )
-    with pytest.raises(AuthorizationError) as path:
+    with pytest.raises(ManagementCliError) as path:
         ConsentRecovery.from_mapping(wrong_path, request=request)
     assert path.value.code == "management_recovery_path_mismatch"
 
     wrong_reason = _recovery(request)
     wrong_reason["reason"] = "delegated_operation_not_granted"
-    with pytest.raises(AuthorizationError) as reason:
+    with pytest.raises(ManagementCliError) as reason:
         ConsentRecovery.from_mapping(wrong_reason, request=request)
     assert reason.value.code == "management_recovery_invalid"
 
     relative_expiry = _recovery(request)
     relative_expiry.pop("expires_at")
     relative_expiry["permit_ttl_seconds"] = 600
-    with pytest.raises(AuthorizationError) as expiry:
+    with pytest.raises(ManagementCliError) as expiry:
         ConsentRecovery.from_mapping(relative_expiry, request=request)
     assert expiry.value.code == "management_value_invalid"
 
@@ -430,7 +430,7 @@ async def test_http_transport_rejects_redirect_without_leaking_bearer() -> None:
         )
 
     transport = HttpxManagementTransport(transport=httpx2.MockTransport(handler))
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         await transport.execute(request, marker)
     assert raised.value.code == "management_redirect_rejected"
     assert marker not in str(raised.value)
@@ -448,7 +448,7 @@ async def test_http_transport_does_not_chain_backend_secret() -> None:
         raise RuntimeError(marker)
 
     transport = HttpxManagementTransport(transport=httpx2.MockTransport(handler))
-    with pytest.raises(AuthorizationError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         await transport.execute(request, marker)
     assert marker not in str(raised.value)
     assert raised.value.__cause__ is None

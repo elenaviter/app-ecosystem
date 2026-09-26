@@ -5,7 +5,7 @@ import os
 import pytest
 
 import connection_hub_cli.management.secret_descriptors as descriptor_module
-from connection_hub_cli.errors import ConnectionHubCliError
+from kdcube_cli.management.errors import ManagementCliError
 from connection_hub_cli.management import ExportedSecret, ManagementSecretTarget
 from connection_hub_cli.management.secret_descriptors import write_secret_descriptors
 
@@ -22,7 +22,7 @@ def test_descriptor_export_rejects_scalar_mapping_conflicts_before_writing(
 ) -> None:
     output = tmp_path / "export"
 
-    with pytest.raises(ConnectionHubCliError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         write_secret_descriptors(
             output,
             [
@@ -44,7 +44,7 @@ def test_descriptor_export_never_clobbers_an_existing_directory(tmp_path) -> Non
     existing = output / "sentinel"
     existing.write_text("keep", encoding="utf-8")
 
-    with pytest.raises(ConnectionHubCliError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         write_secret_descriptors(
             output,
             [_exported(key="platform.provider.api_key", value="secret-marker")],
@@ -93,7 +93,7 @@ def test_descriptor_export_detects_target_created_during_staging(
 
     monkeypatch.setattr(descriptor_module.Path, "mkdir", race_mkdir)
 
-    with pytest.raises(ConnectionHubCliError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         write_secret_descriptors(
             output,
             [_exported(key="platform.provider.api_key", value="secret-marker")],
@@ -121,7 +121,7 @@ def test_descriptor_export_removes_owned_partial_destination(
 
     monkeypatch.setattr(descriptor_module.os, "replace", fail_second_replace)
 
-    with pytest.raises(ConnectionHubCliError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         write_secret_descriptors(
             output,
             [_exported(key="platform.provider.api_key", value="secret-marker")],
@@ -151,7 +151,7 @@ def test_descriptor_export_closes_file_when_private_mode_application_fails(
     monkeypatch.setattr(descriptor_module, "apply_open_file_mode", fail_mode)
     monkeypatch.setattr(descriptor_module.os, "close", record_close)
 
-    with pytest.raises(ConnectionHubCliError) as raised:
+    with pytest.raises(ManagementCliError) as raised:
         write_secret_descriptors(
             tmp_path / "export",
             [_exported(key="platform.provider.api_key", value="secret-marker")],

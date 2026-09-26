@@ -1,19 +1,11 @@
-"""Small cross-version filesystem operations used by local state writers."""
+"""Alias of ``connection_hub.caller.filesystem`` (W322).
 
-from __future__ import annotations
+The caller layer moved to the connection-hub package. This module is that
+module, so code importing the old path shares one module object with it.
+"""
 
-import os
-from pathlib import Path
+import sys
 
+from connection_hub.caller import filesystem as _moved
 
-def apply_open_file_mode(descriptor: int, path: Path, mode: int) -> None:
-    """Apply a mode through the descriptor when supported, otherwise by path."""
-
-    fchmod = getattr(os, "fchmod", None)
-    if callable(fchmod):
-        fchmod(descriptor, mode)
-        return
-    os.chmod(path, mode)
-
-
-__all__ = ["apply_open_file_mode"]
+sys.modules[__name__] = _moved

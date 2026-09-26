@@ -1,5 +1,11 @@
-"""Compatibility import for the KDCube-owned loopback callback."""
+"""Alias of ``connection_hub.caller.authorization.callback`` (W322).
 
-from kdcube_cli.management.callback import AuthorizationCallback, LoopbackCallbackServer
+The caller layer moved to the connection-hub package. This module is that
+module, so code importing the old path shares one module object with it.
+"""
 
-__all__ = ["AuthorizationCallback", "LoopbackCallbackServer"]
+import sys
+
+from connection_hub.caller.authorization import callback as _moved
+
+sys.modules[__name__] = _moved

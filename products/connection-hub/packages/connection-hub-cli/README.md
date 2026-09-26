@@ -310,10 +310,12 @@ discoverable.
 
 ## Python Composition
 
-Domain host processes can use the same profile boundary directly:
+Domain host processes can use the same profile boundary directly. It lives in
+the `connection-hub` package (`connection-hub[client]`), so a host does not
+need this command line to use it:
 
 ```python
-from connection_hub_cli.profile_connection import connect_profile_tools
+from connection_hub.caller.profile_connection import connect_profile_tools
 
 async with connect_profile_tools(
     profile_name="coding-agent",
