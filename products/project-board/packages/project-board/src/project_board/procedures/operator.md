@@ -359,6 +359,34 @@ When a permission change is proposed, inspect both the resource operation
 selection and its required grants. They answer different questions: which
 operation the caller selected, and which capabilities that operation needs.
 
+## Sharing An Agent With Another Person
+
+An agent belongs to the person who authorized it: it is in their pool and
+nobody else's. The owner shares it with a named person from their projects
+with **Share** on its pool card (W319):
+
+| Level | The person may |
+|---|---|
+| view | see it in their pool, marked "shared by <owner>"; message it and read their own exchange with it; get its answers to their messages; open its Card read-only |
+| edit | all of view, plus change its Card and make it coordinator |
+
+- The owner's own conversation with the agent stays private; a person reads
+  only the messages they sent and the answers addressed to them.
+- Rename, suspend, retire, resume and journal requests stay the owner's.
+- **Stop sharing** takes effect at once. The person's next message or Card
+  change is refused with "<owner> no longer shares this agent with you."
+- **Adding a shared agent to a project is not available yet.** The project's
+  Control Card attaches only to agents its owner holds; the board refuses the
+  link by name until the cross-owner Control Card exists. Until then the
+  agent's owner adds it.
+- A platform admin sees every person's agents, read-only, with the pool's
+  **everyone** switch.
+
+Connection Hub owns the share, stored next to the agent's Card
+(`agent_card_share`, `agent_card_unshare`, `agent_card_shared_with_me`). No
+credential is copied: a shared Card is read or changed under its owner's key,
+and the person is recorded in the Card's audit.
+
 ## Re-Authorizing A Revoked Agent Happens At That Agent's Own Console
 
 A revoked agent is not reachable through the managed network, and it must not

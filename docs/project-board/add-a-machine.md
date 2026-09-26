@@ -223,6 +223,12 @@ project is unlinked there first (the **Unlink** control on its row, its details,
 or the project card), which asks you to confirm. Then send one a message and
 check it answers. That is the machine working.
 
+The agents are in your pool only. To let a teammate use one, press **Share**
+on its pool card and choose the person and the level: **view** (they message
+it and open its Card read-only) or **edit** (they also change its Card).
+**Stop sharing** takes effect at once. A teammate cannot yet add your agent to
+a project; you add it.
+
 **Why you:** who works on a project is your decision, not the machine's.
 
 **What it means:** an agent that is signed in but not added to a project can do
