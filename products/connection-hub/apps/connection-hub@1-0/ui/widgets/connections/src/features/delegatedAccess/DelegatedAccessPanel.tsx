@@ -159,7 +159,8 @@ import {
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import { projectPersonControlCoordinates } from './projectPersonControl';
-import { cardOwnerView, readableCardLabel } from './cardLabels';
+import { cardOwnerView, controlIssuerLabel, isPersonIssuer, readableCardLabel } from './cardLabels';
+import { detailedCardOffersEdit } from './cardActions';
 import {
   projectAgentCardFocus,
   projectAgentCardUpdateTarget,
@@ -1109,6 +1110,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [pendingInvocationMode, setPendingInvocationMode] =
     useState<InvocationMode | null>(() => pendingPresetMode(pendingAgentGrantRequest(openParams)));
   const accessCardFocus = useMemo(() => accessCardFocusRequest(openParams), [openParams]);
+  // Who is looking, and whom a Team > People link opened the Card for: a
+  // person's Control Card is named by them, never by raw id (2026-09-26).
+  const issuerViewer = useMemo(() => ({
+    viewerSubject: platformUserId || undefined,
+    targetSubject: accessCardFocus?.targetSubject,
+    targetLabel: accessCardFocus?.targetLabel,
+  }), [platformUserId, accessCardFocus]);
   const [accessCardFocusState, setAccessCardFocusState] =
     useState<'idle' | 'loading' | 'resolved' | 'unavailable'>(
       () => (accessCardFocus ? 'loading' : 'idle'),
@@ -4038,10 +4046,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     const linkedControl = linkedControlCard(item);
     const controlLabel = composition?.controlLabel
-      || linkedControl?.binding?.issuer_label
-      || linkedControl?.binding?.issuer_ref
-      || linkedControl?.binding?.control_id
-      || 'Control Card';
+      || (linkedControl?.binding ? controlIssuerLabel(linkedControl.binding, issuerViewer) : 'Control Card');
     const controlCapsCaller = item.source !== 'control'
       && linkedControl?.state === 'active'
       && linkedControl.composition_mode !== 'or'
@@ -4773,7 +4778,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (!control || control.state === 'not_controlled') return null;
     const binding = control.binding;
     if (!binding) return null;
-    const label = binding.issuer_label || binding.issuer_ref || binding.control_id || 'Control Card';
+    const label = controlIssuerLabel(binding, issuerViewer);
     const reading = authorityReading(item);
     const controlActive = control.state === 'active' && Boolean(control.authority);
     const effectiveReady = controlActive && (!editing || Boolean(control.control_authority));
@@ -4786,7 +4791,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       >
         <div className="control-card-composition__head">
           <span>
-            <strong>{controlActive ? `Card composed with ${label} (${mode})` : `${label} Control Card unavailable`}</strong>
+            <strong>{controlActive
+              ? `Card composed with ${label} (${mode})`
+              : `${label}${/Control Card$/.test(label) ? '' : ' Control Card'} unavailable`}</strong>
             <small>{controlActive
               ? ' The linked card applies at every guarded operation.'
               : ' Operations governed by this link are closed.'}</small>
@@ -5026,10 +5033,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const problemText = problems
       .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(record, resource)))
       .join(' ');
-    const controlLabel = linkedControl?.binding?.issuer_label
-      || linkedControl?.binding?.issuer_ref
-      || linkedControl?.binding?.control_id
-      || 'Control Card';
+    const controlLabel = linkedControl?.binding
+      ? controlIssuerLabel(linkedControl.binding, issuerViewer)
+      : 'Control Card';
     const controlCappedTools = linkedControl?.state === 'active'
       && linkedControl.composition_mode !== 'or'
       && linkedControl.control_authority
@@ -5155,8 +5161,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             <div className="card-fields control-card-fields">
               <Field label="Issued by">
                 <span className="control-card-issuer">
-                  <b>{record.issuer_label || record.issuer_ref || 'Connected application'}</b>
-                  {record.issuer_ref ? (
+                  <b title={isPersonIssuer(record) ? record.issuer_ref : undefined}>
+                    {record.issuer_label || (record.issuer_ref ? controlIssuerLabel(record, issuerViewer) : 'Connected application')}
+                  </b>
+                  {/* A person is named, never shown by raw id. */}
+                  {record.issuer_ref && !isPersonIssuer(record) ? (
                     <span className="control-card-issuer__ref">
                       <code className="claim-chip" title={record.issuer_ref}>{record.issuer_ref}</code>
                       <CopyButton value={record.issuer_ref} label="Copy issuer reference" />
@@ -5687,7 +5696,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         </>
                       ) : (
                         <>
-                          {editable ? (
+                          {/* A linked Card opens to read, with every action its
+                              kind has (see cardActions.ts). */}
+                          {detailedCardOffersEdit(item, viewAccessId) ? (
                             <span className="action-row">
                               {editButton(item)}
                               <span className="action-slot" aria-hidden="true" />

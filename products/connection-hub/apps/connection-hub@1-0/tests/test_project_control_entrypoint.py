@@ -162,13 +162,12 @@ def test_linked_control_card_explains_composed_authority() -> None:
         / "ui/widgets/connections/src/features/delegatedAccess/DelegatedAccessPanel.tsx"
     ).read_text(encoding="utf-8")
 
-    assert (
-        "const label = binding.issuer_label || binding.issuer_ref "
-        "|| binding.control_id || 'Control Card';"
-    ) in source
+    # A person's Control Card is named, never by raw id (2026-09-26): the
+    # issuer label goes through controlIssuerLabel.
+    assert "const label = controlIssuerLabel(binding, issuerViewer);" in source
     assert "if (!binding) return null;" in source
     assert "`Card composed with ${label} (${mode})`" in source
-    assert "`${label} Control Card unavailable`" in source
+    assert "`${label}${/Control Card$/.test(label) ? '' : ' Control Card'} unavailable`" in source
     assert "Operations governed by this link are closed." in source
     assert "dispatch(loadControlCard({ controlId: cleanControlId })).unwrap()" in source
     assert "if (result.access) switchEdit(result.access);" in source
