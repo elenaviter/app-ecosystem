@@ -285,12 +285,14 @@ account at call time.
   - A deployment without a project host answers 503
     `project_control_card_authorization_unavailable` (reason
     `project_control_card_provider_not_configured`), not a denial.
-- **Who edits which Card in a project** is owned by the Problem Board app's
-  documentation (`repo:applications/playground/domain-solution/apps/problem-board@1-0/docs/project-control-card.md`,
-  section "Who edits which Card in a project"): project-held
-  Cards (the project Control Card, each person's Control Card, each agent's
-  project Card) are changed by that Problem Board project's admins; every
-  other Control Card keeps its normal editing here. The mechanics on this side:
+- **Who edits which Card in a project.** Cards held by a Problem Board project
+  (the project Control Card, each person's Control Card, each agent's project
+  Card) are changed by that Problem Board project's admins (the project's own
+  admin role, not a KDCube user role), reached through the project's Team >
+  People; a member changes only their own My Card, within their Control Card.
+  Every other Control Card keeps its normal editing here. The full Problem Board
+  page comes with the public Problem Board documentation (W340). The mechanics
+  on this side:
   - `project_person_control_get` (W260) answers `viewer: {can_edit: false,
     edit_in_project, reason}`: a person's Control Card is read only in this
     view for everyone. A project admin gets a link to the project's Team >
