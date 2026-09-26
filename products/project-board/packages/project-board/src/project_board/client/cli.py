@@ -68,6 +68,7 @@ from .card_refusal import with_actionable_refusal
 from .stop_guard import stop_guard_decision
 from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
+from .workspace_report import build_workspace_report, report_signature
 from .limit_state import (
     limit_state_from_claude_statusline,
     limit_state_from_claude_stop_failure,
@@ -831,6 +832,26 @@ def build_parser() -> argparse.ArgumentParser:
     _agent_identity(command)
     command.add_argument("text", nargs="?", default=None, help="The line, at most 200 characters.")
     command.add_argument("--clear", action="store_true", help="Remove the line from every card.")
+
+    command = worker_commands.add_parser(
+        "workspace-report",
+        help=(
+            "Tell the board what your project workspace holds (W337): for each "
+            "repository on the project card, whether <workspace>/<alias> is a "
+            "checkout of the listed URL that answers (verified), or unreachable "
+            "and why. Run it after setting the workspace up and after any "
+            "re-clone; the relay carries it on the next heartbeat."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", default="", help="The project, when this agent attends several.")
+    command.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Do not ask each remote (git ls-remote); a matching checkout is reported as cloned.",
+    )
+    command.add_argument("--timeout-seconds", type=float, default=15.0, help="Per git call (default 15).")
 
     command = worker_commands.add_parser(
         "limit-state",
@@ -3392,6 +3413,46 @@ def _plan_command(args: Any) -> dict[str, Any]:
     raise ValueError(f"unsupported plan command: {args.plan_command}")
 
 
+def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any) -> dict[str, Any]:
+    """pb worker workspace-report: inspect the project workspace for the relay's next heartbeat (W337)."""
+
+    project_ref = str(args.project_ref or "").strip() or _attended_project_ref(field, identity.worker_name)
+    parsed = parse_ref(project_ref)
+    if parsed.kind != "project":
+        raise DomainError("field_project_ref_invalid", "Expected a work:project reference.")
+    record = field.read_project_repositories(parsed.object_id)
+    if int(record.get("revision") or 0) <= 0:
+        raise DomainError(
+            "field_project_record_missing",
+            "This host holds no repository list for the project yet: the relay writes it on its next poll.",
+            details={"project_ref": project_ref},
+        )
+    workspace = str(getattr(config.worker(identity), "working_directory", "") or "")
+    if not workspace:
+        raise DomainError(
+            "field_workspace_unknown",
+            "This session enrolled before its folder was recorded: run `pb worker listen` from your workspace folder.",
+        )
+    report = build_workspace_report(
+        Path(workspace),
+        record.get("repositories") or [],
+        revision=int(record.get("revision") or 0),
+        reported_at=utc_now(),
+        verify=not args.no_verify,
+        timeout=max(1.0, float(args.timeout_seconds)),
+    )
+    signature = report_signature(report)
+    entry = field.set_workspace_report(identity.worker_name, parsed.object_id, report, signature=signature)
+    return {
+        "worker": identity.worker_name,
+        "project_ref": project_ref,
+        "workspace": workspace,
+        **report,
+        "on_board": entry.get("published_signature") == signature,
+        "rule": "The relay carries this report on its next heartbeat; the project card shows it.",
+    }
+
+
 def _worker_info_command(args: Any, field: Any, identity: Any) -> dict[str, Any]:
     """pb worker info: record the agent's one-line note for the relay's next heartbeat (W330)."""
 
@@ -3711,6 +3772,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
         }
     if args.worker_command == "info":
         return _worker_info_command(args, field, identity)
+    if args.worker_command == "workspace-report":
+        return _workspace_report_command(args, config, field, identity)
     if args.worker_command == "busy-until":
         response = _reference_mapping_request(
             args,
