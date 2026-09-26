@@ -4,7 +4,7 @@ On 2026-09-23 dev-main held 51,855 reconciliation receipts, every one empty,
 and 54,827 settled outbox rows, almost all refusals filed under ``sent/``.
 Every relay restart re-read all of the receipts before its first cycle
 finished, which stalled startup for about four minutes. These tests pin the
-rules in ``docs/project-board/storage-and-retention.md`` ("Relay Local State")
+rules in ``products/project-board/docs/storage-and-retention.md`` ("Relay Local State")
 at the places that broke them.
 """
 

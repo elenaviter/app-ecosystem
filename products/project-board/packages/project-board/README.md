@@ -59,7 +59,7 @@ the contract.
 What the relay keeps on the host (the outbox, reconciliation receipts, mail,
 leases and markers), how each store is partitioned, its retention bound and the
 `relay store read` log line are in
-[Storage and retention](../../../../docs/project-board/storage-and-retention.md#relay-local-state).
+[Storage and retention](../../docs/storage-and-retention.md#relay-local-state).
 
 ## Select host source
 

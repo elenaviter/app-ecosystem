@@ -2,7 +2,7 @@
 
 Everything here can cost time in proportion to history, so the relay runs it
 in a worker thread on its own schedule (rule LS5 in
-``docs/project-board/storage-and-retention.md``, "Relay Local State"). Whether
+``products/project-board/docs/storage-and-retention.md``, "Relay Local State"). Whether
 retention is due is read from a file in the field, not from process memory, so
 a restart neither repeats it nor skips it (LS4).
 

@@ -4,7 +4,7 @@ This module is the one place that decides whether receipt evidence leaves the
 host. Every publication is one outbox row per bounded batch, with an id derived
 from the batch's content hash, so finding a batch is one direct path lookup and
 never a scan of the outbox history (W287, rule LS3 in
-``docs/project-board/storage-and-retention.md``).
+``products/project-board/docs/storage-and-retention.md``).
 
 A receipt's publication is ``queued`` until every batch row is terminal, then
 ``published`` when the service accepted every batch, or ``refused`` when it

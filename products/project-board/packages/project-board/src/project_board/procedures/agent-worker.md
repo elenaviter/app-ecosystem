@@ -8,7 +8,7 @@ see_also:
   - ./first-time-setup.md
   - ./operator.md
   - ./live-acceptance.md
-  - repo:app-ecosystem/docs/project-board/topology-and-flows.md
+  - repo:app-ecosystem/products/project-board/docs/topology-and-flows.md
 ---
 
 # Choose The Problem Board Worker Or Operator Procedure

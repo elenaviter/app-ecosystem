@@ -13,7 +13,7 @@ Layout, per project and agent (the worker or person a record belongs to)::
 
 The file name starts with the record's UTC creation stamp, so a listing sorts
 by time and retention removes whole hour folders without opening a file (rule
-LS2 in ``docs/project-board/storage-and-retention.md``). A lookup by id that
+LS2 in ``products/project-board/docs/storage-and-retention.md``). A lookup by id that
 cannot compute its folder reads the day ``ids`` files newest first, inside the
 retention window only (LS3).
 
