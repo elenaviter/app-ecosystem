@@ -692,3 +692,24 @@ async def test_the_heartbeat_carries_the_last_store_reads_once_per_change(tmp_pa
     first, third = sent[0]["outbox"], sent[2]["outbox"]
     assert (first["range"], first["records"], first["project"]) == ("2026-09-26T03..2026-09-26T03", 4, PROJECT)
     assert (third["range"], third["records"], third["removed"]) == ("2026-09-26T04..2026-09-26T04", 6, 0)
+
+
+def test_the_size_bound_removal_is_counted_on_the_retention_line(field, monkeypatch):
+    """Review of #126 (claude-app): the size-bound loop's removals were untested.
+
+    Two published receipts inside the age window, a record bound of one: the
+    older hour folder goes for the bound, and the read summary says so.
+    """
+
+    monkeypatch.setattr(receipts, "MAX_RECORDS_PER_AGENT", 1)
+    for hour in ("10", "11"):
+        receipt = _receipt(receipt_id=f"mailbox-reconciliation_20260923T{hour}0000Z_d{hour}", started_at=f"2026-09-23T{hour}:00:00Z", archived=1)
+        receipts.record_receipt(field, PROJECT, worker_name=WORKER, receipt=receipt)
+        _settle(field, "sent")
+        receipts.recover_unpublished_receipts(field, PROJECT, worker_name=WORKER)
+
+    result = receipts.apply_receipt_retention(field, PROJECT, now=datetime(2026, 9, 24, tzinfo=timezone.utc))
+
+    assert result["partitions_removed"] == 1 and result["receipts_removed"] == 1
+    read = last_read_summaries(WORKER)[receipts.STORE]
+    assert read["op"] == "retention" and read["removed"] == 1
