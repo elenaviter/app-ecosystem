@@ -193,8 +193,29 @@ export interface DelegatedControlCardView {
   };
 }
 
+/** How this person reached another person's agent Card (W319): through a
+ *  project the agent attends (its admin), or as a platform admin (read). */
+export interface ProjectAgentCardAccess {
+  via: 'owner' | 'project_admin' | 'platform_admin' | string;
+  can_edit: boolean;
+  project_ref: string;
+  worker_name?: string;
+}
+
+export interface ProjectAgentCardGetResult {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  item?: DelegatedAccessRecord;
+  access?: ProjectAgentCardAccess;
+  grant_options?: DelegatedAccessGrantOption[];
+  resources?: DelegatedAccessResourceOption[];
+}
+
 export interface DelegatedAccessRecord {
   access_id: string;
+  /** Set when this Card was opened through the project path, not the owner's list (W319). */
+  project_agent_card?: ProjectAgentCardAccess;
   /** Current durable Card state. Exact-card reads include revoked Cards so a
    *  linking application can explain why its gate is closed. */
   state?: 'active' | 'revoked' | string;

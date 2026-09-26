@@ -4049,6 +4049,9 @@ class AutomationAccessService:
         profile: str,
         expected_card_revision: int | None = None,
         request_id: str = "",
+        _actor_subject: str = "",
+        _delegable_grants: Iterable[str] | None = None,
+        _extra_record_transform: Callable[[Any, Any], Any] | None = None,
     ) -> dict[str, Any]:
         """Re-apply a descriptor authorization profile to an existing Card, in place.
 
@@ -4179,7 +4182,9 @@ class AutomationAccessService:
                 "action": "profile_applied",
                 "profile": name,
                 "applied": applied,
-                "actor_subject": grantor_subject,
+                # The project path (W319) acts under the owner's key for an
+                # admin of the agent's project: the audit names that admin.
+                "actor_subject": _clean(_actor_subject) or grantor_subject,
                 "request_id": _clean(request_id),
                 "occurred_at": occurred_at,
                 "before_revision": int(getattr(previous, "card_revision", 0) or 0),
@@ -4192,7 +4197,12 @@ class AutomationAccessService:
             }
             provenance = dict(getattr(candidate, "provenance", None) or {})
             provenance[AUTHORIZATION_PROFILE_AUDIT_PROVENANCE] = audit
-            return replace_fields(candidate, provenance=provenance)
+            stamped = replace_fields(candidate, provenance=provenance)
+            return (
+                _extra_record_transform(previous, stamped)
+                if _extra_record_transform is not None
+                else stamped
+            )
 
         result = await self.update_access(
             user,
@@ -4200,6 +4210,8 @@ class AutomationAccessService:
             resource_grants=resource_grants,
             resource_operations=resource_operations,
             expected_card_revision=expected_card_revision,
+            _delegable_grants=_delegable_grants,
+            _platform_admin=False if _actor_subject else None,
             _record_transform=_stamp_profile_audit,
         )
         if result.get("ok"):

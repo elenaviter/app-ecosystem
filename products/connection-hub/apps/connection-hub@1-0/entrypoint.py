@@ -208,7 +208,13 @@ from .services.durable_authority import ConnectionHubDurableAuthority
 from .services.project_invitation_binding import (
     descriptor_project_invitation_binding_resolver,
 )
-from .services.project_membership import descriptor_project_authorization_port
+from .services.project_membership import (
+    descriptor_agent_card_port,
+    descriptor_project_authorization_port,
+)
+from connection_hub.delegated_credentials.project_agent_card_access import (
+    ProjectAgentCardAccess,
+)
 
 BUNDLE_ID = "connection-hub@1-0"
 ENTRYPOINT_NAME = "connection-hub"
@@ -238,6 +244,9 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "control_card_create",
     "control_card_update",
     "project_person_control_get",
+    "project_agent_card_get",
+    "project_agent_card_update",
+    "project_agent_card_apply_profile",
     "project_person_control_create",
     "project_person_control_update",
     "project_person_control_revoke",
@@ -2649,6 +2658,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "control_card_create": {"visibility": {"user_types": []}},
                             "control_card_update": {"visibility": {"user_types": []}},
                             "project_person_control_get": {"visibility": {"user_types": []}},
+                            "project_agent_card_get": {"visibility": {"user_types": []}},
+                            "project_agent_card_update": {"visibility": {"user_types": []}},
+                            "project_agent_card_apply_profile": {"visibility": {"user_types": []}},
                             "project_person_control_create": {"visibility": {"user_types": []}},
                             "project_person_control_update": {"visibility": {"user_types": []}},
                             "project_person_control_revoke": {"visibility": {"user_types": []}},
@@ -4144,6 +4156,146 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             control_id=str(
                 payload.get("control_id") or payload.get("control_card_id") or ""
             ).strip(),
+            request_id=_audit_request_id(request),
+        )
+
+    async def _project_agent_card_access(self, request: Any) -> ProjectAgentCardAccess:
+        """The project path to an agent's Card (W319): the project host authorizes."""
+
+        port = getattr(self, "agent_card_authorization_port", None)
+        return ProjectAgentCardAccess(
+            await _automation_access_service(self, request),
+            port if port is not None else descriptor_agent_card_port(self),
+        )
+
+    @api(
+        method="POST",
+        alias="project_agent_card_get",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_agent_card_get"),
+    )
+    async def project_agent_card_get(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Open an agent's Card as its owner, a project admin, or a platform admin (read)."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (await self._project_agent_card_access(request)).get(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            project_ref=str(payload.get("project_ref") or "").strip(),
+        )
+
+    @api(
+        method="POST",
+        alias="project_agent_card_update",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_agent_card_update"),
+    )
+    async def project_agent_card_update(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Change an agent's Card as a project admin, under the owner's key, audited (W319)."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        try:
+            changes: Dict[str, Any] = {
+                "resource_grants": dict(payload.get("resource_grants") or {}),
+                "resource_operations": (
+                    dict(payload.get("resource_operations") or {})
+                    if "resource_operations" in payload
+                    else None
+                ),
+                "operations": _safe_list(payload.get("operations")) if "operations" in payload else (),
+                "named_service_operations": (
+                    payload.get("named_service_operations")
+                    if "named_service_operations" in payload
+                    else None
+                ),
+                "account_scope": (
+                    dict(payload.get("account_scope") or {}) if "account_scope" in payload else None
+                ),
+                "label": str(payload.get("label") or "").strip() or None,
+                "expected_card_revision": _expected_card_revision(payload),
+                "expected_catalog_version": str(payload.get("expected_catalog_version") or "").strip() or None,
+                "accepted_operations": (
+                    dict(payload.get("accepted_operations") or {})
+                    if "accepted_operations" in payload
+                    else None
+                ),
+                "properties": (
+                    dict(payload.get("properties") or {})
+                    if isinstance(payload.get("properties"), Mapping)
+                    else None
+                ),
+                "composition_mode": (
+                    str(payload.get("composition_mode") or "").strip()
+                    if "composition_mode" in payload
+                    else None
+                ),
+            }
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+        return await (await self._project_agent_card_access(request)).update(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            request_id=_audit_request_id(request),
+            **changes,
+        )
+
+    @api(
+        method="POST",
+        alias="project_agent_card_apply_profile",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_agent_card_apply_profile"),
+    )
+    async def project_agent_card_apply_profile(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Apply an authorization profile to an agent's Card as a project admin (W319, W313)."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        try:
+            expected = _expected_card_revision(payload)
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+        return await (await self._project_agent_card_access(request)).apply_profile(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            profile=str(payload.get("profile") or "").strip(),
+            expected_card_revision=expected,
             request_id=_audit_request_id(request),
         )
 

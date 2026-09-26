@@ -134,6 +134,8 @@ def test_template_names_project_membership_provider() -> None:
         "provider": {
             "bundle_id": "problem-board@1-0",
             "operation": "project_membership_resolve",
+            # W319: the agent Card question goes to the same host.
+            "agent_card_operation": "project_agent_card_authorize",
         },
         "administrative_roles": ["owner", "admin"],
     }

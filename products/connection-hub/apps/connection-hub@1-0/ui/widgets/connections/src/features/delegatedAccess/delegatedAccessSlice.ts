@@ -5,6 +5,11 @@ import {
   controlCardGetRequest,
   type ProjectControlCoordinates,
 } from './projectPersonControl';
+import {
+  projectAgentCardGetRequest,
+  projectAgentCardRecord,
+  type ProjectAgentCardTarget,
+} from './projectAgentCard';
 import type {
   DelegatedAccessCreateResult,
   DelegatedAccessGrantOption,
@@ -17,6 +22,7 @@ import type {
   DelegatedAccessStoredNamedServices,
   DelegatedInvocationPolicyResult,
   ControlCardGetResult,
+  ProjectAgentCardGetResult,
 } from '../../api/types';
 
 export interface DelegatedAccessState {
@@ -96,6 +102,27 @@ export const loadControlCard = createAsyncThunk<
         return rejectWithValue('This Control Card is revoked. Linked callers remain closed until the application links an active Card.');
       }
       return res;
+    } catch (e) {
+      return rejectWithValue(message(e));
+    }
+  },
+);
+
+/** W319: another person's agent Card, opened through a project the agent attends. */
+export const loadProjectAgentCard = createAsyncThunk<
+  DelegatedAccessRecord,
+  ProjectAgentCardTarget,
+  { rejectValue: string }
+>(
+  'delegatedAccess/loadProjectAgentCard',
+  async (target, { rejectWithValue }) => {
+    try {
+      const request = projectAgentCardGetRequest(target);
+      const res = await postOp<ProjectAgentCardGetResult>(request.operation, request.data);
+      if (res?.ok === false) return rejectWithValue(resultError(res, 'This Card could not be opened through the project'));
+      const record = projectAgentCardRecord(res);
+      if (!record) return rejectWithValue('Connection Hub returned no Card');
+      return record;
     } catch (e) {
       return rejectWithValue(message(e));
     }
@@ -197,6 +224,8 @@ export interface UpdateDelegatedAccessArgs {
   compositionMode?: 'and' | 'or';
   properties?: Record<string, unknown>;
   projectPersonControl?: ProjectControlCoordinates;
+  /** W319: save another person's agent Card through the project path. */
+  projectAgentCard?: ProjectAgentCardTarget;
 }
 
 /** Edit a manual automation IN PLACE — the card keeps its access_id/client_id,
@@ -224,14 +253,22 @@ export const updateDelegatedAccess = createAsyncThunk<
       compositionMode,
       properties,
       projectPersonControl,
+      projectAgentCard,
     },
     { rejectWithValue },
   ) => {
     try {
       const res = await postOp<DelegatedAccessCreateResult>(
-        projectPersonControl ? 'project_person_control_update' : 'delegated_access_update',
+        projectPersonControl
+          ? 'project_person_control_update'
+          : projectAgentCard
+            ? 'project_agent_card_update'
+            : 'delegated_access_update',
         {
-          ...(projectPersonControl
+          ...(projectAgentCard
+            ? { access_id: projectAgentCard.accessId, project_ref: projectAgentCard.projectRef }
+            : {}),
+          ...(projectAgentCard ? {} : projectPersonControl
             ? projectPersonControl.kind === 'person'
               ? {
                   project_ref: projectPersonControl.projectRef,
@@ -448,6 +485,13 @@ const delegatedAccessSlice = createSlice({
         state.loadRequestId = '';
         state.loading = false;
         state.error = action.payload ?? 'Failed to load delegated access';
+      })
+      .addCase(loadProjectAgentCard.fulfilled, (state, action) => {
+        state.focusedCard = action.payload;
+      })
+      .addCase(loadProjectAgentCard.rejected, (state, action) => {
+        state.focusedCard = undefined;
+        state.error = action.payload || 'This Card could not be opened through the project';
       })
       .addCase(loadControlCard.pending, (state) => {
         state.busy = true;

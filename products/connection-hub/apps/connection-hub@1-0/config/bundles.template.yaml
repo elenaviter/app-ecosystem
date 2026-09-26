@@ -114,6 +114,9 @@ bundles:
         provider:
           bundle_id: "problem-board@1-0"
           operation: "project_membership_resolve"
+          # W319: "may this person open or change this agent's Card", asked
+          # of the same host under the person's session.
+          agent_card_operation: "project_agent_card_authorize"
         administrative_roles:
         - owner
         - admin

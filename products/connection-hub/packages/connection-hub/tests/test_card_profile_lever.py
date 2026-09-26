@@ -152,3 +152,39 @@ async def test_only_the_grantor_moves_its_card():
     assert refused["error"] in {"delegated_access_not_found", "delegated_access_not_owned"}
     missing = await service.apply_authorization_profile(USER, access_id=card.access_id, profile="")
     assert missing == {"ok": False, "error": "delegated_access_profile_required"}
+
+
+@pytest.mark.asyncio
+async def test_a_project_admin_raises_another_persons_agent_card_through_the_project_path():
+    """W319 (and the W313 limit it closes): the project host authorizes, the
+    Card changes under its owner's key, and both audits name the admin."""
+
+    from connection_hub.delegated_credentials.project_agent_card_access import (
+        PROJECT_AGENT_CARD_AUDIT_PROVENANCE,
+        AgentCardDecision,
+        ProjectAgentCardAccess,
+    )
+
+    service, persistence, card = await _worker_card()
+
+    class Port:
+        async def authorize_agent_card(self, *, access_id, project_ref, action):
+            return AgentCardDecision(
+                allowed=True, via="project_admin", grantor_subject=GRANTOR, access_id=access_id,
+                project_ref=project_ref, action=action,
+            )
+
+    admin = {"user_id": "second-admin", "roles": ["kdcube:role:registered"]}
+    refused = await service.apply_authorization_profile(admin, access_id=card.access_id, profile="coordinator")
+    assert refused["ok"] is False, "directly, only the grantor moves its Card"
+
+    access = ProjectAgentCardAccess(service, Port())
+    raised = await access.apply_profile(
+        admin, access_id=card.access_id, project_ref="work:project:one", profile="coordinator", request_id="req-w319",
+    )
+    assert raised["ok"] is True, raised
+    provenance = raised["access"]["provenance"]
+    assert provenance[AUTHORIZATION_PROFILE_AUDIT_PROVENANCE]["actor_subject"] == "second-admin"
+    assert provenance[PROJECT_AGENT_CARD_AUDIT_PROVENANCE]["actor_subject"] == "second-admin"
+    assert provenance[PROJECT_AGENT_CARD_AUDIT_PROVENANCE]["via"] == "project_admin"
+    assert raised["access"]["grantor_subject"] == GRANTOR, "still the owner's Card"

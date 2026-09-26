@@ -142,6 +142,7 @@ import {
   setDelegatedInvocationPolicy,
   updateAgentCapabilitySelection,
   updateDelegatedAccess,
+  loadProjectAgentCard,
 } from './delegatedAccessSlice';
 import {
   approveOAuthConsent,
@@ -157,6 +158,12 @@ import {
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import { projectPersonControlCoordinates } from './projectPersonControl';
+import {
+  projectAgentCardFocus,
+  projectAgentCardReadOnly,
+  projectAgentCardReadOnlyMessage,
+  projectAgentCardUpdateTarget,
+} from './projectAgentCard';
 import {
   authorityAccountCount,
   authorityAllowsOuterOperation,
@@ -2251,6 +2258,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
   }, [pendingServiceCapability]);
   const focusedAccessId = useRef<string | null>(null);
+  // W319: a project link to another person's agent Card, opened through the project.
+  const projectAgentCardAttempt = useRef<string | null>(null);
+  const projectAgentCardPending = useRef(false);
   useEffect(() => {
     if (!accessCardFocus?.controlOnly) return;
     if (focusedCard && matchesAccessCardFocus(focusedCard, accessCardFocus)) {
@@ -2290,7 +2300,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
     if (!item) {
       if (!accessCardFocus.controlOnly) {
-        setAccessCardFocusState(delegatedAccessLoading ? 'loading' : 'unavailable');
+        setAccessCardFocusState(
+          delegatedAccessLoading || projectAgentCardPending.current ? 'loading' : 'unavailable',
+        );
       }
       return;
     }
@@ -2327,6 +2339,22 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     delegatedAccessLoading,
     startEdit,
   ]);
+  useEffect(() => {
+    // The Card is not in this person's own list: ask for it through the
+    // project the link names. The focus effect above resolves it from
+    // focusedCard, or shows it unavailable when the board says no.
+    const target = projectAgentCardFocus(accessCardFocus);
+    if (!target || !accessCardFocus || delegatedAccessLoading) return;
+    if (findAccessCardFocus([...items, ...(focusedCard ? [focusedCard] : [])], accessCardFocus)) return;
+    const key = `${target.projectRef}|${target.accessId}`;
+    if (projectAgentCardAttempt.current === key) return;
+    projectAgentCardAttempt.current = key;
+    projectAgentCardPending.current = true;
+    setAccessCardFocusState('loading');
+    void dispatch(loadProjectAgentCard(target)).unwrap()
+      .catch(() => setAccessCardFocusState('unavailable'))
+      .finally(() => { projectAgentCardPending.current = false; });
+  }, [accessCardFocus, delegatedAccessLoading, dispatch, items, focusedCard]);
   // Per-account claim binding chosen while granting a PENDING request (consent card).
   const [pendingAccountScope, setPendingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   const [pendingExistingAccountScope, setPendingExistingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
@@ -3140,6 +3168,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
     let updated;
     const projectPersonControl = projectPersonControlCoordinates(item);
+    if (projectAgentCardReadOnly(item)) {
+      setEditActionError(projectAgentCardReadOnlyMessage(item));
+      return;
+    }
+    const projectAgentCard = projectAgentCardUpdateTarget(item);
     try {
       updated = await dispatch(updateDelegatedAccess({
         accessId: item.access_id,
@@ -3164,6 +3197,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           : undefined,
         properties: selectedProperties,
         projectPersonControl: projectPersonControl || undefined,
+        projectAgentCard: projectAgentCard || undefined,
       })).unwrap();
     } catch (error) {
       setEditActionError(`Save was not applied: ${String(error || 'request refused')}`);
