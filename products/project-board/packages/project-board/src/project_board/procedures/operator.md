@@ -67,8 +67,12 @@ shared package contract.
 
 The exact KDCube refresh invocation is owned by
 [the maintainer rebuild procedure](repo:app-ecosystem/products/kdcube/procedures/maintainer-rebuild.md)
-in this repository. Host procedures point there instead of maintaining another
-copy.
+in this repository, and the refresh, bundle reload and app deploy a KDCube
+runtime's actions run are in
+[the KDCube maintainer runtime profile](repo:app-ecosystem/products/kdcube/procedures/runtime-profile-maintainer.md),
+which a project's runtime names. Host procedures point there instead of
+maintaining another copy; the worker procedure's `references/runtime-actions.md`
+keeps only the Problem Board host actions.
 
 ## One Host, One Relay, Many Sessions
 

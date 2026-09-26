@@ -883,7 +883,7 @@ works from its own tree. Entries are added as they happen.
   says who may publish, from which ref, and what is recorded.
 - **23:52Z, finding six: the coordinator ran a stack rebuild without
   announcing it or collecting ready** (recorded by claude-main, in its words).
-  At 23:50Z it merged KDCube #261 and ran `kdcube refresh --build` straight
+  At 23:50Z it merged KDCube #261 and ran a platform rebuild straight
   after, because the operator was waiting to retest the picker. Three workers
   were mid-flight, two lost their channels for about five minutes, and one
   spent that time diagnosing whether the platform was failing. Ready had been
@@ -1007,13 +1007,13 @@ works from its own tree. Entries are added as they happen.
   record with a different `release_id` after the restart. One test to add in
   the package, not a condition on the heads.
 - **03:43Z, incident: a bare rebuild took the published connection-hub.**
-  `kdcube refresh --build` without `--maintainer-local-python-package` for
-  every first-party package installed the published connection-hub, which
+  A platform rebuild that did not stage every first-party package from
+  source installed the published connection-hub, which
   has no `server_side_login`. chat-ingress and chat-processor died, the web
   proxy answered 502, and every relay channel reported
   `oauth_challenge_not_advertised` for thirteen minutes while four agents
   read a gateway error as a missing OAuth challenge. Keepers: the rebuild
-  command is the documented maintainer one (the maintainer rebuild procedure, `repo:app-ecosystem/products/kdcube/procedures/maintainer-rebuild.md`), and
+  command is the runtime profile's (the KDCube maintainer runtime profile, `repo:app-ecosystem/products/kdcube/procedures/runtime-profile-maintainer.md`), and
   exit 0 plus "every container started" is not verification, verify against
   the containers and an unauthenticated probe of the endpoint. connection-hub
   discovery reports any non-401 as a missing challenge and has to report a

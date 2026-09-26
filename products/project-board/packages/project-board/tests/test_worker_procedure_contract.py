@@ -46,6 +46,23 @@ def _words(text: str) -> str:
 REVISION_LEDGER = source_revision_ledger_path()
 
 
+def _repository_root() -> Path:
+    current = PACKAGE_ROOT
+    while current != current.parent:
+        if (current / "products").is_dir() and (current / "packages").is_dir():
+            return current
+        current = current.parent
+    raise AssertionError("the app-ecosystem repository root was not found above the package")
+
+
+KDCUBE_MAINTAINER_PROFILE = "products/kdcube/procedures/runtime-profile-maintainer.md"
+
+
+def _profile() -> str:
+    """The KDCube maintainer runtime profile, where the KDCube commands live (W262 PR 2)."""
+    return (_repository_root() / KDCUBE_MAINTAINER_PROFILE).read_text(encoding="utf-8")
+
+
 def test_project_board_owns_its_operational_procedures() -> None:
     present = {
         path.name
@@ -87,7 +104,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.4"
+    assert package["revision"] == "2026.09.26.5"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -657,11 +674,12 @@ def test_situational_references_open_on_their_trigger() -> None:
     window = _read("references/test-window.md")
     wake = _read("references/claude-code-wake.md")
     assert "Read this before asking the coordinator for a reload, refresh or restart" in runtime
-    assert "kdcube refresh --path \"$REPO\" --build" in runtime
-    assert "--maintainer-local-python-package DIST=SOURCE" in runtime
+    profile = _profile()
+    assert "kdcube refresh --path \"$REPO\" --build" in profile
+    assert "--maintainer-local-python-package DIST=SOURCE" in profile
     assert "Verify in the running artifact, not in the checkout" in runtime
     assert "pb source status" in runtime
-    assert "the reload returns before that build finishes" in _words(runtime)
+    assert "the reload returns before that build finishes" in _words(profile)
     assert "Ask what it released" in runtime
     coordinator = _words(_read("references/coordinator.md"))
     assert "Read this when you are about to accept, return or cancel a submission" in coordinator
@@ -677,16 +695,16 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "ask its owner, now or after, and act on the answer" in coordinator
     assert "Collect one `ready` or `hold` from every attending worker" in coordinator
     assert "neither is the guarantee" in coordinator
-    assert "A bundle reload returns before the widget build finishes" in coordinator
+    assert "A bundle reload returns before the widget build finishes" in _words(profile)
     assert "Verify the deployed artifact, never the commit" in coordinator
     assert "Say what loaded" in coordinator
     # The four things the first list did not carry (coordinator review, 2026-09-20).
     assert "A `hold` names what releases it" in coordinator
     assert "Running without its answer is allowed only when" in coordinator
     assert "the announcement records the missing answer and that reason" in coordinator
-    assert "diff the touched entry against the live `config/bundles.yaml` first" in coordinator
-    assert "never by the first match of a block" in coordinator
-    assert "a widget has three states after a reload" in coordinator
+    assert "diff the touched entry against the live `config/bundles.yaml` first" in _words(profile)
+    assert "never by the first match of a block" in _words(profile)
+    assert "a widget has three states after a reload" in _words(profile)
     assert "that case cannot occur" in coordinator
     # A reload row asks for a stage, it does not hold one (coordinator 2026-09-20 23:11Z, filed 2026-09-21).
     assert "A `reload` row is a request and never a hold" in coordinator
@@ -971,14 +989,16 @@ def test_every_activation_is_addressed_to_the_approved_commit_and_its_receipt_is
     assert "Every activation is addressed to a commit" in coordinator
     assert "whatever it holds at that instant. The\nlist is what makes that survivable" not in coordinator
     assert "the approved commit per tree" in coordinator
-    assert "`git -C <deploy-worktree> checkout --detach <sha>` and `kdcube bundle reload <bundle-id>`" in " ".join(coordinator.split())
+    profile = _profile()
+    assert "`git -C <deploy-worktree> checkout --detach <sha>` and `kdcube bundle reload <bundle-id>`" in " ".join(profile.split())
+    assert "**Execute** the action as the runtime's profile gives it, at the commit the ref names" in " ".join(coordinator.split())
     assert "**check the receipt against the approved candidate**" in " ".join(coordinator.split())
     assert "A receipt that names another commit is a failed\n   activation: report it as failed, with both commits" in coordinator
     assert coordinator.index("the receipt against the approved candidate") < coordinator.index("6. **Verify the deployed artifact, never the commit.**")
     # The preflight stays, as evidence and explicitly not the guarantee.
     assert "neither is the\n   guarantee" in coordinator
-    assert "`git -C <deploy-worktree> checkout --detach <approved-sha>`, then `kdcube bundle reload <bundle-id>`" in actions
-    assert "a reload of an app whose path is a working checkout, which stages whatever that checkout holds at that instant" in actions
+    assert "`git -C <deploy-worktree> checkout --detach <approved-sha>`, then `kdcube bundle reload <bundle-id>`" in profile
+    assert "a reload of an app whose path is a working checkout, which stages whatever that checkout holds at that instant" in profile
 
 
 def test_an_app_deploys_from_its_deploy_worktree_never_from_a_working_checkout():
@@ -988,12 +1008,11 @@ def test_an_app_deploys_from_its_deploy_worktree_never_from_a_working_checkout()
     it. activation.commit is not the guarantee: a restart and the Data Bus
     workers ignore it (W333)."""
 
-    coordinator = (PROCEDURE_ROOT / "references" / "coordinator.md").read_text(encoding="utf-8")
-    actions = (PROCEDURE_ROOT / "references" / "runtime-actions.md").read_text(encoding="utf-8")
+    actions = _profile()
 
-    step = coordinator[coordinator.index("5. **Execute**"):coordinator.index("6. **Verify the deployed artifact")]
-    assert "The working checkouts are never an app's path" in step
-    assert "a restart and the\n   Data Bus workers ignore it (W333)" in step
+    step = actions[actions.index("## Execute (coordinator step 5)"):actions.index("## Verify in the running artifact")]
+    assert "The working checkouts are never an app's path" in _words(step)
+    assert "a restart and the Data Bus workers ignore it (W333)" in _words(step)
     assert "set `activation.commit" not in step and "--commit <sha>" not in step
     assert step.index("checkout --detach") < step.index("**check")
     assert "`git -C <deploy-worktree> rev-parse HEAD` is the commit on disk" in " ".join(step.split())
@@ -1229,8 +1248,8 @@ def test_the_procedure_names_no_gender_for_the_operator_or_anyone() -> None:
 def test_a_window_that_refreshes_and_moves_an_app_checks_the_app_out_first():
     """W304 U3: the refresh loads the app at startup; a later reload keeps cached submodules."""
 
-    coordinator = _words(_read("references/coordinator.md"))
-    step = coordinator.split("5. **Execute**", 1)[1].split("6. **Verify", 1)[0]
+    profile = _words(_profile())
+    step = profile.split("## Execute (coordinator step 5)", 1)[1].split("## Verify", 1)[0]
     assert "**When one window refreshes the platform and moves an app**" in step
     assert "check the app's deploy worktree out at its approved commit **before** `kdcube refresh --build`, then refresh" in step
     assert "`ImportError: card_delegable_grants`" in step
@@ -1246,7 +1265,7 @@ def test_runtime_actions_orders_a_platform_rebuild_before_a_board_that_moves_ope
     every operation id in the contract, or a change of format would hide one.
     """
 
-    runtime = _read("references/runtime-actions.md")
+    runtime = _profile()
     assert "Problem Board operation policy and handler table differ" in runtime
     assert "check the approved board commit out in its deploy worktree **without reloading**" in runtime
     assert "a platform rebuild before the board commit is checked out" in runtime
@@ -1282,6 +1301,54 @@ def test_a_project_declares_its_instructions_and_runtimes_and_actions_release_a_
     assert coordinator.index("1. **Integrate onto the named ref first.**") < coordinator.index("2. **Read the dashboard first**")
     assert "On one machine this is the same step" in coordinator and "On several machines" in coordinator
 
+
+KDCUBE_RUNTIME_COMMANDS = (
+    "kdcube refresh",
+    "bundle reload",
+    "bundle config apply",
+    "--maintainer-local-python-package",
+    "bundles.yaml",
+    "bundles.template.yaml",
+    "deploy worktree",
+    "--local-path",
+    "refresh --build",
+)
+
+
+def test_the_generic_worker_procedure_carries_no_kdcube_runtime_command():
+    """W262 line 8: a worker on an independent project receives no refresh or
+    bundle instruction; the KDCube commands live in the KDCube runtime profile."""
+
+    documents = [PROCEDURE_ROOT / "SKILL.md", *sorted((PROCEDURE_ROOT / "references").glob("*.md"))]
+    assert len(documents) > 2
+    found = [
+        f"{document.relative_to(PROCEDURE_ROOT)}: {command!r}"
+        for document in documents
+        for command in KDCUBE_RUNTIME_COMMANDS
+        if command in " ".join(document.read_text(encoding="utf-8").split())
+    ]
+    assert found == [], "\n".join(found)
+
+
+def test_the_kdcube_maintainer_profile_holds_the_runtime_actions():
+    """W262 line 4: the profile reproduces refresh with package selectors and bundle reload."""
+
+    profile = _profile()
+    words = _words(profile)
+    assert "id: kdcube.procedures.runtime-profile-maintainer" in profile
+    assert "kdcube refresh" in profile
+    assert "--maintainer-local-python-package" in profile
+    assert "kdcube bundle reload" in profile
+    assert "`bundle config apply`" in profile
+    assert "`profile_ref`" in profile and "`local_profile`" in profile
+    assert "**Every action releases, in each repository it loads, the commit its ref names**" in words
+    assert "**Its receipt names each of those commits**" in words
+    assert "A reload is always addressed to a commit" in words
+    # The generic package points there and says the commands are the profile's.
+    actions = _words(_read("references/runtime-actions.md"))
+    assert "(repo:app-ecosystem/products/kdcube/procedures/runtime-profile-maintainer.md)" in actions
+    assert "are in that runtime's profile, never on this page" in actions
+    assert "A reload without a commit stages the working tree" not in actions
 
 def test_delegation_is_not_free_and_its_reason_is_stated():
     """Operator 2026-09-25: delegate only when net positive; no polling; independent pools first."""

@@ -3,7 +3,7 @@ id: project-board.worker-reference.coordinator
 title: Accept, Route, Reload, Refresh
 summary: The coordinator's checklist for review decisions, capacity-aware routing, teammate setup, shared project knowledge, and runtime actions, placed where each act happens so the rule is present when it is applied.
 tags: [procedure, problem-board, coordinator, review, routing, runtime]
-keywords: [what the coordinator is for, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, bundles.template.yaml, bundle reload, refresh --build, widget build states, verify the artifact, what loaded]
+keywords: [what the coordinator is for, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, integrate onto the ref, runtime profile, receipt names the commit, verify the artifact, what loaded]
 see_also:
   - runtime-actions.md
   - test-window.md
@@ -424,12 +424,13 @@ was the right rule applied to the wrong case.
 
 ## Reload, refresh, restart
 
-Every activation is addressed to a commit: an app reload from its deploy
-worktree checked out at that commit, a refresh from clean exports of named
-commits, a client switch with `pb source use-code --expect`. The list below
-decides which commit that is and proves it is the one that loaded. An app whose
-path is a working checkout stages that tree at the instant of the reload,
-whatever it holds, so no app's path is ever a working checkout.
+Every activation is addressed to a commit: a runtime action releases the
+commit its ref names, and a client switch is `pb source use-code --expect`.
+The list below decides which commit that is and proves it is the one that
+loaded. The commands for a runtime's actions, and what their receipts say,
+are in the runtime's profile (`pb worker context`, `runtimes[].local_profile`);
+this list is the same for every runtime. Nothing is ever loaded from a working
+tree, which stages whatever it holds at that instant.
 
 1. **Integrate onto the named ref first.** The action releases, in each
    repository it loads, a ref the project names for that runtime
@@ -478,59 +479,32 @@ whatever it holds, so no app's path is ever a working checkout.
 4. **Immediately before**: `git status --porcelain` on the tree and a
    `pb worker receive`. Both are evidence about that moment and neither is the
    guarantee: the tree can change between the check and the staging, and the
-   guarantee is an activation addressed to a commit. When the range touches
-   `bundles.template.yaml`, diff the touched entry against the live
-   `config/bundles.yaml` first: a fix whose descriptor is behind it deploys
-   and cannot run. Identical blocks sit under different bundle ids in that
-   file, so edit the live descriptor by locating the bundle id, never by the
-   first match of a block.
-5. **Execute** the action `runtime-actions.md` names for the tree, at the
-   announced commit: for an app, first read its entry in the staged
-   `config/bundles.yaml` (located by bundle id) and remove any `activation`
-   block, `commit` or `require_commit`, because a commitless reload still
-   applies it in the web proc while the Data Bus workers load the deploy
-   worktree, and `--local-path` keeps it; then `git -C <deploy-worktree>
-   checkout --detach <sha>` and `kdcube bundle reload <bundle-id>`; `kdcube refresh --build`
-   from exports of the announced commits; `pb source use-code` with `--expect`
-   and `--expect-kdcube`. Why the deploy worktree: it is the app's only path,
-   read by web requests, the Data Bus workers and a restart alike, and nobody
-   edits it, so the commit checked out there is what every process loads and a
-   restart keeps it. The working checkouts are never an app's path. The
-   descriptor's `activation.commit` is not the guarantee: a restart and the
-   Data Bus workers ignore it (W333), and the 2026-09-25 23:23Z window removed
-   it. **When one window refreshes the platform and moves an app**, check the
-   app's deploy worktree out at its approved commit **before** `kdcube refresh
-   --build`, then refresh. The refresh restarts the process, and the process
-   loads the app from its path at startup. A bundle reload afterwards evicts the
-   bundle but not submodules already cached, so the process can run new code
-   against old modules. That happened on 2026-09-25: the board failed with
-   `ImportError: card_delegable_grants` from 11:23 to 11:27Z, until a restart
-   (W304 U3).
-   Then **check the receipt against the approved candidate**: for an app
-   the reload's line reads `Loaded: mounted tree at head <sha>, clean`, a
-   `Loaded: snapshot of` line is a failed activation because a pin is still in
-   effect, and `git -C <deploy-worktree> rev-parse HEAD` is the commit on disk;
-   the
-   relay's first stamped line (`source=snapshot`, `app_ecosystem=<sha>`), and
-   the commits the refresh exported each equal the announced commit. A receipt that names another commit is a failed
-   activation: report it as failed, with both commits, and stop there. A bundle
-   reload returns before the widget build finishes, and a widget has three
-   states after a reload: build pending, no build because the signature was
-   unchanged and the artifact is already current, and no build because it
-   broke. The receipt does not tell them apart, only step 6 does.
-6. **Verify the deployed artifact, never the commit.** Bundle: the eviction
-   count plus one symbol or behaviour the change introduced, asked of the
-   running process. Widget: `dist/` inside the container carries the new
-   source, after the build ends. Relay: the first stamped line of the new pid
+   guarantee is an activation addressed to a commit. Run the checks the
+   runtime's profile adds for this moment (a descriptor behind the change,
+   for example).
+5. **Execute** the action as the runtime's profile gives it, at the commit
+   the ref names, in the order the profile gives when one window moves more
+   than one tree; for the host's client, `pb source use-code` with `--expect`
+   and `--expect-kdcube`. Then **check
+   the receipt against the approved candidate**: the profile says which line
+   of the receipt names what loaded, and the relay's first stamped line
+   (`source=snapshot`, `app_ecosystem=<sha>`) names the client. A receipt that names another commit is a failed
+   activation: report it as failed, with both commits, and stop there. An
+   action that returns before its build finishes has not said whether the
+   artifact is current; only step 6 does.
+6. **Verify the deployed artifact, never the commit.** Ask the running
+   process for one symbol or behaviour the change introduced, with the checks
+   the runtime's profile gives. Relay: the first stamped line of the new pid
    (`file_descriptor_limit=`, `source=`). Package: `pb procedure verify` on
-   the host. Descriptor: `bundle status` on the running catalog.
-7. **Say what loaded**: the pid or eviction count, the commit range, and, for
+   the host.
+7. **Say what loaded**: the pid or the profile's receipt, the ref and the
+   commit it named, the commit range, and, for
    each worker whose commits rode along, that they did. Clear your dashboard
    row. A worker asking "what did that release" is asking for this line.
 
 A LaunchAgent or systemd unit is host service configuration: `pb relay-service
-install` is typed by an agent after the operator approves it, and
-`kdcube refresh --build` rebuilds the operator's stack, so both are theirs to clear.
+install` is typed by an agent after the operator approves it, so it is theirs
+to clear, as is any action the runtime's profile says rebuilds their stack.
 Restarting a service whose definition exists is a coordinated runtime action
 and needs no more than the list above.
 
