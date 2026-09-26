@@ -185,7 +185,14 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
         "#!/bin/sh\n[ \"$1\" = ls-remote ] && case \"$2\" in github-reachable:*) exit 0;; esac\nexit 1\n",
         encoding="utf-8",
     )
-    for tool in ("pb", "git"):
+    # W346: macOS's realpath refuses GNU's -m, and the second run then
+    # reported every existing key block as a CONFLICT on the macOS host only.
+    # The script needs no realpath at all, so this one refuses every call, on
+    # every platform.
+    (bin_dir / "realpath").write_text(
+        "#!/bin/sh\necho \"realpath is not portable: $*\" >&2\nexit 64\n", encoding="utf-8"
+    )
+    for tool in ("pb", "git", "realpath"):
         (bin_dir / tool).chmod(0o755)
     keygen = lambda name, comment: subprocess.run(  # noqa: E731
         ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(keys / name)], check=True
@@ -218,6 +225,10 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
     second = run()
     assert (keys / "config").read_text(encoding="utf-8").count("Host github-applications") == 1
     assert "### GRANT applications" in second and "### REVOKE removed" in second and "REVOKE betaonly" not in second
+    # The block the first run wrote is recognised as this key's, not a conflict.
+    assert "CONFLICT github-applications" not in second and "CONFLICT github-betaonly" not in second
+    assert "ok reachable" in second
+    assert "realpath is not portable" not in first + second
 
 
 
