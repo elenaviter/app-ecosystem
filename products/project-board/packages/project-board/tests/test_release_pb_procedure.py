@@ -88,13 +88,17 @@ def test_prepare_sets_the_new_version_everywhere_and_leaves_no_old_one(tmp_path:
     assert product["components"]["python_package"]["version"] == new
 
 
+# The versions below are fixed and never the set's current one: `prepare`
+# rewrites every file of the set that names the current version.
+
+
 def test_a_version_must_be_the_calendar_form_and_newer() -> None:
-    release_pb.check_new_version("2026.09.26.2220", "2026.09.27.0100")
+    release_pb.check_new_version("2000.01.01.0000", "2000.01.02.0100")
     with pytest.raises(release_pb.ReleaseError, match="YYYY.MM.DD.HHMM"):
-        release_pb.check_new_version("2026.09.26.2220", "2026.9.27.100")
+        release_pb.check_new_version("2000.01.01.0000", "2026.9.27.100")
     with pytest.raises(release_pb.ReleaseError, match="not newer"):
-        release_pb.check_new_version("2026.09.26.2220", "2026.09.26.2220")
-    assert release_pb.canonical("2026.09.27.0100") == "2026.9.27.100"
+        release_pb.check_new_version("2000.01.01.0000", "2000.01.01.0000")
+    assert release_pb.canonical("2000.01.02.0100") == "2000.1.2.100"
 
 
 def test_publish_tags_the_merge_that_brought_the_version_not_later_main(tmp_path: Path) -> None:
@@ -110,13 +114,13 @@ def test_publish_tags_the_merge_that_brought_the_version_not_later_main(tmp_path
         _git(root, "commit", "-q", "-m", message)
         return _git(root, "rev-parse", "HEAD")
 
-    commit("2026.09.26.2220", "before")
-    release = commit("2026.09.27.0100", "release")
-    commit("2026.09.27.0100", "later work on main")
+    commit("2000.01.01.0000", "before")
+    release = commit("2000.01.02.0100", "release")
+    commit("2000.01.02.0100", "later work on main")
 
-    assert release_pb.release_commit("2026.09.27.0100", cwd=root, ref="main") == release
+    assert release_pb.release_commit("2000.01.02.0100", cwd=root, ref="main") == release
     with pytest.raises(release_pb.ReleaseError, match="does not carry"):
-        release_pb.release_commit("2026.09.28.0100", cwd=root, ref="main")
+        release_pb.release_commit("2000.01.03.0100", cwd=root, ref="main")
 
 
 def test_the_workflow_publishes_the_set_in_order_and_stops_at_a_failure() -> None:
