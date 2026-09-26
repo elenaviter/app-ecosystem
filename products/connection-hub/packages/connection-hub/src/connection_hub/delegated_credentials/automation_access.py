@@ -119,6 +119,10 @@ from connection_hub.delegated_credentials.cards.model import (
     NamedServiceSelection,
     authority_is_credentialless,
 )
+from connection_hub.delegated_credentials.controls.project_person_composition import (
+    compose_with_project_held_control,
+    project_held_control,
+)
 from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
@@ -1725,6 +1729,36 @@ class AutomationAccessService:
             return None
         return await self._ensure_control_snapshot(record)
 
+    async def _compose_with_control(
+        self, record: AutomationAccessRecord
+    ) -> tuple[AutomationAccessRecord | None, CardAuthority | None]:
+        """The record's Control Card and its effective authority; (None, None) when unresolvable.
+
+        A Card bound to the Control Card its project holds for the person is
+        resolved under the project's subject and composed by selection
+        intersection (W260); every other binding keeps ordinary composition.
+        Raises ControlCardMismatch or CardUnavailable, never falls open.
+        """
+
+        binding = record.control_card
+        caller = card_authority_from_record(record)
+        held = project_held_control(caller)
+        if held is not None:
+            control = await self._resolve_control_record(
+                held.control_id, grantor_subject=held.grantor_subject
+            )
+            if control is None:
+                return None, None
+            return control, compose_with_project_held_control(
+                caller, card_authority_from_record(control)
+            )
+        control = await self._resolve_control_record(
+            binding.control_id, grantor_subject=record.grantor_subject
+        )
+        if control is None:
+            return None, None
+        return control, effective_card_authority(caller, card_authority_from_record(control))
+
     async def _effective_control_view(
         self,
         record: AutomationAccessRecord,
@@ -1735,11 +1769,15 @@ class AutomationAccessService:
         if binding is None:
             return {"state": "not_controlled"}
         try:
-            control = await self._resolve_control_record(
-                binding.control_id,
-                grantor_subject=record.grantor_subject,
-            )
+            control, composed = await self._compose_with_control(record)
         except CardUnavailable as exc:
+            return {
+                "state": "unavailable",
+                "reason": exc.reason,
+                "fail_closed": True,
+                "binding": binding.to_dict(),
+            }
+        except ControlCardMismatch as exc:
             return {
                 "state": "unavailable",
                 "reason": exc.reason,
@@ -1767,18 +1805,7 @@ class AutomationAccessService:
                 "fail_closed": True,
                 "binding": binding.to_dict(),
             }
-        try:
-            effective = effective_card_authority(
-                card_authority_from_record(record),
-                card_authority_from_record(control),
-            )
-        except ControlCardMismatch as exc:
-            return {
-                "state": "unavailable",
-                "reason": exc.reason,
-                "fail_closed": True,
-                "binding": binding.to_dict(),
-            }
+        effective = composed
         return {
             "state": "active",
             "fail_closed": False,
@@ -6690,16 +6717,10 @@ class AutomationAccessService:
                 )
             if record is not None and record.control_card is not None:
                 try:
-                    control = await self._resolve_control_record(
-                        record.control_card.control_id,
-                        grantor_subject=record.grantor_subject,
-                    )
-                    if control is None:
+                    control, composed = await self._compose_with_control(record)
+                    if control is None or composed is None:
                         raise ControlCardMismatch("control_card_unresolvable")
-                    record = record_from_card(effective_card_authority(
-                        card_authority_from_record(record),
-                        card_authority_from_record(control),
-                    ))
+                    record = record_from_card(composed)
                 except (CardUnavailable, ControlCardMismatch) as exc:
                     return {
                         "governed": True,

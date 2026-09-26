@@ -24,6 +24,10 @@ from connection_hub.delegated_credentials.cards.resolver import (
     CardUnavailable,
     DelegatedCardResolver,
 )
+from connection_hub.delegated_credentials.controls.project_person_composition import (
+    compose_with_project_held_control,
+    project_held_control,
+)
 from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
@@ -143,10 +147,18 @@ async def resolve_live_grant_composition(
     effective = caller
     if caller.control_card is not None:
         control_id = caller.control_card.control_id
-        if card_store is not None and subject_hash:
+        # A Control Card the project holds for this person is stored under the
+        # project's subject, not the caller's (W260, 2026-09-26).
+        held = project_held_control(caller)
+        control_subject_hash = (
+            hashlib.sha256(held.grantor_subject.encode("utf-8")).hexdigest()
+            if held is not None
+            else subject_hash
+        )
+        if card_store is not None and control_subject_hash:
             try:
-                control = await resolver.resolve(
-                    subject_hash=subject_hash,
+                control = await DelegatedCardResolver(cache=cache, store=card_store).resolve(
+                    subject_hash=control_subject_hash,
                     access_id=control_id,
                 )
             except CardUnavailable as exc:
@@ -176,7 +188,11 @@ async def resolve_live_grant_composition(
         if not authority_is_credentialless(control):
             raise LiveGrantCardError("control_card_has_credential")
         try:
-            effective = effective_card_authority(caller, control)
+            effective = (
+                compose_with_project_held_control(caller, control)
+                if held is not None
+                else effective_card_authority(caller, control)
+            )
         except ControlCardMismatch as exc:
             raise LiveGrantCardError(exc.reason) from exc
     return ResolvedCardComposition(
