@@ -30,6 +30,7 @@ OPERATIONAL_PROCEDURES = {
     "first-time-setup.md",
     "live-acceptance.md",
     "local-worker-session.md",
+    "enroll-an-agent.md",
     "operator.md",
     "testing.md",
 }
@@ -1095,7 +1096,7 @@ def test_the_start_step_reads_the_project_facts_page() -> None:
     # Its hosts, agents and client release stay true across sessions and are
     # lost with a compacted context, so the start step reads it first.
     skill = _words(_read("SKILL.md"))
-    assert "and the project facts page `pb worker context` names (`project_facts_ref`)" in skill
+    assert "the project facts page (`project_facts_ref`)" in skill
 
 
 def test_an_agent_searches_the_plan_and_the_journal_before_acting_on_a_subject() -> None:
@@ -1149,7 +1150,7 @@ def test_an_assignment_notice_is_settled_after_working_not_after_completion() ->
 def test_project_environment_is_the_final_workspace_setup_step() -> None:
     reference = _words(_read("references/project-workspace.md"))
     assert "read the environment page that the same `pb worker context` result names as `project_environment_ref`" in reference
-    assert "Build and prove the environment from that page before interpreting a test failure" in reference
+    assert "build and prove the environment from that page on demand, before the first test or build you run, and before interpreting a test failure" in reference
     assert "The team adds the setup or correction to the project page" in reference
 
 
@@ -1293,7 +1294,7 @@ def test_a_project_declares_its_instructions_and_runtimes_and_actions_release_a_
     skill = " ".join(_read("SKILL.md").split())
     actions = " ".join(_read("references/runtime-actions.md").split())
     coordinator = " ".join(_read("references/coordinator.md").split())
-    assert "Read the project's instructions file, which `pb worker context` names as `project_instructions_ref`" in skill
+    assert "the project's instructions file (`project_instructions_ref`: what the project is" in skill
     assert "who triggers it and the ref it releases in each repository it loads (`releases`)" in skill
     assert "the commands live in the runtime's profile (`local_profile`), never here, and a project with none has no runtime actions" in skill
     assert "Every action loads, per repository, the commit its ref names, never a working tree, and its result names each repository, ref and commit." in skill
@@ -1520,13 +1521,26 @@ def test_rehearsing_an_official_flow_gives_no_hints():
 
 
 def test_the_official_command_starts_an_agent_session():
-    # Operator, 2026-09-26: every agent session, the coordinator included, starts this way.
+    # Operator, 2026-09-26: the person-facing enroll page, exactly this simple.
+    enroll = " ".join((PROCEDURE_ROOT.parent / "enroll-an-agent.md").read_text(encoding="utf-8").split())
+    assert "## 1. Create the agent's workspace, then start it" in enroll
+    assert 'cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude --add-dir "$HOME/.kdcube" --dangerously-skip-permissions --disallowedTools AskUserQuestion' in enroll
+    assert 'codex -C "$HOME/.kdcube/pb/workspaces/$ALIAS" --sandbox danger-full-access --ask-for-approval never --search' in enroll
+    assert "## 2. Enroll it to the pool" in enroll and "Prefer `--device`" in enroll
+    assert "## 3. Connect it to your project" in enroll
+    skill = " ".join(_read("SKILL.md").split())
+    assert "enroll-an-agent.md" in skill
     first_run = " ".join(_read("references/first-run.md").split())
-    command = 'cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude \\ --add-dir "$HOME/.kdcube" \\ --dangerously-skip-permissions \\ --disallowedTools AskUserQuestion'
-    assert command in first_run
-    assert "the `workspace` that `pb worker context` names" in first_run
+    assert "enroll-an-agent.md" in first_run
     host = " ".join((PROCEDURE_ROOT.parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
-    assert "**The official command to start an agent's session**" in host
-    assert command in host
-    assert 'codex -C "$HOME/.kdcube/pb/workspaces/$ALIAS"' in host
+    assert "[enroll an agent](./enroll-an-agent.md)" in host
 
+
+def test_rehearsal_gaps_are_closed():
+    # Onboarding rehearsal on .11, 2026-09-26: six places the skill left an agent guessing.
+    skill = " ".join(_read("SKILL.md").split())
+    assert "What `pb worker context` names is read after you attend a project (step 7)" in skill
+    assert "empty means the project has none yet, so read the facts page and ask the coordinator" in skill
+    assert "chronicle" not in skill.split("## Receive Addressed Input")[0]
+    workspace = " ".join(_read("references/project-workspace.md").split())
+    assert "Onboarding does not build it" in workspace

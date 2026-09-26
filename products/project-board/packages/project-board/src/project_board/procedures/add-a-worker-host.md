@@ -661,37 +661,7 @@ settings file that is not valid JSON is refused and left unchanged. The first-ru
 reports. Without them the card says `limit not reported` (spark1 until
 2026-09-24). Codex agents need none of this.
 
-**The official command to start an agent's session** (operator, 2026-09-26),
-for every agent, the coordinator included:
-
-```bash
-cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude \
-  --add-dir "$HOME/.kdcube" \
-  --dangerously-skip-permissions \
-  --disallowedTools AskUserQuestion
-```
-
-`$ALIAS` is the agent's own folder name under the workspace root: the folder
-`pb worker context` (and `pb worker listen`) names as `workspace`. Never a
-folder chosen by hand.
-
-- `--add-dir "$HOME/.kdcube"` lets the session read the client state (its
-  `pb` configuration, journals and relay state).
-- `--dangerously-skip-permissions` lets it run unattended: nobody approves
-  each command.
-- `--disallowedTools AskUserQuestion` makes every question for the operator go
-  through the board, never a terminal dialog nobody watches.
-
-For a Codex agent the equivalent is:
-
-```bash
-codex -C "$HOME/.kdcube/pb/workspaces/$ALIAS" \
-  --sandbox danger-full-access --ask-for-approval never --search \
-  --add-dir "$HOME/.kdcube"
-```
-
-The start scripts below hold exactly these commands, so a restart is one short
-command and no flag is lost.
+A person enrolling one agent by hand follows [enroll an agent](./enroll-an-agent.md): three steps, the commands, nothing more. The start scripts below hold the same commands for a host that runs its agents unattended.
 
 **Host agent**, first, one start script per agent in `~/.local/bin`, holding its
 workspace and every flag, so a start or a restart is one short command and no

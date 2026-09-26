@@ -55,11 +55,11 @@ wakes and held leases still require prompt receive, handling, and settlement.
 
 ## Start Or Resume
 
-1. Read the project's instructions file, which `pb worker context` names as `project_instructions_ref` (what the project is, its conventions, its repositories and runtimes), then the repository instructions, the bottom of the current journal
-   chronicle, the entries for the work being resumed, and the project facts page `pb worker context` names (`project_facts_ref`). An agent attends one project at a time (a link to another is refused until it is unlinked). For the subject of the task, search the plan and the journal (Choose A Relevant Next Action).
+1. Read the repository instructions of the folder you are in. What `pb worker context` names is read after you attend a project (step 7): the command needs enrollment and attendance first.
+   An agent attends one project at a time (a link to another is refused until it is unlinked).
 2. Identify this exact runtime session: `pb worker whoami`.
 3. Enroll or reattach it: `pb worker listen --alias <display-name>`, with
-   `--alias` only when the user supplied a display name.
+   `--alias` only when the user supplied a display name. The person's side is [enroll an agent](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/enroll-an-agent.md).
 4. Follow `next`; present its exact `pb worker authorize <profile>`. Do not reconstruct a profile name.
    On a browserless host, or when the approving person signs in with a different browser or account than the one that opens here, append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`; the handoff exposes only public URL/code and the credential goes to the native store. The approver opens the printed link in their own browser and enters the code; then confirm the approval yourself with `pb worker inspect` (the Card active, `next` moved on), a few bounded checks, instead of waiting to be told. Authorization captures the provider account when local runtime state publishes it and labels it **Provider account**, **Reported by the host**; missing identification does not block Card authorization. [Identity and authorization](references/identity-and-authorization.md) owns the account and Card-authority contract.
 5. Establish the notification path returned for this runtime:
@@ -94,7 +94,7 @@ wakes and held leases still require prompt receive, handling, and settlement.
    live. Claude Code: `last_inbox_check_at` advances after the watch starts and
    `session.inbox_check_state` reads `current`.
 7. Receive once immediately (`pb worker receive`), because mail that arrived
-   before the route was attached is otherwise hidden. Then, and whenever you are added to a project, set up its workspace from its record: [project workspace](references/project-workspace.md). Your workspace is the `workspace` `pb worker context` names (the host's root, one folder per agent), never the folder this session started in and never a path you choose: create it there, work from it, clone the project's repositories into it, and report it with `pb worker workspace-report`. When it names none, ask the operator for a host root.
+   before the route was attached is otherwise hidden. Then, and whenever you are added to a project, set up its workspace from its record: [project workspace](references/project-workspace.md). Your workspace is the `workspace` `pb worker context` names (the host's root, one folder per agent), never the folder this session started in and never a path you choose: create it there, work from it, clone the project's repositories into it, and report it with `pb worker workspace-report`. When it names none, ask the operator for a host root. Then read what `pb worker context` names: the project's instructions file (`project_instructions_ref`: what the project is, its conventions, repositories and runtimes; empty means the project has none yet, so read the facts page and ask the coordinator), the project facts page (`project_facts_ref`), and the newest journal entries and those for the work being resumed (`pb worker journal-search`). For the subject of the task, search the plan and the journal (Choose A Relevant Next Action).
 
 Read [identity and authorization](references/identity-and-authorization.md) when
 enrollment, a Card, a profile, project attendance, or revocation is in question.

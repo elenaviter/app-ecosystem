@@ -4397,6 +4397,12 @@ class ProblemBoardRelaySupervisor:
             if isinstance(listener.get("subscription"), Mapping)
             else {}
         )
+        if str(subscription.get("adapter") or "") == "session-owned-watch":
+            # A Claude Code session is told by its own `pb worker watch`; there
+            # is no native wake to attempt, so none is recorded, and inspect
+            # no longer reads "wake delivery failed" (rehearsal, 2026-09-26).
+            field.clear_wake_hold(channel.worker_name)
+            return None
         withheld = wake_withheld_by_reconciliation(queue_reconciliation, subscription)
         if not withheld:
             # W334: the wake is eligible again, so a hold ends here and only

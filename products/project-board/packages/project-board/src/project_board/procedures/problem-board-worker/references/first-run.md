@@ -256,13 +256,7 @@ cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude \
   --disallowedTools AskUserQuestion
 ```
 
-That is the official start command for every agent (operator, 2026-09-26);
-`claude --resume <session-uuid>` with the same flags resumes one. `$ALIAS` is
-the agent's own folder under the workspace root, the `workspace` that
-`pb worker context` names. `--add-dir` lets the session read the client state,
-`--dangerously-skip-permissions` lets it run unattended, and
-`--disallowedTools AskUserQuestion` sends operator questions through the board.
-The Codex equivalent is in add-a-worker-host, step 9.
+That is the official start command for every agent; `claude --resume <session-uuid>` with the same flags resumes one. A person follows [enroll an agent](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/enroll-an-agent.md), which also gives the Codex command.
 
 The flag applies to that one session, and the user's other Claude Code
 sessions keep their prompts. A session that is already running picks it up on

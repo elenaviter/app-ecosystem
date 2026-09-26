@@ -197,3 +197,27 @@ def test_listen_report_and_enrollment_refuse_a_recorded_folder_outside_the_root(
         worker_alias="lehrwerk", working_directory=str(shared),
     )
     assert again.working_directory == str(root.resolve() / "lehrwerk"), "enrollment follows the same answer"
+
+
+def test_an_alias_with_an_at_sign_is_its_own_folder_name(tmp_path):
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    assert host_config.default_working_directory(
+        [str(root)], alias="claude-lehrwerk@elena", worker_name="claude-code-x"
+    ) == str(root / "claude-lehrwerk@elena")
+
+
+def test_a_recorded_folder_that_no_longer_exists_gives_way_to_the_alias_folder(tmp_path):
+    # Rehearsal, 2026-09-26: listen kept a folder the agent had created and deleted.
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    config = host_config.HostRelayConfig.load(_host(tmp_path, [str(root)]).path)
+    gone = root / "old-name"
+    workspace, source, note = host_config.agent_workspace(
+        config, recorded=str(gone), alias="claude-lehrwerk@elena", worker_name="claude-code-x",
+    )
+    assert workspace == str(root / "claude-lehrwerk@elena") and source == "host_root"
+    assert "no longer exists" in note
+    # The agent's own folder, not created yet, is kept.
+    own = str(root / "claude-lehrwerk@elena")
+    assert host_config.agent_workspace(config, recorded=own, alias="claude-lehrwerk@elena", worker_name="x")[:2] == (own, "recorded")

@@ -839,7 +839,10 @@ def resolve_host_config_path(value: str | Path | None = None) -> Path:
     )
 
 
-_SAFE_FOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+# One folder name: letters, digits, `.`, `_`, `-` and `@` (an alias such as
+# `claude-lehrwerk@elena` is its own folder name); anything else uses the
+# agent's stable name.
+_SAFE_FOLDER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,63}")
 
 
 def is_inside(path: str | Path, root: str | Path) -> bool:
@@ -888,15 +891,23 @@ def agent_workspace(
 
     root = config.effective_agent_workspace_root
     recorded = str(recorded or "").strip()
-    if recorded and (not root or is_inside(recorded, root)):
-        return recorded, "recorded", ""
     derived = default_working_directory([root] if root else [], alias=alias, worker_name=worker_name)
-    note = (
-        f"The folder this session recorded ({recorded}) is outside the host's agent "
-        f"workspace root ({root}); it is not your workspace."
-        if recorded and root
-        else ""
-    )
+    if recorded and not root:
+        return recorded, "recorded", ""
+    if recorded and is_inside(recorded, root) and (Path(recorded).exists() or recorded == derived):
+        # Kept only while it exists (or is the agent's own folder, not
+        # created yet): a folder deleted since, or recorded under an old
+        # alias, gives way to <root>/<alias> (rehearsal, 2026-09-26).
+        return recorded, "recorded", ""
+    if recorded and root and not is_inside(recorded, root):
+        note = (
+            f"The folder this session recorded ({recorded}) is outside the host's agent "
+            f"workspace root ({root}); it is not your workspace."
+        )
+    elif recorded:
+        note = f"The folder this session recorded ({recorded}) no longer exists; it is not your workspace."
+    else:
+        note = ""
     return derived, ("host_root" if derived else ""), note
 
 
