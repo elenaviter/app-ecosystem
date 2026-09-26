@@ -3327,6 +3327,8 @@ class ProblemBoardHostRelayAdapter:
                         self.config.project_id, heartbeat_result["coordinator"]
                     )
                 except DomainError:
+                    # Like the team sync: a project not yet on this host keeps
+                    # no holder; the next heartbeat after it lands writes one.
                     pass
             recipients = heartbeat_result.get("mail_recipients")
             if not isinstance(recipients, list):
