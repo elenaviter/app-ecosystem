@@ -297,3 +297,48 @@ def test_another_persons_control_card_may_only_narrow() -> None:
     assert refused.value.reason == "control_card_foreign_holder_requires_and"
     assert control.composition_mode in ("", CONTROL_COMPOSITION_AND)
 
+
+
+# -- review on app-ecosystem#192: the owner cannot drop the project's narrowing --
+
+
+@pytest.mark.asyncio
+async def test_the_agents_owner_cannot_detach_the_projects_control_card_on_the_plain_path() -> None:
+    agent, control = _cards()
+    service, authorities = _service(agent, control)
+    assert (await _attach(service, _access(service), agent))["ok"] is True
+
+    refused = await service.detach_control_card(
+        {"user_id": OWNER}, access_id=agent.access_id, control_id=CONTROL_ID,
+    )
+
+    assert refused["ok"] is False and refused["error"] == "control_card_held_by_project"
+    assert refused["status"] == 409
+    assert authorities[agent.access_id].control_card.holder_subject == CREATOR, "still narrowed"
+
+
+@pytest.mark.asyncio
+async def test_the_agents_owner_cannot_replace_the_projects_control_card_on_the_plain_path() -> None:
+    agent, control = _cards()
+    own = dataclasses.replace(control, access_id="control-owners-own", grantor_subject=OWNER)
+    service, authorities = _service(agent, control)
+    authorities[own.access_id] = own
+    assert (await _attach(service, _access(service), agent))["ok"] is True
+
+    refused = await service.attach_control_card(
+        {"user_id": OWNER}, access_id=agent.access_id, control_id=own.access_id,
+        replace_control_id=CONTROL_ID,
+    )
+
+    assert refused["ok"] is False and refused["error"] == "control_card_held_by_project"
+    assert authorities[agent.access_id].control_card.control_id == CONTROL_ID
+
+
+def test_a_holder_never_makes_a_credentialed_card_a_control_card() -> None:
+    """Review P3: the credentialless check is the gate a foreign holder passes through."""
+
+    agent, control = _cards()
+    credentialed = dataclasses.replace(control, delegate_subject="someone", source="oauth")
+    with pytest.raises(ControlCardMismatch) as refused:
+        effective_card_authority(_bound(agent, credentialed, holder=CREATOR), credentialed)
+    assert refused.value.reason == "control_card_has_credential"

@@ -663,6 +663,30 @@ def _legacy_record_card_kind(
     return CARD_KIND_AUTOMATION
 
 
+def _held_binding_refusal(
+    record: "AutomationAccessRecord", *, caller_is_project: bool
+) -> dict[str, Any] | None:
+    """A project's Control Card on another person's Card stays until the project removes it.
+
+    W260 (review on app-ecosystem#192): a binding that records a holder other
+    than the Card's own grantor was attached through the project, with the
+    project host deciding. Only the project path detaches or replaces it; the
+    Card's owner cannot drop the project's narrowing on the plain path.
+    """
+
+    binding = record.control_card
+    holder = str(getattr(binding, "holder_subject", "") or "") if binding is not None else ""
+    if caller_is_project or not holder or holder == record.grantor_subject:
+        return None
+    return {
+        "ok": False,
+        "error": "control_card_held_by_project",
+        "message": "This Card is narrowed by a project's Control Card; an admin of that project removes it through the project.",
+        "status": 409,
+        "control_card": binding.to_dict(),
+    }
+
+
 def _record_is_credentialless(record: "AutomationAccessRecord") -> bool:
     """The one material difference between a linked Card and a caller Card."""
     return (
@@ -6259,6 +6283,9 @@ class AutomationAccessService:
                     "access": record.to_public_dict(),
                     "control_card": await self._effective_control_view(record),
                 }
+            refusal = _held_binding_refusal(record, caller_is_project=bool(_clean(_control_holder)))
+            if refusal is not None:
+                return refusal
             if record.control_card.control_id != expected_previous_control_id:
                 return {
                     "ok": False,
@@ -6374,8 +6401,14 @@ class AutomationAccessService:
         control_id: str,
         expected_card_revision: int | None = None,
         _record_transform: Callable[[Any, Any], Any] | None = None,
+        _through_project: bool = False,
     ) -> dict[str, Any]:
-        """Unlink the named Control Card so the caller Card applies alone."""
+        """Unlink the named Control Card so the caller Card applies alone.
+
+        A binding whose Control Card another person holds (a project's, W260)
+        is removed only through the project path, which asked the project host
+        (``_through_project``); the agent's owner cannot drop it here.
+        """
 
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
@@ -6419,6 +6452,9 @@ class AutomationAccessService:
             }
         if record.control_card is None:
             return {"ok": True, "detached": False, "access": record.to_public_dict()}
+        refusal = _held_binding_refusal(record, caller_is_project=_through_project)
+        if refusal is not None:
+            return refusal
         if record.control_card.control_id != selected_control_id:
             return {
                 "ok": False,

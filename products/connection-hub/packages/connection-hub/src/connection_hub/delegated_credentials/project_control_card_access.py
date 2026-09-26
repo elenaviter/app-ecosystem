@@ -417,4 +417,5 @@ class ProjectControlCardAccess:
             _record_transform=self._attach_audit(
                 user, control, agent, action="detached", request_id=request_id
             ),
+            _through_project=True,
         )
