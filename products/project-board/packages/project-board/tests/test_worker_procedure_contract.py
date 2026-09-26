@@ -1359,3 +1359,14 @@ def test_delegation_is_not_free_and_its_reason_is_stated():
     assert "It does not wait on a delegate with repeated short empty checks or status polls" in coordinator
     assert "Portable work goes first to an independent, less used quota pool" in coordinator
     assert "Why: a delegation that costs more to brief and check than it saves spends the same shared budget twice" in coordinator
+
+
+def test_the_kdcube_profile_gives_deploy_worktrees_a_gitdir_the_container_can_read():
+    """W262 line 4 proof (dev-main 2026-09-26): an absolute gitdir left the receipt without git evidence."""
+
+    words = " ".join(_profile().split())
+    assert "### A deploy worktree the container can read" in _profile()
+    assert "`git -C <checkout> worktree add --relative-paths <deploy-worktree> <sha>`" in words
+    assert "Before 2.48 (dev-main runs 2.43): after `git worktree add`, rewrite the worktree's `.git` file" in words
+    assert "`head -1 <deploy-worktree>/.git` starts with `gitdir: ../`, never `gitdir: /`" in words
+    assert "a `Loaded: mounted tree` line with `(no git evidence: ...)` is a failed proof because it names no commit" in words

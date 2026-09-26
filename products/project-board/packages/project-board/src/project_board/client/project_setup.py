@@ -146,6 +146,13 @@ def read_project_setup(path: Path, *, setup_ref: str, resolve: Resolver) -> dict
 
     result = empty_project_setup()
     if not path.is_file():
+        # Empty fields, and why: a project may declare nothing, but a host
+        # whose journal checkout is behind looks the same (W262 line 4 proof,
+        # dev-main 2026-09-26), so the reason names the file and where.
+        result["project_setup_issues"].append(
+            f"no {PROJECT_SETUP_FILE} at {setup_ref or 'the journal home'} on this host: "
+            "the project declares no setup, or this host's journal checkout is behind"
+        )
         return result
     result["project_setup_ref"] = setup_ref
     issues: list[str] = result["project_setup_issues"]

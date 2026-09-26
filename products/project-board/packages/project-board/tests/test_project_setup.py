@@ -104,6 +104,10 @@ def test_a_project_without_the_file_gets_empty_fields(tmp_path):
 
     assert context["project_setup_ref"] == ""
     assert context["project_instructions_ref"] == "" and context["runtimes"] == []
+    # The reason is stated (W262 line 4 proof: a stale checkout looked like no setup).
+    [reason] = context["project_setup_issues"]
+    assert reason.startswith("no project-setup.json at repo:journals/projects/project-one/project-setup.json on this host")
+    assert "journal checkout is behind" in reason
 
 
 def test_an_action_without_the_ref_it_releases_is_left_out_and_named(tmp_path):
