@@ -9,19 +9,30 @@ procedures, in `docs/`, or in any product's `docs/`. A repository NAME used as
 an example (a deploy-key label, a `--set-source-repo-url` placeholder) is not a
 path into it and stays allowed.
 
-Names are checked by hash: this public test must not name them either. Each
-word of a page (and each run of its hyphen-joined parts) is hashed and compared
-with the hashes of the private names. To add a name, add
-`hashlib.sha256(name.lower().encode()).hexdigest()`. The repository's own public
-address (its clone URL and its PyPI owner line) is public by construction and is
-removed before the check.
+Names are read from a private file, never from this public test: a list of
+names or of their hashes here would publish them (a short guess list recovers
+hashed names). `PB_PRIVATE_NAMES_FILE` points at the project's private list,
+one name per line; each word of a page, and each run of its hyphen-joined
+parts, is compared with it. Without the variable the name check skips; with
+`PB_REQUIRE_PRIVATE_NAMES=1` it fails instead, so a maintainer run proves it
+ran. The repository's own public address (its clone URL and its PyPI owner
+line) is public by construction and is removed before the check. Machine
+names are not listed: they open no door (operator, 2026-09-23).
+
+One door is never written anywhere, not even in the private list: the host of
+this machine's selected Problem Board endpoint (a tunnel hostname). The check
+reads it at test time from the `pb` host configuration and refuses it in every
+public page; a failure prints only `file:line`.
 """
 
 from __future__ import annotations
 
-import hashlib
+import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
+
+import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = PACKAGE_ROOT.parents[3]
@@ -40,29 +51,26 @@ PRIVATE = (
     re.compile(r"~/src/kdcube/applications"),
 )
 
-PRIVATE_NAME_HASHES = frozenset({
-    "94364d42fabb0be8e99f509a9a62f84c3a8c71b6b4d2da52b1c15a5473ba364b",
-    "03cdb5536dc3150fd8dbcbc2ea27776a32005ccbc621f88563f90e2ce1a4e61f",
-    "cc967443070ab409a57a455dc8c2405a10b6ba96ca75f87bcf18ca368bb090a8",
-    "0ce93c9606f0685bf60e051265891d256381f639d05c0aec67c84eec49d33cc1",
-    "795e55c568cee7455748c5ae48953bec0ccf9229fe0e85f07945960fef0ce627",
-    "635d3933acbae41a13ecd20ff8e5a936debc94f2c0d995183509cb5da2aad579",
-    "2a6d847da3ef4d51e1228347e35c7f784560659592e623091f8ea44db714a175",
-    "0df89317e02535902d116be0f27294a75145339bf4af53fb35131aea8071a0e1",
-    "50ef43677caa6aab199caefb3883415e6f515a535e867f0fa09e0f5c752d3b5a",
-    "2e2907386a93de1dd6000948948aebccaabe012b492ee894f2b091a48ce6691c",
-    "1db1a1868b097ee3d3b8a485549097d4e7bf0cee5fe8c1997195df2f4046835a",
-    "224b4f95bbe48b40649515fac9dad3f0e6693fefb4689f561f846e2119d3d75b",
-    "c2e9644f996a6475ee5e4a5a644f6ce5f838394aed710b16fbce7056a1483eab",
-    "177d78514028e81e1f90e35569d939b67ce735f510dae387967df52c837af225",
-    "315dc1c3a775edd6cbb6f413fe27f163f441a5574ee8df2b038fa40343f828fa",
-    "16170e88695f8e82bec30a377f0587e4010a93e4cb49b1a51f597b04a3956323",
-    "f02c63b09978720996db5b5a8cbd2d41dbf4457cacfd8375c087bcec2164a103",
-    "9b0945d898182d5473d4326c25beea69aee5d477ded321467ea5e1bfa40c96f9",
-    "d26f44459530e6aa95e159354c3f5ba59977c3273c8ce17736f28949ed341042",
-    "bf0374b06424e71aba097e8955a21fb961e24b8eb2f3b85def136b011415f8fa",
-    "55221fad19df58af459dd217017dde7d94cb5482aa7cb5bebeb0744d898f300d",
-})
+PRIVATE_NAMES_FILE = "PB_PRIVATE_NAMES_FILE"
+REQUIRE_PRIVATE_NAMES = "PB_REQUIRE_PRIVATE_NAMES"
+
+
+def _private_names() -> frozenset[str]:
+    """The private names, lowercased, from the file the environment names."""
+
+    location = os.environ.get(PRIVATE_NAMES_FILE, "").strip()
+    if not location:
+        if os.environ.get(REQUIRE_PRIVATE_NAMES, "").strip() == "1":
+            pytest.fail(f"{PRIVATE_NAMES_FILE} is required and not set")
+        pytest.skip(f"no private names list: set {PRIVATE_NAMES_FILE}")
+    names = frozenset(
+        # A name may carry a trailing `# note`; underscores count as hyphens.
+        line.split("#", 1)[0].strip().lower().replace("_", "-")
+        for line in Path(location).expanduser().read_text(encoding="utf-8").splitlines()
+        if line.split("#", 1)[0].strip()
+    )
+    assert names, f"{PRIVATE_NAMES_FILE} lists no names"
+    return names
 
 # This repository's own public address: its clone URL and the owner line of its
 # PyPI trusted-publisher registration (docs/releases.md).
@@ -71,19 +79,36 @@ OWN_ADDRESS = (
     re.compile(r"^owner: [A-Za-z0-9-]+$"),
 )
 
+NOT_A_DOOR = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def _endpoint_host() -> str:
+    """The host of this machine's selected endpoint, or "" when there is none."""
+
+    try:
+        from project_board.client.host_config import HostRelayConfig, resolve_host_config_path
+
+        endpoint = HostRelayConfig.load(resolve_host_config_path()).endpoint
+    except Exception:  # noqa: BLE001 - no host configuration on this machine
+        return ""
+    host = (urlsplit(endpoint).hostname or "").lower()
+    return "" if host in NOT_A_DOOR else host
+
+
 WORD = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
-def _names_in(line: str) -> list[str]:
+def _names_in(line: str, names: frozenset[str]) -> list[str]:
     for pattern in OWN_ADDRESS:
         line = pattern.sub(" ", line)
     found = []
-    for word in WORD.findall(line.lower()):
+    # `quickstart_works` is the same name as `quickstart-works`.
+    for word in WORD.findall(line.lower().replace("_", "-")):
         parts = word.split("-")
         for start in range(len(parts)):
             for end in range(start + 1, len(parts) + 1):
                 candidate = "-".join(parts[start:end])
-                if hashlib.sha256(candidate.encode()).hexdigest() in PRIVATE_NAME_HASHES:
+                if candidate in names:
                     found.append(candidate)
     return found
 
@@ -114,28 +139,73 @@ def test_no_public_page_points_into_a_private_repository() -> None:
     assert not found, "private references in public pages:\n" + "\n".join(found)
 
 
-def test_no_public_page_names_a_private_person_host_or_agent() -> None:
+def test_no_public_page_names_a_private_person_or_organisation() -> None:
+    names = _private_names()
     found = []
     for path in _public_markdown():
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if _names_in(line):
+            if _names_in(line, names):
                 # The line number only: printing the name would publish it in CI logs.
                 found.append(f"{path.relative_to(REPO_ROOT)}:{number}")
-    assert not found, "private names in public pages (see the hashes in this test):\n" + "\n".join(found)
+    assert not found, f"private names in public pages (see {PRIVATE_NAMES_FILE}):\n" + "\n".join(found)
 
 
-def test_the_name_check_finds_a_listed_name_inside_an_alias_and_a_path(monkeypatch) -> None:
-    # A made-up name stands in for a listed one, so this test names nobody.
-    probe = "zq-probe"
-    monkeypatch.setattr(
-        __import__(__name__), "PRIVATE_NAME_HASHES",
-        PRIVATE_NAME_HASHES | {hashlib.sha256(probe.encode()).hexdigest()},
-    )
-    assert _names_in("agent-zq-probe@host-two") == [probe]
-    assert _names_in("~/.kdcube/pb/workspaces/ZQ-Probe/applications") == [probe]
-    assert _names_in("zq-prober and probe-zq") == []
-    # The placeholders the public pages use are not listed names.
-    assert _names_in("agent-one@host-two, my-agent, maintainer-host, agent-user") == []
+def test_the_name_check_finds_a_listed_name_inside_an_alias_and_a_path() -> None:
+    # A made-up list stands in for the private one, so this test names nobody.
+    names = frozenset({"zq-probe", "zq"})
+    assert _names_in("agent-zq-probe@host-two", names) == ["zq", "zq-probe"]
+    assert _names_in("~/.kdcube/pb/workspaces/ZQ-Probe/applications", names) == ["zq", "zq-probe"]
+    assert _names_in("zqx-prober and probe-zqx", names) == []
+    assert _names_in("the zq_probe folder", names) == ["zq", "zq-probe"]
+    # The placeholders the public pages use are plain words.
+    assert _names_in("agent-one@host-two, my-agent, maintainer-host, agent-user", names) == []
     # The repository's own address is not a private name.
-    assert _names_in("git clone https://github.com/zq-probe/app-ecosystem.git") == []
-    assert len(PRIVATE_NAME_HASHES) >= 20
+    assert _names_in("git clone https://github.com/zq-probe/app-ecosystem.git", names) == []
+
+
+def test_without_the_private_list_the_check_skips_and_a_required_run_fails(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv(PRIVATE_NAMES_FILE, raising=False)
+    monkeypatch.delenv(REQUIRE_PRIVATE_NAMES, raising=False)
+    with pytest.raises(pytest.skip.Exception):
+        _private_names()
+    monkeypatch.setenv(REQUIRE_PRIVATE_NAMES, "1")
+    with pytest.raises(pytest.fail.Exception):
+        _private_names()
+    listed = tmp_path / "names.txt"
+    listed.write_text("# a comment\n\nZQ-Probe\nzq_other   # a note\n", encoding="utf-8")
+    monkeypatch.setenv(PRIVATE_NAMES_FILE, str(listed))
+    assert _private_names() == frozenset({"zq-probe", "zq-other"})
+
+
+def test_no_public_page_names_this_hosts_endpoint() -> None:
+    host = _endpoint_host()
+    if not host:
+        if os.environ.get(REQUIRE_PRIVATE_NAMES, "").strip() == "1":
+            pytest.fail("no Problem Board host configuration to read the endpoint from")
+        pytest.skip("no Problem Board host configuration on this machine")
+    found = []
+    for path in _public_markdown():
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+            if host in line.lower():
+                # The line number only: the host must not reach a log either.
+                found.append(f"{path.relative_to(REPO_ROOT)}:{number}")
+    assert not found, "this host's endpoint appears in public pages:\n" + "\n".join(found)
+
+
+def test_the_endpoint_probe_reads_the_host_configuration(monkeypatch, tmp_path) -> None:
+    from project_board.client import host_config
+
+    class Loaded:
+        endpoint = "https://door.example.invalid/mcp/problem-board"
+
+    monkeypatch.setattr(host_config, "resolve_host_config_path", lambda *_: tmp_path / "config.json")
+    monkeypatch.setattr(host_config.HostRelayConfig, "load", classmethod(lambda cls, _path: Loaded()))
+    assert _endpoint_host() == "door.example.invalid"
+    Loaded.endpoint = "http://localhost:8080/mcp"
+    assert _endpoint_host() == ""
+
+    def unconfigured(*_):
+        raise RuntimeError("no configuration")
+
+    monkeypatch.setattr(host_config, "resolve_host_config_path", unconfigured)
+    assert _endpoint_host() == ""
