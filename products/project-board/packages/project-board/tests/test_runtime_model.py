@@ -257,6 +257,9 @@ def test_the_relay_records_what_the_codex_rollout_said_so_a_miss_keeps_it(tmp_pa
         def runtime_limit_state(self, name):
             return {}
 
+        def wake_hold(self, name):
+            return {}
+
         def runtime_model(self, name):
             return dict(self.model)
 

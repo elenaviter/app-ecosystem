@@ -4110,6 +4110,53 @@ class SharedFieldStore:
         recorded = worker.get("runtime_limit_state")
         return dict(recorded) if isinstance(recorded, Mapping) else {}
 
+    # -- W334: a wake the relay holds for a limited agent --------------------
+    #
+    # The delivery loop writes the hold from the same decision that withholds
+    # the wake, and clears it only when the wake is eligible again or there is
+    # no mail to wake for. It lives in the worker's record, not in a relay
+    # process, so a restart keeps it and every project heartbeat reads it.
+
+    def record_wake_hold(self, worker_name: str, *, until: str, pending: int) -> dict[str, Any]:
+        """Hold (or keep holding) the wake: ``since`` stays when the hold began."""
+
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            current = row.get("wake_hold")
+            current = dict(current) if isinstance(current, Mapping) else {}
+            since = str(current.get("since") or "") or utc_now()
+            hold = {"since": since, "until": str(until or current.get("until") or ""), "pending": max(0, int(pending))}
+            if hold == current:
+                return current
+            row["wake_hold"] = hold
+            atomic_write_json(path, row)
+            return dict(hold)
+
+    def clear_wake_hold(self, worker_name: str) -> None:
+        try:
+            clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        except DomainError:
+            return
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            if not row.get("wake_hold"):
+                return
+            row.pop("wake_hold", None)
+            atomic_write_json(path, row)
+
+    def wake_hold(self, worker_name: str) -> dict[str, Any]:
+        """The held wake, or empty when none is held."""
+
+        try:
+            worker = self.read_worker(worker_name)
+        except DomainError:
+            return {}
+        hold = worker.get("wake_hold")
+        return dict(hold) if isinstance(hold, Mapping) and hold.get("since") else {}
+
     def set_worker_info(self, worker_name: str, text: str) -> dict[str, Any]:
         """Record the worker's one-line info note for the relay to publish (W330).
 
