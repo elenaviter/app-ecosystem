@@ -50,12 +50,12 @@ def field(tmp_path: Path) -> SharedFieldStore:
     return store
 
 
-def _receipt(*, receipt_id: str, started_at: str = "2026-09-23T20:00:00Z", archived: int = 0) -> dict:
+def _receipt(*, receipt_id: str, started_at: str = "2026-09-23T20:00:00Z", archived: int = 0, reporter: str = WORKER) -> dict:
     value = {
         "schema": MAILBOX_RECONCILIATION_RECEIPT_SCHEMA,
         "receipt_id": receipt_id,
         "project_ref": f"work:project:{PROJECT}",
-        "reporter_worker_name": WORKER,
+        "reporter_worker_name": reporter,
         "host_id": "host-01",
         "relay_id": "relay-01",
         "started_at": started_at,
@@ -490,3 +490,64 @@ async def test_guard_a_large_history_costs_neither_cycles_nor_first_heartbeat(
         "relay startup to first heartbeat took "
         f"{startup_elapsed:.2f}s over a 50,000-record history"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_refused_publication_names_the_card_fix_and_the_relay_row_counts_it(tmp_path):
+    """Audit of #126 (claude-ops): a refused publication said only its code.
+
+    A Card whose operation list predates ``mail.reconciliation.publish`` is
+    fixed by one command. The settled row names it with this channel's
+    profile, and the relay row counts refused publications apart from the
+    other outbox refusals.
+    """
+
+    from project_board.contract.errors import DomainError
+
+    host, identity, channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.register_worker(
+        worker_name=identity.worker_name,
+        worker_alias="worker",
+        worker_identity=identity.worker_identity,
+        runtime_kind=identity.runtime_kind,
+        runtime_session_id=identity.runtime_session_id,
+        capabilities=[],
+        authority_label="connection-hub:test",
+        host_id=host.host_id,
+        host_label=host.host_label,
+        host_kind=host.host_kind,
+        relay_id=host.relay_id,
+    )
+    field.create_project(project_id=PROJECT, title="Local state", goal="Keep the relay's local state bounded.", owner="operator")
+    receipt = _receipt(receipt_id="mailbox-reconciliation_20260801T130000Z_b2c3", started_at="2026-08-01T13:00:00Z", archived=1, reporter=identity.worker_name)
+    receipts.record_receipt(field, PROJECT, worker_name=identity.worker_name, receipt=receipt)
+
+    class RefusingClient:
+        async def action(self, *, object_ref, action, payload=None):
+            raise DomainError(
+                "work_worker_operation_not_granted",
+                "The Card does not hold this operation.",
+                status=403,
+                details={"operation": OUTBOX_KIND, "reason": "connection_hub_operation_not_granted"},
+            )
+
+    adapter = relay.ProblemBoardHostRelayAdapter(
+        config=relay.RelayConfig.from_host_channel(host, channel, project_id=PROJECT),
+        field=field,
+        client=RefusingClient(),
+    )
+    counts = await adapter._flush_outbox()
+
+    assert counts["outbox_refused"] == 1
+    assert counts["reconciliation_publications_refused"] == 1
+    outbox = OutboxStore(field.control)
+    [path] = [
+        path
+        for path in outbox.settled_paths(project_ref=f"work:project:{PROJECT}", op="test")
+        if state_of_name(path.name) == "refused"
+    ]
+    result = json.loads(path.read_text())["remote_result"]
+    assert result["error"]["code"] == "work_worker_operation_not_granted"
+    assert result["fix"] == f"pb worker authorize {channel.profile} --replace-card"
+    assert result["permission_group"]
