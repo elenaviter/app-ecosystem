@@ -185,7 +185,14 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
         "#!/bin/sh\n[ \"$1\" = ls-remote ] && case \"$2\" in github-reachable:*) exit 0;; esac\nexit 1\n",
         encoding="utf-8",
     )
-    for tool in ("pb", "git"):
+    # W346: macOS's realpath refuses GNU's -m, and the second run then
+    # reported every existing key block as a CONFLICT on the macOS host only.
+    # The script needs no realpath at all, so this one refuses every call, on
+    # every platform.
+    (bin_dir / "realpath").write_text(
+        "#!/bin/sh\necho \"realpath is not portable: $*\" >&2\nexit 64\n", encoding="utf-8"
+    )
+    for tool in ("pb", "git", "realpath"):
         (bin_dir / tool).chmod(0o755)
     keygen = lambda name, comment: subprocess.run(  # noqa: E731
         ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", str(keys / name)], check=True
@@ -194,7 +201,12 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
     keygen("deploy_betaonly", "host deploy key: betaonly owner/betaonly")  # only project beta needs it
     keygen("deploy_applications", "old")  # the SSH block was lost
     (keys / "deploy_applications.pub").unlink()  # and so was the public half
-    (keys / "config").write_text("Host github-kdcube\n  HostName example.com\n  IdentityFile /elsewhere\n", encoding="utf-8")
+    (keys / "config").write_text(
+        "Host github-kdcube\n  HostName example.com\n  IdentityFile /elsewhere\n"
+        # A hand-written block for this key, spelled with ~/ as ssh -G prints it (W346 review).
+        "Host github-reachable\n  HostName github.com\n  IdentityFile ~/keys/deploy_reachable\n",
+        encoding="utf-8",
+    )
     env = {
         "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
         "HOME": str(tmp_path), "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host",
@@ -206,7 +218,7 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
 
     first = run()
     assert "### GRANT applications" in first and "Page: https://github.com/kdcube/applications/settings/keys" in first
-    assert "ok reachable" in first
+    assert "ok reachable" in first and "CONFLICT github-reachable" not in first
     assert "CONFLICT github-kdcube" in first and "Left unchanged." in first
     assert "CONFLICT alias clash names different repositories" in first
     assert "### REVOKE removed (on no attended project's card)" in first and "Repository: owner/removed" in first
@@ -218,6 +230,10 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
     second = run()
     assert (keys / "config").read_text(encoding="utf-8").count("Host github-applications") == 1
     assert "### GRANT applications" in second and "### REVOKE removed" in second and "REVOKE betaonly" not in second
+    # The block the first run wrote is recognised as this key's, not a conflict.
+    assert "CONFLICT github-applications" not in second and "CONFLICT github-betaonly" not in second
+    assert "ok reachable" in second
+    assert "realpath is not portable" not in first + second
 
 
 
