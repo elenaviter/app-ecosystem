@@ -304,19 +304,18 @@ class ProjectControlCardAccess:
 
     @staticmethod
     def _not_delegable(result: Mapping[str, Any]) -> dict[str, Any]:
-        """Say why a save the editor did not widen is still refused (review on app-ecosystem#187).
+        """Name what a save adds beyond what the editor may delegate.
 
-        A save is checked against every permission the Card carries after it,
-        not only the ones the editor added, so an editor who holds fewer
-        permissions than the Card carries can save no change at all.
+        A save keeps what the Card already carries and is refused only for the
+        permissions it adds beyond the editor's bound (W296, 2026-09-26; this
+        replaces the every-permission check of the review on app-ecosystem#187).
         """
 
         refused = dict(result)
-        grants = ", ".join(str(grant) for grant in refused.get("grants") or ()) or "some of its permissions"
+        grants = ", ".join(str(grant) for grant in refused.get("grants") or ()) or "some permissions"
         refused["message"] = (
-            "To save this project's Control Card you must be able to delegate every permission it "
-            f"carries, not only the ones you change. You cannot delegate: {grants}. The Card's creator, "
-            "or an admin who holds these permissions, can save it; or remove them from the Card first."
+            f"You cannot add {grants} to this project's Control Card: they are beyond what you may "
+            "delegate. What the Card already carries stays as it is."
         )
         return refused
 

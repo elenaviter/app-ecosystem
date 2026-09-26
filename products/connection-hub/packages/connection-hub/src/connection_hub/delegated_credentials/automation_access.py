@@ -1524,6 +1524,69 @@ def _account_scope_claims_for_requirements(
     )
 
 
+def _newly_selected_operation_grants(
+    existing: "AutomationAccessRecord",
+    *,
+    resource_operations: Mapping[str, Iterable[str]],
+    named_service_operations: NamedServiceSelection,
+    resource_pairs: Iterable[tuple[str, Any]],
+) -> set[str] | None:
+    """Grants carried by operations a save selects that the stored Card did not.
+
+    ``None`` when the growth cannot be told apart operation by operation (a
+    selection widened to every operation, a legacy selection, an operation the
+    catalog does not map to a grant): the caller then treats every grant the
+    save carries as added.
+    """
+
+    from connection_hub.delegated_credentials.agent_capability_sync import (
+        _named_operation_grants,
+    )
+
+    added: set[str] = set()
+    configs = {resource: cfg for resource, cfg in resource_pairs}
+    for resource, cfg in configs.items():
+        now = set(_as_list(list(resource_operations.get(resource) or ())))
+        before = set(_as_list(list(dict(existing.resource_operations or {}).get(resource) or ())))
+        carried = resource in dict(existing.resource_grants or {})
+        if not now:
+            if carried and before:
+                return None  # an exact selection widened to every tool
+            if not carried:
+                added.update(getattr(cfg, "grants", ()) or ())
+            continue
+        if carried and not before:
+            continue  # every tool before, an exact subset now
+        tools = {tool.name: tuple(tool.grants) for tool in getattr(cfg, "tools", ()) or ()}
+        for operation in now - before:
+            if operation not in tools:
+                return None
+            added.update(tools[operation])
+    prior = existing.named_service_operations
+    kind = named_service_operations.kind
+    if kind == "none" or (kind == "exact" and prior.kind == "all"):
+        return added
+    if kind == "all":
+        return added if prior.kind == "all" else None
+    if kind != "exact" or prior.kind == "unknown":
+        return None
+    for resource, namespaces in named_service_operations.operations.items():
+        cfg = configs.get(resource)
+        named = getattr(cfg, "named_services", None) if cfg is not None else None
+        if not isinstance(named, Mapping):
+            return None
+        before_namespaces = (
+            dict(prior.operations).get(resource, {}) if prior.kind == "exact" else {}
+        )
+        for namespace, operations in namespaces.items():
+            grants_by_operation = _named_operation_grants(named, namespace)
+            for operation in set(operations) - set(before_namespaces.get(namespace, ())):
+                if operation not in grants_by_operation:
+                    return None
+                added.update(grants_by_operation[operation])
+    return added
+
+
 def _effective_named_service_grants(
     grants: Iterable[str],
     *,
@@ -3917,6 +3980,28 @@ class AutomationAccessService:
             else set(_as_list(_delegable_grants))
         )
         denied = [grant for grant in selected_grants if grant not in delegable_grants]
+        if denied and _delegable_grants is not None:
+            # A save bounded by its project host refuses only what it ADDS
+            # beyond that bound (W296, 2026-09-26): a grant the stored Card
+            # already carries stays, unless an operation newly selected here
+            # carries it. Removing a permission or accepting a changed
+            # descriptor never needs the editor to hold everything the Card holds.
+            carried = {
+                grant
+                for grants in dict(existing.resource_grants or {}).values()
+                for grant in grants
+            }
+            added = _newly_selected_operation_grants(
+                existing,
+                resource_operations=selected_resource_operations,
+                named_service_operations=selected_named_service_operations,
+                resource_pairs=resource_pairs,
+            )
+            denied = [
+                grant
+                for grant in denied
+                if grant not in carried or added is None or grant in added
+            ]
         if denied:
             return ResolvedCardAuthority(error={
                 "ok": False,
@@ -3928,6 +4013,10 @@ class AutomationAccessService:
                     "declared in connection-hub@1-0 "
                     "`connections.delegated_credentials.oauth.capabilities`, as "
                     "`delegable_roles` and `delegable_permissions`."
+                    if _delegable_grants is None
+                    else "These permissions are beyond what you may add to this Card: "
+                    + ", ".join(denied)
+                    + "."
                 ),
             })
         try:

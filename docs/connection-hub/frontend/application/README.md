@@ -274,11 +274,16 @@ account at call time.
   `project.control.update`) or `project_member` (read only), and names the
   Card's creator. Every change is written under the creator's storage key
   with the acting person in a `project_control_card_audit` provenance entry.
-  - **A save needs every permission the Card carries.** The acting person
-    must be able to delegate each grant on the Card after the save, not only
-    the ones they add, so an admin who holds fewer permissions than the Card
-    carries can save no change at all. The refusal
-    (`delegated_access_grants_not_delegable`) names the grants and says so.
+  - **A save is refused only for what it adds.** On every project-held Card
+    (the project Control Card, a person's Control Card, their My Card seed),
+    the save keeps the grants the stored Card already carries and is refused
+    only for a grant it adds beyond what the acting person may delegate. A
+    grant counts as added when the Card did not carry it, or when an
+    operation newly selected on the Card carries it. Removing permissions,
+    renaming and accepting a changed descriptor need nothing beyond it. The
+    refusal (`delegated_access_grants_not_delegable`) names those grants; on
+    a person's Control Card it also carries the project host's reason
+    (`reason`, from the membership answer's `delegation_bound`).
   - **The save runs without the acting person's platform roles.** A Card
     offering a resource that only a role may choose (an admin-only resource)
     cannot be saved on this path; the creator's own path is unaffected.
