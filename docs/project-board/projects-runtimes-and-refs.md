@@ -109,3 +109,47 @@ hold the same fields, so only where they are read from changes.
 Every action must name `who` and `releases`: each repository it loads, by alias, and the git ref it releases there, so its result can name the commit that loaded in each. An entry that cannot be read is
 left out and named in `project_setup_issues`; a missing file gives empty
 fields. Neither ever fails `pb worker context`.
+
+### Where a host reads the project's setup
+
+A host's repository map (`journal_workspace.source_repositories` in the host
+relay config) maps each alias to its checkout. That checkout is where writes
+go, and on a host it is often an operator's working checkout, which cannot
+fast-forward over their uncommitted edits. A setup read there goes stale, and
+a stale setup looks like no setup. So an entry may also name a **read root**:
+
+```json
+"source_repositories": {
+  "applications": {
+    "root": "/home/me/src/applications",
+    "read_root": "/home/me/src/.read/applications",
+    "read_ref": "origin/main"
+  },
+  "kdcube": "/home/me/src/kdcube"
+}
+```
+
+A plain string is a root only. `read_ref` defaults to `origin/main`; the read
+root must be inside an approved coding root like the root.
+
+- **Create it once**, a dedicated detached worktree per alias, never edited:
+  `git -C <checkout> worktree add --detach --relative-paths <read-root> origin/main`
+  (before git 2.48, without `--relative-paths`, then rewrite the gitdir links
+  to relative paths as the KDCube runtime profile shows).
+- **Reads go through it.** `pb worker context` reads `project-setup.json`,
+  `project-facts.md`, `project-environment.md`, the instructions file and each
+  runtime's profile through the alias's read root, and returns
+  `journal_home_commit` (the commit they were read at) and
+  `journal_home_read_root`. Without a read root, both come from the root.
+- **A lag is named, never fatal.** When the read root is behind its
+  `read_ref`, missing, or not a git tree, `project_setup_issues` names the
+  alias, the read root, both commits and the reason. The context compares
+  local refs only; it never fetches.
+- **The relay advances it, only when clean.** Its housekeeping, at most every
+  five minutes per alias, fetches the ref's branch and, when
+  `git status --porcelain` is empty, checks the read root out detached at the
+  ref. A dirty tree or a failed fetch is left as it is and logged once per
+  change.
+- **Writes never go there.** Journal entries and every other change are
+  committed on the agent's own branch in its own worktree and land through a
+  pull request; the journal workspace's links and index use the root.

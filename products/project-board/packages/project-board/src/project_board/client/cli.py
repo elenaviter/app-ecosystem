@@ -2977,7 +2977,7 @@ def _reference_migration_preview(args: Any) -> dict[str, Any]:
     )
     workspace = JournalWorkspace(
         config.journal_workspace_root,
-        RepositoryMap.from_mapping(dict(config.source_repositories)),
+        RepositoryMap.from_mapping(config.repository_mapping()),
     )
     context = workspace.context(args.project_ref)
     journal_home = Path(str(context["local_journal_home"]))
@@ -3157,7 +3157,7 @@ def _references_command(args: Any) -> dict[str, Any]:
         index = _complete_remote_plan(args)
         workspace = JournalWorkspace(
             config.journal_workspace_root,
-            RepositoryMap.from_mapping(dict(config.source_repositories)),
+            RepositoryMap.from_mapping(config.repository_mapping()),
         )
         context = workspace.context(args.project_ref)
         git_result = sync_plan(
@@ -3358,7 +3358,7 @@ def _plan_command(args: Any) -> dict[str, Any]:
         else:
             workspace = JournalWorkspace(
                 config.journal_workspace_root,
-                RepositoryMap.from_mapping(dict(config.source_repositories)),
+                RepositoryMap.from_mapping(config.repository_mapping()),
             )
             context = workspace.context(args.project_ref)
             journal_home = Path(str(context["local_journal_home"]))
@@ -3415,7 +3415,7 @@ def _plan_command(args: Any) -> dict[str, Any]:
     index = _complete_remote_plan(args)
     workspace = JournalWorkspace(
         config.journal_workspace_root,
-        RepositoryMap.from_mapping(dict(config.source_repositories)),
+        RepositoryMap.from_mapping(config.repository_mapping()),
     )
     context = workspace.context(args.project_ref)
     journal_home = Path(str(context["local_journal_home"]))
@@ -4282,7 +4282,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
             project_ref = _attended_project_ref(field, identity.worker_name)
         workspace = JournalWorkspace(
             config.journal_workspace_root,
-            RepositoryMap.from_mapping(dict(config.source_repositories)),
+            RepositoryMap.from_mapping(config.repository_mapping()),
         )
         entries = workspace.search(
             args.query,
@@ -4300,7 +4300,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
     }:
         workspace = JournalWorkspace(
             config.journal_workspace_root,
-            RepositoryMap.from_mapping(dict(config.source_repositories)),
+            RepositoryMap.from_mapping(config.repository_mapping()),
         )
         workflow = JournalIndexWorkflow(
             field=field,
@@ -4449,7 +4449,7 @@ def _worker_project_context(
     try:
         journal = JournalWorkspace(
             config.journal_workspace_root,
-            RepositoryMap.from_mapping(dict(config.source_repositories), require_existing=False),
+            RepositoryMap.from_mapping(config.repository_mapping(), require_existing=False),
         ).context(project_ref)
         journal_state = {"journal_state": "available"}
     except DomainError as exc:
