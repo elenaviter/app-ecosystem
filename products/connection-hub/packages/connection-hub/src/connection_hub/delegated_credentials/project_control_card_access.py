@@ -36,6 +36,7 @@ PROJECT_CONTROL_CARD_AUDIT_SCHEMA = "connection_hub.project_control_card_audit.v
 # two ever change the Card, whatever else a host answer says.
 READING_VIAS = frozenset({"owner", "project_admin", "project_member"})
 EDITING_VIAS = frozenset({"owner", "project_admin"})
+NOT_DELEGABLE = "delegated_access_grants_not_delegable"
 
 
 class ControlCardAuthorizationError(Exception):
@@ -88,7 +89,12 @@ class ProjectControlCardAuthorizationPort(Protocol):
 
 
 class RefusingProjectControlCardAuthorizationPort:
-    """Fail closed with a configuration reason."""
+    """Fail closed with a configuration reason.
+
+    A missing provider is the deployment's gap, not a denial of this person:
+    it is unavailable (503, with the reason), never a 403 that reads like
+    "you may not" (review on app-ecosystem#187).
+    """
 
     def __init__(self, reason: str) -> None:
         self._reason = reason
@@ -96,10 +102,7 @@ class RefusingProjectControlCardAuthorizationPort:
     async def authorize_project_control_card(
         self, *, control_id: str, project_ref: str, action: str
     ) -> ProjectControlCardDecision:
-        return ProjectControlCardDecision(
-            allowed=False, reason=self._reason, control_id=control_id,
-            project_ref=project_ref, action=action,
-        )
+        raise ControlCardAuthorizationError(self._reason)
 
 
 def _subject(user: Mapping[str, Any]) -> str:
@@ -171,7 +174,14 @@ class ProjectControlCardAccess:
 
     @staticmethod
     def _owner_user(decision: ProjectControlCardDecision) -> dict[str, Any]:
-        """Storage identity only: the authorization came from the project host."""
+        """Storage identity only: the authorization came from the project host.
+
+        It carries no roles or permissions, so the save runs without the
+        acting person's platform roles: a Card offering a resource only a role
+        may choose (an admin-only resource) cannot be saved on this path. The
+        acting person's own grants still bound the save
+        (``_actor_delegable_grants``).
+        """
 
         return {"user_id": decision.grantor_subject, "roles": [], "permissions": []}
 
@@ -249,8 +259,28 @@ class ProjectControlCardAccess:
             **changes,
         )
         if result.get("ok") is not True:
+            if result.get("error") == NOT_DELEGABLE:
+                return self._not_delegable(result)
             return self._not_found(result)
         result = dict(result)
         result["access"] = {**dict(result.get("access") or {}), "via": decision.via,
                             "can_edit": True, "project_ref": decision.project_ref}
         return result
+
+    @staticmethod
+    def _not_delegable(result: Mapping[str, Any]) -> dict[str, Any]:
+        """Say why a save the editor did not widen is still refused (review on app-ecosystem#187).
+
+        A save is checked against every permission the Card carries after it,
+        not only the ones the editor added, so an editor who holds fewer
+        permissions than the Card carries can save no change at all.
+        """
+
+        refused = dict(result)
+        grants = ", ".join(str(grant) for grant in refused.get("grants") or ()) or "some of its permissions"
+        refused["message"] = (
+            "To save this project's Control Card you must be able to delegate every permission it "
+            f"carries, not only the ones you change. You cannot delegate: {grants}. The Card's creator, "
+            "or an admin who holds these permissions, can save it; or remove them from the Card first."
+        )
+        return refused

@@ -82,14 +82,18 @@ class AgentCardAuthorizationPort(Protocol):
 
 
 class RefusingAgentCardAuthorizationPort:
-    """Fail closed with a configuration reason."""
+    """Fail closed with a configuration reason.
+
+    A missing provider is the deployment's gap, not a denial of this person:
+    it is unavailable (503, with the reason), never a 403 that reads like
+    "you may not" (review on app-ecosystem#187).
+    """
 
     def __init__(self, reason: str) -> None:
         self._reason = reason
 
     async def authorize_agent_card(self, *, access_id: str, project_ref: str, action: str) -> AgentCardDecision:
-        return AgentCardDecision(allowed=False, reason=self._reason, access_id=access_id,
-                                 project_ref=project_ref, action=action)
+        raise AgentCardAuthorizationError(self._reason)
 
 
 def _subject(user: Mapping[str, Any]) -> str:
@@ -141,8 +145,9 @@ class ProjectAgentCardAccess:
                 access_id=access_id, project_ref=clean_text(project_ref), action=action
             )
         except AgentCardAuthorizationError as exc:
-            return {"ok": False, "error": "project_agent_card_authorization_unavailable",
-                    "reason": exc.reason, "retryable": True, "status": 503}
+            # A share's own refusal still wins, as it does with no port at all.
+            return refusal or {"ok": False, "error": "project_agent_card_authorization_unavailable",
+                               "reason": exc.reason, "retryable": True, "status": 503}
         except Exception:  # noqa: BLE001 - the project host is an availability boundary
             return {"ok": False, "error": "project_agent_card_authorization_unavailable",
                     "reason": "authorization_port_failed", "retryable": True, "status": 503}

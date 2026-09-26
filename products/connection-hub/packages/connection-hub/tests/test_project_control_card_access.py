@@ -185,10 +185,14 @@ def test_an_unreachable_host_is_unavailable_never_allowed(port, reason):
     assert host.calls == []
 
 
-def test_an_unconfigured_provider_fails_closed_with_its_reason():
+def test_an_unconfigured_provider_is_unavailable_not_a_denial():
+    # Review on app-ecosystem#187: a deployment gap must not read like "you may not".
+    host = Host()
     port = RefusingProjectControlCardAuthorizationPort("project_control_card_provider_not_configured")
-    result = _get(Host(), port)
-    assert result == {"ok": False, "error": "project_control_card_provider_not_configured", "status": 403}
+    result = _get(host, port)
+    assert result == {"ok": False, "error": "project_control_card_authorization_unavailable",
+                      "reason": "project_control_card_provider_not_configured", "retryable": True, "status": 503}
+    assert host.calls == []
 
 
 @pytest.mark.parametrize(
@@ -284,6 +288,27 @@ def test_an_editor_asking_for_more_than_they_hold_is_refused_by_name():
     ))
     assert refused["ok"] is False and refused["error"] == "delegated_access_grants_not_delegable"
     assert sorted(refused["grants"]) == ["named_services:use", "slack:post"]
+    # The refusal says the save needs every permission the Card carries.
+    assert "every permission it carries, not only the ones you change" in refused["message"]
+    assert "named_services:use" in refused["message"] and "slack:post" in refused["message"]
     stored = asyncio.run(service.control_card_get(creator, control_id=control_id))
     assert PROJECT_CONTROL_CARD_AUDIT_PROVENANCE not in (stored["access"].get("provenance") or {})
     assert "slack:post" not in (stored["access"].get("resource_grants") or {}).get(resource, [])
+
+
+def test_an_editor_with_fewer_grants_than_the_card_cannot_save_even_an_unrelated_change():
+    """Review on app-ecosystem#187: the save is checked against every grant the Card carries."""
+
+    service, creator, control_id, resource = _real_card()
+    asyncio.run(service.control_card_update(
+        creator, control_id=control_id, resource_grants={resource: ["named_services:use", "slack:read"]},
+    ))
+    ada = {"user_id": "ada", "roles": ["kdcube:role:registered"], "permissions": []}
+    access = ProjectControlCardAccess(service, _real_port(control_id))
+    refused = asyncio.run(access.update(
+        ada, control_id=control_id, project_ref=PROJECT, request_id="req-label", label="Renamed",
+    ))
+    assert refused["error"] == "delegated_access_grants_not_delegable"
+    assert "not only the ones you change" in refused["message"]
+    stored = asyncio.run(service.control_card_get(creator, control_id=control_id))
+    assert stored["access"]["label"] != "Renamed"

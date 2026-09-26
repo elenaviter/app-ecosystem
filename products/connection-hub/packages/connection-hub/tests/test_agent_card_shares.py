@@ -214,3 +214,21 @@ def test_only_an_agent_card_is_shared_and_a_share_of_another_card_grants_nothing
         denied = _run(ProjectAgentCardAccess(Host(), Port(), shares=shares).update(
             ADA, access_id=ACCESS, project_ref="", resource_grants={}))
         assert denied["ok"] is False and denied["error"] == "work_agent_card_write_denied", name
+
+
+def test_an_unconfigured_provider_keeps_a_view_shares_own_refusal(tmp_path):
+    """Review on app-ecosystem#187: a missing provider is unavailable (503), but a
+    view share's refusal to write still reaches the person, as with no port at all."""
+
+    from connection_hub.delegated_credentials.project_agent_card_access import (
+        RefusingAgentCardAuthorizationPort,
+    )
+
+    shares = AgentCardShares(_store(tmp_path))
+    _run(shares.share(BORIS, access_id=ACCESS, grantee_subject="ada", level="view"))
+    access = ProjectAgentCardAccess(Host(), RefusingAgentCardAuthorizationPort("not_configured"), shares=shares)
+    refused = _run(access.update(ADA, access_id=ACCESS, project_ref="", resource_grants={}))
+    assert refused["status"] == 403 and refused["error"] == "agent_card_shared_view_only"
+    unshared = ProjectAgentCardAccess(Host(), RefusingAgentCardAuthorizationPort("not_configured"))
+    down = _run(unshared.update(ADA, access_id=ACCESS, project_ref="", resource_grants={}))
+    assert down["status"] == 503 and down["reason"] == "not_configured"

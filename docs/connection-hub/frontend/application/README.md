@@ -262,7 +262,29 @@ account at call time.
   (`project_agent_card_authorize`) answers for the owner, a project admin, and
   a platform admin (read only); an owner's share is decided here. Every
   change is written under the owner's storage key with the acting person in a
-  `project_agent_card_audit` provenance entry.
+  `project_agent_card_audit` provenance entry. A deployment without a project
+  host answers 503 `project_agent_card_authorization_unavailable` (reason
+  `project_agent_card_provider_not_configured`), not a denial.
+- `project_control_card_get`, `project_control_card_update` (operations,
+  W260) — read and change a project's Control Card as someone other than the
+  person who created it (the creator's own `control_card_get` and
+  `control_card_update` find only the creator's Cards). The project host
+  (`project_control_card_authorize`) answers under the person's session with
+  `via` `owner`, `project_admin` (a person whose project Card holds
+  `project.control.update`) or `project_member` (read only), and names the
+  Card's creator. Every change is written under the creator's storage key
+  with the acting person in a `project_control_card_audit` provenance entry.
+  - **A save needs every permission the Card carries.** The acting person
+    must be able to delegate each grant on the Card after the save, not only
+    the ones they add, so an admin who holds fewer permissions than the Card
+    carries can save no change at all. The refusal
+    (`delegated_access_grants_not_delegable`) names the grants and says so.
+  - **The save runs without the acting person's platform roles.** A Card
+    offering a resource that only a role may choose (an admin-only resource)
+    cannot be saved on this path; the creator's own path is unaffected.
+  - A deployment without a project host answers 503
+    `project_control_card_authorization_unavailable` (reason
+    `project_control_card_provider_not_configured`), not a denial.
 - `agent_card_share`, `agent_card_unshare`, `agent_card_shares` (operations,
   W319) — the owner shares an agent's Card with a named person at `view`
   (open read-only) or `edit` (also change it, and apply a profile such as
