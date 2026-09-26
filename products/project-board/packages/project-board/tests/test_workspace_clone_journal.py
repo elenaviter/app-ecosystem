@@ -1,9 +1,9 @@
 """Each worker reads its project's journal and pages from its own workspace clone (W343).
 
-On dev-main, 2026-09-26, `pb worker context` read the journal home, and with
+On the maintainer host, 2026-09-26, `pb worker context` read the journal home, and with
 it the setup, facts, environment and instructions pages, through the host's
 repository map: one host-wide checkout that was 186 commits behind its
-remote. Every dev-main agent got no runtimes, no instructions ref and "no
+remote. Every agent there got no runtimes, no instructions ref and "no
 project-setup.json", while each had a current clone in its own workspace.
 
 Each worker now reads and writes project state only through
