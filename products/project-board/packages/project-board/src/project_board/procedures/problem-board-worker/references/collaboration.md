@@ -111,8 +111,8 @@ Rules of the shape:
 
 The Problem Board client and relay run from one recorded source selection, not
 from any working tree. `pb source use-release` selects an approved package
-version and `pb source use-code` selects exact App Ecosystem and KDCube commits
-as one release for both command and relay. A direct checkout invocation is a
+version and `pb source use-code` selects an exact App Ecosystem commit as one
+release for both command and relay. A direct checkout invocation is a
 visibly unpinned development process and never changes that host selection.
 The integration ref is source history, not a runtime selection.
 

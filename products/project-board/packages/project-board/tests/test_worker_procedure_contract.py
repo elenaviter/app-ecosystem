@@ -105,7 +105,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.16"
+    assert package["revision"] == "2026.09.26.17"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -157,7 +157,7 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
     assert "This section is the owning definition" in first_run
     assert "setup guides point here rather than restating the meanings" in first_run
     assert "`pb` is the console command in the `project-board` distribution" in first_run
-    assert "one dependency resolution over all six first-party package paths" in first_run
+    assert "one dependency resolution over all four first-party package paths" in first_run
     # Two install paths, both intended (operator, 2026-09-22): a team host from
     # pinned source exports, a user of a published release from the package
     # index. Neither reads a checkout at run time (W262).
@@ -168,8 +168,8 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
     assert "--expect-version <version>" in first_run
     assert "Neither path reads a repository checkout at run time" in first_run
     assert "scripts/install_from_source.py" in first_run
-    assert "the composite release ID, both full commits, all six package trees" in first_run
-    assert "never become runtime import paths" in first_run
+    assert "the release ID, the full commit, all four package trees" in first_run
+    assert "never becomes a runtime import path" in first_run
     assert "run it after they approve" in first_run
     # A worker whose credential was refused is not attending (coordinator, 2026-09-21 10:41Z).
     assert "its channel is `pending_authorization`" in first_run
@@ -215,10 +215,10 @@ def test_source_selection_guidance_is_added_without_rewriting_collaboration() ->
     coordinator = _words(_read("references/coordinator.md"))
     collaboration = _words(_read("references/collaboration.md"))
 
-    assert "Selecting a released client version or an App Ecosystem plus KDCube source manifest with `pb source`" in skill
-    assert "clean exports of approved App Ecosystem and KDCube commits" in first_run
+    assert "Selecting a released client version or an App Ecosystem source commit with `pb source`" in skill
+    assert "a clean export of an approved App Ecosystem commit" in first_run
     assert "`pb source use-release --expect-version <version>`" in runtime
-    assert "`pb source use-code` with both repository paths, refs, and full approved commits" in runtime
+    assert "`pb source use-code` with the App Ecosystem repository path, ref, and full approved commit" in runtime
     assert "`client.pinned: false` with `source.mode: checkout`" in runtime
     assert "Move An Existing Host To Release Environments" in runtime
     assert "One Complete Host Release" in runtime
@@ -229,8 +229,8 @@ def test_source_selection_guidance_is_added_without_rewriting_collaboration() ->
     )
     assert "one failed restart does not prevent the remaining relays from being attempted" in runtime
     assert "At that point the former venv has no launcher or service consumer and may be deleted" in runtime
-    assert "same released version or composite source, including both commits and all six package trees" in runtime
-    assert "the full App Ecosystem and KDCube commits" in coordinator
+    assert "same released version or code source, including the App Ecosystem commit and all four package trees" in runtime
+    assert "the full App Ecosystem commit" in coordinator
     # W278: the coordinator binds every repository at assignment time.
     assert "one entry per repository the work touches" in coordinator
     assert "Fill it when you assign, not later" in coordinator

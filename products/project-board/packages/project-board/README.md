@@ -8,37 +8,30 @@ The Project Board client: the `pb` command a machine runs to join a board.
 APP_REPOSITORY=/path/to/app-ecosystem
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=/path/to/kdcube
-KDCUBE_COMMIT=<approved-full-commit>
-KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
-test "$(git -C "$KDCUBE_REPOSITORY" rev-parse "$KDCUBE_COMMIT^{commit}")" = "$KDCUBE_COMMIT"
 git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
-git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT" | tar -x -C "$KDCUBE_EXPORT"
 
 python3 \
   "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
-  --source-root "$APP_EXPORT" \
-  --kdcube-source-root "$KDCUBE_EXPORT"
+  --source-root "$APP_EXPORT"
 "$HOME/.local/bin/pb" procedure install --target codex --target claude-code
 
 # After pb setup creates the target configuration:
 "$HOME/.local/bin/pb" source use-code \
   --repository "$APP_REPOSITORY" \
   --ref "$APP_COMMIT" \
-  --expect "$APP_COMMIT" \
-  --kdcube-repository "$KDCUBE_REPOSITORY" \
-  --kdcube-ref "$KDCUBE_COMMIT" \
-  --expect-kdcube "$KDCUBE_COMMIT"
+  --expect "$APP_COMMIT"
 ```
 
 The source installer creates and smokes one complete release environment and
 installs an inert user launcher for `releases/current`. Its one `pip install`
-invocation resolves all six first-party distributions from the two clean
-exports together with their third-party dependencies. Neither checkout is an
-import path. `pb source status` reports the active release and environment,
-launcher version, target receipt, both repository commits, every selected
-package tree, and the source reported by the supervised relay.
+invocation resolves the four first-party distributions (`project-board`,
+`app-foundation`, `service-foundation`, and `connection-hub` with its `client`
+extra) from the clean export together with their third-party dependencies. The
+client needs no KDCube package and no Connection Hub command line (W322). The
+checkout is not an import path. `pb source status` reports the active release
+and environment, launcher version, target receipt, the App Ecosystem commit,
+every selected package tree, and the source reported by the supervised relay.
 
 ## Package contents
 
@@ -71,24 +64,21 @@ restart with:
 pb source use-release --expect-version 2026.09.23.0158
 ```
 
-The source deployment selects one reviewed App Ecosystem commit and one
-reviewed KDCube commit:
+The source deployment selects one reviewed App Ecosystem commit:
 
 ```bash
 pb source use-code \
   --repository /path/to/app-ecosystem \
   --ref <commit-or-ref> \
-  --expect <full-40-character-commit> \
-  --kdcube-repository /path/to/kdcube \
-  --kdcube-ref <commit-or-ref> \
-  --expect-kdcube <full-40-character-commit>
+  --expect <full-40-character-commit>
 ```
 
 The code release is exported from Git objects and verified blob by blob. It
-contains `project-board`, `app-foundation`, `service-foundation`,
-`connection-hub`, and `connection-hub-cli` from the App Ecosystem commit, plus
-`kdcube-cli` from the KDCube commit. Their named commits and package trees form
-one path-independent release ID. One host-wide `releases/current` pointer is
+contains `project-board`, `app-foundation`, `service-foundation`, and
+`connection-hub` from the App Ecosystem commit. The commit and package trees
+form one path-independent release ID. A release selected before W322 also
+named `connection-hub-cli` and a KDCube commit; it stays readable, keeps its
+id, and can still be rolled back to. One host-wide `releases/current` pointer is
 shared by the `pb` launcher and every relay definition; each target keeps its
 source-action receipt. An installed relay must report the candidate source
 before the switch succeeds. A failed start restores the previous current

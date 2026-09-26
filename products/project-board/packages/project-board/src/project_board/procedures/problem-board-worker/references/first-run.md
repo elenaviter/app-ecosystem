@@ -52,9 +52,9 @@ restating the meanings.
 ways to install it, and the operator names which applies to this machine:
 
 - **A team host** (a maintainer's machine, or a worker host of a team that
-  runs its own KDCube) installs the six-package client family from clean
-  exports of approved App Ecosystem and KDCube commits, and selects those
-  commits with `pb source use-code`. This is what the section below shows.
+  runs its own KDCube) installs the four-package client family from a clean
+  export of an approved App Ecosystem commit, and selects that commit with
+  `pb source use-code`. This is what the section below shows.
 - **A user of a published release** installs the approved `project-board`
   version from the package index and selects it with `pb source use-release`.
   This is the shorter path under "From the published package".
@@ -69,39 +69,33 @@ switch updates every configured target receipt and every installed relay as one
 host transaction. The rollback, retention, and migration contract is in
 [runtime actions](runtime-actions.md#one-complete-host-release).
 
-For a team host, ask for both repository paths and full commits, then propose
+For a team host, ask for the App Ecosystem repository path and full commit, then propose
 the source install and selector from [runtime actions](runtime-actions.md).
-The install is one dependency resolution over all six first-party package
+The install is one dependency resolution over all four first-party package
 paths:
 
 ```bash
 APP_REPOSITORY=<app-ecosystem>
 APP_COMMIT=<full-app-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=<kdcube>
-KDCUBE_COMMIT=<full-kdcube-commit>
-KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
-test "$(git -C "$KDCUBE_REPOSITORY" rev-parse "$KDCUBE_COMMIT^{commit}")" = "$KDCUBE_COMMIT"
 git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
-git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT" | tar -x -C "$KDCUBE_EXPORT"
 
 python3 \
   "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
-  --source-root "$APP_EXPORT" \
-  --kdcube-source-root "$KDCUBE_EXPORT"
+  --source-root "$APP_EXPORT"
 "$HOME/.local/bin/pb" procedure install --target codex --target claude-code
 ```
 
 Installing a command and a procedure changes the user's machine, so ask before
 either command. Use only the targets they run. The source installer creates and
 smokes the first release environment, makes it current, and installs launcher
-version 2. Its one `pip install` invocation resolves all six first-party
-distributions and their third-party dependencies.
-The repositories are inputs to the clean exports and never become runtime
-import paths. After selection, `pb source status` reports the composite release
-ID, both full commits, all six package trees, and the source loaded by the
-relay.
+version 2. Its one `pip install` invocation resolves all four first-party
+distributions and their third-party dependencies; the client needs no KDCube
+source (W322). The repository is the input to the clean export and never
+becomes a runtime import path. After selection, `pb source status` reports the
+release ID, the full commit, all four package trees, and the source loaded by
+the relay.
 
 ### From the published package
 
@@ -144,9 +138,7 @@ When `next.step` is `configure_target`:
    ```bash
    pb source use-code \
      --repository <app-ecosystem> --ref <full-app-commit> \
-     --expect <full-app-commit> \
-     --kdcube-repository <kdcube> --kdcube-ref <full-kdcube-commit> \
-     --expect-kdcube <full-kdcube-commit>
+     --expect <full-app-commit>
    pb source status
    ```
 

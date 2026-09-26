@@ -44,9 +44,11 @@ from .release_install import (
 from .source_manifest import (
     APP_ECOSYSTEM_COMPONENT,
     APP_ECOSYSTEM_SOURCE_PATHS,
+    APP_ECOSYSTEM_SOURCE_PATHS_V1,
     CLIENT_SOURCE_PATHS,
     KDCUBE_COMPONENT,
     SourceComponent,
+    client_source_paths_for,
     component_named,
     component_records,
     normalise_components,
@@ -578,7 +580,7 @@ def _selection_subtrees(
     value: Any,
     *,
     path: Path | None = None,
-    required_paths: tuple[str, ...] = APP_ECOSYSTEM_SOURCE_PATHS,
+    required_paths: tuple[str, ...] = APP_ECOSYSTEM_SOURCE_PATHS_V1,
 ) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise DomainError(
@@ -664,7 +666,7 @@ def _validated_composite_selection(
         validated_subtrees = _selection_subtrees(
             compatibility_subtrees,
             path=path,
-            required_paths=APP_ECOSYSTEM_SOURCE_PATHS,
+            required_paths=tuple(app_ecosystem.subtrees),
         )
         if validated_subtrees != app_ecosystem.subtrees:
             raise DomainError(
@@ -719,7 +721,7 @@ def read_selection(root: Path) -> dict[str, Any]:
             marker["subtrees"] = _selection_subtrees(
                 marker.get("subtrees"),
                 path=root / SELECTION_FILE,
-                required_paths=APP_ECOSYSTEM_SOURCE_PATHS,
+                required_paths=APP_ECOSYSTEM_SOURCE_PATHS_V1,
             )
         else:
             raise DomainError(
@@ -758,7 +760,7 @@ def write_selection(root: Path, selection: Mapping[str, Any]) -> dict[str, Any]:
             value["commit"] = commit
             value["subtrees"] = _selection_subtrees(
                 value.get("subtrees"),
-                required_paths=APP_ECOSYSTEM_SOURCE_PATHS,
+                required_paths=APP_ECOSYSTEM_SOURCE_PATHS_V1,
             )
     else:
         raise DomainError(
@@ -814,7 +816,9 @@ def snapshot_selection(
             release.components, include_repository=False
         ),
         "commit": release.commit,
-        "subtrees": _selection_subtrees(release.subtrees),
+        "subtrees": _selection_subtrees(
+            release.subtrees, required_paths=tuple(release.subtrees)
+        ),
         "release_path": str(release.path),
         "selected_at": selected_at or utc_now(),
     }
@@ -844,7 +848,9 @@ def selected_release(root: Path, selection: Mapping[str, Any] | None = None) -> 
             details={"release_id": identity, "root": str(root)},
         )
     required_paths = (
-        APP_ECOSYSTEM_SOURCE_PATHS if legacy else CLIENT_SOURCE_PATHS
+        APP_ECOSYSTEM_SOURCE_PATHS_V1
+        if legacy
+        else client_source_paths_for(release.components)
     )
     if (
         release.entrypoint_path != PROJECT_BOARD_CODE_ENTRYPOINT
@@ -1107,11 +1113,14 @@ def source_line(source: Mapping[str, Any]) -> str:
                         component.get("commit") or "unknown"
                     )
         if commits:
-            return (
+            line = (
                 f"source=snapshot release={source.get('release_id') or 'unknown'} "
-                f"app_ecosystem={commits.get(APP_ECOSYSTEM_COMPONENT, 'unknown')} "
-                f"kdcube={commits.get(KDCUBE_COMPONENT, 'unknown')}"
+                f"app_ecosystem={commits.get(APP_ECOSYSTEM_COMPONENT, 'unknown')}"
             )
+            # Only a release built before W322 Step 1 has a KDCube component.
+            if KDCUBE_COMPONENT in commits:
+                line += f" kdcube={commits[KDCUBE_COMPONENT]}"
+            return line
         return f"source=snapshot commit={source.get('commit') or 'unknown'}"
     if mode == "checkout":
         return (

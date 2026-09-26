@@ -87,24 +87,18 @@ runbook uses those values and does not maintain a second definition.
 
 ## 2. Install The Local Command And Worker Procedure
 
-Install the client family from clean exports of the approved App Ecosystem and
-KDCube commits, then select those same commits:
+Install the client family from a clean export of the approved App Ecosystem
+commit, then select that same commit:
 
 ```bash
 APP_REPOSITORY=<app-ecosystem>
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=<kdcube>
-KDCUBE_COMMIT=<approved-full-commit>
-KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
-test "$(git -C "$KDCUBE_REPOSITORY" rev-parse "$KDCUBE_COMMIT^{commit}")" = "$KDCUBE_COMMIT"
 git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
-git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT" | tar -x -C "$KDCUBE_EXPORT"
 python3 \
   "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
-  --source-root "$APP_EXPORT" \
-  --kdcube-source-root "$KDCUBE_EXPORT"
+  --source-root "$APP_EXPORT"
 pb procedure install --target codex --target claude-code
 pb procedure show
 pb procedure verify
@@ -112,10 +106,10 @@ pb procedure verify
 
 The installer creates and smokes the first complete release environment,
 activates `releases/current`, and installs the inert host launcher. Its one
-resolver invocation binds `project-board`, both foundations,
-`connection-hub`, and `connection-hub-cli` to the App Ecosystem export and
-`kdcube-cli` to the KDCube export; package indexes provide only third-party
-dependencies. Use only the procedure targets present
+resolver invocation binds `project-board`, both foundations, and
+`connection-hub` (with its `client` extra) to the App Ecosystem export; package
+indexes provide only third-party dependencies. The client needs no KDCube
+source (W322). Use only the procedure targets present
 on the host. Installation, source selection, and procedure installation change
 the user's machine, so the operator approves them. The repository checkouts
 are never runtime import paths.
@@ -173,9 +167,7 @@ pb setup \
   --source-repo project=/absolute/approved/project
 pb source use-code \
   --repository <app-ecosystem> --ref <approved-full-commit> \
-  --expect <approved-full-commit> \
-  --kdcube-repository <kdcube> --kdcube-ref <approved-full-kdcube-commit> \
-  --expect-kdcube <approved-full-kdcube-commit>
+  --expect <approved-full-commit>
 pb source status
 ```
 

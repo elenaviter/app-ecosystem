@@ -519,8 +519,8 @@ tree, which stages whatever it holds at that instant.
    for example).
 5. **Execute** the action as the runtime's profile gives it, at the commit
    the ref names, in the order the profile gives when one window moves more
-   than one tree; for the host's client, `pb source use-code` with `--expect`
-   and `--expect-kdcube`. Then **check
+   than one tree; for the host's client, `pb source use-code` with `--expect`.
+   Then **check
    the receipt against the approved candidate**: the profile says which line
    of the receipt names what loaded, and the relay's first stamped line
    (`source=snapshot`, `app_ecosystem=<sha>`) names the client. A receipt that names another commit is a failed
@@ -560,13 +560,13 @@ and needs no more than the list above.
 `pb source use-release` and `pb source use-code` change the immutable source
 used by both the host command and that service, and include the restart needed
 for the relay to observe it. Announce the exact package version or, for code,
-the full App Ecosystem and KDCube commits. Collect the same host-local
+the full App Ecosystem commit. Collect the same host-local
 readiness, and verify `pb source status` plus the new relay startup record
 before reporting the move complete.
 
 When a host still runs the checkout client, follow the cutover section in
 [runtime actions](runtime-actions.md) before fast-forwarding that checkout.
-The six-package source install, two-commit verification, and relay restart are one
+The four-package source install, commit verification, and relay restart are one
 precondition for the fast-forward, not recovery steps after it.
 
 ## Research Is Coordinated Progressively

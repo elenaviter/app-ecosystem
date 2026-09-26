@@ -24,24 +24,18 @@ is ready.
 
 ## Host Command Dependencies
 
-Install the client family from clean exports of the approved App Ecosystem and
-KDCube commits, select those commits, then install its worker procedure:
+Install the client family from a clean export of the approved App Ecosystem
+commit, select that commit, then install its worker procedure:
 
 ```bash
 APP_REPOSITORY=<app-ecosystem>
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=<kdcube>
-KDCUBE_COMMIT=<approved-full-commit>
-KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
-test "$(git -C "$KDCUBE_REPOSITORY" rev-parse "$KDCUBE_COMMIT^{commit}")" = "$KDCUBE_COMMIT"
 git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
-git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT" | tar -x -C "$KDCUBE_EXPORT"
 python3 \
   "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
-  --source-root "$APP_EXPORT" \
-  --kdcube-source-root "$KDCUBE_EXPORT"
+  --source-root "$APP_EXPORT"
 pb procedure install --target codex --target claude-code
 pb procedure verify
 "$HOME/.local/bin/pb" --version
@@ -58,8 +52,8 @@ definition and directs the operator to that transaction; the complete contract
 is in the worker procedure's `references/runtime-actions.md`.
 `app-foundation` owns the generic MCP and Data Bus clients, `connection-hub`
 owns the host-neutral
-Connection Hub contracts, `connection-hub-cli` owns profiles and native
-credential custody, `kdcube-cli` supplies its KDCube management dependency,
+Connection Hub contracts and, in its `client` extra, the caller side (sign-in,
+profiles and native credential custody),
 `service-foundation` owns relay lifecycle and wakeable
 waiting, and `project-board` owns the host protocol, local field, command,
 relay, and worker procedure. This app owns the server surfaces and imports the
@@ -82,9 +76,7 @@ the same reviewed commits that provided the bootstrap, then inspect both records
 ```bash
 pb source use-code \
   --repository <app-ecosystem> --ref <approved-full-commit> \
-  --expect <approved-full-commit> \
-  --kdcube-repository <kdcube> --kdcube-ref <approved-full-kdcube-commit> \
-  --expect-kdcube <approved-full-kdcube-commit>
+  --expect <approved-full-commit>
 pb source status
 pb host inspect
 ```
@@ -209,11 +201,10 @@ connection failure.
 The service definition always enters through the released `project-board`
 bootstrap. One per-target selector then governs both ordinary `pb` commands
 and the relay. `pb source use-release --expect-version <version>` records an
-approved installed version. `pb source use-code` takes the App Ecosystem and
-KDCube repository paths, refs, and full approved commits. It exports and
-verifies `project-board`, both foundations, `connection-hub`, and
-`connection-hub-cli` from App Ecosystem plus `kdcube-cli` from KDCube as one
-release ID.
+approved installed version. `pb source use-code` takes the App Ecosystem
+repository path, ref, and full approved commit. It exports and verifies
+`project-board`, both foundations, and `connection-hub` as one release ID; the
+client needs no KDCube source (W322).
 When the service is installed, either source action restarts it and succeeds
 only when the new process's startup record names the selected version or
 release; otherwise it restores the prior selector and relay source. A direct

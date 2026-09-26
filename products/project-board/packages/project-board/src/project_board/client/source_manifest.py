@@ -11,25 +11,41 @@ from typing import Any, Iterable, Mapping
 APP_ECOSYSTEM_COMPONENT = "app_ecosystem"
 KDCUBE_COMPONENT = "kdcube"
 
+# The client is App Ecosystem only (W322 Step 1): pb depends on
+# connection-hub[client], so neither the Connection Hub command line nor KDCube's
+# is part of it. The earlier identity (v1, W255) named both and stays readable,
+# so a host can still show and roll back to a release built before the change.
 APP_ECOSYSTEM_SOURCE_PATHS = (
     "products/project-board/packages/project-board",
     "packages/app-foundation",
     "packages/service-foundation",
     "products/connection-hub/packages/connection-hub",
+)
+APP_ECOSYSTEM_SOURCE_PATHS_V1 = (
+    *APP_ECOSYSTEM_SOURCE_PATHS,
     "products/connection-hub/packages/connection-hub-cli",
 )
 KDCUBE_SOURCE_PATHS = (
     "app/ai-app/src/kdcube-ai-app/kdcube_cli",
 )
-SOURCE_PATHS_BY_COMPONENT = {
-    APP_ECOSYSTEM_COMPONENT: APP_ECOSYSTEM_SOURCE_PATHS,
-    KDCUBE_COMPONENT: KDCUBE_SOURCE_PATHS,
+IDENTITY_SCHEMA_V1 = "project-board.client-source-identity.v1"
+IDENTITY_SCHEMA = "project-board.client-source-identity.v2"
+SOURCE_PATHS_BY_SCHEMA = {
+    IDENTITY_SCHEMA_V1: {
+        APP_ECOSYSTEM_COMPONENT: APP_ECOSYSTEM_SOURCE_PATHS_V1,
+        KDCUBE_COMPONENT: KDCUBE_SOURCE_PATHS,
+    },
+    IDENTITY_SCHEMA: {
+        APP_ECOSYSTEM_COMPONENT: APP_ECOSYSTEM_SOURCE_PATHS,
+    },
 }
+# What a new release is built from.
+SOURCE_PATHS_BY_COMPONENT = SOURCE_PATHS_BY_SCHEMA[IDENTITY_SCHEMA]
+CLIENT_COMPONENTS = tuple(SOURCE_PATHS_BY_COMPONENT)
 CLIENT_SOURCE_PATHS = tuple(
-    path
-    for component in (APP_ECOSYSTEM_COMPONENT, KDCUBE_COMPONENT)
-    for path in SOURCE_PATHS_BY_COMPONENT[component]
+    path for component in CLIENT_COMPONENTS for path in SOURCE_PATHS_BY_COMPONENT[component]
 )
+CLIENT_SOURCE_PATHS_V1 = (*APP_ECOSYSTEM_SOURCE_PATHS_V1, *KDCUBE_SOURCE_PATHS)
 SOURCE_IMPORTS_BY_PATH = {
     "products/project-board/packages/project-board": "project_board",
     "packages/app-foundation": "app_foundation",
@@ -41,7 +57,23 @@ SOURCE_IMPORTS_BY_PATH = {
 CLIENT_SOURCE_IMPORTS = tuple(
     SOURCE_IMPORTS_BY_PATH[path] for path in CLIENT_SOURCE_PATHS
 )
-IDENTITY_SCHEMA = "project-board.client-source-identity.v1"
+
+
+def identity_schema_for(names: Iterable[str]) -> str:
+    """The identity a set of component names belongs to.
+
+    A KDCube component exists only in the v1 identity; every other set is the
+    current one.
+    """
+
+    return IDENTITY_SCHEMA_V1 if KDCUBE_COMPONENT in set(names) else IDENTITY_SCHEMA
+
+
+def client_source_paths_for(components: Iterable["SourceComponent"]) -> tuple[str, ...]:
+    """The package paths a release with these components exports, in order."""
+
+    schema = identity_schema_for(component.name for component in components)
+    return CLIENT_SOURCE_PATHS_V1 if schema == IDENTITY_SCHEMA_V1 else CLIENT_SOURCE_PATHS
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,11 +108,13 @@ def _full_hex(value: Any, *, lengths: tuple[int, ...], label: str) -> str:
     return clean
 
 
-def component_from_record(value: Mapping[str, Any]) -> SourceComponent:
-    """Validate one persisted component against the package ownership map."""
+def component_from_record(
+    value: Mapping[str, Any], *, schema: str = IDENTITY_SCHEMA
+) -> SourceComponent:
+    """Validate one persisted component against its identity's package map."""
 
     name = str(value.get("name") or "").strip()
-    required_paths = SOURCE_PATHS_BY_COMPONENT.get(name)
+    required_paths = SOURCE_PATHS_BY_SCHEMA[schema].get(name)
     if required_paths is None:
         raise ValueError(f"unknown source component: {name or '<empty>'}")
     raw_subtrees = value.get("subtrees")
@@ -111,16 +145,20 @@ def normalise_components(
 ) -> tuple[SourceComponent, ...]:
     """Return unique components in canonical name order."""
 
-    components: dict[str, SourceComponent] = {}
+    records: list[Mapping[str, Any]] = []
     for raw in values:
         value = raw.record() if isinstance(raw, SourceComponent) else raw
         if not isinstance(value, Mapping):
             raise ValueError("each source component must be an object")
-        component = component_from_record(value)
+        records.append(value)
+    schema = identity_schema_for(str(value.get("name") or "").strip() for value in records)
+    components: dict[str, SourceComponent] = {}
+    for value in records:
+        component = component_from_record(value, schema=schema)
         if component.name in components:
             raise ValueError(f"duplicate source component: {component.name}")
         components[component.name] = component
-    required = set(SOURCE_PATHS_BY_COMPONENT)
+    required = set(SOURCE_PATHS_BY_SCHEMA[schema])
     if require_complete and set(components) != required:
         raise ValueError(
             "client source components must name exactly: "
@@ -148,13 +186,15 @@ def release_id_for_components(
 ) -> str:
     """A path-independent digest of every repository commit and package tree."""
 
+    records = component_records(
+        components,
+        include_repository=False,
+        require_complete=True,
+    )
     identity = {
-        "schema": IDENTITY_SCHEMA,
-        "components": component_records(
-            components,
-            include_repository=False,
-            require_complete=True,
-        ),
+        # A v1 release keeps the id it was built with.
+        "schema": identity_schema_for(record["name"] for record in records),
+        "components": records,
     }
     encoded = json.dumps(
         identity, sort_keys=True, separators=(",", ":"), ensure_ascii=True
@@ -178,11 +218,19 @@ def component_named(
 __all__ = [
     "APP_ECOSYSTEM_COMPONENT",
     "APP_ECOSYSTEM_SOURCE_PATHS",
+    "APP_ECOSYSTEM_SOURCE_PATHS_V1",
+    "CLIENT_COMPONENTS",
     "CLIENT_SOURCE_IMPORTS",
     "CLIENT_SOURCE_PATHS",
+    "CLIENT_SOURCE_PATHS_V1",
+    "IDENTITY_SCHEMA",
+    "IDENTITY_SCHEMA_V1",
     "KDCUBE_COMPONENT",
     "KDCUBE_SOURCE_PATHS",
     "SOURCE_PATHS_BY_COMPONENT",
+    "SOURCE_PATHS_BY_SCHEMA",
+    "client_source_paths_for",
+    "identity_schema_for",
     "SOURCE_IMPORTS_BY_PATH",
     "SourceComponent",
     "component_from_record",

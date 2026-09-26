@@ -46,7 +46,7 @@ _RELEASE_INSTALL = _load_module(
     "_project_board_release_install", RELEASE_INSTALL_PATH
 )
 APP_ECOSYSTEM_COMPONENT = _SOURCE_MANIFEST.APP_ECOSYSTEM_COMPONENT
-KDCUBE_COMPONENT = _SOURCE_MANIFEST.KDCUBE_COMPONENT
+CLIENT_COMPONENTS = _SOURCE_MANIFEST.CLIENT_COMPONENTS
 SOURCE_PATHS_BY_COMPONENT = _SOURCE_MANIFEST.SOURCE_PATHS_BY_COMPONENT
 CLIENT_SOURCE_IMPORTS = _SOURCE_MANIFEST.CLIENT_SOURCE_IMPORTS
 
@@ -147,11 +147,12 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Install all first-party Project Board client distributions from "
-            "clean App Ecosystem and KDCube source exports."
+            "a clean App Ecosystem source export."
         )
     )
     parser.add_argument("--source-root", required=True)
-    parser.add_argument("--kdcube-source-root", required=True)
+    # Retired by W322 Step 1: the client needs no KDCube source.
+    parser.add_argument("--kdcube-source-root", help=argparse.SUPPRESS)
     parser.add_argument(
         "--release-root",
         default=str(_RELEASE_INSTALL.default_release_root()),
@@ -165,16 +166,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _first_party_packages(
-    source_root: Path, kdcube_source_root: Path
-) -> tuple[Path, ...]:
-    roots = {
-        APP_ECOSYSTEM_COMPONENT: source_root,
-        KDCUBE_COMPONENT: kdcube_source_root,
-    }
+def _first_party_packages(source_root: Path) -> tuple[Path, ...]:
+    roots = {APP_ECOSYSTEM_COMPONENT: source_root}
     packages = tuple(
         roots[component] / relative
-        for component in (APP_ECOSYSTEM_COMPONENT, KDCUBE_COMPONENT)
+        for component in CLIENT_COMPONENTS
         for relative in SOURCE_PATHS_BY_COMPONENT[component]
     )
     missing = [str(path) for path in packages if not path.is_dir()]
@@ -224,17 +220,16 @@ def _launcher_path(*, command_dir: Path, pb_command: Path, force: bool) -> Path:
 def _install_locked(
     *,
     source_root: Path,
-    kdcube_source_root: Path,
     release_root: Path,
     command_dir: Path,
     base_python: Path,
     force_launcher: bool,
 ) -> dict[str, object]:
     _refuse_migrated_host(release_root)
-    packages = _first_party_packages(source_root, kdcube_source_root)
+    packages = _first_party_packages(source_root)
     labels = tuple(
         relative
-        for component in (APP_ECOSYSTEM_COMPONENT, KDCUBE_COMPONENT)
+        for component in CLIENT_COMPONENTS
         for relative in SOURCE_PATHS_BY_COMPONENT[component]
     )
     release_id = _RELEASE_INSTALL.source_release_id(zip(labels, packages))
@@ -301,7 +296,6 @@ def _install_locked(
 def install(
     *,
     source_root: Path,
-    kdcube_source_root: Path,
     release_root: Path,
     command_dir: Path,
     base_python: Path,
@@ -310,7 +304,6 @@ def install(
     with _RELEASE_INSTALL.activation_lock(release_root):
         return _install_locked(
             source_root=source_root,
-            kdcube_source_root=kdcube_source_root,
             release_root=release_root,
             command_dir=command_dir,
             base_python=base_python,
@@ -320,9 +313,13 @@ def install(
 
 def main() -> int:
     args = _parser().parse_args()
+    if args.kdcube_source_root is not None:
+        raise SystemExit(
+            "--kdcube-source-root is retired (W322): the Project Board client "
+            "needs no KDCube source. Run the installer with --source-root alone."
+        )
     result = install(
         source_root=Path(args.source_root).expanduser().resolve(),
-        kdcube_source_root=Path(args.kdcube_source_root).expanduser().resolve(),
         release_root=Path(args.release_root).expanduser().resolve(),
         command_dir=Path(args.command_dir).expanduser().resolve(),
         base_python=Path(args.python).expanduser().resolve(),

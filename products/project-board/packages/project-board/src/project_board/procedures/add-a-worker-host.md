@@ -92,7 +92,7 @@ new host
     │       ├── current -> <release-id>                  atomic host selection
     │       └── <release-id>/venv/                       complete release environment
     ├── .kdcube/          (700)        selectors, snapshots, relay state, logs, mailboxes
-    ├── src/app-ecosystem, src/kdcube          public clones the client is built from, read only
+    ├── src/app-ecosystem              the public clone the client is built from, read only
     ├── .ssh/deploy_<alias>{,.pub}     one deploy key per repository on the project card
     ├── .config/systemd/user/kdcube-problem-board-relay-*.service
     └── workspaces/       (700)
@@ -103,7 +103,7 @@ new host
 **The client release is selected once per host.** `releases/current` selects
 one complete environment used by `~/.local/bin/pb` and every relay definition
 on the host. Each target retains its own source-action receipt, so status can
-show which approved released version or App Ecosystem plus KDCube commits were
+show which approved released version or App Ecosystem commit was
 applied for that target. Agent workspaces are build workspaces rather than
 runtime import paths. The host release moves only by
 [step 13](#13-update-the-selected-client-source).
@@ -140,7 +140,7 @@ before anything changes:
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 | **teammates who may write to these agents** | `*` (the default), any agent that shares a project with them, or named workers such as the coordinator | the host's receiver policy (`receiver_policy.allowed_peer_workers`). `pb setup` writes `*` (operator ruling, 2026-09-26); step 3 narrows it only when the operator chose named workers or none. The board lets an agent in a shared project address them, and, while one of them attends no project, anyone who knows its exact stable name (never its alias) may send it a request, reply or ping; so `*` means "my project teammates, and whoever knows a new agent's id before it joins". It grants no access to anything: it decides whose mail reaches these agents. The operator's own messages reach them either way. |
-| **how the client is installed** | a published `project-board` version (for example `2026.9.26.1900`), or exact App Ecosystem and KDCube commits | step 2. A published release is one version from the package index, the default for a machine that only runs agents; exact commits are for a machine of the team that builds Problem Board, or before a release is published (W304 U2). |
+| **how the client is installed** | a published `project-board` version (for example `2026.9.26.1900`), or an exact App Ecosystem commit | step 2. A published release is one version from the package index, the default for a machine that only runs agents; exact commits are for a machine of the team that builds Problem Board, or before a release is published (W304 U2). |
 | **GitHub identity for pull requests** | a machine account such as `kdcube-agents`, with write on the project's repositories | agents open their own pull requests and post review verdicts with `gh`. Deploy keys (step 7) only push branches. Which identity signs in, and with what access, is the operator's decision. |
 
 **Repositories are not a host decision.** They belong to the project: the
@@ -201,7 +201,11 @@ Two routes install the same client. Step 0 decides which (W304 U2):
 
 - **A published release** (the default for a machine that only runs agents):
   the operator names an approved `project-board` version on the package
-  index, and the host installs that version, nothing else:
+  index, and the host installs that version with the packages it depends on
+  (`app-foundation`, `service-foundation` and `connection-hub[client]`, all
+  from the index; no KDCube package and no Connection Hub command line, W322).
+  This route works from the first release that publishes those four packages
+  together; before it, use exact source commits:
 
   ```bash
   python3 -m venv "$HOME/.local/share/project-board-bootstrap"
@@ -218,44 +222,37 @@ Two routes install the same client. Step 0 decides which (W304 U2):
   or before a release is published), below.
 
 **Host agent**, logged in as the user who will run the agents, first clones the
-two source repositories the client is built from. Both are public, and these
-clones are the install source only, read and never edited: each agent gets its
-own clones in step 8.
+source repository the client is built from. It is public, and this clone is the
+install source only, read and never edited: each agent gets its own clones in
+step 8.
 
 ```bash
 mkdir -p ~/src
 [ -d ~/src/app-ecosystem ] || git clone -q https://github.com/elenaviter/app-ecosystem.git ~/src/app-ecosystem
-[ -d ~/src/kdcube ] || git clone -q https://github.com/kdcube/kdcube.git ~/src/kdcube
-git -C ~/src/app-ecosystem fetch -q origin && git -C ~/src/kdcube fetch -q origin
+git -C ~/src/app-ecosystem fetch -q origin
 ```
 
-Then it installs the client family from clean exports of the exact App
-Ecosystem and KDCube commits approved by the operator:
+Then it installs the client family from a clean export of the exact App
+Ecosystem commit approved by the operator:
 
 ```bash
 APP_REPOSITORY=/home/<user>/src/app-ecosystem
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=/home/<user>/src/kdcube
-KDCUBE_COMMIT=<approved-full-commit>
-KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
-test "$(git -C "$KDCUBE_REPOSITORY" rev-parse "$KDCUBE_COMMIT^{commit}")" = "$KDCUBE_COMMIT"
 git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
-git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT" | tar -x -C "$KDCUBE_EXPORT"
 python3 \
   "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
-  --source-root "$APP_EXPORT" \
-  --kdcube-source-root "$KDCUBE_EXPORT"
+  --source-root "$APP_EXPORT"
 ```
 
 The source installer calls the same release builder as later source switches.
 It creates `releases/<release-id>/venv`, resolves and smokes the complete
 candidate, atomically moves `releases/current`, and installs launcher version
 2. Its one resolver invocation binds `project-board`, `app-foundation`,
-`service-foundation`, `connection-hub`, and `connection-hub-cli` to the App
-Ecosystem export and `kdcube-cli` to the KDCube export; package indexes provide
-only third-party dependencies. Do not use
+`service-foundation`, and `connection-hub` (with its `client` extra) to the App
+Ecosystem export; package indexes provide only third-party dependencies. The
+client needs no KDCube source and no Connection Hub command line (W322). Do not use
 `sudo`, a checkout launcher, or an editable install. Repeat the install for
 another login user rather than sharing one credential-bearing runtime between
 users.
@@ -292,10 +289,7 @@ chmod 700 ~/.kdcube
 pb source use-code \
   --repository /home/<user>/src/app-ecosystem \
   --ref <approved-full-commit> \
-  --expect <approved-full-commit> \
-  --kdcube-repository /home/<user>/src/kdcube \
-  --kdcube-ref <approved-full-kdcube-commit> \
-  --expect-kdcube <approved-full-kdcube-commit>
+  --expect <approved-full-commit>
 pb source status
 pb procedure install --target claude-code --target codex
 pb procedure verify
@@ -1151,24 +1145,16 @@ launcher, a user-owned permanent venv, or the older root-owned `/opt` install:
 APP_REPOSITORY=/home/<user>/src/app-ecosystem
 APP_COMMIT=<approved-full-commit>
 APP_EXPORT=$(mktemp -d)
-KDCUBE_REPOSITORY=/home/<user>/src/kdcube
-KDCUBE_COMMIT=<approved-full-commit>
-KDCUBE_EXPORT=$(mktemp -d)
 test "$(git -C "$APP_REPOSITORY" rev-parse "$APP_COMMIT^{commit}")" = "$APP_COMMIT"
-test "$(git -C "$KDCUBE_REPOSITORY" rev-parse "$KDCUBE_COMMIT^{commit}")" = "$KDCUBE_COMMIT"
 git -C "$APP_REPOSITORY" archive "$APP_COMMIT" | tar -x -C "$APP_EXPORT"
-git -C "$KDCUBE_REPOSITORY" archive "$KDCUBE_COMMIT" | tar -x -C "$KDCUBE_EXPORT"
 python3 \
   "$APP_EXPORT/products/project-board/packages/project-board/scripts/install_from_source.py" \
-  --source-root "$APP_EXPORT" \
-  --kdcube-source-root "$KDCUBE_EXPORT"
+  --source-root "$APP_EXPORT"
 "$HOME/.local/bin/pb" --version
 "$HOME/.local/bin/pb" relay-service install
 "$HOME/.local/bin/pb" source use-code \
   --repository "$APP_REPOSITORY" --ref "$APP_COMMIT" \
-  --expect "$APP_COMMIT" \
-  --kdcube-repository "$KDCUBE_REPOSITORY" --kdcube-ref "$KDCUBE_COMMIT" \
-  --expect-kdcube "$KDCUBE_COMMIT"
+  --expect "$APP_COMMIT"
 "$HOME/.local/bin/pb" source status
 ```
 
@@ -1176,7 +1162,7 @@ The installer builds and smokes the candidate before moving
 `releases/current`. Reinstalling the relay service once changes its definition
 from the former interpreter to the stable
 `releases/current/venv/bin/python` path. `source use-code` then records both
-reviewed commits as one composite release and performs the verified restart.
+reviewed commit as one release and performs the verified restart.
 
 Install the procedure, then inspect status for every target configured on this
 host:
@@ -1195,7 +1181,7 @@ The migration is complete when each target reports all of these facts:
 2. `relay.program_arguments[0]` ends in
    `releases/current/venv/bin/python`;
 3. every target receipt and every `relay.startup_record.source` name the same
-   snapshot release ID, both commits, and all six package tree IDs;
+   snapshot release ID, the App Ecosystem commit, and all four package tree IDs;
 4. `pb procedure verify` succeeds through `~/.local/bin/pb`.
 
 After every target passes those checks, no launcher or relay service consumes

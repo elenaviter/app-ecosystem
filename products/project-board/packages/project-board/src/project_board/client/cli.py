@@ -1530,8 +1530,8 @@ def build_parser() -> argparse.ArgumentParser:
     command = source_commands.add_parser(
         "use-code",
         help=(
-            "Export the approved App Ecosystem and KDCube commits as one "
-            "client source, select it for pb and the relay, and restart the relay."
+            "Export the approved App Ecosystem commit as one client source, "
+            "select it for pb and the relay, and restart the relay."
         ),
     )
     _host_config(command)
@@ -1554,13 +1554,10 @@ def build_parser() -> argparse.ArgumentParser:
             "its ref resolves elsewhere."
         ),
     )
-    command.add_argument("--kdcube-repository", required=True)
-    command.add_argument("--kdcube-ref", required=True)
-    command.add_argument(
-        "--expect-kdcube",
-        required=True,
-        help="The full approved KDCube commit; selection refuses when its ref resolves elsewhere.",
-    )
+    # Retired by W322 Step 1: the client needs no KDCube source. Kept hidden so
+    # an older procedure that still passes them is told why, not just refused.
+    for retired in ("--kdcube-repository", "--kdcube-ref", "--expect-kdcube"):
+        command.add_argument(retired, dest=f"retired_{retired[2:].replace('-', '_')}", help=argparse.SUPPRESS)
     command.add_argument("--wait-seconds", type=float, default=None)
     command = source_commands.add_parser(
         "use-release",
@@ -4796,6 +4793,21 @@ def _source_command(args: Any) -> dict[str, Any]:
     from .relay_service import STARTUP_WAIT_SECONDS
     from .source_control import ClientSourceController
 
+    if args.source_command == "use-code":
+        retired = sorted(
+            f"--{name[len('retired_'):].replace('_', '-')}"
+            for name, value in vars(args).items()
+            if name.startswith("retired_") and value is not None
+        )
+        if retired:
+            raise DomainError(
+                "work_client_source_kdcube_retired",
+                "The Project Board client no longer includes KDCube source (W322): "
+                f"drop {', '.join(retired)} and select the App Ecosystem commit alone. "
+                "Reinstall the procedure (pb procedure install) if it still names them.",
+                status=400,
+                details={"retired_arguments": retired},
+            )
     controller = ClientSourceController(resolve_host_config_path(args.config))
     if args.source_command == "status":
         return controller.status()
@@ -4806,9 +4818,6 @@ def _source_command(args: Any) -> dict[str, Any]:
             repository=args.repository,
             ref=args.ref,
             expect=args.expect,
-            kdcube_repository=args.kdcube_repository,
-            kdcube_ref=args.kdcube_ref,
-            expect_kdcube=args.expect_kdcube,
             wait_seconds=wait_seconds,
         )
     if args.source_command == "use-release":
