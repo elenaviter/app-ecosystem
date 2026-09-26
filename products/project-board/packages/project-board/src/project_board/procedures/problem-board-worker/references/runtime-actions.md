@@ -9,6 +9,34 @@ see_also: []
 
 # Runtime Actions By Tree
 
+## Project Runtimes
+
+A project declares its runtimes: each named place its system runs, the host
+its actions are triggered from, each action with who may trigger it and the git
+ref it releases, and a profile that holds the commands for that kind of
+runtime. `pb worker context` returns them as `runtimes`, read from the
+project's setup (by hand in `project-setup.json` at the journal home's root,
+later on the project's Control Card). The four concepts behind them are in
+[projects, runtimes and refs](repo:app-ecosystem/docs/project-board/projects-runtimes-and-refs.md).
+
+- **A runtime action releases its refs.** It names, for each repository it
+  loads (a platform refresh loads the platform and the packages it stages, an
+  app reload its app), the ref it releases (`releases`). The commit each ref
+  names is fetched onto the runtime's machine and loaded; never whatever a
+  working tree holds at that moment. Before it, the coordinator integrates the
+  commits to go live onto that ref and pushes it ([coordinator](coordinator.md),
+  Reload, refresh, restart, step 1).
+- **Its result names what loaded:** each repository, its ref, and the commit
+  the ref named when it loaded. A result that names another commit is a failed action.
+- **Only who the action names triggers it**, from the runtime's host.
+- **The commands are the profile's.** Read the runtime's `local_profile` for
+  them. A project that declares no runtime has no runtime actions, and a
+  runtime of another kind has its own profile.
+
+The Problem Board host actions below (relay restart, client source, procedure
+install) belong to every project that runs `pb`. The rest of this page is the
+KDCube runtime's, until it moves into the KDCube maintainer profile.
+
 Read this before asking the coordinator for a reload, refresh or restart.
 Name the action by the tree the change is in; the wrong one reports a fix as
 live that has never executed.
