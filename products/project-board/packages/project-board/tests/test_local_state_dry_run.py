@@ -65,3 +65,17 @@ def test_the_dry_run_renders_key_value_lines(field, capsys):
     assert dry.main([str(field.root), "--now", "2026-09-26T05:00:00Z"]) == 0
     out = capsys.readouterr().out
     assert "field_totals.files = " in out and "receipt_classification = relay" in out
+
+
+def test_simulate_runs_maintenance_on_a_copy_and_leaves_the_field_alone(field, tmp_path):
+    for index in range(3):
+        _legacy_receipt(field, _receipt(receipt_id=f"mailbox-reconciliation_20260916T21000{index}Z_000{index}"), outbox_ids=[f"outbox_mailrecon_empty{index}"])
+    before = _snapshot(field.root)
+
+    result = dry.simulate(field.root, tmp_path / "sim", datetime.now(timezone.utc))
+
+    assert _snapshot(field.root) == before, "simulate changed the live field"
+    assert result["settled"] and result["passes"] >= 2
+    assert result["files_after"] < result["files_before"]
+    assert "projects/*/mail" in result["stores_changed"]
+    assert not (tmp_path / "sim" / "field" / ".problem-board" / "projects" / PROJECT / "mail" / "reconciliation-receipts").exists()

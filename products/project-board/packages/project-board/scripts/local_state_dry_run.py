@@ -24,6 +24,18 @@ The rules mirror ``local_state_maintenance.run_local_state_maintenance``:
 
 Size bounds (records or bytes per agent) are reported where exceeded, not
 simulated.
+
+These counts follow main's rules. A client that adds migrations (app-ecosystem
+#126 partitions mail history, idempotency, journal receipts, operations,
+assignments and scope leases) is measured with ``--simulate <work-dir>``
+instead. That copies the field into ``<work-dir>`` and runs the importable
+package's own ``run_local_state_maintenance`` on the copy until a pass changes
+nothing. It reports files and bytes per store before and after, and the
+summed summaries. The live field is only read. Put the client to be measured
+first on ``PYTHONPATH``:
+
+    PYTHONPATH=<app-ecosystem checkout>/products/project-board/packages/project-board/src \
+      python3 local_state_dry_run.py <field-root> --simulate /tmp/w287-sim
 """
 
 from __future__ import annotations
@@ -31,6 +43,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -280,6 +293,73 @@ def totals(report: dict[str, Any]) -> dict[str, int]:
     return {key: found.get(key, 0) for key in ACTIONS}
 
 
+def _store_sizes(control: Path) -> dict[str, dict[str, int]]:
+    """Files and bytes per store: ``projects/<p>/<store>`` and other top-level folders."""
+
+    sizes: dict[str, dict[str, int]] = defaultdict(lambda: {"files": 0, "bytes": 0})
+    for directory, _dirs, names in os.walk(control):
+        parts = Path(directory).relative_to(control).parts
+        if parts[:1] == ("projects",) and len(parts) >= 3:
+            key = f"projects/*/{parts[2]}"
+        elif parts[:1] == ("workers",) and len(parts) >= 3:
+            key = f"workers/*/{parts[2]}"
+        else:
+            key = parts[0] if parts else "."
+        for name in names:
+            try:
+                sizes[key]["bytes"] += os.lstat(os.path.join(directory, name)).st_size
+                sizes[key]["files"] += 1
+            except FileNotFoundError:
+                continue
+    return {key: dict(value) for key, value in sorted(sizes.items())}
+
+
+def simulate(field_root: Path, work_dir: Path, now: datetime, *, max_passes: int = 500) -> dict[str, Any]:
+    """Run the importable client's maintenance on a copy of the field until it settles."""
+
+    from project_board.client import local_state_maintenance as maintenance
+    from project_board.client.store import SharedFieldStore
+
+    target = work_dir / "field"
+    if target.exists():
+        raise SystemExit(f"{target} exists; pass an empty work directory")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(field_root, target, symlinks=True)
+    field = SharedFieldStore(target)
+    before = _store_sizes(field.control)
+    state = field.control / "local-state-maintenance.json"
+    passes = 0
+    summaries: list[dict[str, Any]] = []
+    previous = None
+    while passes < max_passes:
+        state.unlink(missing_ok=True)  # the copy's own hourly gate: run retention every pass
+        summaries.append(maintenance.run_local_state_maintenance(field, now=now))
+        passes += 1
+        current = _store_sizes(field.control)
+        current.pop(state.name, None)
+        if current == previous:
+            break
+        previous = current
+    after = _store_sizes(field.control)
+    changed = {
+        key: {"before": before.get(key, {"files": 0, "bytes": 0}), "after": after.get(key, {"files": 0, "bytes": 0})}
+        for key in sorted(set(before) | set(after))
+        if before.get(key) != after.get(key)
+    }
+    return {
+        "client": str(Path(maintenance.__file__).resolve().parents[1]),
+        "copy": str(target),
+        "passes": passes,
+        "settled": passes < max_passes,
+        "files_before": sum(v["files"] for v in before.values()),
+        "files_after": sum(v["files"] for v in after.values()),
+        "bytes_before": sum(v["bytes"] for v in before.values()),
+        "bytes_after": sum(v["bytes"] for v in after.values()),
+        "stores_changed": changed,
+        "first_pass": summaries[0] if summaries else {},
+    }
+
+
 def _render(report: dict[str, Any], prefix: str = "") -> Iterator[str]:
     for key, value in report.items():
         if isinstance(value, dict):
@@ -294,10 +374,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("field_root", type=Path, help="the directory that holds .problem-board/")
     parser.add_argument("--now", help="UTC time to evaluate retention at (default: now)")
     parser.add_argument("--json", action="store_true", help="print JSON instead of key = value lines")
+    parser.add_argument("--simulate", type=Path, metavar="WORK_DIR", help="copy the field here and run the importable client's maintenance on the copy")
     args = parser.parse_args(argv)
     now = datetime.now(timezone.utc)
     if args.now:
         now = datetime.fromisoformat(args.now.replace("Z", "+00:00")).astimezone(timezone.utc)
+    if args.simulate:
+        result = simulate(args.field_root.expanduser(), args.simulate.expanduser(), now)
+        if args.json:
+            json.dump(result, sys.stdout, indent=2, sort_keys=True, default=str)
+            print()
+        else:
+            summary = {key: value for key, value in result.items() if key != "first_pass"}
+            print("\n".join(_render(summary)))
+        return 0
     report = dry_run(args.field_root.expanduser(), now)
     report = {"totals": totals(report), **report}
     if args.json:
