@@ -140,3 +140,60 @@ def test_context_says_plainly_when_the_recorded_folder_is_outside_the_agent_root
     assert context["workspace_source"] == "host_root"
     assert "is outside the host's agent workspace root" in context["workspace_note"]
     assert "it is not your workspace" in context["workspace_note"]
+
+
+def test_an_unsafe_alias_never_escapes_the_root(tmp_path):
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    for alias in ("../../etc", "/tmp/evil", "..", "a/b", ""):
+        path = host_config.default_working_directory([str(root)], alias=alias, worker_name="claude-code-x")
+        assert path == str(root / "claude-code-x"), alias
+        assert host_config.is_inside(path, root)
+    assert host_config.default_working_directory([str(root)], alias="..", worker_name="..") == ""
+
+
+def test_the_agent_root_must_lie_inside_an_approved_root_and_can_be_cleared(tmp_path):
+    import pytest
+    from project_board.contract.errors import DomainError  # noqa: F401  (import path check)
+
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    host = _host(tmp_path, [str(root)])
+    with pytest.raises(Exception) as refused:
+        host_config.update_host_config(host.path, agent_workspace_root=str(outside))
+    assert getattr(refused.value, "code", "") == "work_agent_workspace_root_outside_allowed_roots"
+
+    inside = root / "agents"
+    host_config.update_host_config(host.path, agent_workspace_root=str(inside))
+    assert host_config.HostRelayConfig.load(host.path).agent_workspace_root == str(inside.resolve())
+    host_config.update_host_config(host.path, agent_workspace_root="")
+    assert host_config.HostRelayConfig.load(host.path).agent_workspace_root == ""
+
+
+def test_listen_report_and_enrollment_refuse_a_recorded_folder_outside_the_root(tmp_path):
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    shared = tmp_path / "shared-kdcube-checkout"
+    shared.mkdir()
+    host = _host(tmp_path, [str(root), str(tmp_path)])
+    # Recorded before the host had an agent root: under an approved root, outside the agent root.
+    channel = host_config.enroll_worker_channel(
+        host.path, identity=IDENTITY, profile="problem-board-claude-one", authorized=True,
+        worker_alias="lehrwerk", working_directory=str(shared),
+    )
+    host_config.update_host_config(host.path, agent_workspace_root=str(root))
+    config = host_config.HostRelayConfig.load(host.path)
+
+    workspace, source, note = host_config.agent_workspace(
+        config, recorded=str(shared), alias="lehrwerk", worker_name=channel.worker_name,
+    )
+    assert workspace == str(root.resolve() / "lehrwerk") and source == "host_root"
+    assert "it is not your workspace" in note
+
+    again = host_config.enroll_worker_channel(
+        host.path, identity=IDENTITY, profile="problem-board-claude-one", authorized=True,
+        worker_alias="lehrwerk", working_directory=str(shared),
+    )
+    assert again.working_directory == str(root.resolve() / "lehrwerk"), "enrollment follows the same answer"

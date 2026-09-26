@@ -32,7 +32,9 @@ from .authorization import (
     inspect_profile_metadata,
 )
 from .host_config import (
+    agent_workspace,
     default_working_directory,
+    is_inside,
     HOST_CONFIG_SCHEMA,
     HostRelayConfig,
     enroll_worker_channel,
@@ -343,8 +345,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-workspace-root",
         default=None,
         help=(
-            "Absolute LOCAL folder holding one workspace per agent (<root>/<alias>). "
-            "Unset, the first approved work root is used."
+            "Absolute LOCAL folder (~ allowed) inside an approved work root, holding one "
+            "workspace per agent (<root>/<alias>). An empty value clears it; unset, the "
+            "alphabetically first approved work root is used, so set it explicitly."
         ),
     )
 
@@ -3466,8 +3469,9 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
             details={"project_ref": project_ref},
         )
     recorded = config.worker(identity)
-    workspace = str(getattr(recorded, "working_directory", "") or "") or default_working_directory(
-        [config.effective_agent_workspace_root] if config.effective_agent_workspace_root else [],
+    workspace, _source, _note = agent_workspace(
+        config,
+        recorded=str(getattr(recorded, "working_directory", "") or ""),
         alias=str(getattr(recorded, "worker_alias", "") or ""),
         worker_name=identity.worker_name,
     )
@@ -3697,7 +3701,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
             # Its sessions start there; a session started elsewhere still
             # works from it, never from where it was started.
             result["workspace"] = channel.working_directory
-            if str(Path.cwd().resolve()) != channel.working_directory:
+            if not is_inside(Path.cwd(), channel.working_directory):
                 result["workspace_note"] = (
                     f"Your workspace is {channel.working_directory}: create it if needed, work "
                     "from it, and start this agent's sessions there. Never choose another folder."
@@ -4489,28 +4493,12 @@ def _worker_project_context(
     # The folder this session enrolled from (`pb worker listen`), which the
     # host procedure makes the agent's own workspace. Repositories are set up
     # inside it, one folder per alias (W304 finding 39).
-    workspace = str(getattr(channel, "working_directory", "") or "")
-    workspace_source = "recorded" if workspace else ""
-    agent_root = str(getattr(config, "effective_agent_workspace_root", "") or "")
-    outside_note = ""
-    if workspace and agent_root and not Path(workspace).is_relative_to(Path(agent_root)):
-        # A folder recorded before the host had an agent root (or from a
-        # shared checkout) is not this agent's workspace: say so plainly, so a
-        # person reading the output sees it too, and name the right folder.
-        outside_note = (
-            f"The folder this session recorded ({workspace}) is outside the host's agent "
-            f"workspace root ({agent_root}); it is not your workspace."
-        )
-        workspace = ""
-    if not workspace:
-        # No folder recorded: the agent's own folder under the host's first
-        # approved root, never the directory this session started in.
-        workspace = default_working_directory(
-            [config.effective_agent_workspace_root] if config.effective_agent_workspace_root else [],
-            alias=str(getattr(channel, "worker_alias", "") or ""),
-            worker_name=str(getattr(channel, "worker_name", "") or ""),
-        )
-        workspace_source = "host_root" if workspace else ""
+    workspace, workspace_source, outside_note = agent_workspace(
+        config,
+        recorded=str(getattr(channel, "working_directory", "") or ""),
+        alias=str(getattr(channel, "worker_alias", "") or ""),
+        worker_name=str(getattr(channel, "worker_name", "") or ""),
+    )
     return {
         "project_ref": project_ref,
         "project_on_this_host": on_host,
