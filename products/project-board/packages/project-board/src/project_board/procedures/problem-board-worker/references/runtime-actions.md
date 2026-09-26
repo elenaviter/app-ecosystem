@@ -20,10 +20,39 @@ live that has never executed.
 | Widget `src/` | the app deploy below for the widget's bundle; the pipeline builds `dist/`, and the reload returns before that build finishes | editing `src/` alone, building widgets by hand, or reading the reload receipt as the widget being live |
 | Descriptor content (`bundles.yaml`) | `bundle config apply` or `bundle reload <bundle-id>` | `refresh`, which preserves `$WORKDIR/config` |
 | An app under `apps/` | the app's **deploy worktree**, a git worktree used for nothing but deploying, is the app's only path, and the app's entry in the staged `config/bundles.yaml` carries **no `activation` block** (neither `commit` nor `require_commit`): `git -C <deploy-worktree> checkout --detach <approved-sha>`, then `kdcube bundle reload <bundle-id>`, whose receipt must read `Loaded: mounted tree at head <approved-sha>, clean`. Web requests, the Data Bus workers and a restart all load that folder, so a restart keeps the commit. The deploy worktrees and commits are on the project facts page. Setting or moving an app's folder is `kdcube bundle <bundle-id> --tenant <t> --project <p> --local-path <container-path>`, then a reload | a reload of an app whose path is a working checkout, which stages whatever that checkout holds at that instant; `activation.commit` in the descriptor, which a restart and the Data Bus workers ignore, so it is not the guarantee until W333 lands, and which a commitless reload still applies in the web proc (`Loaded: snapshot of ...`), splitting it from the Data Bus workers; `--local-path`, which keeps an existing `activation` block |
+| A change that adds, removes or renames a board operation, on either side: an operation id in `project_board/contract/worker_operation_contract.py` (App Ecosystem) or a handler in `services/operation_dispatch.py` (applications) | both halves change together, in this order: (1) check the approved board commit out in its deploy worktree **without reloading**; (2) the platform rebuild that stages the matching `project-board` package (the `app-ecosystem` row above), whose restart loads the new board against the new contract; (3) verify the board's receipt and that it answers. The board refuses to import unless its handler table **equals** the contract (`operation_dispatch.py`), so any moment with one side new and the other old is an outage. Find the case with the checks below before the window is planned | a board reload alone (the new board meets the image's old contract and fails to load with `Problem Board operation policy and handler table differ`: 2026-09-26, W326, down 03:32–03:36Z); a platform rebuild before the board commit is checked out (its restart re-imports the old board against the new contract) |
 | A released Problem Board host client | `pb source use-release --expect-version <version>` builds a new release environment, resolves that version's complete dependency graph, smokes its `pb --version` and imports, atomically activates it, and verifies the restarted relay | upgrading a permanent bootstrap environment, which leaves the launcher and relay on a different dependency set |
 | A committed Problem Board client under development | `pb source use-code` with both repository paths, refs, and full approved commits exports all six first-party packages, resolves them together inside the composite release environment, smokes it, atomically activates it, and accepts only the restarted relay's matching startup record | independent installs, an editable install, a live-checkout launcher, or selecting only one repository or the relay |
 | The already selected Problem Board relay source | `pb relay-service restart`. A relay restart is host-local and reloads the recorded source without advancing it | a bundle reload; a restart cannot select a newer checkout or package version |
 | The worker procedure package inside `project-board` | `pb procedure install`, run by the coordinator on the host after the selected release or code commit carries the new revision | editing package source, which installed sessions never read |
+
+## Does This Change Move Board Operations?
+
+Run both checks before planning a window, each with the commit the runtime
+runs now and the commit to deploy.
+
+In the App Ecosystem checkout (the operation contract):
+
+```bash
+git diff --unified=0 <running-commit> <target-commit> -- \
+  products/project-board/packages/project-board/src/project_board/contract/worker_operation_contract.py \
+  | grep -E '^[-+][[:space:]]*"[a-z][a-z0-9_.]*": \{'
+```
+
+In the applications checkout (the board's handler table):
+
+```bash
+git diff --unified=0 <running-commit> <target-commit> -- \
+  playground/domain-solution/apps/problem-board@1-0/services/operation_dispatch.py \
+  | grep -E '^[-+][[:space:]]*"[a-z][a-z0-9_.]*": _'
+```
+
+Any output names an operation id that is new, removed or renamed on that side.
+The window is then the ordered change in the table above: board commit checked
+out without a reload, then the platform rebuild with the `project-board`
+package staged, then the receipt. Output on one side only means the two sides
+disagree, and the board cannot load: fix the change before any window. No
+output on either side means a board reload may go on its own.
 
 Copying a file into a container and restarting a container are not actions
 this team has: a container-local patch is invisible to everyone, vanishes

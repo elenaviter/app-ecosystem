@@ -87,7 +87,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.2"
+    assert package["revision"] == "2026.09.26.3"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1235,3 +1235,31 @@ def test_a_window_that_refreshes_and_moves_an_app_checks_the_app_out_first():
     assert "check the app's deploy worktree out at its approved commit **before** `kdcube refresh --build`, then refresh" in step
     assert "`ImportError: card_delegable_grants`" in step
     assert step.index("**before** `kdcube refresh") < step.index("**check the receipt")
+
+
+def test_runtime_actions_orders_a_platform_rebuild_before_a_board_that_moves_operations():
+    """2026-09-26 03:32-03:36Z: the board would not load after W326.
+
+    A board reload alone met a platform image whose operation contract lacked
+    `review.assign`, and the board refuses to load while its handlers and that
+    contract differ. The procedure says the order, and its diff check must find
+    every operation id in the contract, or a change of format would hide one.
+    """
+
+    runtime = _read("references/runtime-actions.md")
+    assert "Problem Board operation policy and handler table differ" in runtime
+    assert "check the approved board commit out in its deploy worktree **without reloading**" in runtime
+    assert "a platform rebuild before the board commit is checked out" in runtime
+    assert "services/operation_dispatch.py" in runtime
+    command = re.search(r"grep -E '(?P<pattern>[^']+)'", runtime.split("## Does This Change Move Board Operations?", 1)[1])
+    assert command, "the check command is in the section"
+    pattern = command.group("pattern").replace("\\{", "{").replace("[[:space:]]", r"\s")
+    pattern = pattern.replace("{", r"\{")
+
+    from project_board.contract import worker_operation_contract as contract
+
+    source = Path(contract.__file__).read_text(encoding="utf-8")
+    added = {line.split('"')[1] for line in ("+" + row for row in source.splitlines()) if re.match(pattern, line)}
+    assert added == set(contract.PROBLEM_BOARD_OPERATION_POLICIES), sorted(
+        added ^ set(contract.PROBLEM_BOARD_OPERATION_POLICIES)
+    )
