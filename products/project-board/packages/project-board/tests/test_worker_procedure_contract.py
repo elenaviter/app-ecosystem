@@ -104,7 +104,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.8"
+    assert package["revision"] == "2026.09.26.10"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1426,3 +1426,18 @@ def test_the_skill_says_which_mail_kinds_reach_the_operators_telegram():
     skill = " ".join(_read("SKILL.md").split())
     assert "`progress`, `update`, `reply` and `result` stay on the board" in skill
     assert "only `question`, `decision`, `blocked`, `delivery_failed` reach their Telegram" in skill
+
+
+def test_the_handover_section_covers_the_w331_screens():
+    """W331: acting and away shown, refresh, three receipts, make permanent, the label drops on return."""
+
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    assert "the board shows the holder as acting and the home as away" in coordinator
+    assert "**Refresh coordinator Card**" in coordinator
+    assert "Read the three receipts the press returns" in coordinator
+    assert "a hand-over is complete only when all three are" in coordinator
+    assert "**Making it permanent:**" in coordinator and "**Make permanent coordinator**" in coordinator
+    assert "Only the current acting holder can be made permanent" in coordinator
+    assert "The outgoing coordinator stops directing the team and answers only mail addressed to it by name" in coordinator
+    assert "and your coordinator label drops" in coordinator
+    assert "judged by its relay's heartbeat" in coordinator
