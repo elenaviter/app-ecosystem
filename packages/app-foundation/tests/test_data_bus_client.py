@@ -587,6 +587,39 @@ async def test_a_bare_server_rejection_is_still_ingress_rejected_without_a_code(
     assert refusal.value.message == "Connection rejected by server"
 
 
+class _RestartingPlatformSocket(_Socket):
+    """What python-socketio does when the ingress refuses the upgrade (404 during a restart)."""
+
+    async def connect(self, *args: Any, **kwargs: Any) -> None:
+        import engineio.exceptions
+        from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+        try:
+            raise engineio.exceptions.ConnectionError("Connection error")
+        except engineio.exceptions.ConnectionError as exc:
+            await self.handlers["connect_error"](exc.args[0])
+            raise SocketIOConnectionError(exc.args[0]) from exc
+
+
+@pytest.mark.asyncio
+async def test_a_refused_upgrade_during_a_platform_restart_is_a_transport_failure() -> None:
+    # dev-main 2026-09-26 03:55Z: socketio fired connect_error("Connection
+    # error") for a 404 upgrade, the client raised DataBusIngressRejected, and
+    # the relay exited instead of retrying.
+    from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+    socket = _RestartingPlatformSocket()
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example", credential=_claim(), socket_factory=lambda: socket
+    )
+
+    with pytest.raises(SocketIOConnectionError) as failure:
+        await client.connect()
+
+    assert not isinstance(failure.value, DataBusIngressRejected)
+    assert not client.connected
+
+
 @pytest.mark.asyncio
 async def test_a_transport_failure_keeps_its_own_exception() -> None:
     # No connect_error arrived, so nothing here claims the server refused anything.
