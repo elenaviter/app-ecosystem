@@ -408,8 +408,8 @@ class ResolverBackedProjectAuthorizationPort:
             # The operator's rule (W260, 2026-09-26): a project admin (an
             # administrative role) does anything to any person's Control Card,
             # their own included; anyone else reads their own and nothing more.
-            # A person's Control Card is decided by an admin, in the board's
-            # Team > People.
+            # A person's Control Card is decided by a project admin, in
+            # Connection Hub (the only Card editor).
             own = request.target_subject == request.actor_subject
             if own and request.operation == PROJECT_PERSON_CONTROL_READ:
                 return ProjectAuthorizationDecision.allow(
