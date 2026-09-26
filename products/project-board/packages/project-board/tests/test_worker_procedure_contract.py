@@ -105,7 +105,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.15"
+    assert package["revision"] == "2026.09.26.16"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1578,3 +1578,17 @@ def test_a_shared_contract_change_runs_the_other_repositorys_suite():
     assert "A change to a contract another repository's code or tests exercise" in gate
     assert "runs that repository's suite against the change's head too, author and reviewer both, before approval" in gate
     assert "the counts name both repositories" in gate
+
+
+def test_a_new_agent_is_reachable_before_it_attends_a_project():
+    # W304 finding 24 and decision 3: the watch runs before approval, so the
+    # approval arrives as its event; and no-project mail reaches an agent that
+    # attends none, by its exact stable name.
+    skill = " ".join(_read("SKILL.md").split())
+    step_4 = skill[skill.index("4. Follow `next`"):skill.index("5. Establish the notification path")]
+    assert "Claude Code: start the step-5 watch before this step, so the approval arrives as its `control_plane.connected` event" in step_4
+    assert "Without a project, only an agent that attends none can be mailed, by that name (`request`, `reply` or `ping`)" in skill
+    wake = " ".join(_read("references/claude-code-wake.md").split())
+    assert "Start the watch right after `pb worker listen`, before `pb worker authorize`." in wake
+    host = " ".join((PROCEDURE_ROOT.parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
+    assert "while one of them attends no project, anyone who knows its exact stable name (never its alias) may send it a request, reply or ping" in host

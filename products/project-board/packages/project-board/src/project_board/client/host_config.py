@@ -42,9 +42,10 @@ DEFAULT_CONTROL_KINDS = (
 # 2026-09-24 left a new agent unable to receive its coordinator's mail
 # (W304 finding 38). The default for new hosts is the operator's decision.
 # Operator ruling, 2026-09-26 (W304 decision 3): a new host accepts mail from
-# its project teammates. The board lets only agents that share a project
-# address each other, so "*" grants nothing beyond that; `pb host configure
-# --deny-all-peers` or named workers narrow it.
+# any worker the board delivers. The board lets agents that share a project
+# address each other, and anyone who knows an agent's exact stable name mail it
+# while it attends no project, so "*" grants nothing beyond that;
+# `pb host configure --deny-all-peers` or named workers narrow it.
 DEFAULT_ALLOWED_PEER_WORKERS: tuple[str, ...] = ("*",)
 
 

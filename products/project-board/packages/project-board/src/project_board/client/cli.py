@@ -1392,7 +1392,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _project(command)
     command.add_argument("--sender", required=True)
-    command.add_argument("--recipient", required=True, help="A worker name, coordinator for the project's acting coordinator, or operator for the project owner's board inbox (kinds question, blocked, decision, progress, reply, update, result).")
+    command.add_argument("--recipient", required=True, help="A worker name, coordinator for the project's acting coordinator, or operator for the project owner's board inbox (kinds question, blocked, decision, progress, reply, update, result). Without --project-ref, a worker name reaches only an agent that attends no project, by its exact stable name (kinds request, reply, ping).")
     command.add_argument("--kind", required=True)
     command.add_argument("--subject", required=True)
     body = command.add_mutually_exclusive_group(required=True)
@@ -4068,7 +4068,15 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 "<project-ref> for the project that item belongs to.",
                 details={"argument": "--project-ref", "work_ref": str(args.work_ref)},
             )
-        resolution = field.resolve_mail_recipient(project_id, args.recipient)
+        direct_address = str(args.recipient or "").strip().lower()
+        if not project_id and direct_address not in {"operator", "owner", "coordinator"}:
+            # W304 decision 3: worker mail without a project always goes to the
+            # board, which delivers it only to an agent that attends no
+            # project, addressed by its exact stable name. A session on this
+            # host is no exception, so no local path bypasses that rule.
+            resolution = {"worker_name": direct_address, "route": "remote"}
+        else:
+            resolution = field.resolve_mail_recipient(project_id, args.recipient)
         recipient = str(resolution["worker_name"])
         route = str(resolution["route"])
         if args.route != "auto" and args.route != route:

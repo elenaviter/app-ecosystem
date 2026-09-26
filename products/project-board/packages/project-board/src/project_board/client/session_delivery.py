@@ -59,6 +59,12 @@ def _command_environment(executable: Path) -> dict[str, str]:
     return environment
 
 
+# Events that start a model turn where the runtime allows one (W304 finding 24):
+# addressed input, and this session's own approval, which an agent otherwise
+# never learns of until someone types into it.
+WAKE_EVENT_KINDS = frozenset({"input.available", "control_plane.connected"})
+
+
 def notify_agent_session(
     channel: WorkerChannelConfig,
     *,
@@ -69,7 +75,7 @@ def notify_agent_session(
     """Queue a standard inbox-check instruction; never start a model."""
 
     adapter = delivery_adapter(channel.runtime_kind)
-    if event_kind != "input.available":
+    if event_kind not in WAKE_EVENT_KINDS:
         return {
             "adapter": adapter,
             "state": "awaiting_input" if adapter == CODEX_QUEUE_ADAPTER else "session_owned",
@@ -109,9 +115,15 @@ def notify_agent_session(
         f"process={provenance.get('process_id') or '(unknown)'}; "
         f"attempted_at={provenance.get('attempted_at') or '(unknown)'}"
     )
+    reason_line = (
+        "Problem Board authorized this already-running session; its Card is "
+        "active. "
+        if event_kind == "control_plane.connected"
+        else "Problem Board has addressed input for this already-running session. "
+    )
     message = (
         f"{PROBLEM_BOARD_WAKE_PREFIX} "
-        "Problem Board has addressed input for this already-running session. "
+        f"{reason_line}"
         f"{provenance_line}. "
         f"Run `{receive_command}` now, handle each returned item, and settle every "
         "lease exactly once. This instruction contains no task body; read it only "

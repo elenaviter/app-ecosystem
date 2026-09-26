@@ -61,7 +61,7 @@ wakes and held leases still require prompt receive, handling, and settlement.
 3. Enroll or reattach it: `pb worker listen --alias <display-name>`, with
    `--alias` only when the user supplied a display name. The person's side is [enroll an agent](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/enroll-an-agent.md).
 4. Follow `next`; present its exact `pb worker authorize <profile>`. Do not reconstruct a profile name.
-   On a browserless host, or when the approving person signs in with a different browser or account than the one that opens here, append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`; the handoff exposes only public URL/code and the credential goes to the native store. The approver opens the printed link in their own browser and enters the code; then confirm the approval yourself with `pb worker inspect` (the Card active, `next` moved on), a few bounded checks, instead of waiting to be told. Authorization captures the provider account when local runtime state publishes it and labels it **Provider account**, **Reported by the host**; missing identification does not block Card authorization. [Identity and authorization](references/identity-and-authorization.md) owns the account and Card-authority contract.
+   On a browserless host, or when the approving person signs in with a different browser or account than the one that opens here, append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`; the handoff exposes only public URL/code and the credential goes to the native store. Claude Code: start the step-5 watch before this step, so the approval arrives as its `control_plane.connected` event (a Codex session is woken by its relay). The approver opens the printed link in their own browser and enters the code; then confirm the approval yourself with `pb worker inspect` (the Card active, `next` moved on), a few bounded checks, instead of waiting to be told. Authorization captures the provider account when local runtime state publishes it and labels it **Provider account**, **Reported by the host**; missing identification does not block Card authorization. [Identity and authorization](references/identity-and-authorization.md) owns the account and Card-authority contract.
 5. Establish the notification path returned for this runtime:
 
    - **Codex:** the persistent login relay owns the `codex-queue` subscription
@@ -276,7 +276,7 @@ move status ([ownership](references/identity-and-authorization.md)).
 - `pb worker send --help` and `pb worker settle --help` are the executable
   argument contract. Do not copy legacy flat mail commands into procedure text.
 - Address a worker with the stable name returned by Problem Board. An alias is
-  refused, and the refusal names the stable choices when they are known.
+  refused, and the refusal names the stable choices when they are known. Without a project, only an agent that attends none can be mailed, by that name (`request`, `reply` or `ping`); the board refuses every other case alike.
 - During active work, run `pb worker receive` at actual safe work boundaries:
   after diagnosis, after a material edit, after verification, and before a
   command that may occupy the session for a long time. During a multi-file
