@@ -488,9 +488,11 @@ KEYS=${KEYS:-$HOME/.ssh}; SSH_CONFIG=${SSH_CONFIG:-$KEYS/config}
 touch "$SSH_CONFIG"; chmod 600 "$SSH_CONFIG"
 CARD=$(mktemp); RAW=$(mktemp); trap 'rm -f "$CARD" "$RAW"' EXIT
 stop() { echo "STOP: $1. Nothing granted or revoked." >&2; exit 1; }
-# One spelling of a path: its directory with symlinks resolved, its name kept.
-# Not `realpath -m`, which macOS's realpath refuses (W346).
-canon() { local dir; dir=$(cd -P -- "$(dirname -- "$1")" 2>/dev/null && pwd) &&
+# One spelling of a path: a leading ~/ expanded (ssh -G prints IdentityFile
+# unexpanded), its directory with symlinks resolved, its name kept. Not
+# `realpath -m`, which macOS's realpath refuses (W346).
+canon() { case $1 in "~/"*) set -- "$HOME/${1#\~/}";; esac
+  local dir; dir=$(cd -P -- "$(dirname -- "$1")" 2>/dev/null && pwd) &&
   printf '%s/%s\n' "$dir" "$(basename -- "$1")" || printf '%s\n' "$1"; }
 # Collect every attended card first, and stop on any failure: a partial card
 # would revoke keys a project still needs.

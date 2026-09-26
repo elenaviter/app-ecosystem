@@ -201,7 +201,12 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
     keygen("deploy_betaonly", "host deploy key: betaonly owner/betaonly")  # only project beta needs it
     keygen("deploy_applications", "old")  # the SSH block was lost
     (keys / "deploy_applications.pub").unlink()  # and so was the public half
-    (keys / "config").write_text("Host github-kdcube\n  HostName example.com\n  IdentityFile /elsewhere\n", encoding="utf-8")
+    (keys / "config").write_text(
+        "Host github-kdcube\n  HostName example.com\n  IdentityFile /elsewhere\n"
+        # A hand-written block for this key, spelled with ~/ as ssh -G prints it (W346 review).
+        "Host github-reachable\n  HostName github.com\n  IdentityFile ~/keys/deploy_reachable\n",
+        encoding="utf-8",
+    )
     env = {
         "PATH": f"{bin_dir}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
         "HOME": str(tmp_path), "KEYS": str(keys), "SSH_CONFIG": str(keys / "config"), "HOST_ID": "host",
@@ -213,7 +218,7 @@ def test_15_step_7_reconciles_keys_with_the_card_in_both_directions(tmp_path):
 
     first = run()
     assert "### GRANT applications" in first and "Page: https://github.com/kdcube/applications/settings/keys" in first
-    assert "ok reachable" in first
+    assert "ok reachable" in first and "CONFLICT github-reachable" not in first
     assert "CONFLICT github-kdcube" in first and "Left unchanged." in first
     assert "CONFLICT alias clash names different repositories" in first
     assert "### REVOKE removed (on no attended project's card)" in first and "Repository: owner/removed" in first
