@@ -4491,6 +4491,17 @@ def _worker_project_context(
     # inside it, one folder per alias (W304 finding 39).
     workspace = str(getattr(channel, "working_directory", "") or "")
     workspace_source = "recorded" if workspace else ""
+    agent_root = str(getattr(config, "effective_agent_workspace_root", "") or "")
+    outside_note = ""
+    if workspace and agent_root and not Path(workspace).is_relative_to(Path(agent_root)):
+        # A folder recorded before the host had an agent root (or from a
+        # shared checkout) is not this agent's workspace: say so plainly, so a
+        # person reading the output sees it too, and name the right folder.
+        outside_note = (
+            f"The folder this session recorded ({workspace}) is outside the host's agent "
+            f"workspace root ({agent_root}); it is not your workspace."
+        )
+        workspace = ""
     if not workspace:
         # No folder recorded: the agent's own folder under the host's first
         # approved root, never the directory this session started in.
@@ -4505,6 +4516,11 @@ def _worker_project_context(
         "project_on_this_host": on_host,
         "workspace": workspace,
         "workspace_source": workspace_source,
+        **(
+            {"workspace_note": f"{outside_note} Work from {workspace}: create it if needed, clone the project's repositories into it, and start this agent's sessions there."}
+            if outside_note and workspace
+            else {}
+        ),
         **(
             {}
             if workspace

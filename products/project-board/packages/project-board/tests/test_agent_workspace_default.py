@@ -123,3 +123,20 @@ def test_the_host_setting_names_the_agent_root_and_it_wins_over_the_first_work_r
 def test_the_configure_command_takes_the_agent_workspace_root():
     parsed = cli.build_parser().parse_args(["host", "configure", "--agent-workspace-root", "/w/agents"])
     assert parsed.agent_workspace_root == "/w/agents"
+
+
+def test_context_says_plainly_when_the_recorded_folder_is_outside_the_agent_root(tmp_path):
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    config = host_config.HostRelayConfig.load(_host(tmp_path, [str(root)]).path)
+    field = SimpleNamespace(_project_path=lambda _project_id: tmp_path / "no-project-record", worker_board_record=lambda _name: {})
+    channel = SimpleNamespace(
+        working_directory=str(tmp_path / "shared-kdcube-checkout"), worker_alias="lehrwerk", worker_name="claude-code-x",
+    )
+
+    context = cli._worker_project_context(config, field, "work:project:one", channel=channel)  # noqa: SLF001
+
+    assert context["workspace"] == str(root.resolve() / "lehrwerk")
+    assert context["workspace_source"] == "host_root"
+    assert "is outside the host's agent workspace root" in context["workspace_note"]
+    assert "it is not your workspace" in context["workspace_note"]
