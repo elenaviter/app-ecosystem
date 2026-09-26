@@ -307,6 +307,12 @@ account at call time.
     Card's creator) and W319's agent answer (it names the owner; a project
     admin linking an agent that does not attend yet is accepted here and for
     no other agent-Card change).
+    The Control Card side is the project host's `attach` answer: the owner or
+    a project admin, or (W260) the agent's owner while linking their own agent
+    (`owner_linking`, accepted by attach only; attaching only narrows) or
+    while unlinking it (`owner_unlinking`, accepted by detach only, as part of
+    leaving the project). Any other pairing is refused
+    (`decision_via_cannot_bind`).
   - The binding then records `holder_subject`, the Control Card's creator, and
     admission resolves the Control Card under it. Only the project path writes
     it, a foreign holder requires `and` composition (the Control Card only

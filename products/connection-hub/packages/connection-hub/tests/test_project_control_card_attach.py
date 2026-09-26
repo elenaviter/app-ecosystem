@@ -342,3 +342,52 @@ def test_a_holder_never_makes_a_credentialed_card_a_control_card() -> None:
     with pytest.raises(ControlCardMismatch) as refused:
         effective_card_authority(_bound(agent, credentialed, holder=CREATOR), credentialed)
     assert refused.value.reason == "control_card_has_credential"
+
+
+# -- the agent's owner while linking or unlinking their own agent (claude-main, 2026-09-26) --
+
+
+@pytest.mark.asyncio
+async def test_the_owner_linking_attaches_but_never_detaches() -> None:
+    agent, control = _cards()
+    service, authorities = _service(agent, control)
+    linking = _access(service, control_port=ControlPort(via="owner_linking"), agent_port=AgentPort(via="owner"))
+
+    attached = await linking.attach(ADMIN, control_id=CONTROL_ID, project_ref=PROJECT, access_id=agent.access_id)
+    assert attached["ok"] is True, attached
+    assert authorities[agent.access_id].control_card.holder_subject == CREATOR
+
+    refused = await linking.detach(ADMIN, control_id=CONTROL_ID, project_ref=PROJECT, access_id=agent.access_id)
+    assert refused == {"ok": False, "error": "project_control_card_write_denied",
+                       "reason": "decision_via_cannot_bind", "status": 403}
+    assert authorities[agent.access_id].control_card is not None, "still narrowed"
+
+
+@pytest.mark.asyncio
+async def test_the_owner_unlinking_detaches_but_never_attaches() -> None:
+    agent, control = _cards()
+    service, authorities = _service(agent, control)
+    unlinking = _access(service, control_port=ControlPort(via="owner_unlinking"), agent_port=AgentPort(via="owner"))
+
+    refused = await unlinking.attach(ADMIN, control_id=CONTROL_ID, project_ref=PROJECT, access_id=agent.access_id)
+    assert refused["ok"] is False and refused["reason"] == "decision_via_cannot_bind"
+    assert authorities[agent.access_id].control_card is None
+
+    assert (await _attach(service, _access(service), agent))["ok"] is True
+    detached = await unlinking.detach(ADMIN, control_id=CONTROL_ID, project_ref=PROJECT, access_id=agent.access_id)
+    assert detached["ok"] is True and detached["detached"] is True, detached
+    assert authorities[agent.access_id].control_card is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("via", ["owner_linking", "owner_unlinking"])
+async def test_an_owners_linking_answer_is_never_a_read_or_write(via) -> None:
+    agent, control = _cards()
+    service, _ = _service(agent, control)
+    access = ProjectControlCardAccess(service, ControlPort(via=via))
+    for call in (
+        access.get(ADMIN, control_id=CONTROL_ID, project_ref=PROJECT),
+        access.update(ADMIN, control_id=CONTROL_ID, project_ref=PROJECT, label="Renamed"),
+    ):
+        refused = await call
+        assert refused["ok"] is False and refused["reason"] == "decision_via_invalid", refused
