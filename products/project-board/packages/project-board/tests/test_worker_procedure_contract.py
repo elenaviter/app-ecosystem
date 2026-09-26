@@ -105,7 +105,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.14"
+    assert package["revision"] == "2026.09.26.15"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1568,3 +1568,13 @@ def test_step_5_starts_the_watch_the_guard_can_find():
     finds = re.compile(pattern.replace("<id>", re.escape(session)))
     assert finds.search(step_command.replace("<id>", session))
     assert not finds.search("pb worker watch")
+
+
+def test_a_shared_contract_change_runs_the_other_repositorys_suite():
+    # W352: a client change the board app's tests encode was approved on the
+    # package suite alone, and eight board tests failed on main.
+    collaboration = " ".join(_read("references/collaboration.md").split())
+    gate = collaboration[collaboration.index("## Rule 5. The merge gate"):collaboration.index("4. **Runtime import path")]
+    assert "A change to a contract another repository's code or tests exercise" in gate
+    assert "runs that repository's suite against the change's head too, author and reviewer both, before approval" in gate
+    assert "the counts name both repositories" in gate

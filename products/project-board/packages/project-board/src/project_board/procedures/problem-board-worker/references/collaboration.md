@@ -357,6 +357,13 @@ is a verification. One that stops at printing JSON is a report.
    `procedures/testing.md` names the first declared dependency the
    interpreter lacks in one sentence, because a missing one surfaces as
    collection errors that look nothing like the cause.
+   A change to a contract another repository's code or tests exercise (the
+   client the board app loads through its `local/` aliases, a payload, a
+   config or a file shape both read) runs that repository's suite against the
+   change's head too, author and reviewer both, before approval, and the
+   counts name both repositories. Why: on 2026-09-26 app-ecosystem#208 moved
+   journal resolution to each worker's own clone, its reviews ran only the
+   package suite, and eight board tests failed on main (W352).
 4. **Runtime import path stated and proven** when the change alters what a
    deployed runtime imports (a moved module, a renamed package, a new
    dependency): the change request says how the runtime gets it (which install
