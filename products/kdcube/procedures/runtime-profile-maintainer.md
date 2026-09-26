@@ -8,7 +8,7 @@ keywords: [runtime profile, kind kdcube, releases, kdcube info, bundle status --
 see_also:
   - ./maintainer-rebuild.md
   - ./platform-suite.md
-  - ../../../docs/project-board/projects-runtimes-and-refs.md
+  - ../../project-board/docs/projects-runtimes-and-refs.md
   - ../../project-board/packages/project-board/src/project_board/procedures/problem-board-worker/references/runtime-actions.md
   - ../../project-board/packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator.md
 ---
@@ -22,7 +22,7 @@ a KDCube deployment whose platform, SDK and apps the team changes, refreshes
 and reloads. The generic Problem Board worker procedure carries no runtime's
 commands; they are here. The concepts (runtime, ref, profile, repository
 alias) are in
-[projects, runtimes and refs](repo:app-ecosystem/docs/project-board/projects-runtimes-and-refs.md).
+[projects, runtimes and refs](repo:app-ecosystem/products/project-board/docs/projects-runtimes-and-refs.md).
 
 A worker reaches this page through its project: `pb worker context` returns
 `runtimes`, and a runtime of this kind names this document as its

@@ -10,7 +10,7 @@ see_also:
   - ./operator.md
   - ./live-acceptance.md
   - ./add-a-worker-host.md
-  - repo:app-ecosystem/docs/project-board/topology-and-flows.md
+  - repo:app-ecosystem/products/project-board/docs/topology-and-flows.md
 ---
 
 # First-Time Problem Board Setup

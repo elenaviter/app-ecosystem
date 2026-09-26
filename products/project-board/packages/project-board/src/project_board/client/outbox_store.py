@@ -15,7 +15,7 @@ under ``unscoped/outbox/<agent>/``, never among the projects)::
 A settled row's name is ``<created>_<outbox_id>__<state>-<kind>`` (or the id
 itself when the id carries its own time), so the outcome is read from the
 name without opening the row, and retention drops whole hour folders
-(rules LS2 and LS3 in ``docs/project-board/storage-and-retention.md``).
+(rules LS2 and LS3 in ``products/project-board/docs/storage-and-retention.md``).
 
 Rows from before W287 2b stay readable in the flat ``outbox/<folder>/``
 directories by exact name until housekeeping moves them. Nothing lists them.

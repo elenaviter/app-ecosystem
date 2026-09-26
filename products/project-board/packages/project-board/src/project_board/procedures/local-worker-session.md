@@ -6,7 +6,7 @@ tags: [procedure, local-worker, codex, claude-code]
 keywords: [worker skill, worker listen, worker receive, lease settlement, native session identity]
 see_also:
   - ./agent-worker.md
-  - repo:app-ecosystem/docs/project-board/topology-and-flows.md
+  - repo:app-ecosystem/products/project-board/docs/topology-and-flows.md
 ---
 
 # Run A Problem Board Local Worker Session

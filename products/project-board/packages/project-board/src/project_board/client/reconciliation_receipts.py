@@ -4,7 +4,7 @@ A reconciliation run examines every mailbox of a project and archives mail no
 one can read. Until W287 every run wrote a receipt and queued it for the
 service, whether it archived anything or not: dev-main held 51,855 receipts,
 every one empty, and the relay re-read all of them after each restart. The
-rules this module follows are in ``docs/project-board/storage-and-retention.md``,
+rules this module follows are in ``products/project-board/docs/storage-and-retention.md``,
 section "Relay Local State" (LS1 to LS5).
 
 Layout, per project and reporting worker (the agent)::

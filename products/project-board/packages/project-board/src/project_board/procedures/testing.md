@@ -9,8 +9,8 @@ tags: [procedure, testing, bundle, problem-board]
 keywords: [pytest, pytest-xdist, parallel tests, slow tier, bundle suite, typecheck, MCP, browser proof]
 see_also:
   - ./live-acceptance.md
-  - repo:app-ecosystem/docs/project-board/topology-and-flows.md
-  - repo:app-ecosystem/docs/project-board/storage-and-retention.md
+  - repo:app-ecosystem/products/project-board/docs/topology-and-flows.md
+  - repo:app-ecosystem/products/project-board/docs/storage-and-retention.md
 ---
 
 # Test The Problem Board Bundle

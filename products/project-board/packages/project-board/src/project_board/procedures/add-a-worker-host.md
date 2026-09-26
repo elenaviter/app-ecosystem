@@ -7,7 +7,7 @@ keywords: [worker host, tailnet, headless, deploy key, pinned client, systemd re
 see_also:
   - ./first-time-setup.md
   - ./operator.md
-  - repo:app-ecosystem/docs/project-board/add-a-machine.md
+  - repo:app-ecosystem/products/project-board/docs/add-a-machine.md
   - repo:app-ecosystem/docs/connection-hub/package/delegated-cards.md#descriptor-owned-authorization-profiles
 ---
 
@@ -26,7 +26,7 @@ and every problem met there is either fixed or written below as a **Known gap**
 with its workaround and the work item that removes it.
 
 The short version a user follows, and what they hand their setup agent, is
-[add a machine](repo:app-ecosystem/docs/project-board/add-a-machine.md).
+[add a machine](repo:app-ecosystem/products/project-board/docs/add-a-machine.md).
 
 ## Who does what
 

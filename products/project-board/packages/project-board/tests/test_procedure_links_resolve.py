@@ -11,7 +11,7 @@ Public means public. Later the same day the twenty references had become
 links into kdcube/applications, a private repository, so the reader of this
 public package was sent to pages they cannot open. A GitHub link is allowed
 only into a repository a reader of this repository can open; the pages the
-procedures needed moved into docs/project-board/ instead.
+procedures needed moved into products/project-board/docs/ instead.
 """
 
 from __future__ import annotations

@@ -6,10 +6,10 @@ tags: [procedure, operator, relay, problem-board]
 keywords: [Connection Hub profile, host relay, worker session, worker capacity, token budget, receiver policy, OAuth reconnect, replace Card]
 see_also:
   - ./agent-worker.md
-  - repo:app-ecosystem/docs/project-board/relay.template.json
+  - repo:app-ecosystem/products/project-board/docs/relay.template.json
   - ./live-acceptance.md
-  - repo:app-ecosystem/docs/project-board/topology-and-flows.md
-  - repo:app-ecosystem/docs/project-board/storage-and-retention.md
+  - repo:app-ecosystem/products/project-board/docs/topology-and-flows.md
+  - repo:app-ecosystem/products/project-board/docs/storage-and-retention.md
 ---
 
 # Operate Problem Board And Its Local Relay
@@ -624,7 +624,7 @@ and session evidence for diagnosis.
 The project view presents one paged timeline for controls, owner inbox turns,
 and service events. Search and date, status, and worker filters run on the
 server. Each row exposes its artifact URI; owner-worker rows open the exact
-mailbox turn. [Storage and retention](repo:app-ecosystem/docs/project-board/storage-and-retention.md) defines
+mailbox turn. [Storage and retention](repo:app-ecosystem/products/project-board/docs/storage-and-retention.md) defines
 how that projection and conversation history continue across long projects.
 
 Files travel with the same messages. In the Inbox thread, attach files to a

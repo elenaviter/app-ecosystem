@@ -21,7 +21,7 @@ def _words(path: Path) -> str:
 
 
 HOST = _words(PROCEDURES / "add-a-worker-host.md")
-GUIDE = _words(REPO / "docs" / "project-board" / "add-a-machine.md")
+GUIDE = _words(REPO / "products" / "project-board" / "docs" / "add-a-machine.md")
 
 
 def test_45_the_install_merges_the_claude_code_settings_and_says_how():
