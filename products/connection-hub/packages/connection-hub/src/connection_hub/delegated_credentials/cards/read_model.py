@@ -651,7 +651,9 @@ def compatible_resource_offers(
             reason = OFFER_ALREADY_ON_CARD
         elif within_door is not None and resource not in within_door:
             reason = OFFER_OUTSIDE_CLIENT_DOOR
-        elif bool(option.get("admin_only")) and not platform_admin:
+        elif bool(option.get("admin_only")) and not platform_admin and not option.get("grants"):
+            # An admin-only row is offered with the grants this approver may
+            # delegate (the options carry only those); closed only when none is.
             reason = OFFER_ADMIN_ONLY
         elif option_scope != scope:
             reason = OFFER_IDENTITY_SCOPE_INCOMPATIBLE
