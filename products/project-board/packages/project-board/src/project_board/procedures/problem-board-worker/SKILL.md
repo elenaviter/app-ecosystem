@@ -70,20 +70,20 @@ wakes and held leases still require prompt receive, handling, and settlement.
      cannot create a Codex model turn; a manually started watch is diagnostic
      only.
    - **Claude Code:** start exactly one session-scoped notification attachment
-     through Claude Code's background terminal facility, and one recurring
-     guard prompt that replaces it on a schedule whose every interval,
-     including the wrap of the hour, is shorter than its 30-minute cap:
+     with the Monitor tool, `timeout_ms` 1800000, `<id>` this session's id:
 
      ```bash
-     pb worker watch
+     exec pb worker watch --runtime-kind claude-code --runtime-session-id <id> 2>&1
      ```
 
-     On the attachment's end notice, start it again and then run `pb worker
-     receive`. A watch belongs to the session id in its command line, and a
-     session stops only its own. Read
-     [claude-code-wake](references/claude-code-wake.md) for the guard prompt,
-     the board-side fields that show a stopped watch, and what a network outage
-     does to both wake channels.
+     Schedule one recurring guard prompt that replaces it on a schedule whose
+     every interval, including the wrap of the hour, is shorter than its
+     30-minute cap. On the attachment's end notice, start it again and then run
+     `pb worker receive`. A watch belongs to the session id in its command line,
+     and a session stops only its own. Read
+     [claude-code-wake](references/claude-code-wake.md) for why a background
+     shell is not the facility, the guard prompt, the board-side fields that
+     show a stopped watch, and what a network outage does to both wake channels.
 6. Confirm the session and route state:
 
    ```bash

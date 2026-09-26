@@ -1538,3 +1538,33 @@ def test_rehearsal_gaps_are_closed():
     assert "chronicle" not in skill.split("## Receive Addressed Input")[0]
     workspace = " ".join(_read("references/project-workspace.md").split())
     assert "Onboarding does not build it" in workspace
+
+
+def test_step_5_starts_the_watch_the_guard_can_find():
+    # W345, 2026-09-26 16:10Z: a coordinator followed step 5 literally, a
+    # background shell running a bare `pb worker watch`. The guard finds
+    # watches by the session id in their command line, so it could neither
+    # replace nor end that one, and a plain background shell has no cap and
+    # posts no end notice.
+    skill = _read("SKILL.md")
+    step_5 = skill.split("   - **Claude Code:**", 1)[1].split("\n6. ", 1)[0]
+    [step_command] = re.findall(r"```bash\n\s*(.+?)\n\s*```", step_5)
+    wake = _words(_read("references/claude-code-wake.md"))
+    guard = re.search(
+        r"start a fresh watch with the Monitor tool \(`(?P<command>[^`]+)`, timeout (?P<timeout>\d+) ms\)",
+        wake,
+    )
+    assert guard, "the guard prompt names its Monitor command and timeout"
+    assert step_command == guard["command"]
+    words = _words(step_5)
+    assert "with the Monitor tool, `timeout_ms` 1800000" in words
+    assert guard["timeout"] == "1800000"
+    assert "for why a background shell is not the facility" in words
+    assert "A plain background shell (`run_in_background`, `&`, `nohup`) is not the facility" in wake
+    assert "A bare `pb worker watch` carries no session id in its command line" in wake
+    # The guard's pattern, with <id> bound, finds the step-5 watch and not a bare one.
+    [pattern] = re.findall(r'pgrep -d, -f "([^"]+)"', wake)
+    session = "398cdfe7-d80d-41fe-bc3b-22fb8823335f"
+    finds = re.compile(pattern.replace("<id>", re.escape(session)))
+    assert finds.search(step_command.replace("<id>", session))
+    assert not finds.search("pb worker watch")
