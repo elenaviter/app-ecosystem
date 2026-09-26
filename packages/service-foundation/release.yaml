@@ -1,14 +1,14 @@
 package:
   id: service-foundation
-  ref: "2026.09.22.2029"
+  ref: "2026.09.26.2205"
   description: |
-    First published release of the implementation candidate: the generic
-    service boundary used with app-foundation by Connection Hub and the
-    Problem Board client. Published so those clients can be installed from
-    an index instead of copied from a checkout.
+    Released together with app-foundation, connection-hub and project-board at
+    one version, so the Problem Board client installs from the package index
+    as one dependency chain with no KDCube package (W322). No code change
+    since 2026.09.22.2029; the version moves with the chain.
 
 components:
   python_package:
     id: service-foundation
     path: packages/service-foundation
-    version: "2026.09.22.2029"
+    version: "2026.09.26.2205"

@@ -1,16 +1,31 @@
 product:
   id: connection-hub
-  ref: "2026.09.23.0158"
+  ref: "2026.09.26.2205"
   description: |
-    Resident Card bearer custody now records prepared secret intent, atomic
-    installation, rotation, retirement, and token-fenced cleanup obligations
-    in PostgreSQL. Cleanup claims survive process restarts and Redis loss, and
-    one row-then-reference lock order governs every credential transition.
+    The caller side of Connection Hub is part of the connection-hub package,
+    behind the new `client` extra (W322): sign-in in a browser or by device
+    code, profiles, credentials in the operating system's native store, and an
+    authenticated MCP connection (`connection_hub.caller`). It contains no
+    KDCube code. Problem Board's pb depends on `connection-hub[client]` only;
+    stored caller state keeps its schema names, so existing profiles and
+    sessions stay readable. The `connection-hub` command line is a thin shell
+    over the same layer.
 
-    This snapshot also versions the Connection Hub host CLI as an explicit
-    release component. The CLI consumes this exact Connection Hub family and
-    the published KDCube CLI family used by its application-target operations,
-    so a clean package-index install resolves one reviewed dependency chain.
+    Also since 2026.09.23.0158:
+    - Connection Hub is the only editor of what a Card holds; project admins
+      edit person Control Cards through the project path; the catalog declares
+      operation groups (H1).
+    - The all-services row for every approver, bounded by the roles their
+      account may delegate (H2).
+    - A project's Control Card is read, changed, attached and detached through
+      the project host; an agent's owner attaches it while linking and detaches
+      it only while unlinking (W260, W319).
+    - Device grants keep the approved authorization opaque in Redis; the
+      session records the platform sign-in and its email verdict.
+
+    connection-hub-cli carries the same version in this snapshot but is not
+    published with it: its management commands still need a KDCube CLI release
+    that the package index does not have.
   documentation: docs/connection-hub
 
 components:
@@ -22,16 +37,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.09.23.0158"
+    version: "2026.09.26.2205"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
   cli_package:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.09.23.0158"
+    version: "2026.09.26.2205"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.09.23.0158"
+  version: "2026.09.26.2205"

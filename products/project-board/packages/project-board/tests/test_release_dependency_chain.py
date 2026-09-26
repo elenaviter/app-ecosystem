@@ -13,7 +13,7 @@ PROJECT_BOARD_ROOT = REPOSITORY_ROOT / "products/project-board/packages/project-
 CONNECTION_HUB_PRODUCT = REPOSITORY_ROOT / "products/connection-hub"
 CONNECTION_HUB_ROOT = CONNECTION_HUB_PRODUCT / "packages/connection-hub"
 CONNECTION_HUB_CLI_ROOT = CONNECTION_HUB_PRODUCT / "packages/connection-hub-cli"
-RELEASE_VERSION = "2026.09.23.0158"
+RELEASE_VERSION = "2026.09.26.2205"
 KDCUBE_CLI_VERSION = "2026.09.13.0145"
 
 
@@ -69,10 +69,19 @@ def test_published_route_has_one_resolvable_version_chain() -> None:
     assert str(project_board_requirements["connection-hub"].specifier) == (
         f"<2027,>={RELEASE_VERSION}"
     )
-    client_extra = [
-        Requirement(value).name
+    # One chain at one version: every first-party floor is the release.
+    for name in ("app-foundation", "service-foundation"):
+        assert str(project_board_requirements[name].specifier) == (
+            f"<2027,>={RELEASE_VERSION}"
+        )
+    client_requirements = {
+        Requirement(value).name: Requirement(value)
         for value in connection_hub["optional-dependencies"]["client"]
-    ]
+    }
+    assert str(client_requirements["app-foundation"].specifier) == (
+        f"<2027,>={RELEASE_VERSION}"
+    )
+    client_extra = list(client_requirements)
     assert not [name for name in client_extra if name.startswith("kdcube")]
     assert "connection-hub-cli" not in client_extra
     assert str(connection_hub_cli_requirements["connection-hub"].specifier) == (
@@ -82,6 +91,16 @@ def test_published_route_has_one_resolvable_version_chain() -> None:
     assert str(connection_hub_cli_requirements["kdcube-cli"].specifier) == (
         f"<2027,>={KDCUBE_CLI_VERSION}"
     )
+
+    for foundation in ("app-foundation", "service-foundation"):
+        root = REPOSITORY_ROOT / "packages" / foundation
+        assert _metadata(root)["version"] == RELEASE_VERSION
+        record = yaml.safe_load((root / "release.yaml").read_text(encoding="utf-8"))
+        assert record["package"]["ref"] == RELEASE_VERSION
+        assert record["components"]["python_package"]["version"] == RELEASE_VERSION
+        assert _module_version(
+            root / "src" / foundation.replace("-", "_") / "__init__.py"
+        ) == RELEASE_VERSION
 
     assert _module_version(
         PROJECT_BOARD_ROOT / "src/project_board/__init__.py"

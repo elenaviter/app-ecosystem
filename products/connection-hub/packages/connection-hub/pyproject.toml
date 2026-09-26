@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "connection-hub"
-version = "2026.09.23.0158"
+version = "2026.09.26.2205"
 description = "Connection Hub delegated-access authority and client SDK."
 readme = "README.md"
 license = { text = "MIT" }
@@ -33,7 +33,7 @@ oidc = [
 # the native store, and an authenticated MCP connection. Problem Board's pb
 # depends on this extra and needs no KDCube package (W322).
 client = [
-    "app-foundation[mcp,native-secrets]>=2026.09.03.1835,<2027",
+    "app-foundation[mcp,native-secrets]>=2026.09.26.2205,<2027",
     "filelock>=3.16,<4",
     "httpx2>=2.5,<3",
     "keyring>=25,<26",

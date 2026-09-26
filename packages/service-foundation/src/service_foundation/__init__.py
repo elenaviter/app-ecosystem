@@ -5,4 +5,4 @@ authority, application-domain behavior, transport selection, and credential
 custody remain in adapters and their composition roots.
 """
 
-__version__ = "2026.09.22.2029"
+__version__ = "2026.09.26.2205"
