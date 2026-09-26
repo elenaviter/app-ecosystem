@@ -1202,10 +1202,14 @@ limited to the roles their account may delegate, and the row stays closed when
 none is theirs. A save that names a grant beyond the approver is refused
 (`delegated_access_grants_not_delegable`), so a Card never exceeds what its
 approver holds. With only the `super-admin` grant, as above, a non-admin
-therefore does not see it. The request-auth surface accepts it only when the
-server-side resource-grant map assigns `kdcube:role:super-admin` to `*` and the
-stored grantor authority projects the grantor with platform admin privilege.
-The role is the authority grant.
+therefore does not see it. On the admin REST entrance, the request-auth
+surface accepts `*` only when the server-side resource-grant map assigns
+`kdcube:role:super-admin` to it and the stored grantor authority projects the
+grantor with platform admin privilege; a non-admin's `*` Card is refused there.
+Application operations reached through `*` are checked one by one against the
+roles the Card carries, and each must be selected on the Card, so an operation
+the catalog adds later is never gained automatically. The role is the
+authority grant.
 
 Issued automation credentials store the boundary as `resource_grants`, not as a
 separate resource list plus a separate grant list. The Connection Hub access
