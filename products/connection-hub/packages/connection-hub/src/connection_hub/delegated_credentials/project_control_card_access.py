@@ -41,6 +41,15 @@ PROJECT_CONTROL_CARD_AUDIT_SCHEMA = "connection_hub.project_control_card_audit.v
 # two ever change the Card, whatever else a host answer says.
 READING_VIAS = frozenset({"owner", "project_admin", "project_member"})
 EDITING_VIAS = frozenset({"owner", "project_admin"})
+# W260 (claude-main, 2026-09-26): the agent's owner, a member, attaches the
+# project's Control Card while linking their own agent (attaching only narrows
+# it), and detaches it only as part of unlinking their own agent. The project
+# host answers each while it holds a live pending link or unlink for exactly
+# that person, agent and project. Each is accepted for its own operation only.
+OWNER_LINKING_VIA = "owner_linking"
+OWNER_UNLINKING_VIA = "owner_unlinking"
+ATTACH_VIAS = EDITING_VIAS | {OWNER_LINKING_VIA}
+DETACH_VIAS = EDITING_VIAS | {OWNER_UNLINKING_VIA}
 NOT_DELEGABLE = "delegated_access_grants_not_delegable"
 
 
@@ -88,8 +97,10 @@ class ProjectControlCardDecision:
 
 
 class ProjectControlCardAuthorizationPort(Protocol):
+    # ``access_id`` names the agent Card an attach or detach binds; the project
+    # host needs it to answer the owner's linking and unlinking vias.
     async def authorize_project_control_card(
-        self, *, control_id: str, project_ref: str, action: str
+        self, *, control_id: str, project_ref: str, action: str, access_id: str = ""
     ) -> ProjectControlCardDecision: ...
 
 
@@ -105,7 +116,7 @@ class RefusingProjectControlCardAuthorizationPort:
         self._reason = reason
 
     async def authorize_project_control_card(
-        self, *, control_id: str, project_ref: str, action: str
+        self, *, control_id: str, project_ref: str, action: str, access_id: str = ""
     ) -> ProjectControlCardDecision:
         raise ControlCardAuthorizationError(self._reason)
 
@@ -116,6 +127,15 @@ def _subject(user: Mapping[str, Any]) -> str:
         if value and value != "anonymous":
             return value
     return ""
+
+
+def _write_refusal(action: str, via: str) -> dict[str, Any] | None:
+    """A write only from the owner or a project admin; never a member's or a linking answer."""
+
+    if action == CONTROL_CARD_WRITE and via not in EDITING_VIAS:
+        return {"ok": False, "error": "project_control_card_write_denied",
+                "reason": "decision_via_cannot_edit", "status": 403}
+    return None
 
 
 def _invalid(reason: str) -> dict[str, Any]:
@@ -138,7 +158,7 @@ class ProjectControlCardAccess:
         self._agent_access = agent_access
 
     async def _authorize(
-        self, user: Mapping[str, Any], *, control_id: str, project_ref: str, action: str
+        self, user: Mapping[str, Any], *, control_id: str, project_ref: str, action: str, access_id: str = ""
     ) -> ProjectControlCardDecision | dict[str, Any]:
         actor = _subject(user)
         if not actor or actor.startswith("integration:"):
@@ -150,9 +170,10 @@ class ProjectControlCardAccess:
             return {"ok": False, "error": "project_control_card_authorization_unavailable",
                     "reason": "authorization_port_not_configured", "retryable": True, "status": 503}
         try:
-            decision = await self._port.authorize_project_control_card(
-                control_id=control_id, project_ref=project_ref, action=action
-            )
+            asked = {"control_id": control_id, "project_ref": project_ref, "action": action}
+            if clean_text(access_id):
+                asked["access_id"] = clean_text(access_id)
+            decision = await self._port.authorize_project_control_card(**asked)
         except ControlCardAuthorizationError as exc:
             return {"ok": False, "error": "project_control_card_authorization_unavailable",
                     "reason": exc.reason, "retryable": True, "status": 503}
@@ -177,11 +198,13 @@ class ProjectControlCardAccess:
             return _invalid("decision_action_mismatch")
         if not decision.grantor_subject:
             return _invalid("decision_grantor_missing")
-        if decision.via not in READING_VIAS:
+        if decision.via not in (
+            READING_VIAS | ATTACH_VIAS | DETACH_VIAS if action == CONTROL_CARD_ATTACH else READING_VIAS
+        ):
             return _invalid("decision_via_invalid")
-        if action in {CONTROL_CARD_WRITE, CONTROL_CARD_ATTACH} and decision.via not in EDITING_VIAS:
-            return {"ok": False, "error": "project_control_card_write_denied",
-                    "reason": "decision_via_cannot_edit", "status": 403}
+        refused = _write_refusal(action, decision.via)
+        if refused is not None:
+            return refused
         return decision
 
     @staticmethod
@@ -300,7 +323,13 @@ class ProjectControlCardAccess:
     # -- attaching the project's Control Card to an agent (W260) ----------------
 
     async def _attach_decisions(
-        self, user: Mapping[str, Any], *, control_id: str, project_ref: str, access_id: str
+        self,
+        user: Mapping[str, Any],
+        *,
+        control_id: str,
+        project_ref: str,
+        access_id: str,
+        allowed_vias: frozenset[str],
     ) -> tuple[ProjectControlCardDecision, Any] | dict[str, Any]:
         """Both host answers an attach or detach needs, or the first refusal.
 
@@ -312,10 +341,16 @@ class ProjectControlCardAccess:
         """
 
         control = await self._authorize(
-            user, control_id=control_id, project_ref=project_ref, action=CONTROL_CARD_ATTACH
+            user, control_id=control_id, project_ref=project_ref, action=CONTROL_CARD_ATTACH,
+            access_id=access_id,
         )
         if isinstance(control, dict):
             return control
+        if control.via not in allowed_vias:
+            # An owner's linking answer never detaches, an unlinking answer
+            # never attaches, and a member's read answer does neither.
+            return {"ok": False, "error": "project_control_card_write_denied",
+                    "reason": "decision_via_cannot_bind", "status": 403}
         if self._agent_access is None:
             return {"ok": False, "error": "project_control_card_authorization_unavailable",
                     "reason": "agent_card_authorization_not_configured", "retryable": True, "status": 503}
@@ -376,7 +411,8 @@ class ProjectControlCardAccess:
         request_id: str = "",
     ) -> dict[str, Any]:
         decided = await self._attach_decisions(
-            user, control_id=control_id, project_ref=project_ref, access_id=clean_text(access_id)
+            user, control_id=control_id, project_ref=project_ref, access_id=clean_text(access_id),
+            allowed_vias=ATTACH_VIAS,
         )
         if isinstance(decided, dict):
             return decided
@@ -404,7 +440,8 @@ class ProjectControlCardAccess:
         request_id: str = "",
     ) -> dict[str, Any]:
         decided = await self._attach_decisions(
-            user, control_id=control_id, project_ref=project_ref, access_id=clean_text(access_id)
+            user, control_id=control_id, project_ref=project_ref, access_id=clean_text(access_id),
+            allowed_vias=DETACH_VIAS,
         )
         if isinstance(decided, dict):
             return decided

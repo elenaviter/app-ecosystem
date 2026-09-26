@@ -199,13 +199,17 @@ class BundleOperationControlCardAuthorizer:
         self._caller = caller
 
     async def authorize_project_control_card(
-        self, *, control_id: str, project_ref: str, action: str
+        self, *, control_id: str, project_ref: str, action: str, access_id: str = ""
     ) -> ProjectControlCardDecision:
+        data = {"control_id": control_id, "project_ref": project_ref, "action": action}
+        if clean_text(access_id):
+            # The agent Card an attach or detach binds (owner linking vias).
+            data["access_id"] = clean_text(access_id)
         try:
             response = await self._caller(
                 bundle_id=self._bundle_id,
                 operation=self._operation,
-                data={"control_id": control_id, "project_ref": project_ref, "action": action},
+                data=data,
             )
         except Exception as exc:
             raise ControlCardAuthorizationError("project_control_card_provider_unavailable") from exc

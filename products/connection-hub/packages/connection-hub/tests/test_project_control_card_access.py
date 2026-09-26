@@ -37,7 +37,7 @@ class Port:
         self.fail = fail
         self.calls: list[dict[str, str]] = []
 
-    async def authorize_project_control_card(self, *, control_id, project_ref, action):
+    async def authorize_project_control_card(self, *, control_id, project_ref, action, access_id=""):
         self.calls.append({"control_id": control_id, "project_ref": project_ref, "action": action})
         if self.fail is not None:
             raise self.fail
