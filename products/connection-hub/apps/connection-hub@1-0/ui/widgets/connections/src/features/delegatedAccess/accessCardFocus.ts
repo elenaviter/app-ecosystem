@@ -73,6 +73,26 @@ export function findAccessCardFocus<T extends { access_id: string; source?: stri
   return candidates.find((candidate) => matchesAccessCardFocus(candidate, focus));
 }
 
-export function unavailableAccessCardMessage(focus: AccessCardFocus): string {
-  return `Card ${focus.accessId} does not exist or is not visible to this account.`;
+const MY_CARD_PREFIX = 'person-my-card-';
+
+/** Why a requested Card did not open, with Connection Hub's own reason when it
+ *  gave one (W260: "Open my Control Card" showed only "does not exist"). */
+export function unavailableAccessCardMessage(focus: AccessCardFocus, reason = ''): string {
+  const base = `Card ${focus.accessId} does not exist or is not visible to this account.`;
+  const why = reason.trim() ? ` Connection Hub answered: ${reason.trim().replace(/\.$/, '')}.` : '';
+  // A person's own Card (My Card) is not a Control Card: a link that asks for
+  // it as one can never open it.
+  const hint = focus.controlOnly && focus.accessId.startsWith(MY_CARD_PREFIX)
+    ? ' This is a person\'s own Card (My Card), not a Control Card; it opens with access_id, not control_card_id.'
+    : '';
+  return `${base}${why}${hint}`;
+}
+
+/** The notice on a project-held person Control Card: read only here (W260). */
+export function projectPersonControlNotice(
+  viewer: { edit_in_project?: boolean } | undefined,
+): string {
+  return viewer?.edit_in_project
+    ? 'This Control Card is decided in the project. Change it in the project\'s Team > People.'
+    : 'This Control Card is decided by an admin of the project. You can read it here; your own Card (My Card) is what you change.';
 }

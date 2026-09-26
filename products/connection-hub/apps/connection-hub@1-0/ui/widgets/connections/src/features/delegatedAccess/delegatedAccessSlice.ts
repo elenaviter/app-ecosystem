@@ -23,6 +23,7 @@ import type {
   DelegatedInvocationPolicyResult,
   ControlCardGetResult,
   ProjectAgentCardGetResult,
+  ProjectPersonControlViewer,
 } from '../../api/types';
 
 export interface DelegatedAccessState {
@@ -32,6 +33,8 @@ export interface DelegatedAccessState {
    *  separate from `items`, because that normal caller-card list does not
    *  centrally enumerate Control Cards yet. */
   focusedCard?: DelegatedAccessRecord;
+  /** W260: the viewer's rights on a focused project-held person Control Card. */
+  focusedViewer?: ProjectPersonControlViewer;
   grantOptions: DelegatedAccessGrantOption[];
   resources: DelegatedAccessResourceOption[];
   issuedToken: string;
@@ -500,10 +503,12 @@ const delegatedAccessSlice = createSlice({
       .addCase(loadControlCard.fulfilled, (state, action) => {
         state.busy = false;
         state.focusedCard = action.payload.access;
+        state.focusedViewer = action.payload.viewer;
       })
       .addCase(loadControlCard.rejected, (state, action) => {
         state.busy = false;
         state.focusedCard = undefined;
+        state.focusedViewer = undefined;
         state.error = action.payload ?? 'Failed to load the Control Card';
       });
 

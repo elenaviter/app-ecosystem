@@ -34,7 +34,9 @@ from connection_hub.delegated_credentials.controls.snapshot import (
 )
 from connection_hub.delegated_credentials.project_authorization import (
     PROJECT_PERSON_CONTROL_CREATE,
+    PROJECT_PERSON_CONTROL_READ,
     PROJECT_PERSON_CONTROL_REVOKE,
+    PROJECT_PERSON_CONTROL_UPDATE,
     PROJECT_PERSON_MY_CARD_SEED,
     ProjectAuthorizationDecision,
 )
@@ -75,9 +77,13 @@ class _Record:
 
 
 class _Port:
-    def __init__(self, *, deny_actor: str = "", mismatch: bool = False) -> None:
+    def __init__(
+        self, *, deny_actor: str = "", mismatch: bool = False, deny_operations: frozenset = frozenset()
+    ) -> None:
         self.deny_actor = deny_actor
         self.mismatch = mismatch
+        # Refuse only these operations (a member: reads their own, writes nothing).
+        self.deny_operations = deny_operations
         self.requests = []
 
     async def authorize_project_person_control(self, request):
@@ -86,6 +92,11 @@ class _Port:
             return ProjectAuthorizationDecision.deny(
                 request,
                 reason="project_person_control_admin_required",
+            )
+        if request.operation in self.deny_operations:
+            return ProjectAuthorizationDecision.deny(
+                request,
+                reason="project_person_control_decided_by_admin",
             )
         decision = ProjectAuthorizationDecision.allow(
             request,
@@ -456,27 +467,50 @@ async def test_create_refuses_union_composition_before_storage() -> None:
 
 
 @pytest.mark.asyncio
-async def test_target_cannot_widen_its_project_card() -> None:
+async def test_an_admin_edits_its_own_project_card_and_it_saves() -> None:
+    """The operator's rule (W260): a project admin changes any Card, their own
+    included. The board's Team > People writes it under that admin's session,
+    so the actor is the target and the policy port decides."""
+
     host = _Host()
     await _create(_lifecycle(host, _Port()))
     host.update_calls.clear()
-    permissive_port = _Port()
+    admin_port = _Port()
 
-    result = await _lifecycle(host, permissive_port).update(
+    result = await _lifecycle(host, admin_port).update(
         actor_subject=TARGET,
         project_ref=PROJECT_REF,
         target_subject=TARGET,
-        request_id="request-target-update",
+        request_id="request-own-update",
+        label="Wider",
+    )
+
+    assert result["ok"] is True, result
+    assert len(host.update_calls) == 1
+    assert [request.operation for request in admin_port.requests] == [PROJECT_PERSON_CONTROL_UPDATE]
+
+
+@pytest.mark.asyncio
+async def test_a_member_is_refused_its_own_project_card_by_the_policy() -> None:
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    host.update_calls.clear()
+    member_port = _Port(deny_operations=frozenset({PROJECT_PERSON_CONTROL_UPDATE}))
+
+    result = await _lifecycle(host, member_port).update(
+        actor_subject=TARGET,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        request_id="request-own-update",
         label="Wider",
     )
 
     assert result == {
         "ok": False,
-        "error": "project_person_control_target_write_denied",
+        "error": "project_person_control_decided_by_admin",
         "status": 403,
     }
     assert host.update_calls == []
-    assert permissive_port.requests == []
 
 
 @pytest.mark.asyncio
@@ -1020,10 +1054,10 @@ async def test_admin_revoke_is_audited_and_removes_live_authority() -> None:
 
 
 @pytest.mark.asyncio
-async def test_target_cannot_revoke_its_project_card() -> None:
+async def test_a_member_is_refused_revoking_its_own_project_card() -> None:
     host = _Host()
     await _create(_lifecycle(host, _Port()))
-    port = _Port()
+    port = _Port(deny_operations=frozenset({PROJECT_PERSON_CONTROL_REVOKE}))
 
     result = await _lifecycle(host, port).revoke(
         actor_subject=TARGET,
@@ -1034,11 +1068,45 @@ async def test_target_cannot_revoke_its_project_card() -> None:
 
     assert result == {
         "ok": False,
-        "error": "project_person_control_target_write_denied",
+        "error": "project_person_control_decided_by_admin",
         "status": 403,
     }
     assert host.forget_calls == []
-    assert port.requests == []
+
+
+@pytest.mark.asyncio
+async def test_reading_a_person_control_card_says_it_is_read_only_here() -> None:
+    """W260: the hub view never edits a person Control Card; a project admin is
+    sent to the project's editor, anyone else is told an admin decides it."""
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+
+    admin_view = await _lifecycle(host, _Port()).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert admin_view["ok"] is True
+    assert admin_view["viewer"] == {
+        "can_edit": False,
+        "edit_in_project": True,
+        "reason": "project_person_control_edited_in_project",
+    }
+
+    member_port = _Port(deny_operations=frozenset({PROJECT_PERSON_CONTROL_UPDATE}))
+    member_view = await _lifecycle(host, member_port).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert member_view["ok"] is True
+    assert member_view["viewer"] == {
+        "can_edit": False,
+        "edit_in_project": False,
+        "reason": "project_person_control_decided_by_admin",
+    }
+    # The viewer question is the edit question, and it changes nothing.
+    assert [request.operation for request in member_port.requests] == [
+        PROJECT_PERSON_CONTROL_READ, PROJECT_PERSON_CONTROL_UPDATE,
+    ]
+    assert host.update_calls == []
 
 
 # -- composing the person's Card with the Control Card its project holds (W260) --

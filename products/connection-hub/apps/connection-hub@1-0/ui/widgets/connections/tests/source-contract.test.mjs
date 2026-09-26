@@ -195,7 +195,8 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
 test('an unresolved exact Card deep link is visible instead of becoming an unfiltered list', () => {
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, /accessCardFocusState === 'unavailable'/)
-  assert.match(panel, /unavailableAccessCardMessage\(accessCardFocus\)/)
+  // W260: the message carries Connection Hub's own reason.
+  assert.match(panel, /unavailableAccessCardMessage\(accessCardFocus, delegatedAccessError\)/)
   assert.match(panel, /<strong>Card unavailable\.<\/strong>/)
 })
 
@@ -666,4 +667,15 @@ test('linked Card editing keeps both authority views and dialogs use one governe
   assert.match(panel, /correlatedCardLabel\(\{ \.\.\.item, label: agentLabel \}\)/)
   assert.match(css, /\.id-value \{[\s\S]*overflow-wrap: anywhere;[\s\S]*white-space: normal;/)
   assert.match(css, /\.rail-row__title \{[\s\S]*flex-wrap: wrap;[\s\S]*overflow-wrap: anywhere;/)
+})
+
+test('W260: a project-held person Control Card is read only here, with the project editor named', () => {
+  const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
+  // No Edit button, and a save is refused with the reason, for every viewer.
+  assert.match(panel, /projectPersonControlCoordinates\(item\) \? null : \(/)
+  assert.match(panel, /if \(projectPersonControlCoordinates\(item\)\) \{\n\s+setEditActionError\(projectPersonControlNotice\(focusedViewer\)\);\n\s+return;/)
+  // The notice links a project admin to Team > People.
+  assert.match(panel, /focusedViewer\?\.edit_in_project && focusedCard\.manage_url/)
+  const slice = source('src/features/delegatedAccess/delegatedAccessSlice.ts')
+  assert.match(slice, /state\.focusedViewer = action\.payload\.viewer;/)
 })
