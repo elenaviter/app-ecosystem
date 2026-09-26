@@ -727,6 +727,7 @@ def update_host_config(
     idle_reconcile_ceiling_seconds: int | None = None,
     create_missing_journal_home: bool | None = None,
     agent_workspace_root: str | Path | None = None,
+    remove_disabled_channels: bool = False,
 ) -> HostRelayConfig:
     """Apply one explicit, non-secret host configuration revision."""
 
@@ -734,6 +735,15 @@ def update_host_config(
     with exclusive_lock(path.with_suffix(f"{path.suffix}.lock")):
         value = read_json(path)
         current = HostRelayConfig.from_mapping(value, path=path)
+        if remove_disabled_channels:
+            # W304 finding 18: detach and retirement only ever disable a
+            # channel row, so a host collected every session it ever ran.
+            # A disabled row is no channel; removing it changes nothing live.
+            value["workers"] = [
+                row
+                for row in value.get("workers") or []
+                if not (isinstance(row, Mapping) and str(row.get("state") or "") == "disabled")
+            ]
         if endpoint:
             selected_endpoint = _endpoint(endpoint)
             if selected_endpoint != current.endpoint:

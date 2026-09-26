@@ -1194,7 +1194,9 @@ same workspace. It keeps its board identity.
 Runs on: the host, and GitHub in the operator's browser (deleting deploy keys).
 
 - One agent: `pb worker detach` in its session, then end its tmux session
-  (`tmux kill-session -t <agent-name>`).
+  (`tmux kill-session -t <agent-name>`). Detaching only disables the agent's
+  relay channel row; `pb host configure --remove-disabled-channels` removes
+  every disabled row once no session on the host needs one back.
 - The host's access to one repository: remove it from the project card, and step 7's
   reconciliation prints the revoke block. Without a card change, delete its deploy key
   in that repository and the key files on the host.
