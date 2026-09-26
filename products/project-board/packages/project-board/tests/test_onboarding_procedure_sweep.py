@@ -88,7 +88,7 @@ def test_u4_agent_workspaces_live_under_kdcube():
     assert 'exec claude ${1:+--resume "$1"} --add-dir "$W"' in HOST
     assert "An existing host keeps its old folders until a planned move." in HOST
     collaboration = _words(PROCEDURES / "problem-board-worker" / "references" / "collaboration.md")
-    assert "worktree add --detach ~/.kdcube/pb/workspaces/<alias>/applications origin/main" in collaboration
+    assert "worktree add --detach ~/.kdcube/pb/workspaces/<alias>/<repo> origin/main" in collaboration
     assert "`~/.kdcube/pb/workspaces/<alias>/<repo>`" in collaboration
 
 

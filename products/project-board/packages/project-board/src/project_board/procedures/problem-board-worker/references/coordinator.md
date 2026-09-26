@@ -81,7 +81,7 @@ successor inherits none of that.
 1. The submission is read against the item's acceptance lines, one by one, and
    against the deployed artifact where a line is about behaviour (see Reload
    below for what "deployed" means per tree).
-2. A pull request to the applications repository is accepted after the app's
+2. A pull request to the board's server app repository is accepted after the app's
    Python suite runs on `main` with the change merged, widget-only changes
    included: the contract tests read widget source. A failure is compared
    against the same suite on `main` before the change.
@@ -117,6 +117,10 @@ successor inherits none of that.
      `"integration": {"merged": [...], "deploy": "<window>: <check>"}` (or
      `"nothing_to_deploy": true`) once it is merged and deployed. The board
      refuses the operator without that evidence and names what is missing.
+     `operator` is any person in the project: every person's Review
+     Assignments lists it and the first decision clears it for all. Use
+     `operator:<user id>` only when a particular person must look (operator
+     ruling, 2026-09-26).
      Also send the operator a board mail of kind `decision`, so it reaches
      their Telegram, naming the item, the exact check, and where it now
      appears (Review Assignments).
@@ -522,6 +526,10 @@ tree, which stages whatever it holds at that instant.
    commit it named, the commit range, and, for
    each worker whose commits rode along, that they did. Clear your dashboard
    row. A worker asking "what did that release" is asking for this line.
+8. **Bump the app's release record.** A board release updates the app's
+   `release.yaml` in the same change as the release: its version and a dated
+   note naming what the release carries. A release record left behind tells
+   nobody what runs.
 
 **New operations reach an agent only through the project Control Card.** A
 project's Control Card caps every agent Card in the project (AND), and a Card

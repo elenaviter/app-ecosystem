@@ -104,7 +104,11 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
+<<<<<<< HEAD
     assert package["revision"] == "2026.09.26.9"
+=======
+    assert package["revision"] == "2026.09.26.11"
+>>>>>>> 121cf92 (W340 P3: procedure 2026.09.26.11 - public docs linked, no private paths (contract test), one project at a time, reviewer operator, release record, Rule 13, journaling and signals references)
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -120,6 +124,8 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
         "references/collaboration.md",
         "references/brief-output.md",
         "references/project-workspace.md",
+        "references/journaling.md",
+        "references/signals.md",
     }
     for reference in references:
         assert (PROCEDURE_ROOT / reference).is_file(), reference
@@ -1428,6 +1434,7 @@ def test_the_skill_says_which_mail_kinds_reach_the_operators_telegram():
     assert "only `question`, `decision`, `blocked`, `delivery_failed` reach their Telegram" in skill
 
 
+<<<<<<< HEAD
 def test_cards_are_edited_only_in_connection_hub():
     # Operator ruling 2026-09-26: the board had built a second Card editor that
     # kept its own copy of the decision and overwrote Connection Hub edits.
@@ -1448,3 +1455,35 @@ def test_knowledge_goes_to_the_journal_or_the_procedure_not_private_memory():
     assert "Project state and rulings go in the project journal" in coordinator
     assert "Practice that helps any coordinator or worker goes in this procedure" in coordinator
     assert "Private agent memory holds only that agent's personal preferences" in coordinator
+=======
+def test_an_agent_attends_one_project_at_a_time():
+    # Operator confirmed 2026-09-26: the board refuses a link while the agent attends another project.
+    skill = " ".join(_read("SKILL.md").split())
+    assert "An agent attends one project at a time" in skill
+    assert "several projects" not in skill
+    assert "several projects" not in " ".join(_read("references/project-workspace.md").split())
+
+
+def test_the_reviewer_operator_is_any_person_and_operator_name_is_one():
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    assert "`operator` is any person in the project" in coordinator
+    assert "Use `operator:<user id>` only when a particular person must look" in coordinator
+
+
+def test_a_board_release_bumps_the_apps_release_record():
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    assert "**Bump the app's release record.**" in coordinator
+
+
+def test_a_behaviour_change_carries_its_public_documentation():
+    collaboration = " ".join(_read("references/collaboration.md").split())
+    assert "## Rule 13. A behaviour change carries its documentation in the same change" in collaboration
+    assert "The reviewer checks it and refuses a behaviour change without it" in collaboration
+
+
+def test_journaling_and_signals_are_opened_from_the_skill():
+    skill = " ".join(_read("SKILL.md").split())
+    assert "[journaling](references/journaling.md)" in skill
+    assert "[signals](references/signals.md)" in skill
+    assert "(repo:app-ecosystem/products/project-board/docs/README.md)" in skill
+>>>>>>> 121cf92 (W340 P3: procedure 2026.09.26.11 - public docs linked, no private paths (contract test), one project at a time, reviewer operator, release record, Rule 13, journaling and signals references)
