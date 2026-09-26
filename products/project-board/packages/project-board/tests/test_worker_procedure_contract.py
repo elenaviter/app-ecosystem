@@ -1418,3 +1418,10 @@ def test_a_review_is_routed_in_the_turn_it_arrives():
     assert "whenever `review.look_at` or `review.could_not_verify` needs a person's browser or account" in coordinator
     assert "tell the operator at once with a notifying kind (`blocked`)" in coordinator
     assert "never mention it only inside a longer list" in coordinator
+
+
+def test_the_skill_says_which_mail_kinds_reach_the_operators_telegram():
+    # 2026-09-26: a Telegram test sent as `reply` never reached Telegram.
+    skill = " ".join(_read("SKILL.md").split())
+    assert "`progress`, `update`, `reply` and `result` stay on the board" in skill
+    assert "only `question`, `decision`, `blocked`, `delivery_failed` reach their Telegram" in skill
