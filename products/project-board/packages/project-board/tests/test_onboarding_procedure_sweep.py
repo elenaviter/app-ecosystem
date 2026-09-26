@@ -428,15 +428,16 @@ def test_u4_move_keeps_conversation_memory_and_worktrees_and_rolls_back(tmp_path
     run("git", "-C", str(shared), "worktree", "add", "-q", str(old / "repo"), "-b", "a")
     run("git", "clone", "-q", str(shared), str(old / "clone"))
     run("git", "-C", str(old / "clone"), "worktree", "add", "-q", str(old / "worktrees" / "w2"), "-b", "x")
-    enc = lambda path: str(path).replace("/", "-").replace(".", "-")
+    # Claude Code's encoding: every character not a letter or digit becomes "-".
+    enc = lambda path: re.sub(r"[^A-Za-z0-9]", "-", str(path))
     projects = home / ".claude" / "projects"
     (projects / enc(old) / "memory").mkdir(parents=True)
     (projects / enc(old) / "sid-1.jsonl").write_text("{}\n")
     (projects / enc(old) / "memory" / "MEMORY.md").write_text("- a fact\n")
-    values = f"A=ag ALIAS=al SID=sid-1\nOLD={old}\n"
+    values = f"A=ag ALIAS=al@spark1 SID=sid-1\nOLD={old}\n"
     fill = lambda script: re.sub(r"A=<agent-name> ALIAS=<alias> SID=<session-id>\nOLD=<[^\n]*>\n", values, script)
     run("bash", "-c", fill(move))
-    new = home / ".kdcube" / "pb" / "workspaces" / "al"
+    new = home / ".kdcube" / "pb" / "workspaces" / "al@spark1"
     assert not old.exists() and not (projects / enc(old)).exists()
     assert (projects / enc(new) / "memory" / "MEMORY.md").read_text() == "- a fact\n"
     assert (projects / enc(new) / "sid-1.jsonl").exists()

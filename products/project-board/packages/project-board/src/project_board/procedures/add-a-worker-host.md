@@ -829,6 +829,9 @@ What a move breaks, found by a dry run on spark1 on 2026-09-26:
   agent's folder under `~/.claude/projects` to the new folder's name **before
   the first start from the new folder**. A start from the new folder before
   the rename creates the new name first, and the rename then lands inside it.
+  The folder's name is the path with every character that is not a letter
+  or a digit replaced by `-`, including `@`, `_`, `+` and `.` (checked on
+  Claude Code 2.1.283), so an alias such as `claude-app@spark1` is covered.
 - **Git worktrees record absolute paths both ways.** A worktree inside the
   moved folder points to its checkout, and the checkout lists the worktree. A
   checkout that stays behind (dev-main's shared checkouts in `~/src`) keeps a
@@ -851,7 +854,7 @@ agent notes its session id (the stable name without `claude-code-` or
 A=<agent-name> ALIAS=<alias> SID=<session-id>
 OLD=<absolute old folder, e.g. /home/<user>/workspaces/space001>
 NEW=$HOME/.kdcube/pb/workspaces/$ALIAS
-enc() { printf '%s' "$1" | sed 's#[/.]#-#g'; }   # Claude Code's folder name for a path
+enc() { printf '%s' "$1" | sed 's#[^A-Za-z0-9]#-#g'; }   # Claude Code's folder name for a path
 PO=$HOME/.claude/projects/$(enc "$OLD"); PN=$HOME/.claude/projects/$(enc "$NEW")
 [ -d "$OLD" ] || { echo "STOP: $OLD is not a folder"; exit 1; }
 [ ! -e "$NEW" ] && [ ! -e "$PN" ] || { echo "STOP: $NEW or $PN already exists"; exit 1; }
