@@ -795,6 +795,23 @@ def resolve_host_config_path(value: str | Path | None = None) -> Path:
     )
 
 
+def default_working_directory(allowed_roots: Sequence[str], *, alias: str, worker_name: str) -> str:
+    """An agent's own workspace when none is recorded: ``<first allowed root>/<alias>``.
+
+    The host's first approved work root, one folder per agent (its alias, else
+    its stable name). Never the directory a session happened to start in: a
+    Claude Code agent started in a shared checkout was handed that checkout
+    (operator, 2026-09-26: "it had to be a dedicated workspace"). Empty when
+    the host approves no root.
+    """
+
+    roots = [str(root) for root in allowed_roots if str(root).strip()]
+    name = str(alias or worker_name or "").strip()
+    if not roots or not name:
+        return ""
+    return str(Path(roots[0]) / name)
+
+
 def enroll_worker_channel(
     config_path: str | Path,
     *,
@@ -855,6 +872,12 @@ def enroll_worker_channel(
                 selected_working_directory = (
                     existing.working_directory if existing else ""
                 )
+        if not selected_working_directory:
+            # No folder inside an approved root: the agent's own folder under
+            # the host's first root, never the directory the session started in.
+            selected_working_directory = default_working_directory(
+                config.allowed_roots, alias=alias, worker_name=identity.worker_name
+            )
         channel = WorkerChannelConfig(
             runtime_kind=identity.runtime_kind,
             runtime_session_id=identity.runtime_session_id,

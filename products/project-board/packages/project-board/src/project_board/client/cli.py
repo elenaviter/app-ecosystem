@@ -32,6 +32,7 @@ from .authorization import (
     inspect_profile_metadata,
 )
 from .host_config import (
+    default_working_directory,
     HOST_CONFIG_SCHEMA,
     HostRelayConfig,
     enroll_worker_channel,
@@ -3455,11 +3456,17 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
             "This host holds no repository list for the project yet: the relay writes it on its next poll.",
             details={"project_ref": project_ref},
         )
-    workspace = str(getattr(config.worker(identity), "working_directory", "") or "")
+    recorded = config.worker(identity)
+    workspace = str(getattr(recorded, "working_directory", "") or "") or default_working_directory(
+        config.allowed_roots,
+        alias=str(getattr(recorded, "worker_alias", "") or ""),
+        worker_name=identity.worker_name,
+    )
     if not workspace:
         raise DomainError(
             "field_workspace_unknown",
-            "This session enrolled before its folder was recorded: run `pb worker listen` from your workspace folder.",
+            "The host approves no work root, so this agent has no workspace: ask the operator to add one "
+            "(`pb host configure --add-allow-root <path>`).",
         )
     report = build_workspace_report(
         Path(workspace),
@@ -4464,17 +4471,29 @@ def _worker_project_context(
     # host procedure makes the agent's own workspace. Repositories are set up
     # inside it, one folder per alias (W304 finding 39).
     workspace = str(getattr(channel, "working_directory", "") or "")
+    workspace_source = "recorded" if workspace else ""
+    if not workspace:
+        # No folder recorded: the agent's own folder under the host's first
+        # approved root, never the directory this session started in.
+        workspace = default_working_directory(
+            config.allowed_roots,
+            alias=str(getattr(channel, "worker_alias", "") or ""),
+            worker_name=str(getattr(channel, "worker_name", "") or ""),
+        )
+        workspace_source = "host_root" if workspace else ""
     return {
         "project_ref": project_ref,
         "project_on_this_host": on_host,
         "workspace": workspace,
+        "workspace_source": workspace_source,
         **(
             {}
             if workspace
             else {
                 "workspace_note": (
-                    "This session enrolled before its folder was recorded: run "
-                    "`pb worker listen` from your workspace folder to record it."
+                    "The host approves no work root, so this agent has no workspace: ask the "
+                    "operator to add one (`pb host configure --add-allow-root <path>`). Never "
+                    "choose a folder yourself."
                 )
             }
         ),

@@ -1499,3 +1499,12 @@ def test_a_second_person_approves_with_the_device_flow_and_the_agent_detects_it(
     assert "Use `--device` as well whenever the person approving is not the one signed in" in first_run
     assert "do not wait to be told \"done\"" in first_run
 
+
+def test_the_workspace_comes_from_the_host_root_never_the_session_folder():
+    # 2026-09-26: an agent started in a shared checkout was handed that checkout.
+    skill = " ".join(_read("SKILL.md").split())
+    assert "never the folder this session started in and never a path you choose" in skill
+    assert "report it with `pb worker workspace-report`" in skill
+    workspace = " ".join(_read("references/project-workspace.md").split())
+    assert "else `<first approved root>/<your alias>` (`workspace_source: host_root`)" in workspace
+
