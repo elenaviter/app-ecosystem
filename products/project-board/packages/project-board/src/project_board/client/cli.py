@@ -2158,7 +2158,7 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             details={
                 "worker_name": identity.worker_name,
                 "channel_state": channel.state,
-                "required_action": f"pb worker authorize {channel.profile}",
+                "required_action": f"pb worker authorize {channel.profile} --device",
             },
         )
     payload: dict[str, Any] = {}
