@@ -79,7 +79,7 @@ test('a project member reads the Card and is told who changes it', () => {
     access_id: 'control-project', source: 'control', via: 'project_member', can_edit: false, project_ref: PROJECT,
   })
   assert.equal(projectControlCardReadOnly(record), true)
-  assert.match(PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE, /creator or a project admin/)
+  assert.match(PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE, /A project admin changes this project's Control Card/)
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, /if \(projectControlCardReadOnly\(item\)\) \{\s*\n\s*setEditActionError\(PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE\)/)
 })

@@ -53,4 +53,4 @@ export function projectControlCardReadOnly(item: DelegatedAccessRecord | null | 
 }
 
 export const PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE =
-  "This project's Control Card is changed by its creator or a project admin; you can read it here.";
+  "A project admin changes this project's Control Card; you can read it here.";
