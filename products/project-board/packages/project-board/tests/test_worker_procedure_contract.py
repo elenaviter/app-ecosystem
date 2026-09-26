@@ -1370,3 +1370,19 @@ def test_the_kdcube_profile_gives_deploy_worktrees_a_gitdir_the_container_can_re
     assert "Before 2.48 (dev-main runs 2.43): after `git worktree add`, rewrite the worktree's `.git` file" in words
     assert "`head -1 <deploy-worktree>/.git` starts with `gitdir: ../`, never `gitdir: /`" in words
     assert "a `Loaded: mounted tree` line with `(no git evidence: ...)` is a failed proof because it names no commit" in words
+
+
+def test_the_kdcube_profile_verifies_with_the_platform_attestations():
+    """W31: verify by version and symbol comparisons, and stop on MISMATCH or UNKNOWN."""
+
+    profile = _profile()
+    section = profile[profile.index("## Verify in the running artifact"):profile.index("## Who clears a refresh")]
+    words = " ".join(section.split())
+    assert "`kdcube info`" in words
+    assert "`kdcube bundle status <bundle-id> --live --json --workdir <workdir>`" in words
+    assert "`pb source status`" in words
+    assert "**`MATCH`** is the proof; **`MISMATCH`** (the command exits nonzero) or **`UNKNOWN`**" in words
+    assert "is a stop" in words
+    assert "never timestamps" in words
+    # The hand checks it replaces are gone.
+    assert "`dist/` inside the container carries the new source" not in words
