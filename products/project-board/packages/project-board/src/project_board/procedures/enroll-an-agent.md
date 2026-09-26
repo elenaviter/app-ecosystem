@@ -44,6 +44,10 @@ this session as a Problem Board worker with alias <alias>."
 It prints a `pb worker authorize ...` command. Prefer `--device`. Run it in
 your own terminal and approve the Card in the browser.
 
+If `pb worker listen` names a different `workspace` (the host sets another
+root, or the alias has characters other than letters, digits, `.`, `_`, `-`,
+`@`), start the agent from that folder from then on.
+
 ## 3. Connect it to your project
 
 On the Problem Board, press Add to project on the agent.
