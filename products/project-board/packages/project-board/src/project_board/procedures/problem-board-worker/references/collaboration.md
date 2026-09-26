@@ -364,11 +364,11 @@ is a verification. One that stops at printing JSON is a report.
    client the board app loads through its `local/` aliases, a payload, a
    config or a file shape both read) runs that repository's suite against the
    change's head too, author and reviewer both, before approval, and the
-   counts name both repositories. A head that edits the worker procedure
-   package fails `test_package_content_is_recorded_for_its_revision` by
-   design, because authors never bump the revision and the merger sets it
-   (`coordinator.md`, Merge): the author states it as the one expected
-   failure. Why: on 2026-09-26 app-ecosystem#208 moved
+   counts name both repositories. On a head that edits the worker procedure
+   package, `test_package_content_is_recorded_for_its_revision` skips on an
+   author's head with the reason "procedure changed; the merger sets the
+   revision", because authors never bump it (`coordinator.md`, Merge); the
+   author names that skip with the others. Why: on 2026-09-26 app-ecosystem#208 moved
    journal resolution to each worker's own clone, its reviews ran only the
    package suite, and eight board tests failed on main (W352).
 4. **Runtime import path stated and proven** when the change alters what a
