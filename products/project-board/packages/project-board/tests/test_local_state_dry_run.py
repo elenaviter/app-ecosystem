@@ -76,8 +76,10 @@ def test_simulate_runs_maintenance_on_a_copy_and_leaves_the_field_alone(field, t
 
     assert _snapshot(field.root) == before, "simulate changed the live field"
     assert result["settled"] and result["passes"] >= 2
-    assert result["files_after"] < result["files_before"]
-    assert "projects/*/mail" in result["stores_changed"]
+    # The total may grow (a partitioned store writes day indexes); the legacy
+    # receipts leave the mail folder.
+    mail = result["stores_changed"]["projects/*/mail"]
+    assert mail["after"]["files"] < mail["before"]["files"]
     assert not (tmp_path / "sim" / "field" / ".problem-board" / "projects" / PROJECT / "mail" / "reconciliation-receipts").exists()
 
 
