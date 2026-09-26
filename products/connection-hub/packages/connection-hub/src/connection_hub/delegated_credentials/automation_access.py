@@ -2513,6 +2513,7 @@ class AutomationAccessService:
                         "description": tool.description,
                         "grants": list(tool.grants),
                         **({"group": tool.group} if getattr(tool, "group", "") else {}),
+                        **({} if getattr(tool, "person_card", True) else {"person_card": False}),
                     }
                     for tool in resource.tools
                     if _grants_delegable(tool.grants, delegable)

@@ -4108,7 +4108,7 @@ code {
   top: calc(100% + 6px);
   left: 0;
   z-index: var(--layer-popover);
-  width: min(320px, 80vw);
+  width: min(320px, calc(100vw - 16px));
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -4122,6 +4122,8 @@ code {
   white-space: normal;
   cursor: default;
 }
+/* No room under the mark: the bubble opens above it (W360). */
+.info-mark__bubble--above { top: auto; bottom: calc(100% + 6px); }
 
 /* Narrow screens: nothing wider than the viewport, and the editor alone
    while a card is being edited (All cards leads back to the list). */

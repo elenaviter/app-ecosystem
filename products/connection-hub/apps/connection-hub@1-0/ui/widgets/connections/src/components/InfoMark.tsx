@@ -4,13 +4,45 @@
  * activation, Escape, or a click elsewhere; hover shows the same text as a
  * native tooltip on a pointer device. Help lives here, never as a paragraph
  * above a form: the form stays bare and the explanation is one gesture away.
+ * The bubble stays inside the viewport at any width (W360): it is measured
+ * where it opens and moved left, or above the mark, when it would cross an edge.
  */
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+
+import { bubblePlacement, type BubblePlacement } from './bubblePlacement';
 
 export function InfoMark({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const ref = useRef<HTMLSpanElement | null>(null);
+  const bubbleRef = useRef<HTMLSpanElement | null>(null);
+  const [placement, setPlacement] = useState<BubblePlacement | null>(null);
+  useLayoutEffect(() => {
+    if (!open) {
+      setPlacement(null);
+      return undefined;
+    }
+    const place = () => {
+      const anchor = ref.current?.getBoundingClientRect();
+      const bubble = bubbleRef.current;
+      if (!anchor || !bubble) return;
+      const next = bubblePlacement(
+        anchor,
+        { width: bubble.offsetWidth, height: bubble.offsetHeight },
+        { width: document.documentElement.clientWidth, height: window.innerHeight },
+      );
+      setPlacement((current) => (
+        current && current.left === next.left && current.above === next.above ? current : next
+      ));
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open]);
   useEffect(() => {
     if (!open) return undefined;
     const onDown = (event: MouseEvent | TouchEvent) => {
@@ -40,7 +72,14 @@ export function InfoMark({ text }: { text: string }) {
         i
       </button>
       {open ? (
-        <span className="info-mark__bubble" role="note" id={id} onClick={(event) => event.stopPropagation()}>
+        <span
+          className={`info-mark__bubble${placement?.above ? ' info-mark__bubble--above' : ''}`}
+          role="note"
+          id={id}
+          ref={bubbleRef}
+          style={placement ? { left: placement.left } : { visibility: 'hidden' }}
+          onClick={(event) => event.stopPropagation()}
+        >
           {text}
         </span>
       ) : null}

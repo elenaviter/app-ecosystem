@@ -83,3 +83,37 @@ export function controlIssuerLabel(fields: ControlIssuerFields, who: IssuerViewe
   }
   return String(fields.issuer_ref || fields.control_id || '').trim() || 'Control Card';
 }
+
+/**
+ * The person a project person's Control Card is for, by name (W360).
+ *
+ * Connection Hub stores the name the board gave when it created the Card,
+ * and a Card created without one carries the person's account id instead
+ * (the Card list showed "42d5a4e4-…", operator 2026-09-26). That id is never
+ * shown: the viewer's own Card is theirs ("You"), a person the board's link
+ * named is named, and anyone else is "Another person".
+ */
+export function personControlCardHolder(
+  label: string | undefined,
+  targetSubject: string,
+  who: IssuerViewer = {},
+): string {
+  const target = bareSubject(targetSubject);
+  if (target && target === bareSubject(who.viewerSubject)) return 'You';
+  const stored = String(label || '').trim();
+  const storedName = stored && bareSubject(stored) !== target ? stored : '';
+  const linked = target && target === bareSubject(who.targetSubject) ? String(who.targetLabel || '').trim() : '';
+  return storedName || linked || 'Another person';
+}
+
+/** The title of a project person's Control Card in the Card list and its header. */
+export function personControlCardTitle(
+  label: string | undefined,
+  targetSubject: string,
+  who: IssuerViewer = {},
+): string {
+  const holder = personControlCardHolder(label, targetSubject, who);
+  if (holder === 'You') return 'Your Control Card';
+  if (holder === 'Another person') return "Another person's Control Card";
+  return `${holder}'s Control Card`;
+}

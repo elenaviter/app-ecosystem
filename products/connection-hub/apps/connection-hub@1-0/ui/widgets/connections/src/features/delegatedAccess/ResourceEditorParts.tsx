@@ -144,6 +144,7 @@ export function ResourceDriftReview({
   onToggleOperation,
   onToggleClaim,
   onChooseInvocation,
+  notOffered,
 }: {
   resource: string;
   state?: ResourceDriftState;
@@ -159,7 +160,13 @@ export function ResourceDriftReview({
   onToggleOperation: (operation: string, grants: string[], on: boolean) => void;
   onToggleClaim: (claim: string, on: boolean) => void;
   onChooseInvocation: (operation: string, mode: InvocationMode) => void;
+  /** Operations this Card is not offered (a person's Control Card, W360): never listed as newly advertised. */
+  notOffered?: string[];
 }) {
+  if (notOffered?.length && state?.added_operations?.length) {
+    const hidden = new Set(notOffered);
+    state = { ...state, added_operations: state.added_operations.filter((operation) => !hidden.has(operation)) };
+  }
   if (!state || !driftNeedsReview(state)) return null;
   const changed = state.changed_operations || [];
   const removed = state.removed_operations || [];

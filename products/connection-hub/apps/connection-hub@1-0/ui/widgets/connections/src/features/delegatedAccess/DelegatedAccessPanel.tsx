@@ -159,7 +159,8 @@ import {
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import { projectPersonControlCoordinates } from './projectPersonControl';
-import { cardOwnerView, controlIssuerLabel, isPersonIssuer, readableCardLabel } from './cardLabels';
+import { notOfferedOnPersonCard, resourcesForPersonCard } from './personCardOperations';
+import { cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, readableCardLabel } from './cardLabels';
 import { detailedCardOffersEdit } from './cardActions';
 import {
   projectAgentCardFocus,
@@ -1055,7 +1056,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     focusedCard,
     focusedViewer,
     grantOptions,
-    resources,
+    resources: catalogResources,
     issuedToken,
     issuedHeader,
     issuedAccess,
@@ -1149,6 +1150,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Per-record EDIT state for granted agent rows: access_id being edited and
   // the checkbox set keyed `${resource}:${claim}`.
   const [editingAccessId, setEditingAccessId] = useState<string | null>(null);
+  // W360: while a project person's or invitation's Control Card is edited,
+  // the catalog it is offered leaves out what the service marks
+  // `person_card: false` (decided for a person by role alone).
+  const editingPersonControl = useMemo(() => {
+    if (!editingAccessId) return false;
+    const record = items.find((it) => it.access_id === editingAccessId)
+      || (focusedCard?.access_id === editingAccessId ? focusedCard : null);
+    return Boolean(record && projectPersonControlCoordinates(record));
+  }, [editingAccessId, focusedCard, items]);
+  const resources = useMemo(
+    () => (editingPersonControl ? resourcesForPersonCard(catalogResources) : catalogResources),
+    [catalogResources, editingPersonControl],
+  );
   // Policy chosen for an operation the editor ADDS to a card, keyed
   // `${resource}:${operation}`. It travels with that operation's grant in one
   // focused transaction (see invocationChoice.ts): set afterwards, the
@@ -1287,13 +1301,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     [grantOptions],
   );
   const secretSelectorOption = useMemo(
-    () => resources.find((item) => item.selector_type === 'kdcube_secret'),
-    [resources],
+    () => catalogResources.find((item) => item.selector_type === 'kdcube_secret'),
+    [catalogResources],
   );
   const createResources = useMemo(() => {
     const generated = Object.entries(createCatalogRows).flatMap(([resource, row]) => {
-      if (resources.some((item) => item.resource === resource)) return [];
-      const option = resources.find((item) => item.resource === row);
+      if (catalogResources.some((item) => item.resource === resource)) return [];
+      const option = catalogResources.find((item) => item.resource === row);
       if (!option) return [];
       return [{
         ...option,
@@ -1305,7 +1319,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     const templateRows = catalogTemplateRows(createCatalogRows);
     const assembled = [
-      ...resources.filter((item) => !templateRows.has(item.resource)),
+      ...catalogResources.filter((item) => !templateRows.has(item.resource)),
       ...generated,
     ];
     if (!oauthDraft || oauthDraft.catalog_scope.mode === 'full') return assembled;
@@ -1314,7 +1328,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       ...Object.keys(resourceGrants),
     ]);
     return assembled.filter((item) => allowed.has(item.resource));
-  }, [createCatalogRows, oauthDraft, resourceGrants, resources]);
+  }, [catalogResources, createCatalogRows, oauthDraft, resourceGrants]);
   const createSelectionIndex = useMemo(
     () => resourceSelectionIndex(createResources),
     [createResources],
@@ -4409,6 +4423,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <ResourceDriftReview
             resource={resource}
             state={item.catalog_drift?.resources?.[resource]}
+            notOffered={projectPersonControlCoordinates(item)
+              ? notOfferedOnPersonCard(
+                catalogRowFor(catalogResources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key),
+              )
+              : undefined}
             accepted={editAcceptedOperations[resource] || []}
             operationOptions={resourceOption?.operations || []}
             grantOptions={grantOptions}
@@ -4613,6 +4632,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       const who = parseAgentClientId(item.client_id);
       const agentLabel = who ? `${who.agent} · ${who.app}` : item.client_id;
       return correlatedCardLabel({ ...item, label: agentLabel });
+    }
+    // W360: a person's Control Card is named by the person, never by account id.
+    const personControl = projectPersonControlCoordinates(item);
+    if (personControl?.kind === 'person') {
+      return personControlCardTitle(item.label, personControl.targetSubject, issuerViewer);
     }
     return correlatedCardLabel({ ...item, label: readableCardLabel(item.label) });
   };
@@ -5159,10 +5183,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <CatalogDriftNotice drift={record.catalog_drift} />
           {record.source === 'control' ? (
             <div className="card-fields control-card-fields">
-              <Field label="Issued by">
+              <Field label={projectPersonControl?.kind === 'person' ? 'For' : 'Issued by'}>
                 <span className="control-card-issuer">
                   <b title={isPersonIssuer(record) ? record.issuer_ref : undefined}>
-                    {record.issuer_label || (record.issuer_ref ? controlIssuerLabel(record, issuerViewer) : 'Connected application')}
+                    {projectPersonControl?.kind === 'person'
+                      ? personControlCardHolder(record.issuer_label, projectPersonControl.targetSubject, issuerViewer)
+                      : record.issuer_label || (record.issuer_ref ? controlIssuerLabel(record, issuerViewer) : 'Connected application')}
                   </b>
                   {/* A person is named, never shown by raw id. */}
                   {record.issuer_ref && !isPersonIssuer(record) ? (
