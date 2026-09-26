@@ -188,8 +188,11 @@ exchanged as a change request against the integration ref.
   report. On GitHub a change request is a pull request. The board speaks of a
   change request so other hosting fits.
 - **Review happens on the change request:** its diff, its base, its
-  staleness. Mail may point at it and carries the verdict, but the change
-  request is the thing reviewed. A review that names a local path is not a
+  staleness. The change request is the thing reviewed, and the verdict also
+  goes to the author by board mail (the head, the verdict, the link), in the
+  same step as the review comment. Why: a verdict posted only as a review
+  comment reaches nobody on the board; on 2026-09-26 a request for one test sat
+  unseen on applications#165 for 1 h 45 min. A review that names a local path is not a
   review, because the path is bound to one machine and one user.
 - **The coordinator merges after approval.** Nobody merges their own change
   request. A merge advances the integration ref, from which runtimes release.

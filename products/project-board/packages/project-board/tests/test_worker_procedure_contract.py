@@ -104,7 +104,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.6"
+    assert package["revision"] == "2026.09.26.7"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1392,3 +1392,11 @@ def test_the_kdcube_profile_verifies_with_the_platform_attestations():
     assert "`git -C <kdcube checkout> status --porcelain --untracked-files=no` is empty (tracked changes only" in before
     # The hand checks it replaces are gone.
     assert "`dist/` inside the container carries the new source" not in words
+
+
+def test_a_review_verdict_reaches_the_author_by_board_mail():
+    # 2026-09-26: a verdict posted only as a review comment on applications#165
+    # reached nobody, and a one-test request sat unseen for 1 h 45 min.
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "the verdict also goes to the author by board mail (the head, the verdict, the link)" in collaboration
+    assert "Mail may point at it and carries the verdict" not in collaboration
