@@ -74,6 +74,8 @@ export interface DelegatedAccessOperationOption {
   grants?: string[];
   /** The group the service declares for this operation (W260). */
   group?: string;
+  /** False when the service decides this operation for a person by role alone (W360). */
+  person_card?: boolean;
 }
 
 /** One operation group a service declares, in display order (W260). */
@@ -86,6 +88,8 @@ export interface DelegatedAccessOperationGroup {
 export interface DelegatedAccessNamedServiceOperationOption {
   /** The group the service declares for this operation (W260). */
   group?: string;
+  /** False when the service decides this operation for a person by role alone (W360). */
+  person_card?: boolean;
   label?: string;
   description?: string;
   authority_id?: string;
