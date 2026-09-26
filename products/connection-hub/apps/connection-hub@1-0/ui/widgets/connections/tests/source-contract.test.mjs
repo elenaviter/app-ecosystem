@@ -300,7 +300,7 @@ test('an ungranted operation offers one atomic once-or-always grant, chosen besi
   // the focused grant with its mode).
   assert.match(panel, /<InvocationPolicyControl\n\s*operation=\{operation\.name\}/)
   assert.match(panel, /\) : selected \? \(\n(?:.*\n){3}\s*<OperationInvocationChoice/)
-  assert.match(panel, /disabled=\{busy \|\| editSaveProblems\(item\)\.length > 0\}/)
+  assert.match(panel, /disabled=\{busy \|\| editSaveProblems\(item\)\.length > 0 \|\| Boolean\(cardReadOnlyReason\(item, focusedViewer\)\)\}/)
   assert.match(panel, /Object\.entries\(splits\)\.map\(\(\[resource, split\]\) => \[resource, split\.kept\]\)/)
   assert.match(panel, /changeId: editChangeId\(item\.access_id, operation, randomNonce\(\)\)/)
 
@@ -669,13 +669,16 @@ test('linked Card editing keeps both authority views and dialogs use one governe
   assert.match(css, /\.rail-row__title \{[\s\S]*flex-wrap: wrap;[\s\S]*overflow-wrap: anywhere;/)
 })
 
-test('W260: a project-held person Control Card is read only here, with the project editor named', () => {
+test('W260: a Card read through a project says so up front, and only its editors save', () => {
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
-  // No Edit button, and a save is refused with the reason, for every viewer.
-  assert.match(panel, /projectPersonControlCoordinates\(item\) \? null : \(/)
-  assert.match(panel, /if \(projectPersonControlCoordinates\(item\)\) \{\n\s+setEditActionError\(projectPersonControlNotice\(focusedViewer\)\);\n\s+return;/)
-  // The notice links a project admin to Team > People.
-  assert.match(panel, /focusedViewer\?\.edit_in_project && focusedCard\.manage_url/)
+  // No Edit button and a disabled Save for a viewer who only reads; a save is
+  // refused with the reason before anything is written.
+  assert.match(panel, /cardReadOnlyReason\(item, focusedViewer\) \? null : \(/)
+  assert.match(panel, /const readOnlyReason = cardReadOnlyReason\(item, focusedViewer\);\n\s+if \(readOnlyReason\) \{\n\s+setEditActionError\(readOnlyReason\);\n\s+return;/)
+  assert.equal((panel.match(/Boolean\(cardReadOnlyReason\((item|record), focusedViewer\)\)/g) || []).length, 3)
+  // The notice shows on the focused Card; nobody is sent to the board's editor.
+  assert.match(panel, /accessCardFocusState === 'resolved' && cardReadOnlyReason\(focusedCard, focusedViewer\)/)
+  assert.doesNotMatch(panel, /Open Team &gt; People/)
   const slice = source('src/features/delegatedAccess/delegatedAccessSlice.ts')
   assert.match(slice, /state\.focusedViewer = action\.payload\.viewer;/)
 })

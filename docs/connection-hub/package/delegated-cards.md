@@ -571,6 +571,31 @@ There are also two different operation layers:
 | Outer surface operation | `resources[].tools.<name>` | `named_services_schema` | The list response calls these `resources[].operations`; the card stores the exact resource -> operation selection in `resource_operations` and returns its flat `operations` union for compatibility. They are API/MCP entry operations at the protected resource. The parser also accepts `operations`, `allowed_tools`, and `actions` as input aliases, but `tools` is the canonical descriptor spelling. |
 | Inner named-service operation | `resources[].named_services.namespaces.<namespace>.tools.<tool>.operation`, or the nested `<tool>.operations.<operation>` map | namespace `linkedin`, operation `object.schema` or `object.action.publish_post` | The exact user selection is stored in `named_service_operations`; the derived bridge policy is stored internally in `named_services`. These are the ontologic operations inside the named-services door. |
 
+**Operation groups.** A service declares how a Card editor groups its
+operations, beside the operations themselves: `group: <key>` on a
+`resources[].tools.<name>` entry, on a named-service tool, or on a nested
+named-service operation; and `operation_groups: {<key>: {label, order}}` (a bare
+string is the label) on the resource row or on the namespace. Connection Hub
+publishes both (`resources[].operations[].group`, `resources[].operation_groups`
+sorted by `order`, the same inside `named_services`) and its Card editor shows
+the operations under their groups in that order, keeping catalog order inside
+a group; an operation with no group goes under "Other", and a service that
+declares none keeps its plain list. Grouping is presentation only: `group` and
+`operation_groups` are left out of every descriptor digest, so regrouping never
+raises catalog drift or suspends a selection. Every client, the service's own
+included, gets the grouped view by declaring it, not by building one.
+
+```yaml
+resources:
+  - resource: problem_board
+    operation_groups:
+      review: {label: Review, order: 10}
+      work: {label: Work, order: 20}
+    tools:
+      review.approve: {label: Approve a review, grants: [work:review], group: review}
+      work.report: {label: Report work, grants: [work:observe], group: work}
+```
+
 The word `capabilities` can also occur as a named-service tool key, for
 example `tools.capabilities.operation: provider.capabilities`. That is merely
 an inner callable operation. It is unrelated to the top-level

@@ -68,7 +68,7 @@ test('the slice and the panel use the project operations', () => {
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, /dispatch\(loadProjectAgentCard\(target\)\)/)
   assert.match(panel, /projectAgentCard: projectAgentCard \|\| undefined/)
-  assert.match(panel, /if \(projectAgentCardReadOnly\(item\)\)/)
+  assert.match(source('src/features/delegatedAccess/cardEditability.ts'), /if \(projectAgentCardReadOnly\(item\)\) return projectAgentCardReadOnlyMessage\(item\);/)
 })
 
 // W319 slice 2: an agent its owner shared with the person opens without a

@@ -72,9 +72,20 @@ export interface DelegatedAccessOperationOption {
   label?: string;
   description?: string;
   grants?: string[];
+  /** The group the service declares for this operation (W260). */
+  group?: string;
+}
+
+/** One operation group a service declares, in display order (W260). */
+export interface DelegatedAccessOperationGroup {
+  group: string;
+  label?: string;
+  order?: number;
 }
 
 export interface DelegatedAccessNamedServiceOperationOption {
+  /** The group the service declares for this operation (W260). */
+  group?: string;
   label?: string;
   description?: string;
   authority_id?: string;
@@ -98,6 +109,7 @@ export interface DelegatedAccessConnectedAccountRequirement {
 
 export interface DelegatedAccessNamedServiceNamespaceOption {
   namespace: string;
+  operation_groups?: DelegatedAccessOperationGroup[];
   label?: string;
   description?: string;
   authority_id?: string;
@@ -107,6 +119,7 @@ export interface DelegatedAccessNamedServiceNamespaceOption {
 
 export interface DelegatedAccessResourceOption {
   resource: string;
+  operation_groups?: DelegatedAccessOperationGroup[];
   label?: string;
   kind?: string;
   provider_id?: string;
@@ -455,12 +468,11 @@ export interface DelegatedAccessCreateResult {
   };
 }
 
-/** W260: what the viewer may do with a project-held person Control Card. It is
- *  never edited here: the project's own editor (Team > People) changes it. */
+/** W260: what the viewer may do with a project-held person Control Card.
+ *  Connection Hub is its only editor: a project admin changes it here, anyone
+ *  else reads it. */
 export interface ProjectPersonControlViewer {
   can_edit: boolean;
-  /** A project admin: the Card is edited in the project's editor. */
-  edit_in_project?: boolean;
   reason?: string;
 }
 

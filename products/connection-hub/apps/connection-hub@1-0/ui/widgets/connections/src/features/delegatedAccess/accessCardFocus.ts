@@ -88,11 +88,11 @@ export function unavailableAccessCardMessage(focus: AccessCardFocus, reason = ''
   return `${base}${why}${hint}`;
 }
 
-/** The notice on a project-held person Control Card: read only here (W260). */
+/** The notice on a project-held person Control Card this viewer only reads (W260). */
 export function projectPersonControlNotice(
-  viewer: { edit_in_project?: boolean } | undefined,
+  viewer: { can_edit?: boolean } | undefined,
 ): string {
-  return viewer?.edit_in_project
-    ? 'This Control Card is decided in the project. Change it in the project\'s Team > People.'
-    : 'This Control Card is decided by an admin of the project. You can read it here; your own Card (My Card) is what you change.';
+  return viewer?.can_edit
+    ? ''
+    : 'A project admin decides this Control Card. You can read it here; your own Card (My Card) is what you change.';
 }

@@ -153,7 +153,6 @@ import {
 } from './oauthConsent';
 import {
   accessCardFocusRequest,
-  projectPersonControlNotice,
   findAccessCardFocus,
   matchesAccessCardFocus,
   unavailableAccessCardMessage,
@@ -161,13 +160,10 @@ import {
 import { projectPersonControlCoordinates } from './projectPersonControl';
 import {
   projectAgentCardFocus,
-  projectAgentCardReadOnly,
-  projectAgentCardReadOnlyMessage,
   projectAgentCardUpdateTarget,
 } from './projectAgentCard';
+import { cardReadOnlyReason } from './cardEditability';
 import {
-  PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE,
-  projectControlCardReadOnly,
   projectControlCardUpdateTarget,
 } from './projectControlCard';
 import {
@@ -183,6 +179,7 @@ import {
   type CompositionRowState,
   type ControlCompositionMode,
 } from './controlCardPreview';
+import { renderOperationGroups } from './OperationGroups';
 
 interface EffectiveCompositionView {
   mode: ControlCompositionMode;
@@ -1830,9 +1827,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Editing is about the grants, expiry about the credential: one never
   // blocks the other.
   const editButton = (item: DelegatedAccessRecord, compact = false) => (
-    // W260: a project-held person Control Card is changed only in the
-    // project's editor (Team > People); here it is read only for everyone.
-    projectPersonControlCoordinates(item) ? null : (
+    // W260: a Card this viewer only reads (through a project) offers no Edit.
+    cardReadOnlyReason(item, focusedViewer) ? null : (
       <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
         {compact ? 'Edit' : <>Edit</>}
       </button>
@@ -3038,8 +3034,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
-    if (projectPersonControlCoordinates(item)) {
-      setEditActionError(projectPersonControlNotice(focusedViewer));
+    const readOnlyReason = cardReadOnlyReason(item, focusedViewer);
+    if (readOnlyReason) {
+      setEditActionError(readOnlyReason);
       return;
     }
     const initialProblems = editSaveProblems(item);
@@ -3183,14 +3180,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
     let updated;
     const projectPersonControl = projectPersonControlCoordinates(item);
-    if (projectAgentCardReadOnly(item)) {
-      setEditActionError(projectAgentCardReadOnlyMessage(item));
-      return;
-    }
-    if (projectControlCardReadOnly(item)) {
-      setEditActionError(PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE);
-      return;
-    }
     const projectAgentCard = projectAgentCardUpdateTarget(item);
     const projectControlCard = projectControlCardUpdateTarget(item);
     try {
@@ -3535,7 +3524,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       </span>
                     </summary>
                     <div className="edit-section__body resource-grants resource-operations">
-                      {item.operations.map((operation) => {
+                      {renderOperationGroups(item.operations, (operation) => operation.group, item.operation_groups, (operation) => {
                         const selected = (resourceOperations[item.resource] || []).includes(operation.name);
                         return (
                           <div
@@ -4269,7 +4258,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               </span>
             </summary>
             <div className="edit-section__body resource-grants resource-operations">
-              {resourceOption.operations.map((operation) => {
+              {renderOperationGroups(resourceOption.operations, (operation) => operation.group, resourceOption.operation_groups, (operation) => {
                 const selected = (editResourceOperations[resource] || []).includes(operation.name);
                 const alreadyGranted = editGrantedOperations(item, resource).includes(operation.name);
                 const policy = invocationPolicyFor(item, resource, operation.name);
@@ -5309,9 +5298,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               type="button"
               disabled={busy
                 || problems.length > 0
+                || Boolean(cardReadOnlyReason(record, focusedViewer))
                 || (residentCapabilityCard && !residentCapabilityAuthority)
                 || (descriptorCapabilityControl && !descriptorCapabilityAuthority)}
-              title={problemText || undefined}
+              title={cardReadOnlyReason(record, focusedViewer) || problemText || undefined}
               onClick={() => saveEdit(record)}
             >
               Save
@@ -5451,8 +5441,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                   <button
       className="btn"
       type="button"
-      disabled={busy || editSaveProblems(item).length > 0}
-      title={editSaveProblems(item)
+      disabled={busy || editSaveProblems(item).length > 0 || Boolean(cardReadOnlyReason(item, focusedViewer))}
+      title={cardReadOnlyReason(item, focusedViewer) || editSaveProblems(item)
         .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
         .join(' ') || undefined}
       onClick={() => saveEdit(item)}
@@ -5665,8 +5655,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           <button
       className="btn"
       type="button"
-      disabled={busy || editSaveProblems(item).length > 0}
-      title={editSaveProblems(item)
+      disabled={busy || editSaveProblems(item).length > 0 || Boolean(cardReadOnlyReason(item, focusedViewer))}
+      title={cardReadOnlyReason(item, focusedViewer) || editSaveProblems(item)
         .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
         .join(' ') || undefined}
       onClick={() => saveEdit(item)}
@@ -5708,12 +5698,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           {unavailableAccessCardMessage(accessCardFocus, delegatedAccessError)}
         </div>
       ) : null}
-      {focusedCard && projectPersonControlCoordinates(focusedCard) && accessCardFocusState === 'resolved' ? (
+      {focusedCard && accessCardFocusState === 'resolved' && cardReadOnlyReason(focusedCard, focusedViewer) ? (
+        // Said up front: this viewer reads this Card and cannot change it.
         <div className="notice project-person-control-readonly" role="status">
-          {projectPersonControlNotice(focusedViewer)}{' '}
-          {focusedViewer?.edit_in_project && focusedCard.manage_url ? (
-            <a href={focusedCard.manage_url} target="_top" rel="noopener">Open Team &gt; People</a>
-          ) : null}
+          {cardReadOnlyReason(focusedCard, focusedViewer)}
         </div>
       ) : null}
 
