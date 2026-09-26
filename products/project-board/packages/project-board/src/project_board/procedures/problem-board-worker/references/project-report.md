@@ -1,5 +1,5 @@
 ---
-id: applications.playground.problem-board.skill-reference.project-report
+id: project-board.skill-reference.project-report
 title: Answer A Project Report Request
 summary: The coordinator's procedure for a project.report request: a capped delta the service composes, previewed, published, and announced only on the service's receipt.
 tags: [procedure, problem-board, coordinator, project-report]
@@ -26,9 +26,19 @@ your machine. You do not count items, diff statuses, or read the plan to answer.
 | `mentioned` | you named it in your summary |
 | `dependency_of_moved` | an item that moved depends on it, and it is not done |
 
-**What you write.** The summary: prose for a person who was not in the room,
-in the shape `docs/project-status-reports.md` describes under How a report
-reads. Name an item by its key (`W42`) and it joins the report as `mentioned`
+**What you write.** The summary, for a person who was not in the room and
+reads it from a phone in under a minute:
+
+- bullets, one fact per line, the fact first; tables for counts and states;
+  a short ASCII diagram for what blocks what;
+- refs where they are checkable (commit, item key, report ref), and the thing
+  that matters in bold;
+- every line names its subjects (who acted, on what, with what result), never
+  "it" or "the fix";
+- what is not known in its own section, and at the end, numbered, what only
+  the reader can decide or do.
+
+Name an item by its key (`W42`) and it joins the report as `mentioned`
 even if it did not move, which is how you put a quiet problem in front of the
 operator. Add `--not-seen` for anything you could not see or reach, because a
 partial answer that does not say so reads as a complete one.

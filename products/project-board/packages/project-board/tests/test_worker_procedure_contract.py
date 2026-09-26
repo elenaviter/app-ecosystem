@@ -105,7 +105,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.12"
+    assert package["revision"] == "2026.09.26.13"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -617,17 +617,13 @@ def test_collaboration_reference_carries_the_round_two_gate_clauses() -> None:
     assert "settled by installing it into a fresh environment at the named commit" in collaboration
     assert "checked line by line against the item's acceptance text" in collaboration
     assert "the report is a claim and the clone is the evidence" in collaboration
-    assert "a journal entry saying work landed is not evidence that it landed" in collaboration
     assert "dependency preflight in `procedures/testing.md`" in collaboration
-    for finding in (
-        "finding thirteen",
-        "finding fourteen",
-        "finding fifteen",
-        "finding sixteen",
-        "finding seventeen",
-        "finding eighteen",
-    ):
-        assert finding in collaboration, finding
+    # The round-by-round log moved to the project's journal (W340 P4a): it named
+    # the project's hosts, agents and change requests. The rules keep what each
+    # finding changed; the page says where the log lives.
+    assert "The entries go in the project's journal, one per finding, not in this page" in collaboration
+    assert "which a public procedure never does (Rule 9)" in collaboration
+    assert "finding sixteen" in collaboration and "finding eighteen" in collaboration
 
 
 # The dependency preflight and the application's testing procedure live with the
@@ -811,8 +807,6 @@ def test_revision_2026_09_23_3_carries_the_brief_rule_and_the_w265_lines() -> No
     coordinator = _words(_read("references/coordinator.md"))
     assert "Research Is Coordinated Progressively" in coordinator
     assert "A second investigation starts only when the coordinator or operator names a specific reason" in coordinator
-    collaboration = _words(_read("references/collaboration.md"))
-    assert "finding nineteen" in collaboration and "finding twenty" in collaboration
     # W265: the reconnecting channel's new messages and the receipt rule for a send.
     delivery = _words(_read("references/delivery-and-recovery.md"))
     assert "`work_send_channel_reconnecting`" in delivery
@@ -1172,7 +1166,7 @@ def test_the_coordinator_role_is_handed_over_with_its_note_and_addressed_as_a_ro
     assert "pb coordinate project.coordinator.get --object-ref <project-ref>" in coordinator
     assert "marked `redirected_from`" in coordinator
     assert "presses **Make worker** on you" in coordinator
-    assert "on this team that is an agent on dev-main" in coordinator
+    assert "A successor that must run a runtime window has to be able to deploy: an agent on the host that runs the runtime" in coordinator
     collaboration = _words(_read("references/collaboration.md"))
     assert "Rule 8 covers work items. The coordinator role itself moves by" in collaboration
     skill = _words(_read("SKILL.md"))

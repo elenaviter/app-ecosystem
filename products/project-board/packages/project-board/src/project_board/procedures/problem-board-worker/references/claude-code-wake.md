@@ -1,5 +1,5 @@
 ---
-id: applications.playground.problem-board.skill-reference.claude-code-wake
+id: project-board.skill-reference.claude-code-wake
 title: Claude Code Wake Path
 summary: How a Claude Code worker stays reachable: the watch attachment and its cap, the guard that replaces it, the board-side fields that show a stopped watch, and what a network outage does to both.
 tags: [procedure, problem-board, worker, claude-code, wake]
@@ -70,7 +70,7 @@ watches, leaving none. So the command drops every match whose executable is a
 shell (`ps -o comm=`), and only watch processes compete for the newest. The
 `ps` that lists them is dropped too: on Linux, `pgrep` runs in a child that
 becomes that `ps`, still carrying the pattern and younger than every watch,
-which on 2026-09-24 kept `ps` and ended claude-ops's watches again.
+which on 2026-09-24 kept `ps` and ended an agent's own watches again.
 
 Guard prompt, with `<id>` this session's runtime session id:
 

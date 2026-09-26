@@ -105,7 +105,7 @@ Every `pb` command accepts `--format brief` anywhere on the line, and
 `PB_FORMAT=brief` makes it the session default: `export PB_FORMAT=brief` once
 before the first command, or the flag on every command, settle and send
 included. Why: a JSON envelope you print lands in your context whole, and a
-session that reads full envelopes compacts every few turns (codex-main,
+session that reads full envelopes compacts every few turns (a Codex agent,
 2026-09-23). Brief output is complete text: `OK` or `ERROR <code>` first, every
 ref, id and key whole on its own line, bodies in full, and each follow-up
 command (`lease-read`, `settle`, and for a question or request the correlated

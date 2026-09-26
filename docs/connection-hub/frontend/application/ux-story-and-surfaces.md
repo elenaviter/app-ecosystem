@@ -129,9 +129,9 @@ read every card.
  ACCESS     canvas:read  canvas:write  conversations:read  +35 more
  OPERATIONS ▸ 11 operations
  SERVICES   ▸ 12 services
- ACCOUNTS   Google      lena@…    docs:comment  docs:read  docs:write  +7 more
-            iCloud Mail elena@…   email:read  email:send
-            Slack       elena @ … slack:assistant:search  slack:channels  slack:files:read  +4 more
+ ACCOUNTS   Google      alex@…    docs:comment  docs:read  docs:write  +7 more
+            iCloud Mail alex@…    email:read  email:send
+            Slack       alex @ …  slack:assistant:search  slack:channels  slack:files:read  +4 more
  APPROVED   9/10/2026, 6:31 PM · expires 3/9/2027, 5:31 PM · not renewed since consent
  ▸ Client metadata 7
 ```

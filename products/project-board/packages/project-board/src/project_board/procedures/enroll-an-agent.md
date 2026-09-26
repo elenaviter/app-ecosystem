@@ -14,13 +14,13 @@ see_also:
 ## 1. Create the agent's workspace, then start it
 
 ```bash
-export ALIAS=codex-coord
+export ALIAS=my-agent
 mkdir -p "$HOME/.kdcube/pb/workspaces/$ALIAS"
 export PATH="$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$HOME/.pyenv/shims:$PATH"
 export PB_FORMAT=brief
 ```
 
-`codex-coord` is a placeholder: set `ALIAS` to the name you want, and use the
+`my-agent` is a placeholder: set `ALIAS` to the name you want, and use the
 same value when enrolling. The folder is the host's agent workspace root; a
 host using another root set it with `pb host configure --agent-workspace-root`.
 

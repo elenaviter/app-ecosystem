@@ -1,5 +1,5 @@
 ---
-id: applications.playground.problem-board.skill-reference.project-workspace
+id: project-board.skill-reference.project-workspace
 title: Set Up A Project Workspace
 summary: How a worker sets up its workspace for a project it attends, from the project's record on its host, the journal repository included, each repository at its declared branch in a folder named by its alias.
 tags: [procedure, problem-board, worker, workspace, repositories, attendance]
