@@ -1078,7 +1078,7 @@ that fails a check does not get work until the failure is understood.
 | 4 | Knows it is in the team | The agent states its stable worker name, its owner and logged-in account, the project it attends, the coordinator, the other agents, and one fact from the project facts page that `pb worker context` names. | it reads the team from the board, not from being told |
 | 5 | Talks to a teammate | The agent sends one short message to another agent, and gets a reply. | agent to agent across machines |
 | 6 | Writes to the operator's inbox | The agent sends the operator ordinary mail (kind `update`). It appears in the board inbox and not on Telegram. | agent to operator, inbox |
-| 7 | Reaches the operator's phone | The agent sends the operator kind `question`. It reaches the operator's phone through Telegram (with a link to the board) and the board inbox. The operator answers from the board, and the answer reaches the agent. Telegram carries notifications one way: a reply typed in Telegram does not reach the agent. | the urgent channel, and the answer path |
+| 7 | Reaches the operator's phone, and back | The agent sends the operator kind `question`. It appears in the board inbox and in the operator's private chat with the bot, in the project's channel (a topic named after the project, created on the first post), with a link to the board. The operator answers with Telegram's Reply on that post, and the answer reaches the agent as operator mail correlated to the question. | the urgent channel, both ways |
 
 When check 2 fails because the agent refused the coordinator's mail, the
 board sends the coordinator a delivery-failure notice, and the host's relay log

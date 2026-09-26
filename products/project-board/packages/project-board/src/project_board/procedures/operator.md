@@ -543,18 +543,31 @@ marks it read; the reply box under it sends one `reply` control to that
 worker with the original message's correlation id, so the worker sees the
 answer in its next inbox check as a reply to its own question.
 
-Questions, blocks, and decisions also reach your linked messaging channel.
+Questions, blocks, and decisions also reach Telegram. Every owner and admin
+of the project gets them in their own private chat with the bot, in a
+**project channel**: a topic named after the project, created on the first
+post. There you can answer:
+
+- **Reply** to a post (Telegram's Reply): the answer reaches the agent that
+  wrote it, as operator mail correlated to the original.
+- **Write directly** in a project channel: the message reaches the project's
+  coordinator.
+- **Write outside any channel**: it reaches no agent, and the bot lists your
+  project channels.
+
 Two conditions: you linked your Telegram account to your KDCube account once
 through the deployment bot's Mini App (the Connection Hub stores that link),
-and the Problem Board app declares one enabled `telegram` integration row in
-its descriptor whose `secret_refs.bot_token` points at the deployment bot's
-Connection Hub authenticator secret, the same row shape the KDCube services
-app carries. Without the row the inbox message shows `channel:
-not_configured`; without the link, `not_connected`. Set the optional
-`board_url` bundle property to the deployment's public origin. Each channel
-notification then links to the public Problem Board site with the stable
-worker address and exact inbox message ref; opening it selects that worker's
-conversation and focuses the message.
+and the Problem Board app declares its `telegram` integration row with the
+bot's `bot_token` and `webhook_secret` refs and names it in
+`telegram.integration_id`. The board owns the bot's webhook; the app's
+`docs/telegram.md` has the deployment steps. Only private chats are
+accepted, and only from a linked person with a role on the project; anything
+else is refused and logged. Without the row the inbox message shows
+`channel: not_configured`; the detail names every owner or admin who has not
+linked Telegram. Set the optional `board_url` bundle property to the
+deployment's public origin. Each post then links to the public Problem Board
+site with the stable worker address and exact inbox message ref; opening it
+selects that worker's conversation and focuses the message.
 
 Every message you send a worker is part of one conversation with that worker,
 whatever its kind. The compact composer sits under the thread in the Inbox
