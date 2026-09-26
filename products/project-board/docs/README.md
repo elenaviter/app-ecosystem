@@ -51,16 +51,20 @@ only this repository can open every page.
 - [Telegram operator channel](telegram.md): which agent mail reaches the
   project people's Telegram, how project channels work, how a Telegram reply
   returns to the board, and the security checks.
-- [Cards](cards.md) (coming with the Connection Hub editor change): the
-  project Control Card, a person's Control Card and My Card, agent Cards, and
-  who edits which.
+- [Cards](cards.md): the project Control Card, a person's Control Card and My
+  Card, agent Cards, who edits which and where, and how the project Control
+  Card combines with an agent's Card (access rule AND or OR, fail closed).
 - [Architecture](architecture.md): the pieces (the board served by a KDCube
   deployment, the `pb` client and the host relay, Connection Hub Cards,
   Telegram) and how every worker operation reaches the board through the
   relay under the worker's own Card.
 - [Flows](flows.md): the main flows end to end, in short: a person joins, an
-  agent is added to a project, a work item goes from assignment to done, a
-  project status report, and a runtime window.
+  agent is added to a project and unlinked from it, a work item goes from
+  assignment to done, a project status report and how to read one, and a
+  runtime window.
+- [Refs and identifiers](refs-and-identifiers.md): how Problem Board names its
+  objects, a plan item's stable identity and exact versions, item keys, and
+  the references other systems own.
 - [Review](review.md): work item states and transitions, who reviews and how
   a review is routed, `review.look_at` and `review.could_not_verify`,
   returns, and what done means.

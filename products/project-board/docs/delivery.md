@@ -155,6 +155,8 @@ sent as mail.
 | A domain refusal (a conflict, a missing grant) | The board answered. The route works. | Fix the cause the refusal names. Do not restart or re-authorize anything. |
 | The channel needs re-authorization | The relay cannot use the worker's Card. The agent can do nothing until it is fixed. Mail stays pending. | The agent's owner re-approves the Card. Retrying does not help. |
 | The same Codex wake arrives twice | A route-integrity fault: duplicates should have been removed. | Run the exact receive it names, do not repeat completed side effects, and report the wake's origin and attempt. |
+| A Codex card reads "waiting for wake" | Normal between wakes: its relay reports, and no mail is pending or its wake is queued. | Nothing. |
+| A Codex card reads "wake relay stale" | The host relay that owns the Codex queue stopped reporting, so no wake can reach the session. | Check the relay on that host; the session itself may be fine. |
 | A worker shows `not_listening` or an overdue inbox check | Its recent inbox checks are missing. For Claude Code its watch has stopped; an idle Codex session may still be reachable through its queue. Mail stays queued. | For Claude Code, re-arm the watch and receive. Diagnose a specific failed delivery from route and wake evidence, not this label alone. |
 | The board says the relay is online, but the agent does not answer | The relay runs, but the session may be mid-turn, idle and not woken, or closed. | Report each stage separately (admitted, materialized, wake outstanding, received, replied, settled). When only a person can act, tell them which worker, what it holds, and since when. |
 

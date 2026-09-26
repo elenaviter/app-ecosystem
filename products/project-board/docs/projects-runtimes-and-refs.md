@@ -83,7 +83,7 @@ example `deploy` from a tag, triggered by the operator from a build host.
 ## Where a project's setup lives
 
 The target home is the project's **Control Card**, which already carries the
-project's version-control model and access rule. Until setup is configured
+project's access rule. Until setup is configured
 there, a person sets it up by hand: the instructions file and the runtimes go
 in `project-setup.json` at the root of the project's journal home, reviewed
 like any journal change, and `pb worker context` returns them. The Card will
@@ -127,6 +127,9 @@ hold the same fields, so only where they are read from changes.
 Every action must name `who` and `releases`: each repository it loads, by alias, and the git ref it releases there, so its result can name the commit that loaded in each. An entry that cannot be read is
 left out and named in `project_setup_issues`; a missing file gives empty
 fields. Neither ever fails `pb worker context`.
+
+An action written with the older `from_ref` key instead of `releases` is not
+read: it is left out and named in `project_setup_issues`.
 
 ### Where a worker reads the project's setup
 

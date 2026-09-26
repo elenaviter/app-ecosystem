@@ -45,7 +45,7 @@ How a call reaches the board with the caller's Card is in
 | --- | --- | --- |
 | **worker** | a coding-agent session doing assigned work | its own caller Card |
 | **coordinator** | an agent session that routes, reviews and closes work | its own caller Card |
-| **operator** | a person who owns or operates the project | the person's Control Card for the project, which the board keeps for the signed-in person |
+| **operator** | a person who owns or operates the project | the person's Control Card for the project, held and edited in Connection Hub; the board only reads it |
 
 The **project Control Card** is the project's ceiling. A caller Card linked to
 it can use only what both allow (the AND/OR rule is on the Control Card). For
@@ -100,6 +100,27 @@ rest of `work:coordinate` is an open question.
   permissions** chips. An operation works only when the Card holds both its
   service permission and the operation itself (the **Tools**).
 
+## Rules no Card changes
+
+Almost every refusal is about the Card: the caller's Card lacks the operation
+(`work_worker_operation_not_granted`, or `work_worker_operation_withheld_by_control_card`
+when the project's Control Card withholds it), and the Card's owner can add it.
+A few refusals are **rules about who someone is**. No Card holds them and no
+consent changes them, and each refusal says so, so nobody waits for a
+permission that cannot be granted:
+
+| Rule | Refusal | Who can act instead |
+| --- | --- | --- |
+| No one accepts their own work. | `work_review_self_forbidden` | Another qualified reviewer. |
+| An agent belongs to the person who approved it. Someone else's agent is linked, unlinked or managed only as that person allows. | `work_worker_not_owned` ("a rule, not a missing permission") | The agent's owner, or a project admin the owner shared it with. |
+| Only a person moves the coordinator role, even when an agent's Card holds every operation. | `work_human_operator_required` | The project owner or a project admin, signed in. |
+| Ownership of a project moves only by transfer, and only its current owner transfers it. | `work_project_owner_role_fixed` | The current owner. |
+
+Role rules name the role that is missing instead (for example
+`work_project_role_required`, `work_control_card_admin_only`,
+`work_shared_agent_link_admin_only`, `work_project_people_sole_admin`); a
+project admin can change who holds that role.
+
 ## Operations
 
 An operation in this table is available to an agent only when its **Card**
@@ -112,7 +133,7 @@ open assignment was refused `plan.note.append`. In both cases the row said yes
 and the Card did not, which is why a refusal is read against the Card and not
 against this table.
 
-An agent's Card is also capped by its project's **Control Card** (AND): an
+An agent's Card is also capped by its project's **Control Card** (AND, the default access rule; see [Cards](cards.md#the-project-control-card-and-an-agents-card)): an
 operation the project Control Card does not include is refused with
 `work_worker_operation_withheld_by_control_card`, which names that Control
 Card, whatever the agent's own Card holds. Re-consent does not help. A project
@@ -156,7 +177,7 @@ at consent", which sent the team to the catalog.
 | `project.plan.embedding_status` | `work:observe` | no | optional | optional | Read which plan items have missing or stale embeddings without model use or writes. |  |
 | `project.control.get` | `work:observe` | yes | yes | yes | Read the project's linked Connection Hub Control Card, catalog state, project properties, and participant links. |  |
 | `project.control.initialize` | `work:coordinate` | no | optional | yes | Create the project's credentialless Connection Hub Card and attach it to current participants. | One-time project setup. A person creates it as a project admin, by role; see [Cards](cards.md). |
-| `project.control.update` | `work:coordinate` | no | optional | yes | Update the project's version-control property on its current Control Card revision. | A person edits it as a project admin, by role; see [Cards](cards.md). Each edit is in People History with who made it. |
+| `project.control.update` | `work:coordinate` | no | optional | yes | Change the project Control Card's access rule (`composition_mode`: `and` or `or`) on its current revision (`expected_revision`). An optional `properties` object is still validated but nothing reads it, and the board no longer shows it. | A person edits it as a project admin, by role; see [Cards](cards.md). Each edit is in People History with who made it. |
 | `journal.view.request` | `work:observe` | yes | yes | yes | Ask a linked local relay for one expiring journal catalog page or a complete Markdown entry. |  |
 | `journal.view.close` | `work:observe` | yes | yes | yes | Erase the requesting user's temporary journal snapshot. |  |
 | `project.link_worker` | `work:coordinate` | no | yes | yes | Link an idle published worker to this project. | When the project has no Control Card yet, linking its first coordinator creates it, so a person must be a project admin. The Control Card attaches through the project when the caller did not create it (see [Cards](cards.md)). |
@@ -179,7 +200,7 @@ at consent", which sent the team to the catalog.
 | `assignment.return` | `work:coordinate` | no | yes | yes | Release the active assignment of stalled work with the owner's reason. The item keeps its status. | Status is kept. |
 | `assignment.list` | `work:relay` | yes | yes | no | Page assignments owned by this worker in one attended project. | Needs `work:relay`, which an operator does not hold. The board shows the operator assignments another way. |
 | `workspace.shared_write.publish` | `work:relay` | yes | yes | no | Publish or replace this worker's expiring shared-workspace status. | How a worker announces which shared files or runtime it is touching. |
-| `workspace.shared_write.list` | `work:relay` | yes | yes | no | Read every current shared-workspace write status in the project. | Needs `work:relay`, which an operator does not hold. |
+| `workspace.shared_write.list` | `work:relay` | yes | yes | yes (list only) | Read every current shared-workspace write status in the project. | An agent needs `work:relay` on its Card and must attend the project. Any signed-in person on the project, members included, sees the same list on the board; only an agent publishes or clears its own entry. |
 | `workspace.shared_write.clear` | `work:relay` | yes | yes | no | Remove this worker's shared-workspace write status. |  |
 | `worker.publish` | `work:relay` | yes | yes | no | Publish this coding-agent session and its logical host identity. |  |
 | `worker.heartbeat` | `work:relay` | yes | yes | no | Refresh worker presence and read its current project attendance. |  |

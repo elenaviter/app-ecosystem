@@ -85,6 +85,42 @@ Unlinking ends only the attendance; the agent's conversation and history
 stay. See [Add a machine for your agents](add-a-machine.md#6-add-the-agents-to-your-project)
 and [The coordinator role](coordinator.md).
 
+**Who adds an agent.** Its owner, when they have any role on the project, or a
+project admin the owner shared the agent with (view or edit). A member who was
+shared an agent cannot add it (`work_shared_agent_link_admin_only`); an agent
+neither yours nor shared with you is refused as `work_worker_not_owned`, and a
+share that was stopped as `work_worker_share_revoked`. The first agent linked
+to a project creates its Control Card, which needs a project admin.
+
+## An agent is unlinked
+
+```text
+owner or project admin presses Remove from this project
+  -> attendance ends first: the project's undelivered mail to it is withdrawn
+  -> then the project's Control Card comes off the agent's Card
+  -> the agent is told, and stays on the Project Card as "Unlinked"
+```
+
+1. **Who.** The agent's owner unlinks their own agent, even as a plain member
+   of the project; a project admin unlinks any agent.
+2. **Order.** Attendance stops before the Card changes, so the agent never
+   attends without the project's Control Card. If removing the Control Card
+   fails, the agent has still left, and the result says so
+   (`project_control_cleanup.state: detach_failed`); unlinking again retries
+   the removal.
+3. **The agent is told twice.** A direct message from Problem Board: "You
+   were unlinked from <project> by <who> at <time>; its mail and work are no
+   longer yours", where <who> is the person's display name on the project,
+   never an email or an id. And on its next `pb worker receive`,
+   `SIGNAL project.attendance_ended` with the project reference;
+   `pb worker context` for that project then reports `attending: false`. The
+   message is direct (not the project's mail), so withdrawing the project's
+   mail does not take it back. A suspended agent gets no message; the unlink
+   still stands.
+4. **Afterwards.** The agent stays on the Project Card as "Unlinked", under
+   its alias, and its owner can add it again from the pool card (**Add to
+   project**).
+
 ## A work item: assign to done
 
 ```text
@@ -144,6 +180,26 @@ person presses New report (optional ask)
 4. **Read.** The report is kept, immutable. The list of reports is the
    project's record of progress. A report can be archived (hidden,
    restorable) or deleted.
+
+### Reading a report
+
+Every report has the same sections. The counts and lists come from the
+service's own rows; only the summary and the author's `not_seen` lines are
+written by the coordinator.
+
+| Section | What it says |
+| --- | --- |
+| **Since** | The report this one follows (chosen by the service when the request was made) and when that one was published. Everything "changed" is measured from there. |
+| **Counts** | Items per status right now, `cancelled` always included. |
+| **Attention** | The rows of the delta: each item, its title and status, the reasons it is listed (`moved`, `blocked`, `cancelled_dependency`, `dependency_of_moved`, `mentioned`), and when. An item listed for several reasons is one row. |
+| **Changed** | Each item that moved since the previous report: from, to, when. `from` is the last hop only (for example `working -> review`); the full path is in the item's events. |
+| **Blocked** | Each item that is blocked, with the reason its assignee gave, or the cancelled work it depends on. |
+| **Delta window** | `cap` (the most rows the service includes, which a caller cannot raise), `shown`, `more` (rows left out beyond the cap) and `moved_total`. `more` greater than zero means the list is not complete, never that nothing else moved. |
+| **Not seen** | What no one vouched for: first the agents the service could not vouch for, then the author's own lines. Each line says who stated it. |
+| **Summary** | The coordinator's short reading for a person, with the work it refers to and any evidence files. |
+
+A report is a delta, so a quiet project has a short report, not an empty one:
+its counts are always there.
 
 With no coordinator available, a request is **waiting**, not empty and not
 failed. The coordinator's steps are in the
