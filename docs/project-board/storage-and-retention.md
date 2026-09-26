@@ -164,12 +164,34 @@ Every partition walk goes through the shared read recorder. It logs one line
 per agent and updates the summary carried by the relay heartbeat:
 
 ```text
-relay store read worker=<agent> store=<store> op=<operation> range=<pending/|first-hour..last-hour> partitions=<count> records=<count> ms=<elapsed>
+relay store read worker=<agent> store=<store> op=<operation> range=<pending/|first-hour..last-hour> partitions=<count> records=<count> ms=<elapsed> [project=<project>] [key=<id>] [removed=<count>]
 ```
+
+The trailing fields name the store's other dimensions when they apply:
+
+- `project=`: the project whose tree was read (a store under `projects/<id>/`).
+- `key=`: the id a lookup asked for (a record, an assignment, a lease).
+- `removed=`: records a retention pass removed, for the age and size bounds together; always present on `op=retention`.
+
+The heartbeat's `store_reads` summary carries the same fields. It rides on the
+next project heartbeat when the last read of a store changed; a read that
+differs only in `ms` or `at` is not sent again.
 
 Exact keyed lookups log at debug level to avoid flooding the relay log; their
 latest summary still appears in the heartbeat. Listings, recovery and
 retention log at info level.
+
+Two tests in `tests/test_relay_local_state.py` guard startup and the cycle
+against a large history: one over 50,000 flat pre-partition records, one over
+50,000 records already in hour folders. Each asserts no history folder is
+listed and the time stays bounded.
+
+A refused `mail.reconciliation.publish` row keeps its receipt under `refused`.
+When the refusal is a Card whose operation list predates the operation
+(`work_worker_operation_not_granted`), the settled row's `remote_result` also
+names `permission_group`, `why` and the `fix` command
+(`pb worker authorize <profile> --replace-card`). The relay row counts these
+as `reconciliation_publications_refused`.
 
 Housekeeping migrates legacy history in batches of at most 1,000 records per
 store and agent. A target `<store>/<agent>/.migration.json` records cumulative
