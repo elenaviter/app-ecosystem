@@ -1161,3 +1161,29 @@ async def test_the_project_held_composition_keeps_the_control_card_guards(change
         compose_with_project_held_control(my_card, dataclasses.replace(control, **change))
     if reason:
         assert refused.value.reason == reason
+
+
+class _ReadOnlyPort(_Port):
+    """Answers the read; the policy host is down for the edit question."""
+
+    async def authorize_project_person_control(self, request):
+        if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+            raise RuntimeError("policy host down")
+        return await super().authorize_project_person_control(request)
+
+
+@pytest.mark.asyncio
+async def test_the_viewer_says_unavailable_when_the_policy_cannot_answer() -> None:
+    """Review on app-ecosystem#190: an outage never reads as "an admin decides it"."""
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    view = await _lifecycle(host, _ReadOnlyPort()).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert view["ok"] is True
+    assert view["viewer"] == {
+        "can_edit": False,
+        "edit_in_project": False,
+        "reason": "project_person_control_authorization_unavailable",
+    }
