@@ -1041,6 +1041,20 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--review-look-at", help="How to check a completed result.")
     command.add_argument("--review-could-not-verify", help="Remaining gaps, or None explicitly.")
     command.add_argument(
+        "--reviewer",
+        help=(
+            "Who reviews a completed result (W326): an agent's stable worker name, or operator. "
+            "Without it the acting coordinator reviews and routes it."
+        ),
+    )
+    command.add_argument(
+        "--merged",
+        help="Merge commit or commits, comma-separated. Required, with --deploy or --nothing-to-deploy, for --reviewer operator.",
+    )
+    deploy_evidence = command.add_mutually_exclusive_group()
+    deploy_evidence.add_argument("--deploy", help='One line: "<window>: <check>", where it was deployed and how it was verified.')
+    deploy_evidence.add_argument("--nothing-to-deploy", action="store_true", help="The merged change needs no deploy.")
+    command.add_argument(
         "--scope",
         default="",
         help=(
@@ -1239,6 +1253,20 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--source-event-ref", required=True)
     command.add_argument("--review-look-at", help="How to check a completed result.")
     command.add_argument("--review-could-not-verify", help="Remaining gaps, or None explicitly.")
+    command.add_argument(
+        "--reviewer",
+        help=(
+            "Who reviews a completed result (W326): an agent's stable worker name, or operator. "
+            "Without it the acting coordinator reviews and routes it."
+        ),
+    )
+    command.add_argument(
+        "--merged",
+        help="Merge commit or commits, comma-separated. Required, with --deploy or --nothing-to-deploy, for --reviewer operator.",
+    )
+    deploy_evidence = command.add_mutually_exclusive_group()
+    deploy_evidence.add_argument("--deploy", help='One line: "<window>: <check>", where it was deployed and how it was verified.')
+    deploy_evidence.add_argument("--nothing-to-deploy", action="store_true", help="The merged change needs no deploy.")
     command.add_argument(
         "--scope",
         default="",
@@ -3453,6 +3481,17 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
     }
 
 
+def _review_routing(args: Any) -> dict[str, Any]:
+    """The W326 reviewer flags of a report, as submit_assignment_report takes them."""
+
+    return {
+        "review_reviewer": getattr(args, "reviewer", None),
+        "review_merged": getattr(args, "merged", None),
+        "review_deploy": getattr(args, "deploy", None),
+        "review_nothing_to_deploy": bool(getattr(args, "nothing_to_deploy", False)),
+    }
+
+
 def _worker_info_command(args: Any, field: Any, identity: Any) -> dict[str, Any]:
     """pb worker info: record the agent's one-line note for the relay's next heartbeat (W330)."""
 
@@ -4092,6 +4131,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
             source_event_ref=args.source_event_ref,
             review_look_at=args.review_look_at,
             review_could_not_verify=args.review_could_not_verify,
+            **_review_routing(args),
             scope=str(getattr(args, "scope", "") or ""),
             wait_seconds=args.wait_seconds,
             status_command_prefix=("pb", "worker", "outbox-status"),

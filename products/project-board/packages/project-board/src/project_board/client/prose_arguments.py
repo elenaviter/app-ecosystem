@@ -45,6 +45,7 @@ PROSE_DESTS = (
     "summary",
     "review_look_at",
     "review_could_not_verify",
+    "deploy",
     "note",
     "reason",
     "text",

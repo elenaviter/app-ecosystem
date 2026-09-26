@@ -108,6 +108,10 @@ def execute(args: Any) -> Any:
             source_event_ref=args.source_event_ref,
             review_look_at=args.review_look_at,
             review_could_not_verify=args.review_could_not_verify,
+            review_reviewer=getattr(args, "reviewer", None),
+            review_merged=getattr(args, "merged", None),
+            review_deploy=getattr(args, "deploy", None),
+            review_nothing_to_deploy=bool(getattr(args, "nothing_to_deploy", False)),
             wait_seconds=args.wait_seconds,
             status_command_prefix=("pb", "worker", "outbox-status"),
         )

@@ -449,6 +449,22 @@ it, what you touched (Rule 3), and what you are waiting on.
   (W245 blocker three, refused live as a duplicate event until the notice
   said what to cite). Push the rework to the same branch.
 
+- **In review, the reviewer is who must act** (W326, operator 2026-09-25).
+  An item always has an assignee and a status, and the assignee is who must
+  act now: the worker while it is Working, **the reviewer** while it is in
+  Review. There is no new status. Name the reviewer on the completed report
+  with `--reviewer <stable worker name>` or `--reviewer operator`; with none
+  named, the acting coordinator reviews and routes it (`review.assign`). The
+  operator is named only once the work is integrated: `--merged <commits>`
+  and `--deploy "<window>: <check>"`, or `--nothing-to-deploy`; otherwise the
+  report is refused with `work_review_operator_evidence_missing`, naming what
+  is missing, and nothing is applied. The item keeps you as its assignee
+  ("worked by"), so a return comes back to you. Why: the operator's review
+  list held every item in Review, most with nothing for the operator to look
+  at (W314, W287, W300 on 2026-09-25); a list of what is really the
+  operator's needs a named reviewer on every item, and work reaches the
+  operator only when it is merged and deployed.
+
 Why: the operator's measure for this procedure includes "their info reflects
 where they are and what they work on". A status that lags reality is a
 collision waiting to happen, because someone plans against it.

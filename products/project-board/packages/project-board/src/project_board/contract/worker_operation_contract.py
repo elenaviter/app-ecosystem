@@ -104,6 +104,14 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:review",),
     },
+    "review.assign": {
+        "description": (
+            "Name who reviews an item in review (W326): a linked agent, or a "
+            "project admin once the work is merged and deployed. The coordinator "
+            "routes reviews; the item's assignee stays the last worker."
+        ),
+        "grants": ("work:coordinate",),
+    },
     # People on a project (W260 phase 2): holding these on the caller's
     # project Card is what makes a person, or an agent, an admin of it.
     "project.people.invite": {
@@ -441,6 +449,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "review.accept",
         "review.return",
         "review.cancel",
+        "review.assign",
         "work.accept",
         "plan.item.delete",
         "plan.note.append",
