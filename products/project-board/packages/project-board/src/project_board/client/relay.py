@@ -2038,6 +2038,21 @@ class ProblemBoardHostRelayAdapter:
                         "downloaded_size": len(data),
                     },
                 )
+            # W363: the board records a checksum at receipt; bytes that do not
+            # match it are refused before they land, never silently accepted.
+            expected_sha256 = str(normalized.get("sha256") or "")
+            actual_sha256 = hashlib.sha256(data).hexdigest()
+            if expected_sha256 and expected_sha256 != actual_sha256:
+                raise DomainError(
+                    "field_control_attachment_digest_mismatch",
+                    "The downloaded attachment does not match the checksum recorded at receipt.",
+                    status=409,
+                    details={
+                        "file_ref": file_ref,
+                        "expected_sha256": expected_sha256,
+                        "actual_sha256": actual_sha256,
+                    },
+                )
             attachment_id = hashlib.sha256(file_ref.encode("utf-8")).hexdigest()[:16]
             target = folder / attachment_id / filename
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -2046,7 +2061,7 @@ class ProblemBoardHostRelayAdapter:
             local_files[file_ref] = {
                 "local_path": str(target),
                 "size": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
+                "sha256": actual_sha256,
             }
         if local_paths and isinstance(item, dict):
             item["attachment_local_paths"] = local_paths
