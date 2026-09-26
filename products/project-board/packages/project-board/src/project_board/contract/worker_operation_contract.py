@@ -148,8 +148,10 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     "project.coordinator.hand_over": {
         "description": (
             "Hand the acting coordinator role to one attending agent, which "
-            "also gains the coordinator label; the home coordinator keeps its "
-            "label."
+            "also gains the coordinator label; the previous acting holder, "
+            "unless it is the home, loses its label in the same step. The home "
+            "coordinator keeps its label. With make_home, the current acting "
+            "holder becomes the home instead."
         ),
         "grants": ("work:admin",),
     },
@@ -170,8 +172,10 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     "project.coordinator.make": {
         "description": (
             "Make an attending agent the acting coordinator: its Card to the "
-            "coordinator profile, then the role, with both receipts and the "
-            "half that failed."
+            "coordinator profile, then the role, then the previous acting "
+            "holder's Card back to the worker profile, with the three receipts "
+            "and the one that failed. On the current holder it refreshes the "
+            "Card and leaves the role."
         ),
         "grants": ("work:admin",),
     },
@@ -184,9 +188,10 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     },
     "project.coordinator.make_worker": {
         "description": (
-            "Make the acting coordinator a worker again: the role back to the "
-            "home coordinator, then its Card to the default worker profile, "
-            "with both receipts."
+            "Make the acting coordinator, or a former home, a worker again: the "
+            "role back to the home coordinator, then its Card to the default "
+            "worker profile and its coordinator label dropped, with the "
+            "receipts."
         ),
         "grants": ("work:admin",),
     },

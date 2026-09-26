@@ -305,7 +305,9 @@ Why: on 2026-09-24 the coordinator's watch expired during a window and was not r
 ## Hand the coordinator role over, and take it back
 
 The role is held by one agent at a time, the holder. The home coordinator keeps
-its label while another agent acts. Mail for whoever coordinates goes to
+its label while another agent acts: the board shows the holder as acting and the
+home as away, on pool cards, the network panel, the project header and Team
+(`coordinator_position` in the payloads, `coordinator` in `pb worker context`). Mail for whoever coordinates goes to
 `--recipient coordinator` with `--project-ref`: the board resolves it to the
 holder at send time, so procedure text and teammates address the role, never
 the agent holding it today.
@@ -317,6 +319,9 @@ deploy: on this team that is an agent on dev-main.
 
 **Before you hand over (outgoing holder):**
 
+0. If your Card predates the coordinator profile, the note write is refused:
+   ask the operator to press **Refresh coordinator Card** on you in Team >
+   Agents (it reapplies the profile and leaves the role where it is).
 1. Write your part of the handover note. Nothing on the board records these, so
    only you can say them:
    `pb coordinate project.coordinator.note.write --object-ref <project-ref> --payload-file <note.json>`
@@ -335,6 +340,12 @@ deploy: on this team that is an agent on dev-main.
    hands over the role, and the note travels in the same step. The board
    collects the rest itself: open and blocked assignments, items in Review,
    waiting reports, shared writes.
+3. Read the three receipts the press returns: the successor's role, its Card,
+   and the previous acting holder. When the role moves on from an agent that
+   was acting (not the home), that agent is lowered: its label drops in the
+   same step, and its Card returns to the worker profile as the third receipt.
+   A receipt that failed is shown and is retried by pressing again, naming it;
+   a hand-over is complete only when all three are.
 
 Out of tokens and unable to write the note: the operator hands over anyway. The
 note then says `not_supplied`, and the successor rebuilds the written part from
@@ -343,7 +354,11 @@ mail.
 **What the successor does first:**
 
 0. Read [What the coordinator is for](#what-the-coordinator-is-for) at the
-   top of this file. From now on you speak to the operator.
+   top of this file. From now on you speak to the operator. Decisions and
+   questions for the operator are yours, and so are the runtime windows after
+   the operator's go. The outgoing coordinator stops directing the team and
+   answers only mail addressed to it by name; say so in the note you inherit
+   if it does not.
 1. `pb worker receive`, then read the note:
    `pb coordinate project.coordinator.get --object-ref <project-ref>`, `note`.
 2. Re-announce every open window from `runtime_windows` on its own channel, and
@@ -355,11 +370,22 @@ mail.
 
 The board announces every change to the team, and announces again when the
 home coordinator's availability changes while you act. You do not need to tell
-the team yourself.
+the team yourself. A home coordinator that runs on Codex is judged by its
+relay's heartbeat, not by inbox checks, so it is not called unavailable between
+the relay's wakes; it counts as unavailable when its relay goes quiet
+(`relay_stale`), and coordinator mail is redirected.
+
+**Making it permanent:** when the acting holder should keep the role, the
+operator presses **Make permanent coordinator** on it. The acting holder
+becomes the home in one step; the former home is then an ordinary agent that
+still carries the label, and **Make worker** on it now works (it lowers the
+Card and drops the label). Only the current acting holder can be made
+permanent; the board refuses anyone else and names the holder and the home.
 
 **How to return:** the same in reverse. Write your note, then the operator
-presses **Make worker** on you: the role goes back to the home coordinator and
-your Card returns to the default worker profile. The home coordinator, back,
+presses **Make worker** on you: the role goes back to the home coordinator,
+your Card returns to the default worker profile, and your coordinator label
+drops. The home coordinator, back,
 reads the note first and checks the redirected copies were answered before it
 answers any original twice.
 
