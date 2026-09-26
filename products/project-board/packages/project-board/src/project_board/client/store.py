@@ -3383,6 +3383,7 @@ class SharedFieldStore:
         control_refs: Sequence[str] = (),
         observed_control_plane_state: str | None = None,
         wake_id: str = "",
+        observed_project_refs: Sequence[str] | None = None,
     ) -> dict[str, Any]:
         worker = self.read_worker(worker_name)
         clean_name = str(worker.get("worker_name") or "")
@@ -3595,6 +3596,12 @@ class SharedFieldStore:
                 listener["subscription"] = subscription
                 if message_refs or control_refs:
                     listener["last_inbox_result_at"] = now
+            if observed_project_refs is not None:
+                # What the last receive saw attended, so the next one can name
+                # a project that dropped out (rehearsal gap 7, 2026-09-26).
+                listener["observed_project_refs"] = sorted(
+                    {str(ref) for ref in observed_project_refs if str(ref or "").strip()}
+                )
             if observed_control_plane_state is not None:
                 listener["observed_control_plane_state"] = bounded_text(
                     observed_control_plane_state,

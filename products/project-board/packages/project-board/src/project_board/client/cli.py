@@ -3955,9 +3955,23 @@ def _worker_command(args: Any) -> dict[str, Any]:
             },
         }
     if args.worker_command == "context":
-        return _worker_project_context(
+        context = _worker_project_context(
             config, field, str(args.project_ref), channel=config.worker(identity)
         )
+        try:
+            attended = set(field.read_worker(identity.worker_name).get("attended_project_refs") or [])
+        except DomainError:
+            attended = set()
+        # Never serve a project record as if the agent still attended it
+        # (rehearsal gap 7, 2026-09-26): an unlinked agent is told plainly.
+        context["attending"] = str(args.project_ref) in attended
+        if not context["attending"]:
+            context["attendance_note"] = (
+                f"This agent does not attend {args.project_ref} (it was unlinked, or never "
+                "linked): what this host still holds for it may be stale, and its mail and "
+                "work are not yours. Ask your owner or the coordinator before acting on it."
+            )
+        return context
     project_ref = str(getattr(args, "project_ref", "") or "").strip()
     parsed_project = parse_ref(project_ref) if project_ref else None
     if parsed_project is not None and parsed_project.kind != "project":
