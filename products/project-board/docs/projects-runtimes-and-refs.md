@@ -138,11 +138,11 @@ a stale setup looks like no setup. So an entry may also name a **read root**:
 ```json
 "source_repositories": {
   "applications": {
-    "root": "/home/me/src/applications",
-    "read_root": "/home/me/src/.read/applications",
+    "root": "/home/<user>/src/applications",
+    "read_root": "/home/<user>/src/.read/applications",
     "read_ref": "origin/main"
   },
-  "kdcube": "/home/me/src/kdcube"
+  "kdcube": "/home/<user>/src/kdcube"
 }
 ```
 

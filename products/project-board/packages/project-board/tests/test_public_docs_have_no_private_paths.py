@@ -20,7 +20,10 @@ PROCEDURES = PACKAGE_ROOT / "src" / "project_board" / "procedures"
 
 PRIVATE = (
     re.compile(r"playground/domain-solution"),
-    re.compile(r"problem-board@1-0/(docs|services|ui|tests)\b"),
+    # Any folder of the private app, except the public MCP endpoint path.
+    re.compile(r"problem-board@1-0/(?!public/)[A-Za-z_]"),
+    re.compile(r"/home/[a-z_][a-z0-9_-]*/"),
+    re.compile(r"/Users/[A-Za-z0-9_.-]+/"),
     re.compile(r"kdcube-docs/"),
     re.compile(r"github\.com/(kdcube|elenaviter)/applications(?!\.git\b)"),
     re.compile(r"repo:applications/"),
