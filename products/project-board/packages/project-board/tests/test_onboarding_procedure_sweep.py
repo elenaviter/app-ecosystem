@@ -51,8 +51,13 @@ def test_35_sessions_restart_in_place_after_an_update():
 
 def test_38_44_the_peer_list_is_set_on_every_host_old_ones_included():
     assert "pb host configure --allow-peer-worker" in HOST
-    assert "A host set up before this setting existed has an empty list" in HOST
+    # Operator ruling 2026-09-26 (W304 decision 3): "*" is the default; old hosts may be empty.
+    words = " ".join(HOST.split())
+    assert "`pb setup` gives a new host the default teammate list `*`" in words
+    assert "may still hold an empty list and refuse every teammate's mail" in words
+    assert "pb host configure --allow-peer-worker '*'" in HOST and "pb host configure --deny-all-peers" in HOST
     assert "Who may write to your agents" in GUIDE
+    assert "A new machine starts with everyone on your projects (`*`)" in GUIDE
 
 
 def test_37_joining_sends_the_welcome_notice_and_the_agent_reports_ready():

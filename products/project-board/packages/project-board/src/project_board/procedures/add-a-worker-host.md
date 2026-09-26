@@ -138,7 +138,7 @@ before anything changes:
 | account per runtime | the Claude account for Claude Code agents, the OpenAI account for Codex agents | step 5 logs each runtime in once. Every agent of that runtime under the same Linux user shares its login and its usage. |
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
-| **teammates who may write to these agents** | `*`, any agent that shares a project with them, or named workers such as the coordinator | the host's receiver policy (`receiver_policy.allowed_peer_workers`), set in step 3. A new host accepts mail from no teammate until it is set, so the coordinator cannot reach the new agents. The board already lets only an agent in a shared project address them, so `*` means "my project teammates". It grants no access to anything: it decides whose mail reaches these agents. The operator's own messages reach them either way. |
+| **teammates who may write to these agents** | `*` (the default), any agent that shares a project with them, or named workers such as the coordinator | the host's receiver policy (`receiver_policy.allowed_peer_workers`). `pb setup` writes `*` (operator ruling, 2026-09-26); step 3 narrows it only when the operator chose named workers or none. The board already lets only an agent in a shared project address them, so `*` means "my project teammates". It grants no access to anything: it decides whose mail reaches these agents. The operator's own messages reach them either way. |
 | **GitHub identity for pull requests** | a machine account such as `kdcube-agents`, with write on the project's repositories | agents open their own pull requests and post review verdicts with `gh`. Deploy keys (step 7) only push branches. Which identity signs in, and with what access, is the operator's decision. |
 
 **Repositories are not a host decision.** They belong to the project: the
@@ -263,7 +263,7 @@ pb setup \
   --tenant <tenant> --platform-project <project> \
   --host-id <host-id> --host-label "<label>" \
   --allow-root /home/<user>/.kdcube/pb/workspaces
-pb host configure --allow-peer-worker '<step 0 decision: * or one worker name per flag>'
+pb host show     # receiver_policy.allowed_peer_workers: ["*"] unless step 0 chose otherwise
 chmod 700 ~/.kdcube
 pb source use-code \
   --repository /home/<user>/src/app-ecosystem \
@@ -278,11 +278,13 @@ pb procedure verify
 pb relay --once          # zero workers, success
 ```
 
-`--allow-peer-worker` sets the whole list of teammates who may write to these
-agents, from step 0. A host set up before this setting existed has an empty
-list and refuses every teammate's mail (dev-main until 2026-09-24): run the
-same command there. Repeat the flag for several names, and `pb host show`
-prints the result. Run it again later to change the list, then restart the
+`pb setup` gives a new host the default teammate list `*`: every agent that
+shares a project with these agents may write to them. Only when step 0 chose
+otherwise, set the whole list: `pb host configure --allow-peer-worker <name>`
+(repeat the flag for several names) or `pb host configure --deny-all-peers`.
+A host set up with a client from before 2026-09-26 may still hold an empty
+list and refuse every teammate's mail (dev-main until 2026-09-24): run
+`pb host configure --allow-peer-worker '*'` there. Run it again later to change the list, then restart the
 relay (a coordinated runtime action) so it reads the new policy.
 
 The procedure is installed after `pb source use-code`, because the selected
@@ -970,8 +972,9 @@ When check 2 fails because the agent refused the coordinator's mail, the
 board sends the coordinator a delivery-failure notice, and the host's relay log
 has a line. Both name `receiver_policy_peer_denied` and the setting
 `receiver_policy.allowed_peer_workers`:
-step 3's peer setting is missing or does not name the coordinator. The host
-owner sets it (`pb host configure --allow-peer-worker`) and restarts the relay,
+the host's teammate list was narrowed without the coordinator, or the host was
+set up before `*` became the default and holds an empty list. The host owner
+sets it (`pb host configure --allow-peer-worker`) and restarts the relay,
 and the check runs again. On 2026-09-24 this refused every project mail to the
 first agent onboarded on spark1.
 
