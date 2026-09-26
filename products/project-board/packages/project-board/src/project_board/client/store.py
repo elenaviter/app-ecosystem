@@ -4195,6 +4195,58 @@ class SharedFieldStore:
             row["info"] = {**dict(info), "published_text": text, "published_at": utc_now()}
             atomic_write_json(path, row)
 
+    def request_worker_alias(self, worker_name: str, alias: str) -> dict[str, Any]:
+        """Record the agent's own rename for the relay to carry to the board (W304 U6).
+
+        The board keeps an existing alias on every publish, so a rename is a
+        request: it rides the heartbeat every worker Card already holds (like
+        the W330 info line) and the board applies it unless a later change,
+        such as the operator's pencil, stands. The answer lands in ``result``.
+        """
+
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        value = normalize_worker_alias(alias, required=True)
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            row["alias_request"] = {"alias": value, "requested_at": utc_now(), "sent": False, "result": {}}
+            row["updated_at"] = utc_now()
+            row["revision"] = int(row.get("revision") or 0) + 1
+            atomic_write_json(path, row)
+            return dict(row["alias_request"])
+
+    def worker_alias_request(self, worker_name: str) -> dict[str, Any]:
+        """The agent's latest alias request and the board's answer, or empty when it never asked."""
+
+        try:
+            worker = self.read_worker(worker_name)
+        except DomainError:
+            return {}
+        recorded = worker.get("alias_request")
+        return dict(recorded) if isinstance(recorded, Mapping) else {}
+
+    def _update_alias_request(self, worker_name: str, requested_at: str, changes: Mapping[str, Any]) -> None:
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            request = row.get("alias_request")
+            # A newer request replaced this one meanwhile: its answer is not ours.
+            if not isinstance(request, Mapping) or str(request.get("requested_at") or "") != requested_at:
+                return
+            row["alias_request"] = {**dict(request), **dict(changes)}
+            atomic_write_json(path, row)
+
+    def mark_worker_alias_request_sent(self, worker_name: str, requested_at: str) -> None:
+        """A heartbeat carried this request, so it forces no further heartbeat."""
+
+        self._update_alias_request(worker_name, requested_at, {"sent": True})
+
+    def record_worker_alias_result(self, worker_name: str, requested_at: str, result: Mapping[str, Any]) -> None:
+        """Keep the board's answer for this request; an answered request rides no more heartbeats."""
+
+        self._update_alias_request(worker_name, requested_at, {"result": {**dict(result), "answered_at": utc_now()}})
+
     def declare_workspace(
         self,
         worker_name: str,

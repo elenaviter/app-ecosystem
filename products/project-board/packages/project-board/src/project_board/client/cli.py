@@ -2574,6 +2574,33 @@ REFERENCE_MIGRATION_PREVIEW_SCHEMA = "problem-board.reference-migration-preview.
 REFERENCE_MIGRATION_RECEIPT_SCHEMA = "problem-board.reference-migration-receipt.v1"
 
 
+def _board_alias_view(field: Any, worker_name: str) -> dict[str, Any]:
+    """The agent's latest alias request as the board answered it (W304 U6), or empty."""
+
+    request = field.worker_alias_request(worker_name)
+    if not request:
+        return {}
+    result = request.get("result") if isinstance(request.get("result"), Mapping) else {}
+    state = str(result.get("state") or ("sent" if request.get("sent") else "requested"))
+    rules = {
+        "requested": "The relay carries this name to the board on its next heartbeat.",
+        "sent": "A heartbeat carried it; the board's answer arrives with a later one.",
+        "applied": "The board shows this name on every card of this agent.",
+        "superseded": "A later rename stands on the board (the operator's pencil, or a newer request).",
+        "refused": "The board refused the name; it shows the previous one.",
+    }
+    view = {
+        "state": state,
+        "alias": str(result.get("alias") or request.get("alias") or ""),
+        "requested": str(request.get("alias") or ""),
+        "requested_at": str(request.get("requested_at") or ""),
+        "rule": rules.get(state, ""),
+    }
+    if result.get("reason"):
+        view["reason"] = str(result["reason"])
+    return view
+
+
 def _reference_mapping_request(
     args: Any,
     *,
@@ -3477,6 +3504,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
             and channel.profile == profile_name
             and channel.state == "active"
         )
+        previous_alias = channel.worker_alias if channel is not None else ""
         channel = enroll_worker_channel(
             path,
             identity=identity,
@@ -3548,6 +3576,13 @@ def _worker_command(args: Any) -> dict[str, Any]:
             "authorization": profile,
             "listening": listening,
         }
+        if getattr(args, "alias", None) and channel.worker_alias and channel.worker_alias != previous_alias:
+            # W304 U6: the board keeps an existing alias on every publish, so
+            # a rename is a request the relay carries on the next heartbeat.
+            field.request_worker_alias(identity.worker_name, channel.worker_alias)
+        board_alias = _board_alias_view(field, identity.worker_name)
+        if board_alias:
+            result["board_alias"] = board_alias
         if channel.state != "active":
             authorize = authorization_command(
                 channel.profile,
@@ -4228,13 +4263,17 @@ def _whoami_channel(args: Any, identity: WorkerSessionIdentity) -> dict[str, Any
     channel = config.worker(identity)
     if channel is None:
         return {"enrolled": False, "reason": "session_not_enrolled"}
+    field = SharedFieldStore(config.field_root)
     try:
-        board_record = SharedFieldStore(config.field_root).worker_board_record(identity.worker_name)
+        board_record = field.worker_board_record(identity.worker_name)
     except DomainError:
         board_record = {}
+    board_alias = _board_alias_view(field, identity.worker_name)
     return {
         "enrolled": True,
         "worker_alias": channel.worker_alias,
+        # The latest rename this agent asked for and the board's answer (W304 U6).
+        **({"board_alias": board_alias} if board_alias else {}),
         "profile": channel.profile,
         "state": channel.state,
         # Who owns this agent and which provider account it runs under, as

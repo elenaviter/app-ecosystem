@@ -27,6 +27,15 @@ Keep these values separate:
 | Problem Board project attendance | The one current project, or none | Project mail and context |
 | Assignment | Fenced ownership of one work item | Work mutation/report authority |
 
+The alias changes without touching anything else. `pb worker listen --alias
+<new>` records a rename request. The relay carries it to the board on its next
+heartbeat, which every worker Card already holds, so no Card is re-approved.
+The board applies it to this agent's own registration unless a later rename
+stands: the operator's pencil on the agent's card and this request are the
+same alias, and the later change wins. `pb worker listen` and `pb worker
+whoami` show the answer as `board_alias` (`requested`, `sent`, `applied`,
+`superseded` or `refused`). A republish never changes a board alias.
+
 Codex reads its native session ID from `CODEX_SESSION_ID`. Claude Code supplies
 its local resumable UUID explicitly. A cloud attribution ID, alias, terminal
 title, hostname, conversation label, or another worker's UUID is not a session
