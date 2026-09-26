@@ -1043,7 +1043,9 @@ Runs on: the board in the operator's browser (attendance and the operator's
 messages), the operator's phone (Telegram), and the host (`pb worker inspect`,
 the relay log).
 
-The **operator** adds each agent to the project. Within seconds the agent's
+The **operator** adds each agent to the project, on the board's **Team >
+Agents > Add agent** (the agent and its role) or on the agent's pool card,
+**Add to project**. Within seconds the agent's
 host holds the project's record: its team and the repositories set on the
 project card. **The agent** then sets up its workspace from that record, as
 the worker procedure's project-workspace reference says:
