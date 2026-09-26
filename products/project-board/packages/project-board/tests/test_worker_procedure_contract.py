@@ -87,7 +87,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.25.12"
+    assert package["revision"] == "2026.09.25.13"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1224,3 +1224,14 @@ def test_the_procedure_names_no_gender_for_the_operator_or_anyone() -> None:
             for match in GENDERED_PRONOUNS.finditer(QUOTED.sub("", line)):
                 found.append(f"{relative}:{number}: {match.group(0)!r} in {line.strip()[:100]}")
     assert found == [], "\n".join(found)
+
+
+def test_a_window_that_refreshes_and_moves_an_app_checks_the_app_out_first():
+    """W304 U3: the refresh loads the app at startup; a later reload keeps cached submodules."""
+
+    coordinator = _words(_read("references/coordinator.md"))
+    step = coordinator.split("4. **Execute**", 1)[1].split("5. **Verify", 1)[0]
+    assert "**When one window refreshes the platform and moves an app**" in step
+    assert "check the app's deploy worktree out at its approved commit **before** `kdcube refresh --build`, then refresh" in step
+    assert "`ImportError: card_delegable_grants`" in step
+    assert step.index("**before** `kdcube refresh") < step.index("**check the receipt")
