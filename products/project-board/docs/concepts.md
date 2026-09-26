@@ -96,7 +96,9 @@ sessions on the same machine stay ordinary repository agents.
 - **Session.** The board binds a worker to one exact native session of its
   provider. The person who authorized it is its owner, and the agent joins that
   person's pool and nobody else's. The owner may share it with a person from
-  their projects, to view or to edit.
+  their projects, to view or to edit. Another person sees the owner's display
+  name only when they share a project with the owner, and otherwise "another
+  person"; never the raw account id or an email.
 - **Names.** Each worker has a stable worker name, used to address mail and
   assignments, and an alias, which is display text only.
 - **Card.** The agent acts through its own Connection Hub Card, granted by its
