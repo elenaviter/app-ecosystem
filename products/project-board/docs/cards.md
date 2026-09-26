@@ -38,9 +38,12 @@ see_also:
   every client.
 - **Who edits which Card in a project.** A project admin (the Problem Board
   project's admin role, not a KDCube role) edits every Card the project holds:
-  the project Control Card, each person's Control Card, their own included,
-  and each agent's project Card. A member reads their own Control Card and
+  the project Control Card, each person's Control Card (their own and the
+  owner's included), and each agent's project Card. A member reads their own Control Card and
   edits only their own My Card, within their Control Card.
+- **A new permission reaches people already in the project only when a
+  project admin ticks it** on their Cards; a person's role preset applies only
+  when their Card is created.
 - **The project Control Card caps every agent Card on the project** (AND), and
   a Card Refresh is capped by it too: after new operations reach the catalog,
   a project admin ticks them on the project Control Card first.

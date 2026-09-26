@@ -72,8 +72,9 @@ How a person becomes a project admin:
    when that person opens the board signed in with that email and the sign-in
    provider has verified it.
 3. A project admin can make any person on the project an admin. A role is a
-   preset for the person's Card; the Card is what each request is checked
-   against.
+   preset applied when the person's Card is created; after that the Card in
+   Connection Hub is what each request is checked against, and only its
+   editors change it.
 
 A project admin stays admin until the admin role itself is removed: taking
 operations off their Card does not make them a member. An admin can make
