@@ -335,16 +335,18 @@ session, and a wake never interrupts a turn in progress.
 ## Project, Source, And Journal Flow
 
 ```text
-remote assignment
+remote assignment, as project.plan.item reads it
   { project_ref, worker_ref, repository_ref, base_commit,
     assignment_ref, ownership_version,
     identity_ref = stable plan node,
-    work_ref = exact assigned state }
+    work_ref = exact version assigned (also versioned_work_ref) }
+  the assign notice carries only the stable ref, as payload.work_ref;
+  a report carries no work ref: assignment_ref + ownership_version name it
         |
         v
 local worker context
-  -> resolve portable repository_ref through this machine's private map
-  -> verify local path is inside an approved root
+  -> resolve repo:<alias>/... in this worker's own clone, <workspace>/<alias>
+  -> verify the workspace is inside the host's agent workspace root
   -> fetch and verify base_commit
   -> work in an isolated branch/worktree under repository rules
   -> agent writes the complete journal file in the project's bound Git journal

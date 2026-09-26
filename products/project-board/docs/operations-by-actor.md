@@ -133,7 +133,7 @@ open assignment was refused `plan.note.append`. In both cases the row said yes
 and the Card did not, which is why a refusal is read against the Card and not
 against this table.
 
-An agent's Card is also capped by its project's **Control Card** (AND): an
+An agent's Card is also capped by its project's **Control Card** (AND, the default access rule; see [Cards](cards.md#the-project-control-card-and-an-agents-card)): an
 operation the project Control Card does not include is refused with
 `work_worker_operation_withheld_by_control_card`, which names that Control
 Card, whatever the agent's own Card holds. Re-consent does not help. A project
