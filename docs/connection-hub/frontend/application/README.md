@@ -288,18 +288,20 @@ account at call time.
 - **Who edits which Card in a project.** Cards held by a Problem Board project
   (the project Control Card, each person's Control Card, each agent's project
   Card) are changed by that Problem Board project's admins (the project's own
-  admin role, not a KDCube user role), reached through the project's Team >
-  People; a member changes only their own My Card, within their Control Card.
+  admin role, not a KDCube user role), here in Connection Hub, which is the
+  only Card editor: the board links to each Card and builds no editor of its
+  own. A member changes only their own My Card, within their Control Card.
   Every other Control Card keeps its normal editing here. The full Problem Board
   page comes with the public Problem Board documentation (W340). The mechanics
   on this side:
-  - `project_person_control_get` (W260) answers `viewer: {can_edit: false,
-    edit_in_project, reason}`: a person's Control Card is read only in this
-    view for everyone. A project admin gets a link to the project's Team >
-    People, where it is edited; a member reads their own
-    (`project_person_control_decided_by_admin` for their own update or
-    revoke); an unanswerable policy says so. A project admin writes any
-    person's Control Card, their own included, through the project path.
+  - `project_person_control_get` (W260) answers `viewer: {can_edit, reason}`
+    from the same policy question an edit asks. A project admin gets
+    `can_edit: true` and edits the Card here; the save goes through
+    `project_person_control_update`. Anyone else reads it
+    (`project_person_control_decided_by_admin`), and the editor says so up
+    front: no Edit, Save disabled, the reason shown. The same up-front
+    read-only view applies to another person's agent Card and to a project's
+    Control Card reached through a project.
   - `project_control_card_attach`, `project_control_card_detach` (operations,
     W260) attach or detach a project's Control Card on an agent's Card that
     another person owns. Two host answers are needed: the project host's

@@ -408,11 +408,10 @@ class ProjectPersonControlLifecycle:
     ) -> dict[str, Any]:
         """What this viewer may do with the Card they are reading (W260).
 
-        A person's Control Card is changed only in the project's own editor
-        (the board's Team > People), which keeps the board's decision the one
-        source of truth; here it is read-only for everyone. A project admin
-        is told to edit it there, anyone else that an admin decides it. The
-        policy port answers, with the same question an edit would ask.
+        Connection Hub is the only Card editor (operator ruling, 2026-09-26):
+        a project admin changes any person's Control Card here, and anyone
+        else reads it (a person reads their own). The policy port answers,
+        with the same question an edit asks, so the view and the save agree.
         """
 
         admin = await self._authorize(
@@ -422,13 +421,12 @@ class ProjectPersonControlLifecycle:
             operation=PROJECT_PERSON_CONTROL_UPDATE,
             request_id=f"{request_id}:viewer",
         )
-        edits_in_project = not isinstance(admin, dict)
+        can_edit = not isinstance(admin, dict)
         return {
-            "can_edit": False,
-            "edit_in_project": edits_in_project,
+            "can_edit": can_edit,
             "reason": (
-                "project_person_control_edited_in_project"
-                if edits_in_project
+                "project_person_control_editable_by_project_admin"
+                if can_edit
                 else "project_person_control_decided_by_admin"
             ),
         }

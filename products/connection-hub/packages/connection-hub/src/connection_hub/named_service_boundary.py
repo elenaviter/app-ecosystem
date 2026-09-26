@@ -6,6 +6,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from connection_hub.operation_groups import parse_operation_groups
+
 
 def as_mapping(value: Any) -> dict[str, Any]:
     return dict(value or {}) if isinstance(value, Mapping) else {}
@@ -70,6 +72,9 @@ class NamespaceBoundaryPolicy:
     authority_id: str = ""
     provider_configs: tuple[Mapping[str, Any], ...] = ()
     tools: Mapping[str, Mapping[str, Any]] | None = None
+    # How this namespace's tools and operations are grouped for a Card editor
+    # (``operation_groups``: key -> {label, order}); presentation only.
+    operation_groups: Mapping[str, Any] | None = None
 
     @classmethod
     def from_config(cls, namespace: str, value: Mapping[str, Any]) -> "NamespaceBoundaryPolicy":
@@ -86,6 +91,7 @@ class NamespaceBoundaryPolicy:
                 dict(item) for item in (providers or ()) if isinstance(item, Mapping)
             ),
             tools=as_mapping(data.get("tools")),
+            operation_groups=as_mapping(data.get("operation_groups")),
         )
 
     def tool_configured(self, tool_name: str) -> bool:
@@ -166,6 +172,8 @@ class NamespaceBoundaryPolicy:
                 "authority_id": str(data.get("authority_id") or data.get("authority") or self.authority_id),
                 "grants": as_list(data.get("grants") or data.get("scopes")),
             }
+            if str(data.get("group") or "").strip():
+                public["group"] = str(data.get("group")).strip()
             operation_policies = as_mapping(data.get("operations"))
             if operation_policies:
                 public["operations"] = {
@@ -179,7 +187,12 @@ class NamespaceBoundaryPolicy:
                             or data.get("authority")
                             or self.authority_id
                         ),
-                        "grants": as_list(as_mapping(op_policy).get("grants") or as_mapping(op_policy).get("scopes"))
+                        "grants": as_list(as_mapping(op_policy).get("grants") or as_mapping(op_policy).get("scopes")),
+                        **(
+                            {"group": str(as_mapping(op_policy).get("group")).strip()}
+                            if str(as_mapping(op_policy).get("group") or "").strip()
+                            else {}
+                        ),
                     }
                     for operation, op_policy in operation_policies.items()
                 }
@@ -190,6 +203,11 @@ class NamespaceBoundaryPolicy:
             "description": self.description,
             "authority_id": self.authority_id,
             "tools": tools,
+            **(
+                {"operation_groups": list(parse_operation_groups(self.operation_groups))}
+                if self.operation_groups
+                else {}
+            ),
         }
 
 

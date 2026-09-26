@@ -115,10 +115,12 @@ test('W260: a My Card asked for as a Control Card says to open it by access_id',
   assert.doesNotMatch(unavailableAccessCardMessage(asAccess), /access_id, not control_card_id/)
 })
 
-test('W260: a person Control Card is read only here; an admin is sent to Team > People', () => {
-  assert.match(projectPersonControlNotice({ edit_in_project: true }), /Team > People/)
-  assert.match(projectPersonControlNotice({ edit_in_project: false }), /decided by an admin/)
-  assert.match(projectPersonControlNotice(undefined), /decided by an admin/)
+test('W260: a project admin edits a person Control Card here; anyone else reads it', () => {
+  // Operator ruling 2026-09-26: Connection Hub is the only Card editor.
+  assert.equal(projectPersonControlNotice({ can_edit: true }), '')
+  assert.match(projectPersonControlNotice({ can_edit: false }), /A project admin decides this Control Card/)
+  assert.match(projectPersonControlNotice(undefined), /A project admin decides this Control Card/)
+  assert.doesNotMatch(projectPersonControlNotice({ can_edit: false }), /Team > People/)
 })
 
 test('W260: a My Card opens by access_id among the person\'s own Cards', () => {

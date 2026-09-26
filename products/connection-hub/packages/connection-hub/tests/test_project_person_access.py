@@ -1075,9 +1075,10 @@ async def test_a_member_is_refused_revoking_its_own_project_card() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reading_a_person_control_card_says_it_is_read_only_here() -> None:
-    """W260: the hub view never edits a person Control Card; a project admin is
-    sent to the project's editor, anyone else is told an admin decides it."""
+async def test_a_project_admin_edits_a_person_control_card_here_and_others_read_it() -> None:
+    """W260 (operator ruling 2026-09-26): Connection Hub is the only Card
+    editor. A project admin edits a person's Control Card here; anyone else
+    reads it and is told an admin decides it."""
 
     host = _Host()
     await _create(_lifecycle(host, _Port()))
@@ -1087,9 +1088,8 @@ async def test_reading_a_person_control_card_says_it_is_read_only_here() -> None
     )
     assert admin_view["ok"] is True
     assert admin_view["viewer"] == {
-        "can_edit": False,
-        "edit_in_project": True,
-        "reason": "project_person_control_edited_in_project",
+        "can_edit": True,
+        "reason": "project_person_control_editable_by_project_admin",
     }
 
     member_port = _Port(deny_operations=frozenset({PROJECT_PERSON_CONTROL_UPDATE}))
@@ -1099,7 +1099,6 @@ async def test_reading_a_person_control_card_says_it_is_read_only_here() -> None
     assert member_view["ok"] is True
     assert member_view["viewer"] == {
         "can_edit": False,
-        "edit_in_project": False,
         "reason": "project_person_control_decided_by_admin",
     }
     # The viewer question is the edit question, and it changes nothing.

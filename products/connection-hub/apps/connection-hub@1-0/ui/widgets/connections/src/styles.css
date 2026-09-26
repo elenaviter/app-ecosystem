@@ -4395,3 +4395,27 @@ code {
     padding-left: 12px;
   }
 }
+
+/* W260: operations under the groups the service declares in its catalog. */
+/* A real box (not display: contents), so the group and its heading stay in the
+   accessibility tree; it spans the list's grid and repeats its columns. */
+.operation-group {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: inherit;
+  align-items: inherit;
+  gap: inherit;
+}
+.operation-group__label {
+  grid-column: 1 / -1;
+  width: 100%;
+  margin: 8px 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.operation-group:first-child > .operation-group__label {
+  margin-top: 0;
+}

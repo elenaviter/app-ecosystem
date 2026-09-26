@@ -14,12 +14,15 @@ import {
   type ControlCompositionMode,
 } from './controlCardPreview';
 import { InfoMark } from '../../components/InfoMark';
+import { renderOperationGroups } from './OperationGroups';
 
 interface NamedServiceOperationRow {
   operation: string;
   label: string;
   description: string;
   grants: string[];
+  /** The group the service declares (W260); '' when none. */
+  group: string;
 }
 
 interface DelegatedResourceCatalogProps {
@@ -80,6 +83,7 @@ export function operationRows(namespace: DelegatedAccessNamedServiceNamespaceOpt
           label: policy.label || operation || toolName,
           description: policy.description || tool.description || '',
           grants,
+          group: String(policy.group || tool.group || ''),
         });
       });
       return;
@@ -93,6 +97,7 @@ export function operationRows(namespace: DelegatedAccessNamedServiceNamespaceOpt
       label: tool.label || operation,
       description: tool.description || '',
       grants,
+      group: String(tool.group || ''),
     });
   });
   return rows;
@@ -356,7 +361,7 @@ export function DelegatedResourceCatalog({
             </summary>
 
             <div className="namespace-operation-list">
-              {rows.map((row) => {
+              {renderOperationGroups(rows, (row) => row.group, namespace.operation_groups, (row) => {
                 const included = includedRows.includes(row);
                 const controlSelected = (composition?.controlOperations[namespace.namespace] || [])
                   .some((operation) => operation === '*' || operation === row.operation);

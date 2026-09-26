@@ -2492,11 +2492,16 @@ class AutomationAccessService:
                         "label": tool.label,
                         "description": tool.description,
                         "grants": list(tool.grants),
+                        **({"group": tool.group} if getattr(tool, "group", "") else {}),
                     }
                     for tool in resource.tools
                     if _grants_delegable(tool.grants, delegable)
                 ],
             }
+            # How the service groups these operations for a Card editor.
+            operation_groups = list(getattr(resource, "operation_groups", ()) or ())
+            if operation_groups:
+                option["operation_groups"] = [dict(group) for group in operation_groups]
             selector_type = str(
                 getattr(resource, "selector_type", "") or ""
             ).strip()

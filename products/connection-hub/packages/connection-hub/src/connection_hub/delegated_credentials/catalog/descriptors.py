@@ -33,6 +33,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
 
+from connection_hub.operation_groups import without_grouping
+
 RESOURCE_KIND_CATALOG = "catalog"
 RESOURCE_KIND_REMOTE_MCP = "remote_mcp"
 
@@ -126,7 +128,8 @@ def resource_row_digest(row: Any) -> str:
             "admin_only": bool(getattr(row, "admin_only", False)),
             "grants": list(_strings(getattr(row, "grants", ()))),
             "tools": tools,
-            "named_services": copy.deepcopy(dict(named_services))
+            # Grouping is presentation: regrouping must not change the digest.
+            "named_services": without_grouping(copy.deepcopy(dict(named_services)))
             if isinstance(named_services, Mapping)
             else {},
         }
