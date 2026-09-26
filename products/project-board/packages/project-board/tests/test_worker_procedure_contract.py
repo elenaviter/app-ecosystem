@@ -104,7 +104,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.8"
+    assert package["revision"] == "2026.09.26.9"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1426,3 +1426,25 @@ def test_the_skill_says_which_mail_kinds_reach_the_operators_telegram():
     skill = " ".join(_read("SKILL.md").split())
     assert "`progress`, `update`, `reply` and `result` stay on the board" in skill
     assert "only `question`, `decision`, `blocked`, `delivery_failed` reach their Telegram" in skill
+
+
+def test_cards_are_edited_only_in_connection_hub():
+    # Operator ruling 2026-09-26: the board had built a second Card editor that
+    # kept its own copy of the decision and overwrote Connection Hub edits.
+    collaboration = " ".join(_read("references/collaboration.md").split())
+    assert "## Rule 12. Cards are edited only in Connection Hub" in collaboration
+    assert "It never builds its own Card editor, and it never keeps a stored copy of the decision" in collaboration
+    assert "declared with the operations in the service catalog" in collaboration
+
+
+def test_new_operations_are_ticked_on_the_project_control_card_before_refresh():
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    assert "a project admin ticks them on the project Control Card in Connection Hub first, and only then refreshes Cards" in coordinator
+    assert "`work_worker_operation_withheld_by_control_card`" in coordinator
+
+
+def test_knowledge_goes_to_the_journal_or_the_procedure_not_private_memory():
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    assert "Project state and rulings go in the project journal" in coordinator
+    assert "Practice that helps any coordinator or worker goes in this procedure" in coordinator
+    assert "Private agent memory holds only that agent's personal preferences" in coordinator
