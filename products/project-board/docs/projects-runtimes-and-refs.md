@@ -59,13 +59,14 @@ worked example, and names where a project's setup lives.
 
 ## Worked examples
 
-**KDCube maintainer (this project, `quickstart-works`).** Runtime `dev-main`,
-kind `kdcube`, host `dev-main`, profile: the KDCube maintainer profile.
+**KDCube maintainer.** Runtime `maintainer-host`, kind `kdcube`, host
+`maintainer-host`, profile: the KDCube maintainer profile.
 Actions `refresh` (a platform rebuild with package selectors) and
 `bundle-reload`, each triggered by the coordinator from `origin/main` of its
 repository. A change is live when the coordinator has integrated it onto
-`main`, pushed it, fetched it on `dev-main`, and the action's receipt names
-that commit. Workers on `spark1` never act on `dev-main`: they push, and ask.
+`main`, pushed it, fetched it on `maintainer-host`, and the action's receipt
+names that commit. Workers on other hosts never act on `maintainer-host`: they
+push, and ask.
 
 **App builder.** Runtime `staging`, kind `kdcube`, the host that runs the
 app's KDCube deployment, profile: the KDCube app-builder profile, which knows
@@ -105,8 +106,8 @@ hold the same fields, so only where they are read from changes.
   "instructions_ref": "repo:<alias>/<path>/project-instructions.md",
   "runtimes": [
     {
-      "name": "dev-main",
-      "host": "dev-main",
+      "name": "maintainer-host",
+      "host": "maintainer-host",
       "kind": "kdcube",
       "profile_ref": "repo:app-ecosystem/products/kdcube/procedures/runtime-profile-maintainer.md",
       "actions": {

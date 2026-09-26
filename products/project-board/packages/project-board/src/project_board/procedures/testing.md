@@ -110,7 +110,7 @@ answer differs per host:
   "$AE/products/connection-hub/packages/connection-hub-cli/pyproject.toml"
 ```
 
-Why: on 2026-09-23 the dev-main chat-processor venv lacked `jwcrypto`
+Why: on 2026-09-23 a maintainer host's chat-processor venv lacked `jwcrypto`
 (connection-hub), `readchar` (kdcube-cli) and `json5` (connection-hub-cli), and
 the suite passed until a change imported one at module level, when sixteen
 modules failed to collect with errors that read nothing like the cause. The

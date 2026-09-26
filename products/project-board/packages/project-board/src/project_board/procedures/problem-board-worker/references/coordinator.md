@@ -333,7 +333,7 @@ the agent holding it today.
 **When to hand over:** your runtime reports a limit coming (`pb worker
 limit-state`, W26), a planned absence, the operator asks, or the relay reports
 you out of tokens. A successor that must run a runtime window has to be able to
-deploy: on this team that is an agent on dev-main.
+deploy: an agent on the host that runs the runtime.
 
 **Before you hand over (outgoing holder):**
 

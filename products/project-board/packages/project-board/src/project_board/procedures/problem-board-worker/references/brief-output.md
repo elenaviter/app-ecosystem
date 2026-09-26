@@ -1,5 +1,5 @@
 ---
-id: applications.playground.problem-board.skill-reference.brief-output
+id: project-board.skill-reference.brief-output
 title: Read Brief Output
 summary: How a worker reads a pb receipt, an ERROR and a ref in brief output, and what it does after an outcome-unknown response.
 tags: [procedure, problem-board, worker, brief-output, receipt, idempotency]
@@ -38,7 +38,7 @@ more JSON envelope otherwise, and an envelope printed into the model's context
 is read whole, receipt, details and all, where brief output would have
 rendered the same facts in a few lines.
 
-Why this is written down: on 2026-09-23 codex-main compacted every few turns.
+Why this is written down: on 2026-09-23 a Codex agent compacted every few turns.
 Its own words: "I also amplified it by letting settlement commands print full
 JSON bodies instead of --format brief; that was my tooling mistake. I'm
 switching every remaining PB command to bounded brief output." The operator
