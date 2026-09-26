@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -79,6 +80,16 @@ OWN_ADDRESS = (
     re.compile(r"^owner: [A-Za-z0-9-]+$"),
 )
 
+# Attribution the license requires, kept on purpose: each entry is one line
+# shape and why it may name a person (W340 P4a2, coordinator 2026-09-26).
+ATTRIBUTION = (
+    # The copyright holder in a source header and in LICENSE: the license
+    # names the holder, and removing it would change the license.
+    re.compile(r"^\s*(?:#|//|\*)?\s*Copyright \(c\) \d{4}(?:-\d{4})? .+$"),
+    # A package's author in pyproject.toml: the published distribution names it.
+    re.compile(r"^authors = \[\{ name = \"[^\"]+\" \}\]$"),
+)
+
 NOT_A_DOOR = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
@@ -99,10 +110,10 @@ WORD = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
 def _names_in(line: str, names: frozenset[str]) -> list[str]:
-    for pattern in OWN_ADDRESS:
+    for pattern in (*OWN_ADDRESS, *ATTRIBUTION):
         line = pattern.sub(" ", line)
     found = []
-    # `quickstart_works` is the same name as `quickstart-works`.
+    # `demo_project` is the same name as `demo-project`.
     for word in WORD.findall(line.lower().replace("_", "-")):
         parts = word.split("-")
         for start in range(len(parts)):
@@ -122,6 +133,56 @@ def _public_markdown() -> list[Path]:
     return files
 
 
+def _tracked_text_files() -> list[Path]:
+    """Every file git tracks in this repository that reads as UTF-8 text (W340 P4a2)."""
+
+    try:
+        listed = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "ls-files", "-z"],
+            capture_output=True, check=True, timeout=60,
+        ).stdout.decode("utf-8").split("\0")
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("not a git checkout: the tracked files cannot be listed")
+    files = []
+    for name in listed:
+        path = REPO_ROOT / name
+        if name and path.is_file() and not path.is_symlink():
+            files.append(path)
+    return files
+
+
+def _lines_where(matches, files: list[Path]) -> list[str]:
+    """`file:line` for every line ``matches`` accepts; the text itself is never kept.
+
+    The scan runs here so a failing test holds only locations: with
+    `--showlocals` a test's locals are printed, and they must not carry a
+    matched line or the name in it.
+    """
+
+    found = []
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for number, line in enumerate(text.splitlines(), start=1):
+            if matches(line):
+                found.append(f"{path.relative_to(REPO_ROOT)}:{number}")
+    return found
+
+
+def _lines_naming_private_names() -> list[str]:
+    names = _private_names()
+    return _lines_where(lambda line: bool(_names_in(line, names)), _tracked_text_files())
+
+
+def _lines_naming_this_hosts_endpoint() -> list[str] | None:
+    host = _endpoint_host()
+    if not host:
+        return None
+    return _lines_where(lambda line: host in line.lower(), _tracked_text_files())
+
+
 def test_the_scan_covers_the_procedures_and_every_public_docs_tree() -> None:
     files = {path.relative_to(REPO_ROOT).as_posix() for path in _public_markdown()}
     assert any(name.endswith("problem-board-worker/SKILL.md") for name in files)
@@ -139,15 +200,9 @@ def test_no_public_page_points_into_a_private_repository() -> None:
     assert not found, "private references in public pages:\n" + "\n".join(found)
 
 
-def test_no_public_page_names_a_private_person_or_organisation() -> None:
-    names = _private_names()
-    found = []
-    for path in _public_markdown():
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if _names_in(line, names):
-                # The line number only: printing the name would publish it in CI logs.
-                found.append(f"{path.relative_to(REPO_ROOT)}:{number}")
-    assert not found, f"private names in public pages (see {PRIVATE_NAMES_FILE}):\n" + "\n".join(found)
+def test_no_tracked_file_names_a_private_person_or_organisation() -> None:
+    found = _lines_naming_private_names()
+    assert not found, f"private names in tracked files (see {PRIVATE_NAMES_FILE}):\n" + "\n".join(found)
 
 
 def test_the_name_check_finds_a_listed_name_inside_an_alias_and_a_path() -> None:
@@ -177,19 +232,13 @@ def test_without_the_private_list_the_check_skips_and_a_required_run_fails(monke
     assert _private_names() == frozenset({"zq-probe", "zq-other"})
 
 
-def test_no_public_page_names_this_hosts_endpoint() -> None:
-    host = _endpoint_host()
-    if not host:
+def test_no_tracked_file_names_this_hosts_endpoint() -> None:
+    found = _lines_naming_this_hosts_endpoint()
+    if found is None:
         if os.environ.get(REQUIRE_PRIVATE_NAMES, "").strip() == "1":
             pytest.fail("no Problem Board host configuration to read the endpoint from")
         pytest.skip("no Problem Board host configuration on this machine")
-    found = []
-    for path in _public_markdown():
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if host in line.lower():
-                # The line number only: the host must not reach a log either.
-                found.append(f"{path.relative_to(REPO_ROOT)}:{number}")
-    assert not found, "this host's endpoint appears in public pages:\n" + "\n".join(found)
+    assert not found, "this host's endpoint appears in tracked files:\n" + "\n".join(found)
 
 
 def test_the_endpoint_probe_reads_the_host_configuration(monkeypatch, tmp_path) -> None:
@@ -209,3 +258,21 @@ def test_the_endpoint_probe_reads_the_host_configuration(monkeypatch, tmp_path) 
 
     monkeypatch.setattr(host_config, "resolve_host_config_path", unconfigured)
     assert _endpoint_host() == ""
+
+
+def test_attribution_lines_are_the_only_named_exception() -> None:
+    names = frozenset({"zq-probe"})
+    assert _names_in("# Copyright (c) 2026 Zq-Probe", names) == []
+    assert _names_in("Copyright (c) 2025-2026 Zq-Probe", names) == []
+    assert _names_in('authors = [{ name = "Zq-Probe" }]', names) == []
+    # The same name anywhere else is found.
+    assert _names_in("# maintained by Zq-Probe", names) == ["zq-probe"]
+    assert _names_in('owner = "zq-probe"  # Copyright (c) 2026', names) == ["zq-probe"]
+
+
+def test_the_scan_reads_every_tracked_text_file() -> None:
+    files = {path.relative_to(REPO_ROOT).as_posix() for path in _tracked_text_files()}
+    assert "LICENSE" in files
+    assert any(name.endswith(".py") and "/tests/" in name for name in files)
+    assert any(name.endswith("pyproject.toml") for name in files)
+    assert not any("/node_modules/" in name for name in files)
