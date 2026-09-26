@@ -1248,7 +1248,9 @@ def test_runtime_actions_orders_a_platform_rebuild_before_a_board_that_moves_ope
 
     runtime = _read("references/runtime-actions.md")
     assert "Problem Board operation policy and handler table differ" in runtime
-    assert "the platform rebuild that stages the matching `project-board` package (the `app-ecosystem` row above) **first**" in runtime
+    assert "check the approved board commit out in its deploy worktree **without reloading**" in runtime
+    assert "a platform rebuild before the board commit is checked out" in runtime
+    assert "services/operation_dispatch.py" in runtime
     command = re.search(r"grep -E '(?P<pattern>[^']+)'", runtime.split("## Does This Change Move Board Operations?", 1)[1])
     assert command, "the check command is in the section"
     pattern = command.group("pattern").replace("\\{", "{").replace("[[:space:]]", r"\s")
