@@ -3,6 +3,8 @@ export interface AccessCardFocus {
   manualOnly: boolean;
   controlOnly: boolean;
   projectRef?: string;
+  /** W319 slice 2: the owner shared this agent with the person; no project needed. */
+  shared?: boolean;
   targetSubject?: string;
   invitationRef?: string;
   resource?: string;
@@ -23,6 +25,7 @@ export function accessCardFocusFromParams(get: (key: string) => string): AccessC
   const accountClaim = get('account_claim').trim();
   const outerOperation = get('outer_operation').trim();
   const projectRef = get('project_ref').trim();
+  const shared = ['1', 'true'].includes(get('shared').trim().toLowerCase());
   const targetSubject = get('target_subject').trim();
   const invitationRef = get('invitation_ref').trim();
   return {
@@ -30,6 +33,7 @@ export function accessCardFocusFromParams(get: (key: string) => string): AccessC
     manualOnly: Boolean(manualAccessId),
     controlOnly: Boolean(controlCardId),
     projectRef: projectRef || undefined,
+    shared: shared || undefined,
     targetSubject: targetSubject || undefined,
     invitationRef: invitationRef || undefined,
     resource: resource || undefined,

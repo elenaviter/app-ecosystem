@@ -70,3 +70,29 @@ test('the slice and the panel use the project operations', () => {
   assert.match(panel, /projectAgentCard: projectAgentCard \|\| undefined/)
   assert.match(panel, /if \(projectAgentCardReadOnly\(item\)\)/)
 })
+
+// W319 slice 2: an agent its owner shared with the person opens without a
+// project; Connection Hub decides the share (view read-only, edit changes).
+test('a shared agent Card link takes the same path without a project', () => {
+  const target = projectAgentCardFocus(focus({ access_id: 'aut_agent', shared: '1' }))
+  assert.deepEqual(target, { accessId: 'aut_agent', projectRef: '' })
+  assert.deepEqual(projectAgentCardGetRequest(target).data, { access_id: 'aut_agent', project_ref: '' })
+  assert.equal(projectAgentCardFocus(focus({ access_id: 'aut_agent', shared: '0' })), null)
+})
+
+test('a view share opens read-only and says why; an edit share saves through the same path', () => {
+  const viewing = projectAgentCardRecord({
+    ok: true,
+    item: { access_id: 'aut_agent' },
+    access: { via: 'shared_view', can_edit: false, project_ref: '', worker_name: '' },
+  })
+  assert.equal(projectAgentCardReadOnly(viewing), true)
+  assert.match(projectAgentCardReadOnlyMessage(viewing), /shares this agent with you to view/)
+  const editing = projectAgentCardRecord({
+    ok: true,
+    item: { access_id: 'aut_agent' },
+    access: { via: 'shared_edit', can_edit: true, project_ref: '', worker_name: '' },
+  })
+  assert.equal(projectAgentCardReadOnly(editing), false)
+  assert.deepEqual(projectAgentCardUpdateTarget(editing), { accessId: 'aut_agent', projectRef: '' })
+})

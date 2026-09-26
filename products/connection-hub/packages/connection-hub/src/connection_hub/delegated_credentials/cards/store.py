@@ -8,6 +8,9 @@ Layout under a shared bundle-storage root:
     delegated-cards/v1/grantors/<subject_hash>/cards/<access_id>/
         revisions/card_revision_<stamp>_<revision>_<hash12>.json
         current.json
+        shares/<grantee_hash>.json          the owner's share with one person (W319)
+    delegated-cards/v1/grantees/<grantee_hash>/shared/<access_id>.json
+                                            the same share, indexed by the person
 
 This module owns paths and object IO only. The mutation protocol — critical
 section, updating marker, ordered commit — belongs to the card service.
@@ -42,6 +45,11 @@ GRANTORS_DIRNAME = "grantors"
 CARDS_SUBDIRNAME = "cards"
 REVISIONS_DIRNAME = "revisions"
 CURRENT_FILENAME = "current.json"
+SHARES_DIRNAME = "shares"
+GRANTEES_DIRNAME = "grantees"
+GRANTEE_SHARED_DIRNAME = "shared"
+_SHARE_FILE_PATTERN = re.compile(r"^([0-9a-f]{64})\.json$")
+_SHARED_CARD_FILE_PATTERN = re.compile(r"^([A-Za-z0-9_-]{1,128})\.json$")
 
 _SUBJECT_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ACCESS_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -261,6 +269,72 @@ class BundleStorageDelegatedCardStore:
         if len(found) > 1:
             raise CardStorageError("card_access_id_not_unique")
         return found[0] if found else None
+
+    # -- Shares (W319): the owner shares one Card with a named person --------
+    #
+    # The share next to the Card is the authority; the grantee index only
+    # finds it. A share is written Card-side first; an unshare rewrites the
+    # Card-side record as revoked, so it takes effect at once.
+
+    def share_path(self, *, subject_hash: str, access_id: str, grantee_hash: str) -> pathlib.Path:
+        return (
+            self.card_path(subject_hash=subject_hash, access_id=access_id)
+            / SHARES_DIRNAME
+            / f"{validated_subject_hash(grantee_hash)}.json"
+        )
+
+    def grantee_share_path(self, *, grantee_hash: str, access_id: str) -> pathlib.Path:
+        return (
+            self._root
+            / GRANTEES_DIRNAME
+            / validated_subject_hash(grantee_hash)
+            / GRANTEE_SHARED_DIRNAME
+            / f"{validated_access_id(access_id)}.json"
+        )
+
+    async def read_share(self, *, subject_hash: str, access_id: str, grantee_hash: str) -> dict | None:
+        return await read_json_or_none(
+            self.share_path(subject_hash=subject_hash, access_id=access_id, grantee_hash=grantee_hash)
+        )
+
+    async def list_shares(self, *, subject_hash: str, access_id: str) -> list[dict]:
+        directory = self.card_path(subject_hash=subject_hash, access_id=access_id) / SHARES_DIRNAME
+        shares: list[dict] = []
+        for name in await list_child_names(directory):
+            match = _SHARE_FILE_PATTERN.match(name)
+            if match is None:
+                continue
+            payload = await self.read_share(
+                subject_hash=subject_hash, access_id=access_id, grantee_hash=match.group(1)
+            )
+            if isinstance(payload, dict):
+                shares.append(payload)
+        return shares
+
+    async def write_share(
+        self, *, subject_hash: str, access_id: str, grantee_hash: str, share: dict
+    ) -> None:
+        await write_json_atomic(
+            self.share_path(subject_hash=subject_hash, access_id=access_id, grantee_hash=grantee_hash),
+            share,
+        )
+        await write_json_atomic(
+            self.grantee_share_path(grantee_hash=grantee_hash, access_id=access_id),
+            {"access_id": access_id, "grantor_hash": validated_subject_hash(subject_hash)},
+        )
+
+    async def list_shared_with(self, *, grantee_hash: str) -> list[dict]:
+        """The index entries for one person: which Card, under which owner partition."""
+
+        directory = self._root / GRANTEES_DIRNAME / validated_subject_hash(grantee_hash) / GRANTEE_SHARED_DIRNAME
+        entries: list[dict] = []
+        for name in await list_child_names(directory):
+            if _SHARED_CARD_FILE_PATTERN.match(name) is None:
+                continue
+            payload = await read_json_or_none(directory / name)
+            if isinstance(payload, dict):
+                entries.append(payload)
+        return entries
 
     async def list_revision_names(self, *, subject_hash: str, access_id: str) -> list[str]:
         path = self.card_path(subject_hash=subject_hash, access_id=access_id) / REVISIONS_DIRNAME
