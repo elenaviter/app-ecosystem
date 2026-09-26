@@ -57,6 +57,19 @@ export function accessCardFocusRequest(openParams?: Record<string, string>): Acc
   }
 }
 
+/**
+ * Whether a link asks for a change to the Card, so it opens the editor (W304
+ * finding 21): an operation to grant on a resource, an account to allow, or
+ * claims to review. Any other link opens the Card to read.
+ */
+export function accessCardFocusRequestsEdit(focus: AccessCardFocus): boolean {
+  return Boolean(
+    (focus.resource && focus.outerOperation)
+      || focus.accountClaim
+      || focus.claims.length > 0,
+  );
+}
+
 export function matchesAccessCardFocus(
   candidate: { access_id: string; source?: string },
   focus: AccessCardFocus,
