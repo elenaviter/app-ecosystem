@@ -4,7 +4,7 @@ title: "KDCube Maintainer Runtime Profile"
 summary: "The commands for a runtime of kind kdcube that this team maintains: which action makes a change live by the tree it is in (platform refresh with package selectors, bundle reload, descriptor apply, app deploy worktree), the order when a change moves board operations, and how each action's receipt proves it loaded the commit its ref names."
 status: current
 tags: [procedure, kdcube, maintainer, runtime, runtime-profile, refresh, reload, deploy]
-keywords: [runtime profile, kind kdcube, releases, kdcube info, bundle status --live, pb source status, MATCH MISMATCH UNKNOWN, relative gitdir, no git evidence, kdcube refresh, --build, maintainer-local-python-package, bundle reload, bundle config apply, bundles.yaml, bundles.template.yaml, deploy worktree, activation block, --local-path, widget dist, eviction count, board operations, receipt names the commit]
+keywords: [runtime profile, kind kdcube, releases, kdcube info, bundle status --live, pb source status, MATCH MISMATCH UNKNOWN, relative gitdir, no git evidence, kdcube refresh, --build, maintainer-local-python-package, bundle reload, bundle config apply, bundles.yaml, bundles.template.yaml, sync_board_descriptor, descriptor sync, deploy worktree, activation block, --local-path, widget dist, eviction count, board operations, receipt names the commit]
 see_also:
   - ./maintainer-rebuild.md
   - ./platform-suite.md
@@ -106,7 +106,8 @@ output on either side means a board reload may go on its own.
 Immediately before, besides the generic `git status --porcelain` and
 `pb worker receive`: when the range touches `bundles.template.yaml`, diff the
 touched entry against the live `config/bundles.yaml` first: a fix whose
-descriptor is behind it deploys and cannot run. Identical blocks sit under
+descriptor is behind it deploys and cannot run. For the board, that diff is the
+sync tool's dry run (Execute, below). Identical blocks sit under
 different bundle ids in that file, so edit the live descriptor by locating the
 bundle id, never by the first match of a block.
 
@@ -163,6 +164,32 @@ Execute the action the table names for the tree, at the commit the ref names:
   proc while the Data Bus workers load the deploy worktree, and `--local-path`
   keeps it; then `git -C <deploy-worktree> checkout --detach <sha>` and
   `kdcube bundle reload <bundle-id>`.
+- **The board's descriptor entry**, in every window that reloads
+  `problem-board@1-0`: after the deploy worktree checkout and any
+  `kdcube refresh`, and before `kdcube bundle reload problem-board@1-0`, run
+  the sync tool from the deploy worktree, so it reads the template of the
+  commit being deployed:
+
+  ```bash
+  DA=<board deploy worktree>
+  python "$DA/playground/domain-solution/tools/sync_board_descriptor.py" \
+    --deployed <workdir>/config/bundles.yaml            # prints the difference
+  python "$DA/playground/domain-solution/tools/sync_board_descriptor.py" \
+    --deployed <workdir>/config/bundles.yaml --apply    # backup, then writes
+  ```
+
+  Any Python with PyYAML runs it. The template is the truth for the entry,
+  except the deployment's own values the tool names (path, public URLs,
+  integrations); it writes only the board's lines and checks every other app
+  is unchanged. A refusal names a live key the template lacks: settle it in a
+  pull request, never by hand-editing the entry. After the reload run
+  `kdcube bundle catalog check --workdir <workdir>`. When the difference
+  changes an operation's label, description or grants, a Card that selected
+  it keeps the old descriptor digest and the operation stays suspended until
+  the Card's owner accepts the change in Connection Hub: name those
+  operations in the window's announcement. Why: the entry was hand-synced
+  twice on 2026-09-26 by two different scratch scripts and still differed
+  from the template (W353).
 - **The platform:** `kdcube refresh --build` from clean exports of the
   commits the ref names, with the package selectors above.
 - **The Problem Board client** on the same host: `pb source use-code` with
