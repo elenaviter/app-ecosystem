@@ -105,7 +105,7 @@ def test_package_content_is_recorded_for_its_revision() -> None:
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.17"
+    assert package["revision"] == "2026.09.26.18"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1592,3 +1592,21 @@ def test_a_new_agent_is_reachable_before_it_attends_a_project():
     assert "Start the watch right after `pb worker listen`, before `pb worker authorize`." in wake
     host = " ".join((PROCEDURE_ROOT.parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
     assert "while one of them attends no project, anyone who knows its exact stable name (never its alias) may send it a request, reply or ping" in host
+
+
+def test_the_merger_retargets_a_stacked_change_request_and_proves_the_merged_tree():
+    # W354: a stacked change request merged into its base branch after that
+    # base landed, so its content never reached main; and a merge on a tested
+    # merged tree replaced a rebase round, proven by comparing trees.
+    coordinator = " ".join(_read("references/coordinator.md").split())
+    merge = coordinator[coordinator.index("### Merge"):coordinator.index("## Release a stalled assignment")]
+    assert "Before merging a change request whose base is not the integration branch, retarget it to `main` (`gh pr edit <number> --base main`), or merge it only after its base has merged and it has been retargeted." in merge
+    assert "Never merge a stacked change request into its base branch after that base landed" in merge
+    assert "When approved heads are behind `main`, the merger may test the exact merged tree instead of asking for a rebase" in merge
+    assert "run both repositories' suites on that tree (gate 3)" in merge
+    assert "After merging, prove `main`'s tree equals the tested tree." in merge
+    assert "git rev-parse origin/main^{tree}" in merge
+    collaboration = " ".join(_read("references/collaboration.md").split())
+    gate_2 = collaboration[collaboration.index("2. **Base current:**"):collaboration.index("3. **Suites green")]
+    assert "The merger may instead test the exact merged tree" in gate_2
+    assert "(`coordinator.md`, Merge)" in gate_2

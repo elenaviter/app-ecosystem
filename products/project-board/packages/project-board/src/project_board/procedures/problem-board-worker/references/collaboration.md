@@ -317,6 +317,9 @@ is a verification. One that stops at printing JSON is a report.
    and again after every integration push, which moves the base under every
    open change request. A rebase is pushed with `--force-with-lease` on the
    author's own branch and the new head is named on the change request.
+   The merger may instead test the exact merged tree of heads that are
+   behind, and prove after merging that `main`'s tree equals it
+   (`coordinator.md`, Merge).
 3. **Suites green on the branch head**, both the Python and the widget suites
    where a widget changed, run by the author and stated with counts, rerun on
    every new head. A regression written for a review finding is shown to fail
