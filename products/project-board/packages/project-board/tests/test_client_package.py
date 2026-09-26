@@ -105,11 +105,7 @@ def test_worker_procedure_revision_records_its_exact_content() -> None:
         source_revision_ledger_path().read_text(encoding="utf-8")
     )
 
-<<<<<<< HEAD
-    assert package["revision"] == "2026.09.26.9"
-=======
-    assert package["revision"] == "2026.09.26.11"
->>>>>>> 121cf92 (W340 P3: procedure 2026.09.26.11 - public docs linked, no private paths (contract test), one project at a time, reviewer operator, release record, Rule 13, journaling and signals references)
+    assert package["revision"] == "2026.09.26.10"
     assert ledger[package["revision"]] == package["source_digest"]
 
 
