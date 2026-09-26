@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
@@ -34,6 +35,33 @@ from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
 
 
 BundleOperationCaller = Callable[..., Awaitable[Mapping[str, Any]]]
+
+LOGGER = logging.getLogger("kdcube.connection_hub.project_membership")
+
+
+def _log_provider_failure(reason: str, bundle_id: str, operation: str, exc: BaseException) -> None:
+    """Name why a peer call failed before it becomes one opaque reason.
+
+    Every exception of the call is converted to ``*_provider_unavailable``, and
+    the platform logs none of its own refusals (a 403 or 404 from the peer route,
+    an application not ready). On 2026-09-26 a second project admin could not
+    open any Control Card and nothing anywhere named the cause. Only the type,
+    an HTTP status and detail when the exception carries them, and the message
+    are logged: never the payload, the subject or the project.
+    """
+
+    status = getattr(exc, "status_code", None)
+    detail = getattr(exc, "detail", None)
+    LOGGER.warning(
+        "[connection-hub.project-host] %s bundle=%s operation=%s exception=%s status=%s detail=%s message=%s",
+        reason,
+        bundle_id,
+        operation,
+        type(exc).__name__,
+        status if status is not None else "-",
+        clean_text(detail)[:300] if detail is not None else "-",
+        clean_text(str(exc))[:300] or "-",
+    )
 
 
 def _refusal_reason(response: Mapping[str, Any]) -> str:
@@ -70,6 +98,9 @@ class BundleOperationProjectMembershipResolver:
                 data={"project_ref": project_ref, "subject": subject},
             )
         except Exception as exc:
+            _log_provider_failure(
+                "project_membership_provider_unavailable", self._bundle_id, self._operation, exc
+            )
             raise ProjectAuthorizationError(
                 "project_membership_provider_unavailable"
             ) from exc
@@ -137,6 +168,9 @@ class BundleOperationAgentCardAuthorizer:
                 data={"access_id": access_id, "project_ref": project_ref, "action": action},
             )
         except Exception as exc:
+            _log_provider_failure(
+                "project_agent_card_provider_unavailable", self._bundle_id, self._operation, exc
+            )
             raise AgentCardAuthorizationError("project_agent_card_provider_unavailable") from exc
         if not isinstance(response, Mapping):
             raise AgentCardAuthorizationError("project_agent_card_provider_response_invalid")
@@ -212,6 +246,9 @@ class BundleOperationControlCardAuthorizer:
                 data=data,
             )
         except Exception as exc:
+            _log_provider_failure(
+                "project_control_card_provider_unavailable", self._bundle_id, self._operation, exc
+            )
             raise ControlCardAuthorizationError("project_control_card_provider_unavailable") from exc
         if not isinstance(response, Mapping):
             raise ControlCardAuthorizationError("project_control_card_provider_response_invalid")
