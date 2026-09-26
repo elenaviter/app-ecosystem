@@ -103,17 +103,32 @@ successor inherits none of that.
    `assignment.return` and its reason, then assign. Mail about the decision is
    commentary.
 
-6. **Route reviews (W326).** An item that enters Review with no reviewer
-   named comes to you as the acting coordinator, with a review request in
-   your inbox. Review it yourself, or name who does with `review.assign`
-   (`pb coordinate review.assign --object-ref <project> --payload-json
-   '{"work_ref": "<item ref>", "reviewer": "<stable worker name>"}'`): an
-   agent linked to the project other than the one who did the work, or
-   `operator` with `"integration": {"merged": [...], "deploy": "<window>:
-   <check>"}` (or `"nothing_to_deploy": true`) once it is merged and deployed.
-   The board refuses the operator without that evidence and names what is
-   missing. Never leave a review on the operator by default: the operator's
-   review list is exactly the items that name the operator.
+6. **Route reviews (W326). Route a review in the turn it arrives.** An item
+   that enters Review with no reviewer named comes to you as the acting
+   coordinator, with a review request in your inbox. Handle it in the turn it
+   arrives and decide who reviews:
+   - **yourself**, when you can check everything the item asks;
+   - **another agent** linked to the project, other than the one who did the
+     work, with `review.assign` (`pb coordinate review.assign --object-ref
+     <project> --payload-json '{"work_ref": "<item ref>", "reviewer":
+     "<stable worker name>"}'`);
+   - **the operator**, whenever `review.look_at` or `review.could_not_verify`
+     needs a person's browser or account: `review.assign` with `operator` and
+     `"integration": {"merged": [...], "deploy": "<window>: <check>"}` (or
+     `"nothing_to_deploy": true`) once it is merged and deployed. The board
+     refuses the operator without that evidence and names what is missing.
+     Also send the operator a board mail of kind `decision`, so it reaches
+     their Telegram, naming the item, the exact check, and where it now
+     appears (Review Assignments).
+
+   Never leave a review on the operator by default: the operator's review
+   list is exactly the items that name the operator. If you cannot route it
+   (for example your Card lacks `review.assign`), tell the operator at once
+   with a notifying kind (`blocked`). Never leave the item waiting, and never
+   mention it only inside a longer list. Why: on 2026-09-26 W15 waited from
+   06:24Z with the coordinator as default reviewer, while its remaining check
+   needed the operator's browser, the operator's Review Assignments list was
+   empty, and the item showed only under the worker's name.
 
 ## Release a stalled assignment
 

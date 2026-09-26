@@ -416,8 +416,8 @@ Mail to the operator takes one of these kinds and nothing else:
     question   blocked   decision   delivery_failed
     progress   reply     update     result
 
-`progress` and `update` carry ordinary movement. `question`, `decision`, `blocked`
-also reach their Telegram. Ask for their input this way, never in a terminal prompt
+`progress`, `update`, `reply` and `result` stay on the board; only `question`, `decision`,
+`blocked`, `delivery_failed` reach their Telegram. Ask for their input this way, never in a terminal prompt
 (collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`.
 
 ## Runtime Actions And Test Windows
