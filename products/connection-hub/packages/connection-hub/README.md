@@ -56,6 +56,20 @@ a standalone service host is planned.
 python -m pip install connection-hub
 ```
 
+A caller that signs in to a Connection Hub resource and keeps its credentials
+on its own machine (a desktop tool, a coding-agent host such as Problem Board's
+`pb`) installs the caller side:
+
+```bash
+python -m pip install "connection-hub[client]"
+```
+
+That adds `connection_hub.caller`: sign-in in a browser or by device code,
+profiles, credentials in the operating system's native store, and an
+authenticated MCP connection (`build_caller_services`,
+`connect_profile_tools`). It needs no KDCube package. The `connection-hub`
+command line is a thin shell over it.
+
 Current release: `2026.09.02.1410`.
 
 The current release supports owner-configured OAuth for external MCP

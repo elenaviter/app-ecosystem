@@ -1,32 +1,11 @@
-from __future__ import annotations
+"""Alias of ``connection_hub.caller.errors`` (W322).
 
-from kdcube_cli.management.errors import ManagementCliError
+The caller layer moved to the connection-hub package. This module is that
+module, so code importing the old path shares one module object with it.
+"""
 
-ConnectionHubCliError = ManagementCliError
+import sys
 
+from connection_hub.caller import errors as _moved
 
-class StateError(ConnectionHubCliError):
-    pass
-
-
-class ProfileError(ConnectionHubCliError):
-    pass
-
-
-class CredentialError(ConnectionHubCliError):
-    pass
-
-
-class UpstreamError(ConnectionHubCliError):
-    pass
-
-
-class ClientConfigurationError(ConnectionHubCliError):
-    pass
-
-
-class HostControlError(ConnectionHubCliError):
-    pass
-
-
-AuthorizationError = ManagementCliError
+sys.modules[__name__] = _moved

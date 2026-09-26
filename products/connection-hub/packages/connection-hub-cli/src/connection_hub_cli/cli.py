@@ -16,32 +16,21 @@ from kdcube_cli.control import DEFAULT_RUNTIME_ROOT, LocalPlatformSourceRequest
 from kdcube_cli.management.errors import ManagementCliError
 from kdcube_cli.management.presentation import management_view
 
+from connection_hub.caller.services import build_caller_services
 from connection_hub_cli import __version__
 from connection_hub_cli.authorization import (
     BrowserAuthorizationFlow,
-    DeviceAuthorizationFlow,
     DeviceAuthorizationPrompt,
-    HttpxOAuthTransport,
-    McpOAuthEndpointDiscovery,
-    NativeOAuthProfileCredentialStore,
-    NativeOAuthSessionCredentialStore,
-    OAuthClient,
-    OAuthDiscovery,
     OAuthSessionRepository,
     OAuthSessionStore,
-    UnavailableOAuthCredentialStore,
 )
 from connection_hub_cli.authorization.profile_session import (
     OAuthProfileSessionService,
 )
 from connection_hub_cli.clients import ClientService, build_client_adapters
-from connection_hub_cli.credentials import (
-    CredentialStore,
-    NativeCredentialStore,
-    UnavailableCredentialStore,
-)
+from connection_hub_cli.credentials import CredentialStore
 from connection_hub_cli.diagnostics import collect_diagnostics
-from connection_hub_cli.errors import ConnectionHubCliError, CredentialError
+from connection_hub_cli.errors import ConnectionHubCliError
 from connection_hub_cli.host import HostService
 from connection_hub_cli.management import (
     DEFAULT_MANAGEMENT_SCOPE,
@@ -66,7 +55,6 @@ from connection_hub_cli.mcp_relay import serve_profile
 from connection_hub_cli.models import SUPPORTED_CLIENTS
 from connection_hub_cli.paths import StatePaths, resolve_helper_launch
 from connection_hub_cli.profiles import ProfileService
-from connection_hub_cli.remote_mcp import probe_remote_tools
 from connection_hub_cli.state import HostStore, InstallationStore, ProfileStore
 
 
@@ -88,95 +76,37 @@ class Services:
 
 
 def build_services(*, paths: StatePaths | None = None) -> Services:
+    caller = build_caller_services(paths=paths)
     selected_paths = paths or StatePaths.default()
-    profiles = ProfileStore(selected_paths.profiles)
-    installations = InstallationStore(selected_paths.installations)
-    hosts = HostStore(selected_paths.host)
-    oauth_sessions = OAuthSessionStore(selected_paths.oauth_sessions)
-    try:
-        native_credentials = NativeCredentialStore()
-    except CredentialError as exc:
-        credentials: CredentialStore = UnavailableCredentialStore(exc)
-        oauth_credentials = UnavailableOAuthCredentialStore(
-            exc,
-            error_prefix="oauth_session",
-        )
-        oauth_profile_credentials = UnavailableOAuthCredentialStore(
-            exc,
-            error_prefix="oauth_profile",
-        )
-    else:
-        credentials = native_credentials
-        oauth_credentials = NativeOAuthSessionCredentialStore(
-            backend=native_credentials.native_backend,
-            platform_name=native_credentials.platform_name,
-        )
-        oauth_profile_credentials = NativeOAuthProfileCredentialStore(
-            backend=native_credentials.native_backend,
-            platform_name=native_credentials.platform_name,
-        )
     adapters = build_client_adapters()
-    host_service = HostService(store=hosts)
-    oauth_transport = HttpxOAuthTransport()
-    oauth_discovery = OAuthDiscovery(transport=oauth_transport)
-    oauth_client = OAuthClient(transport=oauth_transport)
-    oauth_repository = OAuthSessionRepository(
-        sessions=oauth_sessions,
-        credentials=oauth_credentials,
-    )
-    authorization_flow = BrowserAuthorizationFlow(
-        discovery=oauth_discovery,
-        client=oauth_client,
-        sessions=oauth_repository,
-    )
-    device_authorization_flow = DeviceAuthorizationFlow(client=oauth_client)
-    oauth_profile_sessions = OAuthProfileSessionService(
-        profiles=profiles,
-        credentials=oauth_profile_credentials,
-        endpoint_discovery=McpOAuthEndpointDiscovery(
-            transport=oauth_transport,
-        ),
-        discovery=oauth_discovery,
-        authorization=authorization_flow,
-        device_authorization=device_authorization_flow,
-        oauth=oauth_client,
-        probe=probe_remote_tools,
-    )
-    profile_service = ProfileService(
-        profiles=profiles,
-        installations=installations,
-        credentials=credentials,
-        probe=probe_remote_tools,
-        oauth_sessions=oauth_profile_sessions,
-    )
     client_service = ClientService(
-        profiles=profiles,
-        installations=installations,
-        credentials=credentials,
+        profiles=caller.profiles,
+        installations=caller.installations,
+        credentials=caller.credentials,
         adapters=adapters,
         launch=resolve_helper_launch(),
-        oauth_sessions=oauth_profile_sessions,
+        oauth_sessions=caller.oauth_profile_sessions,
     )
     management_service = AuthorizedManagementService(
-        sessions=oauth_repository,
-        discovery=oauth_discovery,
-        oauth=oauth_client,
+        sessions=caller.oauth_repository,
+        discovery=caller.oauth_discovery,
+        oauth=caller.oauth_client,
         management=ManagementClient(transport=HttpxManagementTransport()),
     )
     secret_export_service = BrowserSecretExportService(
         client=SecretExportClient(transport=HttpxSecretExportTransport())
     )
     return Services(
-        profiles=profiles,
-        installations=installations,
-        credentials=credentials,
-        profile_service=profile_service,
+        profiles=caller.profiles,
+        installations=caller.installations,
+        credentials=caller.credentials,
+        profile_service=caller.profile_service,
         client_service=client_service,
-        host_service=host_service,
-        oauth_sessions=oauth_sessions,
-        oauth_repository=oauth_repository,
-        oauth_profile_sessions=oauth_profile_sessions,
-        authorization_flow=authorization_flow,
+        host_service=HostService(store=HostStore(selected_paths.host)),
+        oauth_sessions=caller.oauth_sessions,
+        oauth_repository=caller.oauth_repository,
+        oauth_profile_sessions=caller.oauth_profile_sessions,
+        authorization_flow=caller.authorization_flow,
         management_service=management_service,
         secret_export_service=secret_export_service,
         adapters=adapters,

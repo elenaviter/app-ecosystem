@@ -14,9 +14,9 @@ RUNTIME_IMPORTS = (
     "project_board.client.cli",
     "project_board.client.relay",
     "project_board.client.authorization",
-    "connection_hub_cli.cli",
-    "connection_hub_cli.paths",
-    "connection_hub_cli.profile_connection",
+    "connection_hub.caller.services",
+    "connection_hub.caller.paths",
+    "connection_hub.caller.profile_connection",
     "service_foundation.host_relay",
     "app_foundation.data_bus",
 )

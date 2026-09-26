@@ -1,5 +1,11 @@
-"""Compatibility import for KDCube-owned PKCE primitives."""
+"""Alias of ``connection_hub.caller.authorization.pkce`` (W322).
 
-from kdcube_cli.management.pkce import PKCEParameters, code_challenge, generate_pkce
+The caller layer moved to the connection-hub package. This module is that
+module, so code importing the old path shares one module object with it.
+"""
 
-__all__ = ["PKCEParameters", "code_challenge", "generate_pkce"]
+import sys
+
+from connection_hub.caller.authorization import pkce as _moved
+
+sys.modules[__name__] = _moved

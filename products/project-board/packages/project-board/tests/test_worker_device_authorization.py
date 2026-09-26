@@ -49,14 +49,14 @@ def _channel() -> SimpleNamespace:
 
 
 def _install_services(monkeypatch, tmp_path, *, existing=None, oauth, profile_service):
-    import connection_hub_cli.cli as connection_hub_cli
+    import connection_hub.caller.services as caller_services
 
     services = SimpleNamespace(
         profiles=SimpleNamespace(get=lambda _name: existing),
         oauth_profile_sessions=oauth,
         profile_service=profile_service,
     )
-    monkeypatch.setattr(connection_hub_cli, "build_services", lambda **_kwargs: services)
+    monkeypatch.setattr(caller_services, "build_caller_services", lambda **_kwargs: services)
     monkeypatch.setattr(authorization.HostRelayConfig, "load", lambda _path: _config(tmp_path))
     monkeypatch.setattr(authorization, "_matching_channel", lambda *_args: _channel())
     monkeypatch.setattr(

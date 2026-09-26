@@ -68,7 +68,7 @@ def is_namespace_handshake_timeout(error: BaseException) -> bool:
     return timed_out
 
 
-# The discovery probe of the MCP endpoint (connection_hub_cli
+# The discovery probe of the MCP endpoint (connection_hub.caller
 # authorization/discovery.py) found no runtime behind it: the endpoint
 # answered something other than 401 (during an outage the ingress answers 404
 # for a runtime that is not there, 2026-09-23 16:10 to 16:21 UTC, chat-proc
