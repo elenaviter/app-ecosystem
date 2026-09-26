@@ -30,6 +30,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -56,12 +57,18 @@ PRIVATE_NAMES_FILE = "PB_PRIVATE_NAMES_FILE"
 REQUIRE_PRIVATE_NAMES = "PB_REQUIRE_PRIVATE_NAMES"
 
 
+def _required() -> bool:
+    """A maintainer run: every missing input fails instead of skipping."""
+
+    return os.environ.get(REQUIRE_PRIVATE_NAMES, "").strip() == "1"
+
+
 def _private_names() -> frozenset[str]:
     """The private names, lowercased, from the file the environment names."""
 
     location = os.environ.get(PRIVATE_NAMES_FILE, "").strip()
     if not location:
-        if os.environ.get(REQUIRE_PRIVATE_NAMES, "").strip() == "1":
+        if _required():
             pytest.fail(f"{PRIVATE_NAMES_FILE} is required and not set")
         pytest.skip(f"no private names list: set {PRIVATE_NAMES_FILE}")
     names = frozenset(
@@ -84,8 +91,13 @@ OWN_ADDRESS = (
 # shape and why it may name a person (W340 P4a2, coordinator 2026-09-26).
 ATTRIBUTION = (
     # The copyright holder in a source header and in LICENSE: the license
-    # names the holder, and removing it would change the license.
-    re.compile(r"^\s*(?:#|//|\*)?\s*Copyright \(c\) \d{4}(?:-\d{4})? .+$"),
+    # names the holder, and removing it would change the license. Only a
+    # name-shaped holder is exempt, so nothing else rides on the line (an
+    # address, a second name after "Contact", a Markdown bullet's text).
+    re.compile(
+        r"^\s*(?:#|//|\*)?\s*Copyright \(c\) \d{4}(?:-\d{4})? "
+        r"[A-Za-z][A-Za-z .,'-]*?(?:\. All rights reserved\.)?\s*$"
+    ),
     # A package's author in pyproject.toml: the published distribution names it.
     re.compile(r"^authors = \[\{ name = \"[^\"]+\" \}\]$"),
 )
@@ -142,6 +154,8 @@ def _tracked_text_files() -> list[Path]:
             capture_output=True, check=True, timeout=60,
         ).stdout.decode("utf-8").split("\0")
     except (OSError, subprocess.SubprocessError):
+        if _required():
+            pytest.fail("not a git checkout: the tracked files cannot be listed")
         pytest.skip("not a git checkout: the tracked files cannot be listed")
     files = []
     for name in listed:
@@ -151,12 +165,21 @@ def _tracked_text_files() -> list[Path]:
     return files
 
 
+# Formats that are not text: a tracked file of one of these is not scanned.
+BINARY_SUFFIXES = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf",
+    ".woff", ".woff2", ".ttf", ".otf", ".zip", ".gz", ".whl", ".pyc",
+})
+
+
 def _lines_where(matches, files: list[Path]) -> list[str]:
     """`file:line` for every line ``matches`` accepts; the text itself is never kept.
 
     The scan runs here so a failing test holds only locations: with
     `--showlocals` a test's locals are printed, and they must not carry a
-    matched line or the name in it.
+    matched line or the name in it. A file that does not decode as UTF-8 and
+    is not a known binary format is itself a finding: the scan cannot read it,
+    so a name in it would pass unseen.
     """
 
     found = []
@@ -164,6 +187,8 @@ def _lines_where(matches, files: list[Path]) -> list[str]:
         try:
             text = path.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
+            if path.suffix.lower() not in BINARY_SUFFIXES:
+                found.append(f"{path.relative_to(REPO_ROOT)}: not UTF-8 text, so not scanned")
             continue
         for number, line in enumerate(text.splitlines(), start=1):
             if matches(line):
@@ -235,7 +260,7 @@ def test_without_the_private_list_the_check_skips_and_a_required_run_fails(monke
 def test_no_tracked_file_names_this_hosts_endpoint() -> None:
     found = _lines_naming_this_hosts_endpoint()
     if found is None:
-        if os.environ.get(REQUIRE_PRIVATE_NAMES, "").strip() == "1":
+        if _required():
             pytest.fail("no Problem Board host configuration to read the endpoint from")
         pytest.skip("no Problem Board host configuration on this machine")
     assert not found, "this host's endpoint appears in tracked files:\n" + "\n".join(found)
@@ -265,9 +290,36 @@ def test_attribution_lines_are_the_only_named_exception() -> None:
     assert _names_in("# Copyright (c) 2026 Zq-Probe", names) == []
     assert _names_in("Copyright (c) 2025-2026 Zq-Probe", names) == []
     assert _names_in('authors = [{ name = "Zq-Probe" }]', names) == []
+    assert _names_in("Copyright (c) 2026 Zq-Probe. All rights reserved.", names) == []
     # The same name anywhere else is found.
     assert _names_in("# maintained by Zq-Probe", names) == ["zq-probe"]
     assert _names_in('owner = "zq-probe"  # Copyright (c) 2026', names) == ["zq-probe"]
+    # Nothing rides on an attribution line: an address, a second name, a bullet.
+    assert _names_in("# Copyright (c) 2026 Holder. Contact zq-probe@example.invalid", names) == ["zq-probe"]
+    assert _names_in("* Copyright (c) 2026 anything <zq-probe>", names) == ["zq-probe"]
+    assert _names_in("Copyright (c) 2026 Holder, see zq_probe/notes", names) == ["zq-probe"]
+
+
+def test_a_file_the_scan_cannot_read_is_a_finding(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", tmp_path)
+    latin = tmp_path / "notes.md"
+    latin.write_bytes("caf\xe9 zq-probe\n".encode("latin-1"))
+    image = tmp_path / "logo.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe")
+    plain = tmp_path / "plain.md"
+    plain.write_text("zq-probe\n", encoding="utf-8")
+    found = _lines_where(lambda line: "zq-probe" in line, [latin, image, plain])
+    assert found == ["notes.md: not UTF-8 text, so not scanned", "plain.md:1"]
+
+
+def test_a_required_run_outside_a_git_checkout_fails(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", tmp_path / "not-a-checkout")
+    monkeypatch.delenv(REQUIRE_PRIVATE_NAMES, raising=False)
+    with pytest.raises(pytest.skip.Exception):
+        _tracked_text_files()
+    monkeypatch.setenv(REQUIRE_PRIVATE_NAMES, "1")
+    with pytest.raises(pytest.fail.Exception):
+        _tracked_text_files()
 
 
 def test_the_scan_reads_every_tracked_text_file() -> None:
