@@ -3706,6 +3706,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
         board_alias = _board_alias_view(field, identity.worker_name)
         if board_alias:
             result["board_alias"] = board_alias
+        procedure = _runtime_procedure_state(identity.runtime_kind)
+        if procedure:
+            result["procedure"] = procedure
         if channel.state != "active":
             authorize = authorization_command(
                 channel.profile,
@@ -3749,6 +3752,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
                     "and settles every returned lease, and leaves the watch running."
                 ),
             }
+        if procedure.get("install"):
+            # First thing to do: the skill this session runs by is not the
+            # package this host's client carries (W304 U8).
+            result["next"] = {"install_procedure": procedure["install"], **result["next"]}
         return result
     if channel is None:
         raise DomainError(
@@ -4612,6 +4619,49 @@ def _worker_project_context(
 
 
 PROCEDURE_TARGETS = ("codex", "claude-code")
+
+
+def _runtime_procedure_state(runtime_kind: str) -> dict[str, Any]:
+    """This runtime's installed worker procedure, checked when a session enrolls (W304 U8).
+
+    A runtime added to a host later (Codex after Claude Code) started from
+    whatever copy of the skill it found, and host checks covered only the
+    runtimes the host already ran. `listen` reads this runtime's own copy, never
+    writes it, and when it is not current names the one install command, first
+    in `next`, with the re-read that must follow.
+    """
+
+    if runtime_kind not in PROCEDURE_TARGETS:
+        return {}
+    from .procedures import verify_agent_procedure
+
+    try:
+        [installed] = verify_agent_procedure([runtime_kind])
+    except (DomainError, OSError, ValueError) as exc:
+        installed = {"state": "unreadable", "errors": [str(exc)]}
+    state = str(installed.get("state") or "")
+    view = {
+        "target": runtime_kind,
+        "state": state,
+        "installed_revision": str(installed.get("installed_revision") or ""),
+        "source_revision": str(installed.get("source_revision") or ""),
+    }
+    if state == "current":
+        return view
+    view["install"] = ["pb", "procedure", "install", "--target", runtime_kind]
+    view["rule"] = (
+        f"This session's {runtime_kind} worker procedure is {state or 'not current'}. "
+        "Run the install command now, then re-read the installed SKILL.md before "
+        "the next step: the copy this session loaded is not the one this host's "
+        "client carries."
+        + (
+            " The destination holds a copy Problem Board does not own or cannot "
+            "read; look at it before adding --force."
+            if state in {"conflict", "corrupt", "unreadable"}
+            else ""
+        )
+    )
+    return view
 
 
 def _procedure_targets(args: Any) -> tuple[list[str], str]:
