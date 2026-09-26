@@ -186,6 +186,7 @@ def test_a_refused_publication_is_filed_as_refused_and_retention_keeps_it(field)
     assert read["op"] == "retention"
     assert read["range"] == "2026-08-01T10..2026-08-01T11"
     assert read["partitions"] == 2 and read["records"] == 2
+    assert read["removed"] == 1 and read["project"] == PROJECT
 
 
 def test_a_receipt_whose_batch_row_is_gone_is_queued_again_not_stuck_in_pending(field):

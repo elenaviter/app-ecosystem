@@ -76,7 +76,7 @@ class ScopeLeaseStore:
 
     def read_active(self, worker_name: str, lease_id: str) -> tuple[Path, dict[str, Any]] | None:
         path = self.pending_path(worker_name, lease_id)
-        with self.reads.reading("lookup") as read:
+        with self.reads.reading("lookup", key=lease_id) as read:
             read.opened_pending(agent_component(worker_name), int(path.is_file()))
         if not path.is_file():
             legacy = self.root / "active" / f"{lease_id}.json"

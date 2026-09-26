@@ -178,6 +178,11 @@ def test_settled_rows_expire_by_hour_folder_per_agent(field, caplog):
     assert field.read_outbox_record(row["outbox_id"]) is None
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("relay store read") and "op=retention" in r.getMessage()]
     assert any(f"worker={WORKER} store=outbox" in line for line in lines)
+    # Audit of #126 (claude-ops): the line names the project it read and what
+    # retention removed, not only what it opened.
+    [line] = [line for line in lines if f"worker={WORKER} store=outbox " in line]
+    assert line.endswith(f" project={PROJECT} removed=1")
+    assert local_store.last_read_summaries(WORKER)["outbox"]["removed"] == 1
 
 
 def test_refused_mail_is_listed_and_found_for_replay_from_the_layout(field):

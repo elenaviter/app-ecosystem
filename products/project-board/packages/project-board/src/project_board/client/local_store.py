@@ -97,6 +97,16 @@ def record_id_of(name: str) -> str:
     return rest.split(SLUG_SEPARATOR, 1)[0]
 
 
+def _project_of(root: Path) -> str:
+    """The project a store root lies under (``.../projects/<id>/...``), or ""."""
+
+    parts = root.parts
+    for index in range(len(parts) - 2, -1, -1):
+        if parts[index] == "projects":
+            return parts[index + 1]
+    return ""
+
+
 def stamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).strftime(_STAMP)
 
@@ -127,6 +137,8 @@ class ReadRecord:
     hours: dict[str, list[str]] = dataclass_field(default_factory=dict)
     records: dict[str, int] = dataclass_field(default_factory=dict)
     pending_only: set[str] = dataclass_field(default_factory=set)
+    removed: dict[str, int] = dataclass_field(default_factory=dict)
+    key: str = ""
 
     def opened(self, agent: str, hour: str, records: int) -> None:
         self.hours.setdefault(agent, []).append(hour)
@@ -136,6 +148,10 @@ class ReadRecord:
         self.pending_only.add(agent)
         self.records[agent] = self.records.get(agent, 0) + int(records)
 
+    def removed_from(self, agent: str, records: int) -> None:
+        """Count records a retention pass removed, for its log line."""
+        self.removed[agent] = self.removed.get(agent, 0) + int(records)
+
     def partitions(self, agent: str) -> list[str]:
         return list(self.hours.get(agent, []))
 
@@ -143,9 +159,10 @@ class ReadRecord:
 class PartitionedStore:
     """Records of one kind for one project, partitioned by agent and hour."""
 
-    def __init__(self, root: Path, *, store: str) -> None:
+    def __init__(self, root: Path, *, store: str, project: str = "") -> None:
         self.root = Path(root)
         self.store = store
+        self.project = project or _project_of(self.root)
 
     @property
     def lock(self) -> Path:
@@ -242,7 +259,7 @@ class PartitionedStore:
     # -- reads ---------------------------------------------------------------
 
     @contextmanager
-    def reading(self, op: str) -> Iterator[ReadRecord]:
+    def reading(self, op: str, *, key: str = "") -> Iterator[ReadRecord]:
         """Record what one read opens, then log it per agent.
 
         A read that walks partitions (a listing, retention, recovery) logs at
@@ -251,8 +268,12 @@ class PartitionedStore:
         on 2026-09-24 the legacy cleanup made 50,000 of them in an hour and
         each wrote an INFO line, flooding the rotating relay log. Lookups log
         at DEBUG, and their last summary still reaches the heartbeat.
+
+        The line names the store's other dimensions (W287 partition keys): the
+        project whose tree was read, the key a lookup asked for, and for
+        retention the records it removed.
         """
-        record = ReadRecord(store=self.store, op=op)
+        record = ReadRecord(store=self.store, op=op, key=key)
         started = time.monotonic()
         try:
             yield record
@@ -270,13 +291,23 @@ class PartitionedStore:
                     "ms": elapsed,
                     "at": stamp(datetime.now(timezone.utc)),
                 }
+                message = "relay store read worker=%s store=%s op=%s range=%s partitions=%d records=%d ms=%d"
+                args: list[Any] = [agent, self.store, op, span, summary["partitions"], summary["records"], elapsed]
+                if self.project:
+                    summary["project"] = self.project
+                    message += " project=%s"
+                    args.append(self.project)
+                if record.key:
+                    summary["key"] = record.key
+                    message += " key=%s"
+                    args.append(record.key)
+                if op == "retention":
+                    summary["removed"] = record.removed.get(agent, 0)
+                    message += " removed=%d"
+                    args.append(summary["removed"])
                 with _LAST_READS_LOCK:
                     _LAST_READS[(agent, self.store)] = summary
-                logger.log(
-                    logging.DEBUG if op == "lookup" else logging.INFO,
-                    "relay store read worker=%s store=%s op=%s range=%s partitions=%d records=%d ms=%d",
-                    agent, self.store, op, span, summary["partitions"], summary["records"], elapsed,
-                )
+                logger.log(logging.DEBUG if op == "lookup" else logging.INFO, message, *args)
 
     def hours_newest_first(self, agent: str, *, not_before: datetime | None = None) -> Iterator[tuple[Path, datetime]]:
         """Hour folders of one agent, newest first, by folder name only."""
@@ -356,7 +387,7 @@ class PartitionedStore:
         carried = stamp_of_id(record_id)
         if carried is not None:
             # A generated id names its own hour folder: one stat per agent.
-            with self.reading(op) as read:
+            with self.reading(op, key=record_id) as read:
                 for agent in chosen:
                     path = self.hour_dir(agent, carried) / f"{record_id}.json"
                     read.opened(agent, carried.strftime("%Y-%m-%dT%H"), 1)
@@ -364,7 +395,7 @@ class PartitionedStore:
                         return path
             return None
         cutoff = datetime.now(timezone.utc) - timedelta(days=within_days)
-        with self.reading(op) as read:
+        with self.reading(op, key=record_id) as read:
             for agent in chosen:
                 root = self.agent_root(agent)
                 for year in _numbered(root, 4, reverse=True):
@@ -450,6 +481,7 @@ class PartitionedStore:
                         shutil.rmtree(hour)
                         removed["partitions"] += 1
                         removed["records"] += len(names)
+                        read.removed_from(agent, len(names))
                         continue
                     retained.append((hour, start, names, size))
 
@@ -469,6 +501,7 @@ class PartitionedStore:
                     total_records -= len(names)
                     removed["partitions"] += 1
                     removed["records"] += len(names)
+                    read.removed_from(agent, len(names))
                     if hour.parent.is_dir() and _numbered(hour.parent, 2):
                         rebuild_day_index(
                             hour.parent,

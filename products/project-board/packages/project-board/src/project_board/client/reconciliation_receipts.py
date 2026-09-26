@@ -223,31 +223,33 @@ def apply_receipt_retention(
                     shutil.rmtree(hour_dir)
                     totals["partitions_removed"] += 1
                     totals["receipts_removed"] += len(names)
+                    read.removed_from(agent_dir.name, len(names))
                 else:
                     totals["receipts_kept_refused"] += sum(
                         1 for name in names if _publication_of(name) not in PRUNABLE_PUBLICATION_STATES
                     )
-        retained = [item for item in inventory if item[0].is_dir()]
-        retained_records = sum(len(item[2]) for item in retained)
-        retained_bytes = sum(item[3] for item in retained)
-        for hour_dir, hour_start, names, size in retained:
-            if (
-                retained_records <= MAX_RECORDS_PER_AGENT
-                and retained_bytes <= MAX_BYTES_PER_AGENT
-            ):
-                break
-            # Refused evidence has not reached the service. Keep it and make
-            # the pressure visible rather than silently deleting it.
-            if not all(
-                _publication_of(name) in PRUNABLE_PUBLICATION_STATES
-                for name in names
-            ):
-                continue
-            shutil.rmtree(hour_dir)
-            retained_records -= len(names)
-            retained_bytes -= size
-            totals["partitions_removed"] += 1
-            totals["receipts_removed"] += len(names)
+            retained = [item for item in inventory if item[0].is_dir()]
+            retained_records = sum(len(item[2]) for item in retained)
+            retained_bytes = sum(item[3] for item in retained)
+            for hour_dir, hour_start, names, size in retained:
+                if (
+                    retained_records <= MAX_RECORDS_PER_AGENT
+                    and retained_bytes <= MAX_BYTES_PER_AGENT
+                ):
+                    break
+                # Refused evidence has not reached the service. Keep it and make
+                # the pressure visible rather than silently deleting it.
+                if not all(
+                    _publication_of(name) in PRUNABLE_PUBLICATION_STATES
+                    for name in names
+                ):
+                    continue
+                shutil.rmtree(hour_dir)
+                retained_records -= len(names)
+                retained_bytes -= size
+                totals["partitions_removed"] += 1
+                totals["receipts_removed"] += len(names)
+                read.removed_from(agent_dir.name, len(names))
         if (
             retained_records > MAX_RECORDS_PER_AGENT
             or retained_bytes > MAX_BYTES_PER_AGENT

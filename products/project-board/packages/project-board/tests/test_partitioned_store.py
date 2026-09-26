@@ -409,3 +409,9 @@ def test_a_lookup_by_id_logs_at_debug_and_a_listing_at_info(tmp_path, caplog):
     # The lookup still reaches the heartbeat summary.
     store.find("event_a", agents=["codex-api"], within_days=36500)
     assert last_read_summaries("codex-api")["events"]["op"] == "lookup"
+    # The line and the summary name what the lookup asked for (audit of #126).
+    with caplog.at_level(logging.DEBUG, logger=local_store.__name__):
+        store.find("event_a", agents=["codex-api"], within_days=36500)
+    [line] = [r.getMessage() for r in caplog.records if " op=lookup " in r.getMessage()]
+    assert " key=event_a" in line
+    assert last_read_summaries("codex-api")["events"]["key"] == "event_a"

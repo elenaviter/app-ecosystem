@@ -43,12 +43,12 @@ class AssignmentStore:
 
         if worker_name:
             path = self.pending_path(worker_name, assignment_id)
-            with self.reads.reading("lookup") as read:
+            with self.reads.reading("lookup", key=assignment_id) as read:
                 read.opened_pending(agent_component(worker_name), int(path.is_file()))
             if path.is_file():
                 return path
         else:
-            with self.reads.reading("lookup") as read:
+            with self.reads.reading("lookup", key=assignment_id) as read:
                 for agent in self.reads.agents():
                     path = self.root / agent / "pending" / f"{assignment_id}.json"
                     read.opened_pending(agent, int(path.is_file()))
