@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -28,6 +29,7 @@ from .io import (
 )
 from .journal_search import JournalDocument, JournalSearchIndex
 from .project_setup import PROJECT_SETUP_FILE, read_project_setup
+from .read_roots import DEFAULT_READ_REF, head_commit, read_root_lag
 
 
 # The page holding a project's standing facts, at the root of its journal home.
@@ -82,6 +84,58 @@ def parse_source_repositories(values: Iterable[str]) -> dict[str, str]:
     return repositories
 
 
+_READ_REF_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+$")
+
+
+def repository_entry(alias: str, raw: Any) -> tuple[str, str, str]:
+    """(root, read_root, read_ref) of one repository map entry.
+
+    An entry is a checkout path, or ``{"root": ..., "read_root": ...,
+    "read_ref": ...}`` where ``read_root`` is the dedicated, never-edited
+    worktree the project's setup is read from (W262). Paths are returned as
+    written; ``read_ref`` defaults to ``origin/main`` when a read root is set.
+    """
+
+    if not isinstance(raw, Mapping):
+        return str(raw or "").strip(), "", ""
+    root = str(raw.get("root") or "").strip()
+    read_root = str(raw.get("read_root") or "").strip()
+    read_ref = str(raw.get("read_ref") or "").strip()
+    if read_ref and not read_root:
+        raise DomainError(
+            "journal_repository_map_invalid",
+            "read_ref is set only beside a read_root.",
+            details={"alias": str(alias)},
+        )
+    if read_root:
+        read_ref = read_ref or DEFAULT_READ_REF
+        if not _READ_REF_RE.fullmatch(read_ref) or ".." in read_ref:
+            raise DomainError(
+                "journal_repository_map_invalid",
+                "read_ref names a remote-tracking ref such as origin/main.",
+                details={"alias": str(alias)},
+            )
+    return root, read_root, read_ref
+
+
+def repository_entries(
+    roots: Mapping[str, str] | Iterable[tuple[str, str]],
+    reads: Iterable[tuple[str, str, str]] = (),
+) -> dict[str, Any]:
+    """The mapping ``RepositoryMap.from_mapping`` takes, from a config's two tuples."""
+
+    pairs = roots.items() if isinstance(roots, Mapping) else roots
+    entries: dict[str, Any] = {str(alias): root for alias, root in pairs}
+    for alias, read_root, read_ref in reads:
+        if alias in entries:
+            entries[alias] = {
+                "root": entries[alias],
+                "read_root": read_root,
+                "read_ref": read_ref,
+            }
+    return entries
+
+
 @dataclass(frozen=True)
 class RepositoryMap:
     roots: Mapping[str, Path]
@@ -89,6 +143,12 @@ class RepositoryMap:
     # instead of refusing the whole map, so a worker's channel opens without
     # any journal checkout, and only a use of that alias is refused (W304 D13).
     missing: Mapping[str, Path] = field(default_factory=dict)
+    # W262: per alias, the never-edited worktree a project's setup is read
+    # from, and the ref it follows. A read root that is not there is kept and
+    # checked on each use; reads then fall back to the root and the lag is
+    # named, never fatal.
+    read_roots: Mapping[str, Path] = field(default_factory=dict)
+    read_refs: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(
@@ -104,6 +164,8 @@ class RepositoryMap:
 
         roots: dict[str, Path] = {}
         missing: dict[str, Path] = {}
+        read_roots: dict[str, Path] = {}
+        read_refs: dict[str, str] = {}
         for alias, raw in values.items():
             if not REPOSITORY_ALIAS_RE.fullmatch(str(alias)):
                 raise DomainError(
@@ -111,7 +173,17 @@ class RepositoryMap:
                     "Repository aliases use letters, digits, dot, underscore, or hyphen.",
                     details={"alias": str(alias)},
                 )
-            value = raw.get("root") if isinstance(raw, Mapping) else raw
+            value, read_value, read_ref = repository_entry(str(alias), raw)
+            if read_value:
+                read_root = Path(read_value).expanduser()
+                if not read_root.is_absolute():
+                    raise DomainError(
+                        "journal_repository_root_invalid",
+                        "LOCAL repository read roots must be absolute paths.",
+                        details={"alias": str(alias)},
+                    )
+                read_roots[str(alias)] = read_root.resolve()
+                read_refs[str(alias)] = read_ref
             root = Path(str(value or "")).expanduser()
             if not root.is_absolute():
                 raise DomainError(
@@ -130,7 +202,32 @@ class RepositoryMap:
                     details={"alias": str(alias)},
                 )
             roots[str(alias)] = resolved
-        return cls(roots=roots, missing=missing)
+        return cls(
+            roots=roots, missing=missing, read_roots=read_roots, read_refs=read_refs
+        )
+
+    def read_root(self, alias: str) -> Path | None:
+        """The alias's read root when it is set and present on this host."""
+
+        read_root = self.read_roots.get(alias)
+        return read_root if read_root is not None and read_root.is_dir() else None
+
+    def resolve_read(
+        self, value: str, *, require_directory: bool = True
+    ) -> tuple[RepositoryRef, Path]:
+        """Like ``resolve``, for reading a project's setup (W262).
+
+        Resolves against the alias's read root when it has one on this host,
+        else against its root. Never creates anything.
+        """
+
+        reference = parse_repository_ref(value)
+        read_root = self.read_root(reference.repository)
+        if read_root is None:
+            return self.resolve(value, require_directory=require_directory)
+        return reference, self._within(
+            reference, read_root, create=False, require_directory=require_directory
+        )
 
     def resolve(
         self, value: str, *, create: bool = False, require_directory: bool = True
@@ -159,6 +256,14 @@ class RepositoryMap:
                 "The portable ref has no LOCAL repository checkout mapping.",
                 details={"repository": reference.repository},
             )
+        return reference, self._within(
+            reference, root, create=create, require_directory=require_directory
+        )
+
+    @staticmethod
+    def _within(
+        reference: RepositoryRef, root: Path, *, create: bool, require_directory: bool
+    ) -> Path:
         candidate = (root / reference.path).resolve(strict=False)
         if candidate == root or root not in candidate.parents:
             raise DomainError(
@@ -180,7 +285,7 @@ class RepositoryMap:
                 "The bound journal home is absent from this LOCAL checkout.",
                 details={"journal_home_ref": str(reference)},
             )
-        return reference, candidate
+        return candidate
 
 
 def _frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -358,6 +463,38 @@ class JournalWorkspace:
         _, path = self.repositories.resolve(ref, require_directory=False)
         return str(path)
 
+    def _read_file(self, ref: str, used: set[str] | None = None) -> str:
+        """A setup file on this host, from its alias's read root when set (W262)."""
+
+        reference, path = self.repositories.resolve_read(ref, require_directory=False)
+        if used is not None:
+            used.add(reference.repository)
+        return str(path)
+
+    def _read_home(self, home_ref: RepositoryRef, journal_home: Path) -> tuple[Path, str, list[str]]:
+        """Where the project's setup is read: (home, read root used, issues).
+
+        The journal home inside the alias's read root when one is set and
+        holds it; otherwise the journal home in the root checkout, which is
+        where every write goes.
+        """
+
+        read_root = self.repositories.read_root(home_ref.repository)
+        if read_root is None:
+            return journal_home, "", []
+        _, home = self.repositories.resolve_read(str(home_ref), require_directory=False)
+        if not home.is_dir():
+            return (
+                journal_home,
+                "",
+                [
+                    f"journal home {home_ref} is absent from the read root of "
+                    f"{home_ref.repository} at {read_root}; the setup was read "
+                    f"from its root checkout instead"
+                ],
+            )
+        return home, str(read_root), []
+
     def context(self, project_ref: str) -> dict[str, Any]:
         binding, home_ref, journal_home = self._bound(project_ref)
         project_artifact = ""
@@ -368,22 +505,50 @@ class JournalWorkspace:
             project_artifact = str(artifact)
         project_id = parse_ref(project_ref).object_id
         journal_directory = journal_home / "journal"
+        # W262: the setup, facts, environment, instructions and profiles are
+        # read from the alias's read root, a never-edited worktree the relay
+        # keeps at its integration ref, when the host maps one. Writes (the
+        # journal directory, indexing, reconcile) stay on the root checkout.
+        read_home, read_root, read_issues = self._read_home(home_ref, journal_home)
+        used: set[str] = {home_ref.repository}
         # The standing facts of a project (hosts, agents, release), kept at the
         # journal home's root. Named only when the page exists (W262).
-        facts = journal_home / PROJECT_FACTS_FILE
+        facts = read_home / PROJECT_FACTS_FILE
         has_facts = facts.is_file()
-        environment = journal_home / PROJECT_ENVIRONMENT_FILE
+        environment = read_home / PROJECT_ENVIRONMENT_FILE
         has_environment = environment.is_file()
         # The project's declared setup: its instructions file and runtimes
         # (W262). By hand in the journal home until the Control Card holds it.
         setup = read_project_setup(
-            journal_home / PROJECT_SETUP_FILE,
+            read_home / PROJECT_SETUP_FILE,
             setup_ref=self._portable_child(home_ref, PurePosixPath(PROJECT_SETUP_FILE)),
-            resolve=self._local_file,
+            resolve=lambda ref: self._read_file(ref, used),
+        )
+        # A lag is named, never fatal: local refs only, no fetch here.
+        issues = list(setup.get("project_setup_issues") or []) + read_issues
+        for alias in sorted(used):
+            configured = self.repositories.read_roots.get(alias)
+            if configured is None:
+                continue
+            lag = read_root_lag(
+                alias,
+                configured,
+                self.repositories.read_refs.get(alias) or DEFAULT_READ_REF,
+            )
+            if lag:
+                issues.append(lag)
+        setup["project_setup_issues"] = issues
+        commit_tree = (
+            Path(read_root)
+            if read_root
+            else self.repositories.roots.get(home_ref.repository)
+            or self.repositories.missing.get(home_ref.repository)
         )
         return {
             **binding,
             **setup,
+            "journal_home_commit": head_commit(commit_tree),
+            "journal_home_read_root": read_root,
             "local_journal_home": str(journal_home),
             "local_journal_directory": str(journal_directory),
             "project_facts_ref": (
@@ -1059,4 +1224,6 @@ __all__ = [
     "RepositoryMap",
     "WORKSPACE_SCHEMA",
     "parse_source_repositories",
+    "repository_entries",
+    "repository_entry",
 ]

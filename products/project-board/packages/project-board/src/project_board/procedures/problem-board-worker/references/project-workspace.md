@@ -157,6 +157,10 @@ the same `pb worker context` result names as `project_environment_ref`. Its
 page owns this project's interpreters, virtual environments, source overlays,
 test commands, fixtures, and machine-owned system packages.
 
+`journal_home_commit` in the same result says which commit the project's
+setup, facts and environment pages were read at; when the host reads them from
+a copy that lags its integration branch, `project_setup_issues` names the lag.
+
 Build and prove the environment from that page before interpreting a test
 failure. When the context has no environment-page ref, or a command needs an
 undeclared dependency, tell the coordinator exactly what is missing. The team

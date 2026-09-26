@@ -13,7 +13,9 @@ Three jobs:
   and their publication rows are deleted, receipts that carry information move
   into the per-agent layout of :mod:`reconciliation_receipts`;
 - receipt retention by hour folder (:func:`reconciliation_receipts.apply_receipt_retention`);
-- outbox retention for settled rows (``sent/`` and ``refused/``).
+- outbox retention for settled rows (``sent/`` and ``refused/``);
+- advancing each clean setup read root to its integration ref (W262,
+  :mod:`read_roots`).
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from .outbox_store import (
     OutboxStore,
 )
 from .operation_store import OperationStore
+from .read_roots import advance_read_roots
 from .reconciliation_replay import replay_refused_receipts
 from .reconciliation_receipts import (
     apply_receipt_retention,
@@ -64,11 +67,27 @@ SESSION_RETENTION_DAYS = 90
 SESSION_MAX_RECORDS_PER_WORKER = 1000
 
 
-def run_local_state_maintenance(field: Any, *, now: datetime | None = None) -> dict[str, Any]:
-    """One maintenance pass over every project in this field."""
+def run_local_state_maintenance(
+    field: Any,
+    *,
+    now: datetime | None = None,
+    repositories: Any = None,
+    read_roots_state: Path | None = None,
+) -> dict[str, Any]:
+    """One maintenance pass over every project in this field.
+
+    With the host's ``repositories`` map and a state file, it also advances
+    each clean setup read root to its integration ref (W262), at most every
+    five minutes per alias.
+    """
 
     current = now or datetime.now(timezone.utc)
     summary: dict[str, Any] = {"legacy_receipts": {}, "retention": None}
+    summary["read_roots"] = (
+        advance_read_roots(repositories, read_roots_state, now=current)
+        if repositories is not None and read_roots_state is not None
+        else None
+    )
     summary["flat_events"] = {}
     summary["refused_receipts_replay"] = {}
     summary["flat_assignments"] = {}

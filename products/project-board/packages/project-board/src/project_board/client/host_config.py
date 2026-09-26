@@ -15,6 +15,7 @@ from ..contract.worker_identity import (
 )
 from .agent_session import default_profile_name
 from .io import atomic_write_json, component, exclusive_lock, read_json, utc_now
+from .journals import repository_entries, repository_entry
 
 
 HOST_CONFIG_SCHEMA = "problem-board.host-relay-config.v2"
@@ -244,6 +245,14 @@ class HostRelayConfig:
     # Remote URL per alias, operator-declared, published so the board can link
     # portable repo: refs. Never a local path.
     source_repository_urls: tuple[tuple[str, str], ...] = ()
+    # W262: (alias, read_root, read_ref) for each alias whose map entry names
+    # the never-edited worktree the project's setup is read from.
+    source_read_roots: tuple[tuple[str, str, str], ...] = ()
+
+    def repository_mapping(self) -> dict[str, Any]:
+        """The repository map entries, read roots included, for ``RepositoryMap``."""
+
+        return repository_entries(self.source_repositories, self.source_read_roots)
 
     @property
     def profile_scope(self) -> str:
@@ -321,6 +330,15 @@ class HostRelayConfig:
                 "work_relay_config_invalid",
                 "journal_workspace.source_repositories must be an object.",
             )
+        try:
+            entries = {
+                alias: repository_entry(str(alias), raw)
+                for alias, raw in repositories.items()
+            }
+        except DomainError as exc:
+            raise DomainError(
+                "work_relay_config_invalid", str(exc), details=dict(exc.details)
+            ) from exc
         repository_urls = journal.get("source_repository_urls") or {}
         if not isinstance(repository_urls, Mapping):
             raise DomainError(
@@ -367,9 +385,20 @@ class HostRelayConfig:
                 sorted(
                     (
                         component(str(alias), field="repository alias"),
-                        str(_absolute(root, f"source_repositories.{alias}")),
+                        str(_absolute(entry[0], f"source_repositories.{alias}")),
                     )
-                    for alias, root in repositories.items()
+                    for alias, entry in entries.items()
+                )
+            ),
+            source_read_roots=tuple(
+                sorted(
+                    (
+                        component(str(alias), field="repository alias"),
+                        str(_absolute(entry[1], f"source_repositories.{alias}.read_root")),
+                        entry[2],
+                    )
+                    for alias, entry in entries.items()
+                    if entry[1]
                 )
             ),
             allowed_roots=tuple(sorted(str(_absolute(root, "allowed_root")) for root in roots)),
@@ -395,7 +424,10 @@ class HostRelayConfig:
             ),
         )
         approved_roots = [Path(root) for root in result.allowed_roots]
-        for alias, repository in result.source_repositories:
+        for alias, repository in (
+            *result.source_repositories,
+            *((alias, read_root) for alias, read_root, _ in result.source_read_roots),
+        ):
             repository_path = Path(repository)
             if not any(
                 repository_path == root or repository_path.is_relative_to(root)
@@ -705,8 +737,11 @@ def update_host_config(
             repositories[component(str(alias), field="repository alias")] = str(
                 _absolute(root, f"source_repositories.{alias}")
             )
+        # A read root set on an alias stays with it when its root changes.
         value["journal_workspace"]["source_repositories"] = dict(
-            sorted(repositories.items())
+            sorted(
+                repository_entries(repositories.items(), current.source_read_roots).items()
+            )
         )
         urls = dict(current.source_repository_urls)
         for alias, url in (source_repository_urls or {}).items():

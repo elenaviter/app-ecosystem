@@ -42,7 +42,7 @@ from ..contract.refs import parse_ref
 from ..contract.worker_identity import WorkerSessionIdentity, normalize_worker_alias
 from ..contract.runtime_account import normalize_runtime_account
 from .io import content_hash, new_id, parse_utc, read_json, utc_now
-from .journals import JournalWorkspace, RepositoryMap
+from .journals import JournalWorkspace, RepositoryMap, repository_entries, repository_entry
 from .mail_attachments import normalize_attachment_manifest
 from .plan_authority import PLAN_REF_RESOLUTION_SCHEMA
 from ..contract.plan_host import NOTE_VIEW_KIND, PLAN_HOST_CONTROL_KINDS
@@ -68,6 +68,7 @@ from .relay_failures import (
     staged_failure,
 )
 from .local_state_maintenance import run_local_state_maintenance
+from .read_roots import READ_ROOTS_STATE
 from .local_store import last_read_summaries
 from .outbox_drain import RelayOutboxDrainServer
 from .outbox_store import OutboxStore
@@ -398,6 +399,11 @@ class RelayConfig:
     # Remote URL per repository alias, published with the worker so the board
     # can render links for portable repo: refs. Paths never cross the network.
     source_repository_urls: tuple[tuple[str, str], ...] = ()
+    # W262: (alias, read_root, read_ref) per alias with a setup read root.
+    source_read_roots: tuple[tuple[str, str, str], ...] = ()
+
+    def repository_mapping(self) -> dict[str, Any]:
+        return repository_entries(self.source_repositories, self.source_read_roots)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "RelayConfig":
@@ -520,7 +526,17 @@ class RelayConfig:
                 journal_root_path.resolve() if journal_root_path else None
             ),
             source_repositories=tuple(
-                sorted((str(alias), str(root)) for alias, root in raw_repositories.items())
+                sorted(
+                    (str(alias), repository_entry(str(alias), raw)[0])
+                    for alias, raw in raw_repositories.items()
+                )
+            ),
+            source_read_roots=tuple(
+                sorted(
+                    (str(alias), *repository_entry(str(alias), raw)[1:])
+                    for alias, raw in raw_repositories.items()
+                    if repository_entry(str(alias), raw)[1]
+                )
             ),
             allowed_roots=tuple(
                 sorted(
@@ -580,6 +596,7 @@ class RelayConfig:
             max_control_bytes=host.max_control_bytes,
             allow_session_resume_view=host.allow_session_resume_view,
             source_repository_urls=getattr(host, "source_repository_urls", ()),
+            source_read_roots=getattr(host, "source_read_roots", ()),
         )
 
     @classmethod
@@ -609,7 +626,7 @@ class RelayConfig:
             self.journal_workspace_root,
             # A checkout that is not on this machine is reported per project
             # when a journal needs it, and never keeps a channel closed (W304 D13).
-            RepositoryMap.from_mapping(dict(self.source_repositories), require_existing=False),
+            RepositoryMap.from_mapping(self.repository_mapping(), require_existing=False),
         )
 
 
@@ -5873,6 +5890,29 @@ class ProblemBoardRelaySupervisor:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
+    def _read_root_maintenance(self) -> dict[str, Any]:
+        """The host's repository map and read-root state file, read each pass (W262).
+
+        Read from the host config on every pass, so a read root added by the
+        operator is advanced without a restart. A config that cannot be read
+        skips only this job.
+        """
+
+        try:
+            host = HostRelayConfig.load(self.config_path)
+            repositories = RepositoryMap.from_mapping(
+                host.repository_mapping(), require_existing=False
+            )
+        except Exception:  # noqa: BLE001 - housekeeping never stops the relay
+            logger.debug("Read-root housekeeping skipped: host config unreadable", exc_info=True)
+            return {}
+        if not repositories.read_roots:
+            return {}
+        return {
+            "repositories": repositories,
+            "read_roots_state": self.config_path.parent / READ_ROOTS_STATE,
+        }
+
     async def _maintain_local_state(self, field_root: Path) -> None:
         """Run housekeeping in a thread, first shortly after start, then on an interval.
 
@@ -5884,7 +5924,9 @@ class ProblemBoardRelaySupervisor:
         while True:
             try:
                 await asyncio.to_thread(
-                    run_local_state_maintenance, SharedFieldStore(field_root)
+                    run_local_state_maintenance,
+                    SharedFieldStore(field_root),
+                    **self._read_root_maintenance(),
                 )
             except asyncio.CancelledError:
                 raise
