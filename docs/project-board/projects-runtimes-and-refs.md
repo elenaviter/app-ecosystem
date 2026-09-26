@@ -74,7 +74,7 @@ hold the same fields, so only where they are read from changes.
 | Setting | What it gives | Today |
 | --- | --- | --- |
 | **Project instructions** (one file per project) | Every participant reads the same project rules on attending (`project_instructions_ref`), whatever repositories it touches. Repository `AGENTS.md` files keep describing how to work in their code. | `instructions_ref` in `project-setup.json` |
-| **Repositories of the project** | Aliases, so `repo:<alias>/...` resolves to each host's checkout; assignments carry and validate repository plus base commit; each repository's integration ref, from which runtime actions release; a per-host check that the repositories and Git access exist; which repositories are in scope. | assignment bindings and each host's repository map; the integration ref in each runtime action's `from_ref` |
+| **Repositories of the project** | Aliases, so `repo:<alias>/...` resolves to each host's checkout; assignments carry and validate repository plus base commit; each repository's integration ref, from which runtime actions release; a per-host check that the repositories and Git access exist; which repositories are in scope. | assignment bindings and each host's repository map; each runtime action's `releases`: a repository alias and its integration ref |
 | **Additional skills** | Project-specific know-how installed for every participant, such as a runtime profile. | each runtime's `profile_ref`, read from `pb worker context` |
 | **Runtimes** | Where the project's systems run, their actions, who may trigger them, from which ref. | `runtimes` in `project-setup.json` |
 | **Journal home** | Where the project's decisions and history are kept, and where this setup file sits. | a project setting already (`pb worker context`) |
@@ -93,14 +93,19 @@ hold the same fields, so only where they are read from changes.
       "kind": "kdcube",
       "profile_ref": "repo:app-ecosystem/products/kdcube/procedures/runtime-profile-maintainer.md",
       "actions": {
-        "refresh": {"who": ["coordinator"], "from_ref": "origin/main"},
-        "bundle-reload": {"who": ["coordinator"], "from_ref": "origin/main"}
+        "refresh": {"who": ["coordinator"], "releases": [
+          {"repository": "kdcube", "ref": "origin/main"},
+          {"repository": "app-ecosystem", "ref": "origin/main"}
+        ]},
+        "bundle-reload": {"who": ["coordinator"], "releases": [
+          {"repository": "applications", "ref": "origin/main"}
+        ]}
       }
     }
   ]
 }
 ```
 
-Every action must name `from_ref` and `who`. An entry that cannot be read is
+Every action must name `who` and `releases`: each repository it loads, by alias, and the git ref it releases there, so its result can name the commit that loaded in each. An entry that cannot be read is
 left out and named in `project_setup_issues`; a missing file gives empty
 fields. Neither ever fails `pb worker context`.

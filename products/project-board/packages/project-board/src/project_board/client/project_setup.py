@@ -8,7 +8,7 @@ read from changes later.
 
 A runtime is a named place where the project's system runs and the team acts
 on it (a KDCube deployment, a staging server, a device). Each of its actions
-names who may trigger it and the git ref it releases: an action never stages
+names who may trigger it and, per repository it loads, the git ref it releases: an action never stages
 whatever a working tree holds. A runtime may name a profile, a procedure
 document with the commands for that kind of runtime, so the generic worker
 procedure carries none of them.
@@ -28,6 +28,8 @@ PROJECT_SETUP_FILE = "project-setup.json"
 PROJECT_SETUP_SCHEMA = "problem-board.project-setup.v1"
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+# A repository alias, as in repo:<alias>/... refs.
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # A git ref as a person writes it: a branch, a tag, origin/main, or a commit.
 _REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]{0,199}$")
 _TEXT_MAX = 200
@@ -77,15 +79,26 @@ def _action(name: str, raw: Any, issues: list[str], where: str) -> dict[str, Any
     if not isinstance(raw, Mapping):
         issues.append(f"{where}.{name}: not an object")
         return None
-    from_ref = _text(raw.get("from_ref"))
-    if not _REF_RE.fullmatch(from_ref):
-        issues.append(f"{where}.{name}: from_ref must name the git ref the action releases")
+    # An action releases one ref per repository it loads: a platform refresh
+    # loads the platform and the packages it stages, an app reload its app.
+    # Without the repository, "the result names the commit" names nothing.
+    releases_raw = raw.get("releases")
+    if not isinstance(releases_raw, list) or not releases_raw:
+        issues.append(f"{where}.{name}: releases must list each repository and the git ref it releases")
         return None
+    releases = []
+    for release in releases_raw:
+        repository = _text(release.get("repository")) if isinstance(release, Mapping) else ""
+        ref = _text(release.get("ref")) if isinstance(release, Mapping) else ""
+        if not _ALIAS_RE.fullmatch(repository) or not _REF_RE.fullmatch(ref):
+            issues.append(f"{where}.{name}: each release names a repository alias and the git ref it releases")
+            return None
+        releases.append({"repository": repository, "ref": ref})
     who = raw.get("who")
     if not isinstance(who, list) or not who or not all(_text(item) for item in who):
         issues.append(f"{where}.{name}: who must list who may trigger it")
         return None
-    return {"name": name, "who": [_text(item) for item in who], "from_ref": from_ref}
+    return {"name": name, "who": [_text(item) for item in who], "releases": releases}
 
 
 def _runtime(raw: Any, index: int, resolve: Resolver, issues: list[str]) -> dict[str, Any] | None:

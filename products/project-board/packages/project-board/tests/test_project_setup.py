@@ -54,8 +54,11 @@ SETUP = {
             "kind": "kdcube",
             "profile_ref": "repo:procedures/kdcube/runtime-profile.md",
             "actions": {
-                "refresh": {"who": ["coordinator"], "from_ref": "origin/main"},
-                "bundle-reload": {"who": ["coordinator", "operator"], "from_ref": "v1.4.0"},
+                "refresh": {"who": ["coordinator"], "releases": [
+                    {"repository": "kdcube", "ref": "origin/main"},
+                    {"repository": "app-ecosystem", "ref": "origin/main"},
+                ]},
+                "bundle-reload": {"who": ["coordinator", "operator"], "releases": [{"repository": "applications", "ref": "v1.4.0"}]},
             },
         }
     ],
@@ -75,8 +78,11 @@ def test_the_context_returns_the_declared_instructions_and_runtimes(tmp_path):
     assert (runtime["name"], runtime["host"], runtime["kind"]) == ("dev-main", "dev-main", "kdcube")
     assert runtime["local_profile"] == str(procedures / "kdcube" / "runtime-profile.md")
     assert runtime["actions"] == [
-        {"name": "refresh", "who": ["coordinator"], "from_ref": "origin/main"},
-        {"name": "bundle-reload", "who": ["coordinator", "operator"], "from_ref": "v1.4.0"},
+        {"name": "refresh", "who": ["coordinator"], "releases": [
+            {"repository": "kdcube", "ref": "origin/main"},
+            {"repository": "app-ecosystem", "ref": "origin/main"},
+        ]},
+        {"name": "bundle-reload", "who": ["coordinator", "operator"], "releases": [{"repository": "applications", "ref": "v1.4.0"}]},
     ]
     assert context["project_setup_issues"] == []
 
@@ -104,14 +110,16 @@ def test_an_action_without_the_ref_it_releases_is_left_out_and_named(tmp_path):
     workspace, home, _procedures = _workspace(tmp_path)
     broken = json.loads(json.dumps(SETUP))
     broken["runtimes"][0]["actions"]["refresh"] = {"who": ["coordinator"]}
-    broken["runtimes"][0]["actions"]["deploy"] = {"who": [], "from_ref": "main"}
+    broken["runtimes"][0]["actions"]["deploy"] = {"who": [], "releases": [{"repository": "applications", "ref": "main"}]}
+    broken["runtimes"][0]["actions"]["restart"] = {"who": ["coordinator"], "releases": [{"ref": "main"}]}
     _declare(home, broken)
 
     context = workspace.context(PROJECT)
 
     assert [action["name"] for action in context["runtimes"][0]["actions"]] == ["bundle-reload"]
     issues = context["project_setup_issues"]
-    assert any("refresh: from_ref must name the git ref" in issue for issue in issues)
+    assert any("refresh: releases must list each repository" in issue for issue in issues)
+    assert any("restart: each release names a repository alias" in issue for issue in issues)
     assert any("deploy: who must list" in issue for issue in issues)
 
 
@@ -146,7 +154,7 @@ def test_a_control_character_or_a_cut_at_the_caps_is_named(tmp_path):
     workspace, home, _procedures = _workspace(tmp_path)
     broken = json.loads(json.dumps(SETUP))
     broken["runtimes"][0]["host"] = "dev\tmain"
-    broken["runtimes"][0]["actions"]["refresh"]["from_ref"] = "origin/main\x1b[31m"
+    broken["runtimes"][0]["actions"]["refresh"]["releases"] = [{"repository": "kdcube", "ref": "origin/main\x1b[31m"}]
     _declare(home, broken)
     context = workspace.context(PROJECT)
     assert context["runtimes"] == []
@@ -156,7 +164,8 @@ def test_a_control_character_or_a_cut_at_the_caps_is_named(tmp_path):
         {**SETUP["runtimes"][0], "name": f"r{index}"} for index in range(project_setup.MAX_RUNTIMES + 2)
     ]}
     many["runtimes"][0] = {**many["runtimes"][0], "actions": {
-        f"a{index}": {"who": ["coordinator"], "from_ref": "main"} for index in range(project_setup.MAX_ACTIONS + 1)
+        f"a{index}": {"who": ["coordinator"], "releases": [{"repository": "applications", "ref": "main"}]}
+        for index in range(project_setup.MAX_ACTIONS + 1)
     }}
     _declare(home, many)
     context = workspace.context(PROJECT)

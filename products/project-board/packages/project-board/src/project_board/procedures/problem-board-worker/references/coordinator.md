@@ -431,9 +431,9 @@ decides which commit that is and proves it is the one that loaded. An app whose
 path is a working checkout stages that tree at the instant of the reload,
 whatever it holds, so no app's path is ever a working checkout.
 
-1. **Integrate onto the named ref first.** The action releases a ref the
-   project names for that runtime (`pb worker context`, `runtimes[].actions[].from_ref`),
-   never a working tree. Before anything else, bring the commits that are to
+1. **Integrate onto the named ref first.** The action releases, in each
+   repository it loads, a ref the project names for that runtime
+   (`pb worker context`, `runtimes[].actions[].releases`), never a working tree. Before anything else, bring the commits that are to
    go live onto that ref, reviewed, and push it where the runtime's machine can
    fetch it; then fetch it on that machine and note the commit it names. On
    one machine this is the same step: the integrator's checkout is not the

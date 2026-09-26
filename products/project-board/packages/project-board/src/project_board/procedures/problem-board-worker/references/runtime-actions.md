@@ -19,13 +19,15 @@ project's setup (by hand in `project-setup.json` at the journal home's root,
 later on the project's Control Card). The four concepts behind them are in
 [projects, runtimes and refs](repo:app-ecosystem/docs/project-board/projects-runtimes-and-refs.md).
 
-- **A runtime action releases its ref.** The commit the action's `from_ref`
+- **A runtime action releases its refs.** It names, for each repository it
+  loads (a platform refresh loads the platform and the packages it stages, an
+  app reload its app), the ref it releases (`releases`). The commit each ref
   names is fetched onto the runtime's machine and loaded; never whatever a
   working tree holds at that moment. Before it, the coordinator integrates the
   commits to go live onto that ref and pushes it ([coordinator](coordinator.md),
   Reload, refresh, restart, step 1).
-- **Its result names what loaded:** the ref, and the commit it named when it
-  loaded. A result that names another commit is a failed action.
+- **Its result names what loaded:** each repository, its ref, and the commit
+  the ref named when it loaded. A result that names another commit is a failed action.
 - **Only who the action names triggers it**, from the runtime's host.
 - **The commands are the profile's.** Read the runtime's `local_profile` for
   them. A project that declares no runtime has no runtime actions, and a

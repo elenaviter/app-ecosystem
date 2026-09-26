@@ -1272,11 +1272,12 @@ def test_a_project_declares_its_instructions_and_runtimes_and_actions_release_a_
     actions = " ".join(_read("references/runtime-actions.md").split())
     coordinator = " ".join(_read("references/coordinator.md").split())
     assert "Read the project's instructions file, which `pb worker context` names as `project_instructions_ref`" in skill
+    assert "who triggers it and the ref it releases in each repository it loads (`releases`)" in skill
     assert "the commands live in the runtime's profile (`local_profile`), never here, and a project with none has no runtime actions" in skill
-    assert "Every action loads the commit its ref names, never a working tree, and its result names that ref and commit." in skill
+    assert "Every action loads, per repository, the commit its ref names, never a working tree, and its result names each repository, ref and commit." in skill
     assert "## Project Runtimes" in _read("references/runtime-actions.md")
-    assert "**A runtime action releases its ref.**" in actions
-    assert "**Its result names what loaded:** the ref, and the commit it named when it loaded." in actions
+    assert "**A runtime action releases its refs.**" in actions
+    assert "**Its result names what loaded:** each repository, its ref, and the commit the ref named when it loaded." in actions
     assert "1. **Integrate onto the named ref first.**" in coordinator
     assert coordinator.index("1. **Integrate onto the named ref first.**") < coordinator.index("2. **Read the dashboard first**")
     assert "On one machine this is the same step" in coordinator and "On several machines" in coordinator
