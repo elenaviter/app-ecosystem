@@ -166,6 +166,11 @@ import {
   projectAgentCardUpdateTarget,
 } from './projectAgentCard';
 import {
+  PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE,
+  projectControlCardReadOnly,
+  projectControlCardUpdateTarget,
+} from './projectControlCard';
+import {
   authorityAccountCount,
   authorityAllowsOuterOperation,
   authorityNamedOperationCount,
@@ -3182,7 +3187,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       setEditActionError(projectAgentCardReadOnlyMessage(item));
       return;
     }
+    if (projectControlCardReadOnly(item)) {
+      setEditActionError(PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE);
+      return;
+    }
     const projectAgentCard = projectAgentCardUpdateTarget(item);
+    const projectControlCard = projectControlCardUpdateTarget(item);
     try {
       updated = await dispatch(updateDelegatedAccess({
         accessId: item.access_id,
@@ -3208,6 +3218,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         properties: selectedProperties,
         projectPersonControl: projectPersonControl || undefined,
         projectAgentCard: projectAgentCard || undefined,
+        projectControlCard: projectControlCard || undefined,
       })).unwrap();
     } catch (error) {
       setEditActionError(`Save was not applied: ${String(error || 'request refused')}`);

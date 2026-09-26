@@ -151,7 +151,7 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
   assert.match(slice, /request\.operation/)
   assert.match(slice, /request\.data/)
   // W319 adds the project path to another person's agent Card between the two.
-  assert.match(slice, /projectPersonControl\s*\?\s*'project_person_control_update'\s*:\s*projectAgentCard\s*\?\s*'project_agent_card_update'\s*:\s*'delegated_access_update'/)
+  assert.match(slice, /projectPersonControl\s*\?\s*'project_person_control_update'\s*:\s*projectAgentCard\s*\?\s*'project_agent_card_update'\s*:\s*projectControlCard\s*\?\s*'project_control_card_update'\s*:\s*'delegated_access_update'/)
   assert.match(slice, /projectPersonControl \? 'project_person_control_revoke' : 'delegated_access_revoke'/)
   assert.match(slice, /state\.focusedCard = action\.payload\.access/)
   assert.doesNotMatch(slice, /state\.items\.push\(action\.payload\.access\)/)

@@ -22,7 +22,7 @@ export type ProjectControlCoordinates =
   | ProjectInvitationControlCoordinates;
 
 export interface ControlCardGetRequest {
-  operation: 'project_person_control_get' | 'control_card_get';
+  operation: 'project_person_control_get' | 'project_control_card_get' | 'control_card_get';
   data: Record<string, string>;
 }
 
@@ -54,6 +54,14 @@ export function controlCardGetRequest({
         project_ref: projectRef,
         target_subject: targetSubject,
       },
+    };
+  }
+  if (projectRef) {
+    // W260: a project's Control Card, through its project; another admin of
+    // the project is not its creator, so `control_card_get` would not find it.
+    return {
+      operation: 'project_control_card_get',
+      data: { control_id: controlId, project_ref: projectRef },
     };
   }
   return {

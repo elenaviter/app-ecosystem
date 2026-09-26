@@ -202,6 +202,13 @@ export interface ProjectAgentCardAccess {
   worker_name?: string;
 }
 
+/** How this person reached a project's Control Card (W260): through the project. */
+export interface ProjectControlCardAccess {
+  via: 'owner' | 'project_admin' | 'project_member' | string;
+  can_edit: boolean;
+  project_ref: string;
+}
+
 export interface ProjectAgentCardGetResult {
   ok?: boolean;
   error?: string;
@@ -216,6 +223,8 @@ export interface DelegatedAccessRecord {
   access_id: string;
   /** Set when this Card was opened through the project path, not the owner's list (W319). */
   project_agent_card?: ProjectAgentCardAccess;
+  /** Set when this Control Card was opened through its project (W260). */
+  project_control_card?: ProjectControlCardAccess;
   /** Current durable Card state. Exact-card reads include revoked Cards so a
    *  linking application can explain why its gate is closed. */
   state?: 'active' | 'revoked' | string;

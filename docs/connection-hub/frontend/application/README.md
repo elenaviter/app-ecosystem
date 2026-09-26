@@ -380,6 +380,16 @@ What the shell owns, and what it does not:
   `access_id`, `manual_access_id`, or `control_card_id` opens that Card. For
   example, `/sites/connections/?tab=delegatedAccess&access_id=<id>` opens the
   named Card. Unknown fields are not copied into the iframe URL.
+- A `control_card_id` link also names how the Card is reached, and the widget
+  reads and saves it on that path:
+  - `control_card_id` alone: the creator's own Control Card
+    (`control_card_get`, `control_card_update`).
+  - `control_card_id` + `project_ref`: a project's Control Card, through the
+    project (`project_control_card_get`, `project_control_card_update`), so
+    any project admin can open and change it, not only its creator; a project
+    member reads it.
+  - `control_card_id` + `project_ref` + `target_subject` (or `invitation_ref`):
+    a person's Control Card in the project (`project_person_control_get`).
 - Because the widget route is authenticated and an iframe request is not a
   top-level navigation, the shell mounts the widget only after `/profile`
   confirms a session. Signed out, it sends the visitor to the platform
