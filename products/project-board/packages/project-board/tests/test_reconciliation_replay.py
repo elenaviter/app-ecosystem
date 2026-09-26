@@ -131,3 +131,21 @@ def test_housekeeping_runs_the_replay_and_a_marker_survives_a_restart(field):
     # A restart keeps no memory but the marker: no second probe within the hour.
     assert maintenance.run_local_state_maintenance(field, now=T0 + timedelta(minutes=5))["refused_receipts_replay"][PROJECT]["probes"] == 0
     assert _where(field, older) == "refused"
+
+
+def test_a_later_replay_never_reuses_an_id_after_queue_publication_rewrites_the_record(field):
+    """Review of #175 (claude-app): queue_publication dropped ``replays``."""
+
+    from project_board.client.reconciliation_publication import queue_publication
+
+    older, _newer = _two_refused(field)
+    replay.replay_refused_receipts(field, PROJECT, now=T0)
+    pending = receipts.agent_root(field, PROJECT, WORKER) / "pending" / f"{older}.json"
+    queue_publication(field, PROJECT, worker_name=WORKER, record_path=pending)
+    assert json.loads(pending.read_text())["publication"]["replays"] == 1
+    _settle(field, "refused")
+    receipts.recover_unpublished_receipts(field, PROJECT, worker_name=WORKER)
+
+    replay.replay_refused_receipts(field, PROJECT, now=T0 + timedelta(minutes=61))
+    ids = json.loads(pending.read_text())["publication"]["outbox_ids"]
+    assert ids and all(value.endswith("_r2") for value in ids)

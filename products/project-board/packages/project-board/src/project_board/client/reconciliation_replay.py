@@ -24,6 +24,7 @@ settlement then treat it like any other receipt.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +64,7 @@ PROBE_INTERVAL_SECONDS = 3600
 # runs every housekeeping interval, so this bounds the outbox growth per pass.
 BATCH_SIZE = 100
 MARKER = "replay.json"
+_REPLAY_SUFFIX = re.compile(r"_r(\d+)$")
 MARKER_SCHEMA = "problem-board.reconciliation-replay.v1"
 
 
@@ -177,8 +179,10 @@ def _requeue(field: Any, project_id: str, agent: str, path: Path) -> str:
     if publication_state(field, record) not in {PUBLICATION_REFUSED, PUBLICATION_MISSING}:
         return ""
     publication = dict(record.get("publication") or {})
-    replays = int(publication.get("replays") or 0) + 1
     previous = [str(value) for value in publication.get("outbox_ids") or []]
+    # The highest replay either recorded or named by an id: an id is never reused.
+    seen = [int(match.group(1)) for value in previous if (match := _REPLAY_SUFFIX.search(value))]
+    replays = max([int(publication.get("replays") or 0), *seen]) + 1
     outbox = OutboxStore(field.control)
     outbox_ids: list[str] = []
     with exclusive_lock(outbox.lock):
