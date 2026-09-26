@@ -1193,8 +1193,16 @@ connections:
             - kdcube:role:super-admin
 ```
 
-`resource: "*"` is deliberately special: non-admin users do not see it in
-Connection Hub, and the request-auth surface accepts it only when the
+`resource: "*"` is deliberately special. An `admin_only` row is offered to
+every approver who may delegate at least one of its grants, with only those
+grants (the operator, 2026-09-26: "that must be for all, with the choice of
+roles from those that are available for that account"): a platform admin sees
+all of them and the "admin" mark, anyone else sees the row as an ordinary one
+limited to the roles their account may delegate, and the row stays closed when
+none is theirs. A save that names a grant beyond the approver is refused
+(`delegated_access_grants_not_delegable`), so a Card never exceeds what its
+approver holds. With only the `super-admin` grant, as above, a non-admin
+therefore does not see it. The request-auth surface accepts it only when the
 server-side resource-grant map assigns `kdcube:role:super-admin` to `*` and the
 stored grantor authority projects the grantor with platform admin privilege.
 The role is the authority grant.
