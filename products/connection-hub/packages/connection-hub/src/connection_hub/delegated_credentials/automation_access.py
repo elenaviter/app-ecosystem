@@ -440,6 +440,24 @@ def _delegate_mutation_refusal(user: Mapping[str, Any]) -> dict[str, Any] | None
     return None
 
 
+def admin_only_closed(resource: Any, delegable: Iterable[str], *, platform_admin: bool) -> bool:
+    """Whether an admin-only resource stays closed to this approver.
+
+    The operator's rule (2026-09-26): "that must be for all, with the choice of
+    roles from those that are available for that account." An admin-only row
+    (the "All platform and application APIs" row, resource ``*``) is offered
+    to every approver who may delegate at least one of its grants, and only
+    those grants are offered; it stays closed only when none is theirs. A
+    Card still never exceeds what its approver holds: each selected grant is
+    checked against the approver's delegable set.
+    """
+
+    if not bool(getattr(resource, "admin_only", False)) or platform_admin:
+        return False
+    held = {str(grant) for grant in delegable}
+    return not any(str(grant) in held for grant in (getattr(resource, "grants", ()) or ()))
+
+
 def _grants_delegable(grants: Iterable[str], delegable: set[str]) -> bool:
     """An entry is offered only when EVERY claim it costs is delegable: ticking
     it makes the panel demand all of them."""
@@ -2469,7 +2487,7 @@ class AutomationAccessService:
         )
         out: list[dict[str, Any]] = []
         for resource in offer.resources:
-            if resource.admin_only and not platform_admin:
+            if admin_only_closed(resource, delegable, platform_admin=platform_admin):
                 continue
             option = {
                 "resource": resource.resource,
@@ -2485,7 +2503,9 @@ class AutomationAccessService:
                 "grants": [
                     grant for grant in resource.grants if grant in delegable
                 ],
-                "admin_only": bool(resource.admin_only),
+                # The "admin" mark is for a platform admin: anyone else sees the
+                # row as an ordinary one, bounded to the grants that are theirs.
+                "admin_only": bool(resource.admin_only) and platform_admin,
                 "operations": [
                     {
                         "name": tool.name,
@@ -3164,8 +3184,11 @@ class AutomationAccessService:
                     "`delegable_roles` and `delegable_permissions`."
                 ),
             }
-        admin_required = [cfg.resource for cfg in resource_configs if cfg.admin_only]
-        if admin_required and not _is_platform_admin(user):
+        admin_required = [
+            cfg.resource for cfg in resource_configs
+            if admin_only_closed(cfg, available, platform_admin=_is_platform_admin(user))
+        ]
+        if admin_required:
             return {
                 "ok": False,
                 "error": "delegated_access_resource_requires_admin",
@@ -3919,13 +3942,16 @@ class AutomationAccessService:
             )
         except ApplicationOperationPolicyError as exc:
             return ResolvedCardAuthority(error=_application_policy_refusal(exc))
-        admin_required = [cfg.resource for cfg in resource_configs if cfg.admin_only]
         platform_admin = (
             _is_platform_admin(user)
             if _platform_admin is None
             else bool(_platform_admin)
         )
-        if admin_required and not platform_admin:
+        admin_required = [
+            cfg.resource for cfg in resource_configs
+            if admin_only_closed(cfg, delegable_grants, platform_admin=platform_admin)
+        ]
+        if admin_required:
             return ResolvedCardAuthority(error={
                 "ok": False,
                 "error": "delegated_access_resource_requires_admin",
