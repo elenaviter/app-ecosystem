@@ -37,6 +37,7 @@ from .local_store import PartitionedStore
 from .reconciliation_publication import (
     PRUNABLE_PUBLICATION_STATES,
     TERMINAL_PUBLICATION_STATES,
+    PUBLICATION_MISSING,
     publication_is_queued,
     publication_state,
     queue_publication,
@@ -137,7 +138,7 @@ def recover_unpublished_receipts(
             receipt = normalize_receipt(record.get("receipt") or {})
             if receipt["reporter_worker_name"] != clean_worker:
                 continue
-            if not publication_is_queued(record):
+            if not publication_is_queued(record) or publication_state(field, record) == PUBLICATION_MISSING:
                 record = queue_publication(field, project_id, worker_name=clean_worker, record_path=path)
                 recovered += 1
                 batches += len((record.get("publication") or {}).get("outbox_ids") or [])

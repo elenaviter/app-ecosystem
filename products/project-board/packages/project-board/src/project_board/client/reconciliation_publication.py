@@ -26,6 +26,9 @@ from .outbox_store import OutboxStore
 
 OUTBOX_KIND = "mail.reconciliation.publish"
 PUBLICATION_QUEUED = "queued"
+# A batch row the receipt names is gone (pruned or lost): the receipt is
+# re-queued, or it would stay in pending/ and be re-read by every recovery.
+PUBLICATION_MISSING = "missing"
 PUBLICATION_PUBLISHED = "published"
 PUBLICATION_REFUSED = "refused"
 # Outcomes after which a receipt leaves pending/ and retention may consider it.
@@ -105,7 +108,7 @@ def publication_is_queued(record: Mapping[str, Any]) -> bool:
 
 
 def publication_state(field: Any, record: Mapping[str, Any]) -> str:
-    """``queued``, ``published`` or ``refused``, from the batch rows by id."""
+    """``queued``, ``published``, ``refused`` or ``missing``, from the batch rows by id."""
 
     if not publication_is_queued(record):
         return PUBLICATION_QUEUED
@@ -117,7 +120,9 @@ def publication_state(field: Any, record: Mapping[str, Any]) -> str:
             str(outbox_id),
             worker_name=str(receipt.get("reporter_worker_name") or ""),
             project_ref=str(receipt.get("project_ref") or ""),
-        ) or {}
+        )
+        if not row:
+            return PUBLICATION_MISSING
         state = str(row.get("state") or "")
         if state == "refused":
             refused = True
@@ -158,6 +163,7 @@ __all__ = [
     "OUTBOX_KIND",
     "PRUNABLE_PUBLICATION_STATES",
     "PUBLICATION_PUBLISHED",
+    "PUBLICATION_MISSING",
     "PUBLICATION_QUEUED",
     "PUBLICATION_REFUSED",
     "TERMINAL_PUBLICATION_STATES",

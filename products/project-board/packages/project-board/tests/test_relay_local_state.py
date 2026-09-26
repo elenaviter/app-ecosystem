@@ -188,6 +188,30 @@ def test_a_refused_publication_is_filed_as_refused_and_retention_keeps_it(field)
     assert read["partitions"] == 2 and read["records"] == 2
 
 
+def test_a_receipt_whose_batch_row_is_gone_is_queued_again_not_stuck_in_pending(field):
+    """Audit of #126 (claude-ops): a missing batch row read as "queued" forever.
+
+    The receipt then stayed in pending/ and every recovery re-read it. Now the
+    row reads as missing, recovery writes it again, and it settles as usual.
+    """
+
+    receipt = _receipt(receipt_id="mailbox-reconciliation_20260801T120000Z_a1b2", started_at="2026-08-01T12:00:00Z", archived=1)
+    receipts.record_receipt(field, PROJECT, worker_name=WORKER, receipt=receipt)
+    outbox = OutboxStore(field.control)
+    pending = [path for path in outbox.in_flight("pending") if json.loads(path.read_text()).get("kind") == OUTBOX_KIND]
+    assert len(pending) == 1
+    pending[0].unlink()  # the row is lost; the receipt still names it
+    assert _publication_rows(field)["pending"] == []
+
+    result = receipts.recover_unpublished_receipts(field, PROJECT, worker_name=WORKER)
+
+    assert result["receipts_recovered"] == 1
+    assert len(_publication_rows(field)["pending"]) == 1, "the missing batch row is written again"
+    _settle(field, "sent")
+    receipts.recover_unpublished_receipts(field, PROJECT, worker_name=WORKER)
+    assert receipts.partition_path(field, PROJECT, WORKER, receipt, publication="published").is_file()
+
+
 def test_receipt_retention_decides_from_names_without_opening_a_receipt(field, monkeypatch):
     receipt = _receipt(receipt_id="mailbox-reconciliation_20260801T100000Z_0a0b", started_at="2026-08-01T10:00:00Z", archived=1)
     receipts.record_receipt(field, PROJECT, worker_name=WORKER, receipt=receipt)
