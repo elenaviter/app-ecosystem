@@ -90,3 +90,9 @@ test('an ordinary Card has no project person route', () => {
     },
   }), null)
 })
+
+test('W260 scope: only a project-held person Control Card is read only; any other Control Card is not', async () => {
+  const { projectPersonControlCoordinates } = await import('../src/features/delegatedAccess/projectPersonControl.ts')
+  assert.equal(projectPersonControlCoordinates({ properties: {} }), null)
+  assert.equal(projectPersonControlCoordinates({ properties: { 'connection_hub.agent_capability_control': {} } }), null)
+})

@@ -1753,7 +1753,8 @@ class AutomationAccessService:
                 caller, card_authority_from_record(control)
             )
         control = await self._resolve_control_record(
-            binding.control_id, grantor_subject=record.grantor_subject
+            binding.control_id,
+            grantor_subject=binding.holder_subject or record.grantor_subject,
         )
         if control is None:
             return None, None
@@ -6178,12 +6179,21 @@ class AutomationAccessService:
         control_id: str,
         expected_card_revision: int | None = None,
         replace_control_id: str = "",
+        _control_holder: str = "",
+        _record_transform: Callable[[Any, Any], Any] | None = None,
     ) -> dict[str, Any]:
         """Attach or compare-and-replace one current Control Card.
 
         Replacement is one caller-Card revision. It is used when an issuer
         moves an existing binding to a new Control Card without an interval in
         which no rule applies.
+
+        ``_control_holder`` is for the project path only (W260,
+        ``project_control_card_access``): the project host decided the attach
+        and named the Control Card's creator, who holds it; the binding
+        records that holder so the runtime resolves the Control Card under it.
+        No operation passes it from a request, so a caller never names a
+        holder: the plain attach binds only the caller's own Control Card.
         """
 
         grantor_subject = _subject_from_user(user)
@@ -6195,6 +6205,7 @@ class AutomationAccessService:
         selected_access_id = _clean(access_id)
         selected_control_id = _clean(control_id)
         expected_previous_control_id = _clean(replace_control_id)
+        control_holder = _clean(_control_holder) or grantor_subject
         if not selected_access_id or not selected_control_id:
             return {"ok": False, "error": "control_card_binding_invalid", "status": 400}
         try:
@@ -6204,7 +6215,7 @@ class AutomationAccessService:
             )
             control = await self._resolve_control_record(
                 selected_control_id,
-                grantor_subject=grantor_subject,
+                grantor_subject=control_holder,
             )
         except CardUnavailable as exc:
             return {
@@ -6263,7 +6274,7 @@ class AutomationAccessService:
                 "retryable": True,
                 "status": 503,
             }
-        if control.grantor_subject != grantor_subject:
+        if control.grantor_subject != control_holder:
             return {"ok": False, "error": "control_card_grantor_mismatch", "status": 403}
         binding = ControlCardBinding(
             control_id=control.access_id,
@@ -6272,6 +6283,8 @@ class AutomationAccessService:
             issuer_label=control.issuer_label,
             manage_url=control.manage_url,
             control_revision=control.card_revision,
+            # Recorded only when the holder is not the Card's own grantor.
+            holder_subject=control_holder if control_holder != grantor_subject else "",
         )
         try:
             effective_card_authority(
@@ -6293,6 +6306,8 @@ class AutomationAccessService:
             card_revision=record.card_revision + 1,
             control_card=binding,
         )
+        if _record_transform is not None:
+            updated = _record_transform(record, updated)
         try:
             await self._persist_record(updated, expected_revision=record.card_revision)
         except CardServingUnavailable as exc:
@@ -6358,6 +6373,7 @@ class AutomationAccessService:
         access_id: str,
         control_id: str,
         expected_card_revision: int | None = None,
+        _record_transform: Callable[[Any, Any], Any] | None = None,
     ) -> dict[str, Any]:
         """Unlink the named Control Card so the caller Card applies alone."""
 
@@ -6415,6 +6431,8 @@ class AutomationAccessService:
             card_revision=record.card_revision + 1,
             control_card=None,
         )
+        if _record_transform is not None:
+            updated = _record_transform(record, updated)
         try:
             await self._persist_record(updated, expected_revision=record.card_revision)
         except CardServingUnavailable as exc:

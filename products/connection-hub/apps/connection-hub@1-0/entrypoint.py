@@ -250,6 +250,8 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "control_card_update",
     "project_control_card_get",
     "project_control_card_update",
+    "project_control_card_attach",
+    "project_control_card_detach",
     "project_person_control_get",
     "project_agent_card_get",
     "project_agent_card_update",
@@ -2720,6 +2722,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "control_card_update": {"visibility": {"user_types": []}},
                             "project_control_card_get": {"visibility": {"user_types": []}},
                             "project_control_card_update": {"visibility": {"user_types": []}},
+                            "project_control_card_attach": {"visibility": {"user_types": []}},
+                            "project_control_card_detach": {"visibility": {"user_types": []}},
                             "project_person_control_get": {"visibility": {"user_types": []}},
                             "project_agent_card_get": {"visibility": {"user_types": []}},
                             "project_agent_card_update": {"visibility": {"user_types": []}},
@@ -4154,10 +4158,84 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         """The project path to a project's Control Card (W260): the project host authorizes."""
 
         port = getattr(self, "control_card_authorization_port", None)
+        host = await _automation_access_service(self, request)
+        agent_port = getattr(self, "agent_card_authorization_port", None)
         return ProjectControlCardAccess(
-            await _automation_access_service(self, request),
+            host,
             port if port is not None else descriptor_control_card_port(self),
+            # W260: an attach also asks W319's agent question.
+            agent_access=ProjectAgentCardAccess(
+                host,
+                agent_port if agent_port is not None else descriptor_agent_card_port(self),
+                shares=self._agent_card_shares(),
+            ),
         )
+
+    async def _project_control_card_binding(
+        self,
+        method: str,
+        data: Optional[Dict[str, Any]],
+        request: Any,
+        user_id: Optional[str],
+        kwargs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        # The payload names the Cards only. The holder of the Control Card is
+        # whoever the project host names; no field of the request can set it.
+        values: Dict[str, Any] = {
+            "control_id": str(payload.get("control_id") or "").strip(),
+            "project_ref": str(payload.get("project_ref") or "").strip(),
+            "access_id": str(payload.get("access_id") or "").strip(),
+            "expected_card_revision": _expected_card_revision(payload),
+            "request_id": _audit_request_id(request),
+        }
+        if method == "attach":
+            values["replace_control_id"] = str(payload.get("replace_control_id") or "").strip()
+        access = await self._project_control_card_access(request)
+        return await getattr(access, method)(user, **values)
+
+    @api(
+        method="POST",
+        alias="project_control_card_attach",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_control_card_attach"),
+    )
+    async def project_control_card_attach(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Attach a project's Control Card to an agent's Card through the project (W260)."""
+
+        del fingerprint
+        return await self._project_control_card_binding("attach", data, request, user_id, kwargs)
+
+    @api(
+        method="POST",
+        alias="project_control_card_detach",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_control_card_detach"),
+    )
+    async def project_control_card_detach(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Detach a project's Control Card from an agent's Card through the project (W260)."""
+
+        del fingerprint
+        return await self._project_control_card_binding("detach", data, request, user_id, kwargs)
 
     @api(
         method="POST",

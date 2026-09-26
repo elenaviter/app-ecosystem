@@ -150,9 +150,14 @@ async def resolve_live_grant_composition(
         # A Control Card the project holds for this person is stored under the
         # project's subject, not the caller's (W260, 2026-09-26).
         held = project_held_control(caller)
+        # A project Control Card attached through the project path is stored
+        # under its creator, named on the binding (W260).
+        holder = str(getattr(caller.control_card, "holder_subject", "") or "")
         control_subject_hash = (
             hashlib.sha256(held.grantor_subject.encode("utf-8")).hexdigest()
             if held is not None
+            else hashlib.sha256(holder.encode("utf-8")).hexdigest()
+            if holder
             else subject_hash
         )
         if card_store is not None and control_subject_hash:

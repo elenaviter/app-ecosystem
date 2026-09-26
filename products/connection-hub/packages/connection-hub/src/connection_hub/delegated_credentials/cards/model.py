@@ -285,6 +285,11 @@ class ControlCardBinding:
     issuer_label: str = ""
     manage_url: str = ""
     control_revision: int = 0
+    # W260: the subject the Control Card is stored under, when it is not the
+    # Card's own grantor (a project Control Card created by another person,
+    # attached through the project path after the project host decided and
+    # named its creator). Empty means the Card's own grantor, as before.
+    holder_subject: str = ""
 
     @classmethod
     def from_mapping(cls, value: Any) -> "ControlCardBinding":
@@ -312,6 +317,7 @@ class ControlCardBinding:
             issuer_label=clean_text(value.get("issuer_label")),
             manage_url=clean_text(value.get("manage_url")),
             control_revision=revision,
+            holder_subject=clean_text(value.get("holder_subject")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -324,6 +330,7 @@ class ControlCardBinding:
                 "issuer_label": self.issuer_label,
                 "manage_url": self.manage_url,
                 "control_revision": self.control_revision,
+                "holder_subject": self.holder_subject,
             }.items()
             if value not in ("", 0, None)
         }

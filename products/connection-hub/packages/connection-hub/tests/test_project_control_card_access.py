@@ -312,3 +312,26 @@ def test_an_editor_with_fewer_grants_than_the_card_cannot_save_even_an_unrelated
     assert "not only the ones you change" in refused["message"]
     stored = asyncio.run(service.control_card_get(creator, control_id=control_id))
     assert stored["access"]["label"] != "Renamed"
+
+
+def test_a_control_card_not_held_by_a_project_stays_editable_by_its_creator():
+    """The operator's scope (2026-09-26): only Control Cards that belong to a
+    Problem Board project are edited through the project. Any other Control
+    Card (for example one governing a hosted agent's capabilities) keeps its
+    normal Connection Hub editing by its creator, with no project question."""
+
+    from test_agent_capability_control_sync import NAMED_RESOURCE, _service
+
+    service, _ = _service(named_services=True)
+    creator = {"user_id": CREATOR, "roles": ["kdcube:role:super-admin"], "permissions": []}
+    made = asyncio.run(service.control_card_create(
+        creator, issuer_ref="agent:resident:helper", issuer_kind="application", issuer_label="Helper",
+    ))
+    control_id = made["control_card"]["access_id"]
+    changed = asyncio.run(service.control_card_update(
+        creator, control_id=control_id, resource_grants={NAMED_RESOURCE: ["named_services:use", "slack:read"]},
+    ))
+    assert changed["ok"] is True, changed
+    opened = asyncio.run(service.control_card_get(creator, control_id=control_id))
+    assert opened["access"]["resource_grants"][NAMED_RESOURCE] == ["named_services:use", "slack:read"]
+    assert "viewer" not in opened, "no project read-only view on a Card no project holds"
