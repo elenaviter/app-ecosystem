@@ -24,5 +24,6 @@ test('Card identity shows owner and host-reported provider account separately', 
     /<RuntimeIdentityFields\s+clientMetadata=\{draft\.client\.client_metadata\}\s+owner=\{draft\.grantor\.label \|\| draft\.grantor\.subject\}\s+ownerTitle=\{draft\.grantor\.subject\}\s+layout="facts"\s*\/>/,
   );
   assert.equal((panel.match(/<CardRuntimeIdentityFields item=\{item\}/g) || []).length, 2);
-  assert.match(panel, /owner=\{item\.grantor_subject \|\| platformUserId\}/);
+  // W304 finding 22: the owner reads as a person (You / Another person), the id labelled on hover.
+  assert.equal((panel.match(/\{\.\.\.cardOwnerView\(item\.grantor_subject, platformUserId\)\}/g) || []).length, 2);
 });

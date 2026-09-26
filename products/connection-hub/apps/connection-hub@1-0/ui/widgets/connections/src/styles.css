@@ -447,7 +447,10 @@ h2 {
   text-transform: uppercase;
   font-weight: 600;
   color: var(--muted);
-  white-space: nowrap;
+  /* W304 finding 22: a long label ("Provider account") wraps inside the
+     capped key column instead of running into its value. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .card-field-value {
   font-size: 12.5px;

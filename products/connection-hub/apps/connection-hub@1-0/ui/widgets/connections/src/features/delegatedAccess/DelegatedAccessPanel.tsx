@@ -153,11 +153,13 @@ import {
 } from './oauthConsent';
 import {
   accessCardFocusRequest,
+  accessCardFocusRequestsEdit,
   findAccessCardFocus,
   matchesAccessCardFocus,
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import { projectPersonControlCoordinates } from './projectPersonControl';
+import { cardOwnerView, readableCardLabel } from './cardLabels';
 import {
   projectAgentCardFocus,
   projectAgentCardUpdateTarget,
@@ -2265,6 +2267,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
   }, [pendingServiceCapability]);
   const focusedAccessId = useRef<string | null>(null);
+  // W304 finding 21: the Card a link opened, shown on its own and read only
+  // until the person presses Edit; Save and Cancel come back to it.
+  const [viewAccessId, setViewAccessId] = useState<string | null>(null);
   // W319: a project link to another person's agent Card, opened through the project.
   const projectAgentCardAttempt = useRef<string | null>(null);
   const projectAgentCardPending = useRef(false);
@@ -2299,6 +2304,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (!accessCardFocus) {
       focusedAccessId.current = null;
       setAccessCardFocusState('idle');
+      setViewAccessId(null);
       return;
     }
     const item = findAccessCardFocus(
@@ -2316,7 +2322,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setAccessCardFocusState('resolved');
     if (focusedAccessId.current !== accessCardFocus.accessId) {
       focusedAccessId.current = accessCardFocus.accessId;
-      startEdit(item);
+      setViewAccessId(item.access_id);
+      // A link opens the Card to read. Only a link that asks for a change (an
+      // operation to grant, an account or claims to allow) opens the editor.
+      if (accessCardFocusRequestsEdit(accessCardFocus)) startEdit(item);
       if (accessCardFocus.resource && accessCardFocus.outerOperation) {
         setEditResourceOperations((current) => ({
           ...current,
@@ -4579,6 +4588,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   // ── The workbench and the compact rows ─────────────────────────────────
+  const viewRecord = viewAccessId
+    ? items.find((item) => item.access_id === viewAccessId)
+      || (focusedCard?.access_id === viewAccessId ? focusedCard : null)
+    : null;
   const editingRecord = editingAccessId
     ? items.find((it) => it.access_id === editingAccessId)
       || (focusedCard?.access_id === editingAccessId ? focusedCard : null)
@@ -4596,7 +4609,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       const agentLabel = who ? `${who.agent} · ${who.app}` : item.client_id;
       return correlatedCardLabel({ ...item, label: agentLabel });
     }
-    return correlatedCardLabel(item);
+    return correlatedCardLabel({ ...item, label: readableCardLabel(item.label) });
   };
   const cardBadge = (item: DelegatedAccessRecord) => (
     <>
@@ -5081,7 +5094,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               className="btn btn-ghost"
               type="button"
               disabled={busy}
-              onClick={() => (editDirty ? setPendingLeave({ kind: 'leave' }) : clearEditState())}
+              onClick={() => {
+                setViewAccessId(null);
+                if (editDirty) setPendingLeave({ kind: 'leave' });
+                else clearEditState();
+              }}
             >
               All cards
             </button>
@@ -5338,7 +5355,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               {expiryHint(item)}
                               {renderCardComposition(item, { editing })}
                               <div className="card-fields card-identity-fields">
-                                <CardRuntimeIdentityFields item={item} owner={item.grantor_subject || platformUserId} />
+                                <CardRuntimeIdentityFields item={item} {...cardOwnerView(item.grantor_subject, platformUserId)} />
                               </div>
                               {/* Edit mode keeps the per-claim checkboxes; the
                                   read-only view uses the same labelled rows as
@@ -5500,7 +5517,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
                       {renderCardComposition(item, { editing })}
                       <div className="card-fields card-identity-fields">
-                        <CardRuntimeIdentityFields item={item} owner={item.grantor_subject || platformUserId} />
+                        <CardRuntimeIdentityFields item={item} {...cardOwnerView(item.grantor_subject, platformUserId)} />
                       </div>
                       {accessCardFocus?.accessId === item.access_id
                         && (accessCardFocus.accountClaim || accessCardFocus.claims.length) ? (
@@ -5706,10 +5723,27 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       ) : null}
 
       {editingRecord ? renderWorkbench(editingRecord) : null}
-      {!editingRecord && compactList ? renderCompactList() : null}
+      {!editingRecord && viewRecord ? (
+        // W304 finding 21: the linked Card on its own, read only; its Edit
+        // button opens the editor, and Save or Cancel come back here.
+        <div className="detailed-group card-link-view" aria-label="Linked card">
+          <div className="rail-group__head">
+            <strong>Linked card</strong>
+            <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => setViewAccessId(null)}>
+              All cards
+            </button>
+          </div>
+          <ul className="accounts">
+            {viewRecord.source === 'agent'
+              ? renderDetailedAgentCard(viewRecord)
+              : renderDetailedOtherCard(viewRecord)}
+          </ul>
+        </div>
+      ) : null}
+      {!editingRecord && !viewRecord && compactList ? renderCompactList() : null}
       {/* The detailed list. While a card is being edited the workbench above
           replaces it, so the inline edit branches below no longer render. */}
-      {!editingRecord && !compactList ? (
+      {!editingRecord && !viewRecord && !compactList ? (
         <div>
           {groupCards(
             [...agentEntries.flatMap(([, records]) => records), ...otherItems],
