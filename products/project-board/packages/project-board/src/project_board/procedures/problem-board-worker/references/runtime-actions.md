@@ -17,7 +17,7 @@ ref it releases, and a profile that holds the commands for that kind of
 runtime. `pb worker context` returns them as `runtimes`, read from the
 project's setup (by hand in `project-setup.json` at the journal home's root,
 later on the project's Control Card). The four concepts behind them are in
-[projects, runtimes and refs](repo:app-ecosystem/docs/project-board/projects-runtimes-and-refs.md).
+[projects, runtimes and refs](repo:app-ecosystem/products/project-board/docs/projects-runtimes-and-refs.md).
 
 - **A runtime action releases its refs.** It names, for each repository it
   loads (a platform refresh loads the platform and the packages it stages, an

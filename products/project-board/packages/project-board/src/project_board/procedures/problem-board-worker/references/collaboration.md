@@ -63,10 +63,10 @@ before the ruling keeps its old folders until a planned move:
 
 ```text
 ~/.kdcube/pb/workspaces/<alias>/   one agent, its own trees
-    applications/                  home tree per repository
+    <repo>/                        home tree per repository
     kdcube-ai-app/
     app-ecosystem/
-    applications@w267/             a sibling tree for a second item in flight
+    <repo>@w<N>/                   a sibling tree for a second item in flight
 ```
 
 On a machine that already holds shared checkouts (dev-main, under `~/src`),
@@ -79,13 +79,13 @@ its change request merges. Made real for fable-pub on 2026-09-22 22:12Z.
 
 ```bash
 # once per repository, from the shared checkout, as yourself
-git -C ~/src/kdcube/applications fetch origin
-git -C ~/src/kdcube/applications worktree add --detach ~/.kdcube/pb/workspaces/<alias>/applications origin/main
+git -C ~/src/<repo> fetch origin
+git -C ~/src/<repo> worktree add --detach ~/.kdcube/pb/workspaces/<alias>/<repo> origin/main
 # a second item while the first waits on review
-git -C ~/src/kdcube/applications worktree add ~/.kdcube/pb/workspaces/<alias>/applications@w<N> -b work/w<N>-<slug> origin/main
+git -C ~/src/<repo> worktree add ~/.kdcube/pb/workspaces/<alias>/<repo>@w<N> -b work/w<N>-<slug> origin/main
 # when its change request merges
-git -C ~/src/kdcube/applications worktree remove ~/.kdcube/pb/workspaces/<alias>/applications@w<N>
-git -C ~/src/kdcube/applications branch -D work/w<N>-<slug>
+git -C ~/src/<repo> worktree remove ~/.kdcube/pb/workspaces/<alias>/<repo>@w<N>
+git -C ~/src/<repo> branch -D work/w<N>-<slug>
 ```
 
 Rules of the shape:
@@ -192,7 +192,7 @@ exchanged as a change request against the integration ref.
   goes to the author by board mail (the head, the verdict, the link), in the
   same step as the review comment. Why: a verdict posted only as a review
   comment reaches nobody on the board; on 2026-09-26 a request for one test sat
-  unseen on applications#165 for 1 h 45 min. A review that names a local path is not a
+  unseen on a board change request for 1 h 45 min. A review that names a local path is not a
   review, because the path is bound to one machine and one user.
 - **The coordinator merges after approval.** Nobody merges their own change
   request. A merge advances the integration ref, from which runtimes release.
@@ -255,7 +255,7 @@ is recovery for an abandoned entry and not the completion path):
 
 ```bash
 pb coordinate workspace.shared_write.list --object-ref <project-ref> --payload-json '{}'
-pb coordinate workspace.shared_write.publish --object-ref <project-ref> --payload-json '{"kind":"source_in_flight","summary":"W245: review.return keeps the owner (store, dialog save, review-lifecycle doc)","targets":["repo:applications/playground/domain-solution/apps/problem-board@1-0/services/store.py","repo:applications/playground/domain-solution/apps/problem-board@1-0/services/work_item_edit.py"],"ttl_seconds":14400}'
+pb coordinate workspace.shared_write.publish --object-ref <project-ref> --payload-json '{"kind":"source_in_flight","summary":"W<N>: <what changes, in a few words>","targets":["repo:<repo>/<path/to/changed/file>"],"ttl_seconds":14400}'
 pb coordinate workspace.shared_write.clear --object-ref <project-ref> --payload-json '{}'
 ```
 
@@ -651,6 +651,17 @@ own grouping. The operator's ruling (2026-09-26): "it must be cards in the
 connection hub ... please do not build new interface for this, this is simply
 wrong! and does not scale."
 
+## Rule 13. A behaviour change carries its documentation in the same change
+
+Every change to Problem Board behaviour updates the public documentation
+(`repo:app-ecosystem/products/project-board/docs/`) in the same change; when
+the code lives in a private repository, the documentation change is a paired
+change request in app-ecosystem, named in the first one and merged with it.
+The reviewer checks it and refuses a behaviour change without it. Why: the
+concepts an agent needs to explain Problem Board had been kept only in private
+pages, so an agent with only the public client could not answer who edits
+which Card (operator, 2026-09-26).
+
 ## From this moment: round 2 on dev-main, 2026-09-22 22:20Z
 
 Round 1 ran four hours under rules that did not exist when it started, and
@@ -748,7 +759,7 @@ Subjects: claude-main (coordinator), codex-main, codex-ui, fable-pub, on
 dev-main. Entries are added as they happen.
 
 - **20:30Z, finding one: a change request needs a pushed integration ref.**
-  The first two change requests (applications #4 and #5) were cut from local
+  The first two change requests were cut from local
   `main`, one commit each. GitHub diffed them against `origin/main`, which was
   14 commits behind local `main` because pushing `main` is the operator's act
   and nobody had pushed. Both change requests therefore showed 13 commits and
@@ -758,11 +769,11 @@ dev-main. Entries are added as they happen.
   for: the operator pushes `main` before or at the start of a round, or the
   procedure names who may push the integration ref. **Resolved 20:36Z:** the
   coordinator pushes the integration ref after merges (operator ruling), and
-  applications `main` was pushed, d34b3d79 to 450bc027, 15 commits, audited.
+  the app repository's `main` was pushed, d34b3d79 to 450bc027, 15 commits, audited.
   Both change requests then showed their one commit. Rule 2 gained the pushed
   integration ref, the scoped-read line, and the per-machine integrator.
 - **20:56Z, finding two: the review of the change request found the fourth
-  place.** codex-main's review of applications #4 read `services/store.py`
+  place.** codex-main's review of the first change request read `services/store.py`
   around the return and found that the version advanced and the control was
   issued, but the ownership ledger the report path authorizes against got no
   row: the worker the return woke would have reported into
@@ -957,9 +968,9 @@ works from its own tree. Entries are added as they happen.
   `tests/test_journal_filename_stamp.py` (change request #22) for the filename
   stamp and for every entry's `entry_ref` stamp, with the rule and its reason
   in the failure message. Merged filenames before the cutoff are addresses and
-  keep their names, a correction goes inside the entry. The feature journals
-  under `kdcube-docs/journal` (1394 entries, a four-digit local stamp and a
-  zoned `Date:` line, no `recorded_at`) are another convention and out of
+  keep their names, a correction goes inside the entry. The older feature
+  journals in a private repository (1394 entries, a four-digit local stamp and
+  a zoned `Date:` line, no `recorded_at`) are another convention and out of
   scope until the operator says otherwise. The lesson under it: before
   enforcing a rule read off a handful of neighbours, census the directory.
   The four corrections written into merged entries that night answered a
@@ -1034,7 +1045,7 @@ works from its own tree. Entries are added as they happen.
   exit 0 plus "every container started" is not verification, verify against
   the containers and an unauthenticated probe of the endpoint. connection-hub
   discovery reports any non-401 as a missing challenge and has to report a
-  gateway error as one (codex-ui, after). The shared applications checkout
+  gateway error as one (codex-ui, after). The shared app checkout
   was dirty at the time (`source.dirty true` at f74c3a99): someone had edited
   the live runtime tree.
 - **03:56Z, note: the wake path is not the channel.** `pb worker inspect`
@@ -1115,7 +1126,7 @@ works from its own tree. Entries are added as they happen.
   merge commit on the integration ref and is written after that commit is
   fetched, never from the intention to merge.
 - **12:33Z, finding nineteen: a push announced after the merge.** fable-pub
-  told the coordinator it was pushing an amendment to applications #29 while
+  told the coordinator it was pushing an amendment to an open change request while
   #29 had merged at 12:32:44Z. No push happened, so nothing was lost, and
   the announcement was still wrong about the world: a merged change request
   takes no more commits, and a branch pushed after its merge is a new change

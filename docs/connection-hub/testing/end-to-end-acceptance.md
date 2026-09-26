@@ -1018,7 +1018,7 @@ OAuth must remain usable when the Connection Hub native store is unavailable;
 bridge mode must fail closed in that condition. The
 full platform matrix, Windows maximum-size credential proof, locked Linux
 collection case, restart, and cleanup evidence are release gates in the
-[cross-platform external-client procedure](https://github.com/elenaviter/applications/blob/main/kdcube-docs/procedures/cicd/connection-hub-external-client-cross-platform.md).
+cross-platform external-client procedure, which the release team keeps with its release gates.
 
 ### 7F. Automated live Relay-to-Gateway gate
 

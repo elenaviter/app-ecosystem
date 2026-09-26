@@ -13,6 +13,8 @@ session to addressed work; it does not start a model.
 
 ## Authority Boundary
 
+What Problem Board is, who edits which Card, how a person becomes a project admin, and how the coordinator hand-over and Telegram topics work: the public documentation, [Problem Board docs](repo:app-ecosystem/products/project-board/docs/README.md) (concepts, cards, coordinator, telegram).
+
 - Read the nearest repository instructions and current project journals before
   changing files. They decide source scope, Git actions, live-runtime actions,
   release authority, and verification. This skill grants none of those actions.
@@ -37,7 +39,7 @@ host action because it changes both the command and relay source. When `pb statu
 
 Before an action, name the task or observed event that calls for it and what
 its result could change. Reassess after a wake or a returned command; a check
-that was useful once is not automatically useful again. Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` when you attend several), then read what they return.
+that was useful once is not automatically useful again. Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return.
 
 For a repeated status query or retry, name the pending operation or receipt, use
 a bounded attempt count, and stop when another repetition cannot inform the next
@@ -54,7 +56,7 @@ wakes and held leases still require prompt receive, handling, and settlement.
 ## Start Or Resume
 
 1. Read the project's instructions file, which `pb worker context` names as `project_instructions_ref` (what the project is, its conventions, its repositories and runtimes), then the repository instructions, the bottom of the current journal
-   chronicle, the entries for the work being resumed, and the project facts page `pb worker context` names (`project_facts_ref`). An agent attending several projects reads each project's own file. For the subject of the task, search the plan and the journal (Choose A Relevant Next Action).
+   chronicle, the entries for the work being resumed, and the project facts page `pb worker context` names (`project_facts_ref`). An agent attends one project at a time (a link to another is refused until it is unlinked). For the subject of the task, search the plan and the journal (Choose A Relevant Next Action).
 2. Identify this exact runtime session: `pb worker whoami`.
 3. Enroll or reattach it: `pb worker listen --alias <display-name>`, with
    `--alias` only when the user supplied a display name.
@@ -324,6 +326,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   have applied. Read that row, then retry the same report unchanged. Changed
   content or an invented source event is a different report, not recovery.
 - A `project.report` request reaches only the coordinator: before answering one, read [project-report](references/project-report.md).
+- Journal every completed move, and put each kind of knowledge where it belongs: [journaling](references/journaling.md). Each signal of this skill and the test that pins it: [signals](references/signals.md).
 - Author the complete journal Markdown, front matter included, under the
   `local_journal_directory` from `pb worker context`. Keep the operator's exact
   ruling, artifact refs, failure text, alternatives, blast radius, verification
@@ -338,7 +341,7 @@ move status ([ownership](references/identity-and-authorization.md)).
 - After writing the file, run `pb worker journal-index --project-ref ... --repository-journal-ref ...`; it indexes the existing file without rewriting it and returns its index, validation, and receipt steps.
   After interruption, inspect with `pb worker journal-index-status --project-ref ... --operation-id ...`, then run `pb worker journal-index-resume --operation-id ...` for the first incomplete step. Status is observation only: it does not rebuild, enqueue, or repair. Do not rerun the original command to guess what happened.
   For a pre-ledger validation use `journal-index-status --project-ref ... --outbox-id ... --repository-journal-ref ...`; it distinguishes an accepted plan revision from an absent receipt.
-  Search with `pb worker journal-search --query ...` (`--project-ref ...` when attending several projects); legacy files remain searchable under a path-derived identity and status names compatibility issues.
+  Search with `pb worker journal-search --query ...` (`--project-ref ...` to name the project explicitly); legacy files remain searchable under a path-derived identity and status names compatibility issues.
 - Your estimate is visible state. After planning, `pb worker busy-until <UTC> --note <one line>`
   says until when you expect to finish and what you are on. Set it again with the reason when it
   slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and

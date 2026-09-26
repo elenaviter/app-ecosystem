@@ -74,7 +74,7 @@ any one machine's paths:
 ```bash
 KD=<kdcube-ai-app checkout>/app/ai-app/src/kdcube-ai-app
 AE=<app-ecosystem checkout>
-PB=<applications checkout>/playground/domain-solution/apps/problem-board@1-0
+PB=<the Problem Board server app directory in your checkout of its repository>
 PROJECT_BOARD=$AE/products/project-board/packages/project-board/src
 
 unset PB_TEST_POSTGRES_DSN PROBLEM_BOARD_HOST_PYTHON
