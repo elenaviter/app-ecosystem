@@ -46,7 +46,7 @@ from .journals import JournalWorkspace, RepositoryMap
 from .mail_attachments import normalize_attachment_manifest
 from .plan_authority import PLAN_REF_RESOLUTION_SCHEMA
 from ..contract.plan_host import NOTE_VIEW_KIND, PLAN_HOST_CONTROL_KINDS
-from .host_config import HostRelayConfig, WorkerChannelConfig, set_worker_channel_state
+from .host_config import DEFAULT_ALLOWED_PEER_WORKERS, HostRelayConfig, WorkerChannelConfig, set_worker_channel_state
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
 from .runtime_account import read_runtime_account
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
@@ -448,7 +448,11 @@ class RelayConfig:
                 "work_relay_config_invalid",
                 "receiver_policy.allowed_control_kinds must be an array.",
             )
-        raw_peers = receiver_policy.get("allowed_peer_workers") or []
+        raw_peers = receiver_policy.get("allowed_peer_workers")
+        if raw_peers is None:
+            # The same rule as the host file: a missing key is the default
+            # ("*", W304 decision 3), an explicit [] denies every teammate.
+            raw_peers = list(DEFAULT_ALLOWED_PEER_WORKERS)
         if isinstance(raw_peers, (str, bytes, bytearray)) or not isinstance(
             raw_peers, Sequence
         ):

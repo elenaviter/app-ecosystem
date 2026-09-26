@@ -430,7 +430,8 @@ the user.
 `receiver_policy.allowed_control_kinds` bounds command kinds accepted on this
 machine. `allowed_peer_workers` applies to cross-machine mail; an empty list
 denies peers and `"*"` admits any session-bound worker already authorized by
-the remote project. `max_control_bytes` is checked before a local mail write.
+the remote project. `pb setup` writes `"*"` for a new machine (operator
+ruling, 2026-09-26). `max_control_bytes` is checked before a local mail write.
 The receiving machine can always refuse an admitted remote command.
 
 `receiver_policy.allow_session_resume_view` separately controls whether the

@@ -40,7 +40,11 @@ DEFAULT_CONTROL_KINDS = (
 # (`pb host configure --allow-peer-worker <name>` or "*"), which on
 # 2026-09-24 left a new agent unable to receive its coordinator's mail
 # (W304 finding 38). The default for new hosts is the operator's decision.
-DEFAULT_ALLOWED_PEER_WORKERS: tuple[str, ...] = ()
+# Operator ruling, 2026-09-26 (W304 decision 3): a new host accepts mail from
+# its project teammates. The board lets only agents that share a project
+# address each other, so "*" grants nothing beyond that; `pb host configure
+# --deny-all-peers` or named workers narrow it.
+DEFAULT_ALLOWED_PEER_WORKERS: tuple[str, ...] = ("*",)
 
 
 def _required(value: Any, field: str) -> str:
@@ -327,7 +331,10 @@ class HostRelayConfig:
         if isinstance(roots, (str, bytes, bytearray)) or not isinstance(roots, Sequence):
             raise DomainError("work_relay_config_invalid", "allowed_roots must be an array.")
         kinds = receiver.get("allowed_control_kinds") or DEFAULT_CONTROL_KINDS
-        peers = receiver.get("allowed_peer_workers") or []
+        peers = receiver.get("allowed_peer_workers")
+        if peers is None:
+            # A key the file never had takes the default; an explicit [] denies all.
+            peers = list(DEFAULT_ALLOWED_PEER_WORKERS)
         if isinstance(kinds, (str, bytes, bytearray)) or not isinstance(kinds, Sequence):
             raise DomainError(
                 "work_relay_config_invalid",
