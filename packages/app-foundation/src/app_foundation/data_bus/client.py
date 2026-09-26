@@ -65,6 +65,25 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _transport_failed(error: BaseException) -> bool:
+    """Whether engine.io failed to open the transport anywhere in this chain.
+
+    python-socketio raises its ConnectionError from engine.io's when the
+    WebSocket or polling transport cannot be opened; a namespace refusal from
+    the server is raised without one.
+    """
+
+    seen: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in seen and len(seen) < 8:
+        seen.append(current)
+        kind = type(current)
+        if kind.__name__ == "ConnectionError" and str(kind.__module__ or "").startswith("engineio"):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _refusal_payload(value: Any) -> dict[str, Any]:
     """The server's refusal as a flat mapping: message, and a code when it sent one.
 
@@ -508,9 +527,14 @@ class FederatedDataBusClient:
             )
         except Exception as exc:
             refusal = self._connect_refusal
-            if refusal is None:
-                # No connect_error arrived: the transport failed before the
-                # server answered. Callers already classify that as transient.
+            if refusal is None or _transport_failed(exc):
+                # The transport failed before the server answered. python-socketio
+                # still fires connect_error for that, with "Connection error", so
+                # the refusal it left says nothing about the server. During a
+                # platform restart the ingress answers the upgrade with 404 and
+                # reading it as a refusal ended the relay process (dev-main,
+                # 2026-09-26 03:55Z). Callers classify this as transient.
+                self._connect_refusal = None
                 raise
             raise DataBusIngressRejected(
                 str(refusal.get("code") or "data_bus_connect_refused"),
