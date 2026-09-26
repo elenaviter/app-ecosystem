@@ -5762,8 +5762,20 @@ class AutomationAccessService:
         expected_card_revision: int | None = None,
         expected_catalog_version: str | None = None,
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
+        _delegable_grants: Iterable[str] | None = None,
+        _record_transform: Callable[
+            [AutomationAccessRecord, AutomationAccessRecord],
+            AutomationAccessRecord,
+        ]
+        | None = None,
     ) -> dict[str, Any]:
-        """Edit a Control Card through the ordinary catalog-aware Card path."""
+        """Edit a Control Card through the ordinary catalog-aware Card path.
+
+        ``_delegable_grants`` and ``_record_transform`` are for the project
+        path (W260, ``project_control_card_access``): the edit is bounded by
+        the acting person's grants and stamped with who made it, while the
+        Card stays stored under its creator.
+        """
 
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
@@ -5816,6 +5828,8 @@ class AutomationAccessService:
             expected_card_revision=expected_card_revision,
             expected_catalog_version=expected_catalog_version,
             accepted_operations=accepted_operations,
+            _delegable_grants=_delegable_grants,
+            _record_transform=_record_transform,
         )
         if updated.get("ok") is not True:
             return updated
