@@ -49,7 +49,10 @@ def empty_project_setup() -> dict[str, Any]:
 
 def _text(value: Any) -> str:
     text = str(value or "").strip() if isinstance(value, (str, int)) else ""
-    return text if text and len(text) <= _TEXT_MAX and "\n" not in text else ""
+    if not text or len(text) > _TEXT_MAX:
+        return ""
+    # One line of printable text: a control character is never a name or a ref.
+    return "" if any(ord(char) < 32 or ord(char) == 127 for char in text) else text
 
 
 def _repo_ref(value: Any) -> str:
@@ -109,6 +112,8 @@ def _runtime(raw: Any, index: int, resolve: Resolver, issues: list[str]) -> dict
         issues.append(f"{where} ({name}): actions must map an action name to its rule")
         return None
     actions = []
+    if len(actions_raw) > MAX_ACTIONS:
+        issues.append(f"{where} ({name}): only the first {MAX_ACTIONS} actions are read")
     for action_name, action_raw in list(actions_raw.items())[:MAX_ACTIONS]:
         action = _action(str(action_name), action_raw, issues, f"{where} ({name}).actions")
         if action is not None:
@@ -151,6 +156,8 @@ def read_project_setup(path: Path, *, setup_ref: str, resolve: Resolver) -> dict
         issues.append("runtimes must be a list")
         runtimes_raw = []
     seen: set[str] = set()
+    if len(runtimes_raw) > MAX_RUNTIMES:
+        issues.append(f"only the first {MAX_RUNTIMES} runtimes are read")
     for index, raw in enumerate(runtimes_raw[:MAX_RUNTIMES]):
         runtime = _runtime(raw, index, resolve, issues)
         if runtime is None:

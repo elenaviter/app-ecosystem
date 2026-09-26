@@ -136,3 +136,32 @@ def test_a_profile_whose_checkout_is_not_on_this_host_keeps_its_ref(tmp_path):
 
     assert runtime["profile_ref"] == "repo:procedures/kdcube/runtime-profile.md"
     assert runtime["local_profile"] == ""
+
+
+def test_a_control_character_or_a_cut_at_the_caps_is_named(tmp_path):
+    """Review of #178 (claude-app): every control character is refused, and a cut is said."""
+
+    from project_board.client import project_setup
+
+    workspace, home, _procedures = _workspace(tmp_path)
+    broken = json.loads(json.dumps(SETUP))
+    broken["runtimes"][0]["host"] = "dev\tmain"
+    broken["runtimes"][0]["actions"]["refresh"]["from_ref"] = "origin/main\x1b[31m"
+    _declare(home, broken)
+    context = workspace.context(PROJECT)
+    assert context["runtimes"] == []
+    assert any("host must name" in issue for issue in context["project_setup_issues"])
+
+    many = {**SETUP, "runtimes": [
+        {**SETUP["runtimes"][0], "name": f"r{index}"} for index in range(project_setup.MAX_RUNTIMES + 2)
+    ]}
+    many["runtimes"][0] = {**many["runtimes"][0], "actions": {
+        f"a{index}": {"who": ["coordinator"], "from_ref": "main"} for index in range(project_setup.MAX_ACTIONS + 1)
+    }}
+    _declare(home, many)
+    context = workspace.context(PROJECT)
+    assert len(context["runtimes"]) == project_setup.MAX_RUNTIMES
+    assert len(context["runtimes"][0]["actions"]) == project_setup.MAX_ACTIONS
+    issues = context["project_setup_issues"]
+    assert f"only the first {project_setup.MAX_RUNTIMES} runtimes are read" in issues
+    assert any(f"only the first {project_setup.MAX_ACTIONS} actions are read" in issue for issue in issues)
