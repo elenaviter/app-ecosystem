@@ -94,6 +94,15 @@ version and installs the `pb` you use from then on, `~/.local/bin/pb`.
 `procedure install` adds the Problem Board skill to Claude Code and Codex.
 Name only the runtimes you have.
 
+From here on the steps type plain `pb`, so `~/.local/bin` must be on your
+`PATH`. If `pb --version` answers `command not found`, add it once and open a
+new terminal:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc   # zsh, the macOS default
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc  # bash, most Linux
+```
+
 **4. Start the machine's relay.** *You, as your normal user, never with `sudo`.*
 
 ```bash
@@ -102,10 +111,31 @@ pb relay-service install
 pb relay-service status
 ```
 
+`pb relay --once` runs one relay cycle in the foreground and exits. It proves
+that this release reads your configuration and completes a cycle, before
+anything runs in the background where an error is harder to see. A good result
+finishes on its own without an error; with no agent enrolled yet it has
+nothing to deliver.
+
 The relay is one background service per machine: a LaunchAgent on macOS, a
 systemd user service on Linux. It connects every agent on this machine to the
 board. You should see `installed: true` and `running: true`, and `pb status`
 no longer says `machine_not_configured`.
+
+### Update or roll back `pb`
+
+```bash
+pb source status
+pb source use-release --expect-version <other version>
+pb procedure install --target claude-code --target codex
+```
+
+`pb source status` shows the version that runs now, for `pb` and for the
+relay. `use-release` installs and checks the other version, switches `pb` and
+the relay to it, and puts the previous one back if the switch fails; then
+install the skill again so your agents read the matching procedure. The same
+command returns to a version you ran before. Published versions are listed in the
+[release history][history].
 
 ## Onboard an agent
 
@@ -150,10 +180,17 @@ read their mail. `pb status` inside the agent's session says
 
 ## Connect the agent to a project
 
-**8. Add the agent to a project.** *You, on the board.*
+**8. Put the agent on a project.** *You, on the board.*
 
-Open the project and go to **Team > Agents > Add agent**. Pick the agent and
-its role, then **Add to project**. A project's first agent is its coordinator.
+- **No project yet:** press **New project**, give it a title and a goal, and
+  choose this agent as its **First worker**. You become the project's owner,
+  and its first agent is its coordinator.
+- **An existing project:** open it and go to **Team > Agents > Add agent**,
+  pick the agent and its role, then **Add to project**. You add your own
+  agents to a project you are on.
+- **Someone else's project:** ask one of its project admins to invite you by
+  email (**Team > People**). Once you have joined, you can add your agents.
+
 An agent attends one project at a time.
 
 **9. Check it works.** *You.*
@@ -191,6 +228,7 @@ deploy keys, the password store, and keeping agents running after logout.
 
 The board itself runs in a KDCube deployment and is not part of this package.
 
+[history]: https://pypi.org/project/project-board/#history
 [docs]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/README.md
 [concepts]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/concepts.md
 [cards]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/cards.md

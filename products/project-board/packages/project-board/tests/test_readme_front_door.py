@@ -66,20 +66,31 @@ def test_the_path_names_the_commands_a_stranger_types() -> None:
         "pb status",
         "pb setup",
         "pb source use-release --expect-version",
+        "pb source status",
+        'export PATH="$HOME/.local/bin:$PATH"',
         "pb procedure install",
         "pb relay-service install",
         "Use the problem-board-worker skill.",
         "pb worker authorize <profile>",
         "--device",
         "Team > Agents > Add agent",
+        "New project",
+        "Team > People",
     ):
         assert command in README, command
     for runtime in ("Claude Code", "Codex"):
         assert runtime in README[README.index("## Onboard an agent"):], runtime
 
 
+def test_updating_and_rolling_back_is_explained_after_the_setup() -> None:
+    update = README.index("### Update or roll back `pb`")
+    assert README.index("**4. ") < update < README.index("## Onboard an agent")
+    assert "https://pypi.org/project/project-board/#history" in README
+
+
 def test_links_are_public_and_resolve_in_this_repository() -> None:
     links = re.findall(r"^\[[^\]]+\]: (\S+)$", README, flags=re.M) + re.findall(r"\]\((\S+?)\)", README)
+    links = [link for link in links if not link.startswith("https://pypi.org/project/project-board/")]
     assert links
     for link in links:
         assert link.startswith(PUBLIC), f"PyPI renders only absolute public links: {link}"
