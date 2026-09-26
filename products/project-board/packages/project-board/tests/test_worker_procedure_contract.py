@@ -97,8 +97,10 @@ def test_package_content_is_recorded_for_its_revision() -> None:
         f'"{revision}": "{package["source_digest"]}"'
     )
     assert recorded == package["source_digest"], (
-        f"the package content changed under revision {revision}; bump "
-        f"package.json and record the new digest in {REVISION_LEDGER.name}"
+        f"the package content changed under revision {revision}; the merger "
+        f"sets the next revision in package.json and records the new digest in "
+        f"{REVISION_LEDGER.name} at merge time (coordinator.md, Merge). On an "
+        f"author's head this is the one expected failure."
     )
 
 
@@ -1610,3 +1612,14 @@ def test_the_merger_retargets_a_stacked_change_request_and_proves_the_merged_tre
     gate_2 = collaboration[collaboration.index("2. **Base current:**"):collaboration.index("3. **Suites green")]
     assert "The merger may instead test the exact merged tree" in gate_2
     assert "(`coordinator.md`, Merge)" in gate_2
+    # The operator's rule of 2026-09-26 20:45Z: two change requests claimed the
+    # same revision twice in one day, so the merger sets it, never the author.
+    assert "**The merger sets the procedure revision; authors never bump it.**" in merge
+    assert "The merger sets the next revision at merge time, in merge order, with one commit on the merged branch" in merge
+    gate_3 = collaboration[collaboration.index("3. **Suites green"):collaboration.index("4. **Runtime import path")]
+    assert "fails `test_package_content_is_recorded_for_its_revision` by design, because authors never bump the revision and the merger sets it" in gate_3
+    skill = " ".join(_read("SKILL.md").split())
+    assert "leave the revision to the merger" in skill
+    assert "advance the package revision" not in skill
+    agent_worker = " ".join((PROCEDURE_ROOT.parent / "agent-worker.md").read_text(encoding="utf-8").split())
+    assert "The merger sets that revision at merge time, in merge order; an author never bumps it" in agent_worker

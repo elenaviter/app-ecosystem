@@ -161,6 +161,14 @@ it, in the order of the act.
    tree merged onto the `main` it was tested against). Unequal trees mean
    something landed that was not tested, or something tested did not land:
    stop, find which, and repair before any runtime action releases `main`.
+4. **The merger sets the procedure revision; authors never bump it.** A
+   change request that edits the worker procedure package arrives without a
+   revision change (`package.json`, `procedure-revisions.json`, the revision
+   pins in the package's tests). The merger sets the next revision at merge
+   time, in merge order, with one commit on the merged branch, pushed before
+   the merge, and the tested tree of steps 2 and 3 includes that commit. Why:
+   on 2026-09-26 #207 and #208, then #228 and #229, each claimed the same
+   revision (operator, 2026-09-26 20:45Z).
 
 ## Release a stalled assignment
 

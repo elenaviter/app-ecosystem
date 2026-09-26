@@ -507,7 +507,7 @@ When an operating failure shows that this skill could lead another agent to
 repeat a mistake, resolve the gap: with clear evidence and a clear owning rule,
 re-read the complete package, find every statement of the concept, rewrite the
 owning rule so no vague, duplicate, or contradictory guidance remains, test the
-contract, advance the package revision, reinstall it, and tell active workers
+contract, leave the revision to the merger, reinstall it, and tell active workers
 to re-read it. With uncertain ownership or policy, create a work item with the
 evidence and ask. A procedure update is a semantic revision of the affected
 contract, never an append-only note, and it carries the rule with one clause of
