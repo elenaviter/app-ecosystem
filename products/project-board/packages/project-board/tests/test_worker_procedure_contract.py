@@ -31,6 +31,7 @@ OPERATIONAL_PROCEDURES = {
     "add-a-worker-host.md",
     "agent-worker.md",
     "first-time-setup.md",
+    "install-update-rollback.md",
     "live-acceptance.md",
     "local-worker-session.md",
     "enroll-an-agent.md",

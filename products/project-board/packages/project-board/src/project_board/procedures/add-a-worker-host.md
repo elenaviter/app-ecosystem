@@ -218,6 +218,8 @@ Two routes install the same client. Step 0 decides which (W304 U2):
   instead of `pb source use-code`. What each route means and what
   `pb source status` reports after it is in the skill's
   [first run](problem-board-worker/references/first-run.md) reference.
+  Moving the machine to another version later, or back to one it ran, is
+  [install, update, roll back pb](install-update-rollback.md).
 - **Exact source commits** (a machine of the team that builds Problem Board,
   or before a release is published), below.
 
