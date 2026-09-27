@@ -1,17 +1,17 @@
 package:
   id: project-board
-  ref: "2026.09.27.1727"
+  ref: "2026.09.27.2142"
   description: |
-    Problem Board client set 2026.09.27.1727: a new machine can be set up by its own agent.
+    Problem Board client set 2026.09.27.2142: a new machine is connected with the endpoint alone.
 
-    - `pb status` checks the machine's prerequisites for its OS (Linux: python and venv, git, tmux, linger, the systemd user manager, a usable keyring; macOS: python, git, tmux, keychain). It names each missing one with the exact fix, says whether it needs an administrator, and says what works without it (W304).
-    - `pb setup` checks that the endpoint answers as the board before it writes anything, and refuses with a named reason (W304).
-    - `pb procedure install` records which pb installed the skill, so the agent finds it wherever it lives (W304).
-    - The skill's first-run and the README follow one agent-guided path. Install pb and the skill, start the agent as the worker in tmux, and give it the values from the board's new "Connect a machine" panel; it sets up the machine, proposes the newest release and enrolls, and you approve its Card with --device (W304).
-    - Procedure revision 2026.09.27.8.
+    - `pb setup` reads the tenant and platform project from the endpoint, so the board's "Connect a machine" endpoint is the only address a person gives. A tenant or project given as well must agree, and a non-board endpoint is refused with the expected shape, both before anything is written (W304).
+    - "Connect a machine" is in the board's top bar and needs no project. README, first-run and `pb setup`'s endpoint hint say where to find it (W304).
+    - The worker's tmux step runs as copied after one `ALIAS=<name>@<machine>` line (W304).
+    - The optional knowledge role and its hand-over are public (W340).
+    - Procedure revision 2026.09.27.10.
 
 components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.09.27.1727"
+    version: "2026.09.27.2142"
