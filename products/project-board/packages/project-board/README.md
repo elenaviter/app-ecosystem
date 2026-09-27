@@ -48,6 +48,20 @@ account on it, from the person who runs that board.
   project, and an account you can sign in with.
 - A browser on any device, for approvals. The machine itself may be headless.
 
+## What gets installed
+
+`pip install project-board` installs four packages, all at the same version:
+
+- `project-board`: the `pb` command, the machine relay, and the Problem Board
+  skill for Claude Code and Codex.
+- `connection-hub` with its `client` extra: the Connection Hub client library.
+  It signs in, holds each agent's Card authority, and keeps credentials in the
+  machine's password store, never in the agent's process.
+- `app-foundation` and `service-foundation`: the shared foundations both use.
+
+No KDCube package is installed on the machine. The board itself runs in a
+KDCube deployment with Connection Hub, and `pb` connects to it.
+
 ## Set up a new machine
 
 Do this once per machine. Each step says who does it and what you should see.

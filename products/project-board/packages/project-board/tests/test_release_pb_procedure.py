@@ -151,3 +151,8 @@ def test_the_release_guide_leads_with_the_procedure() -> None:
     for command in ("scripts/release-pb prepare", "scripts/release-pb publish", "scripts/release-pb verify",
                     "pb source use-release --expect-version"):
         assert command in first_section, command
+    # The repository's procedure names neutral roles; a project's own roles
+    # (its coordinator, its operator) belong on that project's pages (operator, 2026-09-27).
+    for project_role in ("coordinator", "operator"):
+        assert project_role not in first_section.lower(), project_role
+    assert "The maintainer" in first_section and "release owner's approval" in first_section

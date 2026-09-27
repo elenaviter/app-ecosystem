@@ -23,6 +23,7 @@ SECTIONS = (
     "What Problem Board is",
     "Why use it",
     "What you need",
+    "What gets installed",
     "Set up a new machine",
     "Onboard an agent",
     "Connect the agent to a project",
@@ -110,3 +111,12 @@ def test_nothing_private_or_internal() -> None:
         r"ngrok",
     ):
         assert not re.search(pattern, README), pattern
+
+
+def test_it_says_what_pip_installs_and_what_the_board_needs() -> None:
+    part = README[README.index("## What gets installed"): README.index("## Set up a new machine")]
+    for piece in ("project-board", "`connection-hub` with its `client` extra", "app-foundation",
+                  "service-foundation", "same version", "Card authority", "password store",
+                  "KDCube deployment with Connection Hub"):
+        assert piece in part, piece
+    assert "No KDCube package is installed" in part
