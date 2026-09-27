@@ -8272,7 +8272,12 @@ class SharedFieldStore:
     PROJECT_REPOSITORY_ROLES = frozenset({"work", "journal", "artifact"})
 
     def sync_project_repositories(
-        self, project_id: str, repositories: Sequence[Mapping[str, Any]], *, revision: int
+        self,
+        project_id: str,
+        repositories: Sequence[Mapping[str, Any]],
+        *,
+        revision: int,
+        commit_identity_email: str | None = None,
     ) -> bool:
         """Store the project's repository list as the board last declared it (W304 finding 39).
 
@@ -8280,14 +8285,25 @@ class SharedFieldStore:
         each `{alias, url, role, branch?, path?}` with role work, journal or
         artifact, under one revision. The agent sets up its workspace from
         this list. A revision this host already holds is not written again.
+
+        W368: the preset also carries the email every agent commits with
+        (``None`` when the board sends none). Setting it advances the revision;
+        the one exception is a host that wrote the revision before it knew the
+        field, so an equal revision with another email is written again.
         """
 
         clean_id = component(project_id, field="project_id")
         path = self._project_dir(clean_id) / "repositories.json"
+        email = str(commit_identity_email or "").strip() if commit_identity_email is not None else None
         with exclusive_lock(self._project_lock(clean_id)):
             self.read_project(clean_id)
             current = read_json(path, required=False) or {}
-            if int(current.get("revision") or 0) >= int(revision) > 0:
+            held = int(current.get("revision") or 0)
+            if held > int(revision) > 0:
+                return False
+            if held == int(revision) > 0 and (
+                email is None or str(current.get("commit_identity_email") or "") == email
+            ):
                 return False
             rows: list[dict[str, Any]] = []
             for raw in repositories:
@@ -8309,7 +8325,12 @@ class SharedFieldStore:
                 )
             atomic_write_json(
                 path,
-                {"revision": int(revision), "repositories": rows, "updated_at": utc_now()},
+                {
+                    "revision": int(revision),
+                    "repositories": rows,
+                    "commit_identity_email": email or "",
+                    "updated_at": utc_now(),
+                },
             )
             return True
 
@@ -8319,6 +8340,8 @@ class SharedFieldStore:
         return {
             "revision": int(record.get("revision") or 0),
             "repositories": list(record.get("repositories") or []),
+            # W368: the email every agent of the project commits with, or "".
+            "commit_identity_email": str(record.get("commit_identity_email") or ""),
             # When this host wrote that revision: the project record's arrival (W337).
             "received_at": str(record.get("updated_at") or ""),
         }

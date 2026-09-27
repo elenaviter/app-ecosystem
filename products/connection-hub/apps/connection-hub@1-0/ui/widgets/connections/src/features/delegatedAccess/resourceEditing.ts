@@ -265,10 +265,25 @@ export interface ResourceDriftState {
   accepted_digest?: string;
   current_digest?: string;
   changed_operations?: string[];
+  changed_effect?: string;
   removed_operations?: string[];
   added_operations?: string[];
   removed_claims?: string[];
   added_claims?: string[];
+}
+
+/** Whether a changed selected operation is actually held back until accepted.
+ *
+ *  Operator, 2026-09-27: the Card screen said "suspended" for Problem Board
+ *  operations that agents were still running. Only a call that checks the
+ *  accepted descriptor suspends: a remote MCP connector's. A catalog row's
+ *  operation stays in effect, so its change is shown for review. The server
+ *  says which (`changed_effect`); without it, only a remote MCP connector
+ *  suspends. */
+export function changedOperationsSuspended(state: ResourceDriftState | undefined): boolean {
+  if (!state) return false;
+  if (state.changed_effect) return state.changed_effect === 'suspended_until_accepted';
+  return state.kind === 'remote_mcp';
 }
 
 /** The catalog rows that a concrete resource already stands for.

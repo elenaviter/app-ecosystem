@@ -327,3 +327,45 @@ def test_card_authority_keeps_the_entry_door_across_serialization():
     legacy = dict(payload)
     legacy.pop("entry_resource")
     assert CardAuthority.from_mapping(legacy).entry_resource == ""
+
+
+def test_a_changed_catalog_operation_reads_in_effect_for_review():
+    """Operator, 2026-09-27: a catalog row's changed operation is not suspended
+    (its call never checks the accepted digest), so the view says so."""
+
+    import copy
+
+    document = CatalogDocument.build(CONNECTIONS, created_at=datetime.fromtimestamp(NOW, tz=timezone.utc))
+    config = oauth_delegated_config_from_connections(document.connections)
+    changed_connections = copy.deepcopy(CONNECTIONS)
+    tasks = changed_connections["delegated_credentials"]["oauth"]["resources"][1]
+    tasks["tools"]["delete"]["description"] = "Delete permanently"
+    after = CatalogDocument.build(changed_connections, created_at=datetime.fromtimestamp(NOW + 5, tz=timezone.utc))
+    after_config = oauth_delegated_config_from_connections(after.connections)
+    authority = CardAuthority(
+        access_id="agent-y",
+        client_id="kdcube-agent:workspace@1-0:lg-react",
+        grantor_subject="u",
+        delegate_subject="d",
+        source="agent",
+        card_kind=CARD_KIND_AGENT,
+        catalog_version=document.version,
+        resource_grants={TASKS: ("tasks:use",)},
+        resource_operations={TASKS: ("search", "delete")},
+        named_service_operations=NamedServiceSelection.none(),
+        resource_acceptance={
+            TASKS: row_acceptance(config.card_selector_config(TASKS), catalog_version=document.version),
+        },
+    )
+    view = build_card_view(
+        authority,
+        resource_states=card_resource_states(card=authority, active=after, active_config=after_config),
+        row_for=after_config.card_selector_config,
+    )
+    delete, search = view.resource(TASKS).operations
+    assert (delete.name, delete.state, delete.effect) == ("delete", "changed", "in_effect_review")
+    assert (search.name, search.state, search.effect) == ("search", "current", "")
+    payload = view.to_dict()
+    assert payload["resources"][0]["operations"][0]["effect"] == "in_effect_review"
+    assert "effect" not in payload["resources"][0]["operations"][1]
+    assert type(view).from_dict(payload) == view

@@ -544,9 +544,12 @@ test('a card edits several resources under one stable identity: sections, add, r
   assert.match(parts, /export function RemovedResourceStub\(/)
   assert.match(parts, /export function ResourceDriftReview\(/)
   assert.match(parts, /export function ResourceOfferPicker\(/)
-  // The review says a changed selected operation is suspended until accepted,
-  // and a newly advertised one is not granted.
-  assert.match(parts, /Changed, suspended until you accept/)
+  // The review says a changed selected operation is suspended until accepted
+  // only where that is enforced (a remote MCP connector); on a catalog row it
+  // reads as a description change to review (operator, 2026-09-27). A newly
+  // advertised one is not granted.
+  assert.match(parts, /\{suspends \? 'Changed, suspended until you accept' : 'Description changed, review'\}/)
+  assert.match(parts, /const suspends = changedOperationsSuspended\(state\);/)
   assert.match(parts, /Newly advertised, not granted/)
   assert.match(parts, /function DriftTable\(/)
   assert.match(parts, /role="table"/)

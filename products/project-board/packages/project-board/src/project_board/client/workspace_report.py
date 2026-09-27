@@ -12,6 +12,11 @@ the local project record and names one state each:
 - ``unreachable``: missing, not a checkout, another origin, or the remote did
   not answer, with a one-line reason.
 
+When the project sets a commit email (W368), each clone also says whether it
+commits as ``<this agent's alias> <that email>``: ``matches``, ``differs`` or
+``unset``. ``--set-identity`` first writes both values repository-local in each
+clone of its own; the clone's worktrees inherit them.
+
 The report is stored in the worker's local record and rides the project
 heartbeat once per change, like the info line (W330).
 """
@@ -22,6 +27,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -181,6 +187,75 @@ def inspect_repository(
     return {"alias": alias, "state": "verified", "reason": ""}
 
 
+IDENTITY_STATES = ("matches", "differs", "unset")
+
+
+def commit_identity(
+    alias: str, email: str, workspace: str, repositories: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """What this agent commits as in the project, and the commands that set it (W368).
+
+    The name is always the agent's alias, the email the project's. Empty when
+    the project sets no email or the agent has no alias: then nothing is set.
+    """
+
+    name = str(alias or "").strip()
+    address = str(email or "").strip()
+    if not name or not address:
+        return {}
+    root = Path(workspace) if workspace else Path("<workspace>")
+    commands = []
+    for repository in list(repositories)[:MAX_REPOSITORIES]:
+        folder = str(repository.get("alias") or "").strip()
+        if not folder:
+            continue
+        clone = shlex.quote(str(root / folder))
+        commands.append(f"git -C {clone} config user.name {shlex.quote(name)}")
+        commands.append(f"git -C {clone} config user.email {shlex.quote(address)}")
+    return {
+        "name": name,
+        "email": address,
+        "commands": commands,
+        "rule": (
+            "Every clone of the project commits as this name and email, repository-local; "
+            "worktrees inherit the clone's. `pb worker workspace-report --set-identity` sets it in each clone."
+        ),
+    }
+
+
+def clone_identity(
+    folder: Path,
+    name: str,
+    email: str,
+    *,
+    set_identity: bool = False,
+    timeout: float = 15.0,
+    git: GitRunner = _run_git,
+) -> str:
+    """Whether the clone commits as ``name <email>``: matches, differs or unset.
+
+    Reads what a commit here would use (repository, then user and system
+    config), so a personal global identity that nothing overrides reads as
+    ``differs``. With ``set_identity`` both values are written to the clone's
+    own config first.
+    """
+
+    try:
+        if set_identity:
+            for key, value in (("user.name", name), ("user.email", email)):
+                if git(["config", "--local", key, value], folder, timeout).returncode != 0:
+                    return "unset"
+        values = []
+        for key in ("user.name", "user.email"):
+            found = git(["config", "--get", key], folder, timeout)
+            values.append(found.stdout.strip() if found.returncode == 0 else "")
+    except (subprocess.TimeoutExpired, OSError):
+        return "unset"
+    if not all(values):
+        return "unset"
+    return "matches" if values == [name, email] else "differs"
+
+
 def build_workspace_report(
     workspace: Path,
     repositories: Sequence[Mapping[str, Any]],
@@ -191,6 +266,8 @@ def build_workspace_report(
     timeout: float = 15.0,
     git: GitRunner = _run_git,
     resolve_host: HostResolver | None = None,
+    identity: tuple[str, str] | None = None,
+    set_identity: bool = False,
 ) -> dict[str, Any]:
     if resolve_host is None:
         cache: dict[str, str] = {}
@@ -200,11 +277,18 @@ def build_workspace_report(
                 cache[alias] = ssh_hostname(alias, timeout=min(5.0, timeout))
             return cache[alias]
 
-    rows = [
-        inspect_repository(workspace, repository, verify=verify, timeout=timeout, git=git, resolve_host=resolve_host)
-        for repository in list(repositories)[:MAX_REPOSITORIES]
-        if str(repository.get("alias") or "").strip()
-    ]
+    rows = []
+    for repository in list(repositories)[:MAX_REPOSITORIES]:
+        alias = str(repository.get("alias") or "").strip()
+        if not alias:
+            continue
+        row = inspect_repository(workspace, repository, verify=verify, timeout=timeout, git=git, resolve_host=resolve_host)
+        # W368: only a clone of its own (not unreachable) has an identity to read or set.
+        if identity and all(identity) and row["state"] != "unreachable":
+            row["identity"] = clone_identity(
+                workspace / alias, identity[0], identity[1], set_identity=set_identity, timeout=timeout, git=git
+            )
+        rows.append(row)
     return {"revision": int(revision), "reported_at": reported_at, "repositories": rows}
 
 
@@ -218,6 +302,8 @@ def report_signature(report: Mapping[str, Any]) -> str:
                 "alias": str(row.get("alias") or ""),
                 "state": str(row.get("state") or ""),
                 "reason": str(row.get("reason") or ""),
+                # W368: only when checked, so a report without it keeps its signature.
+                **({"identity": str(row["identity"])} if row.get("identity") else {}),
             }
             for row in report.get("repositories") or []
             if isinstance(row, Mapping)
@@ -228,8 +314,11 @@ def report_signature(report: Mapping[str, Any]) -> str:
 
 
 __all__ = [
+    "IDENTITY_STATES",
     "REPORT_STATES",
     "build_workspace_report",
+    "clone_identity",
+    "commit_identity",
     "comparable_url",
     "inspect_repository",
     "report_signature",
