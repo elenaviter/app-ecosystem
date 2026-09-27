@@ -5,7 +5,7 @@ processes.
 
 ## Current Status
 
-`2026.09.27.1507` is released together with app-foundation, connection-hub and
+`2026.09.27.1727` is released together with app-foundation, connection-hub and
 project-board at one version (W322). It includes a generic
 host-relay lifecycle under `service_foundation.host_relay`:
 
