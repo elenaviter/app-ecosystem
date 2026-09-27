@@ -153,6 +153,7 @@ at consent", which sent the team to the catalog.
 | `project.register` | `work:coordinate` | no | optional | yes | Register a project under the signed-in owner. | An owner decision. A coordinator may do it on the owner's instruction. |
 | `project.set_journal_home` | `work:coordinate` | no | optional | yes | Version the owner's portable Git-backed journal-home binding without transferring journal files. It is read only while the project's repository preset names no journal repository with a path; the board no longer offers an editor for it. |  |
 | `project.set_repositories` | `work:coordinate` | no | optional | admin | Version the project repository preset carried in attended-worker heartbeats. | The journal-home alias must name an entry whose role is `journal`. |
+| `project.set_commit_identity` | `work:coordinate` | no | optional | admin | Set the email every agent of the project commits with, as `<agent alias> <email>`; part of the repository preset and advances its revision. | One email address, or empty to clear; `person_card: false`. |
 | `project.plan.index` | `work:observe` | yes | yes | yes | Read each plan item's source text, summary, status, dependencies, attachment references, and derived-state hashes. |  |
 | `project.plan.item` | `work:observe` | yes | yes | yes | Read one complete authoritative plan item by its canonical URI. |  |
 | `project.plan.resolve` | `work:observe` | yes | yes | yes | Resolve a bounded explicit set of plan-item references and project-scoped keys in one query, naming every absent selector. |  |
