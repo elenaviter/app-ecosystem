@@ -1,16 +1,17 @@
 package:
   id: project-board
-  ref: "2026.09.27.1507"
+  ref: "2026.09.27.1727"
   description: |
-    Problem Board client set 2026.09.27.1507.
+    Problem Board client set 2026.09.27.1727: a new machine can be set up by its own agent.
 
-    - Each agent's commit identity comes from the project. `pb worker context` returns it as `<agent alias> <project email>`, `pb worker workspace-report --set-identity` applies it repository-local, and the report flags clones that differ (W368).
-    - The project-board README explains what gets installed: four packages at one version, with `connection-hub[client]` holding Card authority and credentials. It also shows an architecture diagram of how machines, relays, agents, workspaces, Cards, KDCube, GitHub and Telegram tie together (W361).
-    - The release procedure is written in neutral roles (W364).
-    - Procedure revision 2026.09.27.7.
+    - `pb status` checks the machine's prerequisites for its OS (Linux: python and venv, git, tmux, linger, the systemd user manager, a usable keyring; macOS: python, git, tmux, keychain). It names each missing one with the exact fix, says whether it needs an administrator, and says what works without it (W304).
+    - `pb setup` checks that the endpoint answers as the board before it writes anything, and refuses with a named reason (W304).
+    - `pb procedure install` records which pb installed the skill, so the agent finds it wherever it lives (W304).
+    - The skill's first-run and the README follow one agent-guided path. Install pb and the skill, start the agent as the worker in tmux, and give it the values from the board's new "Connect a machine" panel; it sets up the machine, proposes the newest release and enrolls, and you approve its Card with --device (W304).
+    - Procedure revision 2026.09.27.8.
 
 components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.09.27.1507"
+    version: "2026.09.27.1727"
