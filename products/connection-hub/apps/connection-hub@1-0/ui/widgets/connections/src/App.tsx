@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { settings } from './api/settings';
+import { signedInAccount, switchPlatformAccount, type SignedInAccount } from './api/platformAuth';
 import { useAppDispatch, useAppSelector } from './app/hooks';
 import { AppShell, type ConnectionsTab } from './components/AppShell';
 import { AuthenticatorsPanel } from './features/authenticators/AuthenticatorsPanel';
@@ -112,6 +113,17 @@ export default function App() {
   const providerConnectionsError = useAppSelector((s) => s.providerConnections.error);
   const remoteMcpError = useAppSelector((s) => s.remoteMcp.error);
   const platformUserId = useAppSelector((s) => s.identity.platformUserId || s.delegatedAccess.platformUserId);
+  // W304 finding 26: who this page acts for, by name, before anything is approved.
+  const [account, setAccount] = useState<SignedInAccount | null>(null);
+  useEffect(() => {
+    if (!runtimeReady || telegramMiniAppMode || claimChallengeId) return;
+    let live = true;
+    void signedInAccount().then((found) => { if (live) setAccount(found); });
+    return () => { live = false; };
+  }, [runtimeReady, telegramMiniAppMode, claimChallengeId, platformUserId]);
+  // A profile of another user than the one the hub answers for is never shown as "signed in as".
+  const signedInAs = account && (!account.userId || !platformUserId || account.userId === platformUserId) ? account.label : '';
+  const switchAccount = useCallback(() => { void switchPlatformAccount(window.location.href); }, []);
 
   useEffect(() => {
     void settings.setupParentListener().then(async () => {
@@ -355,6 +367,8 @@ export default function App() {
       onRefresh={refresh}
       refreshing={refreshing}
       userId={platformUserId}
+      signedInAs={signedInAs}
+      onSwitchAccount={switchAccount}
       activeTab={activeTab}
       onTabChange={changeTab}
       telegramConnectStatus={telegramConnectStatus}

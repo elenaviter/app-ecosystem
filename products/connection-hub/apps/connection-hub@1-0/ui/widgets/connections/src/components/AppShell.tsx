@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { CopyButton } from './CopyControls';
 import { TabGuide } from './TabGuide';
+import { SWITCH_ACCOUNT_HINT } from './signedInAccount';
 
 export type ConnectionsTab = 'identity' | 'delegatedToKdcube' | 'providerConnections' | 'remoteMcp' | 'delegatedAccess' | 'accessMap' | 'authenticators';
 
@@ -11,6 +12,10 @@ export interface AppShellProps {
   refreshing?: boolean;
   /** The signed-in platform user id: the owner of everything on every tab. */
   userId?: string;
+  /** Who that is (email, else name), from the platform's profile (W304 finding 26). */
+  signedInAs?: string;
+  /** Sign out and back in as another account, returning to this page. */
+  onSwitchAccount?: () => void;
   activeTab: ConnectionsTab;
   onTabChange: (tab: ConnectionsTab) => void;
   telegramConnectStatus?: 'idle' | 'connecting' | 'connected' | 'failed';
@@ -28,6 +33,8 @@ export function AppShell({
   onRefresh,
   refreshing,
   userId,
+  signedInAs,
+  onSwitchAccount,
   activeTab,
   onTabChange,
   telegramConnectStatus = 'idle',
@@ -76,6 +83,17 @@ export function AppShell({
           <h1>Connections</h1>
         </div>
         <div className="page-head__right">
+          {signedInAs ? (
+            <span className="whose-list signed-in-as" title="The platform account this page acts for: it owns every Card you approve here.">
+              <span className="whose-list-label">signed in as</span>
+              <strong className="whose-list-account">{signedInAs}</strong>
+              {onSwitchAccount ? (
+                <button type="button" className="btn btn-ghost" onClick={onSwitchAccount} title={SWITCH_ACCOUNT_HINT}>
+                  Not you? Switch account
+                </button>
+              ) : null}
+            </span>
+          ) : null}
           {userId ? (
             <span className="whose-list" title="Your platform user id: the owner of everything on every tab, and what a script names as the grantor.">
               <span className="whose-list-label">your user id</span>
