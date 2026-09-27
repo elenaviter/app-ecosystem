@@ -721,6 +721,8 @@ def update_host_config(
     source_repositories: Mapping[str, str] | None = None,
     source_repository_urls: Mapping[str, str] | None = None,
     allowed_control_kinds: Sequence[str] | None = None,
+    add_control_kinds: Sequence[str] = (),
+    remove_control_kinds: Sequence[str] = (),
     allowed_peer_workers: Sequence[str] | None = None,
     max_control_bytes: int | None = None,
     allow_session_resume_view: bool | None = None,
@@ -792,6 +794,13 @@ def update_host_config(
             value["receiver_policy"]["allowed_control_kinds"] = sorted(
                 {str(item).strip() for item in allowed_control_kinds if str(item).strip()}
             )
+        # Additive changes keep every other kind the host accepts: replacing the
+        # list to allow one more kind would refuse mail, requests and pings.
+        if add_control_kinds or remove_control_kinds:
+            kinds = set(value["receiver_policy"].get("allowed_control_kinds") or current.allowed_control_kinds)
+            kinds |= {str(item).strip() for item in add_control_kinds if str(item).strip()}
+            kinds -= {str(item).strip() for item in remove_control_kinds if str(item).strip()}
+            value["receiver_policy"]["allowed_control_kinds"] = sorted(kinds)
         if allowed_peer_workers is not None:
             value["receiver_policy"]["allowed_peer_workers"] = sorted(
                 {

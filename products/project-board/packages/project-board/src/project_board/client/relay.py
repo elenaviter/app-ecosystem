@@ -81,6 +81,7 @@ from .relay_failures import (
     staged_failure,
 )
 from .local_state_maintenance import run_local_state_maintenance
+from .project_file_edit import FILE_EDIT_KIND, apply_file_edit
 from .project_files import file_state
 from .read_roots import READ_ROOTS_STATE, head_commit
 from .local_store import last_read_summaries
@@ -1795,6 +1796,20 @@ class ProblemBoardHostRelayAdapter:
                 )
                 counts["controls_refused"] += 1
                 continue
+            if kind == FILE_EDIT_KIND:
+                edit_ref, summary = await self._serve_file_edit(item)
+                await self._settle_leased_control(
+                    command_ref,
+                    action="control.acknowledge",
+                    kind=kind,
+                    payload={
+                        "lease_id": lease_id,
+                        "lease_owner": self.config.relay_id,
+                        "result_summary": summary,
+                        "result_ref": edit_ref,
+                    },
+                )
+                continue
             if kind in {"journal.catalog", "journal.read", FILE_VIEW_KIND}:
                 try:
                     view_ref = await (
@@ -2178,6 +2193,82 @@ class ProblemBoardHostRelayAdapter:
             payload=action_payload,
         )
         return view_ref
+
+    async def _serve_file_edit(self, control: Mapping[str, Any]) -> tuple[str, str]:
+        """Apply a project-file edit made on the card, in this coordinator's clone (W370).
+
+        The board sends it only to the project's coordinator, for a person
+        allowed to edit, with the branch and the repository's file_edits
+        policy already resolved. The result always goes back to the edit; a
+        request that cannot be applied is a ``refused`` result, never a silent
+        drop.
+        """
+
+        payload = dict(control.get("payload") or {})
+        edit_ref = str(payload.get("edit_ref") or "")
+
+        async def publish(result: Mapping[str, Any]) -> tuple[str, str]:
+            outcome = str(result.get("outcome") or "refused")
+            reason = str(result.get("reason") or "")
+            # The board's result shape (claude-app, 2026-09-27): the compare link
+            # rides in pr_url for a pushed branch.
+            body = {
+                "edit_ref": edit_ref,
+                "outcome": outcome,
+                "commit": str(result.get("commit") or ""),
+                "pr_url": str(result.get("pr_url") or result.get("compare_url") or ""),
+                "reason": reason,
+                "reason_code": str(result.get("reason_code") or ""),
+            }
+            if edit_ref:
+                try:
+                    await self.client.action(object_ref=edit_ref, action="project.file.edit.result", payload=body)
+                except DomainError as exc:
+                    return edit_ref, f"File edit {outcome}; the result was not accepted: {exc.code}"
+            return edit_ref, f"File edit {outcome}" + (f": {reason}" if reason else "")
+
+        def refused(code: str, reason: str) -> dict[str, str]:
+            return {"outcome": "refused", "reason_code": code, "reason": reason}
+
+        if content_hash(payload) != str(control.get("payload_hash") or ""):
+            return await publish(refused("field_control_hash_invalid", "the edit request does not match its hash"))
+        if str(control.get("project_ref") or "") != f"work:project:{self.config.project_id}":
+            return await publish(refused("project_mismatch", "the edit targets another project"))
+        alias = str(payload.get("alias") or "")
+        path = str(payload.get("path") or "")
+        content = payload.get("content")
+        if not isinstance(content, str):
+            return await publish(refused("edit_invalid", "the edit carries no content"))
+        if hashlib.sha256(content.encode("utf-8")).hexdigest() != str(payload.get("content_sha256") or ""):
+            return await publish(refused("edit_invalid", "the content does not match its sha256"))
+        listed = self.field.read_project_files(self.config.project_id)
+        if not any(
+            str(row.get("alias") or "") == alias and str(row.get("path") or "") == path
+            for row in listed.get("files") or []
+        ):
+            return await publish(refused("file_not_listed", "this file is not on the project's list"))
+        repositories = self.field.read_project_repositories(self.config.project_id)
+        url = next(
+            (str(row.get("url") or "") for row in repositories.get("repositories") or [] if row.get("alias") == alias),
+            "",
+        )
+        requested = payload.get("requested_by") if isinstance(payload.get("requested_by"), Mapping) else {}
+        result = await asyncio.to_thread(
+            apply_file_edit,
+            workspace=self.config.workspace,
+            alias=alias,
+            path=path,
+            url=url,
+            branch=str(payload.get("branch") or ""),
+            base_commit=str(payload.get("base_commit") or ""),
+            content=content,
+            author_name=self.config.worker_alias,
+            author_email=str(repositories.get("commit_identity_email") or ""),
+            requested_by=str(requested.get("label") or requested.get("subject") or "a person"),
+            edit_id=hashlib.sha256(edit_ref.encode("utf-8")).hexdigest()[:12],
+            policy=str(payload.get("file_edits") or ""),
+        )
+        return await publish(result)
 
     async def _serve_file_view(self, control: Mapping[str, Any]) -> str:
         """Publish one listed project file from this agent's clone, stamped with its commit (W370).

@@ -239,6 +239,15 @@ edit a project file like any file in its repository: a branch, a commit and a
 pull request, or a direct commit where the project allows it. Without it,
 propose the change to the coordinator by mail: the file, the change and why.
 
+A person may also edit a project file on the card. The board never writes
+it: the coordinator's relay applies the edit in the coordinator's clone, in a
+worktree from the branch, and refuses it when the file changed since the
+person opened it. It commits as the coordinator ("Project file <path>: edited
+by <person> on the board") and pushes by the repository's `file_edits`
+setting on the card: a direct commit for a local repository, a pull request
+for a remote one. Every agent is then told on its next check, as for any
+change.
+
 **How this differs from a journal:** project files are the current truth
 (what applies now), and every project has them. A journal is history (what
 happened and why), and it stays optional. With no journal

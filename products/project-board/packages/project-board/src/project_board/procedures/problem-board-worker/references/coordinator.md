@@ -333,7 +333,17 @@ sessions.
 writes it into Facts, the project's facts file: rulings live in project files,
 not in any agent's private memory, and every agent is told on its next check
 (project workspace, "Project files"). What happened and why goes in the
-project journal, when the project keeps one. Practice that helps any coordinator or worker goes in this procedure,
+project journal, when the project keeps one.
+
+**Edits made on the card come to you.** When a person edits a project file on
+the card, your relay applies it (W370). The board then mails you the path,
+who edited it and the result: a commit, a pull request, or a pushed branch
+when your machine has no `gh`. Review and merge the pull request, or open it
+from the pushed branch, like any change request. Your machine accepts these
+edits only after the operator's opt-in, on your host alone:
+`pb host configure --add-control-kind project.file.edit`. Never
+`--allow-control-kind` for this: it replaces the whole list, and the host
+would refuse mail, requests and pings. Practice that helps any coordinator or worker goes in this procedure,
 through a change request. Private agent memory holds only that agent's
 personal preferences. Why: knowledge kept in one agent's memory is lost to
 every other agent and to that agent's successor (operator, 2026-09-26).
