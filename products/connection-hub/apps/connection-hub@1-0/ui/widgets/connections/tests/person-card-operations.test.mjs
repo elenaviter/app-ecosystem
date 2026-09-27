@@ -3,6 +3,9 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
+  catalogDriftForPersonCard,
+  driftForPersonCard,
+  notOfferedNamedOnPersonCard,
   notOfferedOnPersonCard,
   offeredOnPersonCard,
   resourceForPersonCard,
@@ -71,5 +74,63 @@ test('the editor narrows the catalog only for a project person\'s or invitation\
   const create = panel.slice(panel.indexOf('const createResources = useMemo'), panel.indexOf('const createSelectionIndex'))
   assert.doesNotMatch(create, /\bresources\./)
   const parts = readFileSync(new URL('../src/features/delegatedAccess/ResourceEditorParts.tsx', import.meta.url), 'utf8')
-  assert.match(parts, /added_operations: state\.added_operations\.filter\(\(operation\) => !hidden\.has\(operation\)\)/)
+  assert.match(parts, /state = driftForPersonCard\(state, notOffered\);/)
+  assert.equal((panel.match(/<CatalogDriftNotice drift=\{cardCatalogDrift\((record|item)\)\} \/>/g) || []).length, 2)
+  assert.doesNotMatch(panel, /<CatalogDriftNotice drift=\{(record|item)\.catalog_drift\} \/>/)
+})
+
+// Operator, 2026-09-27: after the board's catalog changed, the LinkedIn admin's
+// person Control Card listed project.people.invite and set_role as "changed,
+// suspended until you accept". Both are marked role-only: the drift review of
+// a person's Card lists them neither as changed nor as newly advertised.
+test('a person\'s Card drift review hides marked operations, changed and added, and keeps the rest', () => {
+  const state = {
+    status: 'changed',
+    changed_operations: ['project.people.invite', 'review.assign'],
+    added_operations: ['project.coordinator.hand_over', 'plan.item.create'],
+    removed_operations: ['project.people.invite'],
+  }
+  const shown = driftForPersonCard(state, notOfferedOnPersonCard(ROW))
+  assert.deepEqual(shown.changed_operations, ['review.assign'])
+  assert.deepEqual(shown.added_operations, ['plan.item.create'])
+  assert.deepEqual(shown.removed_operations, ['project.people.invite'], 'what the service no longer offers stays listed')
+  assert.equal(state.changed_operations.length, 2, 'the server\'s drift is not mutated')
+  // Only role-only changes: the review has nothing to show.
+  const onlyMarked = driftForPersonCard(
+    { status: 'changed', changed_operations: ['project.people.invite'] },
+    notOfferedOnPersonCard(ROW),
+  )
+  assert.deepEqual(onlyMarked.changed_operations, [])
+  assert.equal(driftForPersonCard(state, undefined), state, 'another Card sees the drift as the server sent it')
+  assert.equal(driftForPersonCard(undefined, ['x']), undefined)
+})
+
+test('the Card-level notice of a person\'s Card leaves out marked outer and named-service additions', () => {
+  assert.deepEqual(
+    [...notOfferedNamedOnPersonCard(ROW)].sort(),
+    ['work object.action.project.coordinator.get', 'work object.action.project.coordinator.make'],
+  )
+  const drift = {
+    status: 'changed',
+    added: {
+      claims: [{ resource: 'problem-board', claim: 'plan' }],
+      outer_operations: [
+        { resource: 'problem-board', operation: 'project.people.invite' },
+        { resource: 'problem-board', operation: 'review.assign' },
+        { resource: 'other', operation: 'project.people.invite' },
+      ],
+      named_service_operations: [
+        { resource: 'problem-board', namespace: 'work', operation: 'object.action.project.coordinator.make' },
+        { resource: 'problem-board', namespace: 'work', operation: 'object.action.review.assign' },
+      ],
+    },
+  }
+  const shown = catalogDriftForPersonCard(drift, (resource) => (resource === 'problem-board' ? ROW : undefined))
+  assert.deepEqual(shown.added.outer_operations.map((row) => `${row.resource} ${row.operation}`), [
+    'problem-board review.assign',
+    'other project.people.invite',
+  ])
+  assert.deepEqual(shown.added.named_service_operations.map((row) => row.operation), ['object.action.review.assign'])
+  assert.deepEqual(shown.added.claims, drift.added.claims)
+  assert.equal(catalogDriftForPersonCard(undefined, () => ROW), undefined)
 })
