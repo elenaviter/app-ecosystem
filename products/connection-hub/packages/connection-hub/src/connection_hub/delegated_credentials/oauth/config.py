@@ -32,7 +32,7 @@ DEFAULT_PUBLIC_CLIENT_GRANT_TYPES: tuple[str, ...] = (
     "authorization_code",
     "refresh_token",
 )
-from connection_hub.operation_groups import parse_operation_groups
+from connection_hub.operation_groups import offered_on_person_card, parse_operation_groups
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,10 @@ class OAuthDelegatedToolConfig:
     # editor shows operations under it. Presentation only, so it stays out of
     # every descriptor digest and never raises catalog drift.
     group: str = ""
+    # False when the service decides this operation for a person by role
+    # alone (W360): a project person's Control Card does not offer it.
+    # Presentation too, so it stays out of every descriptor digest.
+    person_card: bool = True
 
 
 @dataclass(frozen=True)
@@ -482,6 +486,7 @@ def _parse_tool(item: Any) -> OAuthDelegatedToolConfig | None:
         description=_coerce_str(item.get("description")) or "",
         grants=_coerce_string_tuple(item.get("grants") or item.get("scopes") or item.get("required_grants")),
         group=_coerce_str(item.get("group")) or "",
+        person_card=offered_on_person_card(item),
     )
 
 

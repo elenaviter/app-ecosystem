@@ -1,0 +1,276 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 1010" font-family="Inter, ui-sans-serif, system-ui, sans-serif" role="img" aria-labelledby="pbtitle pbdesc">
+  <title id="pbtitle">How Problem Board ties together</title>
+  <desc id="pbdesc">A KDCube deployment holds the Problem Board app and Connection Hub. The board holds the plan, mail, assignments, reviews, journal views and Telegram topics, in PostgreSQL and KDCube conversation storage. On the board, a project names its repositories, each with a role (journal, work, artifact), and its places: instructions, facts and journal are kept in the journal repository; artifacts in an artifact repository or KDCube storage. Agents attend the project, and it binds them to those repositories. Connection Hub holds the Cards as a hierarchy: the project Control Card; under it each person's Control Card, set by project admins, and under that the person's My Card, their own choice within it, so a person may do what both allow; and under the project Control Card each agent's Card, combined with it by AND by default. People hold the project roles owner, admin or member; one agent is the project's coordinator, which routes, reviews and merges, and the others are workers. A person uses the board in a browser and approves Cards on their own device with a device link and code. A Telegram bot relays project messages and files both ways. On each machine, one pb relay per operating-system user keeps each agent's channel to the board under that agent's own Card. Credentials stay in the machine's native password store, never inside the agent. Each agent's workspace holds a clean clone of each repository on main, only fast-forwarded; a worktree per task; the journal worktree; and review copies at the exact commit under review. The clones reach GitHub over SSH with one deploy key per repository; today these keys are made per operating-system user, and the direction is keys minted per project through Connection Hub. Teal marks Cards, roles and authority; dark red marks credentials and keys.</desc>
+  <defs>
+    <linearGradient id="pbgraphite" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F1F3F4"/><stop offset="100%" stop-color="#E3E6E8"/>
+    </linearGradient>
+    <radialGradient id="pblamp" cx="50%" cy="50%" r="62%">
+      <stop offset="0%" stop-color="#FFC978" stop-opacity="0.32"/>
+      <stop offset="45%" stop-color="#F0BC2E" stop-opacity="0.11"/>
+      <stop offset="100%" stop-color="#F0BC2E" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="pbtick" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#465864"/><stop offset="1" stop-color="#D9A945"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1100" height="1010" fill="url(#pbgraphite)"/>
+  <text x="34" y="36" font-size="11" letter-spacing="0.2em" fill="#465864" font-weight="700" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">PROBLEM BOARD · HOW IT TIES TOGETHER</text>
+  <rect x="34" y="44" width="72" height="2" rx="1" fill="url(#pbtick)"/>
+
+  <!-- the platform boundary -->
+  <rect x="300" y="66" width="770" height="354" rx="12" fill="none" stroke="#465864" stroke-opacity="0.4" stroke-dasharray="6 5"/>
+  <text x="316" y="84" font-size="8.5" letter-spacing="0.14em" font-weight="700" fill="#465864" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">KDCUBE DEPLOYMENT · INSIDE THE PLATFORM</text>
+
+  <!-- the board: the warm-lit heart -->
+  <ellipse cx="510" cy="246" rx="240" ry="170" fill="url(#pblamp)"/>
+  <rect x="320" y="94" width="380" height="310" rx="14" fill="#FFF8E9" stroke="#D9A945" stroke-width="1.3"/>
+  <rect x="326" y="100" width="368" height="298" rx="11" fill="none" stroke="#D9A945" stroke-opacity="0.3"/>
+  <text x="338" y="120" font-size="15" font-weight="700" fill="#8A6A1C" font-family="Iowan Old Style, Georgia, serif">Problem Board</text>
+  <text x="338" y="135" font-size="10" font-style="italic" fill="#A08648">the board app · one deployable unit</text>
+  <text x="338" y="154" font-size="8" letter-spacing="0.12em" font-weight="700" fill="#465864" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">HOLDS</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="338" y="160" width="78" height="18" rx="4" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/><text x="377" y="172.5" fill="#465864">plan · items</text>
+    <rect x="422" y="160" width="42" height="18" rx="4" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/><text x="443" y="172.5" fill="#465864">mail</text>
+    <rect x="470" y="160" width="82" height="18" rx="4" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/><text x="511" y="172.5" fill="#465864">assignments</text>
+    <rect x="558" y="160" width="58" height="18" rx="4" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/><text x="587" y="172.5" fill="#465864">reviews</text>
+    <rect x="338" y="182" width="94" height="18" rx="4" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/><text x="385" y="194.5" fill="#465864">journal views</text>
+    <rect x="438" y="182" width="96" height="18" rx="4" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/><text x="486" y="194.5" fill="#465864">Telegram topics</text>
+  </g>
+  <text x="338" y="218" font-size="8" letter-spacing="0.12em" font-weight="700" fill="#8A6A1C" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">STORAGE</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="338" y="224" width="78" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="377" y="236.5" fill="#8A6A1C">PostgreSQL</text>
+    <rect x="422" y="224" width="206" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="525" y="236.5" fill="#8A6A1C">files · KDCube conversation storage</text>
+  </g>
+
+  <!-- the project, on the board -->
+  <rect x="336" y="254" width="348" height="138" rx="10" fill="#FFFFFF" stroke="#D9A945" stroke-width="1.2"/>
+  <text x="350" y="273" font-size="13" font-weight="700" fill="#8A6A1C" font-family="Iowan Old Style, Georgia, serif">A project</text>
+  <text x="418" y="273" font-size="9.5" font-style="italic" fill="#A08648">its goal, plan, people and agents</text>
+  <text x="350" y="292" font-size="7.5" letter-spacing="0.12em" font-weight="700" fill="#465864" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">REPOSITORIES · ROLE</text>
+  <text x="490" y="292" font-size="7.5" letter-spacing="0.12em" font-weight="700" fill="#465864" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">ITS PLACES · KEPT IN</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="350" y="298" width="128" height="18" rx="4" fill="#FFF8E9" stroke="#D9A945" stroke-opacity="0.55"/><text x="414" y="310.5" fill="#8A6A1C">journal repo · journal</text>
+    <rect x="350" y="322" width="128" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="414" y="334.5" fill="#465864">work repos · work</text>
+    <rect x="350" y="346" width="128" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="414" y="358.5" fill="#465864">artifact repo · artifact</text>
+    <rect x="490" y="298" width="180" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="580" y="310.5" fill="#465864">instructions · facts · journal</text>
+    <rect x="490" y="346" width="180" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="580" y="358.5" fill="#465864">artifacts</text>
+  </g>
+  <text x="496" y="331" font-size="8.5" font-style="italic" fill="#A08648">→ in the journal repo</text>
+  <text x="496" y="378" font-size="8.5" font-style="italic" fill="#A08648">→ an artifact repo or KDCube storage</text>
+  <path d="M478 307 H 490" stroke="#D9A945" stroke-width="1" stroke-opacity="0.7"/>
+  <path d="M478 355 H 490" stroke="#D9A945" stroke-width="1" stroke-opacity="0.7"/>
+
+  <!-- Connection Hub: the Cards, as a hierarchy -->
+  <rect x="720" y="94" width="330" height="310" rx="10" fill="#FFFFFF" stroke="#06968C" stroke-opacity="0.55" stroke-width="1.2"/>
+  <circle cx="738" cy="114" r="3.4" fill="none" stroke="#06968C"/><circle cx="738" cy="114" r="1.2" fill="#06968C"/>
+  <text x="750" y="118" font-size="12" font-weight="700" fill="#057069">Connection Hub</text>
+  <text x="750" y="133" font-size="9.5" font-style="italic" fill="#8794A0">Cards say who may do what · people approve them</text>
+  <text x="736" y="154" font-size="8" letter-spacing="0.12em" font-weight="700" fill="#057069" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">CARDS · A HIERARCHY</text>
+
+  <g stroke="#06968C" stroke-width="1.1" fill="none" stroke-opacity="0.7">
+    <path d="M885 186 V 198 H 816 V 212"/>
+    <path d="M885 198 H 972 V 212"/>
+    <path d="M816 248 V 272"/>
+  </g>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="800" y="162" width="170" height="24" rx="5" fill="#EAF5F4" stroke="#06968C" stroke-opacity="0.6"/><text x="885" y="178" fill="#057069">project Control Card</text>
+    <rect x="736" y="212" width="160" height="36" rx="5" fill="#FFFFFF" stroke="#06968C" stroke-opacity="0.5"/><text x="816" y="227" fill="#057069">a person's Control Card</text>
+    <rect x="906" y="212" width="132" height="36" rx="5" fill="#FFFFFF" stroke="#06968C" stroke-opacity="0.5"/><text x="972" y="227" fill="#057069">each agent's Card</text>
+    <rect x="736" y="272" width="160" height="36" rx="5" fill="#FFFFFF" stroke="#06968C" stroke-opacity="0.5"/><text x="816" y="287" fill="#057069">that person's My Card</text>
+  </g>
+  <g font-size="8.5" font-style="italic" fill="#8794A0" text-anchor="middle">
+    <text x="816" y="241">set by project admins</text>
+    <text x="972" y="241">AND the project's, by default</text>
+    <text x="816" y="301">their own choice, within it</text>
+  </g>
+  <text x="906" y="286" font-size="9" font-style="italic" fill="#057069">a person may do</text>
+  <text x="906" y="299" font-size="9" font-style="italic" fill="#057069">what both allow</text>
+  <text x="736" y="336" font-size="8" letter-spacing="0.12em" font-weight="700" fill="#465864" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">STORAGE</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="736" y="344" width="96" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="784" y="356.5" fill="#465864">its own store</text>
+  </g>
+  <text x="736" y="386" font-size="8.5" font-style="italic" fill="#8794A0">Direction: deploy keys minted per project here.</text>
+
+  <!-- the actors outside -->
+  <rect x="40" y="94" width="230" height="118" rx="10" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/>
+  <circle cx="58" cy="116" r="3.4" fill="none" stroke="#465864"/><circle cx="58" cy="116" r="1.2" fill="#465864"/>
+  <text x="70" y="120" font-size="12" font-weight="700" fill="#3A4A56">A person</text>
+  <text x="70" y="136" font-size="9.5" font-style="italic" fill="#8794A0">uses the board in a browser</text>
+  <text x="70" y="150" font-size="9.5" font-style="italic" fill="#8794A0">approves Cards on their own device</text>
+  <text x="58" y="174" font-size="7.5" letter-spacing="0.12em" font-weight="700" fill="#057069" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">ROLE IN A PROJECT</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="58" y="182" width="52" height="18" rx="9" fill="#EAF5F4" stroke="#06968C" stroke-opacity="0.5"/><text x="84" y="194.5" fill="#057069">owner</text>
+    <rect x="116" y="182" width="52" height="18" rx="9" fill="#EAF5F4" stroke="#06968C" stroke-opacity="0.5"/><text x="142" y="194.5" fill="#057069">admin</text>
+    <rect x="174" y="182" width="60" height="18" rx="9" fill="#EAF5F4" stroke="#06968C" stroke-opacity="0.5"/><text x="204" y="194.5" fill="#057069">member</text>
+  </g>
+
+  <rect x="40" y="262" width="230" height="70" rx="10" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/>
+  <circle cx="58" cy="284" r="3.4" fill="none" stroke="#465864"/><circle cx="58" cy="284" r="1.2" fill="#465864"/>
+  <text x="70" y="288" font-size="12" font-weight="700" fill="#3A4A56">Telegram</text>
+  <text x="70" y="304" font-size="9.5" font-style="italic" fill="#8794A0">a topic per project</text>
+  <text x="70" y="319" font-size="9.5" font-style="italic" fill="#8794A0">messages and files, both ways</text>
+
+  <!-- the machines -->
+  <text x="40" y="458" font-size="8.5" letter-spacing="0.14em" font-weight="700" fill="#465864" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">ON YOUR MACHINES · ONE RELAY PER MACHINE AND OS USER</text>
+
+  <rect x="40" y="470" width="600" height="380" rx="12" fill="none" stroke="#465864" stroke-opacity="0.4" stroke-dasharray="6 5"/>
+  <text x="56" y="490" font-size="8.5" letter-spacing="0.14em" font-weight="700" fill="#465864" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">MACHINE A · ONE OS USER</text>
+
+  <rect x="60" y="500" width="360" height="44" rx="10" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/>
+  <circle cx="78" cy="522" r="3.4" fill="none" stroke="#465864"/><circle cx="78" cy="522" r="1.2" fill="#465864"/>
+  <text x="90" y="519" font-size="12" font-weight="700" fill="#3A4A56">pb relay</text>
+  <text x="90" y="534" font-size="9.5" font-style="italic" fill="#8794A0">keeps each agent's channel to the board</text>
+
+  <rect x="60" y="572" width="275" height="108" rx="10" fill="#FFF8E9" stroke="#D9A945" stroke-opacity="0.8"/>
+  <text x="76" y="594" font-size="12" font-weight="700" fill="#8A6A1C">claude-worker@machine-a</text>
+  <text x="76" y="609" font-size="9.5" font-style="italic" fill="#A08648">a Claude Code session · its own provider account</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="76" y="618" width="80" height="18" rx="9" fill="#EAF5F4" stroke="#06968C" stroke-opacity="0.5"/><text x="116" y="630.5" fill="#057069">coordinator</text>
+  </g>
+  <text x="164" y="631" font-size="8" font-style="italic" fill="#8794A0">routes, reviews, merges; one per project</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="76" y="646" width="46" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="99" y="658.5" fill="#8A6A1C">pb</text>
+    <rect x="128" y="646" width="132" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="194" y="658.5" fill="#8A6A1C">Problem Board skill</text>
+  </g>
+
+  <rect x="345" y="572" width="275" height="108" rx="10" fill="#FFF8E9" stroke="#D9A945" stroke-opacity="0.8"/>
+  <text x="361" y="594" font-size="12" font-weight="700" fill="#8A6A1C">codex-worker@machine-a</text>
+  <text x="361" y="609" font-size="9.5" font-style="italic" fill="#A08648">a Codex session · its own provider account</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="361" y="618" width="58" height="18" rx="9" fill="#EAF5F4" stroke="#06968C" stroke-opacity="0.5"/><text x="390" y="630.5" fill="#057069">worker</text>
+  </g>
+  <text x="427" y="631" font-size="8" font-style="italic" fill="#8794A0">does assigned items · reports for review</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="361" y="646" width="46" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="384" y="658.5" fill="#8A6A1C">pb</text>
+    <rect x="413" y="646" width="132" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="479" y="658.5" fill="#8A6A1C">Problem Board skill</text>
+  </g>
+
+  <rect x="60" y="690" width="560" height="30" rx="8" fill="#FFFFFF" stroke="#B45438" stroke-opacity="0.6"/>
+  <circle cx="76" cy="705" r="3.4" fill="none" stroke="#B45438"/><circle cx="76" cy="705" r="1.2" fill="#B45438"/>
+  <text x="88" y="709" font-size="10" font-weight="600" fill="#B45438">native password store</text>
+  <text x="218" y="709" font-size="9.5" font-style="italic" fill="#8794A0">each agent's Card credential, never inside the agent</text>
+
+  <rect x="60" y="730" width="560" height="104" rx="10" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/>
+  <text x="76" y="749" font-size="10" font-weight="600" fill="#3A4A56">each agent's workspace</text>
+  <text x="208" y="749" font-size="9.5" font-style="italic" fill="#8794A0">one folder per agent, on the host's root</text>
+  <g font-size="9.5" font-weight="600">
+    <rect x="76" y="758" width="262" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="84" y="770.5" fill="#465864">a clean clone on main <tspan font-weight="400" fill="#8794A0">· only fast-forwarded</tspan></text>
+    <rect x="344" y="758" width="260" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="352" y="770.5" fill="#465864">a worktree per task <tspan font-weight="400" fill="#8794A0">· wt/&lt;item&gt;-&lt;repo&gt;</tspan></text>
+    <rect x="76" y="782" width="262" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="84" y="794.5" fill="#465864">the journal worktree <tspan font-weight="400" fill="#8794A0">· wt/journal-&lt;agent&gt;</tspan></text>
+    <rect x="344" y="782" width="260" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="352" y="794.5" fill="#465864">a review copy at the exact commit <tspan font-weight="400" fill="#8794A0">· rv/…</tspan></text>
+    <rect x="76" y="806" width="262" height="18" rx="4" fill="#FFFFFF" stroke="#B45438" stroke-opacity="0.6"/><text x="84" y="818.5" fill="#B45438">a deploy key per repo <tspan font-weight="400" fill="#8794A0">· ~/.ssh, today</tspan></text>
+  </g>
+
+  <rect x="660" y="470" width="240" height="380" rx="12" fill="none" stroke="#465864" stroke-opacity="0.4" stroke-dasharray="6 5"/>
+  <text x="676" y="490" font-size="8.5" letter-spacing="0.14em" font-weight="700" fill="#465864" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">MACHINE B · ANOTHER OS USER</text>
+  <rect x="676" y="500" width="208" height="44" rx="10" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/>
+  <circle cx="694" cy="522" r="3.4" fill="none" stroke="#465864"/><circle cx="694" cy="522" r="1.2" fill="#465864"/>
+  <text x="706" y="519" font-size="12" font-weight="700" fill="#3A4A56">pb relay</text>
+  <text x="706" y="534" font-size="9.5" font-style="italic" fill="#8794A0">its own, for this user</text>
+  <rect x="676" y="572" width="208" height="108" rx="10" fill="#FFF8E9" stroke="#D9A945" stroke-opacity="0.8"/>
+  <text x="690" y="594" font-size="12" font-weight="700" fill="#8A6A1C">claude-worker@machine-b</text>
+  <text x="690" y="609" font-size="9.5" font-style="italic" fill="#A08648">Claude Code · its own account</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="690" y="618" width="58" height="18" rx="9" fill="#EAF5F4" stroke="#06968C" stroke-opacity="0.5"/><text x="719" y="630.5" fill="#057069">worker</text>
+    <rect x="690" y="646" width="46" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="713" y="658.5" fill="#8A6A1C">pb</text>
+    <rect x="742" y="646" width="126" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="805" y="658.5" fill="#8A6A1C">Problem Board skill</text>
+  </g>
+  <rect x="676" y="690" width="208" height="30" rx="8" fill="#FFFFFF" stroke="#B45438" stroke-opacity="0.6"/>
+  <circle cx="692" cy="705" r="3.4" fill="none" stroke="#B45438"/><circle cx="692" cy="705" r="1.2" fill="#B45438"/>
+  <text x="704" y="709" font-size="10" font-weight="600" fill="#B45438">native password store</text>
+  <rect x="676" y="730" width="208" height="104" rx="10" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/>
+  <text x="690" y="749" font-size="10" font-weight="600" fill="#3A4A56">workspace</text>
+  <text x="690" y="767" font-size="9.5" font-style="italic" fill="#8794A0">the same layout: clean clones,</text>
+  <text x="690" y="781" font-size="9.5" font-style="italic" fill="#8794A0">task and journal worktrees,</text>
+  <text x="690" y="795" font-size="9.5" font-style="italic" fill="#8794A0">review copies</text>
+  <g font-size="9.5" font-weight="600">
+    <rect x="690" y="806" width="136" height="18" rx="4" fill="#FFFFFF" stroke="#B45438" stroke-opacity="0.6"/><text x="698" y="818.5" fill="#B45438">its own deploy keys</text>
+  </g>
+
+  <!-- GitHub -->
+  <rect x="920" y="572" width="150" height="248" rx="10" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/>
+  <circle cx="938" cy="594" r="3.4" fill="none" stroke="#465864"/><circle cx="938" cy="594" r="1.2" fill="#465864"/>
+  <text x="950" y="598" font-size="12" font-weight="700" fill="#3A4A56">GitHub</text>
+  <text x="936" y="615" font-size="9.5" font-style="italic" fill="#8794A0">the project's repositories</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="936" y="626" width="118" height="18" rx="4" fill="#FFF8E9" stroke="#D9A945" stroke-opacity="0.55"/><text x="995" y="638.5" fill="#8A6A1C">journal repo</text>
+  </g>
+  <text x="936" y="657" font-size="8.5" font-style="italic" fill="#A08648">instructions · facts · journal</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="936" y="666" width="118" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="995" y="678.5" fill="#465864">work repos</text>
+  </g>
+  <text x="936" y="697" font-size="8.5" font-style="italic" fill="#8794A0">the code agents change</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="936" y="706" width="118" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="995" y="718.5" fill="#465864">artifact repo</text>
+  </g>
+  <text x="936" y="737" font-size="8.5" font-style="italic" fill="#8794A0">what the work produces</text>
+  <g font-size="9.5" font-weight="600" text-anchor="middle">
+    <rect x="936" y="754" width="118" height="18" rx="4" fill="#FFFFFF" stroke="#B45438" stroke-opacity="0.6"/><text x="995" y="766.5" fill="#B45438">deploy key per repo</text>
+  </g>
+  <text x="936" y="786" font-size="8.5" font-style="italic" fill="#8794A0">added by a repository</text>
+  <text x="936" y="799" font-size="8.5" font-style="italic" fill="#8794A0">admin, write access</text>
+
+  <!-- the links -->
+  <g stroke="#B08428" stroke-width="1.1" fill="none" stroke-dasharray="5 4" stroke-opacity="0.6">
+    <path d="M270 128 C 292 128 300 132 311 138"/>
+    <path d="M270 296 C 292 296 300 284 311 278"/>
+    <path d="M240 500 C 240 460 290 446 318 412"/>
+    <path d="M780 500 C 780 470 720 460 700 425 L 694 413"/>
+    <path d="M197 572 V 554"/>
+    <path d="M482 572 V 554"/>
+    <path d="M780 572 V 554"/>
+    <path d="M540 392 C 540 440 540 470 540 562"/>
+    <path d="M676 392 C 676 432 700 436 760 436 H 1000 C 1020 436 1030 450 1030 562"/>
+    <path d="M338 834 C 338 872 380 878 460 878 H 960 C 990 878 995 860 995 830"/>
+    <path d="M884 790 H 910"/>
+  </g>
+  <g stroke="#06968C" stroke-width="1.1" fill="none" stroke-dasharray="5 4" stroke-opacity="0.7">
+    <path d="M155 94 C 155 64 320 58 600 58 H 1040 C 1056 58 1060 66 1060 84 V 158 C 1060 170 1050 174 1030 174 H 980"/>
+  </g>
+  <g fill="#B08428" fill-opacity="0.8">
+    <path d="M320 142l-9 -0.5 4 -7.5z"/>
+    <path d="M320 274l-6 7 -2 -9z"/>
+    <path d="M323 405l-2 9 -6 -6z"/>
+    <path d="M690 405l6 7 -9 1z"/>
+    <path d="M197 545l-4 9h8z"/>
+    <path d="M482 545l-4 9h8z"/>
+    <path d="M780 545l-4 9h8z"/>
+    <path d="M540 571l-4 -9h8z"/>
+    <path d="M1030 571l-4 -9h8z"/>
+    <path d="M995 821l-4 9h8z"/>
+    <path d="M919 790l-9 -4v8z"/>
+    <path d="M271 296l9 -3 -1 8z"/>
+  </g>
+  <path d="M971 174l9 -4v8z" fill="#06968C" fill-opacity="0.85"/>
+  <g font-size="7.5" letter-spacing="0.1em" fill="#8794A0" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">
+    <text x="276" y="120">BOARD</text>
+    <text x="100" y="352">FILES BOTH WAYS</text>
+    <text x="248" y="440">MAIL · WORK · REPORTS</text>
+    <text x="204" y="564">PB COMMANDS</text>
+    <text x="548" y="438">AGENTS ATTEND IT</text>
+    <text x="548" y="449">· BOUND TO ITS REPOS</text>
+    <text x="766" y="430">ITS REPOSITORIES</text>
+    <text x="620" y="872">GIT OVER SSH</text>
+  </g>
+  <text x="408" y="53" font-size="7.5" letter-spacing="0.1em" fill="#057069" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">APPROVES CARDS · DEVICE LINK AND CODE</text>
+  <text x="792" y="451" font-size="7.5" letter-spacing="0.1em" fill="#057069" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">UNDER EACH</text>
+  <text x="792" y="462" font-size="7.5" letter-spacing="0.1em" fill="#057069" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">AGENT'S CARD</text>
+
+  <!-- notes and legend -->
+  <text x="40" y="906" font-size="9.5" font-style="italic" fill="#8794A0">Deploy keys, today: made per OS user by add-a-worker-host step 7 and added on GitHub by a repository admin.</text>
+  <text x="40" y="921" font-size="9.5" font-style="italic" fill="#8794A0">The direction: keys minted per project through Connection Hub.</text>
+
+  <rect x="600" y="892" width="470" height="62" rx="8" fill="#FFFFFF" fill-opacity="0.7" stroke="#465864" stroke-opacity="0.25"/>
+  <text x="614" y="908" font-size="7.5" letter-spacing="0.14em" font-weight="700" fill="#465864" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">LEGEND</text>
+  <g font-size="9.5">
+    <rect x="614" y="916" width="14" height="10" rx="2" fill="#EAF5F4" stroke="#06968C"/><text x="634" y="925" fill="#057069" font-weight="600">Cards, roles, authority</text>
+    <rect x="780" y="916" width="14" height="10" rx="2" fill="#FFFFFF" stroke="#B45438"/><text x="800" y="925" fill="#B45438" font-weight="600">credentials and keys</text>
+    <rect x="934" y="916" width="14" height="10" rx="2" fill="#FFF8E9" stroke="#D9A945"/><text x="954" y="925" fill="#8A6A1C" font-weight="600">board, project, agents</text>
+    <path d="M614 942 H 628" stroke="#B08428" stroke-width="1.1" stroke-dasharray="4 3"/><text x="634" y="945" fill="#465864">a connection, the arrow shows who starts it</text>
+    <path d="M880 942 H 894" stroke="#06968C" stroke-width="1.1" stroke-dasharray="4 3"/><text x="900" y="945" fill="#465864">an approval</text>
+  </g>
+
+  <text x="550" y="990" font-size="9" letter-spacing="0.2em" fill="#8794A0" text-anchor="middle" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">THE BOARD NEVER STARTS A MODEL · IT CONNECTS SESSIONS PEOPLE STARTED</text>
+</svg>

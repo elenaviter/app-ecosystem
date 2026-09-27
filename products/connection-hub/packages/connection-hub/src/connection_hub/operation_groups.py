@@ -6,6 +6,11 @@ the resource or namespace carries ``operation_groups``, a map of group key to
 ``{label, order}`` (a bare string is the label). Connection Hub's Card view
 groups by it, so no client builds its own grouping. Presentation only: it
 stays out of every descriptor digest, so regrouping never raises drift.
+
+``person_card: false`` on an operation (W360) is presentation of the same
+kind: the service decides that operation for a person by role alone, so a
+project person's Control Card does not offer it. It stays out of the digest
+too, and an operation without it is offered as before.
 """
 
 from __future__ import annotations
@@ -36,18 +41,34 @@ def parse_operation_groups(raw: Any) -> tuple[dict[str, Any], ...]:
     return tuple(row for _order, _index, row in sorted(rows, key=lambda item: (item[0], item[1])))
 
 
-def _drop(entry: Any, key: str) -> Any:
+def _drop(entry: Any, *keys: str) -> Any:
     if not isinstance(entry, Mapping):
         return entry
-    return {name: value for name, value in entry.items() if name != key}
+    return {name: value for name, value in entry.items() if name not in keys}
+
+
+# What a tool or operation entry says about presentation, never authority.
+_PRESENTATION_KEYS = ("group", "person_card")
+
+
+def offered_on_person_card(entry: Any) -> bool:
+    """False only when the entry says ``person_card: false`` (W360)."""
+
+    if not isinstance(entry, Mapping) or "person_card" not in entry:
+        return True
+    value = entry.get("person_card")
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"0", "false", "no", "n", "off"}
 
 
 def without_grouping(named_services: Any) -> Any:
-    """A ``named_services`` tree without its grouping, for a descriptor digest.
+    """A ``named_services`` tree without its presentation, for a descriptor digest.
 
-    Only where the schema puts grouping: ``operation_groups`` on a namespace,
-    ``group`` on a tool entry and on an operation entry. A tool, operation or
-    namespace that is itself named ``group`` is content and stays.
+    Only where the schema puts it: ``operation_groups`` on a namespace,
+    ``group`` and ``person_card`` on a tool entry and on an operation entry. A
+    tool, operation or namespace that is itself named ``group`` is content and
+    stays.
     """
 
     if not isinstance(named_services, Mapping):
@@ -62,12 +83,12 @@ def without_grouping(named_services: Any) -> Any:
         if isinstance(tools, Mapping):
             kept_tools: dict[str, Any] = {}
             for tool_name, tool in tools.items():
-                tool = _drop(tool, "group")
+                tool = _drop(tool, *_PRESENTATION_KEYS)
                 operations = tool.get("operations") if isinstance(tool, Mapping) else None
                 if isinstance(operations, Mapping):
                     tool = {
                         **tool,
-                        "operations": {op: _drop(policy, "group") for op, policy in operations.items()},
+                        "operations": {op: _drop(policy, *_PRESENTATION_KEYS) for op, policy in operations.items()},
                     }
                 kept_tools[tool_name] = tool
             namespace = {**namespace, "tools": kept_tools}

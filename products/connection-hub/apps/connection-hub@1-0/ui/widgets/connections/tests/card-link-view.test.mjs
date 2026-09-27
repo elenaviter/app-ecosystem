@@ -44,3 +44,14 @@ test('Save and Cancel return to the linked Card; All cards leaves it', () => {
   assert.match(panel, /onClick=\{\(\) => \{\s+setViewAccessId\(null\);\s+if \(editDirty\) setPendingLeave\(\{ kind: 'leave' \}\);\s+else clearEditState\(\);/)
   assert.match(panel, /onClick=\{\(\) => setViewAccessId\(null\)\}>\s+All cards/)
 })
+
+test('the detailed view decides Edit through detailedCardOffersEdit, for the linked Card too', () => {
+  const other = panel.slice(panel.indexOf('const renderDetailedOtherCard'))
+  assert.match(other, /\{detailedCardOffersEdit\(item, viewAccessId\) \? \(\s*<span className="action-row">\s*\{editButton\(item\)\}/)
+  const agent = panel.slice(panel.indexOf('const renderDetailedAgentCard'), panel.indexOf('const renderDetailedOtherCard'))
+  assert.match(agent, /<span className="action-row">\s*\{editButton\(item\)\}/)
+  // The read view renders through exactly these two.
+  assert.match(panel, /renderDetailedAgentCard\(viewRecord\)\s+: renderDetailedOtherCard\(viewRecord\)/)
+  // editButton still hides itself for a viewer who may only read.
+  assert.match(panel, /cardReadOnlyReason\(item, focusedViewer\) \? null : \(\s*<button className="btn" type="button" disabled=\{busy\} onClick=\{\(\) => startEdit\(item\)\}>/)
+})

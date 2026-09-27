@@ -28,6 +28,9 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from connection_hub.delegated_credentials.catalog.descriptors import (
+    CHANGE_EFFECT_REVIEW,
+    CHANGE_EFFECT_SUSPENDED,
+    changed_operation_effect,
     resource_descriptor_state,
 )
 from connection_hub.delegated_credentials.cards.model import (
@@ -54,9 +57,12 @@ DRIFT_UNAVAILABLE = "unavailable"
 
 EFFECT_DENIED = "denied_immediately"
 # A selected operation whose descriptor changed is not denied by the catalog
-# (the operation still exists); it is held back from use until the owner
-# accepts the changed descriptor on the card.
-EFFECT_SUSPENDED = "suspended_until_accepted"
+# (the operation still exists). Where the call checks the accepted digest (a
+# remote MCP connector) it is held back until the owner accepts the change;
+# on a catalog row it stays in effect and is shown for review
+# (descriptors.changed_operation_effect).
+EFFECT_SUSPENDED = CHANGE_EFFECT_SUSPENDED
+EFFECT_REVIEW = CHANGE_EFFECT_REVIEW
 
 
 def _clean(value: Any) -> str:
@@ -247,7 +253,8 @@ def _changed_operations(
                     "resource": resource,
                     "operation": operation,
                     "was_selected": True,
-                    "effect": EFFECT_SUSPENDED,
+                    "effect": _clean(state.get("changed_effect"))
+                    or changed_operation_effect(state.get("kind")),
                     "accepted_digest": state.get("accepted_digest", ""),
                     "current_digest": state.get("current_digest", ""),
                 }
@@ -490,6 +497,7 @@ __all__ = [
     "DRIFT_NO_RELEVANT_CHANGE",
     "DRIFT_UNAVAILABLE",
     "EFFECT_DENIED",
+    "EFFECT_REVIEW",
     "EFFECT_SUSPENDED",
     "card_drift",
     "card_resource_states",

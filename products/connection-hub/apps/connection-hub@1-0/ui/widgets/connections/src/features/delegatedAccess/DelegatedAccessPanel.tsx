@@ -159,7 +159,9 @@ import {
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import { projectPersonControlCoordinates } from './projectPersonControl';
-import { cardOwnerView, readableCardLabel } from './cardLabels';
+import { catalogDriftForPersonCard, notOfferedOnPersonCard, resourcesForPersonCard } from './personCardOperations';
+import { cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, readableCardLabel } from './cardLabels';
+import { detailedCardOffersEdit } from './cardActions';
 import {
   projectAgentCardFocus,
   projectAgentCardUpdateTarget,
@@ -1054,7 +1056,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     focusedCard,
     focusedViewer,
     grantOptions,
-    resources,
+    resources: catalogResources,
     issuedToken,
     issuedHeader,
     issuedAccess,
@@ -1109,6 +1111,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [pendingInvocationMode, setPendingInvocationMode] =
     useState<InvocationMode | null>(() => pendingPresetMode(pendingAgentGrantRequest(openParams)));
   const accessCardFocus = useMemo(() => accessCardFocusRequest(openParams), [openParams]);
+  // Who is looking, and whom a Team > People link opened the Card for: a
+  // person's Control Card is named by them, never by raw id (2026-09-26).
+  const issuerViewer = useMemo(() => ({
+    viewerSubject: platformUserId || undefined,
+    targetSubject: accessCardFocus?.targetSubject,
+    targetLabel: accessCardFocus?.targetLabel,
+  }), [platformUserId, accessCardFocus]);
   const [accessCardFocusState, setAccessCardFocusState] =
     useState<'idle' | 'loading' | 'resolved' | 'unavailable'>(
       () => (accessCardFocus ? 'loading' : 'idle'),
@@ -1141,6 +1150,29 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Per-record EDIT state for granted agent rows: access_id being edited and
   // the checkbox set keyed `${resource}:${claim}`.
   const [editingAccessId, setEditingAccessId] = useState<string | null>(null);
+  // W360: while a project person's or invitation's Control Card is edited,
+  // the catalog it is offered leaves out what the service marks
+  // `person_card: false` (decided for a person by role alone).
+  const editingPersonControl = useMemo(() => {
+    if (!editingAccessId) return false;
+    const record = items.find((it) => it.access_id === editingAccessId)
+      || (focusedCard?.access_id === editingAccessId ? focusedCard : null);
+    return Boolean(record && projectPersonControlCoordinates(record));
+  }, [editingAccessId, focusedCard, items]);
+  const resources = useMemo(
+    () => (editingPersonControl ? resourcesForPersonCard(catalogResources) : catalogResources),
+    [catalogResources, editingPersonControl],
+  );
+  // The Card-level drift notice of a project person's or invitation's Control
+  // Card leaves out what that Card is not offered (W360).
+  const cardCatalogDrift = (record: DelegatedAccessRecord) => (
+    projectPersonControlCoordinates(record)
+      ? catalogDriftForPersonCard(
+        record.catalog_drift,
+        (resource) => catalogRowFor(catalogResources, resource, (key) => (record.catalog_row_by_resource || {})[key] || key),
+      )
+      : record.catalog_drift
+  );
   // Policy chosen for an operation the editor ADDS to a card, keyed
   // `${resource}:${operation}`. It travels with that operation's grant in one
   // focused transaction (see invocationChoice.ts): set afterwards, the
@@ -1279,13 +1311,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     [grantOptions],
   );
   const secretSelectorOption = useMemo(
-    () => resources.find((item) => item.selector_type === 'kdcube_secret'),
-    [resources],
+    () => catalogResources.find((item) => item.selector_type === 'kdcube_secret'),
+    [catalogResources],
   );
   const createResources = useMemo(() => {
     const generated = Object.entries(createCatalogRows).flatMap(([resource, row]) => {
-      if (resources.some((item) => item.resource === resource)) return [];
-      const option = resources.find((item) => item.resource === row);
+      if (catalogResources.some((item) => item.resource === resource)) return [];
+      const option = catalogResources.find((item) => item.resource === row);
       if (!option) return [];
       return [{
         ...option,
@@ -1297,7 +1329,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     const templateRows = catalogTemplateRows(createCatalogRows);
     const assembled = [
-      ...resources.filter((item) => !templateRows.has(item.resource)),
+      ...catalogResources.filter((item) => !templateRows.has(item.resource)),
       ...generated,
     ];
     if (!oauthDraft || oauthDraft.catalog_scope.mode === 'full') return assembled;
@@ -1306,7 +1338,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       ...Object.keys(resourceGrants),
     ]);
     return assembled.filter((item) => allowed.has(item.resource));
-  }, [createCatalogRows, oauthDraft, resourceGrants, resources]);
+  }, [catalogResources, createCatalogRows, oauthDraft, resourceGrants]);
   const createSelectionIndex = useMemo(
     () => resourceSelectionIndex(createResources),
     [createResources],
@@ -3208,7 +3240,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         expectedCardRevision: item.card_revision,
         expectedCatalogVersion: item.catalog_drift?.current_version || item.catalog_version,
         // Changed descriptors the grantor reviewed and accepts with this save;
-        // every other changed selected operation stays suspended.
+        // every other changed selected operation stays as it was: suspended
+        // on a remote MCP connector, in effect for review on a catalog row.
         acceptedOperations: editAcceptedOperations,
         compositionMode: item.source === 'control'
           ? (projectPersonControl ? 'and' : editCompositionMode)
@@ -4038,10 +4071,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     const linkedControl = linkedControlCard(item);
     const controlLabel = composition?.controlLabel
-      || linkedControl?.binding?.issuer_label
-      || linkedControl?.binding?.issuer_ref
-      || linkedControl?.binding?.control_id
-      || 'Control Card';
+      || (linkedControl?.binding ? controlIssuerLabel(linkedControl.binding, issuerViewer) : 'Control Card');
     const controlCapsCaller = item.source !== 'control'
       && linkedControl?.state === 'active'
       && linkedControl.composition_mode !== 'or'
@@ -4404,6 +4434,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <ResourceDriftReview
             resource={resource}
             state={item.catalog_drift?.resources?.[resource]}
+            notOffered={projectPersonControlCoordinates(item)
+              ? notOfferedOnPersonCard(
+                catalogRowFor(catalogResources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key),
+              )
+              : undefined}
             accepted={editAcceptedOperations[resource] || []}
             operationOptions={resourceOption?.operations || []}
             grantOptions={grantOptions}
@@ -4609,6 +4644,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       const agentLabel = who ? `${who.agent} · ${who.app}` : item.client_id;
       return correlatedCardLabel({ ...item, label: agentLabel });
     }
+    // W360: a person's Control Card is named by the person, never by account id.
+    const personControl = projectPersonControlCoordinates(item);
+    if (personControl?.kind === 'person') {
+      return personControlCardTitle(item.label, personControl.targetSubject, issuerViewer);
+    }
     return correlatedCardLabel({ ...item, label: readableCardLabel(item.label) });
   };
   const cardBadge = (item: DelegatedAccessRecord) => (
@@ -4773,7 +4813,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (!control || control.state === 'not_controlled') return null;
     const binding = control.binding;
     if (!binding) return null;
-    const label = binding.issuer_label || binding.issuer_ref || binding.control_id || 'Control Card';
+    const label = controlIssuerLabel(binding, issuerViewer);
     const reading = authorityReading(item);
     const controlActive = control.state === 'active' && Boolean(control.authority);
     const effectiveReady = controlActive && (!editing || Boolean(control.control_authority));
@@ -4786,7 +4826,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       >
         <div className="control-card-composition__head">
           <span>
-            <strong>{controlActive ? `Card composed with ${label} (${mode})` : `${label} Control Card unavailable`}</strong>
+            <strong>{controlActive
+              ? `Card composed with ${label} (${mode})`
+              : `${label}${/Control Card$/.test(label) ? '' : ' Control Card'} unavailable`}</strong>
             <small>{controlActive
               ? ' The linked card applies at every guarded operation.'
               : ' Operations governed by this link are closed.'}</small>
@@ -5026,10 +5068,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const problemText = problems
       .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(record, resource)))
       .join(' ');
-    const controlLabel = linkedControl?.binding?.issuer_label
-      || linkedControl?.binding?.issuer_ref
-      || linkedControl?.binding?.control_id
-      || 'Control Card';
+    const controlLabel = linkedControl?.binding
+      ? controlIssuerLabel(linkedControl.binding, issuerViewer)
+      : 'Control Card';
     const controlCappedTools = linkedControl?.state === 'active'
       && linkedControl.composition_mode !== 'or'
       && linkedControl.control_authority
@@ -5150,13 +5191,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               ) : null}
             </div>
           ) : null}
-          <CatalogDriftNotice drift={record.catalog_drift} />
+          <CatalogDriftNotice drift={cardCatalogDrift(record)} />
           {record.source === 'control' ? (
             <div className="card-fields control-card-fields">
-              <Field label="Issued by">
+              <Field label={projectPersonControl?.kind === 'person' ? 'For' : 'Issued by'}>
                 <span className="control-card-issuer">
-                  <b>{record.issuer_label || record.issuer_ref || 'Connected application'}</b>
-                  {record.issuer_ref ? (
+                  <b title={isPersonIssuer(record) ? record.issuer_ref : undefined}>
+                    {projectPersonControl?.kind === 'person'
+                      ? personControlCardHolder(record.issuer_label, projectPersonControl.targetSubject, issuerViewer)
+                      : record.issuer_label || (record.issuer_ref ? controlIssuerLabel(record, issuerViewer) : 'Connected application')}
+                  </b>
+                  {/* A person is named, never shown by raw id. */}
+                  {record.issuer_ref && !isPersonIssuer(record) ? (
                     <span className="control-card-issuer__ref">
                       <code className="claim-chip" title={record.issuer_ref}>{record.issuer_ref}</code>
                       <CopyButton value={record.issuer_ref} label="Copy issuer reference" />
@@ -5536,7 +5582,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           ) : null}
                         </div>
                       ) : null}
-                      <CatalogDriftNotice drift={item.catalog_drift} />
+                      <CatalogDriftNotice drift={cardCatalogDrift(item)} />
                       {editing ? (
                         <label className="rename-row">
                           <span className="card-field-label">Name</span>
@@ -5687,7 +5733,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         </>
                       ) : (
                         <>
-                          {editable ? (
+                          {/* A linked Card opens to read, with every action its
+                              kind has (see cardActions.ts). */}
+                          {detailedCardOffersEdit(item, viewAccessId) ? (
                             <span className="action-row">
                               {editButton(item)}
                               <span className="action-slot" aria-hidden="true" />

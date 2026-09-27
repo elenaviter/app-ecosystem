@@ -19,6 +19,13 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "description": "Set the project's revisioned repository preset.",
         "grants": ("work:coordinate",),
     },
+    "project.set_commit_identity": {
+        "description": (
+            "Set the email every agent of the project commits with, as "
+            "'<agent alias> <email>'; part of the revisioned repository preset."
+        ),
+        "grants": ("work:coordinate",),
+    },
     "project.plan.index": {
         "description": (
             "Open any generation-pinned plan page directly in authored order, "
@@ -425,6 +432,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.register",
         "project.set_journal_home",
         "project.set_repositories",
+        "project.set_commit_identity",
         "project.plan.index",
         "project.plan.item",
         "project.plan.resolve",

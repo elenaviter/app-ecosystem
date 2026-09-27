@@ -533,6 +533,15 @@ line rides the relay's next heartbeat, which every worker Card already holds,
 so it shows within about two minutes (the idle heartbeat ceiling); `pb worker
 info` without arguments says `on_board = True` once the board has it.
 
+**A pause you choose goes on the line too.** When you consciously stop working
+(your quota pool is near its limit, you wait for a person, or you are blocked):
+commit and push, write a one-line progress note on your item, then publish
+`pb worker info "Paused by choice: <reason>, resumes <time>"`, and clear it
+when you resume. Why: an agent that stopped by decision looks, on its card,
+exactly like one that is broken or asleep, and the operator must tell them
+apart at a glance (operator, 2026-09-26). The coordinator's thresholds for
+quota pauses are in the coordinator reference, Worker budgets.
+
 ## Rule 7. A question about how the team collaborates is decided in rounds
 
 When the team has to choose how it collaborates or stays visible (a practice,
@@ -675,6 +684,18 @@ The reviewer checks it and refuses a behaviour change without it. Why: the
 concepts an agent needs to explain Problem Board had been kept only in private
 pages, so an agent with only the public client could not answer who edits
 which Card (operator, 2026-09-26).
+
+## Rule 14. Search before you file an item, and tell the coordinator
+
+A worker's Card may create plan items (`plan.item.create`). Before filing
+one, search the plan (`project.plan.search` with the subject's words) and
+read what comes back. When a related item exists, update it or add a note or
+an acceptance line to it instead of filing a duplicate. A small change or
+lesson is never its own item: it goes onto an open item. A new item is for a
+distinct deliverable with its own review. After filing, mail the coordinator
+the new item's key and title, so routing sees it. Why: the operator allowed
+workers to file items on these two conditions (2026-09-26 21:1xZ), and asked
+for no items for very small things (23:38Z).
 
 ## From this moment: round 2 on the shared host, 2026-09-22 22:20Z
 

@@ -30,7 +30,9 @@ OPERATIONAL_PROCEDURE_ROOT = PACKAGE_ROOT / "src" / "project_board" / "procedure
 OPERATIONAL_PROCEDURES = {
     "add-a-worker-host.md",
     "agent-worker.md",
+    "create-a-project.md",
     "first-time-setup.md",
+    "install-update-rollback.md",
     "live-acceptance.md",
     "local-worker-session.md",
     "enroll-an-agent.md",
@@ -142,7 +144,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.26.18"
+    assert package["revision"] == "2026.09.27.8"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -177,8 +179,9 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
         assert state in first_run, state
     for step in ("`configure_target`", "`install_relay`", "`enroll_session`", "`authorize_profile`", "`attend_project`"):
         assert step in first_run, step
-    assert "preserve the returned profile and append `--device`" in first_run
-    assert "append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`" in skill
+    # W367: the command always carries --device (operator, 2026-09-26).
+    assert "Give them the exact `pb worker authorize <profile> --device`" in first_run
+    assert "Use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`" in skill
     assert "missing identification does not block Card authorization" in skill
     # W305, 2026-09-24: the skill once said "never callback flags" while the
     # host procedure kept the tunnel as its only recovery from a failed device
@@ -1385,6 +1388,20 @@ def test_the_kdcube_maintainer_profile_holds_the_runtime_actions():
     assert "are in that runtime's profile, never on this page" in actions
     assert "A reload without a commit stages the working tree" not in actions
 
+def test_the_board_descriptor_is_synced_by_the_committed_tool_before_the_reload():
+    """W353: the board's live descriptor entry was hand-synced twice by scratch
+    scripts; the profile names the committed tool, where it runs in a window,
+    and the catalog check after it."""
+
+    words = _words(_profile())
+    step = words[words.index("**The board's descriptor entry**"):words.index("**The platform:**")]
+    assert "after the deploy worktree checkout and any `kdcube refresh`, and before `kdcube bundle reload problem-board@1-0`" in step
+    assert "playground/domain-solution/tools/sync_board_descriptor.py" in step
+    assert "--apply" in step
+    assert "After the reload run `kdcube bundle catalog check --workdir <workdir>`." in step
+    assert "never by hand-editing the entry" in step
+
+
 def test_delegation_is_not_free_and_its_reason_is_stated():
     """Operator 2026-09-25: delegate only when net positive; no polling; independent pools first."""
 
@@ -1526,10 +1543,13 @@ def test_a_second_person_approves_with_the_device_flow_and_the_agent_detects_it(
     # 2026-09-26: a second person's enrollment opened the first person's browser,
     # and the agent waited to be told "done".
     skill = " ".join(_read("SKILL.md").split())
-    assert "or when the approving person signs in with a different browser or account" in skill
+    # W367: always --device, not only for a second person (operator, 2026-09-26).
+    assert "present its exact `pb worker authorize <profile> --device`" in skill
+    assert "never drop `--device`" in skill
     assert "confirm the approval yourself with `pb worker inspect`" in skill
     first_run = " ".join(_read("references/first-run.md").split())
-    assert "Use `--device` as well whenever the person approving is not the one signed in" in first_run
+    assert "Always keep `--device`" in first_run
+    assert "the person approving owns the Card and may not be the one signed in" in first_run
     assert "do not wait to be told \"done\"" in first_run
 
 
@@ -1557,7 +1577,7 @@ def test_the_official_command_starts_an_agent_session():
     assert "## 1. Create the agent's workspace, then start it" in enroll
     assert 'cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude --add-dir "$HOME/.kdcube" --dangerously-skip-permissions --disallowedTools AskUserQuestion' in enroll
     assert 'codex -C "$HOME/.kdcube/pb/workspaces/$ALIAS" --sandbox danger-full-access --ask-for-approval never --search' in enroll
-    assert "## 2. Enroll it to the pool" in enroll and "Prefer `--device`" in enroll
+    assert "## 2. Enroll it to the pool" in enroll and "`pb worker authorize <profile> --device`" in enroll
     assert "## 3. Connect it to your project" in enroll
     skill = " ".join(_read("SKILL.md").split())
     assert "enroll-an-agent.md" in skill
@@ -1683,3 +1703,27 @@ def test_journaling_describes_the_optional_knowledge_role_and_its_hand_over() ->
         "a retrieval-facing summary",
     ):
         assert part in journaling
+
+
+def test_worker_budgets_name_the_usage_field_and_where_the_caps_live() -> None:
+    # W351: the coordinator could not find usage figures from the CLI across
+    # hosts; the reference now names the field and where the operator's caps are.
+    coordinator = _words(_read("references/coordinator.md"))
+
+    assert "`team[].limit_state.windows[]` carries each window's `name`, `used_percent` and `resets_at`" in coordinator
+    assert "one `team usage:` line per member" in coordinator
+    assert "caps per quota pool" in coordinator
+    assert "live on the project's facts page" in coordinator
+
+
+def test_a_worker_searches_before_filing_and_tells_the_coordinator():
+    # W359: workers may file plan items on the operator's two conditions, and
+    # small things go onto an open item (operator, 2026-09-26).
+    collaboration = " ".join(_read("references/collaboration.md").split())
+    rule = collaboration[collaboration.index("## Rule 14."):]
+    assert "search the plan (`project.plan.search`" in rule
+    assert "update it or add a note or an acceptance line to it instead of filing a duplicate" in rule
+    assert "A small change or lesson is never its own item" in rule
+    assert "mail the coordinator the new item's key and title" in rule
+    skill = " ".join(_read("SKILL.md").split())
+    assert "Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14" in skill

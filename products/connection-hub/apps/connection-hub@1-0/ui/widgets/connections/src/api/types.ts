@@ -74,6 +74,8 @@ export interface DelegatedAccessOperationOption {
   grants?: string[];
   /** The group the service declares for this operation (W260). */
   group?: string;
+  /** False when the service decides this operation for a person by role alone (W360). */
+  person_card?: boolean;
 }
 
 /** One operation group a service declares, in display order (W260). */
@@ -86,6 +88,8 @@ export interface DelegatedAccessOperationGroup {
 export interface DelegatedAccessNamedServiceOperationOption {
   /** The group the service declares for this operation (W260). */
   group?: string;
+  /** False when the service decides this operation for a person by role alone (W360). */
+  person_card?: boolean;
   label?: string;
   description?: string;
   authority_id?: string;
@@ -372,6 +376,10 @@ export interface DelegatedResourceDriftState {
   accepted_digest?: string;
   current_digest?: string;
   changed_operations?: string[];
+  /** What a changed selected operation does until accepted: suspended where
+   *  the call checks the accepted digest (remote MCP), else still in effect
+   *  and shown for review (a catalog row). */
+  changed_effect?: 'suspended_until_accepted' | 'in_effect_review' | string;
   removed_operations?: string[];
   added_operations?: string[];
   removed_claims?: string[];
@@ -382,7 +390,7 @@ export interface DelegatedDriftChange {
   resource: string;
   operation: string;
   was_selected?: boolean;
-  effect?: 'suspended_until_accepted' | string;
+  effect?: 'suspended_until_accepted' | 'in_effect_review' | string;
   accepted_digest?: string;
   current_digest?: string;
 }
@@ -427,7 +435,8 @@ export interface DelegatedCatalogDrift {
     outer_operations?: DelegatedDriftAddition[];
     named_service_operations?: DelegatedDriftAddition[];
   };
-  /** Selected operations whose descriptor changed; suspended until accepted. */
+  /** Selected operations whose descriptor changed: suspended until accepted
+   *  (remote MCP) or still in effect for review (catalog row), per `effect`. */
   changed?: {
     outer_operations?: DelegatedDriftChange[];
   };

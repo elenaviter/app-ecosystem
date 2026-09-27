@@ -25,7 +25,7 @@ import json
 import shlex
 from typing import Any, Iterable, Mapping, Sequence
 
-from project_board.client.limit_state import limit_state_line
+from project_board.client.limit_state import limit_state_line, usage_windows_line
 
 FORMAT_JSON = "json"
 FORMAT_BRIEF = "brief"
@@ -169,7 +169,10 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_settled(result)
     if not result:
         return ["(empty result)"]
-    return _flatten(result, prefix="")
+    lines = _flatten(result, prefix="")
+    if isinstance(result.get("team"), list) and result.get("team"):
+        lines.extend(_team_usage_lines(result["team"]))
+    return lines
 
 
 def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
@@ -404,6 +407,7 @@ def _render_worker_list(result: Mapping[str, Any]) -> list[str]:
             )
         )
         lines.append(_worker_limits_line(worker.get("runtime_limit_state")))
+        lines.append(_usage_line(worker.get("runtime_limit_state")))
         for ref in worker.get("attended_project_refs") or []:
             lines.append(f"attends: {ref}")
         if worker.get("worker_ref"):
@@ -430,6 +434,41 @@ def _worker_limits_line(state: Any) -> str:
     observed = str(state.get("observed_at") or state.get("recorded_at") or "")
     when = f" · observed {observed[:10]} {observed[11:16]}Z" if len(observed) >= 16 else ""
     return f"limits: {limit_state_line(state)}{when}"
+
+
+def _usage_line(state: Any) -> str:
+    """Each usage window's share and reset, whatever the limit kind (W351)."""
+
+    windows = usage_windows_line(state) if isinstance(state, Mapping) else ""
+    return f"usage: {windows or 'no windows reported'}"
+
+
+def _team_usage_lines(team: Sequence[Any]) -> list[str]:
+    """One line per teammate with its limit and usage windows (W351).
+
+    `pb worker context` is the only cross-host view a worker's CLI has; the
+    coordinator routes by these figures (the operator's per-pool caps).
+    """
+
+    lines = ["team usage:"]
+    for member in team:
+        if not isinstance(member, Mapping):
+            continue
+        state = member.get("limit_state")
+        name = str(member.get("worker_name") or "-")
+        alias = str(member.get("worker_alias") or "")
+        label = f"{alias} ({name})" if alias and alias != name else name
+        host = member.get("host_label") or member.get("host_id") or ""
+        where = f" on {host}" if host else ""
+        if isinstance(state, Mapping) and state:
+            windows = usage_windows_line(state)
+            # "usage ok" already lists the windows without resets; say it once.
+            head = "usage ok" if state.get("kind") == "ok" else limit_state_line(state)
+            status = f"{head} · {windows}" if windows else limit_state_line(state)
+        else:
+            status = "not reported"
+        lines.append(f"  {label}{where}: {status}")
+    return lines
 
 
 _RECEIPT_OUTCOMES = ("applied", "refused")

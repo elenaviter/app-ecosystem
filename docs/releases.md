@@ -5,6 +5,63 @@ record, verification gate, and publication path. A release always identifies a
 committed repository snapshot. A version bump in a working tree is not a
 release.
 
+## Release the pb set
+
+The Problem Board client installs from PyPI as four packages at one version:
+`app-foundation`, `service-foundation`, `connection-hub` and `project-board`.
+`scripts/release-pb` releases them together. `connection-hub-cli` carries the
+same version in the snapshot and is published on its own when it is
+releasable.
+
+1. **Write the release notes.** *The maintainer who cuts the release.* One short file saying
+   what changed since the last release. It becomes the description in each
+   release record.
+2. **Prepare.** *The maintainer, from a clean checkout of `origin/main`.*
+
+   ```bash
+   scripts/release-pb prepare <YYYY.MM.DD.HHMM> --notes <file>
+   ```
+
+   It sets the version in every file of the set and checks that no file
+   still names the old one. It builds and `twine check`s every distribution.
+   Then it runs each package's gate the way the publish workflow does: a fresh
+   environment, `pip install -e "<path>[test]"` with the set's own packages
+   from the wheels just built, no source overlay, the tests, the import
+   version, and a wheel smoke. It then commits on `release/<version>` and
+   opens the release pull request. You should see one line per package ending
+   in "passed", then the pull request's address. Add `--dry-run` to do all of
+   it in a throwaway worktree and commit nothing.
+3. **Review and merge the release pull request.** *The maintainer.* It
+   changes versions and release notes only.
+4. **Publish.** *The maintainer, with the release owner's approval.*
+
+   ```bash
+   scripts/release-pb publish <YYYY.MM.DD.HHMM>
+   ```
+
+   It tags the merge commit that brought the version in, and dispatches
+   `publish-python-package.yml` once with `package=pb-set`. The workflow
+   publishes the four packages one after another in dependency order. Each
+   waits until the index serves the ones before it, and the first failure
+   cancels the rest, so project-board is never published against a
+   foundation that failed. The command waits for the run and then verifies.
+5. **Verify.** *Done by `publish`; run it again at any time.*
+
+   ```bash
+   scripts/release-pb verify <YYYY.MM.DD.HHMM>
+   ```
+
+   It checks each version on PyPI and installs `project-board==<version>` in
+   a clean environment. It checks `pb --version` and that the install resolved
+   the whole set at that version. Then it prints the line hosts run:
+   `pb source use-release --expect-version <version>`.
+
+If a run fails, correct it with a new version: PyPI versions are immutable,
+and a failed run has published only the packages before the failure.
+
+The gate below is the reference for what each step checks, and for releasing
+any other piece.
+
 ## Release units
 
 | Piece | Source | Version source | Release record | Publication |

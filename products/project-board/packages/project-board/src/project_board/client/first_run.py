@@ -223,7 +223,7 @@ def _next_step(state: str, *, config: str, relay: Mapping[str, Any], session: Ma
     ):
         return {
             "step": "authorize_profile",
-            "command": f"pb worker authorize {session.get('profile') or '<profile>'}",
+            "command": f"pb worker authorize {session.get('profile') or '<profile>'} --device",
             "approval": "user",
             "explain": "procedures/first-time-setup.md, section 6. Authorize That Worker's Profile",
         }
@@ -245,8 +245,15 @@ def first_run_status(
     relay_reader: Callable[[str], Mapping[str, Any]] | None = None,
     worker_reader: Callable[[HostRelayConfig], Callable[[str], Mapping[str, Any]]] | None = None,
     profile_inspector: Callable[..., Mapping[str, Any]] | None = None,
+    prerequisites: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Read the machine and session state and name the first-run step. Read-only."""
+    """Read the machine and session state and name the first-run step. Read-only.
+
+    ``prerequisites`` is the machine's check (prerequisites.check_prerequisites,
+    W304): reported under ``machine``, and on a machine not configured yet a
+    missing one is named first, as ``next.before`` (``prepare_machine``);
+    ``next.step`` stays the same, so nothing keyed to it changes.
+    """
 
     targets = configured_targets(targets_root)
     config_path = _default_config(config)
@@ -311,6 +318,24 @@ def first_run_status(
         "session": session,
         "next": _next_step(state, config=config_path, relay=relay, session=session),
     }
+    if prerequisites is not None:
+        result["machine"]["prerequisites"] = dict(prerequisites)
+        missing = list(prerequisites.get("missing") or ())
+        if state == MACHINE_NOT_CONFIGURED and missing:
+            needs_admin = list(prerequisites.get("needs_admin") or ())
+            result["next"]["before"] = {
+                "step": "prepare_machine",
+                "approval": "admin" if needs_admin else "user",
+                "missing": missing,
+                "needs_admin": needs_admin,
+                "explain": (
+                    "This machine lacks " + ", ".join(missing) + ". Each item under "
+                    "machine.prerequisites.checked names why it is needed, what works without it, "
+                    "and the exact fix; "
+                    + ("any administrator account on this machine can run the admin fixes. " if needs_admin else "")
+                    + "Fix them, or continue knowingly, then run pb status again."
+                ),
+            }
     if loaded is not None:
         result["machine"]["default_target"] = {
             "target_id": loaded.target_id,

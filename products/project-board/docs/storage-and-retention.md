@@ -188,7 +188,7 @@ A refused `mail.reconciliation.publish` row keeps its receipt under `refused`.
 When the refusal is a Card whose operation list predates the operation
 (`work_worker_operation_not_granted`), the settled row's `remote_result` also
 names `permission_group`, `why` and the `fix` command
-(`pb worker authorize <profile> --replace-card`). The relay row counts these
+(`pb worker authorize <profile> --device --replace-card`). The relay row counts these
 as `reconciliation_publications_refused`.
 
 A refused receipt is published again once the Card holds the grant

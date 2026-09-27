@@ -20,8 +20,10 @@ keywords:
   - work:review
   - work:admin
   - least privilege
+  - identity rules
 see_also:
   - ./README.md
+  - ./operations-and-rules.md
   - ./cards.md
   - ./review.md
   - ./architecture.md
@@ -107,21 +109,39 @@ rest of `work:coordinate` is an open question.
 Almost every refusal is about the Card: the caller's Card lacks the operation
 (`work_worker_operation_not_granted`, or `work_worker_operation_withheld_by_control_card`
 when the project's Control Card withholds it), and the Card's owner can add it.
-A few refusals are **rules about who someone is**. No Card holds them and no
-consent changes them, and each refusal says so, so nobody waits for a
-permission that cannot be granted:
+A few decisions are **identity rules**: rules about who someone is. No Card
+holds them and no consent changes them, and a refusal from one says so, so
+nobody waits for a permission that cannot be granted. Every board decision is
+either an operation on the caller's Card, with that operation's business
+rules, or one of these rules (operator ruling, 2026-09-22).
 
-| Rule | Refusal | Who can act instead |
-| --- | --- | --- |
-| No one accepts their own work. | `work_review_self_forbidden` | Another qualified reviewer. |
-| An agent belongs to the person who approved it. Someone else's agent is linked, unlinked or managed only as that person allows. | `work_worker_not_owned` ("a rule, not a missing permission") | The agent's owner, or a project admin the owner shared it with. |
-| Only a person moves the coordinator role, even when an agent's Card holds every operation. | `work_human_operator_required` | The project owner or a project admin, signed in. |
-| Ownership of a project moves only by transfer, and only its current owner transfers it. | `work_project_owner_role_fixed` | The current owner. |
+The board states them once, in `services/identity_rules.py`, with the ids
+below; a gate that applies one names it (in its docstring, and as
+`identity_rule` in a refusal's details). This table is the same list. What decides
+each operation for a person, and each operation's business rules, is the
+generated page [Operations and rules](operations-and-rules.md).
 
-Role rules name the role that is missing instead (for example
-`work_project_role_required`, `work_control_card_admin_only`,
-`work_shared_agent_link_admin_only`, `work_project_people_sole_admin`); a
-project admin can change who holds that role.
+| Rule id | Rule | Refusal | Who can act instead |
+| --- | --- | --- | --- |
+| `project_membership` | A person on the project reads it: the plan, items, notes, reports, people, workers, the board and the timeline. Membership scopes a person to a project; it is not an operation on a Card (operator, 2026-09-27). | `work_project_role_required`, or `work_project_person_removed` for a removed person | A project admin invites the person. |
+| `operator_inbox_people_only` | The operator inbox is for people: threads, replies, read state and the worker directory, for a signed-in person on the project (not an older read-only viewer), never an agent (operator, 2026-09-27). | `work_human_operator_required` | A person on the project. |
+| `person_views_people_only` | The views the board opens on a person's screen (a project report, a note view, a session-resume view, a command to the local plan host) are requested and managed by a signed-in person on the project; agents publish them (operator, 2026-09-27). | `work_human_operator_required` | A person on the project. |
+| `private_thread` | A thread its person made private is visible only to that person, the timeline included. | The thread is not listed. | The person who made it private. |
+| `project_admin_by_role` | A project admin by role (owner or admin in this project) decides every Card on the project in Connection Hub, the project Control Card, the coordinator levers, the people on the project and its configuration (repositories, journal home, commit identity), however narrow their own Card, until the admin role itself is removed. | `work_control_card_admin_only`, `work_project_admin_required`; only a person moves the coordinator role (`work_human_operator_required`) | A project admin, signed in. |
+| `project_owner_is_a_person` | A project is registered by, and owned by, a signed-in person. | `work_project_owner_is_a_person` | A person registers it. |
+| `owner_exempt_from_card` | The project's owner may do every Card operation on their project, whatever their Card holds, so a project always has someone who can act. | None: the owner is never refused `work_card_operation_required`. | |
+| `last_admin` | The last admin of a project can be neither removed nor demoted, and the owner is not removed; ownership moves only by transfer to another admin, by the current owner. | `work_project_last_admin`, `work_project_owner_not_removable`, `work_project_owner_role_fixed` | The current owner transfers ownership first. |
+| `own_role` | A person does not change their own project role. | Named as the gates move (W260). | Another project admin. |
+| `worker_pool_is_its_grantors` | An agent belongs to the person who approved it. Someone else's agent is linked, unlinked or managed only as that person allows, through a share or a project it is linked to. | `work_worker_not_owned` ("a rule, not a missing permission") | The agent's owner, or a project admin the owner shared it with. |
+| `shared_write_agents_only` | Shared workspace writes are made by agents, each as itself. | Named as the gates move (W260). | An agent. |
+| `coordinator_publishes_reports` | A project report is published, or failed, by the project's coordinator. | Named as the gates move (W260). | The acting coordinator. |
+| `attachment_upload_people_only` | Attachments are staged by a signed-in person. | Named as the gates move (W260). | A person on the project. |
+
+Some operations carry **business rules of their own**, which hold whatever the
+Card says: no one accepts their own work (`work_review_self_forbidden`), and an
+agent decides a review only as the item's named reviewer or the coordinator
+(`work_review_not_reviewer`). They are listed with the operation in
+[Review](review.md).
 
 ## Operations
 
@@ -152,6 +172,7 @@ at consent", which sent the team to the catalog.
 | `project.register` | `work:coordinate` | no | optional | yes | Register a project under the signed-in owner. | An owner decision. A coordinator may do it on the owner's instruction. |
 | `project.set_journal_home` | `work:coordinate` | no | optional | yes | Version the owner's portable Git-backed journal-home binding without transferring journal files. It is read only while the project's repository preset names no journal repository with a path; the board no longer offers an editor for it. |  |
 | `project.set_repositories` | `work:coordinate` | no | optional | admin | Version the project repository preset carried in attended-worker heartbeats. | The journal-home alias must name an entry whose role is `journal`. |
+| `project.set_commit_identity` | `work:coordinate` | no | optional | admin | Set the email every agent of the project commits with, as `<agent alias> <email>`; part of the repository preset and advances its revision. | One email address, or empty to clear; `person_card: false`. |
 | `project.plan.index` | `work:observe` | yes | yes | yes | Read each plan item's source text, summary, status, dependencies, attachment references, and derived-state hashes. |  |
 | `project.plan.item` | `work:observe` | yes | yes | yes | Read one complete authoritative plan item by its canonical URI. |  |
 | `project.plan.resolve` | `work:observe` | yes | yes | yes | Resolve a bounded explicit set of plan-item references and project-scoped keys in one query, naming every absent selector. |  |

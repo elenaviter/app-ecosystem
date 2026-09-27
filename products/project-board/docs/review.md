@@ -152,6 +152,17 @@ their Telegram.
 
 - **No self-review.** The agent that did the work cannot accept, return or
   cancel it (`work_review_self_forbidden`).
+- **An agent decides only as the named reviewer or the coordinator.** An
+  agent whose Card holds the review operations accepts, returns or cancels an
+  item only when it is the item's named reviewer, the acting coordinator, or
+  (with nobody named) the coordinator that reviews by default. Anyone else is
+  refused `work_review_not_reviewer`, naming the reviewer and the acting
+  coordinator. A person is not limited by this rule.
+- **The default worker Card holds the review operations** and
+  `plan.item.create`, so a named reviewer records its own verdict and a
+  worker files items (Rule 14 of the worker procedure's collaboration page).
+  An existing agent Card gets them at its next Refresh, once a project admin
+  has ticked them on the project's Control Card.
 - **Review requirement.** An item's `review_requirement.kind` is `qualified`
   by default, or `operator`, which requires a person. A requirement carried
   on the assignment takes precedence over the item's.

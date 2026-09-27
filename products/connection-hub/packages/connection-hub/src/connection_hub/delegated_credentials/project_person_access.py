@@ -133,6 +133,35 @@ def _my_card_untouched(authority: CardAuthority) -> bool:
     )
 
 
+NOT_DELEGABLE = "delegated_access_grants_not_delegable"
+
+
+def _named_not_delegable(result: Mapping[str, Any], decision: Any) -> dict[str, Any]:
+    """Name the grants a save may not add and the project host's reason (W296).
+
+    The bound is the project host's: Problem Board sends why these grants are
+    what the acting person may hand out (``delegation_bound`` in the acting
+    person's membership evidence). The fixed text about Connection Hub's
+    capability list named a setting this path never reads.
+    """
+
+    if result.get("error") != NOT_DELEGABLE:
+        return dict(result)
+    evidence = getattr(decision, "evidence", None) or {}
+    actor = evidence.get("actor_membership") if isinstance(evidence, Mapping) else None
+    host = actor.get("evidence") if isinstance(actor, Mapping) else None
+    reason = str((host or {}).get("delegation_bound") or "").strip() if isinstance(host, Mapping) else ""
+    grants = ", ".join(str(grant) for grant in result.get("grants") or ()) or "some permissions"
+    refused = dict(result)
+    refused["message"] = (
+        f"You cannot add {grants} to this Card."
+        + (f" {reason}" if reason else " The project does not let you delegate them.")
+    )
+    if reason:
+        refused["reason"] = reason
+    return refused
+
+
 def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
     return {
         "ok": False,
@@ -556,7 +585,7 @@ class ProjectPersonControlLifecycle:
                     _platform_admin=decision.platform_admin,
                 )
                 if resolved.error is not None:
-                    return resolved.error
+                    return _named_not_delegable(resolved.error, decision)
                 if resolved.revoke:
                     return {
                         "ok": False,
@@ -812,7 +841,7 @@ class ProjectPersonControlLifecycle:
             status = 409 if exc.reason == "project_person_control_audit_changes_empty" else 400
             return {"ok": False, "error": exc.reason, "status": status}
         if updated.get("ok") is not True:
-            return updated
+            return _named_not_delegable(updated, decision)
         result = await self._view(identity=identity, decision=decision)
         if updated.get("pruned") is not None:
             result["pruned"] = updated["pruned"]
@@ -1159,7 +1188,7 @@ class ProjectPersonControlLifecycle:
         except ControlCardMismatch as exc:
             return {"ok": False, "error": exc.reason, "status": 409}
         if updated.get("ok") is not True:
-            return updated
+            return _named_not_delegable(updated, decision)
         try:
             current = await self._project_identities.resolve(
                 project_ref=project_ref,

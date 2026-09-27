@@ -1,24 +1,17 @@
 package:
   id: app-foundation
-  ref: "2026.09.26.2220"
+  ref: "2026.09.27.1727"
   description: |
-    Released together with service-foundation, connection-hub and
-    project-board at one version, so the Problem Board client installs from
-    the package index as one dependency chain with no KDCube package (W322).
+    Problem Board client set 2026.09.27.1727: a new machine can be set up by its own agent.
 
-    2026.09.26.2205 has the same content and is on the package index. This
-    version exists because connection-hub's publication at 2205 failed its CI
-    tests, and the four packages are released at one version (PyPI versions
-    are immutable).
-
-    Changes since 2026.09.22.2029:
-    - Data Bus client: a reconnect presents the credential that is valid at
-      reconnect time, not the one captured when the client started (W265).
-    - Data Bus client: a refused upgrade during a platform restart is reported
-      as a transport failure, so the caller retries instead of giving up.
+    - `pb status` checks the machine's prerequisites for its OS (Linux: python and venv, git, tmux, linger, the systemd user manager, a usable keyring; macOS: python, git, tmux, keychain). It names each missing one with the exact fix, says whether it needs an administrator, and says what works without it (W304).
+    - `pb setup` checks that the endpoint answers as the board before it writes anything, and refuses with a named reason (W304).
+    - `pb procedure install` records which pb installed the skill, so the agent finds it wherever it lives (W304).
+    - The skill's first-run and the README follow one agent-guided path. Install pb and the skill, start the agent as the worker in tmux, and give it the values from the board's new "Connect a machine" panel; it sets up the machine, proposes the newest release and enrolls, and you approve its Card with --device (W304).
+    - Procedure revision 2026.09.27.8.
 
 components:
   python_package:
     id: app-foundation
     path: packages/app-foundation
-    version: "2026.09.26.2220"
+    version: "2026.09.27.1727"

@@ -1,35 +1,14 @@
 product:
   id: connection-hub
-  ref: "2026.09.26.2220"
+  ref: "2026.09.27.1727"
   description: |
-    The caller side of Connection Hub is part of the connection-hub package,
-    behind the new `client` extra (W322): sign-in in a browser or by device
-    code, profiles, credentials in the operating system's native store, and an
-    authenticated MCP connection (`connection_hub.caller`). It contains no
-    KDCube code. Problem Board's pb depends on `connection-hub[client]` only;
-    stored caller state keeps its schema names, so existing profiles and
-    sessions stay readable. The `connection-hub` command line is a thin shell
-    over the same layer.
+    Problem Board client set 2026.09.27.1727: a new machine can be set up by its own agent.
 
-    Also since 2026.09.23.0158:
-    - Connection Hub is the only editor of what a Card holds; project admins
-      edit person Control Cards through the project path; the catalog declares
-      operation groups (H1).
-    - The all-services row for every approver, bounded by the roles their
-      account may delegate (H2).
-    - A project's Control Card is read, changed, attached and detached through
-      the project host; an agent's owner attaches it while linking and detaches
-      it only while unlinking (W260, W319).
-    - Device grants keep the approved authorization opaque in Redis; the
-      session records the platform sign-in and its email verdict.
-
-    The `test` extra carries the `client` extra's packages, so the tests run
-    from a clean `pip install -e .[test]`; publication at 2026.09.26.2205
-    failed on exactly that and was not published.
-
-    connection-hub-cli carries the same version in this snapshot but is not
-    published with it: its management commands still need a KDCube CLI release
-    that the package index does not have.
+    - `pb status` checks the machine's prerequisites for its OS (Linux: python and venv, git, tmux, linger, the systemd user manager, a usable keyring; macOS: python, git, tmux, keychain). It names each missing one with the exact fix, says whether it needs an administrator, and says what works without it (W304).
+    - `pb setup` checks that the endpoint answers as the board before it writes anything, and refuses with a named reason (W304).
+    - `pb procedure install` records which pb installed the skill, so the agent finds it wherever it lives (W304).
+    - The skill's first-run and the README follow one agent-guided path. Install pb and the skill, start the agent as the worker in tmux, and give it the values from the board's new "Connect a machine" panel; it sets up the machine, proposes the newest release and enrolls, and you approve its Card with --device (W304).
+    - Procedure revision 2026.09.27.8.
   documentation: docs/connection-hub
 
 components:
@@ -41,16 +20,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.09.26.2220"
+    version: "2026.09.27.1727"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
   cli_package:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.09.26.2220"
+    version: "2026.09.27.1727"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.09.26.2220"
+  version: "2026.09.27.1727"

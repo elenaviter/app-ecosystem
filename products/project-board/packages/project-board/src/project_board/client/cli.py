@@ -76,7 +76,7 @@ from .card_refusal import with_actionable_refusal
 from .stop_guard import stop_guard_decision
 from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
-from .workspace_report import build_workspace_report, report_signature
+from .workspace_report import build_workspace_report, commit_identity, report_signature
 from .limit_state import (
     limit_state_from_claude_statusline,
     limit_state_from_claude_stop_failure,
@@ -252,6 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="ALIAS=https://... remote URL for a mapped repository alias; the board links repo:ALIAS refs to it.",
+    )
+    setup.add_argument(
+        "--no-verify-endpoint",
+        action="store_true",
+        help="Write the configuration without first checking that the endpoint answers as the board's MCP (offline setup).",
     )
     setup.add_argument("--config")
     setup.add_argument("--state-root")
@@ -877,6 +882,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not ask each remote (git ls-remote); a matching checkout is reported as cloned.",
     )
     command.add_argument("--timeout-seconds", type=float, default=15.0, help="Per git call (default 15).")
+    command.add_argument(
+        "--set-identity",
+        action="store_true",
+        help=(
+            "First set each clone's repository-local user.name and user.email to this agent's "
+            "alias and the project's commit email (W368); worktrees inherit them."
+        ),
+    )
 
     command = worker_commands.add_parser(
         "limit-state",
@@ -1528,6 +1541,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _host_config(command)
     command = source_commands.add_parser(
+        "versions",
+        help=(
+            "List the published project-board versions, mark the installed and the "
+            "active one, and print the use-release line for the newest or a chosen one."
+        ),
+    )
+    _host_config(command)
+    command.add_argument("--version", dest="choose", default="", help="The version to print the use-release line for.")
+    command.add_argument("--index-url", default=None, help="Package index (default: PIP_INDEX_URL, else PyPI).")
+    command = source_commands.add_parser(
         "use-code",
         help=(
             "Export the approved App Ecosystem commit as one client source, "
@@ -1675,7 +1698,21 @@ def _status_command(args: Any) -> dict[str, Any]:
             # No session named and none detectable (Claude Code supplies its
             # id explicitly): report the machine, and say how to name one.
             identity = None
-    return first_run_status(config=getattr(args, "config", None), identity=identity)
+    from .prerequisites import check_prerequisites
+
+    return first_run_status(
+        config=getattr(args, "config", None), identity=identity, prerequisites=check_prerequisites()
+    )
+
+
+def _setup_endpoint_check(args: Any) -> dict[str, Any]:
+    from .endpoint_check import verify_board_endpoint
+    from .host_config import _endpoint
+
+    endpoint = _endpoint(args.endpoint)
+    if getattr(args, "no_verify_endpoint", False):
+        return {"state": "skipped", "endpoint": endpoint}
+    return verify_board_endpoint(endpoint)
 
 
 def _setup(args: Any) -> dict[str, Any]:
@@ -2158,7 +2195,7 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             details={
                 "worker_name": identity.worker_name,
                 "channel_state": channel.state,
-                "required_action": f"pb worker authorize {channel.profile}",
+                "required_action": f"pb worker authorize {channel.profile} --device",
             },
         )
     payload: dict[str, Any] = {}
@@ -3488,6 +3525,17 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
             "The host approves no work root, so this agent has no workspace: ask the operator to add one "
             "(`pb host configure --add-allow-root <path>`).",
         )
+    # W368: the project's commit identity, the agent's alias and the project's email.
+    alias = str(getattr(recorded, "worker_alias", "") or "").strip()
+    email = str(record.get("commit_identity_email") or "").strip()
+    if args.set_identity and not (alias and email):
+        raise DomainError(
+            "field_commit_identity_unset",
+            "There is no commit identity to set: "
+            + ("the project sets no commit email" if not email else "this agent has no alias")
+            + ".",
+            details={"project_ref": project_ref},
+        )
     report = build_workspace_report(
         Path(workspace),
         record.get("repositories") or [],
@@ -3495,6 +3543,8 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
         reported_at=utc_now(),
         verify=not args.no_verify,
         timeout=max(1.0, float(args.timeout_seconds)),
+        identity=(alias, email) if alias and email else None,
+        set_identity=bool(args.set_identity),
     )
     signature = report_signature(report)
     entry = field.set_workspace_report(identity.worker_name, parsed.object_id, report, signature=signature)
@@ -3502,6 +3552,7 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
         "worker": identity.worker_name,
         "project_ref": project_ref,
         "workspace": workspace,
+        **({"commit_identity": {"name": alias, "email": email}} if alias and email else {}),
         **report,
         "on_board": entry.get("published_signature") == signature,
         "rule": "The relay carries this report on its next heartbeat; the project card shows it.",
@@ -4627,6 +4678,14 @@ def _worker_project_context(
         # The repositories to set the workspace up from (W304 finding 39).
         "repositories": repositories["repositories"],
         "repositories_revision": repositories["revision"],
+        # W368: what this agent commits as in the project, with the exact
+        # commands that set it in each clone. Empty when the project sets none.
+        "commit_identity": commit_identity(
+            str(getattr(channel, "worker_alias", "") or ""),
+            str(repositories.get("commit_identity_email") or ""),
+            workspace,
+            repositories["repositories"],
+        ),
         **journal_state,
         **journal,
     }
@@ -4762,6 +4821,7 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             home=args.home,
             force=args.force,
             allow_downgrade=bool(getattr(args, "allow_downgrade", False)),
+            installed_by=_installing_pb(),
         )
         result = {
             "procedure": str(source_path()),
@@ -4776,6 +4836,24 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             result["claude_code_settings"] = merge_claude_code_settings(_home_path(args.home), pb=hook_pb)
         return result
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")
+
+
+def _installing_pb() -> dict[str, Any] | None:
+    """The pb running this install, for the skill to find it (W304 finding 7); None when it has no path."""
+
+    from importlib.metadata import PackageNotFoundError, version
+
+    from .claude_settings import pb_command
+
+    try:
+        pb = pb_command()
+    except DomainError:
+        return None
+    try:
+        installed_version = version("project-board")
+    except PackageNotFoundError:
+        installed_version = ""
+    return {"pb": pb, "version": installed_version, "python": sys.executable, "installed_at": utc_now()}
 
 
 def _relay_service_command(args: Any) -> dict[str, Any]:
@@ -4808,6 +4886,18 @@ def _source_command(args: Any) -> dict[str, Any]:
                 status=400,
                 details={"retired_arguments": retired},
             )
+    if args.source_command == "versions":
+        # Read-only, and useful before setup: a machine with no configuration
+        # uses the default release store.
+        from .release_install import default_release_root
+        from .relay_source import client_release_root
+        from .source_versions import source_versions
+
+        try:
+            root = client_release_root(resolve_host_config_path(args.config))
+        except DomainError:
+            root = default_release_root()
+        return source_versions(root, choose=args.choose, index=args.index_url)
     controller = ClientSourceController(resolve_host_config_path(args.config))
     if args.source_command == "status":
         return controller.status()
@@ -5267,7 +5357,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "relay":
             result = asyncio.run(_relay(args))
         elif args.command == "setup":
-            result = _setup(args)
+            # Before anything is written, the endpoint must answer as the board (W304).
+            endpoint_check = _setup_endpoint_check(args)
+            result = {**_setup(args), "endpoint_check": endpoint_check}
         elif args.command == "status":
             result = _status_command(args)
         elif args.command == "host":

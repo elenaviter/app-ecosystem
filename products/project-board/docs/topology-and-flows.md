@@ -113,8 +113,9 @@ user chooses one existing Claude Code or Codex terminal
        one deterministic Connection Hub profile for this session
        local control-plane state = pending_authorization
        one runtime-specific notification adapter
-  -> selected agent returns pb worker authorize <profile>
-  -> user runs that short command in a normal terminal and approves consent
+  -> selected agent returns pb worker authorize <profile> --device
+  -> user runs that short command in a normal terminal; the approver enters
+     the printed code on their own device and account
   -> Connection Hub stores that profile's credential in native custody
        local profile-store change wakes the machine relay
   -> machine relay proves that the pending profile is now usable
@@ -550,7 +551,7 @@ credential revocation
   -> next incoming Data Bus operation rechecks and rejects the Card
   -> outbound routing rechecks and removes the Card's live route
   -> relay marks only that worker channel pending_authorization
-  -> user runs pb worker authorize <profile>
+  -> user runs pb worker authorize <profile> --device
   -> terminal authorization failure rotates the old Card; outage does not
 
 credential-store custody failure

@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from connection_hub.operation_groups import parse_operation_groups
+from connection_hub.operation_groups import offered_on_person_card, parse_operation_groups
 
 
 def as_mapping(value: Any) -> dict[str, Any]:
@@ -174,6 +174,8 @@ class NamespaceBoundaryPolicy:
             }
             if str(data.get("group") or "").strip():
                 public["group"] = str(data.get("group")).strip()
+            if not offered_on_person_card(data):
+                public["person_card"] = False
             operation_policies = as_mapping(data.get("operations"))
             if operation_policies:
                 public["operations"] = {
@@ -191,6 +193,11 @@ class NamespaceBoundaryPolicy:
                         **(
                             {"group": str(as_mapping(op_policy).get("group")).strip()}
                             if str(as_mapping(op_policy).get("group") or "").strip()
+                            else {}
+                        ),
+                        **(
+                            {"person_card": False}
+                            if not offered_on_person_card(as_mapping(op_policy))
                             else {}
                         ),
                     }

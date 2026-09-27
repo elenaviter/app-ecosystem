@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { OTHER_GROUP_LABEL, groupOperations } from '../src/features/delegatedAccess/operationGroups.ts'
+import { OTHER_GROUP_LABEL, groupOperations } from '../src/features/delegatedAccess/operationGroupsModel.ts'
 import { cardReadOnlyReason } from '../src/features/delegatedAccess/cardEditability.ts'
 
 // W260 (operator ruling, 2026-09-26): Connection Hub is the only Card editor,

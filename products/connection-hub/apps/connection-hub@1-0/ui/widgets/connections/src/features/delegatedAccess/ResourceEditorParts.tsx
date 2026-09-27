@@ -7,6 +7,7 @@
 import type { ReactNode } from 'react';
 import {
   doorName,
+  changedOperationsSuspended,
   driftNeedsReview,
   offerReasonText,
   operationDisplayLabel,
@@ -16,6 +17,7 @@ import {
 } from './resourceEditing';
 import { InfoMark } from '../../components/InfoMark';
 import { OperationInvocationChoice } from './InvocationControls';
+import { driftForPersonCard } from './personCardOperations';
 import type {
   DelegatedAccessGrantOption,
   DelegatedAccessOperationOption,
@@ -128,7 +130,9 @@ function DriftIdentity({
 
 /** Per-resource descriptor review: what changed on THIS resource's own
  *  authority since the card accepted it, and the checkbox that accepts a
- *  changed selected operation. Unticked changed operations stay suspended. */
+ *  changed selected operation. Unticked changed operations stay suspended
+ *  where the call checks the accepted descriptor (a remote MCP connector);
+ *  on a catalog row they stay in effect and the change waits for review. */
 export function ResourceDriftReview({
   resource,
   state,
@@ -144,6 +148,7 @@ export function ResourceDriftReview({
   onToggleOperation,
   onToggleClaim,
   onChooseInvocation,
+  notOffered,
 }: {
   resource: string;
   state?: ResourceDriftState;
@@ -159,9 +164,13 @@ export function ResourceDriftReview({
   onToggleOperation: (operation: string, grants: string[], on: boolean) => void;
   onToggleClaim: (claim: string, on: boolean) => void;
   onChooseInvocation: (operation: string, mode: InvocationMode) => void;
+  /** Operations this Card is not offered (a person's Control Card, W360): never listed as changed or newly advertised. */
+  notOffered?: string[];
 }) {
+  state = driftForPersonCard(state, notOffered);
   if (!state || !driftNeedsReview(state)) return null;
   const changed = state.changed_operations || [];
+  const suspends = changedOperationsSuspended(state);
   const removed = state.removed_operations || [];
   const added = state.added_operations || [];
   const removedClaims = state.removed_claims || [];
@@ -191,7 +200,7 @@ export function ResourceDriftReview({
       </div>
       {changed.length ? (
         <div className="resource-drift-review__group">
-          <div className="card-field-label">Changed, suspended until you accept</div>
+          <div className="card-field-label">{suspends ? 'Changed, suspended until you accept' : 'Description changed, review'}</div>
           <DriftTable label="Changed tools">
             {changed.map((operation) => {
               const on = accepted.includes(operation);
@@ -207,8 +216,17 @@ export function ResourceDriftReview({
                     />
                   </span>
                   <span className="resource-drift-table__effect" role="cell">
-                    <span className="badge badge-warn">Suspended</span>
-                    <small>Not run until its updated descriptor is accepted.</small>
+                    {suspends ? (
+                      <>
+                        <span className="badge badge-warn">Suspended</span>
+                        <small>Not run until its updated descriptor is accepted.</small>
+                      </>
+                    ) : (
+                      <>
+                        <span className="badge badge-neutral">In effect</span>
+                        <small>Still runs. The service changed how it describes this tool; accepting records your review.</small>
+                      </>
+                    )}
                   </span>
                   <span className="resource-drift-table__decision" role="cell">
                     <label className="descriptor-accept">

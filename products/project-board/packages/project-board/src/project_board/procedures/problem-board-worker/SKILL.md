@@ -39,7 +39,7 @@ host action because it changes both the command and relay source. When `pb statu
 
 Before an action, name the task or observed event that calls for it and what
 its result could change. Reassess after a wake or a returned command; a check
-that was useful once is not automatically useful again. Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return.
+that was useful once is not automatically useful again. Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return. Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14: search first, note small things on an open item, and tell the coordinator what you filed.
 
 For a repeated status query or retry, name the pending operation or receipt, use
 a bounded attempt count, and stop when another repetition cannot inform the next
@@ -52,6 +52,7 @@ Resume, step 5); between wakes, receive only at the work boundaries under Work,
 Report, And Journal. A quiet inbox is not evidence that the watch is running,
 and a `not_listening` label alone is not evidence of a delivery fault. Actual
 wakes and held leases still require prompt receive, handling, and settlement.
+When the person asks you to create a project and connect you and other agents to it ("I want to create the project and connect you and other agents to it, help me"), guide them through [create a project](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/create-a-project.md) from its step 0: they decide every value, you never invent one.
 
 ## Start Or Resume
 
@@ -60,8 +61,7 @@ wakes and held leases still require prompt receive, handling, and settlement.
 2. Identify this exact runtime session: `pb worker whoami`.
 3. Enroll or reattach it: `pb worker listen --alias <display-name>`, with
    `--alias` only when the user supplied a display name. The person's side is [enroll an agent](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/enroll-an-agent.md).
-4. Follow `next`; present its exact `pb worker authorize <profile>`. Do not reconstruct a profile name.
-   On a browserless host, or when the approving person signs in with a different browser or account than the one that opens here, append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`; the handoff exposes only public URL/code and the credential goes to the native store. Claude Code: start the step-5 watch before this step, so the approval arrives as its `control_plane.connected` event (a Codex session is woken by its relay). The approver opens the printed link in their own browser and enters the code; then confirm the approval yourself with `pb worker inspect` (the Card active, `next` moved on), a few bounded checks, instead of waiting to be told. Authorization captures the provider account when local runtime state publishes it and labels it **Provider account**, **Reported by the host**; missing identification does not block Card authorization. [Identity and authorization](references/identity-and-authorization.md) owns the account and Card-authority contract.
+4. Follow `next`; present its exact `pb worker authorize <profile> --device`. Do not reconstruct a profile name, and never drop `--device`: the person who approves the Card owns it and may not be the one signed in to a browser on this machine (operator, 2026-09-26). Tell them to open the printed link on their own device, in their own account, and enter the code. Use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`; the handoff exposes only public URL/code and the credential goes to the native store. Claude Code: start the step-5 watch before this step, so the approval arrives as its `control_plane.connected` event (a Codex session is woken by its relay). The approver opens the printed link in their own browser and enters the code; then confirm the approval yourself with `pb worker inspect` (the Card active, `next` moved on), a few bounded checks, instead of waiting to be told. Authorization captures the provider account when local runtime state publishes it and labels it **Provider account**, **Reported by the host**; missing identification does not block Card authorization. [Identity and authorization](references/identity-and-authorization.md) owns the account and Card-authority contract.
 5. Establish the notification path returned for this runtime:
 
    - **Codex:** the persistent login relay owns the `codex-queue` subscription
@@ -345,7 +345,7 @@ move status ([ownership](references/identity-and-authorization.md)).
 - Your estimate is visible state. After planning, `pb worker busy-until <UTC> --note <one line>`
   says until when you expect to finish and what you are on. Set it again with the reason when it
   slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and
-  marks it overdue once the time has passed ([collaboration](references/collaboration.md), rule 6). What the operator told you that the team must know about you goes on your cards with `pb worker info` (same rule, The info line).
+  marks it overdue once the time has passed ([collaboration](references/collaboration.md), rule 6). What the operator told you that the team must know about you goes on your cards with `pb worker info` (same rule, The info line), and so does a pause you choose.
 - How the team collaborates is decided in rounds, ideas alone first, then read all, then talk, then a votes table to everyone (rule 7). Handoff is an ownership decision the coordinator takes (rule 8), what you publish is safe to publish (rule 9), a runtime window speaks one channel that survives it (rule 10): all in [collaboration](references/collaboration.md).
 - When assigned work transitions to no work remaining, say so once with `pb worker idle`. When
   this exact session stops participating, run `pb worker detach`.
