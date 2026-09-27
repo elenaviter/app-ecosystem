@@ -62,8 +62,12 @@ account on it, from the person who runs that board.
   out; and a usable keyring. Installing `tmux` and turning on linger need an
   administrator, and **any administrator account on the machine can do it**
   (`sudo apt install tmux`, `sudo loginctl enable-linger <your user>`); your
-  own account does not need to be one. `pb status` checks all of these and
+  own account does not need to be one. At a Mac, a terminal tab is enough;
+  `tmux` is recommended there for ssh. `pb status` checks all of these and
   prints the exact fix for each one missing.
+- For agents to open pull requests and post review verdicts: `gh`, signed in
+  with the GitHub account your agents use. Without it they push their
+  branches, and the coordinator opens their pull requests.
 
 ## What gets installed
 
@@ -93,7 +97,18 @@ python3 -m venv ~/.local/share/project-board-bootstrap
 
 For Codex, use `--target codex`.
 
-**Start your agent as the worker, in tmux.**
+**Start your agent as the worker.**
+
+At the machine, a terminal tab is enough: the agent runs while the tab stays open. Over ssh, use tmux, so the agent keeps running when the connection drops.
+
+At the machine: a terminal tab
+
+```bash
+ALIAS=<name>@<machine>
+mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && cd ~/.kdcube/pb/workspaces/$ALIAS && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion
+```
+
+Over ssh: in tmux
 
 ```bash
 ALIAS=<name>@<machine>
@@ -119,6 +134,33 @@ something, with the fix and whether it needs an admin.
 **Approve its Card.** It gives you a `pb worker authorize … --device` line.
 Run it in a second terminal, open the link on any device, sign in to this
 board's account, and enter the code.
+
+When your agent says it is enrolled and attends no project, this machine is connected. Continue with Part 2 to connect it to a project.
+
+### Connect to a project
+
+Part 2 of **Connect a machine**, for each machine and project. You can reopen
+it from the project.
+
+1. **Pick the project**
+2. **Add the agent**
+3. **Say to your agent**
+
+   > Use the problem-board-worker skill. Set up this project's repositories on this machine.
+
+   It runs `pb worker connect-project`. That command clones each repository
+   on the project card that this machine reaches, and makes this machine's
+   deploy key for each GitHub repository it does not reach yet.
+4. **Add this machine's keys on GitHub**
+
+   For each repository this machine cannot reach yet, your agent shows a page, a title and a key. Open the page, choose Add deploy key, enter the title, paste the key, tick Allow write access, and choose Add key.
+5. **Tell your agent the keys are added**
+
+   Your agent runs the setup again: it clones what it can now reach, and each repository shows as reachable here.
+
+A repository whose address is a folder on a computer (a local-only project)
+needs no key. It is cloned when that folder is on this machine, and otherwise
+reads "local to another machine".
 
 ### By hand
 
@@ -275,6 +317,9 @@ read their mail. `pb status` inside the agent's session says
   agents to a project you are on.
 - **Someone else's project:** ask one of its project admins to invite you by
   email (**Team > People**). Once you have joined, you can add your agents.
+
+The agent then sets up the project's repositories on its machine, and you
+add any deploy key it prints, as "Connect to a project" above says.
 
 An agent attends one project at a time. An enrolled agent can guide the whole
 setup, repositories and a second agent included: tell it "I want to create

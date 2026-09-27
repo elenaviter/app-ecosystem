@@ -1,6 +1,7 @@
 import { UserManager, type UserManagerSettings } from 'oidc-client-ts';
 import { connectSession, type SessionClient } from '@kdcube/components-core/session';
 import { settings } from './settings';
+import { accountLabel } from '../components/signedInAccount';
 
 type FrontendAuthConfig = {
   authType?: string;
@@ -169,4 +170,45 @@ export async function signOutPlatformSession(): Promise<void> {
       reason: 'connection-hub-platform-session-cleared',
     },
   }));
+}
+
+export interface SignedInAccount {
+  /** The email, else the name, else the user name. */
+  label: string;
+  userId: string;
+}
+
+/** The account this browser is signed in as, from the platform's own profile; null when unknown. */
+export async function signedInAccount(): Promise<SignedInAccount | null> {
+  const client = await sessionClient();
+  if (client) {
+    const session = await client.probe().catch(() => null);
+    const user = session?.user;
+    if (user) {
+      const label = accountLabel(user);
+      if (label) return { label, userId: user.userId };
+    }
+  }
+  const config = await loadFrontendConfig();
+  const managerSettings = config ? userManagerSettings(config) : null;
+  if (!managerSettings) return null;
+  const stored = await new UserManager(managerSettings).getUser().catch(() => null);
+  const label = accountLabel(stored?.profile);
+  return label ? { label, userId: String(stored?.profile?.sub || '') } : null;
+}
+
+/**
+ * "Not you? Switch account" (W304 finding 26): end this session and sign in
+ * again, coming back to `returnTo` (the same consent page and device code).
+ */
+export async function switchPlatformAccount(returnTo = window.location.href): Promise<void> {
+  const client = await sessionClient();
+  if (client) {
+    // The server carries `next` through the identity provider's own sign-out.
+    const result = await client.signOut({ next: returnTo, followUpstream: true }).catch(() => null);
+    if (result?.upstreamLogoutUrl) return;
+  }
+  await signOutPlatformSession();
+  const started = await startPlatformSignIn(returnTo);
+  if (!started) window.location.assign(returnTo);
 }

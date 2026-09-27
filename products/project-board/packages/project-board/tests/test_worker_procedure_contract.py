@@ -144,7 +144,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.27.10"
+    assert package["revision"] == "2026.09.27.11"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1557,7 +1557,7 @@ def test_the_workspace_comes_from_the_host_root_never_the_session_folder():
     # 2026-09-26: an agent started in a shared checkout was handed that checkout.
     skill = " ".join(_read("SKILL.md").split())
     assert "never the folder this session started in and never a path you choose" in skill
-    assert "report it with `pb worker workspace-report`" in skill
+    assert "`pb worker connect-project` clones the project's repositories into it" in skill and "reports it" in skill
     workspace = " ".join(_read("references/project-workspace.md").split())
     assert "else `<agent workspace root>/<your alias>` (`workspace_source: host_root`)" in workspace
     assert "`pb host configure --agent-workspace-root`" in workspace

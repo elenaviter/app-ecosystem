@@ -3900,6 +3900,9 @@ code {
 .whose-list { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .whose-list-label { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .whose-list-id { font-family: var(--mono); font-size: 11px; color: var(--text-2); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* W304 finding 26: who the page acts for, by name, with the way to change it. */
+.whose-list-account { font-size: 12px; font-weight: 600; color: var(--text); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.signed-in-as .btn { padding: 2px 8px; font-size: 11px; white-space: nowrap; }
 .rail-groupby { padding: 0; }
 
 /* Action rows: every control one height, one baseline, one line. A label
@@ -4130,6 +4133,7 @@ code {
 .page-viewport { max-width: 100%; overflow-x: clip; }
 .page-head { flex-wrap: wrap; }
 .whose-list-id { max-width: min(260px, 38vw); }
+.whose-list-account { max-width: min(260px, 38vw); }
 @media (max-width: 899px) {
   .card-workbench .card-rail { display: none; }
   .card-editor { padding: 10px; }

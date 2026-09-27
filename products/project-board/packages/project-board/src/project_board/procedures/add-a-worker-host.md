@@ -498,6 +498,20 @@ The key and its SSH alias are named by the card's `alias`, because the worker's
 workspace setup clones through `github-<alias>` whenever that alias exists
 (project-workspace reference).
 
+**Granting for one project: `pb worker connect-project`** (W304 finding 19).
+An agent that attends the project runs it itself, as Part 2 of connecting a
+machine (first-run, "Part 2: Connect To A Project"). For its project's
+repositories it makes the same key, the same `Host github-<alias>` block and
+the same grant as the script below: page, title `<host-id> agents`, Allow
+write access yes, and the key. It does this only for a GitHub repository this
+machine does not reach yet, and then clones, sets the commit identity and
+reports the workspace. A key and block that the script or another agent of
+this user made are reused. One that differs is refused, with its path, and
+never overwritten. It never revokes and never retires a key. **Revoking stays
+with the script below**, which sees every project an agent of this user
+attends on this host. Run it when a card drops a repository or moves an alias
+to another one, and whenever a host's keys are in doubt.
+
 **Host agent**, as the Linux user that runs the agents, with the host id:
 
 ```bash
@@ -575,7 +589,9 @@ ensure_key() {  # key pair and SSH alias, each repaired on its own
 cut -f1 "$CARD" | uniq -u | while read -r alias; do
   repo=$(grep "^$alias	" "$CARD" | cut -f2)
   ensure_key "$alias" "$repo" || continue
-  if GIT_SSH_COMMAND="ssh -F $SSH_CONFIG" git ls-remote "github-$alias:$repo.git" HEAD </dev/null >/dev/null 2>&1; then
+  # -T: a config that requests a terminal would print "Pseudo-terminal will
+  # not be allocated" for every alias (W304 finding 21).
+  if GIT_SSH_COMMAND="ssh -T -F $SSH_CONFIG" git ls-remote "github-$alias:$repo.git" HEAD </dev/null >/dev/null 2>&1; then
     echo "ok $alias"
   else
     printf '\n### GRANT %s\n\nPage: https://github.com/%s/settings/keys\nTitle: %s agents\nAllow write access: yes\nKey:\n\n    %s\n' \
@@ -1075,8 +1091,9 @@ The **operator** adds each agent to the project, on the board's **Team >
 Agents > Add agent** (the agent and its role) or on the agent's pool card,
 **Add to project**. Within seconds the agent's
 host holds the project's record: its team and the repositories set on the
-project card. **The agent** then sets up its workspace from that record, as
-the worker procedure's project-workspace reference says:
+project card. **The agent** then sets up its workspace from that record with
+`pb worker connect-project` (first-run's Part 2), as the worker procedure's
+project-workspace reference says:
 - it reads `pb worker context --project-ref <project>` once `project_on_this_host` is true;
 - it clones each listed repository, the journal repository (role `journal`) included, into `<workspace>/<alias>` at its declared branch;
 - it fetches and fast-forwards any it already has;
@@ -1084,9 +1101,9 @@ the worker procedure's project-workspace reference says:
 
 A repository it cannot reach has no deploy key on this host yet: the first
 time, because keys are made from the attended card, and later because the card
-gained it. The host agent runs step 7's reconciliation on this host, the
-operator acts on the grant and revoke blocks, and the agent runs its workspace
-setup again. Nothing is cloned by hand: a clone the card does not
+gained it. `pb worker connect-project` makes the key and prints its grant, the
+operator adds it on GitHub, and the agent runs the command again. Step 7's
+reconciliation remains for revoking keys the cards no longer need. Nothing is cloned by hand: a clone the card does not
 list is not the project's.
 
 The workspace holding each listed alias at its branch is the proof. Joining a

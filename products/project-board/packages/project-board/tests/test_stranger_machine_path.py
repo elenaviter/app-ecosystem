@@ -52,7 +52,10 @@ def _by_name(result):
 def test_a_ready_linux_host_has_nothing_missing():
     result = check_prerequisites(_linux())
     assert result["os"] == "linux" and result["ok"] is True and result["missing"] == []
-    assert set(_by_name(result)) == {"python", "git", "tmux", "linger", "systemd user manager", "keyring"}
+    assert set(_by_name(result)) == {"python", "git", "tmux", "gh", "linger", "systemd user manager", "keyring"}
+    # W304 finding 23: gh is recommended, never blocking: without it the coordinator opens the pull requests.
+    assert result["recommended"] == ["gh"]
+    assert "coordinator opens their pull requests" in _by_name(result)["gh"]["without_it"]
 
 
 def test_the_mint_walk_names_each_missing_one_with_its_fix_and_who_can_run_it():
@@ -79,8 +82,11 @@ def test_a_fedora_host_gets_dnf_lines_and_a_mac_its_own_set():
         keyring_state=lambda: (True, "keyring.backends.macOS.Keyring"),
     )
     result = check_prerequisites(mac)
-    assert result["os"] == "macos" and result["missing"] == ["tmux"] and result["needs_admin"] == []
-    assert _by_name(result)["tmux"]["fix"] == "brew install tmux"
+    # W304 finding 24: at a Mac a terminal tab is enough, so tmux is recommended, not missing.
+    assert result["os"] == "macos" and result["ok"] is True and result["missing"] == [] and result["needs_admin"] == []
+    assert result["recommended"] == ["tmux"]
+    assert _by_name(result)["tmux"]["fix"] == "brew install tmux" and _by_name(result)["tmux"]["recommended"] is True
+    assert "a terminal tab is enough" in _by_name(result)["tmux"]["why"]
     assert "linger" not in _by_name(result)
 
 
