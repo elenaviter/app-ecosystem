@@ -231,8 +231,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     setup.add_argument("--target-id", required=True)
     setup.add_argument("--endpoint", required=True)
-    setup.add_argument("--tenant", required=True)
-    setup.add_argument("--platform-project", required=True)
+    setup.add_argument(
+        "--tenant", default="",
+        help="Optional: read from the endpoint; when given it must agree (W304 finding 18).",
+    )
+    setup.add_argument(
+        "--platform-project", default="",
+        help="Optional: read from the endpoint; when given it must agree (W304 finding 18).",
+    )
     setup.add_argument("--host-id", default="")
     setup.add_argument("--host-label", default="Local machine")
     setup.add_argument(
@@ -5357,7 +5363,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "relay":
             result = asyncio.run(_relay(args))
         elif args.command == "setup":
-            # Before anything is written, the endpoint must answer as the board (W304).
+            # The tenant and project come from the endpoint (W304 finding 18),
+            # and before anything is written it must answer as the board (W304).
+            from .endpoint_check import setup_scope
+
+            args.tenant, args.platform_project = setup_scope(
+                args.endpoint, tenant=args.tenant, platform_project=args.platform_project
+            )
             endpoint_check = _setup_endpoint_check(args)
             result = {**_setup(args), "endpoint_check": endpoint_check}
         elif args.command == "status":

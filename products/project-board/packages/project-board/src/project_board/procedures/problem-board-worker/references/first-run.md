@@ -33,14 +33,16 @@ The person starts this session as the worker, in `tmux`, from the words the
 README and the board's **Connect a machine** panel give them:
 
 ```bash
-tmux new-session -d -s <alias> "mkdir -p ~/.kdcube/pb/workspaces/<alias> && cd ~/.kdcube/pb/workspaces/<alias> && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
-tmux attach -t <alias>
+ALIAS=<name>@<machine>
+tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && cd ~/.kdcube/pb/workspaces/$ALIAS && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+tmux attach -t "$ALIAS"
 ```
 
 and says "Use the problem-board-worker skill. Help me set up Problem Board on
 this machine, then enroll this session as a Problem Board worker with alias
-<alias>". `<alias>` names this agent and this machine, for example
-`ana@mint`. This session sets the machine up and then enrolls: whatever
+<name>@<machine>", with the same name as in ALIAS. Edit only the ALIAS line,
+for example ana@mint. Use letters, digits, '-' and '@': tmux does not allow
+'.' and ':' in a session name. This session sets the machine up and then enrolls: whatever
 session enrolls becomes the worker. `--add-dir ~/.kdcube` lets it read the
 client's state, `--dangerously-skip-permissions` lets it work without a person
 at the keyboard, and `--disallowedTools AskUserQuestion` makes it ask through
@@ -93,7 +95,7 @@ step buried among tool results is a step the person does not see.
 | --- | --- |
 | target name (`--target-id`) | this machine's short, stable label for one KDCube deployment; the deployment never receives it |
 | endpoint (`--endpoint`) | the real governed Problem Board MCP address on that deployment |
-| tenant and platform project | the KDCube deployment coordinates that host the Problem Board app |
+| tenant and platform project | the KDCube deployment coordinates that host the Problem Board app; `pb setup` reads both from the endpoint's path, so `--tenant` and `--platform-project` are only for a check (a value that differs is refused as `work_setup_scope_mismatch`) |
 | host ID (`--host-id`) | the stable logical identity of this machine, published with its workers |
 | host label (`--host-label`) | the machine's readable display name |
 | allowed root (`--allow-root`) | a local directory workers on this machine may address |
@@ -194,14 +196,14 @@ that carries messages between the agents here and that server.
 
 When `next.step` is `configure_target`:
 
-1. Ask which deployment they want. The board's own values come from
-   **Connect a machine** in the project's Project dialog in the Problem Board
-   web app, which shows the endpoint, tenant and platform project filled in,
-   each copyable: ask them to copy those. Ask for nothing
-   the panel gives. Without the panel, ask for the endpoint URL (the address
-   ending in `/public/mcp/problem_board`, as this machine reaches it), the
-   tenant and the platform project, and say which is which, using the table
-   above. `pb setup` checks that the endpoint answers as the board's MCP
+1. Ask for the endpoint only. It comes from **Connect a machine** in the
+   board's top bar in the Problem Board web app (it needs no project), filled
+   in and copyable: ask them to copy it. Without the panel, ask for the
+   endpoint URL, the address ending in `/public/mcp/problem_board`, as this
+   machine reaches it. The endpoint names the tenant and the platform project,
+   so do not ask for them: `pb setup` reads them from its path, and refuses an
+   address that is not a board bundle path as `work_setup_endpoint_not_bundle`.
+   `pb setup` checks that the endpoint answers as the board's MCP
    and writes nothing when it does not: `work_setup_endpoint_not_board` (an
    address that is not the board's MCP, for example a `worker_stream` address
    copied from another machine's config) or `work_setup_endpoint_unreachable`
