@@ -75,6 +75,47 @@ one in your inbox.
 
 ## The knowledge role
 
-A project may later have a knowledge role that maintains a knowledge base from
-the journal. It is being designed. Until the project has one, the journal
-entry is the whole hand-over: write it so that nothing else is needed.
+A project may have a **knowledge role**: an agent that keeps the project's
+knowledge base (a maintained wiki and its search index) current from the work
+the team finishes. The journal says what happened; the knowledge base says
+how things work now, for readers who never saw the work. The operator's
+design is W302.
+
+**It is optional, per project.** A project may have no knowledge base, its
+own, or one shared with other projects (whether a shared base is kept by one
+agent serving several projects is not decided yet). Until a project has the
+role, the journal entry is the whole hand-over: write it so that nothing else
+is needed.
+
+**How the role works when a project has it:**
+
+- **It is a role, like the coordinator's.** An agent takes it when it joins
+  the project; teammates address the role, not a particular agent.
+- **Its instructions are a path the project names.** The project's setup
+  names a repository, ref and path where the knowledge application's root
+  and its instructions (`AGENTS.md`) are; the knowledge agent reads them from
+  its own clone.
+- **It approves its own proposals.** It turns hand-overs into proposals,
+  checks them for gaps, applies them, rebuilds the index, and checks
+  retrieval afterwards; no separate approval gate.
+- **Audience follows the source.** A note whose source is a public
+  repository may be readable by users; a note from a private source stays
+  internal.
+
+**The hand-over.** When you complete an item that changes the product's
+behaviour, terminology, flows, APIs or data models, and the project has the
+role, send it a `request` with the subject `Knowledge handover: W<n> <title>`,
+carrying the item ref, the merged change requests, and six parts:
+
+1. **changed features and concepts**: what exists now that did not, or
+   works differently;
+2. **fixes and semantic corrections**: what was wrong before, and what is
+   true now;
+3. **terms and aliases**: new names, and old names that mean the same thing;
+4. **do-not-misunderstand points**: the readings a newcomer would get wrong;
+5. **source documents to link**: the public pages and code that are the
+   authority;
+6. **a retrieval-facing summary**: two or three sentences a search should
+   find.
+
+The journal entry for the move comes first; the hand-over points to it.

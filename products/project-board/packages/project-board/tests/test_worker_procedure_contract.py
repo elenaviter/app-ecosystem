@@ -144,7 +144,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.27.8"
+    assert package["revision"] == "2026.09.27.9"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1680,6 +1680,29 @@ def test_the_merger_retargets_a_stacked_change_request_and_proves_the_merged_tre
     agent_worker = " ".join((PROCEDURE_ROOT.parent / "agent-worker.md").read_text(encoding="utf-8").split())
     assert "The merger sets that revision at merge time, in merge order; an author never bumps it" in agent_worker
     assert "PB_REQUIRE_REVISION_RECORDED=1" in agent_worker
+
+
+def test_journaling_describes_the_optional_knowledge_role_and_its_hand_over() -> None:
+    # W340 line 5 (returned 2026-09-26): the optional knowledge role (W302)
+    # must be described in the public procedure, reachable from journaling.
+    journaling = _words(_read("references/journaling.md"))
+    skill = _read("SKILL.md")
+
+    assert "[journaling](references/journaling.md)" in skill
+    assert "## The knowledge role" in _read("references/journaling.md")
+    assert "It is optional, per project." in journaling
+    assert "teammates address the role, not a particular agent" in journaling
+    assert "Until a project has the role, the journal entry is the whole hand-over" in journaling
+    assert "`Knowledge handover: W<n> <title>`" in journaling
+    for part in (
+        "changed features and concepts",
+        "fixes and semantic corrections",
+        "terms and aliases",
+        "do-not-misunderstand points",
+        "source documents to link",
+        "a retrieval-facing summary",
+    ):
+        assert part in journaling
 
 
 def test_worker_budgets_name_the_usage_field_and_where_the_caps_live() -> None:
