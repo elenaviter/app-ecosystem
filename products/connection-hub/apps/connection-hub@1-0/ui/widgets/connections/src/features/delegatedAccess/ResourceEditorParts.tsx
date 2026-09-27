@@ -16,6 +16,7 @@ import {
 } from './resourceEditing';
 import { InfoMark } from '../../components/InfoMark';
 import { OperationInvocationChoice } from './InvocationControls';
+import { driftForPersonCard } from './personCardOperations';
 import type {
   DelegatedAccessGrantOption,
   DelegatedAccessOperationOption,
@@ -160,13 +161,10 @@ export function ResourceDriftReview({
   onToggleOperation: (operation: string, grants: string[], on: boolean) => void;
   onToggleClaim: (claim: string, on: boolean) => void;
   onChooseInvocation: (operation: string, mode: InvocationMode) => void;
-  /** Operations this Card is not offered (a person's Control Card, W360): never listed as newly advertised. */
+  /** Operations this Card is not offered (a person's Control Card, W360): never listed as changed or newly advertised. */
   notOffered?: string[];
 }) {
-  if (notOffered?.length && state?.added_operations?.length) {
-    const hidden = new Set(notOffered);
-    state = { ...state, added_operations: state.added_operations.filter((operation) => !hidden.has(operation)) };
-  }
+  state = driftForPersonCard(state, notOffered);
   if (!state || !driftNeedsReview(state)) return null;
   const changed = state.changed_operations || [];
   const removed = state.removed_operations || [];

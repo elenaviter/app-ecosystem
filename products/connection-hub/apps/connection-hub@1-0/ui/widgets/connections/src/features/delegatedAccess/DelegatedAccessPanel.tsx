@@ -159,7 +159,7 @@ import {
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import { projectPersonControlCoordinates } from './projectPersonControl';
-import { notOfferedOnPersonCard, resourcesForPersonCard } from './personCardOperations';
+import { catalogDriftForPersonCard, notOfferedOnPersonCard, resourcesForPersonCard } from './personCardOperations';
 import { cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, readableCardLabel } from './cardLabels';
 import { detailedCardOffersEdit } from './cardActions';
 import {
@@ -1162,6 +1162,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const resources = useMemo(
     () => (editingPersonControl ? resourcesForPersonCard(catalogResources) : catalogResources),
     [catalogResources, editingPersonControl],
+  );
+  // The Card-level drift notice of a project person's or invitation's Control
+  // Card leaves out what that Card is not offered (W360).
+  const cardCatalogDrift = (record: DelegatedAccessRecord) => (
+    projectPersonControlCoordinates(record)
+      ? catalogDriftForPersonCard(
+        record.catalog_drift,
+        (resource) => catalogRowFor(catalogResources, resource, (key) => (record.catalog_row_by_resource || {})[key] || key),
+      )
+      : record.catalog_drift
   );
   // Policy chosen for an operation the editor ADDS to a card, keyed
   // `${resource}:${operation}`. It travels with that operation's grant in one
@@ -5180,7 +5190,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               ) : null}
             </div>
           ) : null}
-          <CatalogDriftNotice drift={record.catalog_drift} />
+          <CatalogDriftNotice drift={cardCatalogDrift(record)} />
           {record.source === 'control' ? (
             <div className="card-fields control-card-fields">
               <Field label={projectPersonControl?.kind === 'person' ? 'For' : 'Issued by'}>
@@ -5571,7 +5581,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           ) : null}
                         </div>
                       ) : null}
-                      <CatalogDriftNotice drift={item.catalog_drift} />
+                      <CatalogDriftNotice drift={cardCatalogDrift(item)} />
                       {editing ? (
                         <label className="rename-row">
                           <span className="card-field-label">Name</span>
