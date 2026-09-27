@@ -116,7 +116,7 @@ In each selected terminal, run `pb worker whoami` and `pb worker listen`.
 Codex must use `CODEX_SESSION_ID`; Claude Code must use the local UUID accepted
 by `claude --resume`, never a `session_...` attribution ID. Give each returned
 Connection Hub profile its own credential with the short
-`pb worker authorize <profile>` command. Have each Claude Code session
+`pb worker authorize <profile> --device` command. Have each Claude Code session
 establish its one session-owned background inbox attachment; verify that the
 persistent login relay owns each Codex channel's exact-session native queue.
 Require:
@@ -452,8 +452,8 @@ next incoming operation must be rejected as `delegated_card_not_active`, and
 an addressed outbound wake must not use that Card's registered route. The relay
 must drop only that channel and mark it `pending_authorization`; sibling
 channels on the same machine remain connected. No token-expiry waiting period
-is allowed. Run the same short `pb worker authorize <profile>` command from a
-normal terminal, complete new consent, and prove the channel reactivates
+is allowed. Run the same short `pb worker authorize <profile> --device`
+command from a normal terminal, complete new consent, and prove the channel reactivates
 without another `worker listen`. Simulate an authority-store outage separately:
 incoming work and outbound delivery fail closed for that attempt, the route is
 retained for retry, and no credential is rotated.

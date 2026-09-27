@@ -221,18 +221,21 @@ Each host config selects one app-scoped Connection Hub directory for non-secret
 profile metadata. This keeps enrollment inspection inside the approved client-
 runtime tree while native Keychain, Credential Manager, or Secret Service
 custody continues to hold token values. `pb worker listen` returns a short
-`pb worker authorize <profile>` action. The command resolves the selected host,
+`pb worker authorize <profile> --device` action: the person who approves opens
+its link on their own device and account and enters the code (operator,
+2026-09-26: the approver may not be whoever is signed in to a browser on the
+host). The command resolves the selected host,
 metadata directory, exact worker channel, and endpoint itself, so the operator
 does not copy internal paths or environment assignments.
 
 For an existing OAuth profile whose token is missing, refused, or no longer
-refreshable, the same command runs browser reconnect with the profile's
+refreshable, the same command reconnects through the device link with the profile's
 recorded OAuth client. It accepts only the recorded Card id and reports
 `Reconnected Card <id> (grants kept)`. The operator can deliberately revoke
 that Card and register a new standard worker Card with:
 
 ```bash
-pb worker authorize <profile> --replace-card
+pb worker authorize <profile> --device --replace-card
 ```
 
 Use `--coordinator` with a first or replacement authorization to propose the
@@ -280,7 +283,7 @@ older duplicate resource and namespace owners in place.
 3. Verify both the managed `problem_board` MCP adapter and its partitioned Data
    Bus handler.
 4. A selected agent runs `pb worker listen`. The command returns its unique
-   profile name and, when needed, `pb worker authorize <profile>`.
+   profile name and, when needed, `pb worker authorize <profile> --device`.
 5. The user opens the normal Connection Hub card editor from the authorization
    flow. The requested Problem Board operations and `work:relay` are proposed
    for that session; the
@@ -305,7 +308,7 @@ Cards created before the connected multi-resource credential contract are not
 silently reclassified. They may still carry obsolete client metadata and may
 open as entry-bound cards. Correlate the exact profile and Card with `pb worker
 inspect`, revoke that Card in Connection Hub, wait for the relay to mark only
-that channel pending, and run the returned `pb worker authorize <profile>`
+that channel pending, and run the returned `pb worker authorize <profile> --device`
 command. The fresh registration carries `kdcube_credential_use=multi_resource`;
 that application-neutral metadata selects the full card editor but grants nothing by
 itself. The user chooses every added resource and account when saving.
@@ -443,7 +446,8 @@ risks revoking the wrong card.
 Migrate one worker at a time, starting with the least critical, so a failure
 costs one agent rather than the pool. Revoke that exact card, let the relay
 mark only that worker pending, then have the owning session run the short
-`pb worker authorize <profile>` action and complete the browser consent. The
+`pb worker authorize <profile> --device` action and complete the consent on the
+approver's own device. The
 fresh registration carries the multi-resource hint, which grants nothing and
 leaves every resource choice to the user.
 
