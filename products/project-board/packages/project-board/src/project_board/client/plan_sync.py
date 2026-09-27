@@ -34,12 +34,91 @@ PLAN_NODE_ROOT = "plan/nodes"
 WORK_REF_CONTINUATION = r"A-Za-z0-9_:-"
 
 
+# W369 step 1 (operator, 2026-09-27): the Git copy of the plan stays compact.
+# Current work keeps its full row and node document; a finished or cancelled
+# item is one short line (key, title, status, the day it closed). The copy is
+# a readable summary, not an import package: moving a project between boards
+# is the project export (W369 step 2).
+SUMMARY_SCHEMA = "problem-board.plan-summary-export.v1"
+FULL_SCHEMA = "problem-board.plan-index.v2"
+CLOSED_STATUSES = frozenset({"done", "cancelled", "canceled"})
+
+
 def _rows(index: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in (index.get("items") or []) if isinstance(row, Mapping)]
 
 
+def _is_closed(row: Mapping[str, Any]) -> bool:
+    return str(row.get("status") or "").strip().lower() in CLOSED_STATUSES
+
+
+def _closed_on(row: Mapping[str, Any]) -> str:
+    """The day an item closed: its cancellation, else its last update."""
+
+    stamp = str(row.get("cancelled_at") or row.get("updated_at") or "").strip()
+    return stamp[:10]
+
+
+def closed_line(row: Mapping[str, Any]) -> dict[str, str]:
+    """One finished or cancelled item as one short line."""
+
+    return {
+        "key": str(row.get("item_key") or ""),
+        "title": str(row.get("title") or ""),
+        "status": str(row.get("status") or ""),
+        "closed_on": _closed_on(row),
+    }
+
+
 def plan_export_package(index: Mapping[str, Any]) -> dict[str, Any]:
-    """Build the complete, integrity-addressed Git import package."""
+    """The compact Git copy: full rows for current work, one line per closed item."""
+
+    rows = sorted(_rows(index), key=lambda row: int(row.get("ordinal") or 0))
+    generation_token = str(index.get("generation_token") or "").strip()
+    if not generation_token:
+        raise DomainError(
+            "plan_sync_generation_missing",
+            "The PostgreSQL plan index did not identify its generation.",
+            status=409,
+        )
+    current = [row for row in rows if not _is_closed(row)]
+    closed = [closed_line(row) for row in rows if _is_closed(row)]
+    package = {
+        "schema": SUMMARY_SCHEMA,
+        "project_ref": str(index.get("project_ref") or ""),
+        "plan_revision": int(index.get("plan_revision") or 0),
+        "generation_token": generation_token,
+        "item_count": len(rows),
+        "current_count": len(current),
+        "closed_count": len(closed),
+        "items": current,
+        "closed": closed,
+    }
+    package["package_content_hash"] = content_hash(package)
+    return package
+
+
+def dump_export_package(package: Mapping[str, Any]) -> str:
+    """The package as JSON with each closed item on its own single line."""
+
+    body = {key: value for key, value in package.items() if key != "closed"}
+    text = json.dumps(body, indent=2, sort_keys=True)
+    if "closed" not in package:
+        return text + "\n"
+    lines = [
+        "    " + json.dumps(entry, sort_keys=True, ensure_ascii=False)
+        for entry in package.get("closed") or []
+    ]
+    closed = '"closed": []' if not lines else '"closed": [\n' + ",\n".join(lines) + "\n  ]"
+    return text[:-2] + ",\n  " + closed + "\n}\n"
+
+
+def plan_full_package(index: Mapping[str, Any]) -> dict[str, Any]:
+    """The complete, integrity-addressed package every row carries (plan-index v2).
+
+    No longer written to Git (W369). Kept because a v2 export already in a
+    repository can still be read and imported.
+    """
 
     rows = sorted(_rows(index), key=lambda row: int(row.get("ordinal") or 0))
     generation_token = str(index.get("generation_token") or "").strip()
@@ -50,7 +129,7 @@ def plan_export_package(index: Mapping[str, Any]) -> dict[str, Any]:
             status=409,
         )
     package = {
-        "schema": str(index.get("schema") or ""),
+        "schema": str(index.get("schema") or FULL_SCHEMA),
         "project_ref": str(index.get("project_ref") or ""),
         "plan_revision": int(index.get("plan_revision") or 0),
         "generation_token": generation_token,
@@ -61,23 +140,33 @@ def plan_export_package(index: Mapping[str, Any]) -> dict[str, Any]:
     return package
 
 
-def render_plan_document(index: Mapping[str, Any]) -> str:
+def render_plan_document(index: Mapping[str, Any], *, compact: bool = False) -> str:
     """The plan as reviewable text, in plan order.
 
     A table rather than prose because the point is diffability: a status change
     should be one changed line, not a reflowed paragraph. Each row links to the
     complete node document, where canonical dependency and attachment URIs stay
     reviewable without querying Postgres.
+
+    ``compact`` (the Git copy since W369) keeps the table for current work and
+    lists each finished or cancelled item on one line below it.
     """
 
     rows = sorted(_rows(index), key=lambda row: int(row.get("ordinal") or 0))
     by_ref = {str(row.get("item_ref") or ""): str(row.get("item_key") or "") for row in rows}
+    table_rows = [row for row in rows if not _is_closed(row)] if compact else rows
+    closed_rows = [row for row in rows if _is_closed(row)] if compact else []
+    count = (
+        f"Items: {len(rows)} ({len(table_rows)} current, {len(closed_rows)} finished or cancelled)"
+        if compact
+        else f"Items: {len(rows)}"
+    )
     lines = [
         "# Plan index",
         "",
         f"Project: `{index.get('project_ref') or ''}`",
         f"Plan revision: {int(index.get('plan_revision') or 0)}",
-        f"Items: {len(rows)}",
+        count,
         "",
         "Each node file carries its searchable source, summary, dependencies, "
         "attachment references, and derived-state hashes.",
@@ -85,7 +174,7 @@ def render_plan_document(index: Mapping[str, Any]) -> str:
         "| # | Key | Status | Assignee | Title | Node | Depends on |",
         "| --- | --- | --- | --- | --- | --- | --- |",
     ]
-    for row in rows:
+    for row in table_rows:
         path = node_document_path(row)
         depends = ", ".join(
             by_ref.get(str(ref), str(ref)) for ref in (row.get("depends_on") or [])
@@ -102,6 +191,17 @@ def render_plan_document(index: Mapping[str, Any]) -> str:
                 depends=depends or "-",
             )
         )
+    if closed_rows:
+        lines.extend([
+            "",
+            "## Finished and cancelled",
+            "",
+            "One line each. The board keeps each item's full record.",
+            "",
+        ])
+        for row in closed_rows:
+            line = closed_line(row)
+            lines.append(f"- {line['key']} {line['status']} {line['closed_on']}: {line['title']}")
     return "\n".join(lines) + "\n"
 
 
@@ -204,7 +304,16 @@ def read_plan_export(
             details={"path": str(data_path)},
         )
     package = dict(value)
-    if str(package.get("schema") or "") != "problem-board.plan-index.v2":
+    if str(package.get("schema") or "") == SUMMARY_SCHEMA:
+        raise DomainError(
+            "plan_import_summary_export",
+            "This Git copy of the plan is a compact summary: finished and cancelled items "
+            "are one line each, so it cannot restore a plan. Move a project between boards "
+            "with the project export (W369 step 2).",
+            status=409,
+            details={"path": str(data_path)},
+        )
+    if str(package.get("schema") or "") != FULL_SCHEMA:
         raise DomainError(
             "plan_import_schema_invalid",
             "The plan export does not use the supported plan-index schema.",
@@ -484,6 +593,10 @@ def _differences(
     """
 
     before = {str(row.get("item_key") or ""): row for row in _rows(previous)}
+    # A compact copy lists closed items as one line each, with no hashes.
+    for line in previous.get("closed") or []:
+        if isinstance(line, Mapping) and str(line.get("key") or ""):
+            before.setdefault(str(line["key"]), {"status": line.get("status"), "closed_line": True})
     after = {str(row.get("item_key") or ""): row for row in _rows(current)}
     added = sorted(set(after) - set(before))
     removed = sorted(set(before) - set(after))
@@ -494,6 +607,9 @@ def _differences(
         now = str(after[key].get("status") or "")
         if was != now:
             changes.append(f"{key} {was} to {now}")
+        if before[key].get("closed_line"):
+            # No content hash was kept for a closed item: only its status is compared.
+            continue
         before_hash = str(
             before[key].get("source_content_hash")
             or before[key].get("search_content_hash")
@@ -765,11 +881,8 @@ def sync_plan(
     )
     expected_nodes: set[str] = set()
     written_files = [PLAN_DOCUMENT, PLAN_DATA]
-    atomic_write_text(journal_home / PLAN_DOCUMENT, render_plan_document(index))
-    atomic_write_text(
-        journal_home / PLAN_DATA,
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-    )
+    atomic_write_text(journal_home / PLAN_DOCUMENT, render_plan_document(index, compact=True))
+    atomic_write_text(journal_home / PLAN_DATA, dump_export_package(payload))
     for row in rows:
         relative = node_document_path(row)
         expected_nodes.add(relative)
@@ -847,6 +960,12 @@ def sync_plan(
 
 
 __all__ = [
+    "CLOSED_STATUSES",
+    "FULL_SCHEMA",
+    "SUMMARY_SCHEMA",
+    "closed_line",
+    "dump_export_package",
+    "plan_full_package",
     "PLAN_DATA",
     "PLAN_DOCUMENT",
     "PLAN_NODE_ROOT",
