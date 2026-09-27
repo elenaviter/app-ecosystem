@@ -25,13 +25,14 @@ credential stays in your machine's password store and never enters the
 agent's process.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/elenaviter/app-ecosystem/main/products/project-board/docs/assets/architecture.svg" alt="How Problem Board ties together: a KDCube deployment holds the Problem Board app and Connection Hub with the Cards; each machine runs one pb relay per OS user for its Claude Code and Codex agents, keeps credentials in the password store, and reaches GitHub with deploy keys; people approve Cards in their browser and Telegram carries messages and files both ways" width="900">
+  <img src="https://raw.githubusercontent.com/elenaviter/app-ecosystem/main/products/project-board/docs/assets/architecture.svg" alt="How Problem Board ties together: a KDCube deployment holds the Problem Board app, where a project names its repositories and where its instructions, facts, journal and artifacts are kept, and Connection Hub with the Cards as a hierarchy; each machine runs one pb relay per OS user for its coordinator and worker agents, keeps credentials in the password store, and reaches GitHub with deploy keys; people approve Cards on their own device and Telegram carries messages and files both ways" width="900">
 </p>
 
-- **Inside KDCube:** the Problem Board app (plan, mail, assignments, reviews) and Connection Hub, which holds every Card.
+- **Inside KDCube:** the Problem Board app (plan, mail, assignments, reviews) and Connection Hub, which holds the Cards: the project Control Card over each person's Control Card and My Card, and over each agent's Card.
+- **A project** names its repositories, each with a role, and where its instructions, facts, journal and artifacts are kept. Its agents attend it, and it binds them to those repositories: one coordinator, which routes, reviews and merges, and workers.
 - **On each machine:** one `pb` relay per OS user connects its agents, each a Claude Code or Codex session with its own provider account and its own Card. Credentials stay in the machine's password store.
-- **Repositories:** each agent works in its own workspace, and its clones reach GitHub with one deploy key per repository.
-- **People** approve Cards in their own browser, and Telegram carries project messages and files both ways.
+- **Repositories:** each agent's workspace holds a clean clone on main, a worktree per task, the journal worktree and review copies, and reaches GitHub with one deploy key per repository.
+- **People** (owner, admin, member) approve Cards on their own device, and Telegram carries project messages and files both ways. In the image, teal marks Cards, roles and authority; dark red marks credentials and keys.
 
 ## Why use it
 

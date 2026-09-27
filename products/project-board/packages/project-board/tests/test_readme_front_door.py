@@ -137,3 +137,12 @@ def test_the_architecture_diagram_is_shipped_and_shown_by_an_absolute_url() -> N
     assert 3 <= sum(1 for line in legend.splitlines() if line.startswith("- **")) <= 5
     for private in ("dev-main", "spark1", "elenaviter@", "ngrok", "quickstart"):
         assert private not in svg, private
+    # Operator review, 2026-09-27: the project, the Card hierarchy, plain words
+    # for the workspace, and two accents with a legend: teal for Cards and
+    # authority, dark red for credentials and keys.
+    for label in ("A project", "project Control Card", "a person's Control Card", "that person's My Card",
+                  "each agent's Card", "coordinator", "worker", "owner", "admin", "member", "LEGEND"):
+        assert f">{label}<" in svg, label
+    assert "a worktree per task" in svg and "a review copy at the exact commit" in svg
+    assert 'fill="#06968C"' in svg or 'stroke="#06968C"' in svg
+    assert 'stroke="#B45438"' in svg
