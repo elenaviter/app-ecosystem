@@ -120,3 +120,20 @@ def test_it_says_what_pip_installs_and_what_the_board_needs() -> None:
                   "KDCube deployment with Connection Hub"):
         assert piece in part, piece
     assert "No KDCube package is installed" in part
+
+
+def test_the_architecture_diagram_is_shipped_and_shown_by_an_absolute_url() -> None:
+    """Operator, 2026-09-27: one SVG showing how everything ties together (W361)."""
+
+    diagram = PACKAGE.parents[1] / "docs" / "assets" / "architecture.svg"
+    svg = diagram.read_text(encoding="utf-8")
+    assert svg.startswith("<svg") and "<title" in svg and "<desc" in svg
+    assert '<rect width="1100"' in svg, "an explicit background, readable on light and dark pages"
+    for label in ("Problem Board", "Connection Hub", "pb relay", "native password store", "GitHub", "Telegram"):
+        assert f">{label}<" in svg, f"{label} is text, not a path"
+    raw = "https://raw.githubusercontent.com/elenaviter/app-ecosystem/main/products/project-board/docs/assets/architecture.svg"
+    assert f'<img src="{raw}"' in README, "PyPI renders only an absolute image URL"
+    legend = README[README.index(raw): README.index("## Why use it")]
+    assert 3 <= sum(1 for line in legend.splitlines() if line.startswith("- **")) <= 5
+    for private in ("dev-main", "spark1", "elenaviter@", "ngrok", "quickstart"):
+        assert private not in svg, private

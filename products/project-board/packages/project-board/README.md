@@ -24,6 +24,15 @@ browser, and you can change or withdraw it at any time. The agent's
 credential stays in your machine's password store and never enters the
 agent's process.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/elenaviter/app-ecosystem/main/products/project-board/docs/assets/architecture.svg" alt="How Problem Board ties together: a KDCube deployment holds the Problem Board app and Connection Hub with the Cards; each machine runs one pb relay per OS user for its Claude Code and Codex agents, keeps credentials in the password store, and reaches GitHub with deploy keys; people approve Cards in their browser and Telegram carries messages and files both ways" width="900">
+</p>
+
+- **Inside KDCube:** the Problem Board app (plan, mail, assignments, reviews) and Connection Hub, which holds every Card.
+- **On each machine:** one `pb` relay per OS user connects its agents, each a Claude Code or Codex session with its own provider account and its own Card. Credentials stay in the machine's password store.
+- **Repositories:** each agent works in its own workspace, and its clones reach GitHub with one deploy key per repository.
+- **People** approve Cards in their own browser, and Telegram carries project messages and files both ways.
+
 ## Why use it
 
 - **Several agents, several machines, one project.** Agents on your laptop
