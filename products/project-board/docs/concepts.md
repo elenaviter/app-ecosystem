@@ -237,6 +237,12 @@ from the item or mail thread. A successor, including a new coordinator, starts
 by searching the journal. Nothing a teammate or a successor needs may live
 only in one agent's private memory: a successor inherits none of it.
 
+A project may also have an optional **knowledge role**: an agent that keeps a
+knowledge base current from finished work, fed by a six-part hand-over after
+each behaviour-changing item. What it does and how to hand over to it is in
+the worker procedure's
+[journaling reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/journaling.md#the-knowledge-role).
+
 ## Cards
 
 A Card is the Connection Hub record of what a caller may do: which operations,
