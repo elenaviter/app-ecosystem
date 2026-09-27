@@ -977,7 +977,7 @@ async def test_target_cannot_update_project_held_card_through_generic_endpoint(
 
 
 @pytest.mark.asyncio
-async def test_save_keeps_a_changed_selected_descriptor_suspended_until_accepted(tmp_path):
+async def test_save_keeps_a_changed_selected_descriptor_for_review_until_accepted(tmp_path):
     h = _Harness(tmp_path)
     created = await h.service.create_access(
         USER, label="lg-react", resource_grants={TASKS: ["tasks:use"]},
@@ -992,7 +992,10 @@ async def test_save_keeps_a_changed_selected_descriptor_suspended_until_accepted
     drift = item["catalog_drift"]
     assert drift["status"] == "changed"
     assert drift["resources"][TASKS]["changed_operations"] == ["delete"]
-    assert drift["changed"]["outer_operations"][0]["effect"] == "suspended_until_accepted"
+    # A catalog row: the change stays in effect and waits for review (the call
+    # never checks the accepted digest; operator, 2026-09-27).
+    assert drift["changed"]["outer_operations"][0]["effect"] == "in_effect_review"
+    assert drift["resources"][TASKS]["changed_effect"] == "in_effect_review"
 
     # A rename does not accept the change.
     renamed = await h.service.update_access(

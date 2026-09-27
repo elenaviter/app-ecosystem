@@ -226,7 +226,8 @@ export interface UpdateDelegatedAccessArgs {
   expectedCardRevision?: number;
   expectedCatalogVersion?: string;
   /** Per resource, the selected operations whose CHANGED descriptor the
-   *  grantor reviewed and accepts with this save. Others stay suspended. */
+   *  grantor reviewed and accepts with this save. Others stay as they were:
+   *  suspended on a remote MCP connector, in effect for review on a catalog row. */
   acceptedOperations?: Record<string, string[]>;
   /** Credentialless Cards use these ordinary Card fields. They are omitted
    *  for credential-bearing Cards, preserving their current values. */
