@@ -3,7 +3,7 @@ id: project-board.worker-reference.coordinator
 title: Accept, Route, Reload, Refresh
 summary: The coordinator's checklist for review decisions, capacity-aware routing, teammate setup, shared project knowledge, and runtime actions, placed where each act happens so the rule is present when it is applied.
 tags: [procedure, problem-board, coordinator, review, routing, runtime]
-keywords: [what the coordinator is for, merge, stacked change request, retarget base, tested merged tree, HEAD^{tree}, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, integrate onto the ref, runtime profile, receipt names the commit, verify the artifact, what loaded]
+keywords: [quota thresholds, paused by choice, resume plan, wake after reset, what the coordinator is for, merge, stacked change request, retarget base, tested merged tree, HEAD^{tree}, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, integrate onto the ref, runtime profile, receipt names the commit, verify the artifact, what loaded]
 see_also:
   - runtime-actions.md
   - test-window.md
@@ -265,6 +265,25 @@ so the operator still performs the return.
 On a deployment where those operations are not live, reserve enough budget in
 the current coordinator to carry routing decisions and open coordination
 threads through the next runtime upgrade.
+
+### Thresholds, a visible pause, and waking after the reset
+
+The coordinator reads every pool's usage at each work boundary, before it starts a review, a merge or a routing decision: `pb worker list` for this host, `pb worker context` for the team. Its own pool is included. A coordinator that shares an account with its workers spends the same pool it is guarding. The operator ruled this on 2026-09-26, after a shared pool reached 95% unnoticed.
+
+| 5-hour window used | What happens in that pool |
+| --- | --- |
+| 80% | No new large tasks. What is in hand is finished and committed. |
+| 90% | Every agent in the pool commits and pushes, writes a one-line progress note on its item, and pauses at its next safe boundary. The coordinator keeps about 5% for mail and settlement. |
+
+Before a pause, the coordinator:
+1. writes the resume plan: who resumes what, from which note, and the reset time;
+2. checks that every session in the pool has its wake: a Claude Code watch with its guard prompt, or a Codex relay subscription. The session then wakes after the reset without anyone prompting it.
+
+After the reset, it reads usage again before it resumes, then resumes by the plan.
+
+**A paused agent says so on its card.** An agent that consciously decides not to work, because of quota, waiting for a person, or a block, sets `pb worker info "Paused by choice: <reason>, resumes <time>"` and clears it with `pb worker info --clear` when it resumes. The coordinator checks that every paused agent shows the line.
+
+Weekly caps the operator sets per pool stay in force, and they live on the facts page. An agent out of quota gets no assignment.
 
 ## Set a teammate up to work
 
