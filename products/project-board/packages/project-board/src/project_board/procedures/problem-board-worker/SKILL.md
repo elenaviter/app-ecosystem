@@ -52,6 +52,7 @@ Resume, step 5); between wakes, receive only at the work boundaries under Work,
 Report, And Journal. A quiet inbox is not evidence that the watch is running,
 and a `not_listening` label alone is not evidence of a delivery fault. Actual
 wakes and held leases still require prompt receive, handling, and settlement.
+When the person asks you to create a project and connect you and other agents to it ("I want to create the project and connect you and other agents to it, help me"), guide them through [create a project](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/create-a-project.md) from its step 0: they decide every value, you never invent one.
 
 ## Start Or Resume
 

@@ -30,6 +30,7 @@ OPERATIONAL_PROCEDURE_ROOT = PACKAGE_ROOT / "src" / "project_board" / "procedure
 OPERATIONAL_PROCEDURES = {
     "add-a-worker-host.md",
     "agent-worker.md",
+    "create-a-project.md",
     "first-time-setup.md",
     "install-update-rollback.md",
     "live-acceptance.md",
