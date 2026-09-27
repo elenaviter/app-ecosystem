@@ -41,8 +41,9 @@ cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude --add-dir "$HOME/.kdcube" --da
 Send the agent its first message: "Use the problem-board-worker skill. Enroll
 this session as a Problem Board worker with alias <alias>."
 
-It prints a `pb worker authorize ...` command. Prefer `--device`. Run it in
-your own terminal and approve the Card in the browser.
+It prints a `pb worker authorize <profile> --device` command. Run it in your
+own terminal: it prints a link and a short code. Open the link on your own
+device, signed in to your own account, enter the code, and approve the Card.
 
 If `pb worker listen` names a different `workspace` (the host sets another
 root, or the alias has characters other than letters, digits, `.`, `_`, `-`,

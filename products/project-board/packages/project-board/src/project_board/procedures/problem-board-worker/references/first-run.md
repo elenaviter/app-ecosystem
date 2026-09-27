@@ -172,20 +172,19 @@ work with.
 - `enroll_session`: ask what this worker should be called on the board (the
   alias is only a display name), then run `pb worker listen` with this
   session's identity. It needs no approval.
-- `authorize_profile`: the user signs in once in their browser to let this
-  worker act for them. Give them the exact `pb worker authorize <profile>`
-  from `next.command` to run in their own terminal, because the browser and
-  their credential store are theirs.
-  When that host has no browser, preserve the returned profile and append
-  `--device`; the user opens the printed verification URL on another device,
-  while the host CLI retains the private device code and writes the resulting
-  credential to its native store. Do not combine device mode with callback
-  flags.
-  Use `--device` as well whenever the person approving is not the one
-  signed in to the browser this host would open: a second person, or
-  another account. A pasted callback link does not work in another browser;
-  the device link and code do. Why: on 2026-09-26 a second person's
-  enrollment opened the first person's browser session.
+- `authorize_profile`: the person who approves this worker lets it act for
+  them. Give them the exact `pb worker authorize <profile> --device` from
+  `next.command` to run in their own terminal. It prints a link and a short
+  code: they open the link on their own device, signed in to their own
+  account, and enter the code, while the host CLI keeps the private device
+  code and writes the resulting credential to its native store. Always keep
+  `--device` (operator, 2026-09-26): the person approving owns the Card and
+  may not be the one signed in to the browser this host would open, a second
+  person or another account. A pasted callback link does not work in another
+  browser; the device link and code do. Why: on 2026-09-26 a second person's
+  enrollment opened the first person's browser session. Only when device
+  login fails, use the named callback fallback of add-a-worker-host step 11,
+  never combined with `--device`.
   After asking, confirm the approval yourself: `pb worker inspect` shows the
   Card active and `next` moved past `authorize_profile`. Check a few times at
   the person's pace, then continue on your own; do not wait to be told

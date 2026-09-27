@@ -4,7 +4,7 @@ On 2026-09-23 `worker.estimate` was declared in the descriptor and every Card
 issued before that refused it with `work_worker_operation_not_granted` and a
 list of what the Card holds. The operator chose re-approval over a grant
 fallback, so the refusal itself has to say which operation, which permission
-group, and the exact `pb worker authorize <profile> --replace-card`.
+group, and the exact `pb worker authorize <profile> --device --replace-card`.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def test_a_card_whose_list_predates_an_operation_it_holds_the_group_for_gets_the
     assert row["permission_group"] == ["work:relay"]
     assert "worker.heartbeat" in row["held_via"]
     assert "predates this operation" in row["why"]
-    assert row["fix"] == "pb worker authorize dev-main-worker --replace-card"
+    assert row["fix"] == "pb worker authorize dev-main-worker --device --replace-card"
 
 
 def test_the_service_named_group_wins_and_a_card_without_the_group_still_gets_the_command():
@@ -60,7 +60,7 @@ def test_the_service_named_group_wins_and_a_card_without_the_group_still_gets_th
         "work_worker_operation_not_granted",
         {"operation": "worker.estimate"},
         profile="",
-    )["fix"] == "pb worker authorize <profile> --replace-card"
+    )["fix"] == "pb worker authorize <profile> --device --replace-card"
 
 
 def test_other_errors_and_other_reasons_are_left_alone():
@@ -92,7 +92,7 @@ def test_the_cli_output_carries_the_fix_line_and_a_missing_channel_hides_nothing
     assert text.startswith("ERROR work_worker_operation_not_granted\n")
     assert "  operation = worker.estimate" in text
     assert "  permission_group[0] = work:relay" in text
-    assert "  fix = pb worker authorize dev-main-worker --replace-card" in text
+    assert "  fix = pb worker authorize dev-main-worker --device --replace-card" in text
     # Reading the profile is best effort: a session with no channel gets an
     # empty profile, and the refusal prints with the placeholder instead of
     # not printing.

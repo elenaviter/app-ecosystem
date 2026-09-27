@@ -172,10 +172,17 @@ def inspect_profile_metadata(
     }
 
 
+# Operator, 2026-09-26 (W367): every suggested authorize command carries
+# --device. The person who approves a Card owns it and may not be the one
+# signed in to a browser on this machine; the device link and code let the
+# right person approve on their own device, in their own account.
+DEVICE_FLAG = "--device"
+
+
 def authorization_command(
     profile_name: str, *, config_path: str | Path | None = None
 ) -> list[str]:
-    command = ["pb", "worker", "authorize", profile_name]
+    command = ["pb", "worker", "authorize", profile_name, DEVICE_FLAG]
     if config_path is not None:
         command.extend(["--config", str(Path(config_path).expanduser().resolve())])
     return command

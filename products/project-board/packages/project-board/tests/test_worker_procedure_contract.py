@@ -142,7 +142,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.27.1"
+    assert package["revision"] == "2026.09.27.2"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -177,8 +177,9 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
         assert state in first_run, state
     for step in ("`configure_target`", "`install_relay`", "`enroll_session`", "`authorize_profile`", "`attend_project`"):
         assert step in first_run, step
-    assert "preserve the returned profile and append `--device`" in first_run
-    assert "append `--device`, and use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`" in skill
+    # W367: the command always carries --device (operator, 2026-09-26).
+    assert "Give them the exact `pb worker authorize <profile> --device`" in first_run
+    assert "Use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`" in skill
     assert "missing identification does not block Card authorization" in skill
     # W305, 2026-09-24: the skill once said "never callback flags" while the
     # host procedure kept the tunnel as its only recovery from a failed device
@@ -1526,10 +1527,13 @@ def test_a_second_person_approves_with_the_device_flow_and_the_agent_detects_it(
     # 2026-09-26: a second person's enrollment opened the first person's browser,
     # and the agent waited to be told "done".
     skill = " ".join(_read("SKILL.md").split())
-    assert "or when the approving person signs in with a different browser or account" in skill
+    # W367: always --device, not only for a second person (operator, 2026-09-26).
+    assert "present its exact `pb worker authorize <profile> --device`" in skill
+    assert "never drop `--device`" in skill
     assert "confirm the approval yourself with `pb worker inspect`" in skill
     first_run = " ".join(_read("references/first-run.md").split())
-    assert "Use `--device` as well whenever the person approving is not the one signed in" in first_run
+    assert "Always keep `--device`" in first_run
+    assert "the person approving owns the Card and may not be the one signed in" in first_run
     assert "do not wait to be told \"done\"" in first_run
 
 
@@ -1557,7 +1561,7 @@ def test_the_official_command_starts_an_agent_session():
     assert "## 1. Create the agent's workspace, then start it" in enroll
     assert 'cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude --add-dir "$HOME/.kdcube" --dangerously-skip-permissions --disallowedTools AskUserQuestion' in enroll
     assert 'codex -C "$HOME/.kdcube/pb/workspaces/$ALIAS" --sandbox danger-full-access --ask-for-approval never --search' in enroll
-    assert "## 2. Enroll it to the pool" in enroll and "Prefer `--device`" in enroll
+    assert "## 2. Enroll it to the pool" in enroll and "`pb worker authorize <profile> --device`" in enroll
     assert "## 3. Connect it to your project" in enroll
     skill = " ".join(_read("SKILL.md").split())
     assert "enroll-an-agent.md" in skill

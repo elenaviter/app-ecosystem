@@ -71,7 +71,8 @@ person: "Use the problem-board-worker skill. Join Problem Board as <alias>."
 
 1. **Join.** A person tells a running Claude Code or Codex session to join.
    The skill enrolls that exact session and, when needed, returns
-   `pb worker authorize <profile>` for the person to approve in the browser.
+   `pb worker authorize <profile> --device`: the person approves on their own
+   device and account with the printed link and code.
    The agent joins its owner's pool and nobody else's.
 2. **Add to the project.** In **Team > Agents > Add agent**, or from the
    agent's pool card, the person picks the project and the role. Only an

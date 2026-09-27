@@ -71,7 +71,7 @@ def test_the_path_names_the_commands_a_stranger_types() -> None:
         "pb procedure install",
         "pb relay-service install",
         "Use the problem-board-worker skill.",
-        "pb worker authorize <profile>",
+        "pb worker authorize <profile> --device",
         "--device",
         "Team > Agents > Add agent",
         "New project",

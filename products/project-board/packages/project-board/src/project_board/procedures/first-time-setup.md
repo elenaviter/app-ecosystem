@@ -282,39 +282,41 @@ changed later from the board.
 ## 6. Authorize That Worker's Profile
 
 When `worker listen` reports pending authorization, it returns only the short
-user-terminal action for that enrolled profile:
-
-```bash
-pb worker authorize <profile>
-```
-
-The selected agent initiated the request. Run that command from a normal
-terminal and complete browser consent. The command resolves the host-scoped
-profile store, direct endpoint, and exact enrolled channel itself; do not copy
-an internal interpreter or state-root environment assignment. The user's
-native credential store, including macOS Keychain, keeps the token even when
-the coding-agent shell is sandboxed. All workers on this host and target share
-one metadata store, while each worker has its own profile and Card.
-The same command reconnects an existing profile to its recorded Card after
-credential loss; deliberate Card replacement is documented in the
-[operator procedure](operator.md).
-
-### Authorize A Headless Host
-
-A worker host without a browser uses OAuth device authorization. Run the same
-profile action with `--device` on that host:
+user-terminal action for that enrolled profile, always in device mode:
 
 ```bash
 pb worker authorize <profile> --device
 ```
 
-The command prints a public verification URL and user code. Open the URL on
-any browser-capable device, sign in, enter the code, and approve the same
-Connection Hub Card editor. The headless host opens no callback listener and
-needs no SSH tunnel. It polls at the server-provided interval and stores the
-resulting credential in its native credential store. The private device code
-and issued tokens are never printed or placed in the browser URL. Device mode
-cannot be combined with `--no-open` or `--callback-port`.
+The selected agent initiated the request. Run that command from a normal
+terminal. It prints a public verification URL and a short user code. The
+person who approves this agent opens the URL on **their own device, signed in
+to their own account**, enters the code, and approves the Connection Hub Card
+editor. That person owns the Card, and may not be whoever is signed in to a
+browser on this machine (operator, 2026-09-26): a shared or new machine, a
+second person, or another account. The device link and code reach the right
+person; a browser this machine opens may not.
+
+The command opens no callback listener and needs no SSH tunnel. It polls at
+the server-provided interval and stores the resulting credential in the
+user's native credential store, including macOS Keychain, even when the
+coding-agent shell is sandboxed. The private device code and issued tokens
+are never printed or placed in the browser URL. The command resolves the
+host-scoped profile store, direct endpoint, and exact enrolled channel
+itself; do not copy an internal interpreter or state-root environment
+assignment. All workers on this host and target share one metadata store,
+while each worker has its own profile and Card. The same command reconnects
+an existing profile to its recorded Card after credential loss; deliberate
+Card replacement is documented in the [operator procedure](operator.md).
+
+### Fallback: A Browser Callback
+
+Only when device login fails (an account or deployment that does not offer
+it), the agent names the callback fallback of
+[add a worker host](add-a-worker-host.md) step 11: the same profile action
+with `--no-open --callback-port <port>`, and the person opens the printed URL
+in their own browser. Device mode cannot be combined with `--no-open` or
+`--callback-port`.
 
 For a new registration, the Card title contains
 `<provider>:<alias>:<native-session-id>`. Its collapsed client metadata names the
@@ -493,8 +495,8 @@ Worker absent from host inspect
   -> that exact session has not completed worker listen
 
 Worker pending authorization
-  -> run its returned pb worker authorize <profile> in a normal terminal
-  -> on a host without a browser, preserve that profile and add --device
+  -> run its returned pb worker authorize <profile> --device in a normal
+     terminal; the approver enters the printed code on their own device
   -> one proved sibling profile is recovered without another consent
 
 Credential rejected after prior authorization

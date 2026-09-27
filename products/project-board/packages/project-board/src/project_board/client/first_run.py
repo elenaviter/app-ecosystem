@@ -223,7 +223,7 @@ def _next_step(state: str, *, config: str, relay: Mapping[str, Any], session: Ma
     ):
         return {
             "step": "authorize_profile",
-            "command": f"pb worker authorize {session.get('profile') or '<profile>'}",
+            "command": f"pb worker authorize {session.get('profile') or '<profile>'} --device",
             "approval": "user",
             "explain": "procedures/first-time-setup.md, section 6. Authorize That Worker's Profile",
         }

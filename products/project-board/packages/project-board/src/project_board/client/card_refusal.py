@@ -36,7 +36,7 @@ def replace_card_command(profile: str) -> str:
     """The one command that gives an existing Card a newly declared operation."""
 
     name = str(profile or "").strip() or PROFILE_PLACEHOLDER
-    return f"pb worker authorize {name} --replace-card"
+    return f"pb worker authorize {name} --device --replace-card"
 
 
 def _strings(value: Any) -> list[str]:

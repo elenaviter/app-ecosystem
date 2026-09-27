@@ -87,7 +87,8 @@ Use command evidence rather than translating every failure to "credential
 missing":
 
 - `pending_authorization`: present the exact authorize command returned by
-  `listen`; the user completes consent.
+  `listen`, `pb worker authorize <profile> --device`; the person who approves
+  opens its link on their own device and account and enters the code.
 - `credential_expired_or_invalid`: reauthorize the same profile after the user
   confirms; do not create a second worker.
 - metadata or authority mismatch: correlate the worker, profile, Card, resource,
