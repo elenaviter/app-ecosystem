@@ -914,7 +914,7 @@ def sync_plan(
         return PlanSyncResult(
             changed=False,
             committed="",
-            item_count=len(rows),
+            item_count=int(payload["item_count"]),
             plan_revision=int(index.get("plan_revision") or 0),
             added=(),
             removed=(),
@@ -924,7 +924,10 @@ def sync_plan(
             rewritten_reference_files=(),
         )
 
-    summary = f"plan: index at revision {int(index.get('plan_revision') or 0)}, {len(rows)} items"
+    summary = (
+        f"plan: index at revision {int(index.get('plan_revision') or 0)}, "
+        f"{payload['item_count']} items ({len(rows)} current, {payload['closed_count']} closed)"
+    )
     detail = []
     if added:
         detail.append("added " + ", ".join(added))
@@ -948,7 +951,7 @@ def sync_plan(
     return PlanSyncResult(
         changed=True,
         committed=committed,
-        item_count=len(rows),
+        item_count=int(payload["item_count"]),
         plan_revision=int(index.get("plan_revision") or 0),
         added=tuple(added),
         removed=tuple(removed),
