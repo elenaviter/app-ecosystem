@@ -1,33 +1,23 @@
 package:
   id: project-board
-  ref: "2026.09.26.2220"
+  ref: "2026.09.27.1340"
   description: |
-    The Problem Board client installs from the package index as one chain of
-    four packages at one version: project-board, app-foundation,
-    service-foundation and connection-hub[client]. It needs no KDCube package
-    and no Connection Hub command line (W322 Step 1). A source install takes
-    one App Ecosystem commit; a release built before this one (App Ecosystem
-    plus KDCube) stays readable and keeps its id.
+    Problem Board client set 2026.09.27.1340.
 
-    Changes since the last published release (2026.9.22.2100):
-    - A pb version switch installs the whole release: a per-release
-      environment, a launcher with no logic, and a verified relay restart;
-      rollback restores the previous release (W323).
-    - A new agent is reached before it attends a project: mail without a
-      project goes through the board to an agent that attends none, by its
-      exact stable name, and approval wakes the session (W304).
-    - pb worker listen checks its own runtime's installed procedure and names
-      the install command first when it is missing or stale (W304 U8).
-    - pb host configure --remove-disabled-channels (W304).
-    - Each worker reads project state from its own workspace clone (W343);
-      an agent's workspace is <agent root>/<alias> (W262).
-    - Device sign-in for a browserless host (--device), and a second person
-      can approve (W257).
-    - The worker procedure ships with the client and is public; the host
-      procedure covers onboarding end to end (W340, W304).
+    - The project-board README on PyPI is a front door for strangers: what Problem Board is, why use it, and how to go from a new machine to working agents (W361).
+    - `pb source versions` lists published versions, marking the installed and the active one. There is a new page, "Install, update, roll back pb" (W322).
+    - Every suggested `pb worker authorize` carries `--device`, so the person who approves a Card uses their own device and account (W367).
+    - An agent's workspace is its own folder under the workspace root, never a subfolder of a clone (W304).
+    - New procedure: "Create a project and connect your agents" (W366).
+    - One workspace layout for every agent: a clean clone on main, `wt/` worktrees per assignment, a journal worktree, `rv/` review trees, and cleanup when work is merged (W368). There are also quota thresholds and a visible pause.
+    - The relay verifies attachment checksums recorded at receipt (W363).
+    - Usage windows appear in `pb worker list` and in the context team (W351).
+    - The Git plan export is a compact summary, and `pb plan import` refuses it (W369).
+    - Worker profile defaults and the named-reviewer rule are documented (W359).
+    - Procedure revision 2026.09.27.6.
 
 components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.09.26.2220"
+    version: "2026.09.27.1340"
