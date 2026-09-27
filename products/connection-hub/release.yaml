@@ -1,14 +1,15 @@
 product:
   id: connection-hub
-  ref: "2026.09.27.2142"
+  ref: "2026.09.27.2230"
   description: |
-    Problem Board client set 2026.09.27.2142: a new machine is connected with the endpoint alone.
+    Problem Board client set 2026.09.27.2230: connecting a machine to a project is one command.
 
-    - `pb setup` reads the tenant and platform project from the endpoint, so the board's "Connect a machine" endpoint is the only address a person gives. A tenant or project given as well must agree, and a non-board endpoint is refused with the expected shape, both before anything is written (W304).
-    - "Connect a machine" is in the board's top bar and needs no project. README, first-run and `pb setup`'s endpoint hint say where to find it (W304).
-    - The worker's tmux step runs as copied after one `ALIAS=<name>@<machine>` line (W304).
-    - The optional knowledge role and its hand-over are public (W340).
-    - Procedure revision 2026.09.27.10.
+    - `pb worker connect-project` does part 2 of Connect a machine: for each repository on the project card it checks reach, then clones or fast-forwards it (never forced, never over uncommitted work). For a GitHub repository this machine cannot reach, it makes the machine's deploy key and prints what to add on GitHub. It sets the project's commit identity and reports the workspace. A local-path repository needs no key (W304).
+    - Each repository says whether this agent can open pull requests there (gh signed in with write access); without gh, the agent pushes and the coordinator opens the pull request (W304).
+    - ssh never prints "Pseudo-terminal will not be allocated" (W304).
+    - `pb procedure install` shows the old and new command for each setting it repoints (W304).
+    - On macOS, tmux is recommended, not required: at the machine a terminal tab is enough (W304).
+    - Procedure revision 2026.09.27.11.
   documentation: docs/connection-hub
 
 components:
@@ -20,16 +21,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.09.27.2142"
+    version: "2026.09.27.2230"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
   cli_package:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.09.27.2142"
+    version: "2026.09.27.2230"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.09.27.2142"
+  version: "2026.09.27.2230"
