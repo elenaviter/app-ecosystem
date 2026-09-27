@@ -23,6 +23,7 @@ keywords:
   - identity rules
 see_also:
   - ./README.md
+  - ./operations-and-rules.md
   - ./cards.md
   - ./review.md
   - ./architecture.md
@@ -116,7 +117,9 @@ rules, or one of these rules (operator ruling, 2026-09-22).
 
 The board states them once, in `services/identity_rules.py`, with the ids
 below; a gate that applies one names it (in its docstring, and as
-`identity_rule` in a refusal's details). This table is the same list.
+`identity_rule` in a refusal's details). This table is the same list. What decides
+each operation for a person, and each operation's business rules, is the
+generated page [Operations and rules](operations-and-rules.md).
 
 | Rule id | Rule | Refusal | Who can act instead |
 | --- | --- | --- | --- |
