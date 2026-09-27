@@ -41,6 +41,7 @@
   <text x="348" y="236" font-size="8" letter-spacing="0.12em" font-weight="700" fill="#8A6A1C" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">STORAGE</text>
   <g font-size="9.5" font-weight="600" text-anchor="middle">
     <rect x="348" y="244" width="78" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="387" y="256.5" fill="#8A6A1C">PostgreSQL</text>
+    <rect x="432" y="244" width="206" height="18" rx="4" fill="#FFFFFF" stroke="#D9A945" stroke-opacity="0.55"/><text x="535" y="256.5" fill="#8A6A1C">files · KDCube conversation storage</text>
   </g>
 
   <!-- Connection Hub: the Cards -->
@@ -135,7 +136,7 @@
   <text x="690" y="630" font-size="9.5" font-style="italic" fill="#8794A0">its own deploy keys</text>
 
   <!-- GitHub -->
-  <rect x="920" y="444" width="150" height="122" rx="10" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/>
+  <rect x="920" y="444" width="150" height="180" rx="10" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.35"/>
   <circle cx="938" cy="466" r="3.4" fill="none" stroke="#465864"/><circle cx="938" cy="466" r="1.2" fill="#465864"/>
   <text x="950" y="470" font-size="12" font-weight="700" fill="#3A4A56">GitHub</text>
   <text x="936" y="488" font-size="9.5" font-style="italic" fill="#8794A0">the repositories on</text>
@@ -143,6 +144,8 @@
   <g font-size="9.5" font-weight="600" text-anchor="middle">
     <rect x="936" y="516" width="118" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="995" y="528.5" fill="#465864">deploy key per repo</text>
     <rect x="936" y="540" width="118" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/><text x="995" y="552.5" fill="#465864">added by an admin</text>
+    <rect x="936" y="572" width="118" height="18" rx="4" fill="#FFF8E9" stroke="#D9A945" stroke-opacity="0.55"/><text x="995" y="584.5" fill="#8A6A1C">journal home</text>
+    <rect x="936" y="596" width="118" height="18" rx="4" fill="#FFF8E9" stroke="#D9A945" stroke-opacity="0.55"/><text x="995" y="608.5" fill="#8A6A1C">pages · journal</text>
   </g>
 
   <!-- the links -->
@@ -155,7 +158,7 @@
     <path d="M197 444 V 426"/>
     <path d="M482 444 V 426"/>
     <path d="M780 444 V 426"/>
-    <path d="M620 636 C 640 676 700 680 780 680 H 960 C 988 680 995 660 995 576"/>
+    <path d="M620 636 C 640 676 700 680 780 680 H 960 C 988 680 995 664 995 634"/>
     <path d="M884 612 C 900 612 906 590 911 574"/>
   </g>
   <g fill="#B08428" fill-opacity="0.8">
@@ -167,7 +170,7 @@
     <path d="M197 417l-4 9h8z"/>
     <path d="M482 417l-4 9h8z"/>
     <path d="M780 417l-4 9h8z"/>
-    <path d="M995 567l-4 9h8z"/>
+    <path d="M995 625l-4 9h8z"/>
     <path d="M914 565l2 9 -8 -3z"/>
   </g>
   <g font-size="7.5" letter-spacing="0.1em" fill="#8794A0" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">
