@@ -129,8 +129,13 @@ def _item(
     admin: bool = False,
     without: str = "",
     detail: str = "",
+    recommended: bool = False,
 ) -> dict[str, Any]:
     item: dict[str, Any] = {"name": name, "found": bool(found), "why": why}
+    if recommended:
+        # Worth having, never blocking: a missing one is named under
+        # ``recommended``, not ``missing`` (W304 findings 23 and 24).
+        item["recommended"] = True
     if detail:
         item["detail"] = detail
     if not found:
@@ -175,11 +180,38 @@ def _git(probes: Probes, family: str, *, mac: bool) -> dict[str, Any]:
 
 
 def _tmux(probes: Probes, family: str, *, mac: bool) -> dict[str, Any]:
+    if mac:
+        # Operator, 2026-09-27 (W304 finding 24): on a Mac the person is
+        # usually at the machine, and a terminal tab is enough.
+        return _item(
+            "tmux", bool(probes.which("tmux")),
+            why=(
+                "Over ssh, each worker agent runs in its own tmux session, so it keeps running when the "
+                "connection drops. At the machine, a terminal tab is enough."
+            ),
+            fix="brew install tmux",
+            without="Agents run only while their terminal stays open.",
+            recommended=True,
+        )
     return _item(
         "tmux", bool(probes.which("tmux")),
         why="Each worker agent runs in its own tmux session, so it keeps running after you close ssh or the terminal.",
-        fix="brew install tmux" if mac else _package_line(family, "tmux"), admin=not mac,
+        fix=_package_line(family, "tmux"), admin=True,
         without="Agents run only while their terminal stays open.",
+    )
+
+
+def _gh(probes: Probes, family: str, *, mac: bool) -> dict[str, Any]:
+    # W304 finding 23: deploy keys push branches; pull requests and review verdicts need gh.
+    return _item(
+        "gh", bool(probes.which("gh")),
+        why=(
+            "Agents open their pull requests and post review verdicts with gh, signed in with the GitHub "
+            "identity the operator chose (add-a-worker-host step 7)."
+        ),
+        fix="brew install gh" if mac else _package_line(family, "gh"), admin=not mac,
+        without="Agents push their branches, and the coordinator opens their pull requests.",
+        recommended=True,
     )
 
 
@@ -236,12 +268,19 @@ def check_prerequisites(probes: Probes | None = None) -> dict[str, Any]:
     mac = system == "Darwin"
     family = "" if mac else _linux_family(probes.os_release())
     if mac:
-        checked = [_python(probes, family), _git(probes, family, mac=True), _tmux(probes, family, mac=True), _keyring(probes, family, mac=True)]
+        checked = [
+            _python(probes, family),
+            _git(probes, family, mac=True),
+            _tmux(probes, family, mac=True),
+            _gh(probes, family, mac=True),
+            _keyring(probes, family, mac=True),
+        ]
     elif system == "Linux":
         checked = [
             _python(probes, family),
             _git(probes, family, mac=False),
             _tmux(probes, family, mac=False),
+            _gh(probes, family, mac=False),
             _linger(probes),
             _systemd_user(probes),
             _keyring(probes, family, mac=False),
@@ -249,13 +288,14 @@ def check_prerequisites(probes: Probes | None = None) -> dict[str, Any]:
     else:
         return {"schema": SCHEMA, "os": system, "ok": False, "missing": [], "checked": [],
                 "note": f"{system} is not a supported worker host; use Linux or macOS."}
-    missing = [item["name"] for item in checked if not item["found"]]
+    missing = [item["name"] for item in checked if not item["found"] and not item.get("recommended")]
     return {
         "schema": SCHEMA,
         "os": "macos" if mac else "linux",
         "ok": not missing,
         "missing": missing,
-        "needs_admin": [item["name"] for item in checked if not item["found"] and item.get("needs_admin")],
+        "needs_admin": [item["name"] for item in checked if item["name"] in missing and item.get("needs_admin")],
+        "recommended": [item["name"] for item in checked if not item["found"] and item.get("recommended")],
         "checked": checked,
     }
 

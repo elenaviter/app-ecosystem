@@ -268,7 +268,10 @@ def build_workspace_report(
     resolve_host: HostResolver | None = None,
     identity: tuple[str, str] | None = None,
     set_identity: bool = False,
+    reasons: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
+    """The report. ``reasons`` gives an unreachable alias a better reason than the folder's (W304 finding 19)."""
+
     if resolve_host is None:
         cache: dict[str, str] = {}
 
@@ -283,6 +286,8 @@ def build_workspace_report(
         if not alias:
             continue
         row = inspect_repository(workspace, repository, verify=verify, timeout=timeout, git=git, resolve_host=resolve_host)
+        if row["state"] == "unreachable" and (reasons or {}).get(alias):
+            row["reason"] = str((reasons or {})[alias])[:MAX_REASON_CHARS]
         # W368: only a clone of its own (not unreachable) has an identity to read or set.
         if identity and all(identity) and row["state"] != "unreachable":
             row["identity"] = clone_identity(

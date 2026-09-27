@@ -3,7 +3,7 @@ id: project-board.skill-reference.collaboration
 title: Collaborate Across Agents And Machines
 summary: How several agents on several machines work on the same repositories without blocking or overwriting each other, exchange work through change requests, and integrate through the coordinator. Written to be run, observed and revised, one rehearsal round at a time.
 tags: [procedure, problem-board, collaboration, git, change-request, coordinator, multi-machine]
-keywords: [one tree per agent, work branch, change request, pull request, merge gate, integration ref, intent before edit, shared write, coordinator decides, rehearsal round, collision log]
+keywords: [host without gh, one tree per agent, work branch, change request, pull request, merge gate, integration ref, intent before edit, shared write, coordinator decides, rehearsal round, collision log]
 see_also:
   - ./coordinator.md
   - ./runtime-actions.md
@@ -186,7 +186,12 @@ exchanged as a change request against the integration ref.
 - **Change request:** open it against the integration ref (`main` today) when
   the branch is ready for review, and put its link on the item and in the
   report. On GitHub a change request is a pull request. The board speaks of a
-  change request so other hosting fits.
+  change request so other hosting fits. **A host without `gh`** (the
+  `pull_requests` of `pb worker connect-project` reads `missing`) pushes the
+  branch and mails the coordinator its branch, base and title. The
+  coordinator opens the pull request, says so in the reply with its link, and
+  the author reports it as its own (W304 finding 23). A review verdict that
+  such a host cannot post goes by board mail only.
 - **Review happens on the change request:** its diff, its base, its
   staleness. The change request is the thing reviewed, and the verdict also
   goes to the author by board mail (the head, the verdict, the link), in the

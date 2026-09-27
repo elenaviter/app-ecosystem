@@ -159,6 +159,18 @@ def _merge_event(groups: Any, *, command: str, args: tuple[str, ...], matcher: b
     return result, owned
 
 
+def _pb_hooks(groups: Any, args: tuple[str, ...]) -> list[tuple[str, Any]]:
+    """(command, its group's matcher) of every Problem Board hook with these arguments, in order."""
+
+    found = []
+    for group in groups if isinstance(groups, list) else []:
+        hooks = group.get("hooks") if isinstance(group, Mapping) else None
+        for hook in hooks if isinstance(hooks, list) else []:
+            if isinstance(hook, Mapping) and _is_pb_command(hook.get("command"), args):
+                found.append((str(hook.get("command")), group.get("matcher")))
+    return found
+
+
 def _private_backup(path: Path, content: bytes) -> Path:
     """A new ``settings.json.bak-<UTC time>`` readable by the user only; an earlier backup is never replaced."""
 
@@ -215,6 +227,10 @@ def merge_claude_code_settings(home: str | Path, *, pb: str | None = None) -> di
     settings = copy.deepcopy(original)
     added: list[str] = []
     updated: list[str] = []
+    # Each updated key with the command it ran and the one it runs now, so a
+    # repoint (a bootstrap pb to the installed one) is not read as a replaced
+    # user entry (W304 finding 22).
+    changes: list[dict[str, str]] = []
     kept: list[str] = []
     notes: list[str] = []
 
@@ -229,6 +245,7 @@ def merge_claude_code_settings(home: str | Path, *, pb: str | None = None) -> di
     elif _is_pb_command(current_command, STATUS_ARGS):
         settings["statusLine"] = {**current, "type": "command", "command": status_command}
         updated.append("statusLine")
+        changes.append({"key": "statusLine", "from": str(current_command), "to": status_command})
     else:
         kept.append("statusLine")
         notes.append(
@@ -243,13 +260,29 @@ def merge_claude_code_settings(home: str | Path, *, pb: str | None = None) -> di
         ("StopFailure", STOP_FAILURE_ARGS, True),
         ("Stop", STOP_ARGS, False),
     ):
-        merged, owned = _merge_event(hooks.get(event), command=_command(pb_path, args), args=args, matcher=matcher)
+        command = _command(pb_path, args)
+        before = _pb_hooks(hooks.get(event), args)
+        merged, owned = _merge_event(hooks.get(event), command=command, args=args, matcher=matcher)
         name = f"hooks.{event}"
         if merged == hooks.get(event):
             kept.append(name)
             continue
         hooks[event] = merged
         (updated if owned else added).append(name)
+        if owned:
+            change = {"key": name, "from": ", ".join(cmd for cmd, _ in before), "to": command}
+            if matcher:
+                old_matchers = sorted({str(found) for _, found in before})
+                new_matcher = next(
+                    str(group.get("matcher"))
+                    for group in merged
+                    if isinstance(group, Mapping)
+                    and any(isinstance(hook, Mapping) and hook.get("command") == command for hook in group.get("hooks") or [])
+                )
+                if old_matchers != [new_matcher]:
+                    change["matcher_from"] = " / ".join(old_matchers)
+                    change["matcher_to"] = new_matcher
+            changes.append(change)
 
     changed = settings != original
     backup = ""
@@ -263,6 +296,7 @@ def merge_claude_code_settings(home: str | Path, *, pb: str | None = None) -> di
         "changed": changed,
         "added": added,
         "updated": updated,
+        "changes": changes,
         "kept": kept,
         "backup": backup,
         "notes": notes,
