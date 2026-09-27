@@ -3,7 +3,7 @@ id: project-board.skill-reference.project-workspace
 title: Set Up A Project Workspace
 summary: How a worker sets up its workspace for a project it attends, from the project's record on its host, the journal repository included, each repository at its declared branch in a folder named by its alias, and why every project page and journal entry is read from that clone and nowhere else.
 tags: [procedure, problem-board, worker, workspace, repositories, attendance]
-keywords: [pb worker connect-project, needs_key, pull_requests, pb worker context, project_on_this_host, commit_identity, user.email, --set-identity, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
+keywords: [project_goal, project_facts, project_card, journal_state none, pb worker connect-project, needs_key, pull_requests, pb worker context, project_on_this_host, commit_identity, user.email, --set-identity, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
 see_also:
   - ./identity-and-authorization.md
   - ./collaboration.md
@@ -192,6 +192,36 @@ test failure. When the context has no environment-page ref, or a command needs a
 undeclared dependency, tell the coordinator exactly what is missing. The team
 adds the setup or correction to the project page, so the next worker starts
 from the prepared answer.
+
+## The project card: goal and facts
+
+The project card holds the project's goal and facts, the same for every
+agent, and each heartbeat brings the current ones to this host (W370).
+`pb worker context` returns them:
+
+- `project_card`: `known` when the board sends the card, `unknown` when the
+  board predates it.
+- `project_goal`: the goal, empty when the card has none.
+- `project_facts`: each fact as `label` and `value`, in the card's order.
+- `project_facts_revision`: advances on each edit of the card.
+
+Read them in this order:
+
+1. **Read `project_goal` and `project_facts` first.** They are the project's
+   own record, current on every heartbeat.
+2. **With a journal** (`journal_state` `available`): the facts page
+   (`project_facts_ref`) and the journal hold the longer record. Where they
+   differ from the card, the card wins, and you tell the coordinator about the
+   difference.
+3. **With no journal** (`journal_state: none`): the project keeps none, and
+   that is not an error. The card's goal and facts are all its record. Do not
+   ask for a journal, and run no journal search or journal write. Decisions
+   and findings go in the plan item's notes (`plan.note.append`).
+4. **With `project_card: unknown`**: the board predates the card. Read the
+   facts page as step 5 says.
+
+`journal_state: unavailable` still means a journal the project declares that
+this agent cannot read yet (step 5).
 
 ## 5. Project state comes from your clone, and nothing else
 
