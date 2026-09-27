@@ -1,18 +1,15 @@
 package:
   id: project-board
-  ref: "2026.09.27.2230"
+  ref: "2026.09.27.2247"
   description: |
-    Problem Board client set 2026.09.27.2230: connecting a machine to a project is one command.
+    Problem Board client set 2026.09.27.2247: a project needs no journal.
 
-    - `pb worker connect-project` does part 2 of Connect a machine: for each repository on the project card it checks reach, then clones or fast-forwards it (never forced, never over uncommitted work). For a GitHub repository this machine cannot reach, it makes the machine's deploy key and prints what to add on GitHub. It sets the project's commit identity and reports the workspace. A local-path repository needs no key (W304).
-    - Each repository says whether this agent can open pull requests there (gh signed in with write access); without gh, the agent pushes and the coordinator opens the pull request (W304).
-    - ssh never prints "Pseudo-terminal will not be allocated" (W304).
-    - `pb procedure install` shows the old and new command for each setting it repoints (W304).
-    - On macOS, tmux is recommended, not required: at the machine a terminal tab is enough (W304).
-    - Procedure revision 2026.09.27.11.
+    - `pb worker context` gives the project card: its goal and facts (`project_goal`, `project_facts`, `project_facts_revision`, `project_card`). A project that keeps no journal reads `journal_state: none`, which is not an error (W370).
+    - The skill reads the card's goal and facts first. Without a journal, decisions go in the plan item's notes (W370).
+    - Procedure revision 2026.09.27.12.
 
 components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.09.27.2230"
+    version: "2026.09.27.2247"
