@@ -125,19 +125,16 @@ def test_a_declared_journal_that_is_not_here_is_still_unavailable(tmp_path, monk
     assert context["journal_state"] == "unavailable" and context["journal_error_code"]
 
 
-def test_the_skill_reads_the_card_first_and_a_project_without_a_journal_quietly():
+def test_a_project_without_a_journal_is_quiet_in_the_skill():
+    """W370: journal_state none is not an error; the project files are the record (text now in "Project files")."""
+
     from project_board.client.procedures import source_package_path
 
-    skill = " ".join((source_package_path() / "SKILL.md").read_text(encoding="utf-8").split())
     workspace = " ".join((source_package_path() / "references" / "project-workspace.md").read_text(encoding="utf-8").split())
-    assert "`project_goal` and `project_facts` from `pb worker context` first" in skill
     for piece in (
-        "## The project card: goal and facts",
-        "**Read `project_goal` and `project_facts` first.**",
-        "the card wins, and you tell the coordinator about the difference",
-        "**With no journal** (`journal_state: none`)",
-        "run no journal search or journal write",
+        "With no journal (`journal_state: none`, not an error) the project files are the record",
+        "no journal search or journal write applies",
         "(`plan.note.append`)",
-        "**With `project_card: unknown`**",
+        "`project_card: unknown`",
     ):
         assert piece in workspace, piece

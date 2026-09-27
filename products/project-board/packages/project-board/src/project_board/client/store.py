@@ -8398,6 +8398,110 @@ class SharedFieldStore:
             )
             return True
 
+    PROJECT_FILE_PURPOSES = ("instructions", "facts", "environment")
+
+    def sync_project_files(
+        self,
+        project_id: str,
+        *,
+        files: Any,
+        revision: int,
+        goal: Any = None,
+        edit_allowed: bool | None = None,
+    ) -> bool:
+        """Keep where the project's files are, as the board last listed them (W370).
+
+        Operator, 2026-09-27: the files live in the project's repositories;
+        the card lists each as a repository alias and a path, three of them
+        with a purpose (instructions, facts, environment). The list is kept
+        by its revision, like the repositories; this worker's permission to
+        edit them (``project.files.edit`` on its Card) is kept beside it and
+        follows every answer.
+        """
+
+        clean_id = component(project_id, field="project_id")
+        path = self._project_dir(clean_id) / "files.json"
+        rows: list[dict[str, str]] = []
+        purposes: set[str] = set()
+        for raw in files if isinstance(files, list) else []:
+            if not isinstance(raw, Mapping):
+                continue
+            alias = str(raw.get("alias") or "").strip()
+            relative = str(raw.get("path") or "").strip()
+            if relative.startswith("./"):
+                relative = relative[2:]
+            parts = PurePosixPath(relative).parts
+            # A path stays inside its repository: relative, no "..".
+            if not alias or not relative or relative.startswith("/") or ".." in parts:
+                continue
+            purpose = str(raw.get("purpose") or "").strip()
+            if purpose not in self.PROJECT_FILE_PURPOSES or purpose in purposes:
+                purpose = ""
+            if purpose:
+                purposes.add(purpose)
+            rows.append(
+                {
+                    "purpose": purpose,
+                    "alias": alias,
+                    "path": relative,
+                    "description": " ".join(str(raw.get("description") or "").split())[:200],
+                }
+            )
+        with exclusive_lock(self._project_lock(clean_id)):
+            self.read_project(clean_id)
+            current = read_json(path, required=False) or {}
+            held = int(current.get("files_revision") or 0)
+            record = dict(current)
+            changed = False
+            if not current or int(revision) > held:
+                record.update(
+                    {
+                        "files": rows,
+                        "files_revision": int(revision),
+                        "goal": str(goal).strip()[: self.PROJECT_GOAL_MAX] if isinstance(goal, str) else "",
+                    }
+                )
+                changed = True
+            if edit_allowed is not None and record.get("edit_allowed") is not edit_allowed:
+                record["edit_allowed"] = edit_allowed
+                changed = True
+            if not changed:
+                return False
+            record["updated_at"] = utc_now()
+            atomic_write_json(path, record)
+            return True
+
+    def record_project_files_seen(
+        self, worker_name: str, project_id: str, *, files_revision: int, files: Mapping[str, str]
+    ) -> None:
+        """What this worker last read of the project's files: the list revision and each file's hash (W370)."""
+
+        clean_id = component(project_id, field="project_id")
+        path = self._project_dir(clean_id) / "files-seen" / f"{component(worker_name, field='worker_name')}.json"
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        atomic_write_json(path, {"files_revision": int(files_revision), "files": dict(files), "read_at": utc_now()})
+
+    def read_project_files_seen(self, worker_name: str, project_id: str) -> dict[str, Any]:
+        path = (
+            self._project_dir(component(project_id, field="project_id"))
+            / "files-seen"
+            / f"{component(worker_name, field='worker_name')}.json"
+        )
+        return read_json(path, required=False) or {}
+
+    def read_project_files(self, project_id: str) -> dict[str, Any]:
+        """The files list; ``known`` is False until a board that sends it answered (W370)."""
+
+        path = self._project_dir(component(project_id, field="project_id")) / "files.json"
+        record = read_json(path, required=False) or {}
+        return {
+            "known": bool(record),
+            "files": [dict(row) for row in record.get("files") or [] if isinstance(row, Mapping)],
+            "files_revision": int(record.get("files_revision") or 0),
+            "goal": str(record.get("goal") or ""),
+            "edit_allowed": bool(record.get("edit_allowed")),
+        }
+
     def read_project_card(self, project_id: str) -> dict[str, Any]:
         """The card's goal and facts; ``known`` is False until a board that sends them answered (W370)."""
 
