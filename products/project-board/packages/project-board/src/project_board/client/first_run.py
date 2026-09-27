@@ -164,7 +164,7 @@ def _next_step(state: str, *, config: str, relay: Mapping[str, Any], session: Ma
     if state == MACHINE_NOT_CONFIGURED and not config:
         return {
             "step": "configure_target",
-            "command": "pb setup --target-id <label> --endpoint <url> --tenant <tenant> --platform-project <project> --host-id <id> --host-label <label>",
+            "command": "pb setup --target-id <label> --endpoint <url> --host-id <id> --host-label <label> --allow-root <folder>",
             "approval": "user",
             "explain": IDENTIFIERS_DOC,
         }
