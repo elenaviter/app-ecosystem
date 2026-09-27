@@ -1,35 +1,20 @@
 product:
   id: connection-hub
-  ref: "2026.09.26.2220"
+  ref: "2026.09.27.1340"
   description: |
-    The caller side of Connection Hub is part of the connection-hub package,
-    behind the new `client` extra (W322): sign-in in a browser or by device
-    code, profiles, credentials in the operating system's native store, and an
-    authenticated MCP connection (`connection_hub.caller`). It contains no
-    KDCube code. Problem Board's pb depends on `connection-hub[client]` only;
-    stored caller state keeps its schema names, so existing profiles and
-    sessions stay readable. The `connection-hub` command line is a thin shell
-    over the same layer.
+    Problem Board client set 2026.09.27.1340.
 
-    Also since 2026.09.23.0158:
-    - Connection Hub is the only editor of what a Card holds; project admins
-      edit person Control Cards through the project path; the catalog declares
-      operation groups (H1).
-    - The all-services row for every approver, bounded by the roles their
-      account may delegate (H2).
-    - A project's Control Card is read, changed, attached and detached through
-      the project host; an agent's owner attaches it while linking and detaches
-      it only while unlinking (W260, W319).
-    - Device grants keep the approved authorization opaque in Redis; the
-      session records the platform sign-in and its email verdict.
-
-    The `test` extra carries the `client` extra's packages, so the tests run
-    from a clean `pip install -e .[test]`; publication at 2026.09.26.2205
-    failed on exactly that and was not published.
-
-    connection-hub-cli carries the same version in this snapshot but is not
-    published with it: its management commands still need a KDCube CLI release
-    that the package index does not have.
+    - The project-board README on PyPI is a front door for strangers: what Problem Board is, why use it, and how to go from a new machine to working agents (W361).
+    - `pb source versions` lists published versions, marking the installed and the active one. There is a new page, "Install, update, roll back pb" (W322).
+    - Every suggested `pb worker authorize` carries `--device`, so the person who approves a Card uses their own device and account (W367).
+    - An agent's workspace is its own folder under the workspace root, never a subfolder of a clone (W304).
+    - New procedure: "Create a project and connect your agents" (W366).
+    - One workspace layout for every agent: a clean clone on main, `wt/` worktrees per assignment, a journal worktree, `rv/` review trees, and cleanup when work is merged (W368). There are also quota thresholds and a visible pause.
+    - The relay verifies attachment checksums recorded at receipt (W363).
+    - Usage windows appear in `pb worker list` and in the context team (W351).
+    - The Git plan export is a compact summary, and `pb plan import` refuses it (W369).
+    - Worker profile defaults and the named-reviewer rule are documented (W359).
+    - Procedure revision 2026.09.27.6.
   documentation: docs/connection-hub
 
 components:
@@ -41,16 +26,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.09.26.2220"
+    version: "2026.09.27.1340"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
   cli_package:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.09.26.2220"
+    version: "2026.09.27.1340"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.09.26.2220"
+  version: "2026.09.27.1340"
