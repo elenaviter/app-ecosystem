@@ -253,6 +253,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="ALIAS=https://... remote URL for a mapped repository alias; the board links repo:ALIAS refs to it.",
     )
+    setup.add_argument(
+        "--no-verify-endpoint",
+        action="store_true",
+        help="Write the configuration without first checking that the endpoint answers as the board's MCP (offline setup).",
+    )
     setup.add_argument("--config")
     setup.add_argument("--state-root")
     setup.add_argument("--connection-hub-state-root")
@@ -1693,7 +1698,21 @@ def _status_command(args: Any) -> dict[str, Any]:
             # No session named and none detectable (Claude Code supplies its
             # id explicitly): report the machine, and say how to name one.
             identity = None
-    return first_run_status(config=getattr(args, "config", None), identity=identity)
+    from .prerequisites import check_prerequisites
+
+    return first_run_status(
+        config=getattr(args, "config", None), identity=identity, prerequisites=check_prerequisites()
+    )
+
+
+def _setup_endpoint_check(args: Any) -> dict[str, Any]:
+    from .endpoint_check import verify_board_endpoint
+    from .host_config import _endpoint
+
+    endpoint = _endpoint(args.endpoint)
+    if getattr(args, "no_verify_endpoint", False):
+        return {"state": "skipped", "endpoint": endpoint}
+    return verify_board_endpoint(endpoint)
 
 
 def _setup(args: Any) -> dict[str, Any]:
@@ -4802,6 +4821,7 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             home=args.home,
             force=args.force,
             allow_downgrade=bool(getattr(args, "allow_downgrade", False)),
+            installed_by=_installing_pb(),
         )
         result = {
             "procedure": str(source_path()),
@@ -4816,6 +4836,24 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             result["claude_code_settings"] = merge_claude_code_settings(_home_path(args.home), pb=hook_pb)
         return result
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")
+
+
+def _installing_pb() -> dict[str, Any] | None:
+    """The pb running this install, for the skill to find it (W304 finding 7); None when it has no path."""
+
+    from importlib.metadata import PackageNotFoundError, version
+
+    from .claude_settings import pb_command
+
+    try:
+        pb = pb_command()
+    except DomainError:
+        return None
+    try:
+        installed_version = version("project-board")
+    except PackageNotFoundError:
+        installed_version = ""
+    return {"pb": pb, "version": installed_version, "python": sys.executable, "installed_at": utc_now()}
 
 
 def _relay_service_command(args: Any) -> dict[str, Any]:
@@ -5319,7 +5357,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "relay":
             result = asyncio.run(_relay(args))
         elif args.command == "setup":
-            result = _setup(args)
+            # Before anything is written, the endpoint must answer as the board (W304).
+            endpoint_check = _setup_endpoint_check(args)
+            result = {**_setup(args), "endpoint_check": endpoint_check}
         elif args.command == "status":
             result = _status_command(args)
         elif args.command == "host":
