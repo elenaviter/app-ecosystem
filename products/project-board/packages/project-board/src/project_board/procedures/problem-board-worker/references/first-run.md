@@ -29,8 +29,17 @@ again after each step, because each step changes what the next one is.
 
 ## One Session Sets Up, Then Becomes The Worker
 
-The person starts this session as the worker, in `tmux`, from the words the
-README and the board's **Connect a machine** panel give them:
+The person starts this session as the worker from the words the README and
+the board's **Connect a machine** panel give them. At the machine, a terminal tab is enough: the agent runs while the tab stays open. Over ssh, use tmux, so the agent keeps running when the connection drops.
+
+At the machine: a terminal tab
+
+```bash
+ALIAS=<name>@<machine>
+mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && cd ~/.kdcube/pb/workspaces/$ALIAS && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion
+```
+
+Over ssh: in tmux
 
 ```bash
 ALIAS=<name>@<machine>
@@ -50,8 +59,7 @@ the board once enrolled. Running unattended, it still shows each command and
 waits for the person's yes in the conversation. The flags and a start script
 for a host are in add-a-worker-host step 9.
 
-**A session started without that line** (it asks for permissions, or runs
-outside `tmux`) does not enroll: it may help with setup, and then gives the
+**A session started without that line** (it asks for permissions) does not enroll: it may help with setup, and then gives the
 person that start line and sentence, word for word, and stops. Such a session
 asks once to "Read outside the working directories" when it opens this skill;
 tell the person to answer "Yes, keep allowing reads outside the working
@@ -184,7 +192,12 @@ This temporary bootstrap exists to run `pb setup` and the first
 `source use-release` after the target config exists. That source action builds
 and smokes the exact release plus its complete dependency graph, activates it,
 and installs `~/.local/bin/pb`. Verify the launcher and relay as described
-below; the temporary bootstrap may then be deleted. The team host path and
+below, and run the second `procedure install`, with `~/.local/bin/pb` (step 5
+of `machine_not_configured`), before the temporary bootstrap is deleted: until
+then the skill and the Claude Code status line and hooks still run the
+bootstrap's `pb`. That install names each entry it repoints, with the command
+it ran and the one it runs now (`claude_code_settings.changes`), so a repoint
+is not a user's entry replaced. Only then may the bootstrap be deleted. The team host path and
 this one meet at `pb setup`, which the `machine_not_configured` section covers.
 
 ## `machine_not_configured`
@@ -275,12 +288,68 @@ work with.
   The same step appears for a worker that used to work and whose credential
   the relay can no longer use (its channel is `pending_authorization`). Then
   the command reconnects the worker to the Card it already has.
-- `attend_project`: projects link workers on the board itself. Ask which
-  project they want this worker in, and tell them to add this worker to that
-  project in the board (the setup guide's section 8 walks it). Then run
+- `attend_project`: this machine is connected. Say so in the panel's words:
+  "When your agent says it is enrolled and attends no project, this machine is connected. Continue with Part 2 to connect it to a project."
+  Projects link workers on the board itself: ask which project they want
+  this worker in, and point them to Part 2 (next section). Then run
   `pb status` again.
 - `channel_disabled`: the operator turned this worker's channel off on this
   machine. Say so and ask them whether it should come back.
+
+## Part 2: Connect To A Project
+
+Part 2 of the board's **Connect a machine** panel, **Connect to a project**,
+runs per machine and project, and the person can reopen it from the project.
+Its steps, word for word as the panel shows them:
+
+1. **Pick the project**
+2. **Add the agent**
+3. **Say to your agent**: "Use the problem-board-worker skill. Set up this project's repositories on this machine."
+4. **Add this machine's keys on GitHub**: "For each repository this machine cannot reach yet, your agent shows a page, a title and a key. Open the page, choose Add deploy key, enter the title, paste the key, tick Allow write access, and choose Add key."
+5. **Tell your agent the keys are added**: "Your agent runs the setup again: it clones what it can now reach, and each repository shows as reachable here."
+
+When the person says step 3's sentence, or you are added to a project, run:
+
+```bash
+pb worker connect-project --format brief
+```
+
+It sets up every repository on the project card in `<workspace>/<alias>`,
+the journal repository included, and names one state each (`connected[]`):
+
+- `reachable`: this machine reaches it; it is cloned, or fetched and
+  fast-forwarded. A repository this machine already reaches gets no key.
+- `needs_key`: a GitHub repository this machine does not reach yet. The
+  command made this machine's deploy key and its `github-<alias>` SSH block,
+  as add-a-worker-host step 7 makes them, or reused the ones another agent of
+  this Linux user made. Show the person each entry of `grants[]` exactly:
+
+  ```text
+  Page: <page>
+  Title: <title>                  # "<host-id> agents"
+  Allow write access: yes
+  Key: <key>
+  ```
+
+  with the panel's step 4 sentence. When they say the keys are added, run the
+  command again.
+- `unreachable`: with its reason. A local repository (a folder path or
+  `file://`) whose folder is not on this machine reads "local to another
+  machine"; a key or SSH block that differs from what the command would make
+  is named with its path and never overwritten; a remote that is not on
+  GitHub needs the operator's access.
+- `left_unchanged`: the folder holds another repository, uncommitted work, or
+  a history that does not fast-forward. Nothing is forced; tell the
+  coordinator.
+
+It then sets the project's commit identity in each clone and reports the
+workspace, so the panel shows each repository as reachable, or "not reachable
+yet" with the reason ("needs this machine's deploy key"). Each GitHub
+repository also says whether you can open pull requests there
+(`pull_requests`): `ready`, `missing` with the reason, or `not_applicable`.
+When it is `missing`, ask the operator to sign in `gh` as add-a-worker-host
+step 7 says, and until then push your branch and ask the coordinator to open
+the pull request, with the branch, base and title.
 
 ## `session_reconnecting`
 

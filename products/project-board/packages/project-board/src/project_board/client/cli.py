@@ -76,6 +76,7 @@ from .card_refusal import with_actionable_refusal
 from .stop_guard import stop_guard_decision
 from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
+from .project_connect import Connector, Machine, connect_repositories, next_step
 from .workspace_report import build_workspace_report, commit_identity, report_signature
 from .limit_state import (
     limit_state_from_claude_statusline,
@@ -896,6 +897,26 @@ def build_parser() -> argparse.ArgumentParser:
             "alias and the project's commit email (W368); worktrees inherit them."
         ),
     )
+
+    command = worker_commands.add_parser(
+        "connect-project",
+        help=(
+            "Set up this machine for the project you attend (W304 finding 19): for each "
+            "repository on the project card, clone or fast-forward what this machine "
+            "reaches, make this machine's deploy key for a GitHub repository it does not "
+            "reach yet and print the grant the person adds on GitHub, then set the "
+            "commit identity and report the workspace. Run it again once the keys are added."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", default="", help="The project, when this agent attends several.")
+    command.add_argument(
+        "--ssh-dir",
+        default="",
+        help="Where this Linux user's deploy keys and SSH config are (default ~/.ssh).",
+    )
+    command.add_argument("--timeout-seconds", type=float, default=15.0, help="Per git call (default 15).")
 
     command = worker_commands.add_parser(
         "limit-state",
@@ -3504,8 +3525,8 @@ def _plan_command(args: Any) -> dict[str, Any]:
     raise ValueError(f"unsupported plan command: {args.plan_command}")
 
 
-def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any) -> dict[str, Any]:
-    """pb worker workspace-report: inspect the project workspace for the relay's next heartbeat (W337)."""
+def _project_workspace(args: Any, config: Any, field: Any, identity: Any) -> tuple[str, Any, dict[str, Any], str, str, str]:
+    """(project ref, parsed ref, repository record, workspace, agent alias, commit email) of an attended project."""
 
     project_ref = str(args.project_ref or "").strip() or _attended_project_ref(field, identity.worker_name)
     parsed = parse_ref(project_ref)
@@ -3534,6 +3555,15 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
     # W368: the project's commit identity, the agent's alias and the project's email.
     alias = str(getattr(recorded, "worker_alias", "") or "").strip()
     email = str(record.get("commit_identity_email") or "").strip()
+    return project_ref, parsed, record, workspace, alias, email
+
+
+def _workspace_report_command(
+    args: Any, config: Any, field: Any, identity: Any, *, reasons: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """pb worker workspace-report: inspect the project workspace for the relay's next heartbeat (W337)."""
+
+    project_ref, parsed, record, workspace, alias, email = _project_workspace(args, config, field, identity)
     if args.set_identity and not (alias and email):
         raise DomainError(
             "field_commit_identity_unset",
@@ -3551,6 +3581,7 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
         timeout=max(1.0, float(args.timeout_seconds)),
         identity=(alias, email) if alias and email else None,
         set_identity=bool(args.set_identity),
+        reasons=reasons,
     )
     signature = report_signature(report)
     entry = field.set_workspace_report(identity.worker_name, parsed.object_id, report, signature=signature)
@@ -3562,6 +3593,50 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
         **report,
         "on_board": entry.get("published_signature") == signature,
         "rule": "The relay carries this report on its next heartbeat; the project card shows it.",
+    }
+
+
+def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) -> dict[str, Any]:
+    """pb worker connect-project: Part 2 of connecting a machine, for one attended project (W304 finding 19)."""
+
+    project_ref, _parsed, record, workspace, alias, email = _project_workspace(args, config, field, identity)
+    Path(workspace).mkdir(parents=True, exist_ok=True)
+    ssh_dir = Path(args.ssh_dir).expanduser() if args.ssh_dir else Path.home() / ".ssh"
+    connector = Connector(
+        Machine(host_id=str(config.host_id), ssh_dir=ssh_dir),
+        Path(workspace),
+        timeout=max(1.0, float(args.timeout_seconds)),
+    )
+    rows = connect_repositories(connector, record.get("repositories") or [])
+    # The workspace report follows, the commit identity set in each clone when the project names one.
+    report_args = argparse.Namespace(**{**vars(args), "set_identity": bool(alias and email), "no_verify": False})
+    reported = _workspace_report_command(
+        report_args,
+        config,
+        field,
+        identity,
+        # Fixed texts only (never a path): the board shows them under "not reachable yet".
+        reasons={str(row["alias"]): str(row["report_reason"]) for row in rows if row.get("report_reason")},
+    )
+    return {
+        "worker": identity.worker_name,
+        "project_ref": project_ref,
+        "workspace": workspace,
+        "host_id": str(config.host_id),
+        "connected": [
+            {key: value for key, value in row.items() if key not in {"grant", "report_reason"}} for row in rows
+        ],
+        "grants": [row["grant"] for row in rows if row.get("grant")],
+        **({"commit_identity": {"name": alias, "email": email}} if alias and email else {}),
+        "workspace_report": {
+            "repositories": reported["repositories"],
+            "on_board": reported["on_board"],
+        },
+        "next": next_step(rows),
+        "rule": (
+            "Run it again after the person adds the keys: a repository this machine reaches is cloned, "
+            "or fetched and fast-forwarded, and is never forced. Revoking keys is add-a-worker-host step 7."
+        ),
     }
 
 
@@ -3914,6 +3989,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
         return _worker_info_command(args, field, identity)
     if args.worker_command == "workspace-report":
         return _workspace_report_command(args, config, field, identity)
+    if args.worker_command == "connect-project":
+        return _connect_project_command(args, config, field, identity)
     if args.worker_command == "busy-until":
         response = _reference_mapping_request(
             args,

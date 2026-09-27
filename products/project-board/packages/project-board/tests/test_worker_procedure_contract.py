@@ -1557,7 +1557,7 @@ def test_the_workspace_comes_from_the_host_root_never_the_session_folder():
     # 2026-09-26: an agent started in a shared checkout was handed that checkout.
     skill = " ".join(_read("SKILL.md").split())
     assert "never the folder this session started in and never a path you choose" in skill
-    assert "report it with `pb worker workspace-report`" in skill
+    assert "`pb worker connect-project` clones the project's repositories into it" in skill and "reports it" in skill
     workspace = " ".join(_read("references/project-workspace.md").split())
     assert "else `<agent workspace root>/<your alias>` (`workspace_source: host_root`)" in workspace
     assert "`pb host configure --agent-workspace-root`" in workspace

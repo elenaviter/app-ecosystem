@@ -3,7 +3,7 @@ id: project-board.skill-reference.project-workspace
 title: Set Up A Project Workspace
 summary: How a worker sets up its workspace for a project it attends, from the project's record on its host, the journal repository included, each repository at its declared branch in a folder named by its alias, and why every project page and journal entry is read from that clone and nowhere else.
 tags: [procedure, problem-board, worker, workspace, repositories, attendance]
-keywords: [pb worker context, project_on_this_host, commit_identity, user.email, --set-identity, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
+keywords: [pb worker connect-project, needs_key, pull_requests, pb worker context, project_on_this_host, commit_identity, user.email, --set-identity, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
 see_also:
   - ./identity-and-authorization.md
   - ./collaboration.md
@@ -54,6 +54,16 @@ Each entry has an `alias`, a `url`, a `role` (`work`, `journal` or
   never a separate clone.
 
 ## 2. Clone or update every repository, the journal one included
+
+`pb worker connect-project --format brief` does this step and step 3 in one
+command, for every repository of the record (W304 finding 19). It clones or fast-forwards each repository as the rules below say. For a
+GitHub repository this machine does not reach yet, it makes this machine's
+deploy key and prints the grant for the person (add-a-worker-host step 7). It
+then sets the commit identity and runs the workspace report. Run it again
+after the person adds a key. first-run's "Part 2: Connect To A Project" says
+what to tell the person for each state. The script below is what the command
+does for one repository, and it is what to run by hand when the command is
+not available:
 
 For each entry, with `WORKSPACE` from the output's `workspace`, and `ALIAS`,
 `URL` and `BRANCH` (empty when the entry has none) from the entry.

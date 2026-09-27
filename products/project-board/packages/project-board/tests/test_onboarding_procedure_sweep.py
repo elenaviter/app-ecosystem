@@ -112,7 +112,9 @@ def test_15_repositories_and_deploy_keys_come_from_the_project_card():
     step8 = HOST[HOST.index("## 8. "):HOST.index("## 9. ")]
     assert "git clone" not in step8
     step12 = HOST[HOST.index("## 12. "):HOST.index("## 13. ")]
-    assert "The host agent runs step 7's reconciliation on this host" in step12
+    # W304 finding 19: the agent makes its project's keys itself; step 7's script keeps the revokes.
+    assert "`pb worker connect-project` makes the key and prints its grant" in step12
+    assert "Step 7's reconciliation remains for revoking keys" in step12
     assert "Repositories the agents may work in" not in GUIDE
     assert "Project the agents join: <project name>" in GUIDE
     assert "you make it on the project card, not per machine" in GUIDE

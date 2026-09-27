@@ -154,6 +154,13 @@ def test_a_rate_limit_only_stop_failure_group_gains_every_stopping_error(tmp_pat
     [group] = _settings(tmp_path)["hooks"]["StopFailure"]
     assert group["matcher"] == ALL_ERRORS
     assert report["updated"] == ["hooks.StopFailure"]
+    assert report["changes"] == [{
+        "key": "hooks.StopFailure",
+        "from": f"{PB} worker limit-state --source stop-failure",
+        "to": f"{PB} worker limit-state --source stop-failure",
+        "matcher_from": "rate_limit",
+        "matcher_to": ALL_ERRORS,
+    }]
     assert report["changed"] is True and report["backup"]
 
 
@@ -183,6 +190,13 @@ def test_bare_pb_entries_move_to_this_host_s_pb_and_then_stay(tmp_path):
     assert settings["hooks"]["StopFailure"][0]["hooks"][0]["command"] == "/opt/problem-board/bin/pb worker limit-state --source stop-failure"
     assert settings["hooks"]["Stop"] == [{"hooks": [{"type": "command", "command": "/opt/problem-board/bin/pb worker stop-guard"}]}]
     assert report["updated"] == ["statusLine", "hooks.StopFailure", "hooks.Stop"]
+    # W304 finding 22: each repoint names the command it replaced, so it is not read as a user's entry replaced.
+    assert report["changes"] == [
+        {"key": "statusLine", "from": "pb worker limit-state", "to": "/opt/problem-board/bin/pb worker limit-state"},
+        {"key": "hooks.StopFailure", "from": "pb worker limit-state --source stop-failure",
+         "to": "/opt/problem-board/bin/pb worker limit-state --source stop-failure"},
+        {"key": "hooks.Stop", "from": "pb worker stop-guard", "to": "/opt/problem-board/bin/pb worker stop-guard"},
+    ]
     assert report["added"] == []
     assert merge_claude_code_settings(tmp_path, pb="/opt/problem-board/bin/pb")["changed"] is False
 
