@@ -228,3 +228,26 @@ def test_a_folder_name_must_start_with_a_letter_or_digit(tmp_path):
     root.mkdir()
     for alias in ("@host1", "-agent", ".agent"):
         assert host_config.default_working_directory([str(root)], alias=alias, worker_name="claude-code-x") == str(root / "claude-code-x"), alias
+
+
+def test_a_folder_recorded_inside_the_agents_folder_is_the_agents_folder(tmp_path):
+    # 2026-09-27 (W304): a session enrolled from a checkout inside its own
+    # folder recorded that checkout; the relay then looked for the project's
+    # repositories inside it and the card said "journal unavailable".
+    root = tmp_path / "workspaces"
+    deep = root / "claude-app@host1" / "applications" / "playground" / "apps"
+    deep.mkdir(parents=True)
+    config = host_config.HostRelayConfig.load(_host(tmp_path, [str(root)]).path)
+
+    workspace, source, note = host_config.agent_workspace(
+        config, recorded=str(deep), alias="claude-app@host1", worker_name="claude-code-x",
+    )
+
+    assert workspace == str(root.resolve() / "claude-app@host1")
+    assert source == "recorded" and note == ""
+    # Enrolling from that checkout records the agent's folder, which the relay uses.
+    channel = host_config.enroll_worker_channel(
+        config.path, identity=IDENTITY, profile="problem-board-claude-one", authorized=True,
+        worker_alias="claude-app@host1", working_directory=str(deep),
+    )
+    assert channel.working_directory == str(root.resolve() / "claude-app@host1")

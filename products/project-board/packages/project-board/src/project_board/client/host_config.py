@@ -889,6 +889,33 @@ def default_working_directory(allowed_roots: Sequence[str], *, alias: str, worke
     return ""
 
 
+def _own_folder(recorded: str, root: str, alias: str, worker_name: str) -> str:
+    """The agent's own folder, `<root>/<alias or name>`, for a folder recorded inside it.
+
+    A session that enrolls from a checkout inside its own folder (for example
+    `<root>/<agent>/applications/...`) recorded that checkout, and the relay
+    then looked for the project's repositories inside it: `journal
+    unavailable` on the card (2026-09-27, W304). A folder deeper in the
+    agent's own folder is that folder; any other recorded folder is judged as
+    before.
+    """
+
+    if not recorded or not root:
+        return recorded
+    base = Path(root).expanduser().resolve()
+    try:
+        at = Path(recorded).expanduser().resolve()
+    except OSError:
+        return recorded
+    for name in (str(alias or "").strip(), str(worker_name or "").strip()):
+        if not name or not _SAFE_FOLDER.fullmatch(name) or name in {".", ".."}:
+            continue
+        own = base / name
+        if at != own and is_inside(at, own):
+            return str(own)
+    return recorded
+
+
 def agent_workspace(
     config: "HostRelayConfig", *, recorded: str, alias: str, worker_name: str
 ) -> tuple[str, str, str]:
@@ -901,7 +928,7 @@ def agent_workspace(
     """
 
     root = config.effective_agent_workspace_root
-    recorded = str(recorded or "").strip()
+    recorded = _own_folder(str(recorded or "").strip(), root, alias, worker_name)
     derived = default_working_directory([root] if root else [], alias=alias, worker_name=worker_name)
     if recorded and not root:
         return recorded, "recorded", ""
