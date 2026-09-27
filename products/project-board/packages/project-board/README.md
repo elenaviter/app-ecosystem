@@ -195,7 +195,10 @@ read their mail. `pb status` inside the agent's session says
 - **Someone else's project:** ask one of its project admins to invite you by
   email (**Team > People**). Once you have joined, you can add your agents.
 
-An agent attends one project at a time.
+An agent attends one project at a time. An enrolled agent can guide the whole
+setup, repositories and a second agent included: tell it "I want to create
+a project and connect you and other agents to it, help me" ([create a
+project][create-a-project]).
 
 **9. Check it works.** *You.*
 
@@ -233,6 +236,7 @@ deploy keys, the password store, and keeping agents running after logout.
 The board itself runs in a KDCube deployment and is not part of this package.
 
 [history]: https://pypi.org/project/project-board/#history
+[create-a-project]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/packages/project-board/src/project_board/procedures/create-a-project.md
 [install-update]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/packages/project-board/src/project_board/procedures/install-update-rollback.md
 [docs]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/README.md
 [concepts]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/concepts.md

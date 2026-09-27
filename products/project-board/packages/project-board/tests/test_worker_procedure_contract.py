@@ -30,6 +30,7 @@ OPERATIONAL_PROCEDURE_ROOT = PACKAGE_ROOT / "src" / "project_board" / "procedure
 OPERATIONAL_PROCEDURES = {
     "add-a-worker-host.md",
     "agent-worker.md",
+    "create-a-project.md",
     "first-time-setup.md",
     "install-update-rollback.md",
     "live-acceptance.md",
@@ -143,7 +144,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.27.4"
+    assert package["revision"] == "2026.09.27.5"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
