@@ -11,3 +11,12 @@ def test_project_repository_mutation_is_a_canonical_project_operation():
     assert operation in PROBLEM_BOARD_OPERATION_POLICIES
     assert operation in PROBLEM_BOARD_OPERATIONS_BY_KIND["work.project"]
     assert required_grants_for_operation(operation) == frozenset({"work:coordinate"})
+
+
+def test_the_commit_identity_is_a_canonical_project_operation():
+    # W368: the email every agent commits with is project configuration.
+    operation = "project.set_commit_identity"
+
+    assert operation in PROBLEM_BOARD_OPERATION_POLICIES
+    assert operation in PROBLEM_BOARD_OPERATIONS_BY_KIND["work.project"]
+    assert required_grants_for_operation(operation) == frozenset({"work:coordinate"})

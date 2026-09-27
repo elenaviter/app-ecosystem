@@ -3,7 +3,7 @@ id: project-board.skill-reference.project-workspace
 title: Set Up A Project Workspace
 summary: How a worker sets up its workspace for a project it attends, from the project's record on its host, the journal repository included, each repository at its declared branch in a folder named by its alias, and why every project page and journal entry is read from that clone and nowhere else.
 tags: [procedure, problem-board, worker, workspace, repositories, attendance]
-keywords: [pb worker context, project_on_this_host, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
+keywords: [pb worker context, project_on_this_host, commit_identity, user.email, --set-identity, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
 see_also:
   - ./identity-and-authorization.md
   - ./collaboration.md
@@ -136,6 +136,15 @@ A checkout or fast-forward that fails (a history that has diverged) is never
 forced. Leave that folder as it is and tell the coordinator
 which alias and why.
 
+**Commit as the project says.** When `pb worker context` returns a
+`commit_identity`, every clone commits as your alias and the project's email,
+set repository-local, so your worktrees inherit it. Set it in every clone you
+already have, now, not only after a fresh clone: run each of its `commands`,
+or let step 3 set it with `pb worker workspace-report --set-identity`. Never
+commit with an email you made up: a commit is credited to whichever account
+owns its email (operator, 2026-09-27). An empty `commit_identity` means the
+project sets none; ask the coordinator before your first commit.
+
 ## 3. Report what you cannot reach
 
 A repository you cannot clone or fetch (no deploy key on this host, no
@@ -151,9 +160,12 @@ pb worker workspace-report
 
 It checks `<workspace>/<alias>` for every listed repository: `verified` when
 it is a checkout of the listed URL and the remote answers, `unreachable` with
-the reason otherwise. The relay carries it on its next heartbeat. Run it again
-after any clone, re-clone or new key, and whenever the repository list changes
-(add `--project-ref` to name the project explicitly).
+the reason otherwise. When the project sets a commit email, each clone also
+reads `matches`, `differs` or `unset` for its commit identity, and the project
+card shows a clone that is not `matches`; `--set-identity` sets it in each
+clone first. The relay carries it on its next heartbeat. Run it again
+after any clone, re-clone or new key, and whenever the repository list or the
+commit email changes (add `--project-ref` to name the project explicitly).
 
 ## 4. Set up the project's development environment
 

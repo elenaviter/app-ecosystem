@@ -76,7 +76,7 @@ from .card_refusal import with_actionable_refusal
 from .stop_guard import stop_guard_decision
 from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
-from .workspace_report import build_workspace_report, report_signature
+from .workspace_report import build_workspace_report, commit_identity, report_signature
 from .limit_state import (
     limit_state_from_claude_statusline,
     limit_state_from_claude_stop_failure,
@@ -877,6 +877,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not ask each remote (git ls-remote); a matching checkout is reported as cloned.",
     )
     command.add_argument("--timeout-seconds", type=float, default=15.0, help="Per git call (default 15).")
+    command.add_argument(
+        "--set-identity",
+        action="store_true",
+        help=(
+            "First set each clone's repository-local user.name and user.email to this agent's "
+            "alias and the project's commit email (W368); worktrees inherit them."
+        ),
+    )
 
     command = worker_commands.add_parser(
         "limit-state",
@@ -3498,6 +3506,17 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
             "The host approves no work root, so this agent has no workspace: ask the operator to add one "
             "(`pb host configure --add-allow-root <path>`).",
         )
+    # W368: the project's commit identity, the agent's alias and the project's email.
+    alias = str(getattr(recorded, "worker_alias", "") or "").strip()
+    email = str(record.get("commit_identity_email") or "").strip()
+    if args.set_identity and not (alias and email):
+        raise DomainError(
+            "field_commit_identity_unset",
+            "There is no commit identity to set: "
+            + ("the project sets no commit email" if not email else "this agent has no alias")
+            + ".",
+            details={"project_ref": project_ref},
+        )
     report = build_workspace_report(
         Path(workspace),
         record.get("repositories") or [],
@@ -3505,6 +3524,8 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
         reported_at=utc_now(),
         verify=not args.no_verify,
         timeout=max(1.0, float(args.timeout_seconds)),
+        identity=(alias, email) if alias and email else None,
+        set_identity=bool(args.set_identity),
     )
     signature = report_signature(report)
     entry = field.set_workspace_report(identity.worker_name, parsed.object_id, report, signature=signature)
@@ -3512,6 +3533,7 @@ def _workspace_report_command(args: Any, config: Any, field: Any, identity: Any)
         "worker": identity.worker_name,
         "project_ref": project_ref,
         "workspace": workspace,
+        **({"commit_identity": {"name": alias, "email": email}} if alias and email else {}),
         **report,
         "on_board": entry.get("published_signature") == signature,
         "rule": "The relay carries this report on its next heartbeat; the project card shows it.",
@@ -4637,6 +4659,14 @@ def _worker_project_context(
         # The repositories to set the workspace up from (W304 finding 39).
         "repositories": repositories["repositories"],
         "repositories_revision": repositories["revision"],
+        # W368: what this agent commits as in the project, with the exact
+        # commands that set it in each clone. Empty when the project sets none.
+        "commit_identity": commit_identity(
+            str(getattr(channel, "worker_alias", "") or ""),
+            str(repositories.get("commit_identity_email") or ""),
+            workspace,
+            repositories["repositories"],
+        ),
         **journal_state,
         **journal,
     }

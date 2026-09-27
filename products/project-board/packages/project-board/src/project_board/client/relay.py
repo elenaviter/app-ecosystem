@@ -3073,10 +3073,13 @@ class ProblemBoardHostRelayAdapter:
         repositories = project.get("repositories")
         if not isinstance(repositories, list):
             return
+        email = project.get("commit_identity_email")
         self.field.sync_project_repositories(
             self.config.project_id,
             repositories,
             revision=int(project.get("repositories_revision") or 0),
+            # W368: None when the board predates the field.
+            commit_identity_email=email if isinstance(email, str) else None,
         )
 
     def _reconcile_assignments(
