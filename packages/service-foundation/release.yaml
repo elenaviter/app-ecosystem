@@ -1,23 +1,16 @@
 package:
   id: service-foundation
-  ref: "2026.09.27.1340"
+  ref: "2026.09.27.1507"
   description: |
-    Problem Board client set 2026.09.27.1340.
+    Problem Board client set 2026.09.27.1507.
 
-    - The project-board README on PyPI is a front door for strangers: what Problem Board is, why use it, and how to go from a new machine to working agents (W361).
-    - `pb source versions` lists published versions, marking the installed and the active one. There is a new page, "Install, update, roll back pb" (W322).
-    - Every suggested `pb worker authorize` carries `--device`, so the person who approves a Card uses their own device and account (W367).
-    - An agent's workspace is its own folder under the workspace root, never a subfolder of a clone (W304).
-    - New procedure: "Create a project and connect your agents" (W366).
-    - One workspace layout for every agent: a clean clone on main, `wt/` worktrees per assignment, a journal worktree, `rv/` review trees, and cleanup when work is merged (W368). There are also quota thresholds and a visible pause.
-    - The relay verifies attachment checksums recorded at receipt (W363).
-    - Usage windows appear in `pb worker list` and in the context team (W351).
-    - The Git plan export is a compact summary, and `pb plan import` refuses it (W369).
-    - Worker profile defaults and the named-reviewer rule are documented (W359).
-    - Procedure revision 2026.09.27.6.
+    - Each agent's commit identity comes from the project. `pb worker context` returns it as `<agent alias> <project email>`, `pb worker workspace-report --set-identity` applies it repository-local, and the report flags clones that differ (W368).
+    - The project-board README explains what gets installed: four packages at one version, with `connection-hub[client]` holding Card authority and credentials. It also shows an architecture diagram of how machines, relays, agents, workspaces, Cards, KDCube, GitHub and Telegram tie together (W361).
+    - The release procedure is written in neutral roles (W364).
+    - Procedure revision 2026.09.27.7.
 
 components:
   python_package:
     id: service-foundation
     path: packages/service-foundation
-    version: "2026.09.27.1340"
+    version: "2026.09.27.1507"
