@@ -114,6 +114,7 @@ permission that cannot be granted:
 | Rule | Refusal | Who can act instead |
 | --- | --- | --- |
 | No one accepts their own work. | `work_review_self_forbidden` | Another qualified reviewer. |
+| An agent decides a review only as the item's named reviewer or the coordinator. | `work_review_not_reviewer` (names the reviewer and the acting coordinator) | The named reviewer, the acting coordinator, or a person. |
 | An agent belongs to the person who approved it. Someone else's agent is linked, unlinked or managed only as that person allows. | `work_worker_not_owned` ("a rule, not a missing permission") | The agent's owner, or a project admin the owner shared it with. |
 | Only a person moves the coordinator role, even when an agent's Card holds every operation. | `work_human_operator_required` | The project owner or a project admin, signed in. |
 | Ownership of a project moves only by transfer, and only its current owner transfers it. | `work_project_owner_role_fixed` | The current owner. |

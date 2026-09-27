@@ -685,6 +685,18 @@ concepts an agent needs to explain Problem Board had been kept only in private
 pages, so an agent with only the public client could not answer who edits
 which Card (operator, 2026-09-26).
 
+## Rule 14. Search before you file an item, and tell the coordinator
+
+A worker's Card may create plan items (`plan.item.create`). Before filing
+one, search the plan (`project.plan.search` with the subject's words) and
+read what comes back. When a related item exists, update it or add a note or
+an acceptance line to it instead of filing a duplicate. A small change or
+lesson is never its own item: it goes onto an open item. A new item is for a
+distinct deliverable with its own review. After filing, mail the coordinator
+the new item's key and title, so routing sees it. Why: the operator allowed
+workers to file items on these two conditions (2026-09-26 21:1xZ), and asked
+for no items for very small things (23:38Z).
+
 ## From this moment: round 2 on the shared host, 2026-09-22 22:20Z
 
 Round 1 ran four hours under rules that did not exist when it started, and
