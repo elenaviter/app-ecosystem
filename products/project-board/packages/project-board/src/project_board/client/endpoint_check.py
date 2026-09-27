@@ -29,6 +29,10 @@ EXPECTED_SHAPE = (
 )
 WHERE_TO_COPY = "Copy the setup line from 'Connect a machine' in the board's top bar."
 _RESOURCE_METADATA = re.compile(r'resource_metadata="([^"]+)"')
+# The deployment's tenant and project are part of the board's own address.
+_BUNDLE_PATH = re.compile(
+    r"^/api/integrations/bundles/(?P<tenant>[^/]+)/(?P<project>[^/]+)/[^/]+/public/mcp/problem_board/?$"
+)
 _INITIALIZE = {
     "jsonrpc": "2.0",
     "id": 1,
@@ -79,6 +83,40 @@ def _not_board(endpoint: str, found: str, **details: Any) -> DomainError:
         status=400,
         details={"endpoint": endpoint, "expected_shape": EXPECTED_SHAPE, "found": found, **details},
     )
+
+
+def setup_scope(endpoint: str, *, tenant: str = "", platform_project: str = "") -> tuple[str, str]:
+    """The tenant and platform project `pb setup` uses, read from the endpoint (W304 finding 18).
+
+    Operator, mid-walk 2026-09-27: asking for the tenant and the platform
+    project is frustrating, since the endpoint already names them. They are
+    parsed from its path; a value the person also gives must agree, or setup
+    refuses before writing anything. An endpoint that is not a board bundle
+    address is refused by name.
+    """
+
+    path = urlsplit(str(endpoint or "").strip()).path
+    match = _BUNDLE_PATH.match(path)
+    if match is None:
+        raise DomainError(
+            "work_setup_endpoint_not_bundle",
+            f"The endpoint is not a board address: it has the shape {EXPECTED_SHAPE}. {WHERE_TO_COPY}",
+            status=400,
+            details={"endpoint": endpoint, "expected_shape": EXPECTED_SHAPE},
+        )
+    parsed = {"tenant": match.group("tenant"), "platform_project": match.group("project")}
+    given = {"tenant": str(tenant or "").strip(), "platform_project": str(platform_project or "").strip()}
+    mismatched = {key: {"given": value, "endpoint": parsed[key]} for key, value in given.items() if value and value != parsed[key]}
+    if mismatched:
+        raise DomainError(
+            "work_setup_scope_mismatch",
+            "The endpoint names another "
+            + " and ".join(key.replace("_", " ") for key in mismatched)
+            + " than you gave. Leave --tenant and --platform-project out; the endpoint names them.",
+            status=400,
+            details={"endpoint": endpoint, **mismatched},
+        )
+    return parsed["tenant"], parsed["platform_project"]
 
 
 def verify_board_endpoint(

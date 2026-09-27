@@ -169,3 +169,57 @@ def test_setup_reports_the_check_and_can_skip_it_offline(tmp_path, monkeypatch, 
     assert cli.main(_setup_argv(other, "--no-verify-endpoint")) == 0
     assert json.loads(capsys.readouterr().out)["result"]["endpoint_check"] == {"state": "skipped", "endpoint": ENDPOINT}
     assert (other / "relay.json").exists()
+
+
+# W304 finding 18 (operator, mid-walk 2026-09-27): the endpoint names the
+# tenant and the platform project, so pb setup reads them from it.
+
+
+def test_the_tenant_and_project_are_read_from_the_endpoint() -> None:
+    assert endpoint_check.setup_scope(ENDPOINT) == ("t1", "p1")
+    assert endpoint_check.setup_scope(ENDPOINT + "/") == ("t1", "p1")
+    # A value given as well must agree.
+    assert endpoint_check.setup_scope(ENDPOINT, tenant="t1", platform_project="p1") == ("t1", "p1")
+
+
+def test_a_value_that_differs_from_the_endpoint_is_refused_by_name() -> None:
+    with pytest.raises(DomainError) as refused:
+        endpoint_check.setup_scope(ENDPOINT, tenant="other", platform_project="p1")
+    assert refused.value.code == "work_setup_scope_mismatch"
+    assert refused.value.details["tenant"] == {"given": "other", "endpoint": "t1"}
+    assert "platform_project" not in refused.value.details
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        f"{BASE}/api/integrations/bundles/t1/p1/problem-board@1-0/public/worker_stream",
+        f"{BASE}/mcp",
+        f"{BASE}/api/integrations/bundles/t1/problem-board@1-0/public/mcp/problem_board",
+    ],
+)
+def test_an_endpoint_that_is_not_a_board_bundle_path_is_refused(endpoint) -> None:
+    with pytest.raises(DomainError) as refused:
+        endpoint_check.setup_scope(endpoint)
+    assert refused.value.code == "work_setup_endpoint_not_bundle"
+    assert endpoint_check.EXPECTED_SHAPE in str(refused.value)
+
+
+def test_setup_needs_only_the_endpoint_and_the_persons_own_names(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        endpoint_check, "verify_board_endpoint", lambda endpoint, **_: {"state": "verified", "endpoint": endpoint}
+    )
+    argv = [value for value in _setup_argv(tmp_path) if value not in {"--tenant", "t1", "--platform-project", "p1"}]
+    assert "--tenant" not in argv and "--platform-project" not in argv
+    assert cli.main(argv) == 0
+    capsys.readouterr()
+    target = json.loads((tmp_path / "relay.json").read_text(encoding="utf-8"))["target"]
+    assert (target["tenant"], target["project"]) == ("t1", "p1")
+    # A differing value refuses before anything is written.
+    other = tmp_path / "mismatch"
+    other.mkdir()
+    mismatch = _setup_argv(other)
+    mismatch[mismatch.index("--tenant") + 1] = "other"
+    assert cli.main(mismatch) == 1
+    assert json.loads(capsys.readouterr().err)["error"]["code"] == "work_setup_scope_mismatch"
+    assert not (other / "relay.json").exists()

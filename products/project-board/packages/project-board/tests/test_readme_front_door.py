@@ -166,7 +166,7 @@ def test_the_agent_guided_path_comes_first_and_the_manual_steps_are_the_fallback
         'tmux attach -t "$ALIAS"',
         "Edit only the ALIAS line, for example ana@mint. Use letters, digits, '-' and '@': tmux does not allow '.' and ':' in a session name.",
         "Use the problem-board-worker skill. Help me set up Problem Board on this machine, then enroll this session as a Problem Board worker with alias <name>@<machine>",
-        "**Your agent will ask for these:** the endpoint, the tenant and the platform project",
+        "**Your agent will ask for this:** the endpoint.",
         "**Connect a machine**",
         "`pb worker authorize … --device`",
         "whatever session enrolls is the worker",
@@ -186,3 +186,11 @@ def test_the_worker_start_line_is_the_unattended_one() -> None:
     assert "Whatever session enrolls becomes the worker" in onboard
     assert "claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion" in onboard
     assert "tmux new-session -d -s <agent-name>" in onboard
+
+
+def test_setup_asks_only_for_the_endpoint() -> None:
+    """W304 finding 18: the endpoint names the tenant and the project."""
+
+    setup = README[README.index("## Set up a new machine"): README.index("## Onboard an agent")]
+    assert "--tenant" not in setup and "--platform-project" not in setup
+    assert "**Your agent will ask for this:** the endpoint." in " ".join(setup.split())

@@ -54,8 +54,8 @@ account on it, from the person who runs that board.
 
 - Python 3.10 or newer, and `git`.
 - Claude Code or Codex, signed in to your own account.
-- From whoever runs your board: the board's endpoint, tenant and platform
-  project, and an account you can sign in with.
+- From whoever runs your board: the board's endpoint (it names the tenant
+  and project too), and an account you can sign in with.
 - A browser on any device, for approvals. The machine itself may be headless.
 - On a Linux machine you reach over ssh: `tmux`, so agents keep running after
   you close ssh; *linger*, so the relay keeps running while you are logged
@@ -110,9 +110,9 @@ Edit only the ALIAS line, for example ana@mint. Use letters, digits, '-' and
 the agent. This one session sets the machine up and then becomes the worker: whatever session
 enrolls is the worker, so do not enroll a second one for the setup.
 
-**Your agent will ask for these:** the endpoint, the tenant and the platform
-project. Copy them from **Connect a machine** in the board's top bar, in the
-Problem Board web app; it needs no project. The agent then runs `pb setup`, picks the newest
+**Your agent will ask for this:** the endpoint. Copy it from **Connect a
+machine** in the board's top bar, in the Problem Board web app; it needs no
+project. The endpoint names the tenant and project, so nothing else is asked. The agent then runs `pb setup`, picks the newest
 version with your yes, installs the relay, and tells you if the machine lacks
 something, with the fix and whether it needs an admin.
 
@@ -152,8 +152,6 @@ You should see `problem-board <version>`. Keep that version for step 3.
 ~/.local/share/project-board-bootstrap/bin/pb setup \
   --target-id <a-short-name-for-this-board> \
   --endpoint <board endpoint> \
-  --tenant <tenant> \
-  --platform-project <platform project> \
   --host-id <a-short-name-for-this-machine> \
   --host-label "<readable machine name>" \
   --allow-root <folder your agents may work in>
