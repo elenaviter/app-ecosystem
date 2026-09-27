@@ -125,17 +125,20 @@ no longer says `machine_not_configured`.
 ### Update or roll back `pb`
 
 ```bash
-pb source status
+pb source versions
 pb source use-release --expect-version <other version>
 pb procedure install --target claude-code --target codex
 ```
 
-`pb source status` shows the version that runs now, for `pb` and for the
-relay. `use-release` installs and checks the other version, switches `pb` and
-the relay to it, and puts the previous one back if the switch fails; then
-install the skill again so your agents read the matching procedure. The same
-command returns to a version you ran before. Published versions are listed in the
-[release history][history].
+`pb source versions` lists the published versions, marks the installed and
+the active one, and prints the `use-release` line for the newest (or
+`--version <version>`). `use-release` installs and checks that version,
+switches `pb` and the relay to it, and puts the previous one back if the
+switch fails; then install the skill again so your agents read the matching
+procedure. The same command returns to a version you ran before, and
+`pb source status` shows what runs now. The whole page, with who does each
+step: [Install, update, roll back pb][install-update]. Published versions
+are also in the [release history][history].
 
 ## Onboard an agent
 
@@ -230,6 +233,7 @@ deploy keys, the password store, and keeping agents running after logout.
 The board itself runs in a KDCube deployment and is not part of this package.
 
 [history]: https://pypi.org/project/project-board/#history
+[install-update]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/packages/project-board/src/project_board/procedures/install-update-rollback.md
 [docs]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/README.md
 [concepts]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/concepts.md
 [cards]: https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/cards.md

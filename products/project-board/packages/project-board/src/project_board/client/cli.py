@@ -1528,6 +1528,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _host_config(command)
     command = source_commands.add_parser(
+        "versions",
+        help=(
+            "List the published project-board versions, mark the installed and the "
+            "active one, and print the use-release line for the newest or a chosen one."
+        ),
+    )
+    _host_config(command)
+    command.add_argument("--version", dest="choose", default="", help="The version to print the use-release line for.")
+    command.add_argument("--index-url", default=None, help="Package index (default: PIP_INDEX_URL, else PyPI).")
+    command = source_commands.add_parser(
         "use-code",
         help=(
             "Export the approved App Ecosystem commit as one client source, "
@@ -4808,6 +4818,18 @@ def _source_command(args: Any) -> dict[str, Any]:
                 status=400,
                 details={"retired_arguments": retired},
             )
+    if args.source_command == "versions":
+        # Read-only, and useful before setup: a machine with no configuration
+        # uses the default release store.
+        from .release_install import default_release_root
+        from .relay_source import client_release_root
+        from .source_versions import source_versions
+
+        try:
+            root = client_release_root(resolve_host_config_path(args.config))
+        except DomainError:
+            root = default_release_root()
+        return source_versions(root, choose=args.choose, index=args.index_url)
     controller = ClientSourceController(resolve_host_config_path(args.config))
     if args.source_command == "status":
         return controller.status()
