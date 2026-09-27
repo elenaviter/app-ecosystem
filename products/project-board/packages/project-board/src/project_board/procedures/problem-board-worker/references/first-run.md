@@ -57,7 +57,9 @@ ways to install it, and the operator names which applies to this machine:
   `pb source use-code`. This is what the section below shows.
 - **A user of a published release** installs the approved `project-board`
   version from the package index and selects it with `pb source use-release`.
-  This is the shorter path under "From the published package".
+  This is the shorter path under "From the published package". Updating and
+  rolling back later, and `pb source versions`, are in
+  [install, update, roll back pb](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/install-update-rollback.md).
 
 Neither path reads a repository checkout at run time, and both end with
 `pb procedure install`, which puts this skill on the machine.
