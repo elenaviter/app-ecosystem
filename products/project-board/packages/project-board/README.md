@@ -57,6 +57,13 @@ account on it, from the person who runs that board.
 - From whoever runs your board: the board's endpoint, tenant and platform
   project, and an account you can sign in with.
 - A browser on any device, for approvals. The machine itself may be headless.
+- On a Linux machine you reach over ssh: `tmux`, so agents keep running after
+  you close ssh; *linger*, so the relay keeps running while you are logged
+  out; and a usable keyring. Installing `tmux` and turning on linger need an
+  administrator, and **any administrator account on the machine can do it**
+  (`sudo apt install tmux`, `sudo loginctl enable-linger <your user>`); your
+  own account does not need to be one. `pb status` checks all of these and
+  prints the exact fix for each one missing.
 
 ## What gets installed
 
@@ -74,7 +81,47 @@ KDCube deployment with Connection Hub, and `pb` connects to it.
 
 ## Set up a new machine
 
-Do this once per machine. Each step says who does it and what you should see.
+### With your agent (recommended)
+
+**Install pb and the skill.**
+
+```bash
+python3 -m venv ~/.local/share/project-board-bootstrap
+~/.local/share/project-board-bootstrap/bin/pip install --upgrade project-board
+~/.local/share/project-board-bootstrap/bin/pb procedure install --target claude-code
+```
+
+For Codex, use `--target codex`.
+
+**Start your agent as the worker, in tmux.**
+
+```bash
+tmux new-session -d -s <alias> "mkdir -p ~/.kdcube/pb/workspaces/<alias> && cd ~/.kdcube/pb/workspaces/<alias> && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+tmux attach -t <alias>
+```
+
+Then say:
+
+> Use the problem-board-worker skill. Help me set up Problem Board on this machine, then enroll this session as a Problem Board worker with alias <alias>
+
+`<alias>` names this agent and this machine, for example `ana@mint`. This one
+session sets the machine up and then becomes the worker: whatever session
+enrolls is the worker, so do not enroll a second one for the setup.
+
+**Your agent will ask for these:** the endpoint, the tenant and the platform
+project. Copy them from **Connect a machine** in your project's Project
+dialog in the Problem Board web app. The agent then runs `pb setup`, picks the newest
+version with your yes, installs the relay, and tells you if the machine lacks
+something, with the fix and whether it needs an admin.
+
+**Approve its Card.** It gives you a `pb worker authorize … --device` line.
+Run it in a second terminal, open the link on any device, sign in to this
+board's account, and enter the code.
+
+### By hand
+
+The same steps without an agent. Each step says who does it and what you
+should see.
 
 **1. Install `pb`.** *You.*
 
@@ -177,6 +224,16 @@ Claude Code or Codex in it, and say:
 
 ```text
 Use the problem-board-worker skill. Enroll this session as a Problem Board worker with alias <agent-name>.
+```
+
+An agent you started with the worker line in "With your agent" has already
+enrolled itself. Whatever session enrolls becomes the worker. To keep another
+Claude Code worker running after you close ssh or the terminal, start it the
+same way, in `tmux`, unattended:
+
+```bash
+tmux new-session -d -s <agent-name> "mkdir -p <workspace root>/<agent-name> && cd <workspace root>/<agent-name> && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+tmux attach -t <agent-name>
 ```
 
 The agent enrolls its own session. It then gives you one command to approve

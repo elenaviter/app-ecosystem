@@ -19,6 +19,10 @@ PROCEDURE_MARKER = "Managed by Problem Board procedure package."
 LEGACY_PROCEDURE_MARKER = "Generated from Problem Board procedures/agent-worker.md."
 SOURCE_MANIFEST = "package.json"
 INSTALLED_MANIFEST = "package-manifest.json"
+# Beside SKILL.md, outside the verified release tree: which pb installed this
+# skill, so an agent finds pb wherever the person installed it (W304 finding 7).
+INSTALLED_BY = "installed-by.json"
+INSTALLED_BY_SCHEMA = "problem-board.procedure-installed-by.v1"
 SOURCE_SCHEMA = "problem-board.procedure-source.v1"
 INSTALLED_SCHEMA = "problem-board.procedure-package.v2"
 INSTALLED_SOURCE_ENTRYPOINT = "_source/SKILL.md"
@@ -898,6 +902,7 @@ def install_agent_procedure(
     home: str | Path | None = None,
     force: bool = False,
     allow_downgrade: bool = False,
+    installed_by: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     root = _home_path(home)
     package = _read_source_package()
@@ -978,10 +983,17 @@ def install_agent_procedure(
                     "pruned_releases": pruned,
                 }
             )
+        if installed_by:
+            record = {"schema": INSTALLED_BY_SCHEMA, **dict(installed_by)}
+            for _, destination in destinations:
+                atomic_write_json(destination.parent / INSTALLED_BY, record)
+            for item in installed:
+                item["installed_by"] = str(Path(item["path"]).parent / INSTALLED_BY)
     return installed
 
 
 __all__ = [
+    "INSTALLED_BY",
     "LEGACY_PROCEDURE_MARKER",
     "PROCEDURE_ID",
     "PROCEDURE_MARKER",
