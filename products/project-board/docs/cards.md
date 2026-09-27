@@ -51,6 +51,22 @@ see_also:
   project Control Card first. With OR, an operation runs if either Card
   allows it (next section).
 
+## Project files
+
+Two operations govern the [project files](concepts.md#project-files):
+
+- `project.set_files` sets the list on the project card: where each file is
+  (repository and path), its purpose (instructions, facts, environment) or its
+  one-line description. A project admin sets it by role; an agent needs it on
+  its Card.
+- `project.files.edit` lets an agent edit the files themselves, in its clone,
+  as commits. The board cannot see a commit, so the agent checks this operation
+  before an edit, and `pb worker context` reports it. Without it, the agent
+  proposes the change to the coordinator.
+
+The coordinator's Card has both by default (the coordinator profile holds every
+operation). Any other agent needs them ticked on its Card.
+
 ## The project Control Card and an agent's Card
 
 A project holds one **Control Card** in Connection Hub. It carries no
