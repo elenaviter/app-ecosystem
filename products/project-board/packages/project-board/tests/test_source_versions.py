@@ -61,38 +61,38 @@ def _install(root: Path, version: str, *, active: bool = False, mode: str = "rel
 
 
 def test_it_lists_the_index_newest_first_and_marks_installed_and_active(tmp_path):
-    fetch = _fake_index(["2026.9.22.2100", "2026.9.27.130", "2026.9.26.2220"])
+    fetch = _fake_index(["2026.9.22.2100", "2026.9.27.130", "2026.9.25.1000"])
     _install(tmp_path, "2026.9.22.2100")
-    _install(tmp_path, "2026.9.26.2220", active=True)
+    _install(tmp_path, "2026.9.25.1000", active=True)
 
     result = source_versions(tmp_path, fetch=fetch, index=INDEX)
 
     assert fetch.calls == [f"{INDEX}/project-board/"]
     assert [(row["version"], row["installed"], row["active"]) for row in result["versions"]] == [
         ("2026.9.27.130", False, False),
-        ("2026.9.26.2220", True, True),
+        ("2026.9.25.1000", True, True),
         ("2026.9.22.2100", True, False),
     ]
     assert result["latest"] == "2026.9.27.130"
-    assert result["active"] == {"mode": "released", "version": "2026.9.26.2220"}
+    assert result["active"] == {"mode": "released", "version": "2026.9.25.1000"}
     # The newest is chosen by default: the update line.
     assert result["use_release"] == "pb source use-release --expect-version 2026.9.27.130"
 
 
 def test_a_chosen_version_prints_its_line_and_the_active_one_says_nothing_to_change(tmp_path):
-    fetch = _fake_index(["2026.9.26.2220", "2026.9.27.130"])
+    fetch = _fake_index(["2026.9.25.1000", "2026.9.27.130"])
     _install(tmp_path, "2026.9.27.130", active=True)
 
-    back = source_versions(tmp_path, choose="2026.09.26.2220", fetch=fetch, index=INDEX)
-    assert back["chosen"] == "2026.9.26.2220"
-    assert back["use_release"] == "pb source use-release --expect-version 2026.9.26.2220"
+    back = source_versions(tmp_path, choose="2026.09.25.1000", fetch=fetch, index=INDEX)
+    assert back["chosen"] == "2026.9.25.1000"
+    assert back["use_release"] == "pb source use-release --expect-version 2026.9.25.1000"
 
     same = source_versions(tmp_path, fetch=fetch, index=INDEX)
     assert same["chosen"] == "2026.9.27.130" and same["note"] == "Already active; nothing to change."
 
 
 def test_an_unpublished_or_invalid_choice_is_refused_by_name(tmp_path):
-    fetch = _fake_index(["2026.9.26.2220"])
+    fetch = _fake_index(["2026.9.25.1000"])
     with pytest.raises(DomainError) as missing:
         source_versions(tmp_path, choose="2026.9.28.100", fetch=fetch, index=INDEX)
     assert missing.value.code == "work_client_version_not_published"
@@ -102,15 +102,15 @@ def test_an_unpublished_or_invalid_choice_is_refused_by_name(tmp_path):
 
 
 def test_a_yanked_version_is_listed_but_never_chosen_by_default(tmp_path):
-    fetch = _fake_index(["2026.9.26.2220", "2026.9.27.130"], yanked={"2026.9.27.130"})
+    fetch = _fake_index(["2026.9.25.1000", "2026.9.27.130"], yanked={"2026.9.27.130"})
     result = source_versions(tmp_path, fetch=fetch, index=INDEX)
     assert [row["yanked"] for row in result["versions"]] == [True, False]
-    assert result["latest"] == "2026.9.26.2220"
-    assert result["use_release"].endswith("2026.9.26.2220")
+    assert result["latest"] == "2026.9.25.1000"
+    assert result["use_release"].endswith("2026.9.25.1000")
 
 
 def test_a_code_snapshot_is_active_but_no_version_is(tmp_path):
-    fetch = _fake_index(["2026.9.26.2220"])
+    fetch = _fake_index(["2026.9.25.1000"])
     snapshot = _install(tmp_path, "0", active=True, mode="snapshot")
     result = source_versions(tmp_path, fetch=fetch, index=INDEX)
     assert result["active"] == {"mode": "snapshot", "release_id": snapshot}
@@ -128,9 +128,9 @@ def test_the_command_is_read_only_and_works_before_setup(tmp_path, monkeypatch):
         return {"schema": "project-board.client-source-versions.v1"}
 
     monkeypatch.setattr("project_board.client.source_versions.source_versions", fake)
-    args = cli.build_parser().parse_args(["source", "versions", "--version", "2026.9.26.2220", "--index-url", INDEX])
+    args = cli.build_parser().parse_args(["source", "versions", "--version", "2026.9.25.1000", "--index-url", INDEX])
     monkeypatch.setattr(cli, "resolve_host_config_path", lambda value=None: (_ for _ in ()).throw(
         DomainError("work_relay_config_required", "no config")))
     assert cli._source_command(args)["schema"] == "project-board.client-source-versions.v1"
     assert str(seen["root"]).endswith(".kdcube/client-runtime/tools/problem-board")
-    assert seen["choose"] == "2026.9.26.2220" and seen["index"] == INDEX
+    assert seen["choose"] == "2026.9.25.1000" and seen["index"] == INDEX
