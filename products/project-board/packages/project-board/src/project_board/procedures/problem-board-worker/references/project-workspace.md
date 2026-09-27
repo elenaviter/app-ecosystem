@@ -199,35 +199,43 @@ like no page.
 
 ## 6. Work in worktrees inside your workspace, and remove them when done
 
-Every agent lays out its workspace the same way, so the person and the
-coordinator can see what each agent has in hand, reviews and fixes never
+Every agent lays out its workspace the same way. The person and the
+coordinator can then see what each agent has in hand, reviews and fixes never
 disturb the work in hand, and a disk does not fill with forgotten copies
-(operator and team round, 2026-09-27):
+(operator and the team's Rule 7 round, 2026-09-27):
 
 | Folder | What it is |
 | --- | --- |
-| `<workspace>/<alias>` | the clone from step 2: always on its declared branch, clean, and only fetched and fast-forwarded. Step 5, the relay's journal views and your test overlays read it, so a work branch, a work in progress or a tool's commit here would change what they read. |
+| `<workspace>/<alias>` | **the clean clone** from step 2. It stays on its declared branch, is clean, and is fetched and fast-forwarded (`git merge --ff-only origin/<branch>`), not only fetched. Step 5, the relay's journal views and every test overlay read its working tree. A work branch, a work in progress or a tool's commit here would change what they read. If the fast-forward refuses, the clone is not clean: stop and report it, never reset it. |
 | `<workspace>/wt/<item>-<alias>` | one worktree per assignment and repository, on the assignment's work branch: `git -C <workspace>/<alias> worktree add <workspace>/wt/<item>-<alias> -b <branch> origin/<base>`. A change pair across repositories is one worktree in each. |
-| `<workspace>/wt/journal-<alias>` | one long-lived worktree for journal entries and project pages, so a journal change never shares a checkout with code |
-| `<workspace>/.reviews/<item>-<alias>-<short sha>` | one detached worktree per review, returned-item check or tested merge, at the exact head you examine |
+| `<workspace>/wt/journal-<alias>` | one long-lived worktree on `work/journal-<agent-alias>`, for journal entries and project pages (one open journal change request per agent at a time), so a journal change never shares a checkout with code |
+| `<workspace>/rv/<item>-<alias>-<short sha>` | one worktree per review, returned-item check or tested merge, **detached** at the exact commit you examine: `git -C <workspace>/<alias> worktree add --detach <path> <sha>`. A review never moves anyone's branch. |
 
 - **Nothing goes to a temporary or hidden folder outside the workspace.** A
   copy there is invisible to the person, and nothing cleans it up.
-- **Tests name their trees.** A suite that overlays other repositories points
-  each one at an explicit folder: the clean clone for `main`, or the
-  partner's worktree for a change pair. It prints each tree's head, so the
-  result names what it tested.
-- **Tools that write** (`pb plan sync`, journal entries, releases) run in a
-  worktree on their own branch, never in the clone.
+- **Suites name their trees.** A suite that overlays other repositories takes
+  each tree as an argument or variable, defaulting to the clean clones (right
+  for main against main). A change pair points each at its partner worktree,
+  for example `AE=<workspace>/wt/<item>-app-ecosystem`. The suite prints each
+  tree's head, and the report quotes them.
+- **Writing tools run in a worktree, never in the clean clone.** `pb plan sync`
+  and `pb plan import` resolve the journal home from `pb worker context`,
+  which is the clean clone. Until they take an explicit journal path, run them
+  from your journal worktree with that path. `scripts/release-pb` runs in its
+  own `wt/release-<version>` tree from `origin/main`.
 
 **Remove what is finished.** When the item is done or cancelled **and** its
 change requests are merged or closed, remove its worktrees and local branches:
 `git -C <workspace>/<alias> worktree remove <path>`, then
-`git -C <workspace>/<alias> branch -d <branch>`, then `git worktree prune`.
-Remote branches are the merger's to delete. A review tree goes as soon as the
-verdict is recorded. Its installed packages (for example a widget's
-`node_modules`) go with it. Before a pause or the end of a session, read
-`git worktree list` for each repository and remove every tree whose work is
-merged or abandoned. Why: worktrees that were never removed filled one host
-with about a hundred stale folders, and a coordinator's hidden test trees
-reached 4 GB.
+`git -C <workspace>/<alias> branch -d <branch>`, then
+`git -C <workspace>/<alias> worktree prune`.
+- Never `rm -rf` a worktree folder, and never remove the clean clone: it holds
+  every worktree's Git data.
+- Remote branches are the merger's to delete.
+- A review tree goes as soon as the verdict is recorded. Its installed packages
+  (for example a widget's `node_modules`) go with it.
+- Before a pause or the end of a session, read `git worktree list` for each
+  repository and remove every tree whose work is merged or abandoned.
+
+Why: worktrees that were never removed filled one host with about a hundred
+stale folders, and a coordinator's hidden test trees reached 4 GB.
