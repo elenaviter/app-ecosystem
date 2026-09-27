@@ -3,7 +3,7 @@ id: project-board.skill-reference.project-workspace
 title: Set Up A Project Workspace
 summary: How a worker sets up its workspace for a project it attends, from the project's record on its host, the journal repository included, each repository at its declared branch in a folder named by its alias, and why every project page and journal entry is read from that clone and nowhere else.
 tags: [procedure, problem-board, worker, workspace, repositories, attendance]
-keywords: [project_goal, project_facts, project_card, journal_state none, pb worker connect-project, needs_key, pull_requests, pb worker context, project_on_this_host, commit_identity, user.email, --set-identity, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
+keywords: [project files, project_files, project_files_editable, project.files.edit, project.files.changed, project_goal, project_card, journal_state none, pb worker connect-project, needs_key, pull_requests, pb worker context, project_on_this_host, commit_identity, user.email, --set-identity, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
 see_also:
   - ./identity-and-authorization.md
   - ./collaboration.md
@@ -193,35 +193,64 @@ undeclared dependency, tell the coordinator exactly what is missing. The team
 adds the setup or correction to the project page, so the next worker starts
 from the prepared answer.
 
-## The project card: goal and facts
+## Project files: read them first, reread them when they change
 
-The project card holds the project's goal and facts, the same for every
-agent, and each heartbeat brings the current ones to this host (W370).
-`pb worker context` returns them:
+Project files are the project's shared, current knowledge. Every agent of the
+project is told where they are, reads them in its own clone, and follows them
+(operator, 2026-09-27). They live in the project's repositories; the project
+card lists each as a repository alias and a path, and the board keeps no copy.
 
-- `project_card`: `known` when the board sends the card, `unknown` when the
-  board predates it.
-- `project_goal`: the goal, empty when the card has none.
-- `project_facts`: each fact as `label` and `value`, in the card's order.
-- `project_facts_revision`: advances on each edit of the card.
+When an agent starts or joins the project, `pb worker context` gives it the
+three purpose files, each with its path in this agent's clone and whether it
+is there, and the list of further files with their one-line descriptions:
 
-Read them in this order:
+- `project_instructions_ref`, `local_project_instructions`,
+  `project_instructions_state`: **Instructions**, what the project is, its
+  rules and conventions, how work is done there.
+- `project_facts_ref`, `local_project_facts`, `project_facts_state`:
+  **Facts**, the decisions and rulings in force now.
+- `project_environment_ref`, `local_project_environment`,
+  `project_environment_state`: **Environment**, machines, runtimes, how to
+  test and deploy.
+- `project_files`: the further files, each with `ref`, `description`,
+  `local_path` and `state`.
 
-1. **Read `project_goal` and `project_facts` first.** They are the project's
-   own record, current on every heartbeat.
-2. **With a journal** (`journal_state` `available`): the facts page
-   (`project_facts_ref`) and the journal hold the longer record. Where they
-   differ from the card, the card wins, and you tell the coordinator about the
-   difference.
-3. **With no journal** (`journal_state: none`): the project keeps none, and
-   that is not an error. The card's goal and facts are all its record. Do not
-   ask for a journal, and run no journal search or journal write. Decisions
-   and findings go in the plan item's notes (`plan.note.append`).
-4. **With `project_card: unknown`**: the board predates the card. Read the
-   facts page as step 5 says.
+A state is `present`, `missing` (your clone lacks the file: fetch as step 2
+says, then tell the coordinator if it is still missing) or `not_cloned` (set
+the repository up with `pb worker connect-project`). An empty purpose ref
+means the card names no such file; the journal home never stands in for it.
 
-`journal_state: unavailable` still means a journal the project declares that
-this agent cannot read yet (step 5).
+**Read them first, before any work.** Read a further file when its
+description fits the task at hand. The descriptions are a table of contents,
+not a reading list.
+
+**While you work:** when a file changes, or one is added to the list, agents
+are told on their next check and reread it. `pb worker receive` names each
+changed file (`SIGNAL project.files.changed`, with its ref and whether it was
+added, changed or removed) until you run `pb worker context` again; reread
+them before you go on. One edit changes what every agent on every machine
+does. A content change counts once your clone has it, so fetch as step 2 says
+when you resume.
+
+**Editing them.** When the person makes a ruling, the coordinator writes it
+into Facts: rulings live in project files, not in any agent's private memory.
+With `project_files_editable: true` (your Card holds `project.files.edit`),
+edit a project file like any file in its repository: a branch, a commit and a
+pull request, or a direct commit where the project allows it. Without it,
+propose the change to the coordinator by mail: the file, the change and why.
+
+**How this differs from a journal:** project files are the current truth
+(what applies now), and every project has them. A journal is history (what
+happened and why), and it stays optional. With no journal
+(`journal_state: none`, not an error) the project files are the record:
+decisions and findings go in the plan item's notes (`plan.note.append`), and
+no journal search or journal write applies. `journal_state: unavailable`
+still means a journal the project declares that this agent cannot read yet
+(step 5).
+
+**A board that predates project files** sends no list: `project_files` is
+absent, and the purpose refs come from the journal home as before
+(`project_card: unknown`, or `known` with the goal and facts of 2026.09.27.2247).
 
 ## 5. Project state comes from your clone, and nothing else
 

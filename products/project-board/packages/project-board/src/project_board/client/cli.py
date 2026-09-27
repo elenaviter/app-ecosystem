@@ -77,6 +77,7 @@ from .stop_guard import stop_guard_decision
 from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
 from .project_connect import Connector, Machine, connect_repositories, next_step
+from .project_files import changed_files, files_context, files_fingerprint, missing_files
 from .workspace_report import build_workspace_report, commit_identity, report_signature
 from .limit_state import (
     limit_state_from_claude_statusline,
@@ -3599,7 +3600,7 @@ def _workspace_report_command(
 def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) -> dict[str, Any]:
     """pb worker connect-project: Part 2 of connecting a machine, for one attended project (W304 finding 19)."""
 
-    project_ref, _parsed, record, workspace, alias, email = _project_workspace(args, config, field, identity)
+    project_ref, parsed, record, workspace, alias, email = _project_workspace(args, config, field, identity)
     Path(workspace).mkdir(parents=True, exist_ok=True)
     ssh_dir = Path(args.ssh_dir).expanduser() if args.ssh_dir else Path.home() / ".ssh"
     connector = Connector(
@@ -3618,11 +3619,26 @@ def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) 
         # Fixed texts only (never a path): the board shows them under "not reachable yet".
         reasons={str(row["alias"]): str(row["report_reason"]) for row in rows if row.get("report_reason")},
     )
+    # W370: every file the card lists must be in these clones once they are set up.
+    listed = field.read_project_files(parsed.object_id)
+    missing = missing_files(workspace, listed) if listed.get("known") else []
+    next_text = next_step(rows)
+    if missing:
+        next_text += (
+            " Tell the coordinator each project file that is not in your clone, with its alias and path: "
+            + "; ".join(f"{item['alias']}:{item['path']} ({item['state']})" for item in missing)
+            + "."
+        )
     return {
         "worker": identity.worker_name,
         "project_ref": project_ref,
         "workspace": workspace,
         "host_id": str(config.host_id),
+        **(
+            {"project_files_missing": [{k: item[k] for k in ("purpose", "alias", "path", "state")} for item in missing]}
+            if listed.get("known")
+            else {}
+        ),
         "connected": [
             {key: value for key, value in row.items() if key not in {"grant", "report_reason"}} for row in rows
         ],
@@ -3632,12 +3648,83 @@ def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) 
             "repositories": reported["repositories"],
             "on_board": reported["on_board"],
         },
-        "next": next_step(rows),
+        "next": next_text,
         "rule": (
             "Run it again after the person adds the keys: a repository this machine reaches is cloned, "
             "or fetched and fast-forwarded, and is never forced. Revoking keys is add-a-worker-host step 7."
         ),
     }
+
+
+def _agent_workspace_for(config: Any, identity: Any) -> str:
+    recorded = config.worker(identity)
+    return agent_workspace(
+        config,
+        recorded=str(getattr(recorded, "working_directory", "") or ""),
+        alias=str(getattr(recorded, "worker_alias", "") or ""),
+        worker_name=identity.worker_name,
+    )[0]
+
+
+def _record_project_files_seen(config: Any, field: Any, identity: Any, project_ref: str) -> None:
+    try:
+        project_id = parse_ref(project_ref).object_id
+        record = field.read_project_files(project_id)
+    except DomainError:
+        return
+    if not record.get("known"):
+        return
+    field.record_project_files_seen(
+        identity.worker_name,
+        project_id,
+        files_revision=int(record.get("files_revision") or 0),
+        files=files_fingerprint(_agent_workspace_for(config, identity), record),
+    )
+
+
+def _with_project_files_signals(received: dict[str, Any], config: Any, field: Any, identity: Any) -> dict[str, Any]:
+    """Name the project files that changed since this agent last read them (W370).
+
+    Operator, 2026-09-27: when a file changes, or one is added to the list,
+    agents are told on their next check and reread it. A content change
+    counts once this agent's clone has it. The signal repeats on each receive
+    until the agent reads `pb worker context` again.
+    """
+
+    signals = list(received.get("signals") or [])
+    try:
+        workspace = _agent_workspace_for(config, identity)
+    except DomainError:
+        return received
+    for project in received.get("projects") or []:
+        if not isinstance(project, Mapping) or project.get("state") == "not_on_this_host":
+            continue
+        project_ref = str(project.get("project_ref") or "")
+        try:
+            project_id = parse_ref(project_ref).object_id
+            record = field.read_project_files(project_id)
+        except DomainError:
+            continue
+        if not record.get("known"):
+            continue
+        seen = field.read_project_files_seen(identity.worker_name, project_id)
+        changes = changed_files(seen, record, files_fingerprint(workspace, record))
+        if changes:
+            signals.append(
+                {
+                    "kind": "project.files.changed",
+                    "project_ref": project_ref,
+                    "changes": changes,
+                    "next": (
+                        "Run `pb worker context --project-ref "
+                        + project_ref
+                        + "` and reread the files named here before you go on."
+                    ),
+                }
+            )
+    if signals:
+        received = {**received, "signals": signals}
+    return received
 
 
 def _review_routing(args: Any) -> dict[str, Any]:
@@ -3931,13 +4018,14 @@ def _worker_command(args: Any) -> dict[str, Any]:
             reason=str(getattr(args, "reason", "") or ""),
         )
     if args.worker_command == "receive":
-        return pull_worker_input(
+        received = pull_worker_input(
             field,
             worker_name=identity.worker_name,
             limit=args.limit,
             lease_seconds=args.lease_seconds,
             wake_id=args.wake_id,
         )
+        return _with_project_files_signals(received, config, field, identity)
     if args.worker_command == "leases":
         worker = field.read_worker(identity.worker_name)
         lease_owner = str(
@@ -4106,6 +4194,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
         context = _worker_project_context(
             config, field, str(args.project_ref), channel=config.worker(identity)
         )
+        # W370: reading the context is reading the project files; receive
+        # names what changes after this.
+        _record_project_files_seen(config, field, identity, str(args.project_ref))
         try:
             attended = set(field.read_worker(identity.worker_name).get("attended_project_refs") or [])
         except DomainError:
@@ -4725,16 +4816,24 @@ def _worker_project_context(
     # W370: the card's goal and facts, the same for every agent; absent while
     # the board has sent none (it predates them), so unknown reads as unknown.
     card = field.read_project_card(parsed.object_id) if on_host else {"known": False}
-    card_fields: dict[str, Any] = (
-        {
-            "project_card": "known",
-            "project_goal": card["goal"],
-            "project_facts": card["facts"],
-            "project_facts_revision": card["facts_revision"],
-        }
-        if card.get("known")
-        else {"project_card": "unknown", "project_facts_revision": 0}
-    )
+    # W370, operator 2026-09-27: the project's files live in its repositories
+    # and the card lists where. Once the board sends that list, it decides the
+    # instructions, facts and environment refs, and the label/value facts retire.
+    files = field.read_project_files(parsed.object_id) if on_host else {"known": False}
+    files_fields: dict[str, Any] = files_context(workspace, files) if files.get("known") else {}
+    if files.get("known"):
+        card_fields: dict[str, Any] = {"project_card": "known", "project_goal": files["goal"]}
+    else:
+        card_fields = (
+            {
+                "project_card": "known",
+                "project_goal": card["goal"],
+                "project_facts": card["facts"],
+                "project_facts_revision": card["facts_revision"],
+            }
+            if card.get("known")
+            else {"project_card": "unknown", "project_facts_revision": 0}
+        )
     return {
         "project_ref": project_ref,
         "project_on_this_host": on_host,
@@ -4793,6 +4892,8 @@ def _worker_project_context(
         ),
         **journal_state,
         **journal,
+        # After the journal's pages: the card's list decides them (W370).
+        **files_fields,
     }
 
 

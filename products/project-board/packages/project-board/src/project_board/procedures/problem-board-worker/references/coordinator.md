@@ -315,8 +315,10 @@ tested was never tested (operator, 2026-09-26).
 
 ## Keep everything known in the project journal
 
-The project journal home is the team's complete shared record. It carries the
-facts page, the environment page, operator rulings with their reasons,
+The project files are the team's current truth, and every project has them
+(project workspace, "Project files"). When the project keeps a journal, the
+project journal home is the team's complete shared history. It carries
+operator rulings with their reasons (the ruling itself is in force in Facts),
 runtime-window outcomes, and every project-wide gap with its fix. Whoever
 learns a project-wide fact writes a journal entry and points to it from the
 relevant item note or mail thread. The coordinator checks that the entry exists,
@@ -327,23 +329,24 @@ note or mail thread can carry the immediate conversation; its journal link
 makes the resulting knowledge available to the whole team and to later
 sessions.
 
-**Where knowledge goes.** Project state and rulings go in the project
-journal. Practice that helps any coordinator or worker goes in this procedure,
+**Where knowledge goes.** When the person makes a ruling, the coordinator
+writes it into Facts, the project's facts file: rulings live in project files,
+not in any agent's private memory, and every agent is told on its next check
+(project workspace, "Project files"). What happened and why goes in the
+project journal, when the project keeps one. Practice that helps any coordinator or worker goes in this procedure,
 through a change request. Private agent memory holds only that agent's
 personal preferences. Why: knowledge kept in one agent's memory is lost to
 every other agent and to that agent's successor (operator, 2026-09-26).
 
 ### Starting a project
 
-The journal accumulates from the first day. When the journal home is bound at
-project creation, the coordinator creates `project-facts.md` and
-`project-environment.md` with their standard sections. Every section contains
-either the current fact or `Not known yet`. The first host, repository,
-environment, and operator ruling update those pages as soon as each becomes
-known.
-
-Automatic page seeding by the board is a product follow-up. The coordinator
-owns this creation step in the current procedure.
+The project files are there from the first day. The coordinator creates each
+file the card lists that does not exist yet (Instructions, Facts, Environment,
+defaults `instructions.md`, `facts.md` and `environment.md`) with its standard
+sections, every section with either the current fact or `Not known yet`, and
+commits them. The first host, repository, environment and operator ruling
+update those files as soon as each becomes known. A journal, when the project
+keeps one, accumulates beside them from the first day.
 
 ## Check a silent worker, do not wait for it
 
