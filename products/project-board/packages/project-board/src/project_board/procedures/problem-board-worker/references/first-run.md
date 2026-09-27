@@ -32,7 +32,7 @@ again after each step, because each step changes what the next one is.
 | value | what it names |
 | --- | --- |
 | target name (`--target-id`) | this machine's short, stable label for one KDCube deployment; the deployment never receives it |
-| endpoint (`--endpoint`) | the real governed Problem Board MCP address on that deployment |
+| endpoint (`--endpoint`) | the board's MCP address, ending in `/problem-board@1-0/public/mcp/problem_board`, as this machine reaches it |
 | tenant and platform project | the KDCube deployment coordinates that host the Problem Board app |
 | host ID (`--host-id`) | the stable logical identity of this machine, published with its workers |
 | host label (`--host-label`) | the machine's readable display name |
@@ -126,14 +126,20 @@ that carries messages between the agents here and that server.
 
 When `next.step` is `configure_target`:
 
-1. Ask which deployment they want. Ask for the endpoint URL, the tenant and the
-   platform project, and say which is which, using the table above.
+1. Ask them to sign in to the board, open their project, press **Connect a
+   machine** and paste the `pb setup` line it shows. Take the endpoint, the
+   tenant and the platform project from that line exactly, and ask for none of
+   them. Without an account, they ask whoever runs the board to add them.
 2. Say that the target name is only a local label they choose, and suggest one.
    The host id and host label name this machine, and they choose those too.
 3. Ask which folders agents on this machine may work in. Those become
    `--allow-root` values.
 4. Show the one `pb setup` command with their values and run it after they
-   approve.
+   approve. It checks first that the endpoint answers as the board and writes
+   nothing otherwise. `work_setup_endpoint_not_board` means another address
+   was copied (a relay's worker-stream address, say); `work_setup_endpoint_unreachable`
+   means this machine cannot reach it, often a local address of another
+   machine. Both are answered by the line from Connect a machine.
 5. Select the same reviewed source that provided the bootstrap, now that the
    target configuration exists. A team host runs the code action:
 

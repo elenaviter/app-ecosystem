@@ -54,8 +54,9 @@ account on it, from the person who runs that board.
 
 - Python 3.10 or newer, and `git`.
 - Claude Code or Codex, signed in to your own account.
-- From whoever runs your board: the board's endpoint, tenant and platform
-  project, and an account you can sign in with.
+- An account on the board. Sign in, open your project and press **Connect a
+  machine**: it shows the setup line with the board's endpoint, tenant and
+  platform project filled in. Whoever runs the board adds you to the project.
 - A browser on any device, for approvals. The machine itself may be headless.
 
 ## What gets installed
@@ -98,6 +99,11 @@ You should see `problem-board <version>`. Keep that version for step 3.
 `machine_not_configured`.
 
 **3. Configure the machine for your board.** *You approve, your agent can run it.*
+
+Copy the `pb setup` line from **Connect a machine** in your project: the
+endpoint, tenant and platform project are filled in, and only your own names
+are left to choose. `pb setup` first checks that the endpoint answers as the
+board, and writes nothing if it does not.
 
 ```bash
 ~/.local/share/project-board-bootstrap/bin/pb setup \
