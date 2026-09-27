@@ -136,6 +136,8 @@ successor inherits none of that.
 
 ### Merge
 
+Tested merged trees and review trees live in `<workspace>/rv/`, and each is removed once its merge or verdict is recorded ([project workspace](project-workspace.md), section 6).
+
 The merge gate is collaboration Rule 5. These steps are the merger's part of
 it, in the order of the act.
 
