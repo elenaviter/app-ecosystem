@@ -23,6 +23,7 @@ see_also:
   - ./flows.md
   - ./review.md
   - ./operations-by-actor.md
+  - ./operations-and-rules.md
   - ./delivery.md
   - repo:app-ecosystem/products/project-board/packages/project-board/README.md
 ---
@@ -71,6 +72,9 @@ only this repository can open every page.
 - [Operations by actor](operations-by-actor.md): every operation, the
   permission it needs, and whether a worker, a coordinator and a person
   operating the project should hold it.
+- [Operations and rules](operations-and-rules.md): generated from the board,
+  what decides each operation for a person (their Card, membership or an
+  identity rule) and its business rules.
 
 ## Hosts, relays and workers
 
