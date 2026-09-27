@@ -100,8 +100,13 @@ def test_a_board_that_predates_the_card_fields_reads_unknown(tmp_path, monkeypat
 
 
 def test_an_empty_card_is_known_and_empty(tmp_path, monkeypatch):
-    context, _, _ = _context(tmp_path, monkeypatch, card={"goal": "", "facts": [], "facts_revision": 1})
+    # The board sends facts_revision 0 for a card never edited: still the card, known and empty.
+    context, _, field = _context(tmp_path, monkeypatch, card={"goal": "", "facts": [], "facts_revision": 0})
     assert context["project_card"] == "known" and context["project_goal"] == "" and context["project_facts"] == []
+    assert context["project_facts_revision"] == 0
+    # Its first edit (revision 1) is written; revision 0 again is not.
+    assert field.sync_project_card(PROJECT_ID, goal="Goal", facts=[], revision=1) is True
+    assert field.sync_project_card(PROJECT_ID, goal="", facts=[], revision=0) is False
 
 
 def test_a_project_with_no_journal_reads_none_not_an_error(tmp_path, monkeypatch):
