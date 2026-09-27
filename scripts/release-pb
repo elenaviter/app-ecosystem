@@ -1,0 +1,5 @@
+#!/bin/sh
+# Release the pb set (app-foundation, service-foundation, connection-hub,
+# project-board) at one version: prepare, publish, verify. See
+# docs/releases.md and scripts/release_pb.py.
+exec python3 "$(dirname "$0")/release_pb.py" "$@"
