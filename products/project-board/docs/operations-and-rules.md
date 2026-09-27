@@ -57,6 +57,8 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `project.set_journal_home` | project | `work:coordinate` | Identity rule `project_admin_by_role` | Read only while the repository preset names no journal repository with a path. |
 | `project.set_repositories` | project | `work:coordinate` | Identity rule `project_admin_by_role` | Written under the preset's current revision. Once the preset is the journal home, a repository keeps the journal role and a path. |
 | `project.set_commit_identity` | project | `work:coordinate` | Identity rule `project_admin_by_role` | One email address, or empty to clear, under the preset's current revision, which it advances. |
+| `project.set_files` | project | `work:coordinate` | Identity rule `project_admin_by_role` | An ordered list of repository alias and path, each alias one of the project's repositories; the instructions, facts and environment purposes at most once each; written under the list's current revision. |
+| `project.files.edit` | project | `work:coordinate` | Membership (`project_membership`) | A read-only check an agent makes before editing the project's files in its repositories; the coordinator profile holds it. |
 | `project.plan.index` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `project.plan.item` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `project.plan.resolve` | plan | `work:observe` | Membership (`project_membership`) |  |
@@ -151,6 +153,7 @@ The board's own page calls these for a signed-in person; no Card holds them.
 | `inbox.thread.privacy` | Identity rule `private_thread` | Audited; a private thread is visible only to its person. |
 | `journal.view.get` | Membership (`project_membership`) |  |
 | `journal.views.list` | Membership (`project_membership`) |  |
+| `project.file.view.request` | Membership (`project_membership`) | Only a file on the project's list, served by an agent that attends the project; the board keeps no content, only an expiring view stamped with its commit. |
 | `project.people.history` | Membership (`project_membership`) | Thread privacy events are not shown. |
 | `project.people.invitation.withdraw` | Identity rule `project_admin_by_role` |  |
 | `project.people.remove` | Identity rule `project_admin_by_role` | The owner and the last admin are not removed; nobody removes themselves (last_admin). |
