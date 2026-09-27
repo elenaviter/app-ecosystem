@@ -6,4 +6,4 @@ deployment orchestration remain outside this package. Additional primitives
 move here only after their contracts are characterized.
 """
 
-__version__ = "2026.09.27.2247"
+__version__ = "2026.09.28.0003"
