@@ -3240,7 +3240,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         expectedCardRevision: item.card_revision,
         expectedCatalogVersion: item.catalog_drift?.current_version || item.catalog_version,
         // Changed descriptors the grantor reviewed and accepts with this save;
-        // every other changed selected operation stays suspended.
+        // every other changed selected operation stays as it was: suspended
+        // on a remote MCP connector, in effect for review on a catalog row.
         acceptedOperations: editAcceptedOperations,
         compositionMode: item.source === 'control'
           ? (projectPersonControl ? 'and' : editCompositionMode)

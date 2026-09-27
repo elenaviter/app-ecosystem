@@ -49,6 +49,7 @@ from connection_hub.delegated_credentials.oauth.clients import (
 from connection_hub.delegated_credentials.catalog.descriptors import (
     RESOURCE_KIND_CATALOG,
     ROW_ATTR_KIND,
+    changed_operation_effect,
     ROW_ATTR_PROVIDER,
 )
 from connection_hub.delegated_credentials.catalog.drift import (
@@ -115,6 +116,9 @@ class CardOperationView:
     accepted_digest: str = ""
     current_digest: str = ""
     policy: Mapping[str, Any] | None = None
+    # For a changed operation: suspended until accepted (remote MCP) or still
+    # in effect for review (catalog row); see changed_operation_effect.
+    effect: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -125,6 +129,8 @@ class CardOperationView:
         }
         if self.policy is not None:
             payload["policy"] = dict(self.policy)
+        if self.effect:
+            payload["effect"] = self.effect
         return payload
 
     @classmethod
@@ -148,6 +154,7 @@ class CardOperationView:
         return cls(
             name=name,
             state=state,
+            effect=_clean(data.get("effect")),
             accepted_digest=_clean(data.get("accepted_digest")),
             current_digest=_clean(data.get("current_digest")),
             policy=policy,
@@ -549,6 +556,11 @@ def build_card_view(
                     ),
                     current_digest=_clean(current_ops.get(name, "")),
                     policy=index.get((resource, name)),
+                    effect=(
+                        _clean(state.get("changed_effect")) or changed_operation_effect(kind)
+                        if op_state == OPERATION_STATE_CHANGED
+                        else ""
+                    ),
                 )
             )
         resources.append(

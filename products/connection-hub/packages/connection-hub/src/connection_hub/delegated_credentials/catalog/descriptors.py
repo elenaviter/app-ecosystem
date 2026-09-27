@@ -16,9 +16,18 @@ The card therefore records, per resource, what it accepted: the resource kind,
 the revision and digest of the descriptor it was saved against, the claims it
 saw, and one digest per operation the resource offered. Drift is then judged
 resource by resource. An unrelated change elsewhere in the deployment catalog
-cannot make an unchanged connector's grants look new, a changed selected
-operation is suspended until the owner accepts exactly that change, and a tool
-the server started advertising stays ungranted.
+cannot make an unchanged connector's grants look new, and a tool the server
+started advertising stays ungranted.
+
+What a changed selected operation means depends on who enforces it
+(``changed_operation_effect``). A remote MCP connector's call is checked
+against the accepted per-tool digest, so a changed tool is suspended until the
+owner accepts exactly that change. A catalog row (the deployment's own apps,
+such as Problem Board's MCP and named services) is not: its calls are decided
+by the Card's selected operations and grants alone, so a changed operation
+stays in effect and is only shown for review. Accepting records the review in
+both cases (operator, 2026-09-27: the Card screen said "suspended" for catalog
+operations that agents were still running).
 
 Rows arriving through an owner overlay (remote MCP connectors) carry their own
 descriptor evidence as attributes; a plain catalog row is digested here from
@@ -37,6 +46,21 @@ from connection_hub.operation_groups import without_grouping
 
 RESOURCE_KIND_CATALOG = "catalog"
 RESOURCE_KIND_REMOTE_MCP = "remote_mcp"
+
+# What a changed selected operation does until the owner accepts it.
+CHANGE_EFFECT_SUSPENDED = "suspended_until_accepted"
+CHANGE_EFFECT_REVIEW = "in_effect_review"
+
+
+def changed_operation_effect(kind: Any) -> str:
+    """Suspended where the call checks the accepted digest, else in effect for review.
+
+    Only a remote MCP connector's calls (and a gateway provider's, which keep
+    their own acceptance) check the accepted per-operation digest. A catalog
+    row's calls do not, so saying "suspended" there would be untrue.
+    """
+
+    return CHANGE_EFFECT_REVIEW if (_clean(kind) or RESOURCE_KIND_CATALOG) == RESOURCE_KIND_CATALOG else CHANGE_EFFECT_SUSPENDED
 
 # Optional attributes an overlay row may carry to declare its own descriptor
 # authority. Absent attributes mean "a static catalog row".
@@ -317,8 +341,10 @@ def resource_descriptor_state(
     Statuses:
 
         current           accepted evidence matches the current descriptor
-        changed           a selected operation's descriptor changed (it is
-                          suspended until accepted), a selected operation or
+        changed           a selected operation's descriptor changed (see
+                          ``changed_effect``: suspended until accepted for a
+                          remote MCP connector, still in effect and shown for
+                          review for a catalog row), a selected operation or
                           claim was withdrawn, or the resource now advertises
                           operations or claims it did not before
         removed           the resource is no longer offered
@@ -331,6 +357,7 @@ def resource_descriptor_state(
         return {
             "status": "removed",
             "kind": accepted.kind if accepted is not None else "",
+            "changed_effect": changed_operation_effect(accepted.kind if accepted is not None else ""),
             "accepted_revision": accepted.revision if accepted is not None else "",
             "accepted_digest": accepted.digest if accepted is not None else "",
             "current_revision": "",
@@ -346,6 +373,8 @@ def resource_descriptor_state(
         return {
             "status": "unknown",
             "kind": current.kind,
+        "changed_effect": changed_operation_effect(current.kind),
+            "changed_effect": changed_operation_effect(current.kind),
             "accepted_revision": "",
             "accepted_digest": "",
             "current_revision": current.revision,
@@ -382,6 +411,7 @@ def resource_descriptor_state(
     return {
         "status": status,
         "kind": current.kind,
+        "changed_effect": changed_operation_effect(current.kind),
         "accepted_revision": accepted.revision,
         "accepted_digest": accepted.digest,
         "current_revision": current.revision,
@@ -395,9 +425,12 @@ def resource_descriptor_state(
 
 
 __all__ = [
+    "CHANGE_EFFECT_REVIEW",
+    "CHANGE_EFFECT_SUSPENDED",
     "RESOURCE_KIND_CATALOG",
     "RESOURCE_KIND_REMOTE_MCP",
     "ROW_ATTR_DIGEST",
+    "changed_operation_effect",
     "ROW_ATTR_KIND",
     "ROW_ATTR_OPERATION_DIGESTS",
     "ROW_ATTR_PROVIDER",

@@ -28,6 +28,7 @@ from connection_hub.delegated_credentials.catalog.drift import (
     DRIFT_CHANGED,
     DRIFT_CURRENT,
     DRIFT_NO_RELEVANT_CHANGE,
+    EFFECT_REVIEW,
     EFFECT_SUSPENDED,
     card_drift,
 )
@@ -350,6 +351,8 @@ def test_changed_selected_tool_is_suspended_and_new_sibling_stays_ungranted():
     assert state["changed_operations"] == ["search"]
     assert state["added_operations"] == ["export"]
     assert state["accepted_revision"] == "1" and state["current_revision"] == "2"
+    # A connector's call checks the accepted per-tool digest: it is suspended.
+    assert state["changed_effect"] == EFFECT_SUSPENDED
     assert drift["changed"]["outer_operations"] == [
         {
             "resource": original.resource,
@@ -469,6 +472,42 @@ def test_static_row_change_is_scoped_to_its_own_resource():
     assert drift["resources"][MEMORIES]["changed_operations"] == []
     same = card_drift(card=card, active=before, baseline=before)
     assert same["status"] == DRIFT_CURRENT
+
+
+def test_a_changed_catalog_operation_stays_in_effect_for_review():
+    """Operator, 2026-09-27: the Card screen said "suspended" for catalog
+    operations agents were still running. A catalog row's call is decided by
+    the Card's selections and grants, never by the accepted digest, so the
+    change is in effect and waits for review, on every Card kind."""
+
+    before = _document(_connections(), stamp=NOW)
+    after = _document(_connections(tasks_delete_description="Delete permanently"), stamp=NOW + 5)
+    config_before = oauth_delegated_config_from_connections(before.connections)
+    card = _card(
+        resource_grants={TASKS: ("tasks:use",)},
+        resource_operations={TASKS: ("search", "delete")},
+        catalog_version=before.version,
+        acceptance={TASKS: row_acceptance(config_before.card_selector_config(TASKS), catalog_version=before.version)},
+    )
+    drift = card_drift(card=card, active=after, baseline=before)
+    state = drift["resources"][TASKS]
+    assert state["kind"] == RESOURCE_KIND_CATALOG
+    assert state["changed_operations"] == ["delete"]
+    assert state["changed_effect"] == EFFECT_REVIEW == "in_effect_review"
+    assert [row["effect"] for row in drift["changed"]["outer_operations"]] == [EFFECT_REVIEW]
+
+
+def test_the_effect_follows_who_enforces_the_accepted_descriptor():
+    from connection_hub.delegated_credentials.catalog.descriptors import changed_operation_effect
+
+    assert changed_operation_effect(RESOURCE_KIND_CATALOG) == EFFECT_REVIEW
+    assert changed_operation_effect("") == EFFECT_REVIEW
+    assert changed_operation_effect(RESOURCE_KIND_REMOTE_MCP) == EFFECT_SUSPENDED
+    # The module no longer promises suspension for every changed operation.
+    from connection_hub.delegated_credentials.catalog import descriptors
+
+    assert "a changed selected\noperation is suspended until the owner accepts" not in descriptors.__doc__
+    assert "stays in effect and is only shown for review" in " ".join(descriptors.__doc__.split())
 
 
 def test_acceptance_survives_a_deep_copy_of_the_card_payload():
