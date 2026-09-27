@@ -142,7 +142,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.27.2"
+    assert package["revision"] == "2026.09.27.3"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1386,6 +1386,20 @@ def test_the_kdcube_maintainer_profile_holds_the_runtime_actions():
     assert "are in that runtime's profile, never on this page" in actions
     assert "A reload without a commit stages the working tree" not in actions
 
+def test_the_board_descriptor_is_synced_by_the_committed_tool_before_the_reload():
+    """W353: the board's live descriptor entry was hand-synced twice by scratch
+    scripts; the profile names the committed tool, where it runs in a window,
+    and the catalog check after it."""
+
+    words = _words(_profile())
+    step = words[words.index("**The board's descriptor entry**"):words.index("**The platform:**")]
+    assert "after the deploy worktree checkout and any `kdcube refresh`, and before `kdcube bundle reload problem-board@1-0`" in step
+    assert "playground/domain-solution/tools/sync_board_descriptor.py" in step
+    assert "--apply" in step
+    assert "After the reload run `kdcube bundle catalog check --workdir <workdir>`." in step
+    assert "never by hand-editing the entry" in step
+
+
 def test_delegation_is_not_free_and_its_reason_is_stated():
     """Operator 2026-09-25: delegate only when net positive; no polling; independent pools first."""
 
@@ -1675,3 +1689,16 @@ def test_worker_budgets_name_the_usage_field_and_where_the_caps_live() -> None:
     assert "one `team usage:` line per member" in coordinator
     assert "caps per quota pool" in coordinator
     assert "live on the project's facts page" in coordinator
+
+
+def test_a_worker_searches_before_filing_and_tells_the_coordinator():
+    # W359: workers may file plan items on the operator's two conditions, and
+    # small things go onto an open item (operator, 2026-09-26).
+    collaboration = " ".join(_read("references/collaboration.md").split())
+    rule = collaboration[collaboration.index("## Rule 14."):]
+    assert "search the plan (`project.plan.search`" in rule
+    assert "update it or add a note or an acceptance line to it instead of filing a duplicate" in rule
+    assert "A small change or lesson is never its own item" in rule
+    assert "mail the coordinator the new item's key and title" in rule
+    skill = " ".join(_read("SKILL.md").split())
+    assert "Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14" in skill
