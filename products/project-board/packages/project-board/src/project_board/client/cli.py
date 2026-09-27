@@ -4704,19 +4704,41 @@ def _worker_project_context(
         journal_state = {"journal_state": "available"}
     except DomainError as exc:
         journal = {}
-        journal_state = {
-            "journal_state": "unavailable",
-            "journal_error_code": exc.code,
-            "journal_error": str(exc),
-            **(
-                {"journal_error_details": dict(exc.details)}
-                if exc.details
-                else {}
-            ),
+        declares_journal = any(
+            str(entry.get("role") or "") == "journal" for entry in repositories["repositories"]
+        )
+        if exc.code == "journal_project_unbound" and on_host and not declares_journal:
+            # W370: a project that keeps no journal (none declared, none bound)
+            # is not an error: its card's goal and facts are its record.
+            journal_state = {"journal_state": "none"}
+        else:
+            journal_state = {
+                "journal_state": "unavailable",
+                "journal_error_code": exc.code,
+                "journal_error": str(exc),
+                **(
+                    {"journal_error_details": dict(exc.details)}
+                    if exc.details
+                    else {}
+                ),
+            }
+    # W370: the card's goal and facts, the same for every agent; absent while
+    # the board has sent none (it predates them), so unknown reads as unknown.
+    card = field.read_project_card(parsed.object_id) if on_host else {"known": False}
+    card_fields: dict[str, Any] = (
+        {
+            "project_card": "known",
+            "project_goal": card["goal"],
+            "project_facts": card["facts"],
+            "project_facts_revision": card["facts_revision"],
         }
+        if card.get("known")
+        else {"project_card": "unknown", "project_facts_revision": 0}
+    )
     return {
         "project_ref": project_ref,
         "project_on_this_host": on_host,
+        **card_fields,
         "workspace": workspace,
         "workspace_source": workspace_source,
         **(

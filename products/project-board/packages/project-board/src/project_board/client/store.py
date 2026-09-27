@@ -8346,6 +8346,70 @@ class SharedFieldStore:
             "received_at": str(record.get("updated_at") or ""),
         }
 
+    # W370: the project card's goal and facts, as the board bounds them.
+    PROJECT_GOAL_MAX = 2000
+    PROJECT_FACTS_MAX = 50
+    PROJECT_FACT_LABEL_MAX = 80
+    PROJECT_FACT_VALUE_MAX = 500
+
+    def sync_project_card(
+        self,
+        project_id: str,
+        *,
+        goal: Any,
+        facts: Any,
+        revision: int,
+    ) -> bool:
+        """Keep the project card's goal and facts on this host, by the board's facts revision (W370).
+
+        Every agent reads them from ``pb worker context``: they are the
+        project's own record, the only one when the project keeps no journal.
+        A revision this host already holds is not written again, and an older
+        one never replaces it. Values are bounded as the board bounds them;
+        a fact's value is one line.
+        """
+
+        clean_id = component(project_id, field="project_id")
+        path = self._project_dir(clean_id) / "card.json"
+        rows: list[dict[str, str]] = []
+        for raw in facts if isinstance(facts, list) else []:
+            if not isinstance(raw, Mapping):
+                continue
+            label = " ".join(str(raw.get("label") or "").split())[: self.PROJECT_FACT_LABEL_MAX]
+            value = " ".join(str(raw.get("value") or "").split())[: self.PROJECT_FACT_VALUE_MAX]
+            if label or value:
+                rows.append({"label": label, "value": value})
+            if len(rows) >= self.PROJECT_FACTS_MAX:
+                break
+        with exclusive_lock(self._project_lock(clean_id)):
+            self.read_project(clean_id)
+            current = read_json(path, required=False) or {}
+            held = int(current.get("facts_revision") or 0)
+            if current and held >= int(revision):
+                return False
+            atomic_write_json(
+                path,
+                {
+                    "goal": str(goal or "").strip()[: self.PROJECT_GOAL_MAX] if isinstance(goal, str) else "",
+                    "facts": rows,
+                    "facts_revision": int(revision),
+                    "updated_at": utc_now(),
+                },
+            )
+            return True
+
+    def read_project_card(self, project_id: str) -> dict[str, Any]:
+        """The card's goal and facts; ``known`` is False until a board that sends them answered (W370)."""
+
+        path = self._project_dir(component(project_id, field="project_id")) / "card.json"
+        record = read_json(path, required=False) or {}
+        return {
+            "known": bool(record),
+            "goal": str(record.get("goal") or ""),
+            "facts": [dict(row) for row in record.get("facts") or [] if isinstance(row, Mapping)],
+            "facts_revision": int(record.get("facts_revision") or 0),
+        }
+
     def sync_project_coordinator(
         self, project_id: str, coordinator: Mapping[str, Any]
     ) -> dict[str, Any] | None:

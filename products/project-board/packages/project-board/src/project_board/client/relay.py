@@ -3044,6 +3044,7 @@ class ProblemBoardHostRelayAdapter:
         )
         if self.field._project_path(project_id).exists():
             self._sync_project_repositories(project)
+            self._sync_project_card(project)
             return False
         if not project:
             return False
@@ -3065,7 +3066,24 @@ class ProblemBoardHostRelayAdapter:
             self.config.worker_name,
         )
         self._sync_project_repositories(project)
+        self._sync_project_card(project)
         return True
+
+    def _sync_project_card(self, project: Mapping[str, Any]) -> None:
+        """Keep the card's goal and facts on this host (W370).
+
+        ``facts_revision`` marks a board that sends the card: the project row
+        carried a ``goal`` long before, so a goal alone says nothing.
+        """
+
+        if "facts_revision" not in project:
+            return
+        self.field.sync_project_card(
+            self.config.project_id,
+            goal=project.get("goal"),
+            facts=project.get("facts"),
+            revision=int(project.get("facts_revision") or 0),
+        )
 
     def _sync_project_repositories(self, project: Mapping[str, Any]) -> None:
         """Keep the project's declared repositories on this host, by the board's revision."""
