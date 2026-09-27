@@ -1,15 +1,19 @@
 package:
   id: service-foundation
-  ref: "2026.09.27.2247"
+  ref: "2026.09.28.0003"
   description: |
-    Problem Board client set 2026.09.27.2247: a project needs no journal.
+    Problem Board client set 2026.09.28.0003: project files.
 
-    - `pb worker context` gives the project card: its goal and facts (`project_goal`, `project_facts`, `project_facts_revision`, `project_card`). A project that keeps no journal reads `journal_state: none`, which is not an error (W370).
-    - The skill reads the card's goal and facts first. Without a journal, decisions go in the plan item's notes (W370).
-    - Procedure revision 2026.09.27.12.
+    - A project lists its files on its card: Instructions, Facts and Environment, each a file in a project repository, and as many further files as the person adds, each with a one-line description. `pb worker context` gives each agent the three by purpose and the rest as a list, each with its path in the agent's own clone and whether it is there (W370).
+    - `pb worker receive` names the project files that changed since the agent last read them, and the agent rereads them (W370).
+    - `pb worker connect-project` checks that every listed project file is present after cloning (W370).
+    - Editing project files is a Card permission (`project.files.edit`), held by the coordinator by default. Without it, an agent proposes the change to the coordinator (W370).
+    - The card can show a project file as an attending agent's clone holds it, with the commit it was read at (W370).
+    - The label/value facts from the previous release are retired. Hosts on it keep the facts they last received and see no project files until they update pb.
+    - Procedure revision 2026.09.27.13.
 
 components:
   python_package:
     id: service-foundation
     path: packages/service-foundation
-    version: "2026.09.27.2247"
+    version: "2026.09.28.0003"
