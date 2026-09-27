@@ -26,6 +26,24 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:coordinate",),
     },
+    # W370 (operator, 2026-09-27): project files live in the project's
+    # repositories; the board keeps the list, and editing them is a Card
+    # permission the coordinator profile holds.
+    "project.set_files": {
+        "description": (
+            "Set where the project's files live: an ordered list of repository "
+            "alias and path, with an optional purpose (instructions, facts, "
+            "environment) and a one-line description, compare-and-set."
+        ),
+        "grants": ("work:coordinate",),
+    },
+    "project.files.edit": {
+        "description": (
+            "May edit the project's files in its repositories. A read-only "
+            "check the agent makes before an edit; the edit itself is a commit."
+        ),
+        "grants": ("work:coordinate",),
+    },
     "project.plan.index": {
         "description": (
             "Open any generation-pinned plan page directly in authored order, "
@@ -433,6 +451,8 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.set_journal_home",
         "project.set_repositories",
         "project.set_commit_identity",
+        "project.set_files",
+        "project.files.edit",
         "project.plan.index",
         "project.plan.item",
         "project.plan.resolve",

@@ -81,7 +81,8 @@ from .relay_failures import (
     staged_failure,
 )
 from .local_state_maintenance import run_local_state_maintenance
-from .read_roots import READ_ROOTS_STATE
+from .project_files import file_state
+from .read_roots import READ_ROOTS_STATE, head_commit
 from .local_store import last_read_summaries
 from .outbox_drain import RelayOutboxDrainServer
 from .outbox_store import OutboxStore
@@ -92,12 +93,16 @@ logger = logging.getLogger(__name__)
 
 
 CONFIG_SCHEMA = "problem-board.host-relay-config.v1"
+# W370: the card's view of one listed project file, read from this agent's clone.
+FILE_VIEW_KIND = "project.file.read"
+FILE_VIEW_MAX_BYTES = 256 * 1024
 DEFAULT_CONTROL_KINDS = (
     "assign",
     "journal.catalog",
     "journal.read",
     "materialize",
     "ping",
+    "project.file.read",
     "project.report",
     "replan",
     "reply",
@@ -1139,7 +1144,13 @@ class ProblemBoardHostRelayAdapter:
         # receiver policy gates new authority arriving at the host, not the
         # operator's answer to the worker's own question, so it is never
         # refused for its kind.
-        if kind != "reply" and kind not in self.config.allowed_control_kinds:
+        # W370: a project-file view is a read-only view of a file the board
+        # lists, like a journal view, so a host that allows journal views
+        # allows it without editing its stored policy.
+        allowed = kind in self.config.allowed_control_kinds or (
+            kind == FILE_VIEW_KIND and "journal.read" in self.config.allowed_control_kinds
+        )
+        if kind != "reply" and not allowed:
             return "receiver_policy_control_kind_denied"
         payload = control.get("payload") if isinstance(control.get("payload"), Mapping) else {}
         payload_bytes = len(
@@ -1503,6 +1514,8 @@ class ProblemBoardHostRelayAdapter:
         capabilities = set(self.config.capabilities)
         if self.journal_workspace is not None:
             capabilities.add("journal-view")
+        # W370: this relay serves views of the project's listed files.
+        capabilities.add("file-view")
         published_capabilities = sorted(capabilities)
         # The advertised interval sizes the board's relay window (three
         # intervals), so an idling worker publishes the interval it will
@@ -1782,9 +1795,11 @@ class ProblemBoardHostRelayAdapter:
                 )
                 counts["controls_refused"] += 1
                 continue
-            if kind in {"journal.catalog", "journal.read"}:
+            if kind in {"journal.catalog", "journal.read", FILE_VIEW_KIND}:
                 try:
-                    view_ref = await self._serve_journal_view(item)
+                    view_ref = await (
+                        self._serve_file_view(item) if kind == FILE_VIEW_KIND else self._serve_journal_view(item)
+                    )
                 except DomainError as exc:
                     payload = dict(item.get("payload") or {})
                     view_ref = str(payload.get("view_ref") or "")
@@ -2161,6 +2176,76 @@ class ProblemBoardHostRelayAdapter:
             object_ref=view_ref,
             action="journal.view.publish",
             payload=action_payload,
+        )
+        return view_ref
+
+    async def _serve_file_view(self, control: Mapping[str, Any]) -> str:
+        """Publish one listed project file from this agent's clone, stamped with its commit (W370).
+
+        Only a path the project's files list names is read, from the clean
+        clone at ``<workspace>/<alias>``; the board stores nothing and the
+        view expires like a journal view.
+        """
+
+        payload = dict(control.get("payload") or {})
+        if content_hash(payload) != str(control.get("payload_hash") or ""):
+            raise DomainError(
+                "field_control_hash_invalid",
+                "The file-view control payload does not match its declared hash.",
+                status=409,
+            )
+        project_ref = str(control.get("project_ref") or "")
+        if project_ref != f"work:project:{self.config.project_id}":
+            raise DomainError(
+                "work_journal_view_project_mismatch",
+                "The file-view request targets another configured project.",
+                status=409,
+            )
+        view_ref = str(payload.get("view_ref") or "")
+        if parse_ref(view_ref).kind != "journal_view" or str(payload.get("mode") or "") != "file":
+            raise DomainError(
+                "work_journal_view_ref_invalid",
+                "Expected a Problem Board journal-view reference in file mode.",
+            )
+        alias = str(payload.get("alias") or "")
+        path = str(payload.get("path") or "")
+        repository_ref = f"repo:{alias}/{path}"
+        if str(payload.get("repository_ref") or "") != repository_ref:
+            raise DomainError("file_not_listed", "The file-view names a path that does not match its reference.")
+        listed = self.field.read_project_files(self.config.project_id)
+        if not any(
+            str(row.get("alias") or "") == alias and str(row.get("path") or "") == path
+            for row in listed.get("files") or []
+        ):
+            raise DomainError("file_not_listed", "This host's project files list does not name that file.")
+        local, state = file_state(self.config.workspace, alias, path)
+        if state == "not_cloned":
+            raise DomainError("repository_not_cloned", f"This agent has no clone of {alias} yet.")
+        if state == "missing":
+            raise DomainError("file_missing", f"{path} is not in this agent's clone of {alias}.")
+        clone = Path(self.config.workspace) / alias
+        target = Path(local).resolve()
+        # A listed path never reads outside its clone, links included.
+        if clone.resolve() not in target.parents:
+            raise DomainError("file_not_listed", "The listed path leaves its repository.")
+        raw = target.read_bytes()
+        if len(raw) > FILE_VIEW_MAX_BYTES:
+            raise DomainError(
+                "file_too_large", f"{path} is {len(raw)} bytes; a file view carries at most {FILE_VIEW_MAX_BYTES}."
+            )
+        content = raw.decode("utf-8", errors="replace")
+        await self.client.action(
+            object_ref=view_ref,
+            action="journal.view.publish",
+            payload={
+                "entries": [],
+                "title": path,
+                "content": content,
+                "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "repository_journal_ref": repository_ref,
+                "next_cursor": "",
+                "source_commit": head_commit(clone),
+            },
         )
         return view_ref
 
@@ -3045,6 +3130,7 @@ class ProblemBoardHostRelayAdapter:
         if self.field._project_path(project_id).exists():
             self._sync_project_repositories(project)
             self._sync_project_card(project)
+            self._sync_project_files(project, heartbeat)
             return False
         if not project:
             return False
@@ -3067,7 +3153,26 @@ class ProblemBoardHostRelayAdapter:
         )
         self._sync_project_repositories(project)
         self._sync_project_card(project)
+        self._sync_project_files(project, heartbeat)
         return True
+
+    def _sync_project_files(self, project: Mapping[str, Any], heartbeat: Mapping[str, Any]) -> None:
+        """Keep the project's files list and this worker's edit permission on this host (W370).
+
+        The files live in the project's repositories; the board sends only
+        where they are. ``files_revision`` marks a board that sends the list.
+        """
+
+        if "files_revision" not in project:
+            return
+        allowed = heartbeat.get("files_edit_allowed", project.get("files_edit_allowed"))
+        self.field.sync_project_files(
+            self.config.project_id,
+            files=project.get("files"),
+            revision=int(project.get("files_revision") or 0),
+            goal=project.get("goal"),
+            edit_allowed=allowed if isinstance(allowed, bool) else None,
+        )
 
     def _sync_project_card(self, project: Mapping[str, Any]) -> None:
         """Keep the card's goal and facts on this host (W370).

@@ -144,7 +144,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.27.12"
+    assert package["revision"] == "2026.09.27.13"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -981,15 +981,16 @@ def test_the_project_journal_accumulates_everything_from_day_one() -> None:
     )
 
     assert "Keep everything known in the project journal" in coordinator
-    assert "project journal home is the team's complete shared record" in coordinator
+    assert "project journal home is the team's complete shared history" in coordinator
+    assert "The project files are the team's current truth, and every project has them" in coordinator
     assert "operator rulings with their reasons" in coordinator
     assert "runtime-window outcomes" in coordinator
     assert "Whoever learns a project-wide fact writes a journal entry" in coordinator
     assert "a successor coordinator begins by searching the journal" in coordinator
     assert "Starting a project" in coordinator
-    assert "creates `project-facts.md` and `project-environment.md`" in coordinator
+    # W370: the project files replace the journal pages; the coordinator creates what the card lists.
+    assert "The coordinator creates each file the card lists that does not exist yet" in coordinator
     assert "either the current fact or `Not known yet`" in coordinator
-    assert "Automatic page seeding by the board is a product follow-up" in coordinator
     assert "[Starting a project](./problem-board-worker/references/coordinator.md#starting-a-project)" in setup
 
 
@@ -1130,7 +1131,7 @@ def test_the_start_step_reads_the_project_facts_page() -> None:
     # Its hosts, agents and client release stay true across sessions and are
     # lost with a compacted context, so the start step reads it first.
     skill = _words(_read("SKILL.md"))
-    assert "the project facts page (`project_facts_ref`)" in skill
+    assert "Facts (`project_facts_ref`: the decisions and rulings in force now)" in skill
 
 
 def test_an_agent_searches_the_plan_and_the_journal_before_acting_on_a_subject() -> None:
@@ -1328,7 +1329,7 @@ def test_a_project_declares_its_instructions_and_runtimes_and_actions_release_a_
     skill = " ".join(_read("SKILL.md").split())
     actions = " ".join(_read("references/runtime-actions.md").split())
     coordinator = " ".join(_read("references/coordinator.md").split())
-    assert "the project's instructions file (`project_instructions_ref`: what the project is" in skill
+    assert "Instructions (`project_instructions_ref`: what the project is" in skill
     assert "who triggers it and the ref it releases in each repository it loads (`releases`)" in skill
     assert "the commands live in the runtime's profile (`local_profile`), never here, and a project with none has no runtime actions" in skill
     assert "Every action loads, per repository, the commit its ref names, never a working tree, and its result names each repository, ref and commit." in skill
@@ -1497,7 +1498,8 @@ def test_new_operations_are_ticked_on_the_project_control_card_before_refresh():
 
 def test_knowledge_goes_to_the_journal_or_the_procedure_not_private_memory():
     coordinator = " ".join(_read("references/coordinator.md").split())
-    assert "Project state and rulings go in the project journal" in coordinator
+    # W370 (operator, 2026-09-27): rulings live in project files, history in the journal.
+    assert "rulings live in project files, not in any agent's private memory" in coordinator
     assert "Practice that helps any coordinator or worker goes in this procedure" in coordinator
     assert "Private agent memory holds only that agent's personal preferences" in coordinator
 
@@ -1591,7 +1593,7 @@ def test_rehearsal_gaps_are_closed():
     # Onboarding rehearsal on .11, 2026-09-26: six places the skill left an agent guessing.
     skill = " ".join(_read("SKILL.md").split())
     assert "What `pb worker context` names is read after you attend a project (step 7)" in skill
-    assert "empty means the project has none yet, so read the facts page and ask the coordinator" in skill
+    assert "An empty instructions ref means the project has none yet: ask the coordinator." in skill
     assert "chronicle" not in skill.split("## Receive Addressed Input")[0]
     workspace = " ".join(_read("references/project-workspace.md").split())
     assert "Onboarding does not build it" in workspace

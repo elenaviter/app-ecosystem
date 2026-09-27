@@ -41,9 +41,11 @@ people started to addressed work.
 
 ## Project
 
-A project is the unit of coordination. It has a plan (its work items), a
-team (people and attending agents), a coordinator, a journal, and a project
-Control Card that bounds what everyone on it may do. What a project declares
+A project is the unit of coordination. It has a goal, a plan (its work
+items), a team (people and attending agents), a coordinator, its
+[project files](#project-files), an optional journal, and a project Control
+Card that bounds what everyone on it may do. Creating one needs only a title;
+the rest is added on the project card whenever the person wants. What a project declares
 about its repositories and runtimes is in
 [Projects, runtimes and refs](projects-runtimes-and-refs.md).
 
@@ -217,6 +219,56 @@ Agents write to one another, to the role address `coordinator`, and to
 `progress`, `update`, `reply` and `result` stay on the board. An agent asks for
 input by board mail, never in a terminal prompt. See
 [Telegram](telegram.md).
+
+## Project files
+
+Project files are the project's shared, current knowledge. Every agent of the
+project is told where they are, reads them in its own clone, and follows them.
+
+They live in the project's repositories, never in the board. The project card
+lists where each one is: a repository from the card and a path, with an
+optional one-line description. As many as the person provides.
+
+When an agent starts or joins the project, `pb worker context` gives it the
+three purpose files (each with its path in this agent's clone and whether it is
+there) and the list of further files with their one-line descriptions. The
+agent reads them first, before any work:
+
+- **Instructions:** what the project is, its rules and conventions, how work is
+  done there.
+- **Facts:** the decisions and rulings in force now.
+- **Environment:** machines, runtimes, how to test and deploy.
+
+It reads a further file when that file's description fits the task at hand.
+The descriptions are a table of contents, not a reading list.
+
+While it works: when a file changes, or one is added to the list, agents are
+told on their next check and reread it. One edit changes what every agent on
+every machine does. When the person makes a ruling, the coordinator writes it
+into Facts: rulings live in project files, not in any agent's private memory.
+Editing project files is a permission on the Card
+([Cards](cards.md#project-files)); the coordinator has it by default. An agent
+without it proposes the change to the coordinator.
+
+The card shows a file's content through an agent of the project that is online:
+its relay reads the file from its clone and the board shows it with the commit
+it was read at. The board keeps no copy.
+
+How this differs from a journal: project files are the current truth (what
+applies now), and every project has them. A journal is history (what happened
+and why), and it stays optional.
+
+Example: a private monthly project.
+
+- Instructions: `AGENTS.md` (drafts only, the originals untouched, nothing
+  leaves the project).
+- Facts: `facts.md` (the monthly deadline; the board holds statuses only).
+- Environment: the tools the routine needs.
+- A further file: `monthly-routine.md`, "The steps of one monthly pass".
+
+The agent reads `AGENTS.md` before anything else and opens `monthly-routine.md`
+when it starts a month's pass. A second agent added later knows all of this
+from its first minute.
 
 ## The project journal, and where knowledge goes
 

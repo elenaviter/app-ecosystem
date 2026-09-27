@@ -28,6 +28,7 @@ DEFAULT_CONTROL_KINDS = (
     "mail",
     "materialize",
     "ping",
+    "project.file.read",
     "project.report",
     "replan",
     "request",

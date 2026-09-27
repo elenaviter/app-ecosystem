@@ -39,7 +39,15 @@ proposal before anything changes:
 - its **repositories**: for each, a short **alias** (letters, digits, `-`),
   the **URL**, and its **role**: `work` (code the agents change), `journal`
   (where the project's journal lives), or `artifact`;
-- the **journal home**, `repo:<journal alias>/<path>`, for example
+- its **project files**, the project's shared, current knowledge that every
+  agent reads first: the three purpose files, each a repository alias and a
+  path, **Instructions** (default `instructions.md`: what the project is, its
+  rules and conventions, how work is done there), **Facts** (default
+  `facts.md`: the decisions and rulings in force now) and **Environment**
+  (default `environment.md`: machines, runtimes, how to test and deploy),
+  and any further files, each with a one-line description;
+- a **journal home**, only if the project keeps a journal (it is optional:
+  history, not the current truth), `repo:<journal alias>/<path>`, for example
   `repo:journals/projects/<project-name>`;
 - the **agents**: this one becomes the coordinator; name the second one (the
   worker) and the machine it runs on.
@@ -50,8 +58,9 @@ The person answers or corrects. Nothing changes until they say yes.
 
 *The person, on the board.*
 
-Press **New project**. Fill in the title, the goal and the **Journal home
-ref** from step 0, and choose this agent as **First worker**. Press create.
+Press **New project**. Fill in the title and the goal (and the **Journal home
+ref** from step 0 if the project keeps a journal), and choose this agent as
+**First worker**. Press create.
 
 What happens:
 
@@ -81,11 +90,16 @@ The project's card decides which repositories every agent on it can reach.
   `pb coordinate project.set_repositories`, then reads the result back to the
   person.
 
-The journal home's alias must be one of these repositories, with role
-`journal`. *The agent* then creates the project's `project-facts.md` and
-`project-environment.md` in the journal home, each section with its fact or
-`Not known yet` ([coordinator reference](problem-board-worker/references/coordinator.md),
-Starting a project), and commits them.
+Then the **project files** from step 0, the same way: on the board, under
+**Project files**, the three purpose files and each further file (repository,
+path, one-line description); or by the agent with `pb coordinate
+project.set_files` when its Card holds it and the person said yes to the
+exact list. *The agent* creates any listed file that does not exist yet in
+its repository, each section with its fact or `Not known yet`, and commits
+it; `pb worker connect-project` then names any listed file still missing.
+
+A journal is optional. When the project keeps one, the journal home's alias
+must be one of these repositories, with role `journal`.
 
 ## 3. Give this machine access to exactly those repositories
 
