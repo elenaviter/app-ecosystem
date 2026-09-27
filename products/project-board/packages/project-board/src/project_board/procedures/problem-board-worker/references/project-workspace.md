@@ -196,3 +196,28 @@ like no page.
   read in its place.
 - **Diverged:** never force it; tell the coordinator the alias and both
   commits, as for any fast-forward that fails.
+
+## 6. Work in worktrees inside your workspace, and remove them when done
+
+Every agent lays out its workspace the same way, so the person and the
+coordinator can see what each agent has in hand, and so that a disk does not
+fill with forgotten copies (operator, 2026-09-27):
+
+| Folder | What it is |
+| --- | --- |
+| `<workspace>/<alias>` | the clone from step 2: always on its declared branch, clean, and only fetched and fast-forwarded. Step 5 reads the project's pages from it, so a work branch checked out here would make the context read that branch. |
+| `<workspace>/wt/<item>-<alias>` | one worktree per assignment and repository, on the assignment's work branch: `git -C <workspace>/<alias> worktree add <workspace>/wt/<item>-<alias> -b <branch> origin/<base>` |
+| `<workspace>/.reviews/<item>-<alias>-<short sha>` | one detached worktree per review or tested merge, at the exact head you review |
+
+Nothing goes to a temporary or hidden folder outside the workspace. A copy
+there is invisible to the person, and nothing cleans it up.
+
+**Remove what is finished.** When the item's change request is merged, or the
+item is done or cancelled, remove its worktrees and local branch:
+`git -C <workspace>/<alias> worktree remove <path>`, then
+`git -C <workspace>/<alias> branch -d <branch>` and `git worktree prune`. A
+review tree goes once the verdict is recorded. Before a pause or the end of a
+session, look at `git worktree list` for each repository and remove every tree
+whose work is merged or abandoned. Why: worktrees that are never removed filled
+one host with about a hundred stale folders, and a coordinator's hidden
+test trees reached 4 GB.
