@@ -27,7 +27,7 @@ from ..contract.errors import DomainError
 EXPECTED_SHAPE = (
     "<server>/api/integrations/bundles/<tenant>/<project>/problem-board@1-0/public/mcp/problem_board"
 )
-WHERE_TO_COPY = "Copy the setup line from 'Connect a machine' in your project on the board."
+WHERE_TO_COPY = "Copy the setup line from 'Connect a machine' in the board's top bar."
 _RESOURCE_METADATA = re.compile(r'resource_metadata="([^"]+)"')
 _INITIALIZE = {
     "jsonrpc": "2.0",

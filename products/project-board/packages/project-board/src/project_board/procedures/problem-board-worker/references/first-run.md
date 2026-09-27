@@ -197,8 +197,8 @@ that carries messages between the agents here and that server.
 When `next.step` is `configure_target`:
 
 1. Ask which deployment they want. The board's own values come from
-   **Connect a machine** in the project's Project dialog in the Problem Board
-   web app, which shows the endpoint, tenant and platform project filled in,
+   **Connect a machine** in the board's top bar in the Problem Board web app
+   (it needs no project), which shows the endpoint, tenant and platform project filled in,
    each copyable: ask them to copy those. Ask for nothing
    the panel gives. Without the panel, ask for the endpoint URL (the address
    ending in `/public/mcp/problem_board`, as this machine reaches it), the

@@ -139,9 +139,22 @@ def test_first_run_has_one_session_set_up_and_enroll_and_finds_pb():
         "stand alone at the end of your reply",
         "source versions",
         'Do not ask the person for "the approved version"',
-        "**Connect a machine** in the project's Project dialog",
+        "**Connect a machine** in the board's top bar",
         "as this machine reaches it",
         "`work_setup_endpoint_not_board`",
         "`work_setup_endpoint_unreachable`",
     ):
         assert piece in first_run, piece
+
+
+def test_connect_a_machine_is_named_where_it_is_the_boards_top_bar():
+    """Walk finding 17 (2026-09-27): the agent sent the person to the Project dialog; it is in the top bar."""
+
+    from project_board.client import endpoint_check
+
+    package = source_package_path().parents[2].parent
+    readme = " ".join((package / "README.md").read_text(encoding="utf-8").split())
+    first_run = " ".join((source_package_path() / "references" / "first-run.md").read_text(encoding="utf-8").split())
+    for text in (readme, first_run, endpoint_check.WHERE_TO_COPY):
+        assert "Connect a machine" in text and "top bar" in text
+        assert "Project dialog" not in text.split("Connect a machine", 1)[1][:80]

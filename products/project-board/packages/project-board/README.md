@@ -111,8 +111,8 @@ the agent. This one session sets the machine up and then becomes the worker: wha
 enrolls is the worker, so do not enroll a second one for the setup.
 
 **Your agent will ask for these:** the endpoint, the tenant and the platform
-project. Copy them from **Connect a machine** in your project's Project
-dialog in the Problem Board web app. The agent then runs `pb setup`, picks the newest
+project. Copy them from **Connect a machine** in the board's top bar, in the
+Problem Board web app; it needs no project. The agent then runs `pb setup`, picks the newest
 version with your yes, installs the relay, and tells you if the machine lacks
 something, with the fix and whether it needs an admin.
 
