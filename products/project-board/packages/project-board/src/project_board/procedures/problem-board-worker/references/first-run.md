@@ -33,14 +33,16 @@ The person starts this session as the worker, in `tmux`, from the words the
 README and the board's **Connect a machine** panel give them:
 
 ```bash
-tmux new-session -d -s <alias> "mkdir -p ~/.kdcube/pb/workspaces/<alias> && cd ~/.kdcube/pb/workspaces/<alias> && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
-tmux attach -t <alias>
+ALIAS=<name>@<machine>
+tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && cd ~/.kdcube/pb/workspaces/$ALIAS && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+tmux attach -t "$ALIAS"
 ```
 
 and says "Use the problem-board-worker skill. Help me set up Problem Board on
 this machine, then enroll this session as a Problem Board worker with alias
-<alias>". `<alias>` names this agent and this machine, for example
-`ana@mint`. This session sets the machine up and then enrolls: whatever
+<name>@<machine>", with the same name as in ALIAS. Edit only the ALIAS line,
+for example ana@mint. Use letters, digits, '-' and '@': tmux does not allow
+'.' and ':' in a session name. This session sets the machine up and then enrolls: whatever
 session enrolls becomes the worker. `--add-dir ~/.kdcube` lets it read the
 client's state, `--dangerously-skip-permissions` lets it work without a person
 at the keyboard, and `--disallowedTools AskUserQuestion` makes it ask through

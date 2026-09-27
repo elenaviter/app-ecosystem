@@ -96,16 +96,18 @@ For Codex, use `--target codex`.
 **Start your agent as the worker, in tmux.**
 
 ```bash
-tmux new-session -d -s <alias> "mkdir -p ~/.kdcube/pb/workspaces/<alias> && cd ~/.kdcube/pb/workspaces/<alias> && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
-tmux attach -t <alias>
+ALIAS=<name>@<machine>
+tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && cd ~/.kdcube/pb/workspaces/$ALIAS && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+tmux attach -t "$ALIAS"
 ```
 
 Then say:
 
-> Use the problem-board-worker skill. Help me set up Problem Board on this machine, then enroll this session as a Problem Board worker with alias <alias>
+> Use the problem-board-worker skill. Help me set up Problem Board on this machine, then enroll this session as a Problem Board worker with alias <name>@<machine>
 
-`<alias>` names this agent and this machine, for example `ana@mint`. This one
-session sets the machine up and then becomes the worker: whatever session
+Edit only the ALIAS line, for example ana@mint. Use letters, digits, '-' and
+'@': tmux does not allow '.' and ':' in a session name. Say the same name to
+the agent. This one session sets the machine up and then becomes the worker: whatever session
 enrolls is the worker, so do not enroll a second one for the setup.
 
 **Your agent will ask for these:** the endpoint, the tenant and the platform
