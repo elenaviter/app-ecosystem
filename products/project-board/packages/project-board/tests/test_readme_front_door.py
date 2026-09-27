@@ -146,3 +146,41 @@ def test_the_architecture_diagram_is_shipped_and_shown_by_an_absolute_url() -> N
     assert "a worktree per task" in svg and "a review copy at the exact commit" in svg
     assert 'fill="#06968C"' in svg or 'stroke="#06968C"' in svg
     assert 'stroke="#B45438"' in svg
+
+
+def test_the_agent_guided_path_comes_first_and_the_manual_steps_are_the_fallback() -> None:
+    """A stranger's new machine walk (2026-09-27): the agent can help only after `pb procedure install`."""
+
+    setup = README[README.index("## Set up a new machine"): README.index("## Onboard an agent")]
+    agent, manual = setup.index("### With your agent"), setup.index("### By hand")
+    assert agent < manual
+    guided = " ".join(setup[agent:manual].split())
+    # The same words as the board's Connect a machine panel (agreed with its author, 2026-09-27).
+    for piece in (
+        "python3 -m venv ~/.local/share/project-board-bootstrap",
+        "~/.local/share/project-board-bootstrap/bin/pip install --upgrade project-board",
+        "~/.local/share/project-board-bootstrap/bin/pb procedure install --target claude-code",
+        "For Codex, use `--target codex`.",
+        'tmux new-session -d -s <alias> "mkdir -p ~/.kdcube/pb/workspaces/<alias> && cd ~/.kdcube/pb/workspaces/<alias> && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"',
+        "Use the problem-board-worker skill. Help me set up Problem Board on this machine, then enroll this session as a Problem Board worker with alias <alias>",
+        "for example `ana@mint`",
+        "**Your agent will ask for these:** the endpoint, the tenant and the platform project",
+        "**Connect a machine**",
+        "`pb worker authorize … --device`",
+        "whatever session enrolls is the worker",
+    ):
+        assert piece in guided, piece
+    assert guided.index("pb procedure install") < guided.index("Help me set up Problem Board"), "install the skill first"
+
+
+def test_what_you_need_names_the_headless_linux_prerequisites_and_who_can_fix_them() -> None:
+    need = " ".join(README[README.index("## What you need"): README.index("## What gets installed")].split())
+    for piece in ("tmux", "linger", "keyring", "sudo loginctl enable-linger", "any administrator account on the machine can do it", "pb status"):
+        assert piece in need, piece
+
+
+def test_the_worker_start_line_is_the_unattended_one() -> None:
+    onboard = " ".join(README[README.index("## Onboard an agent"): README.index("## Connect the agent to a project")].split())
+    assert "Whatever session enrolls becomes the worker" in onboard
+    assert "claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion" in onboard
+    assert "tmux new-session -d -s <agent-name>" in onboard

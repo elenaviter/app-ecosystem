@@ -1693,7 +1693,11 @@ def _status_command(args: Any) -> dict[str, Any]:
             # No session named and none detectable (Claude Code supplies its
             # id explicitly): report the machine, and say how to name one.
             identity = None
-    return first_run_status(config=getattr(args, "config", None), identity=identity)
+    from .prerequisites import check_prerequisites
+
+    return first_run_status(
+        config=getattr(args, "config", None), identity=identity, prerequisites=check_prerequisites()
+    )
 
 
 def _setup(args: Any) -> dict[str, Any]:
@@ -4802,6 +4806,7 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             home=args.home,
             force=args.force,
             allow_downgrade=bool(getattr(args, "allow_downgrade", False)),
+            installed_by=_installing_pb(),
         )
         result = {
             "procedure": str(source_path()),
@@ -4816,6 +4821,24 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             result["claude_code_settings"] = merge_claude_code_settings(_home_path(args.home), pb=hook_pb)
         return result
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")
+
+
+def _installing_pb() -> dict[str, Any] | None:
+    """The pb running this install, for the skill to find it (W304 finding 7); None when it has no path."""
+
+    from importlib.metadata import PackageNotFoundError, version
+
+    from .claude_settings import pb_command
+
+    try:
+        pb = pb_command()
+    except DomainError:
+        return None
+    try:
+        installed_version = version("project-board")
+    except PackageNotFoundError:
+        installed_version = ""
+    return {"pb": pb, "version": installed_version, "python": sys.executable, "installed_at": utc_now()}
 
 
 def _relay_service_command(args: Any) -> dict[str, Any]:

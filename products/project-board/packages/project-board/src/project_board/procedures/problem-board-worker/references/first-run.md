@@ -27,6 +27,66 @@ and projects, and `next`: the step, the command, and whether it needs the
 user's approval (`approval: user`) or none. Act on `next` and run `pb status`
 again after each step, because each step changes what the next one is.
 
+## One Session Sets Up, Then Becomes The Worker
+
+The person starts this session as the worker, in `tmux`, from the words the
+README and the board's **Connect a machine** panel give them:
+
+```bash
+tmux new-session -d -s <alias> "mkdir -p ~/.kdcube/pb/workspaces/<alias> && cd ~/.kdcube/pb/workspaces/<alias> && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+tmux attach -t <alias>
+```
+
+and says "Use the problem-board-worker skill. Help me set up Problem Board on
+this machine, then enroll this session as a Problem Board worker with alias
+<alias>". `<alias>` names this agent and this machine, for example
+`ana@mint`. This session sets the machine up and then enrolls: whatever
+session enrolls becomes the worker. `--add-dir ~/.kdcube` lets it read the
+client's state, `--dangerously-skip-permissions` lets it work without a person
+at the keyboard, and `--disallowedTools AskUserQuestion` makes it ask through
+the board once enrolled. Running unattended, it still shows each command and
+waits for the person's yes in the conversation. The flags and a start script
+for a host are in add-a-worker-host step 9.
+
+**A session started without that line** (it asks for permissions, or runs
+outside `tmux`) does not enroll: it may help with setup, and then gives the
+person that start line and sentence, word for word, and stops. Such a session
+asks once to "Read outside the working directories" when it opens this skill;
+tell the person to answer "Yes, keep allowing reads outside the working
+directories".
+
+## Find `pb`
+
+`pb procedure install` records the `pb` that installed this skill in
+`installed-by.json` beside `SKILL.md` (its path, version and Python). Until
+`~/.local/bin/pb` exists, run `pb` by that path, wherever the person
+installed it, instead of searching fixed folders. After `pb source
+use-release`, use `~/.local/bin/pb`.
+
+## `prepare_machine`: This Machine First
+
+`pb status` checks the machine's prerequisites for its operating system and
+lists them under `machine.prerequisites`. On a machine not configured yet, a
+missing one is named in `next.before` (`step: prepare_machine`): handle it
+before `next.step`. Each item says why it
+is needed, what still works without it, and the exact fix line. On headless
+Linux they are Python with `venv`, `git`, `tmux`, linger
+(`loginctl enable-linger`), the systemd user manager and a usable keyring; on
+macOS, Python, `git`, `tmux` and the login keychain.
+
+When an item has `needs_admin: true`, say so plainly: the fix needs an
+administrator, **any administrator account on this machine can run it** (for
+example after `su - <admin-user>`), and the person's own account does not need
+to be one. Say what works without it (`without_it`): without `tmux` agents
+run only while their terminal is open; without linger the relay stops when the
+person's last session closes. Then run `pb status` again.
+
+## Tell The Person Plainly
+
+Instructions the person must act on stand alone at the end of your reply,
+after any tool output, as a short numbered list with the exact commands. A
+step buried among tool results is a step the person does not see.
+
 ## What The Setup Coordinates Mean
 
 | value | what it names |
@@ -101,8 +161,16 @@ the relay.
 
 ### From the published package
 
-The `project-board` distribution is published to the package index, and the
-operator names the approved version. Propose, and run it after they approve:
+The `project-board` distribution is published to the package index. Do not
+ask the person for "the approved version": they do not know it. Propose the
+newest published one, from the `pb` that installed this skill (see Find `pb`),
+and ask for a yes:
+
+```bash
+<installing pb> source versions
+```
+
+Then propose, and run it after they approve:
 
 ```bash
 python3 -m venv "$HOME/.local/share/project-board-bootstrap"
@@ -126,8 +194,19 @@ that carries messages between the agents here and that server.
 
 When `next.step` is `configure_target`:
 
-1. Ask which deployment they want. Ask for the endpoint URL, the tenant and the
-   platform project, and say which is which, using the table above.
+1. Ask which deployment they want. The board's own values come from
+   **Connect a machine** in the project's Project dialog in the Problem Board
+   web app, which shows the endpoint, tenant and platform project filled in,
+   each copyable: ask them to copy those. Ask for nothing
+   the panel gives. Without the panel, ask for the endpoint URL (the address
+   ending in `/public/mcp/problem_board`, as this machine reaches it), the
+   tenant and the platform project, and say which is which, using the table
+   above. `pb setup` checks that the endpoint answers as the board's MCP
+   and writes nothing when it does not: `work_setup_endpoint_not_board` (an
+   address that is not the board's MCP, for example a `worker_stream` address
+   copied from another machine's config) or `work_setup_endpoint_unreachable`
+   (this machine cannot reach it). Ask for the address again; never pass
+   `--no-verify-endpoint` without the person's yes.
 2. Say that the target name is only a local label they choose, and suggest one.
    The host id and host label name this machine, and they choose those too.
 3. Ask which folders agents on this machine may work in. Those become
