@@ -13,10 +13,10 @@ The Problem Board client installs from PyPI as four packages at one version:
 same version in the snapshot and is published on its own when it is
 releasable.
 
-1. **Write the release notes.** *The coordinator.* One short file saying
+1. **Write the release notes.** *The maintainer who cuts the release.* One short file saying
    what changed since the last release. It becomes the description in each
    release record.
-2. **Prepare.** *The coordinator, from a clean checkout of `origin/main`.*
+2. **Prepare.** *The maintainer, from a clean checkout of `origin/main`.*
 
    ```bash
    scripts/release-pb prepare <YYYY.MM.DD.HHMM> --notes <file>
@@ -31,9 +31,9 @@ releasable.
    opens the release pull request. You should see one line per package ending
    in "passed", then the pull request's address. Add `--dry-run` to do all of
    it in a throwaway worktree and commit nothing.
-3. **Review and merge the release pull request.** *The coordinator.* It
+3. **Review and merge the release pull request.** *The maintainer.* It
    changes versions and release notes only.
-4. **Publish.** *The coordinator, with the operator's go for the release.*
+4. **Publish.** *The maintainer, with the release owner's approval.*
 
    ```bash
    scripts/release-pb publish <YYYY.MM.DD.HHMM>
