@@ -707,6 +707,70 @@ def _held_binding_refusal(
     }
 
 
+
+def _profile_selection(profile: str, *, config: Any) -> dict[str, Any] | None:
+    """The selection first consent proposes for ``profile`` (W377).
+
+    Every catalog resource that declares the profile contributes, as
+    ``apply_authorization_profile`` computes it for one Card resource. None
+    when no resource declares it.
+    """
+
+    from connection_hub.delegated_credentials.oauth.consent import (
+        requested_card_selection,
+    )
+
+    resource_grants: dict[str, list[str]] = {}
+    resource_operations: dict[str, list[str]] = {}
+    named_service_operations: dict[str, Any] = {}
+    for row in getattr(config, "resources", ()) or ():
+        chosen = next(
+            (
+                item
+                for item in (getattr(row, "authorization_profiles", ()) or ())
+                if _clean(getattr(item, "name", "")).lower() == profile
+            ),
+            None,
+        )
+        if chosen is None:
+            continue
+        selection = requested_card_selection(
+            [_clean(getattr(chosen, "scope", ""))],
+            config=config,
+            resource=row.resource,
+        )
+        for key, values in dict(selection.get("resource_grants") or {}).items():
+            resource_grants[key] = list(values)
+            resource_operations[key] = list(
+                dict(selection.get("resource_operations") or {}).get(key) or ()
+            )
+        named_service_operations.update(
+            dict(selection.get("named_service_operations") or {})
+        )
+    if not resource_grants:
+        return None
+    return {
+        "resource_grants": resource_grants,
+        "resource_operations": resource_operations,
+        "named_service_operations": named_service_operations,
+        "account_scope": {},
+    }
+
+def _control_card_started_from(record: "AutomationAccessRecord") -> dict[str, Any]:
+    """What a Control Card started from: a profile, a seeding Card, or nothing."""
+
+    return dict(
+        (record.provenance or {}).get("control_card_initial_selection") or {}
+    )
+
+
+def _control_card_unstarted(record: "AutomationAccessRecord") -> bool:
+    """Created with no start and never given a selection since (W377)."""
+
+    return not _control_card_started_from(record) and not any(
+        (record.resource_grants or {}).values()
+    )
+
 def _record_is_credentialless(record: "AutomationAccessRecord") -> bool:
     """The one material difference between a linked Card and a caller Card."""
     return (
@@ -5801,12 +5865,22 @@ class AutomationAccessService:
         composition_mode: str = CONTROL_COMPOSITION_AND,
         initial_selection_access_id: str = "",
         basis_access_id: str = "",
+        initial_profile: str = "",
     ) -> dict[str, Any]:
         """Create or return one catalog-driven credentialless Control Card.
 
         An optional delegated Card supplies the initially checked values only.
         The Control Card's complete option set and every later save are
         resolved against the catalog.
+
+        ``initial_profile`` instead starts it from a descriptor authorization
+        profile: what first consent proposes for that profile, on every
+        catalog resource that declares it (W377). No other Card is read, so an
+        issuer can create its Control Card before any Card exists. Every
+        answer names what the Card started from in ``started_from``, so a
+        caller can refuse a Card an older Connection Hub made empty. Such a
+        Card, never started, is started from the profile when it is asked
+        for again.
 
         ``basis_access_id`` is accepted only for callers staged before the
         field was named accurately.
@@ -5818,6 +5892,16 @@ class AutomationAccessService:
         refusal = _delegate_mutation_refusal(user)
         if refusal is not None:
             return refusal
+        initial_selection_id = _clean(initial_selection_access_id) or _clean(
+            basis_access_id
+        )
+        profile_name = _clean(initial_profile).lower()
+        if initial_selection_id and profile_name:
+            return {
+                "ok": False,
+                "error": "control_card_initial_selection_ambiguous",
+                "status": 400,
+            }
         try:
             control_id = control_card_id_for_issuer(
                 issuer_kind,
@@ -5849,6 +5933,8 @@ class AutomationAccessService:
                 return {"ok": False, "error": "control_card_identity_conflict", "status": 409}
             if state != CARD_STATE_ACTIVE:
                 return {"ok": False, "error": "control_card_not_active", "status": 409}
+            if profile_name and _control_card_unstarted(record):
+                return await self._start_control_card(user, record, profile_name)
             try:
                 record = await self._ensure_control_snapshot(record)
             except CardUnavailable as exc:
@@ -5868,6 +5954,7 @@ class AutomationAccessService:
                     state=state,
                 ),
                 "authority": card_authority_from_record(record).to_dict(),
+                "started_from": _control_card_started_from(record),
             }
 
         try:
@@ -5886,9 +5973,16 @@ class AutomationAccessService:
                 "status": 503,
             }
 
-        initial_selection_id = _clean(initial_selection_access_id) or _clean(
-            basis_access_id
-        )
+        profile_start: dict[str, Any] | None = None
+        if profile_name:
+            profile_start = _profile_selection(profile_name, config=catalog_config)
+            if profile_start is None:
+                return {
+                    "ok": False,
+                    "error": "control_card_initial_profile_not_declared",
+                    "status": 409,
+                    "profile": profile_name,
+                }
         initial_selection: AutomationAccessRecord | None = None
         if initial_selection_id:
             try:
@@ -5937,18 +6031,39 @@ class AutomationAccessService:
                 "claims": [],
                 "named_service_operations": [],
             }
-            if initial_selection is not None:
+            start = (
+                {
+                    "resource_grants": initial_selection.resource_grants,
+                    "resource_operations": initial_selection.resource_operations,
+                    "named_service_operations": (
+                        initial_selection.named_service_operations.to_stored()
+                    ),
+                    "account_scope": initial_selection.account_scope,
+                }
+                if initial_selection is not None
+                else profile_start
+            )
+            if profile_start is not None:
+                record = dataclasses.replace(
+                    record,
+                    provenance={
+                        **dict(record.provenance or {}),
+                        "control_card_initial_selection": {
+                            "profile": profile_name,
+                            "catalog_version": catalog_version,
+                        },
+                    },
+                )
+            if start is not None:
                 resolved = await self._resolve_card_authority(
                     user=user,
                     existing=record,
                     active=active,
-                    resource_grants=initial_selection.resource_grants,
-                    resource_operations=initial_selection.resource_operations,
+                    resource_grants=start["resource_grants"],
+                    resource_operations=start["resource_operations"],
                     operations=(),
-                    named_service_operations=(
-                        initial_selection.named_service_operations.to_stored()
-                    ),
-                    account_scope=initial_selection.account_scope,
+                    named_service_operations=start["named_service_operations"],
+                    account_scope=start["account_scope"],
                     properties=record.properties,
                 )
                 if resolved.error is not None:
@@ -6028,7 +6143,72 @@ class AutomationAccessService:
             "created": True,
             "control_card": await self._control_card_public_view(user, record),
             "authority": card_authority_from_record(record).to_dict(),
+            "started_from": _control_card_started_from(record),
             "pruned": pruned,
+        }
+
+    async def _start_control_card(
+        self,
+        user: Mapping[str, Any],
+        record: AutomationAccessRecord,
+        profile: str,
+    ) -> dict[str, Any]:
+        """Start a Card that was created empty from ``profile``, once (W377).
+
+        A Connection Hub that predates ``initial_profile`` ignored it and made
+        the Card with nothing selected. Its id is fixed per issuer and person,
+        so it cannot be replaced; the first create that names the profile
+        starts it through the ordinary Control Card edit.
+        """
+
+        try:
+            active = await self._active_catalog()
+            catalog_config = await self._catalog_config(
+                active,
+                owner_subject=record.grantor_subject,
+            )
+        except CatalogUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_catalog_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        start = _profile_selection(profile, config=catalog_config)
+        if start is None:
+            return {
+                "ok": False,
+                "error": "control_card_initial_profile_not_declared",
+                "status": 409,
+                "profile": profile,
+            }
+        started_from = {"profile": profile, "catalog_version": self._version_of(active)}
+
+        def _stamp(previous: Any, candidate: Any) -> Any:
+            provenance = dict(getattr(candidate, "provenance", None) or {})
+            provenance["control_card_initial_selection"] = dict(started_from)
+            return replace_fields(candidate, provenance=provenance)
+
+        updated = await self.control_card_update(
+            user,
+            control_id=record.access_id,
+            resource_grants=start["resource_grants"],
+            resource_operations=start["resource_operations"],
+            named_service_operations=start["named_service_operations"],
+            account_scope={},
+            expected_card_revision=record.card_revision,
+            _record_transform=_stamp,
+        )
+        if updated.get("ok") is not True:
+            return updated
+        return {
+            "ok": True,
+            "created": False,
+            "started": True,
+            "control_card": updated.get("control_card"),
+            "authority": updated.get("authority"),
+            "started_from": started_from,
         }
 
     async def control_card_update(

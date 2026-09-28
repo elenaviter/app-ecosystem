@@ -1672,6 +1672,23 @@ application-specific editor. The owner-scoped operations are
 `delegated_access_update` path. The older project-control operation aliases
 remain compatibility adapters for already-staged callers.
 
+`control_card_create` starts the Card from one of two optional sources, never
+both: `initial_selection_access_id`, a caller Card of the same person whose
+selection is copied as the initially checked values, or `initial_profile`, a
+descriptor authorization profile name (such as `coordinator`), which selects
+what first consent proposes for that profile on every catalog resource that
+declares it. The profile start reads no other Card, so an application can
+create its Control Card before any caller Card exists; the Card records it in
+`provenance.control_card_initial_selection.profile`. An undeclared profile is
+refused `control_card_initial_profile_not_declared`, and both sources together
+`control_card_initial_selection_ambiguous`.
+Every create answer names the start in `started_from` (the profile, the seeding
+Card, or `{}` for none), so a caller can refuse a Card that selects nothing.
+A Card created with no start and nothing selected since, as a Connection Hub
+before `initial_profile` made it, is started from the profile once when a create
+names one (`started: true`, a new revision through the ordinary Control Card
+edit); its id is fixed per issuer and person, so it cannot be replaced.
+
 ## Runtime Enforcement Lifecycle
 
 The cross-surface flow from a card and active catalog through managed REST/MCP,
