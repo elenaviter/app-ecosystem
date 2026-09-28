@@ -29,6 +29,12 @@ from urllib.parse import urlsplit
 
 CONNECTION_HUB_BUNDLE_ID = "connection-hub@1-0"
 ISSUE_OPERATION = "project_agent_github_token_issue"
+# The Card bearer rides its own header, never Authorization: the platform
+# checks every application operation called with a delegated Authorization
+# bearer against the Card's selected operations, and no Card can select this
+# route; Connection Hub authenticates the Card for identity itself (the first
+# real push, 2026-09-28).
+CARD_BEARER_HEADER = "X-Connection-Hub-Card-Bearer"
 GITHUB_HOST = "github.com"
 GIT_USERNAME = "x-access-token"
 _REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
@@ -206,6 +212,7 @@ def gh_repository(args: list[str], origin_url: str) -> str:
 
 
 __all__ = [
+    "CARD_BEARER_HEADER",
     "CONNECTION_HUB_BUNDLE_ID",
     "GIT_USERNAME",
     "GitHubKeyRefused",

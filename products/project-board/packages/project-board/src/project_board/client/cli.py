@@ -78,6 +78,7 @@ from .stop_guard import stop_guard_decision
 from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
 from .github_key import (
+    CARD_BEARER_HEADER,
     GitHubKeyRefused,
     GitHubToken,
     card_repositories,
@@ -3723,7 +3724,7 @@ async def _post_json(url: str, body: Mapping[str, Any], bearer: str) -> tuple[in
     import aiohttp
 
     timeout = aiohttp.ClientTimeout(total=30)
-    headers = {"Authorization": f"Bearer {bearer}", "Accept": "application/json"}
+    headers = {CARD_BEARER_HEADER: bearer, "Accept": "application/json"}
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(url, json=dict(body), headers=headers) as reply:
             try:

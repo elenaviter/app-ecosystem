@@ -197,6 +197,7 @@ from connection_hub.mcp_metadata import (
     kdcube_website_url,
 )
 from kdcube_ai_app.infra.redis.client import get_async_redis_client
+from .surfaces.card_bearer import authenticate_card_bearer, card_bearer
 from .surfaces.delegated_admission import (
     AdmissionHostContext,
     handle_delegated_admission,
@@ -3575,11 +3576,18 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
 
         payload = _payload(data, **kwargs)
         await _bind_delegated_client_request_config(self, request)
-        denial = await authorize_delegated_mcp_proxy_request(
-            request=request,
-            body=b"{}",
-            auth=_delegated_gateway_auth_config(self),
-        )
+        # The Card bearer rides its own header (surfaces/card_bearer.py): the
+        # platform's application-operation check never sees it, and the Card
+        # is authenticated here for identity only; the project host decides.
+        token = card_bearer(request)
+        if token:
+            denial = await authenticate_card_bearer(request, token)
+        else:
+            denial = await authorize_delegated_mcp_proxy_request(
+                request=request,
+                body=b"{}",
+                auth=_delegated_gateway_auth_config(self),
+            )
         if denial is not None:
             return denial
         view = DelegatedCredentialView.from_request(request)

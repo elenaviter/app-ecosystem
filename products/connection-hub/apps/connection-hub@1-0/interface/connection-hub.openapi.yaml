@@ -1312,19 +1312,24 @@ paths:
       tags: [Delegated Access]
       summary: Issue an attending agent its owner's GitHub token for one repository.
       description: |
-        The agent's delegated Card bearer authenticates the call; the owner
-        and Card come from its verified facts. The project host decides
+        The agent's delegated Card bearer, in the X-Connection-Hub-Card-Bearer
+        header (not Authorization), authenticates the call for identity only;
+        the owner and Card come from its verified facts. The project host decides
         attendance, the Card's GitHub use and the repository (a question
         Connection Hub signs with the shared peer-proof secret), then the
         owner's My Card link issues the token. The token is returned only
         in this response.
       operationId: project_agent_github_token_issue
-      security:
-        - DelegatedBearer: []
       parameters:
         - $ref: "#/components/parameters/Tenant"
         - $ref: "#/components/parameters/Project"
         - $ref: "#/components/parameters/BundleId"
+        - name: X-Connection-Hub-Card-Bearer
+          in: header
+          required: true
+          description: The agent's delegated Card bearer.
+          schema:
+            type: string
       requestBody:
         required: true
         content:
