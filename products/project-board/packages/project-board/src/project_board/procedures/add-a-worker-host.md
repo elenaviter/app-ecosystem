@@ -467,6 +467,19 @@ the complete step 13 migration proof has passed for every configured target.
 
 Runs on: the host (keys, reconciliation), and GitHub in the operator's browser (adding and deleting keys).
 
+**First, the owners' GitHub keys** (W371, [GitHub access for
+agents](repo:app-ecosystem/products/project-board/docs/github.md)). An agent
+pushes and opens pull requests under its owner's GitHub key: the owner links
+GitHub once on their My Card for the project (the **Set up GitHub** button on
+their card on the board), its Card holds **Use GitHub**, and the deployment's
+GitHub App is installed on the repository. `pb worker connect-project` then
+clones over HTTPS with `pb worker git-credential` as each clone's helper, and
+`pb worker gh` runs gh with the key for one command. This host stores no
+GitHub token and needs no deploy key for those repositories. The deploy keys
+below are the **fallback**: for a repository the key does not reach yet (its
+row's `github_key` names why), and for a machine whose owner has not linked
+GitHub.
+
 One **deploy key per repository**: an SSH key that one repository accepts for
 itself. A personal key would reach every repository its owner can reach, and
 removing it would cut off every machine using it. Deleting a deploy key revokes

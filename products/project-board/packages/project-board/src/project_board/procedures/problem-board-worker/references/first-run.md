@@ -305,8 +305,9 @@ Its steps, word for word as the panel shows them:
 1. **Pick the project**
 2. **Add the agent**
 3. **Say to your agent**: "Use the problem-board-worker skill. Set up this project's repositories on this machine."
-4. **Add this machine's keys on GitHub**: "For each repository this machine cannot reach yet, your agent shows a page, a title and a key. Open the page, choose Add deploy key, enter the title, paste the key, tick Allow write access, and choose Add key."
-5. **Tell your agent the keys are added**: "Your agent runs the setup again: it clones what it can now reach, and each repository shows as reachable here."
+4. **Your GitHub key for this project**: "Your agents push and open pull requests under your GitHub key, linked on your My Card for this project in Connection Hub."
+5. **Add this machine's keys on GitHub** (fallback, "Needed only for a repository your GitHub key does not reach yet."): "For each repository this machine cannot reach yet, your agent shows a page, a title and a key. Open the page, choose Add deploy key, enter the title, paste the key, tick Allow write access, and choose Add key."
+6. **Tell your agent the keys are added**: "Your agent runs the setup again: it clones what it can now reach, and each repository shows as reachable here."
 
 When the person says step 3's sentence, or you are added to a project, run:
 
@@ -315,7 +316,29 @@ pb worker connect-project --format brief
 ```
 
 It sets up every repository on the project card in `<workspace>/<alias>`,
-the journal repository included, and names one state each (`connected[]`):
+the journal repository included, and names one state each (`connected[]`).
+
+**Your owner's GitHub key comes first** (W371, [GitHub access for
+agents](repo:app-ecosystem/products/project-board/docs/github.md)). For each
+GitHub repository the command asks Connection Hub for your owner's key; each
+row's `github_key` reads `ready` or the reason it is not. When it is ready, a
+new clone is made over HTTPS and every clone gets `pb worker git-credential`
+as its credential helper for github.com, and your commits carry your owner's
+My Card email (`pb worker context` then names it with `source:
+owner_github_key`). No token is stored: git asks the helper each time. Open
+pull requests with `pb worker gh -- pr create ...`. The key needs three
+things, each refused by name when missing:
+
+- your owner linked GitHub on their My Card for this project
+  (`github_not_linked`), with a commit email set there (`commit_email_not_set`),
+  and their GitHub connection still works (`github_reconnect_required`);
+- your Card holds **Use GitHub** (`card_denies`), and you attend the project
+  (`not_attending`);
+- the repository is on the project card (`repository_not_on_card`) and the
+  GitHub App is installed on it (the My Card coverage names the link).
+
+Tell your owner the refusal's words. Until the key answers, deploy keys are
+the fallback:
 
 - `reachable`: this machine reaches it; it is cloned, or fetched and
   fast-forwarded. A repository this machine already reaches gets no key.
@@ -352,9 +375,10 @@ workspace, so the panel shows each repository as reachable, or "not reachable
 yet" with the reason ("needs this machine's deploy key"). Each GitHub
 repository also says whether you can open pull requests there
 (`pull_requests`): `ready`, `missing` with the reason, or `not_applicable`.
-When it is `missing`, ask the operator to sign in `gh` as add-a-worker-host
-step 7 says, and until then push your branch and ask the coordinator to open
-the pull request, with the branch, base and title.
+With your owner's key it reads `ready` via `pb worker gh`. When it is
+`missing`, the key has not answered: tell your owner the `github_key` reason,
+and until then push your branch and ask the coordinator to open the pull
+request, with the branch, base and title.
 
 ## `session_reconnecting`
 

@@ -196,7 +196,15 @@ repository listed on the project's page on the board that this machine
 reaches, and makes this machine's deploy key for each GitHub repository it
 does not reach yet.
 
+Once your GitHub is linked (the **Set up GitHub** button on your card on the
+board, which opens your My Card in Connection Hub), your agents push and open
+pull requests under your GitHub key and commit with your My Card email: the
+command clones over HTTPS with it and no deploy key is needed for those
+repositories. See [GitHub access for agents](https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/github.md).
+
 **D. Add this machine's keys on GitHub**
+
+*Only for a repository your GitHub key does not reach yet.*
 
 *You.* For each repository this machine cannot reach yet, your agent shows a page, a title and a key. Open the page, choose Add deploy key, enter the title, paste the key, tick Allow write access, and choose Add key.
 

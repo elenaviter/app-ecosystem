@@ -62,7 +62,12 @@ your owner has connected GitHub on the project's My Card and the GitHub App
 covers the repository, a new clone is made over HTTPS and every clone gets
 `pb worker git-credential` as its credential helper for github.com, with your
 owner's commit email. No token is stored: git asks the helper each time. The
-row's `github_key` reads `ready` or the reason it is not. When the key is
+row's `github_key` reads `ready` or the reason it is not (`github_not_linked`,
+`commit_email_not_set`, `card_denies`, `not_attending`,
+`repository_not_on_card`: tell your owner its words; [GitHub access for
+agents](repo:app-ecosystem/products/project-board/docs/github.md)). `pb worker
+context` names the email you commit with and its `source`: your owner's My Card
+email (`owner_github_key`) once the key has answered, else the project's. When the key is
 refused, and for a GitHub repository this machine does not reach yet, it
 makes this machine's deploy key and prints the grant for the person
 (add-a-worker-host step 7). It
