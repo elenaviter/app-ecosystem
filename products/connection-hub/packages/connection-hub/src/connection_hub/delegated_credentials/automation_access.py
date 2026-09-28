@@ -707,6 +707,55 @@ def _held_binding_refusal(
     }
 
 
+
+def _profile_selection(profile: str, *, config: Any) -> dict[str, Any] | None:
+    """The selection first consent proposes for ``profile`` (W377).
+
+    Every catalog resource that declares the profile contributes, as
+    ``apply_authorization_profile`` computes it for one Card resource. None
+    when no resource declares it.
+    """
+
+    from connection_hub.delegated_credentials.oauth.consent import (
+        requested_card_selection,
+    )
+
+    resource_grants: dict[str, list[str]] = {}
+    resource_operations: dict[str, list[str]] = {}
+    named_service_operations: dict[str, Any] = {}
+    for row in getattr(config, "resources", ()) or ():
+        chosen = next(
+            (
+                item
+                for item in (getattr(row, "authorization_profiles", ()) or ())
+                if _clean(getattr(item, "name", "")).lower() == profile
+            ),
+            None,
+        )
+        if chosen is None:
+            continue
+        selection = requested_card_selection(
+            [_clean(getattr(chosen, "scope", ""))],
+            config=config,
+            resource=row.resource,
+        )
+        for key, values in dict(selection.get("resource_grants") or {}).items():
+            resource_grants[key] = list(values)
+            resource_operations[key] = list(
+                dict(selection.get("resource_operations") or {}).get(key) or ()
+            )
+        named_service_operations.update(
+            dict(selection.get("named_service_operations") or {})
+        )
+    if not resource_grants:
+        return None
+    return {
+        "resource_grants": resource_grants,
+        "resource_operations": resource_operations,
+        "named_service_operations": named_service_operations,
+        "account_scope": {},
+    }
+
 def _record_is_credentialless(record: "AutomationAccessRecord") -> bool:
     """The one material difference between a linked Card and a caller Card."""
     return (
@@ -5801,12 +5850,18 @@ class AutomationAccessService:
         composition_mode: str = CONTROL_COMPOSITION_AND,
         initial_selection_access_id: str = "",
         basis_access_id: str = "",
+        initial_profile: str = "",
     ) -> dict[str, Any]:
         """Create or return one catalog-driven credentialless Control Card.
 
         An optional delegated Card supplies the initially checked values only.
         The Control Card's complete option set and every later save are
         resolved against the catalog.
+
+        ``initial_profile`` instead starts it from a descriptor authorization
+        profile: what first consent proposes for that profile, on every
+        catalog resource that declares it (W377). No other Card is read, so an
+        issuer can create its Control Card before any Card exists.
 
         ``basis_access_id`` is accepted only for callers staged before the
         field was named accurately.
@@ -5889,6 +5944,23 @@ class AutomationAccessService:
         initial_selection_id = _clean(initial_selection_access_id) or _clean(
             basis_access_id
         )
+        profile_name = _clean(initial_profile).lower()
+        if initial_selection_id and profile_name:
+            return {
+                "ok": False,
+                "error": "control_card_initial_selection_ambiguous",
+                "status": 400,
+            }
+        profile_start: dict[str, Any] | None = None
+        if profile_name:
+            profile_start = _profile_selection(profile_name, config=catalog_config)
+            if profile_start is None:
+                return {
+                    "ok": False,
+                    "error": "control_card_initial_profile_not_declared",
+                    "status": 409,
+                    "profile": profile_name,
+                }
         initial_selection: AutomationAccessRecord | None = None
         if initial_selection_id:
             try:
@@ -5937,18 +6009,39 @@ class AutomationAccessService:
                 "claims": [],
                 "named_service_operations": [],
             }
-            if initial_selection is not None:
+            start = (
+                {
+                    "resource_grants": initial_selection.resource_grants,
+                    "resource_operations": initial_selection.resource_operations,
+                    "named_service_operations": (
+                        initial_selection.named_service_operations.to_stored()
+                    ),
+                    "account_scope": initial_selection.account_scope,
+                }
+                if initial_selection is not None
+                else profile_start
+            )
+            if profile_start is not None:
+                record = dataclasses.replace(
+                    record,
+                    provenance={
+                        **dict(record.provenance or {}),
+                        "control_card_initial_selection": {
+                            "profile": profile_name,
+                            "catalog_version": catalog_version,
+                        },
+                    },
+                )
+            if start is not None:
                 resolved = await self._resolve_card_authority(
                     user=user,
                     existing=record,
                     active=active,
-                    resource_grants=initial_selection.resource_grants,
-                    resource_operations=initial_selection.resource_operations,
+                    resource_grants=start["resource_grants"],
+                    resource_operations=start["resource_operations"],
                     operations=(),
-                    named_service_operations=(
-                        initial_selection.named_service_operations.to_stored()
-                    ),
-                    account_scope=initial_selection.account_scope,
+                    named_service_operations=start["named_service_operations"],
+                    account_scope=start["account_scope"],
                     properties=record.properties,
                 )
                 if resolved.error is not None:

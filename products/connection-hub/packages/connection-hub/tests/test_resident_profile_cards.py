@@ -1374,3 +1374,55 @@ async def test_oauth_profile_does_not_reapply_to_an_existing_card(tmp_path):
     assert resolved["resource_operations"] == {
         MEMORIES: ["search", "write"],
     }
+
+
+# -- W377: a Control Card started from a descriptor profile ---------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile", "operations"),
+    [("coordinator", ["search", "write"]), ("worker", ["search"])],
+)
+async def test_a_control_card_starts_from_a_profile_without_reading_another_card(
+    tmp_path, profile, operations
+):
+    h = _Harness(tmp_path, connections=_connections_with_authorization_profiles())
+
+    made = await h.service.control_card_create(
+        USER,
+        issuer_ref="work:project:one",
+        issuer_kind="application",
+        issuer_label="One",
+        initial_profile=profile,
+    )
+
+    assert made["ok"] is True, made
+    authority = made["authority"]
+    assert authority["resource_operations"] == {MEMORIES: operations}
+    assert list(authority["resource_grants"]) == [MEMORIES], "only the declaring resource"
+    stored = await h.card(authority["access_id"])
+    assert stored.provenance["control_card_initial_selection"] == {
+        "profile": profile,
+        "catalog_version": h.catalog.active.version,
+    }
+    assert h.persistence.persist_calls == 1, "no other Card was written"
+
+
+@pytest.mark.asyncio
+async def test_a_control_card_refuses_an_undeclared_profile_and_two_starts(tmp_path):
+    h = _Harness(tmp_path, connections=_connections_with_authorization_profiles())
+
+    missing = await h.service.control_card_create(
+        USER, issuer_ref="work:project:one", issuer_kind="application",
+        initial_profile="reviewer",
+    )
+    both = await h.service.control_card_create(
+        USER, issuer_ref="work:project:one", issuer_kind="application",
+        initial_profile="coordinator", initial_selection_access_id="aut_any",
+    )
+
+    assert missing["ok"] is False and missing["error"] == "control_card_initial_profile_not_declared"
+    assert missing["profile"] == "reviewer"
+    assert both["ok"] is False and both["error"] == "control_card_initial_selection_ambiguous"
+    assert h.persistence.persist_calls == 0
