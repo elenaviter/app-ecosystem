@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -76,6 +77,18 @@ from .card_refusal import with_actionable_refusal
 from .stop_guard import stop_guard_decision
 from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
+from .github_key import (
+    GitHubKeyRefused,
+    GitHubToken,
+    card_repositories,
+    credential_answer,
+    credential_repository,
+    gh_repository,
+    helper_command,
+    issue_token,
+    issue_url,
+    parse_credential_request,
+)
 from .project_connect import Connector, Machine, connect_repositories, next_step
 from .runtime_launch import capture as capture_runtime_launch
 from .project_files import changed_files, files_context, files_fingerprint, missing_files
@@ -935,6 +948,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Where this Linux user's deploy keys and SSH config are (default ~/.ssh).",
     )
     command.add_argument("--timeout-seconds", type=float, default=15.0, help="Per git call (default 15).")
+
+    command = worker_commands.add_parser(
+        "git-credential",
+        help=(
+            "git's credential helper for github.com: answers with your owner's "
+            "GitHub key for a repository on the project card, and stores nothing. "
+            "connect-project names it in each clone's config; you do not run it by hand."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("action", nargs="?", default="get", choices=("get", "store", "erase"))
+    command.add_argument("--project-ref", default="", help="The project, when this agent attends several.")
+
+    command = worker_commands.add_parser(
+        "gh",
+        help=(
+            "Run gh with your owner's GitHub key for this one command, e.g. "
+            "`pb worker gh -- pr create --fill`. The repository is -R/--repo, else this "
+            "clone's origin, and must be on the project card."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", default="", help="The project, when this agent attends several.")
+    command.add_argument("gh_args", nargs=argparse.REMAINDER, help="gh's own arguments, after --.")
 
     command = worker_commands.add_parser(
         "limit-state",
@@ -3579,11 +3618,19 @@ def _project_workspace(args: Any, config: Any, field: Any, identity: Any) -> tup
 
 
 def _workspace_report_command(
-    args: Any, config: Any, field: Any, identity: Any, *, reasons: Mapping[str, str] | None = None
+    args: Any,
+    config: Any,
+    field: Any,
+    identity: Any,
+    *,
+    reasons: Mapping[str, str] | None = None,
+    commit_email: str = "",
 ) -> dict[str, Any]:
     """pb worker workspace-report: inspect the project workspace for the relay's next heartbeat (W337)."""
 
     project_ref, parsed, record, workspace, alias, email = _project_workspace(args, config, field, identity)
+    # W371: the owner's commit email (My Card) over the project's, when the GitHub key gave one.
+    email = str(commit_email or "").strip() or email
     if args.set_identity and not (alias and email):
         raise DomainError(
             "field_commit_identity_unset",
@@ -3616,18 +3663,153 @@ def _workspace_report_command(
     }
 
 
+class _GitHubKeySession:
+    """This session's way to its owner's GitHub key (W371): the channel, project and card."""
+
+    def __init__(self, args: Any) -> None:
+        self.identity = _identity(args)
+        self.config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
+        self.channel = self.config.worker(self.identity)
+        if self.channel is None:
+            raise DomainError(
+                "work_worker_channel_missing",
+                "This session has no worker channel on this host: run pb worker listen first.",
+            )
+        field = SharedFieldStore(self.config.field_root)
+        self.project_ref = str(getattr(args, "project_ref", "") or "").strip() or _attended_project_ref(
+            field, self.identity.worker_name
+        )
+        record = field.read_project_repositories(parse_ref(self.project_ref).object_id)
+        self.on_card = card_repositories(record.get("repositories") or [])
+
+    def helper(self) -> str:
+        return helper_command(self.identity.runtime_kind, self.identity.runtime_session_id)
+
+    async def _issue(self, repository: str) -> GitHubToken:
+        from connection_hub.caller.paths import StatePaths
+        from connection_hub.caller.profile_connection import resolve_profile_bearer
+        from connection_hub.caller.services import build_caller_services
+
+        paths = (
+            StatePaths(self.config.connection_hub_state_root)
+            if self.config.connection_hub_state_root is not None
+            else StatePaths.default()
+        )
+        services = build_caller_services(paths=paths)
+        bearer = await resolve_profile_bearer(
+            profile_name=self.channel.profile,
+            profiles=services.profiles,
+            credentials=services.credentials,
+            oauth_sessions=services.oauth_profile_sessions,
+        )
+        return await issue_token(
+            post=_post_json,
+            url=issue_url(self.config.endpoint, self.config.tenant, self.config.platform_project),
+            bearer=bearer,
+            project_ref=self.project_ref,
+            repository=repository,
+        )
+
+    def token(self, repository: str) -> GitHubToken:
+        if repository.lower() not in self.on_card:
+            raise GitHubKeyRefused(
+                "repository_not_on_card",
+                f"{repository} is not on the project card; the GitHub key serves only those.",
+            )
+        return asyncio.run(self._issue(repository))
+
+
+async def _post_json(url: str, body: Mapping[str, Any], bearer: str) -> tuple[int, Any]:
+    import aiohttp
+
+    timeout = aiohttp.ClientTimeout(total=30)
+    headers = {"Authorization": f"Bearer {bearer}", "Accept": "application/json"}
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(url, json=dict(body), headers=headers) as reply:
+            try:
+                parsed = await reply.json(content_type=None)
+            except (aiohttp.ContentTypeError, ValueError):
+                parsed = {}
+            return reply.status, parsed
+
+
+def _git_credential_command(args: Any, *, stdin: Any = None, stdout: Any = None) -> int:
+    """git's credential helper (W371). A refusal prints nothing to stdout, so git asks no one else."""
+
+    source = sys.stdin if stdin is None else stdin
+    out = sys.stdout if stdout is None else stdout
+    request = source.read()
+    if args.action != "get":
+        return 0
+    try:
+        session = _GitHubKeySession(args)
+        repository = credential_repository(parse_credential_request(request), session.on_card)
+        out.write(credential_answer(session.token(repository)))
+    except GitHubKeyRefused as exc:
+        print(f"pb GitHub key: {exc.message} ({exc.code})", file=sys.stderr)
+    except (DomainError, ValueError, OSError) as exc:
+        print(f"pb GitHub key: {exc}", file=sys.stderr)
+    return 0
+
+
+def _gh_command(args: Any) -> int:
+    """gh with the owner's GitHub key for one command (W371); the token lives in its environment only."""
+
+    gh_args = list(args.gh_args or [])
+    if gh_args[:1] == ["--"]:
+        gh_args = gh_args[1:]
+    origin = ""
+    try:
+        found = subprocess.run(
+            ["git", "remote", "get-url", "origin"], capture_output=True, text=True, timeout=10, check=False
+        )
+        origin = found.stdout.strip() if found.returncode == 0 else ""
+    except (OSError, subprocess.TimeoutExpired):
+        origin = ""
+    repository = gh_repository(gh_args, origin)
+    if not repository:
+        print("pb GitHub key: name the repository with -R owner/name, or run inside a clone of it.", file=sys.stderr)
+        return 2
+    try:
+        token = _GitHubKeySession(args).token(repository)
+    except GitHubKeyRefused as exc:
+        print(f"pb GitHub key: {exc.message} ({exc.code})", file=sys.stderr)
+        return 1
+    except (DomainError, ValueError, OSError) as exc:
+        print(f"pb GitHub key: {exc}", file=sys.stderr)
+        return 1
+    env = dict(os.environ)
+    env.pop("GITHUB_TOKEN", None)
+    env["GH_TOKEN"] = token.token
+    try:
+        return subprocess.call(["gh", *gh_args], env=env)
+    except FileNotFoundError:
+        print("pb GitHub key: gh is not installed on this machine.", file=sys.stderr)
+        return 127
+
+
 def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) -> dict[str, Any]:
     """pb worker connect-project: Part 2 of connecting a machine, for one attended project (W304 finding 19)."""
 
     project_ref, parsed, record, workspace, alias, email = _project_workspace(args, config, field, identity)
     Path(workspace).mkdir(parents=True, exist_ok=True)
     ssh_dir = Path(args.ssh_dir).expanduser() if args.ssh_dir else Path.home() / ".ssh"
+    try:
+        key_session: _GitHubKeySession | None = _GitHubKeySession(args)
+    except (DomainError, ValueError, OSError):
+        key_session = None
     connector = Connector(
         Machine(host_id=str(config.host_id), ssh_dir=ssh_dir),
         Path(workspace),
         timeout=max(1.0, float(args.timeout_seconds)),
+        # W371: the owner's GitHub key first; the deploy key when it is refused.
+        github_key=key_session.token if key_session is not None else None,
+        helper=key_session.helper() if key_session is not None else "",
+        alias_name=alias,
     )
     rows = connect_repositories(connector, record.get("repositories") or [])
+    # W371: the owner's commit email on My Card, when the key was issued, is the one commits carry.
+    email = connector.commit_email or email
     # The workspace report follows, the commit identity set in each clone when the project names one.
     report_args = argparse.Namespace(**{**vars(args), "set_identity": bool(alias and email), "no_verify": False})
     reported = _workspace_report_command(
@@ -3635,6 +3817,7 @@ def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) 
         config,
         field,
         identity,
+        commit_email=connector.commit_email,
         # Fixed texts only (never a path): the board shows them under "not reachable yet".
         reasons={str(row["alias"]): str(row["report_reason"]) for row in rows if row.get("report_reason")},
     )
@@ -5586,6 +5769,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "worker" and getattr(args, "worker_command", "") == "limit-state":
         # One plain line, because Claude Code shows it as the status line.
         return _limit_state_command(args)
+    if args.command == "worker" and getattr(args, "worker_command", "") == "git-credential":
+        # git reads the answer as key=value lines; never an envelope.
+        return _git_credential_command(args)
+    if args.command == "worker" and getattr(args, "worker_command", "") == "gh":
+        # gh's own output and exit code are the command's.
+        return _gh_command(args)
     if args.command == "worker" and getattr(args, "worker_command", "") == "stop-guard":
         # Claude Code reads the hook's decision as JSON on stdout.
         return _stop_guard_command(args)

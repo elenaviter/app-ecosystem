@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .github_key import clone_config
 from .workspace_report import comparable_url
 
 CONNECT_STATES = ("reachable", "needs_key", "unreachable", "left_unchanged")
@@ -130,13 +131,62 @@ class Machine:
 class Connector:
     """One connect run: the machine, the workspace, and the runner every command goes through."""
 
-    def __init__(self, machine: Machine, workspace: Path, *, timeout: float = 15.0, run: Runner | None = None) -> None:
+    def __init__(
+        self,
+        machine: Machine,
+        workspace: Path,
+        *,
+        timeout: float = 15.0,
+        run: Runner | None = None,
+        github_key: Callable[[str], Any] | None = None,
+        helper: str = "",
+        alias_name: str = "",
+    ) -> None:
         self.machine = machine
         self.workspace = workspace
         self.timeout = timeout
         self.run = run or _run
         # gh auth status, asked once per run: "" when signed in, else why not.
         self._gh_signed_in: str | None = None
+        # W371: the owner's GitHub key. github_key(repo) returns a token or
+        # raises GitHubKeyRefused; helper is this session's credential-helper
+        # line. Asked once per repository per run; the token is never kept.
+        self.github_key = github_key
+        self.helper = helper
+        self.alias_name = alias_name
+        self._key_state: dict[str, str] = {}
+        self.commit_email = ""
+
+    # -- the GitHub key (W371) -------------------------------------------
+
+    def key_state(self, repo: str) -> str:
+        """"ready" when the owner's GitHub key serves this repository, else why not."""
+
+        if not repo:
+            return ""
+        if repo not in self._key_state:
+            if self.github_key is None or not self.helper:
+                self._key_state[repo] = "no GitHub key on this pb"
+            else:
+                try:
+                    token = self.github_key(repo)
+                except Exception as exc:  # noqa: BLE001 - GitHubKeyRefused and transport failures alike
+                    self._key_state[repo] = str(getattr(exc, "message", "") or exc)
+                else:
+                    self._key_state[repo] = "ready"
+                    self.commit_email = self.commit_email or str(getattr(token, "commit_email", "") or "")
+        return self._key_state[repo]
+
+    def _key_config(self, folder: Path) -> None:
+        for step in clone_config(self.helper, name=self.alias_name, email=self.commit_email):
+            self._git(step, folder)
+
+    def _key_flags(self) -> list[str]:
+        return [
+            "-c", "credential.https://github.com.helper=",
+            "-c", f"credential.https://github.com.helper={self.helper}",
+            "-c", "credential.https://github.com.useHttpPath=true",
+        ]
 
     # -- ssh -------------------------------------------------------------
 
@@ -262,6 +312,9 @@ class Connector:
         repo = github_repository(url)
         if not repo:
             return {"state": "not_applicable", "reason": ""}
+        if self.key_state(repo) == "ready":
+            # The owner's key opens pull requests through `pb worker gh` (W371).
+            return {"state": "ready", "reason": "", "via": "pb worker gh"}
         if self._gh_signed_in is None:
             try:
                 status = self.run(["gh", "auth", "status"], None, self.timeout, None)
@@ -316,6 +369,23 @@ class Connector:
         exists = (folder / ".git").exists()
         if folder.exists() and not exists:
             return row("left_unchanged", f"{folder} exists and is not a git checkout.")
+        key = self.key_state(repo)
+        if key:
+            row = _with(row, github_key=key)
+        if key == "ready" and not exists:
+            # W371: a new clone goes over HTTPS with the owner's GitHub key.
+            https_url = f"https://github.com/{repo}.git"
+            result = self._clone_or_update(
+                folder,
+                https_url,
+                branch,
+                exists=False,
+                through_alias=False,
+                row=row,
+                flags=self._key_flags(),
+                after_clone=self._key_config,
+            )
+            return {**result, "route": "github_key"} if result.get("state") == "reachable" else result
         origin = ""
         if exists:
             found = self._git(["remote", "get-url", "origin"], folder)
@@ -341,10 +411,22 @@ class Connector:
             if exists:
                 # The same repository, through the key that reaches it.
                 self._git(["remote", "set-url", "origin", alias_url], folder)
+        if key == "ready" and exists:
+            # An existing clone keeps its origin and gains the key for pushes and gh.
+            self._key_config(folder)
         return self._clone_or_update(folder, source, branch, exists=exists, through_alias=through_alias, row=row)
 
     def _clone_or_update(
-        self, folder: Path, source: str, branch: str, *, exists: bool, through_alias: bool, row: Callable[..., dict[str, Any]]
+        self,
+        folder: Path,
+        source: str,
+        branch: str,
+        *,
+        exists: bool,
+        through_alias: bool,
+        row: Callable[..., dict[str, Any]],
+        flags: Sequence[str] = (),
+        after_clone: Callable[[Path], None] | None = None,
     ) -> dict[str, Any]:
         try:
             if exists:
@@ -357,9 +439,11 @@ class Connector:
                     return row("unreachable", f"git fetch failed (exit {fetched.returncode}).")
                 action = "updated"
             else:
-                cloned = self._git(["clone", "--quiet", source, str(folder)], self.workspace, through_alias=through_alias)
+                cloned = self._git([*flags, "clone", "--quiet", source, str(folder)], self.workspace, through_alias=through_alias)
                 if cloned.returncode != 0:
                     return row("unreachable", f"git clone failed (exit {cloned.returncode}).")
+                if after_clone is not None:
+                    after_clone(folder)
                 action = "cloned"
             if not branch:
                 self._git(["remote", "set-head", "origin", "--auto"], folder, through_alias=through_alias)
@@ -378,6 +462,13 @@ class Connector:
         except (OSError, subprocess.TimeoutExpired):
             return row("unreachable", f"git did not answer within {int(self.timeout)}s.")
         return row("reachable", "", action=action, branch=branch)
+
+
+def _with(row: Callable[..., dict[str, Any]], **fixed: Any) -> Callable[..., dict[str, Any]]:
+    def build(state: str, reason: str = "", **extra: Any) -> dict[str, Any]:
+        return row(state, reason, **fixed, **extra)
+
+    return build
 
 
 def connect_repositories(connector: Connector, repositories: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

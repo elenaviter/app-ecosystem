@@ -3,7 +3,7 @@ id: project-board.skill-reference.project-workspace
 title: Set Up A Project Workspace
 summary: How a worker sets up its workspace for a project it attends, from the project's record on its host, the journal repository included, each repository at its declared branch in a folder named by its alias, and why every project page and journal entry is read from that clone and nowhere else.
 tags: [procedure, problem-board, worker, workspace, repositories, attendance]
-keywords: [project files, project_files, project_files_editable, project.files.edit, project.files.changed, project_goal, project_card, journal_state none, pb worker connect-project, needs_key, pull_requests, pb worker context, project_on_this_host, commit_identity, user.email, --set-identity, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
+keywords: [project files, project_files, project_files_editable, project.files.edit, project.files.changed, project_goal, project_card, journal_state none, pb worker connect-project, needs_key, pull_requests, github_key, pb worker git-credential, pb worker gh, pb worker context, project_on_this_host, commit_identity, user.email, --set-identity, journal_clone, journal_home_commit, own clone, repositories, alias, branch, path, role journal, clone, fetch, fast-forward, deploy key, project card, attendance]
 see_also:
   - ./identity-and-authorization.md
   - ./collaboration.md
@@ -57,8 +57,15 @@ Each entry has an `alias`, a `url`, a `role` (`work`, `journal` or
 
 `pb worker connect-project --format brief` does this step and step 3 in one
 command, for every repository of the record (W304 finding 19). It clones or fast-forwards each repository as the rules below say. For a
-GitHub repository this machine does not reach yet, it makes this machine's
-deploy key and prints the grant for the person (add-a-worker-host step 7). It
+GitHub repository, it first asks for your owner's GitHub key (W371): when
+your owner has connected GitHub on the project's My Card and the GitHub App
+covers the repository, a new clone is made over HTTPS and every clone gets
+`pb worker git-credential` as its credential helper for github.com, with your
+owner's commit email. No token is stored: git asks the helper each time. The
+row's `github_key` reads `ready` or the reason it is not. When the key is
+refused, and for a GitHub repository this machine does not reach yet, it
+makes this machine's deploy key and prints the grant for the person
+(add-a-worker-host step 7). It
 then sets the commit identity and runs the workspace report. Run it again
 after the person adds a key. first-run's "Part 2: Connect To A Project" says
 what to tell the person for each state. The script below is what the command

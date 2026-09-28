@@ -443,3 +443,125 @@ def test_readme_and_first_run_carry_the_panels_words_for_part_2_and_both_start_l
     step7 = " ".join((source_package_path().parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
     assert "pb worker connect-project" in step7 and "Revoking stays with the script below" in step7
     assert 'GIT_SSH_COMMAND="ssh -T -F $SSH_CONFIG"' in step7
+
+
+# --- W371: the owner's GitHub key comes first; the deploy key when it is refused ---
+
+from project_board.client.github_key import GitHubKeyRefused, GitHubToken, helper_command  # noqa: E402
+
+HELPER = helper_command("claude-code", "session-1")
+OWNER_EMAIL = "owner@example.test"
+
+
+class KeyedGitHub(GitHub):
+    """github.com over HTTPS: a repository the owner's key serves answers when git carries the pb helper."""
+
+    def __init__(self, repositories: dict[str, Path]) -> None:
+        super().__init__(repositories)
+        self.keyed: set[str] = set()
+        self.clone_flags: list[list[str]] = []
+
+    def answers(self, url: str) -> bool:
+        match = _GITHUB_URL.match(url)
+        if match and match.group(1) == "https://github.com/" and match.group(2) in self.keyed:
+            return True
+        return super().answers(url)
+
+    def __call__(self, argv, cwd, timeout, env):
+        argv = list(argv)
+        if argv[0] == "git" and argv[1:2] == ["-c"]:
+            rest, flags = argv[1:], []
+            while rest[:1] == ["-c"]:
+                flags.append(rest[1])
+                rest = rest[2:]
+            self.clone_flags.append(flags)
+            carries_helper = f"credential.https://github.com.helper={HELPER}" in flags
+            url = rest[-2]
+            repo = _GITHUB_URL.match(url).group(2)
+            if rest[0] != "clone" or not (carries_helper and repo in self.keyed):
+                return subprocess.CompletedProcess(argv, 128, "", "Authentication failed")
+            done = _REAL_RUN(["git", "clone", "--quiet", str(self.repositories[repo]), rest[-1]], cwd, timeout, env)
+            _REAL_RUN(["git", "remote", "set-url", "origin", url], Path(rest[-1]), timeout, env)
+            return done
+        return super().__call__(argv, cwd, timeout, env)
+
+
+def _key(github: KeyedGitHub, issued: list):
+    def issue(repo: str) -> GitHubToken:
+        issued.append(repo)
+        if repo not in github.keyed:
+            raise GitHubKeyRefused("github_not_linked", "Your owner has not connected GitHub on this project.")
+        return GitHubToken(token="ghu_secret", expires_at=0, login="owner", commit_email=OWNER_EMAIL, repository=repo)
+
+    return issue
+
+
+def _config_values(folder: Path, key: str) -> list[str]:
+    found = subprocess.run(
+        ["git", "config", "--local", "--get-all", key], cwd=str(folder), capture_output=True, text=True, check=False
+    )
+    return found.stdout.splitlines()
+
+
+def test_a_repository_the_owners_key_serves_is_cloned_over_https_with_no_deploy_key(tmp_path):
+    github = KeyedGitHub({"example-org/app-ecosystem": _remote(tmp_path / "remotes", "app-ecosystem")})
+    github.keyed.add("example-org/app-ecosystem")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    issued: list[str] = []
+    connector = Connector(
+        _machine(tmp_path), workspace, run=github, github_key=_key(github, issued), helper=HELPER, alias_name=ALIAS
+    )
+    listed = {"alias": "app-ecosystem", "url": "git@github.com:example-org/app-ecosystem.git"}
+
+    row = connector.connect(listed)
+
+    assert row["state"] == "reachable" and row["action"] == "cloned", row
+    assert row["route"] == "github_key" and row["github_key"] == "ready"
+    clone = workspace / "app-ecosystem"
+    assert _GIT_ORIGIN(clone) == "https://github.com/example-org/app-ecosystem.git"
+    # The clone names this session's helper after clearing any inherited one, and says which repository.
+    assert _config_values(clone, "credential.https://github.com.helper") == ["", HELPER]
+    assert _config_values(clone, "credential.https://github.com.useHttpPath") == ["true"]
+    assert _config_values(clone, "user.email") == [OWNER_EMAIL]
+    assert _config_values(clone, "user.name") == [ALIAS]
+    assert connector.commit_email == OWNER_EMAIL
+    assert not (tmp_path / "ssh").exists(), "no deploy key is made"
+    assert "ghu_secret" not in (clone / ".git" / "config").read_text(encoding="utf-8"), "the token is never stored"
+    assert connector.pull_requests(listed["url"]) == {"state": "ready", "reason": "", "via": "pb worker gh"}
+    assert issued == ["example-org/app-ecosystem"], "asked once per repository per run"
+
+
+def test_a_refused_key_is_named_and_the_deploy_key_path_runs_as_before(tmp_path):
+    github = KeyedGitHub({"example-org/applications": _remote(tmp_path / "remotes", "applications")})
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    connector = Connector(
+        _machine(tmp_path), workspace, run=github, github_key=_key(github, []), helper=HELPER, alias_name=ALIAS
+    )
+
+    row = connector.connect({"alias": "applications", "url": "git@github.com:example-org/applications.git"})
+
+    assert row["state"] == "needs_key" and row["reason"] == NEEDS_KEY_REASON
+    assert row["github_key"] == "Your owner has not connected GitHub on this project."
+    assert row["grant"]["repository"] == "example-org/applications"
+    assert connector.commit_email == ""
+
+
+def test_an_existing_clone_keeps_its_origin_and_gains_the_key(tmp_path):
+    github = KeyedGitHub({"example-org/app-ecosystem": _remote(tmp_path / "remotes", "app-ecosystem")})
+    github.open.add("example-org/app-ecosystem")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    listed = {"alias": "app-ecosystem", "url": "git@github.com:example-org/app-ecosystem.git"}
+    assert Connector(_machine(tmp_path), workspace, run=github).connect(listed)["action"] == "cloned"
+    github.keyed.add("example-org/app-ecosystem")
+
+    row = Connector(
+        _machine(tmp_path), workspace, run=github, github_key=_key(github, []), helper=HELPER, alias_name=ALIAS
+    ).connect(listed)
+
+    clone = workspace / "app-ecosystem"
+    assert row["state"] == "reachable" and row["action"] == "updated" and row["github_key"] == "ready"
+    assert _GIT_ORIGIN(clone) == "git@github.com:example-org/app-ecosystem.git"
+    assert _config_values(clone, "credential.https://github.com.helper") == ["", HELPER]
