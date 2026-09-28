@@ -219,7 +219,9 @@ function defaultClaims(provider?: DelegatedToKdcubeProvider, connectorAppId?: st
 
 function oauthEnabled(provider?: DelegatedToKdcubeProvider, connectorAppId?: string): boolean {
   const app = connectorAppId ? provider?.connector_apps?.[connectorAppId] : undefined;
-  return Boolean(provider?.adapter?.includes('oauth') && app?.client_id);
+  // github.app is OAuth too: a GitHub App authorizes users by the web flow (W371).
+  const adapter = provider?.adapter || '';
+  return Boolean((adapter.includes('oauth') || adapter === 'github.app') && app?.client_id);
 }
 
 // One-line help lives behind a small info mark next to a label, so a form
