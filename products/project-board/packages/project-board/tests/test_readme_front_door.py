@@ -84,8 +84,9 @@ def test_the_path_names_the_commands_a_stranger_types() -> None:
 
 
 def test_updating_and_rolling_back_is_explained_after_the_setup() -> None:
-    update = README.index("### Update or roll back `pb`")
-    assert README.index("**4. ") < update < README.index("## Onboard an agent")
+    # W361 second review: after the numbered path (step 9), not a detour between steps 4 and 5.
+    update = README.index("## Update or roll back `pb`")
+    assert README.index("**9. ") < update < README.index("## Learn more")
     assert "https://pypi.org/project/project-board/#history" in README
 
 
@@ -95,7 +96,8 @@ def test_links_are_public_and_resolve_in_this_repository() -> None:
     assert links
     for link in links:
         assert link.startswith(PUBLIC), f"PyPI renders only absolute public links: {link}"
-        assert (REPOSITORY / link[len(PUBLIC):]).is_file(), link
+        # A section anchor (#project-files) points into a page that must exist.
+        assert (REPOSITORY / link[len(PUBLIC):].split("#", 1)[0]).is_file(), link
     for page in ("docs/concepts.md", "docs/cards.md", "docs/add-a-machine.md", "procedures/enroll-an-agent.md"):
         assert any(link.endswith(page) for link in links), page
 
