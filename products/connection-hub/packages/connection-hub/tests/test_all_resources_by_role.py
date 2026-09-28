@@ -190,3 +190,86 @@ def test_an_agent_card_through_its_project_uses_the_actors_admin_fact():
 
     platform = [call[1]["_platform_admin"] for call in host.calls if call[0] == "update_access"]
     assert platform == [True, False], "never a fixed False"
+
+
+# -- W379 follow-up (operator, 2026-09-28 ~20:27Z) -----------------------------
+# "the role which the user can pick in the list of roles, for the card holder
+# to derive, start from the role which the logged in user has. i.e. if admin
+# the list contain all possible roles. but if registered then only that".
+
+PRIVILEGED = "kdcube:role:privileged"
+LADDER = [REGISTERED, PAID, PRIVILEGED, SUPER]
+
+
+def _deployed_ladder():
+    """The deployed descriptor's role grants: each is delegable by itself and the roles above it."""
+
+    return {
+        "delegated_credentials": {
+            "oauth": {
+                "enabled": True,
+                "capabilities": [
+                    {"grant": role, "label": role, "delegable_roles": LADDER[index:]}
+                    for index, role in enumerate(LADDER)
+                ] + [
+                    {"grant": "work:review", "label": "Review", "delegable_roles": LADDER},
+                    {"grant": "deployment:manage", "label": "Manage", "delegable_roles": [SUPER]},
+                ],
+                "resources": [
+                    {"resource": "*", "label": "All platform and application APIs",
+                     "grants": LADDER, "tools": {}},
+                    {"resource": BOARD, "label": "Problem Board", "grants": ["work:review", "deployment:manage"],
+                     "tools": {"review.accept": {"grants": ["work:review"]},
+                               "deployment.redeploy": {"grants": ["deployment:manage"]}}},
+                    {"resource": "urn:kdcube:management:deployment:*:*", "label": "Deployment",
+                     "grants": ["deployment:manage"], "tools": {}},
+                ],
+            }
+        }
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("role", "roles_offered"), [
+    (REGISTERED, [REGISTERED]),
+    (PAID, [REGISTERED, PAID]),
+    (PRIVILEGED, [REGISTERED, PAID, PRIVILEGED]),
+    (SUPER, LADDER),
+])
+async def test_the_role_picker_starts_from_the_signed_in_persons_role(tmp_path, role, roles_offered):
+    """Every Card editor draws a row's role choices from resource_options for the signed-in person."""
+
+    h = _Harness(tmp_path, connections=_deployed_ladder())
+    person = {"user_id": f"user-{role}", "roles": [role], "permissions": []}
+
+    rows = {row["resource"]: row for row in await h.service.resource_options(person)}
+
+    assert rows["*"]["grants"] == roles_offered
+
+
+@pytest.mark.asyncio
+async def test_rows_and_operations_restricted_to_a_role_are_offered_only_to_it(tmp_path):
+    h = _Harness(tmp_path, connections=_deployed_ladder())
+
+    registered = {row["resource"]: row for row in await h.service.resource_options(REGISTERED_USER)}
+    admin = {row["resource"]: row for row in await h.service.resource_options(ADMIN)}
+
+    assert "urn:kdcube:management:deployment:*:*" not in registered
+    assert "urn:kdcube:management:deployment:*:*" in admin
+    assert [op["name"] for op in registered[BOARD]["operations"]] == ["review.accept"]
+    assert sorted(op["name"] for op in admin[BOARD]["operations"]) == ["deployment.redeploy", "review.accept"]
+
+
+def test_a_control_card_saved_through_its_project_is_bounded_by_the_editors_role(tmp_path):
+    h = _Harness(tmp_path, connections=_deployed_ladder())
+    control_id = _control_card(h)
+    access = ProjectControlCardAccess(h.service, _real_port(control_id))
+    paid = {"user_id": "user-paid", "roles": [PAID], "permissions": []}
+
+    beyond = asyncio.run(access.update(
+        paid, control_id=control_id, project_ref=PROJECT, request_id="req-paid",
+        resource_grants={"*": [PAID, PRIVILEGED]},
+    ))
+
+    assert beyond["ok"] is False and beyond["error"] == "delegated_access_grants_not_delegable"
+    assert PRIVILEGED in beyond["grants"] and PAID not in beyond["grants"]
