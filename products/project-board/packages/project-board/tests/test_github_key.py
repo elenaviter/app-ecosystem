@@ -153,3 +153,38 @@ def test_the_card_bearer_rides_its_own_header_never_authorization():
     post = source[source.index("async def _post_json"):source.index("def _git_credential_command")]
     assert "CARD_BEARER_HEADER: bearer" in post
     assert "Authorization" not in post
+
+
+def test_a_card_login_that_cannot_refresh_is_named_not_a_traceback(monkeypatch, capsys):
+    """2026-09-28 16:14Z: the helper crashed while refreshing the Card's own login."""
+
+    from connection_hub.caller.errors import UpstreamError
+
+    class _Failing(_Session):
+        def token(self, repository):
+            raise UpstreamError("oauth_token_request_failed", "The Card's login could not be refreshed: the token endpoint did not answer.")
+
+    monkeypatch.setattr(cli, "_GitHubKeySession", _Failing)
+    out = io.StringIO()
+    code = cli._git_credential_command(  # noqa: SLF001
+        SimpleNamespace(action="get"),
+        stdin=io.StringIO("protocol=https\nhost=github.com\npath=example-org/app-ecosystem.git\n\n"),
+        stdout=out,
+    )
+    err = capsys.readouterr().err
+    assert code == 0 and out.getvalue() == ""
+    assert "could not be refreshed" in err and "oauth_token_request_failed" in err
+    assert "Traceback" not in err
+
+    class _Unexpected(_Session):
+        def token(self, repository):
+            raise KeyError("ghu_should_not_print")
+
+    monkeypatch.setattr(cli, "_GitHubKeySession", _Unexpected)
+    cli._git_credential_command(  # noqa: SLF001
+        SimpleNamespace(action="get"),
+        stdin=io.StringIO("protocol=https\nhost=github.com\npath=example-org/app-ecosystem.git\n\n"),
+        stdout=io.StringIO(),
+    )
+    err = capsys.readouterr().err
+    assert "KeyError" in err and "ghu_should_not_print" not in err

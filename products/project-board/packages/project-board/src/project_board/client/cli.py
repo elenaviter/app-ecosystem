@@ -3734,6 +3734,24 @@ async def _post_json(url: str, body: Mapping[str, Any], bearer: str) -> tuple[in
             return reply.status, parsed
 
 
+def _key_failure(exc: BaseException) -> str:
+    """One line naming why the key was not issued, never a traceback.
+
+    Connection Hub's caller errors carry a safe code and message (a Card login
+    that could not be refreshed, 2026-09-28 16:14Z, raised from its token
+    endpoint call); anything else is named by its type only, so no token or
+    URL detail reaches the terminal.
+    """
+
+    from connection_hub.caller.errors import ConnectionHubClientError
+
+    if isinstance(exc, ConnectionHubClientError):
+        return f"{exc.message} ({exc.code})"
+    if isinstance(exc, (DomainError, ValueError, OSError)):
+        return str(exc)
+    return f"the key could not be issued ({type(exc).__name__}); try again, and tell the coordinator if it repeats"
+
+
 def _git_credential_command(args: Any, *, stdin: Any = None, stdout: Any = None) -> int:
     """git's credential helper (W371). A refusal prints nothing to stdout, so git asks no one else."""
 
@@ -3748,8 +3766,8 @@ def _git_credential_command(args: Any, *, stdin: Any = None, stdout: Any = None)
         out.write(credential_answer(session.token(repository)))
     except GitHubKeyRefused as exc:
         print(f"pb GitHub key: {exc.message} ({exc.code})", file=sys.stderr)
-    except (DomainError, ValueError, OSError) as exc:
-        print(f"pb GitHub key: {exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - git gets no answer, and the reason by name, never a traceback
+        print(f"pb GitHub key: {_key_failure(exc)}", file=sys.stderr)
     return 0
 
 
@@ -3776,8 +3794,8 @@ def _gh_command(args: Any) -> int:
     except GitHubKeyRefused as exc:
         print(f"pb GitHub key: {exc.message} ({exc.code})", file=sys.stderr)
         return 1
-    except (DomainError, ValueError, OSError) as exc:
-        print(f"pb GitHub key: {exc}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - gh does not run, and the reason is named
+        print(f"pb GitHub key: {_key_failure(exc)}", file=sys.stderr)
         return 1
     env = dict(os.environ)
     env.pop("GITHUB_TOKEN", None)
