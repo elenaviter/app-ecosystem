@@ -1188,18 +1188,24 @@ connections:
       resources:
         - resource: "*"
           label: All platform and application APIs
-          admin_only: true
           grants:
             - kdcube:role:super-admin
 ```
 
-`resource: "*"` is deliberately special. An `admin_only` row is offered to
-every approver who may delegate at least one of its grants, with only those
-grants (the operator, 2026-09-26: "that must be for all, with the choice of
-roles from those that are available for that account"): a platform admin sees
-all of them and the "admin" mark, anyone else sees the row as an ordinary one
-limited to the roles their account may delegate, and the row stays closed when
-none is theirs. A save that names a grant beyond the approver is refused
+`resource: "*"` is deliberately special: its grants are platform roles. Every
+catalog row, this one included, is offered to a person who may delegate at
+least one of its grants, with only those grants, and stays closed when none is
+theirs (the operator, 2026-09-26: "that must be for all, with the choice of
+roles from those that are available for that account"; 2026-09-28, W379: "it
+must show all the resources that are allowed to be shown according to the role
+of logged in user"). The deployed row therefore carries no `admin_only` mark;
+a row that still declares it is also offered to a platform admin, who sees the
+"admin" mark. The person is the signed-in one on every Card screen: their own
+Cards, and the project routes that read a Card under its owner (a project's
+Control Card, a person's Card in a project, an agent's Card through its
+project) add that person's own role grants and platform-admin fact to the
+project host's answer (W379; before it, those routes read the Card with no
+roles and the row was closed there, a regression of W155). A save that names a grant beyond the approver is refused
 (`delegated_access_grants_not_delegable`), so a Card never exceeds what its
 approver holds. With only the `super-admin` grant, as above, a non-admin
 therefore does not see it. On the admin REST entrance, the request-auth

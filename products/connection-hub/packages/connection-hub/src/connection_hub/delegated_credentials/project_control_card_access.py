@@ -121,6 +121,15 @@ class RefusingProjectControlCardAuthorizationPort:
         raise ControlCardAuthorizationError(self._reason)
 
 
+
+def _platform_admin(user: Mapping[str, Any]) -> bool:
+    """The acting person's own platform-admin fact, from their roles (W379)."""
+
+    from connection_hub.authority_projection import authority_has_platform_privilege
+
+    roles = user.get("roles") if isinstance(user, Mapping) else ()
+    return authority_has_platform_privilege(list(roles or ()))
+
 def _subject(user: Mapping[str, Any]) -> str:
     for key in ("user_id", "sub", "id"):
         value = clean_text(user.get(key))
@@ -232,7 +241,14 @@ class ProjectControlCardAccess:
         decision = await self._authorize(user, control_id=control_id, project_ref=project_ref, action=CONTROL_CARD_READ)
         if isinstance(decision, dict):
             return decision
-        result = await self._host.control_card_get(self._owner_user(decision), control_id=decision.control_id)
+        # W379: the Card is read under its creator, and what it may take is
+        # offered by the reading person's own role.
+        result = await self._host.control_card_get(
+            self._owner_user(decision),
+            control_id=decision.control_id,
+            _delegable_grants=await self._actor_delegable_grants(user, decision.grantor_subject),
+            _platform_admin=_platform_admin(user),
+        )
         if result.get("ok") is not True:
             return self._not_found(result)
         can_edit = decision.via in EDITING_VIAS
@@ -290,6 +306,7 @@ class ProjectControlCardAccess:
             self._owner_user(decision),
             control_id=decision.control_id,
             _delegable_grants=await self._actor_delegable_grants(user, decision.grantor_subject),
+            _platform_admin=_platform_admin(user),
             _record_transform=self._audit(user, decision, request_id=request_id),
             **changes,
         )

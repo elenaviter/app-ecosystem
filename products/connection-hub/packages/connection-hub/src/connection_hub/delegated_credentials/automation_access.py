@@ -145,6 +145,7 @@ from connection_hub.delegated_credentials.controls.snapshot import (
 )
 from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationPort,
+    ViewerAuthority,
 )
 from connection_hub.delegated_credentials.project_identity_authorization import (
     ProjectOperationRequest,
@@ -456,6 +457,23 @@ def admin_only_closed(resource: Any, delegable: Iterable[str], *, platform_admin
         return False
     held = {str(grant) for grant in delegable}
     return not any(str(grant) in held for grant in (getattr(resource, "grants", ()) or ()))
+
+
+def role_closed(resource: Any, delegable: Iterable[str]) -> bool:
+    """Whether a catalog row is closed to this person by their role (W379).
+
+    The operator's rule (2026-09-28 ~20:20Z): "it must show all the
+    resources that are allowed to be shown according to the role of logged
+    in user". The descriptor's grants on the row decide, and nothing else: a
+    row is offered to a person who may delegate at least one of its grants.
+    A row that declares no grants costs nothing and stays offered.
+    """
+
+    grants = [str(grant) for grant in (getattr(resource, "grants", ()) or ()) if str(grant)]
+    if not grants:
+        return False
+    held = {str(grant) for grant in delegable}
+    return not any(grant in held for grant in grants)
 
 
 def _grants_delegable(grants: Iterable[str], delegable: set[str]) -> bool:
@@ -2586,6 +2604,25 @@ class AutomationAccessService:
                 namespace["connected_accounts"] = requirements
         return namespaces
 
+    async def _viewer_authority(self, user: Mapping[str, Any]) -> ViewerAuthority:
+        """What the signed-in person's own role may delegate (W379).
+
+        The project routes read and write a Card under its owner and ask the
+        project host who may act; the catalog rows are still offered by the
+        signed-in person's role, as on their own Cards.
+        """
+
+        grants: tuple[str, ...] = ()
+        try:
+            offer = await self._offer_config(owner_subject=_subject_from_user(user))
+            if offer is not None:
+                grants = tuple(
+                    sorted((await self._available_inventory(user, config=offer)).grant_names())
+                )
+        except Exception:  # noqa: BLE001 - no catalog adds nothing: the host's answer alone bounds the route
+            grants = ()
+        return ViewerAuthority(grants=grants, platform_admin=_is_platform_admin(user))
+
     async def resource_options(
         self,
         user: Mapping[str, Any],
@@ -2617,6 +2654,8 @@ class AutomationAccessService:
         out: list[dict[str, Any]] = []
         for resource in offer.resources:
             if admin_only_closed(resource, delegable, platform_admin=platform_admin):
+                continue
+            if role_closed(resource, delegable):
                 continue
             option = {
                 "resource": resource.resource,
@@ -4264,6 +4303,7 @@ class AutomationAccessService:
         _actor_subject: str = "",
         _delegable_grants: Iterable[str] | None = None,
         _extra_record_transform: Callable[[Any, Any], Any] | None = None,
+        _actor_platform_admin: bool = False,
     ) -> dict[str, Any]:
         """Re-apply a descriptor authorization profile to an existing Card, in place.
 
@@ -4423,7 +4463,9 @@ class AutomationAccessService:
             resource_operations=resource_operations,
             expected_card_revision=expected_card_revision,
             _delegable_grants=_delegable_grants,
-            _platform_admin=False if _actor_subject else None,
+            # W379: the acting person's own platform-admin fact on the
+            # project path, never a fixed False.
+            _platform_admin=bool(_actor_platform_admin) if _actor_subject else None,
             _record_transform=_stamp_profile_audit,
         )
         if result.get("ok"):
@@ -4441,6 +4483,7 @@ class AutomationAccessService:
         _actor_subject: str = "",
         _delegable_grants: Iterable[str] | None = None,
         _extra_record_transform: Callable[[Any, Any], Any] | None = None,
+        _actor_platform_admin: bool = False,
     ) -> dict[str, Any]:
         """Add operations to an existing Card, keeping everything else (W371).
 
@@ -4559,7 +4602,9 @@ class AutomationAccessService:
             resource_operations=resource_operations,
             expected_card_revision=expected_card_revision,
             _delegable_grants=_delegable_grants,
-            _platform_admin=False if _actor_subject else None,
+            # W379: the acting person's own platform-admin fact on the
+            # project path, never a fixed False.
+            _platform_admin=bool(_actor_platform_admin) if _actor_subject else None,
             _record_transform=_stamp_operations_added,
         )
         if result.get("ok"):
@@ -5786,8 +5831,15 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         control_id: str,
+        _delegable_grants: Iterable[str] | None = None,
+        _platform_admin: bool | None = None,
     ) -> dict[str, Any]:
-        """Read one credentialless Control Card owned by this user."""
+        """Read one credentialless Control Card owned by this user.
+
+        ``_delegable_grants`` and ``_platform_admin`` are for the project path
+        (W379): the Card is read under its creator, and what it may take is
+        offered by the reading person's own role.
+        """
 
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
@@ -5820,7 +5872,13 @@ class AutomationAccessService:
                     "retryable": True,
                     "status": 503,
                 }
-        card = await self._control_card_public_view(user, record, state=state)
+        card = await self._control_card_public_view(
+            user,
+            record,
+            state=state,
+            _delegable_grants=_delegable_grants,
+            _platform_admin=_platform_admin,
+        )
         authority = dataclasses.replace(card_authority_from_record(record), state=state)
         access = record.to_public_dict()
         access["state"] = state
@@ -6232,6 +6290,7 @@ class AutomationAccessService:
             AutomationAccessRecord,
         ]
         | None = None,
+        _platform_admin: bool | None = None,
     ) -> dict[str, Any]:
         """Edit a Control Card through the ordinary catalog-aware Card path.
 
@@ -6294,10 +6353,16 @@ class AutomationAccessService:
             accepted_operations=accepted_operations,
             _delegable_grants=_delegable_grants,
             _record_transform=_record_transform,
+            _platform_admin=_platform_admin,
         )
         if updated.get("ok") is not True:
             return updated
-        result = await self.control_card_get(user, control_id=existing.access_id)
+        result = await self.control_card_get(
+            user,
+            control_id=existing.access_id,
+            _delegable_grants=_delegable_grants,
+            _platform_admin=_platform_admin,
+        )
         if updated.get("pruned") is not None:
             result["pruned"] = updated["pruned"]
         return result
@@ -6322,6 +6387,7 @@ class AutomationAccessService:
             }
         if _clean(invitation_ref):
             return await self._project_invitation_controls.get(
+                viewer=await self._viewer_authority(user),
                 actor_subject=actor_subject,
                 project_ref=project_ref,
                 invitation_ref=invitation_ref,
@@ -6329,6 +6395,7 @@ class AutomationAccessService:
                 request_id=request_id,
             )
         return await self._project_person_controls.get(
+            viewer=await self._viewer_authority(user),
             actor_subject=actor_subject,
             project_ref=project_ref,
             target_subject=target_subject,
@@ -6371,6 +6438,7 @@ class AutomationAccessService:
                     "status": 400,
                 }
             return await self._project_invitation_controls.create(
+                viewer=await self._viewer_authority(user),
                 actor_subject=actor_subject,
                 project_ref=project_ref,
                 invitation_ref=invitation_ref,
@@ -6386,6 +6454,7 @@ class AutomationAccessService:
                 manage_url=manage_url,
             )
         return await self._project_person_controls.create(
+            viewer=await self._viewer_authority(user),
             actor_subject=actor_subject,
             project_ref=project_ref,
             target_subject=target_subject,
@@ -6432,6 +6501,7 @@ class AutomationAccessService:
             }
         if _clean(invitation_ref):
             return await self._project_invitation_controls.update(
+                viewer=await self._viewer_authority(user),
                 actor_subject=actor_subject,
                 project_ref=project_ref,
                 invitation_ref=invitation_ref,
@@ -6449,6 +6519,7 @@ class AutomationAccessService:
                 accepted_operations=accepted_operations,
             )
         return await self._project_person_controls.update(
+            viewer=await self._viewer_authority(user),
             actor_subject=actor_subject,
             project_ref=project_ref,
             target_subject=target_subject,
@@ -6485,6 +6556,7 @@ class AutomationAccessService:
             }
         if _clean(invitation_ref):
             return await self._project_invitation_controls.revoke(
+                viewer=await self._viewer_authority(user),
                 actor_subject=actor_subject,
                 project_ref=project_ref,
                 invitation_ref=invitation_ref,
@@ -6492,6 +6564,7 @@ class AutomationAccessService:
                 request_id=request_id,
             )
         return await self._project_person_controls.revoke(
+            viewer=await self._viewer_authority(user),
             actor_subject=actor_subject,
             project_ref=project_ref,
             target_subject=target_subject,

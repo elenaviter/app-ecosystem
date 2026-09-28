@@ -468,7 +468,43 @@ class ResolverBackedProjectAuthorizationPort:
         )
 
 
+
+@dataclass(frozen=True)
+class ViewerAuthority:
+    """What the signed-in person's own account may delegate, by role (W379).
+
+    A project host answers who may act on a project's Card and what the
+    project lets them delegate; it knows no platform roles. The catalog rows
+    whose grants are platform roles (the "All platform and application APIs"
+    row, resource ``*``) are offered by the signed-in person's own role, as on
+    their own Cards, so every project route adds this to the host's answer.
+    """
+
+    grants: tuple[str, ...] = ()
+    platform_admin: bool = False
+
+
+def with_viewer_authority(
+    decision: "ProjectAuthorizationDecision",
+    viewer: ViewerAuthority | None,
+) -> "ProjectAuthorizationDecision":
+    """The host's decision, bounded also by what the signed-in person's role may delegate."""
+
+    if viewer is None or not decision.allowed:
+        return decision
+    from dataclasses import replace
+
+    return replace(
+        decision,
+        delegable_grants=tuple(
+            sorted(set(decision.delegable_grants) | {str(g) for g in viewer.grants if str(g)})
+        ),
+        platform_admin=bool(decision.platform_admin or viewer.platform_admin),
+    )
+
 __all__ = [
+    "ViewerAuthority",
+    "with_viewer_authority",
     "PROJECT_INVITATION_CONTROL_CREATE",
     "PROJECT_INVITATION_CONTROL_OPERATIONS",
     "PROJECT_INVITATION_CONTROL_READ",
