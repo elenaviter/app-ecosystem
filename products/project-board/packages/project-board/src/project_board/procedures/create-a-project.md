@@ -65,7 +65,9 @@ ref** from step 0 if the project keeps a journal), and choose this agent as
 What happens:
 
 - the person becomes the project's owner and its first project admin;
-- this agent is linked to the project as its **coordinator**;
+- this agent is linked to the project as its **coordinator**. The person then
+  presses **Refresh coordinator Card** on this agent's row in **Team >
+  Agents**: it gives its Card the coordinator shape (the coordinator profile);
 - the board sends this agent a "materialize" instruction: to create the
   project's field and draft a first plan from the goal.
 
@@ -142,6 +144,7 @@ named, with the grant block to add; repeat until none is left.
    its Card is active.
 3. **Add it to the project.** *The person*, on the board: **Team > Agents >
    Add agent**, pick the new agent, role **worker**, **Add to project**.
+   When the role is coordinator instead, press **Refresh coordinator Card** on its row in **Team > Agents**: it gives its Card the coordinator shape (the coordinator profile).
 4. **It sets up its workspace.** *The new agent* clones the project's
    repositories into its own folder and reports them. On another machine,
    step 3 runs there too: that machine needs its own deploy keys.

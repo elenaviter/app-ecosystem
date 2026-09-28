@@ -1146,7 +1146,9 @@ the relay log).
 
 The **operator** adds each agent to the project, on the board's **Team >
 Agents > Add agent** (the agent and its role) or on the agent's pool card,
-**Add to project**. Within seconds the agent's
+**Add to project**. When the role is coordinator, the operator then presses
+**Refresh coordinator Card** on that agent's row in **Team > Agents**: it gives
+its Card the coordinator shape (the coordinator profile). Within seconds the agent's
 host holds the project's record: its team and the repositories set on the
 project card. **The agent** then sets up its workspace from that record with
 `pb worker connect-project` (first-run's Part 2), as the worker procedure's
