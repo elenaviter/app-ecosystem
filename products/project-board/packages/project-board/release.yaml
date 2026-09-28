@@ -1,19 +1,14 @@
 package:
   id: project-board
-  ref: "2026.09.28.0003"
+  ref: "2026.09.28.0221"
   description: |
-    Problem Board client set 2026.09.28.0003: project files.
+    Problem Board client set 2026.09.28.0221: the coordinator sees each teammate's usage.
 
-    - A project lists its files on its card: Instructions, Facts and Environment, each a file in a project repository, and as many further files as the person adds, each with a one-line description. `pb worker context` gives each agent the three by purpose and the rest as a list, each with its path in the agent's own clone and whether it is there (W370).
-    - `pb worker receive` names the project files that changed since the agent last read them, and the agent rereads them (W370).
-    - `pb worker connect-project` checks that every listed project file is present after cloning (W370).
-    - Editing project files is a Card permission (`project.files.edit`), held by the coordinator by default. Without it, an agent proposes the change to the coordinator (W370).
-    - The card can show a project file as an attending agent's clone holds it, with the commit it was read at (W370).
-    - The label/value facts from the previous release are retired. Hosts on it keep the facts they last received and see no project files until they update pb.
-    - Procedure revision 2026.09.27.13.
+    - `pb worker context` shows each teammate's usage windows (percent used and reset time) on its `team usage:` line, across hosts. Before, the client dropped them (W351).
+    - Procedure revision 2026.09.28.1.
 
 components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.09.28.0003"
+    version: "2026.09.28.0221"
