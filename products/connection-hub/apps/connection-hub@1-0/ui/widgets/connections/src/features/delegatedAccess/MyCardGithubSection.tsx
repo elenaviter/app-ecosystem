@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { postOp } from '../../api/client';
 import { startDelegatedToKdcubeOAuth } from '../delegatedToKdcube/delegatedToKdcubeSlice';
@@ -9,8 +9,9 @@ import {
   githubStatusRequest,
   githubUnlinkRequest,
   linkableAccounts,
+  openedRepositories,
+  opensGithubSection,
   ownerAction,
-  repositoriesFromSearch,
   repositoryStateLabel,
   type GithubConnectHint,
   type GithubKeyStatus,
@@ -30,10 +31,18 @@ async function run(request: OperationRequest, fallback: string): Promise<GithubK
 const BADGE = { ok: 'badge badge-ok', warn: 'badge badge-warn', off: 'badge badge-neutral' } as const;
 
 // The GitHub key and commit email on a person's project My Card (W371).
-export function MyCardGithubSection({ projectRef }: { projectRef: string }) {
+export function MyCardGithubSection({
+  projectRef,
+  openParams,
+}: {
+  projectRef: string;
+  openParams?: Record<string, string>;
+}) {
   const dispatch = useAppDispatch();
   const accounts = useAppSelector((s) => s.delegatedToKdcube.accounts);
-  const [repositories] = useState(() => repositoriesFromSearch(window.location.search));
+  const [repositories] = useState(() => openedRepositories(openParams, window.location.search));
+  const sectionRef = useRef<HTMLDivElement | null>(null);
+  const [scrolled, setScrolled] = useState(false);
   const [status, setStatus] = useState<GithubKeyStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -94,6 +103,15 @@ export function MyCardGithubSection({ projectRef }: { projectRef: string }) {
     window.open(result.authorize_url, '_blank', 'noopener,noreferrer');
   });
 
+  // Opened for this section (the board's "Connect GitHub"): bring it into view once.
+  useEffect(() => {
+    if (scrolled || loading || !sectionRef.current) return;
+    if (opensGithubSection(openParams, window.location.search)) {
+      sectionRef.current.scrollIntoView({ block: 'start' });
+    }
+    setScrolled(true);
+  }, [loading, openParams, scrolled]);
+
   if (loading && !status) return <p className="muted">Checking GitHub…</p>;
 
   const line = githubStatusLine(status);
@@ -101,7 +119,7 @@ export function MyCardGithubSection({ projectRef }: { projectRef: string }) {
   const candidates = state === 'not_connected' ? linkableAccounts(accounts || [], status) : [];
 
   return (
-    <div className="my-card-github">
+    <div className="my-card-github" ref={sectionRef}>
       <div className="card-fields">
         <span className="card-field-label">GitHub</span>
         <span className="card-field-value">

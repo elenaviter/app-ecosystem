@@ -21,6 +21,7 @@ Outcomes: ``committed``, ``pr_opened``, ``branch_pushed``, ``unchanged`` and
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -41,11 +42,15 @@ GH_SERVICE_FIX = (
 FILE_EDIT_MAX_BYTES = 60 * 1024
 _EDIT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
-Runner = Callable[[Sequence[str], "Path | None", float], "subprocess.CompletedProcess[str]"]
+# (argv, cwd, timeout) and, with the owner's GitHub key, extra_env=.
+Runner = Callable[..., "subprocess.CompletedProcess[str]"]
 
 
-def _run(argv: Sequence[str], cwd: Path | None, timeout: float) -> "subprocess.CompletedProcess[str]":
+def _run(
+    argv: Sequence[str], cwd: Path | None, timeout: float, extra_env: Mapping[str, str] | None = None
+) -> "subprocess.CompletedProcess[str]":
     env = dict(os.environ)
+    env.update(extra_env or {})
     env["GIT_TERMINAL_PROMPT"] = "0"
     ssh = str(env.get("GIT_SSH_COMMAND") or "ssh").strip()
     if "BatchMode" not in ssh:
@@ -63,6 +68,23 @@ def _run(argv: Sequence[str], cwd: Path | None, timeout: float) -> "subprocess.C
         timeout=timeout,
         check=False,
     )
+
+
+def github_key_env(token: str) -> dict[str, str]:
+    """The owner's GitHub key for one git or gh process (W371), in its environment only.
+
+    git reads GIT_CONFIG_* as command-line config that no other process sees
+    and no file keeps; the header is sent to https://github.com only. gh reads
+    GH_TOKEN.
+    """
+
+    basic = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+    return {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
+        "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}",
+        "GH_TOKEN": token,
+    }
 
 
 def default_policy(url: str) -> str:
@@ -96,14 +118,29 @@ def apply_file_edit(
     policy: str = "",
     timeout: float = 30.0,
     run: Runner | None = None,
+    github_token: Any = None,
 ) -> dict[str, Any]:
-    """Apply one edit; never raises for a git or gh failure, which is a ``refused`` outcome."""
+    """Apply one edit; never raises for a git or gh failure, which is a ``refused`` outcome.
+
+    ``github_token`` is the coordinator owner's GitHub key for this repository
+    (W371): the branch is pushed over HTTPS with it and gh opens the pull
+    request with it, and the commit carries the owner's My Card email.
+    """
 
     run = run or _run
     policy = policy if policy in FILE_EDIT_POLICIES else default_policy(url)
+    repo = github_repository(url)
+    key_env = github_key_env(str(github_token.token)) if (github_token is not None and repo) else None
+    if key_env is not None and str(getattr(github_token, "commit_email", "") or ""):
+        author_email = str(github_token.commit_email)
 
     def refused(code: str, reason: str) -> dict[str, Any]:
         return {"outcome": "refused", "reason_code": code, "reason": reason, "policy": policy}
+
+    def call(argv: Sequence[str], cwd: Path | None) -> "subprocess.CompletedProcess[str]":
+        return run(argv, cwd, timeout, extra_env=key_env) if key_env is not None else run(argv, cwd, timeout)
+
+    remote = f"https://github.com/{repo}.git" if key_env is not None else "origin"
 
     if not _EDIT_ID.match(edit_id):
         return refused("edit_invalid", "The edit id is not a plain name.")
@@ -116,7 +153,7 @@ def apply_file_edit(
         return refused("repository_not_cloned", f"The coordinator has no clone of {alias}.")
 
     def git(*args: str, cwd: Path = clone) -> "subprocess.CompletedProcess[str]":
-        return run(["git", *args], cwd, timeout)
+        return call(["git", *args], cwd)
 
     try:
         fetched = git("fetch", "--prune", "origin")
@@ -158,15 +195,14 @@ def apply_file_edit(
                 return refused("commit_failed", f"git commit failed: {_first_line(committed)}")
             commit = git("rev-parse", "HEAD", cwd=tree).stdout.strip()
             if policy == "direct":
-                pushed = git("push", "origin", f"HEAD:refs/heads/{branch}", cwd=tree)
+                pushed = git("push", remote, f"HEAD:refs/heads/{branch}", cwd=tree)
                 if pushed.returncode != 0:
                     return refused("push_refused", f"git push refused: {_first_line(pushed)}")
                 return {"outcome": "committed", "commit": commit, "branch": branch, "policy": policy}
             edit_branch = f"file-edit/{edit_id}"
-            pushed = git("push", "origin", f"HEAD:refs/heads/{edit_branch}", cwd=tree)
+            pushed = git("push", remote, f"HEAD:refs/heads/{edit_branch}", cwd=tree)
             if pushed.returncode != 0:
                 return refused("push_refused", f"git push refused: {_first_line(pushed)}")
-            repo = github_repository(url)
             result: dict[str, Any] = {
                 "outcome": "branch_pushed",
                 "commit": commit,
@@ -182,23 +218,23 @@ def apply_file_edit(
             # so the result says why no pull request was opened (first use,
             # 2026-09-28).
             try:
-                signed_in = run(["gh", "auth", "status", "--hostname", "github.com"], tree, timeout)
+                # With the owner's key gh needs no sign-in of its own (W371).
+                signed_in = None if key_env is not None else run(["gh", "auth", "status", "--hostname", "github.com"], tree, timeout)
             except (OSError, subprocess.TimeoutExpired):
                 return {**result, "reason_code": "gh_unavailable", "reason": "gh is not available on the coordinator's machine"}
-            if signed_in.returncode != 0:
+            if signed_in is not None and signed_in.returncode != 0:
                 return {
                     **result,
                     "reason_code": "gh_unavailable",
                     "reason": f"gh is not signed in for the relay service: {_first_line(signed_in)}. {GH_SERVICE_FIX}",
                 }
             try:
-                opened = run(
+                opened = call(
                     [
                         "gh", "pr", "create", "--repo", repo, "--base", branch, "--head", edit_branch,
                         "--title", message, "--body", f"Edited on the board by {requested_by}. Review and merge.",
                     ],
                     tree,
-                    timeout,
                 )
             except (OSError, subprocess.TimeoutExpired):
                 return {**result, "reason_code": "gh_unavailable", "reason": "gh is not available on the coordinator's machine"}
@@ -222,4 +258,5 @@ __all__ = [
     "apply_file_edit",
     "commit_message",
     "default_policy",
+    "github_key_env",
 ]

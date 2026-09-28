@@ -66,9 +66,23 @@ export function myCardProjectRef(item: CardLike): string {
 }
 
 // Repositories come from the link that opened the Card (the board's Part 2
-// step passes the project's GitHub repositories); owner/name only.
+// step and GitHub access block pass the project's GitHub repositories):
+// standalone in the URL, embedded in the surface command's openParams.
+// owner/name only.
 export function repositoriesFromSearch(search: string): string[] {
-  const raw = new URLSearchParams(search).get('repositories') || '';
+  return repositoriesFromValue(new URLSearchParams(search).get('repositories') || '');
+}
+
+export function openedRepositories(openParams: Record<string, string> | undefined, search: string): string[] {
+  const embedded = repositoriesFromValue(String(openParams?.repositories ?? ''));
+  return embedded.length ? embedded : repositoriesFromSearch(search);
+}
+
+export function opensGithubSection(openParams: Record<string, string> | undefined, search: string): boolean {
+  return String(openParams?.section ?? new URLSearchParams(search).get('section') ?? '') === 'github';
+}
+
+export function repositoriesFromValue(raw: string): string[] {
   const out: string[] = [];
   for (const part of raw.split(',')) {
     const value = part.trim().replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
