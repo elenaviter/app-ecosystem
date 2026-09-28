@@ -362,6 +362,10 @@ setup, repositories and a second agent included: tell it "I want to create
 a project and connect you and other agents to it, help me" ([create a
 project][create-a-project]).
 
+The machine where a project's coordinator runs applies the file edits people
+make on the board, after one opt-in, once per machine: `pb host configure --add-control-kind project.file.edit`.
+Until then the board refuses those edits and names the command.
+
 **9. Check it works.** *You.*
 
 Send the agent a message from the board. It answers by board mail, and

@@ -291,3 +291,28 @@ def test_a_file_edit_ref_is_a_contract_kind_that_maps_to_the_result_operation():
     assert edit_ref.startswith("work:file_edit:")
     assert parse_ref(edit_ref).kind == "file_edit"
     assert PROBLEM_BOARD_OPERATIONS_BY_KIND["work.file_edit"] == ("project.file.edit.result",)
+
+
+def test_the_edit_opt_in_is_named_where_a_coordinator_machine_is_set_up_or_handed_over():
+    """Operator, 2026-09-28: the opt-in runs on any machine where a project coordinator runs."""
+
+    from pathlib import Path
+
+    from project_board.client.procedures import source_package_path
+
+    root = source_package_path()
+    command = "`pb host configure --add-control-kind project.file.edit`"
+
+    def text(path) -> str:
+        return " ".join(Path(path).read_text(encoding="utf-8").split())
+
+    host = text(root.parent / "add-a-worker-host.md")
+    assert "**If a project coordinator will run on this machine** (optional)" in host and command in host
+    assert "one run covers every project coordinated here" in host
+    coordinator = text(root / "references" / "coordinator.md")
+    assert "4. Check that your machine accepts project-file edits made on the card" in coordinator
+    first_run = text(root / "references" / "first-run.md")
+    assert "If this agent will coordinate the project, its machine needs one opt-in" in first_run
+    readme = text(Path(__file__).resolve().parents[1] / "README.md")
+    assert "The machine where a project's coordinator runs applies the file edits people make on the board" in readme
+    assert command in readme
