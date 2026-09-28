@@ -10,6 +10,8 @@ import {
   isMyCard,
   linkableAccounts,
   myCardProjectRef,
+  openedRepositories,
+  opensGithubSection,
   ownerAction,
   repositoriesFromSearch,
 } from '../src/features/delegatedAccess/myCardGithub.ts'
@@ -88,4 +90,14 @@ test('only accounts of the GitHub provider the status names can be linked', () =
   const status = { connection_state: 'not_connected', connect: { provider_id: 'github', connector_app_id: 'app', claims: [] } }
   assert.deepEqual(linkableAccounts(accounts, status).map((a) => a.account_id), ['g1'])
   assert.deepEqual(linkableAccounts(accounts, null), [])
+})
+
+test('embedded, the board passes repositories and the section in openParams, which win over the URL', () => {
+  const openParams = { access_id: 'person-my-card-0123', section: 'github', repositories: 'example-org/app-ecosystem,example-org/applications' }
+  assert.deepEqual(openedRepositories(openParams, '?repositories=example-org/other'), ['example-org/app-ecosystem', 'example-org/applications'])
+  assert.deepEqual(openedRepositories(undefined, '?repositories=example-org/other'), ['example-org/other'])
+  assert.deepEqual(openedRepositories({ access_id: 'x' }, '?repositories=example-org/other'), ['example-org/other'])
+  assert.equal(opensGithubSection(openParams, ''), true)
+  assert.equal(opensGithubSection(undefined, '?section=github'), true)
+  assert.equal(opensGithubSection({}, ''), false)
 })
