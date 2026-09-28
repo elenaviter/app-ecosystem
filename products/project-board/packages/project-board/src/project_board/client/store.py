@@ -678,15 +678,59 @@ def _contains_identity(actual: Any, expected: Any) -> bool:
 WORKER_INFO_MAX_CHARS = 200
 
 
-def _team_limit_state(value: Any) -> dict[str, str]:
-    """The bounded limit a team row keeps: the board already validated it."""
+TEAM_LIMIT_WINDOWS_MAX = 8
+
+
+def _team_limit_windows(value: Any) -> list[dict[str, Any]]:
+    """A teammate's usage windows, bounded: the figures a coordinator routes by (W351).
+
+    Each keeps its name, used share, length and reset; a window without a
+    number is dropped, never shown as zero.
+    """
+
+    windows: list[dict[str, Any]] = []
+    for raw in value if isinstance(value, list) else []:
+        if not isinstance(raw, Mapping):
+            continue
+        try:
+            used = float(raw.get("used_percent"))
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= used <= 1000:
+            continue
+        window: dict[str, Any] = {"name": str(raw.get("name") or "")[:40], "used_percent": used}
+        try:
+            minutes = int(raw.get("window_minutes"))
+            if minutes > 0:
+                window["window_minutes"] = minutes
+        except (TypeError, ValueError):
+            pass
+        resets = str(raw.get("resets_at") or "")[:40]
+        if resets:
+            window["resets_at"] = resets
+        windows.append(window)
+        if len(windows) >= TEAM_LIMIT_WINDOWS_MAX:
+            break
+    return windows
+
+
+def _team_limit_state(value: Any) -> dict[str, Any]:
+    """The bounded limit a team row keeps: the board already validated it.
+
+    W351 (review return, 2026-09-28): the usage windows were dropped here, so
+    `pb worker context` said "usage ok" for every teammate with no figure.
+    """
 
     if not isinstance(value, Mapping) or not str(value.get("kind") or "").strip():
         return {}
-    return {
+    state: dict[str, Any] = {
         key: str(value.get(key) or "")
         for key in ("kind", "reached", "resets_at", "observed_at", "source")
     }
+    windows = _team_limit_windows(value.get("windows"))
+    if windows:
+        state["windows"] = windows
+    return state
 
 
 # W334: the board accepts a held wake's pending count up to this.
