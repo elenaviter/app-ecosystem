@@ -619,6 +619,8 @@ ACCESS_SOURCE_OAUTH = "oauth"
 # revision it wrote, like the project-person control audit.
 AUTHORIZATION_PROFILE_AUDIT_PROVENANCE = "authorization_profile_audit"
 AUTHORIZATION_PROFILE_AUDIT_SCHEMA = "connection_hub.authorization_profile.audit.v1"
+OPERATIONS_ADDED_AUDIT_PROVENANCE = "operations_added_audit"
+OPERATIONS_ADDED_AUDIT_SCHEMA = "connection_hub.operations_added.audit.v1"
 # A per-agent delegated grant: the consenting user grants a hosted agent
 # (a "Delegated By KDCube" entity, keyed by a deterministic client_id) access to
 # a resource. Unlike a MANUAL automation (which mints its own random client), the
@@ -4362,6 +4364,142 @@ class AutomationAccessService:
         )
         if result.get("ok"):
             result = {**result, "profile": name, "applied": applied}
+        return result
+
+    async def add_operations(
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        operations: Iterable[str],
+        expected_card_revision: int | None = None,
+        request_id: str = "",
+        _actor_subject: str = "",
+        _delegable_grants: Iterable[str] | None = None,
+        _extra_record_transform: Callable[[Any, Any], Any] | None = None,
+    ) -> dict[str, Any]:
+        """Add operations to an existing Card, keeping everything else (W371).
+
+        The generic additive write: for each Card resource whose catalog row
+        offers a requested operation, the operation and the grants it needs are
+        added; the Card's other selections, including a deliberate narrowing,
+        stay as they are. Nothing is written when every offered operation is
+        already on the Card. The save goes through ``update_access`` (ownership,
+        catalog validation, the delegable-grant ceiling, the revision
+        precondition) and the new revision carries an audit of who added what.
+        It knows no project: a project path authorizes the actor before it.
+        """
+
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        refusal = _delegate_mutation_refusal(user)
+        if refusal is not None:
+            return refusal
+        access_id = _clean(access_id)
+        requested = list(dict.fromkeys(_clean(item) for item in (operations or ()) if _clean(item)))
+        if not access_id:
+            return {"ok": False, "error": "delegated_access_requires_access_id"}
+        if not requested:
+            return {"ok": False, "error": "delegated_access_operations_required", "status": 400}
+        try:
+            existing = await self._load_record(access_id, grantor_subject=grantor_subject)
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_cards_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
+            }
+        if existing is None:
+            return {"ok": False, "error": "delegated_access_not_found"}
+        if existing.grantor_subject != grantor_subject:
+            return {"ok": False, "error": "delegated_access_not_owned"}
+        if _clean(existing.source) != ACCESS_SOURCE_OAUTH:
+            return {
+                "ok": False,
+                "error": "delegated_access_add_requires_oauth_card",
+                "status": 409,
+                "source": _clean(existing.source),
+            }
+        try:
+            active = await self._active_catalog()
+            catalog_config = await self._catalog_config(active, owner_subject=grantor_subject)
+        except CatalogUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_catalog_unavailable",
+                "reason": getattr(exc, "reason", "") or str(exc),
+                "retryable": True,
+                "status": 503,
+            }
+        resource_grants = {key: list(values or ()) for key, values in (existing.resource_grants or {}).items()}
+        resource_operations = {
+            key: list(values or ()) for key, values in (existing.resource_operations or {}).items()
+        }
+        added: list[dict[str, Any]] = []
+        offered: set[str] = set()
+        for resource in list(resource_grants):
+            row = self._configured_resource(resource, config=catalog_config)
+            if row is None:
+                continue
+            tools = {_clean(getattr(tool, "name", "")): tool for tool in (getattr(row, "tools", ()) or ())}
+            wanted = [name for name in requested if name in tools]
+            offered.update(wanted)
+            missing = [name for name in wanted if name not in resource_operations.get(resource, [])]
+            if not missing:
+                continue
+            grants = resource_grants[resource]
+            for name in missing:
+                for grant in (getattr(tools[name], "grants", None) or getattr(row, "grants", None) or ()):
+                    if _clean(grant) and _clean(grant) not in grants:
+                        grants.append(_clean(grant))
+            resource_operations[resource] = [*resource_operations.get(resource, []), *missing]
+            added.append({"resource": resource, "operations": missing})
+        if not offered:
+            return {
+                "ok": False,
+                "error": "delegated_access_operation_not_offered",
+                "status": 409,
+                "operations": requested,
+            }
+        if not added:
+            return {"ok": True, "changed": False, "access_id": access_id, "added": []}
+        occurred_at = int(time.time())
+
+        def _stamp_operations_added(previous: Any, candidate: Any) -> Any:
+            audit = {
+                "schema": OPERATIONS_ADDED_AUDIT_SCHEMA,
+                "action": "operations_added",
+                "added": added,
+                "actor_subject": _clean(_actor_subject) or grantor_subject,
+                "request_id": _clean(request_id),
+                "occurred_at": occurred_at,
+                "before_revision": int(getattr(previous, "card_revision", 0) or 0),
+                "after_revision": int(getattr(candidate, "card_revision", 0) or 0),
+            }
+            provenance = dict(getattr(candidate, "provenance", None) or {})
+            provenance[OPERATIONS_ADDED_AUDIT_PROVENANCE] = audit
+            stamped = replace_fields(candidate, provenance=provenance)
+            return (
+                _extra_record_transform(previous, stamped)
+                if _extra_record_transform is not None
+                else stamped
+            )
+
+        result = await self.update_access(
+            user,
+            access_id=access_id,
+            resource_grants=resource_grants,
+            resource_operations=resource_operations,
+            expected_card_revision=expected_card_revision,
+            _delegable_grants=_delegable_grants,
+            _platform_admin=False if _actor_subject else None,
+            _record_transform=_stamp_operations_added,
+        )
+        if result.get("ok"):
+            result = {**result, "changed": True, "added": added}
         return result
 
     async def update_access(
