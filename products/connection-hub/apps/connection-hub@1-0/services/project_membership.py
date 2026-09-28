@@ -29,6 +29,11 @@ from connection_hub.delegated_credentials.project_authorization import (
     ProjectMembershipEvidence,
     ResolverBackedProjectAuthorizationPort,
 )
+from connection_hub.delegated_credentials.admission import MIN_SERVICE_SECRET_BYTES
+from connection_hub.project_peer_proof import (
+    GITHUB_AUTHORIZE_OPERATION,
+    sign_github_authorize_request,
+)
 from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
     call_bundle_operation,
 )
@@ -333,9 +338,115 @@ def descriptor_project_authorization_port(
     )
 
 
+SecretResolver = Callable[[str], Awaitable[str]]
+
+
+class BundleOperationGitHubAuthorizer:
+    """Ask the project host whether an agent may use GitHub for one repository (W371).
+
+    Not request-bound: the question is asked for an agent whose Card bearer
+    Connection Hub authenticated, so there is no person session to forward.
+    Connection Hub signs it instead (project_peer_proof.py) with the secret
+    at ``project_membership.provider.peer_proof_secret_ref``, and the host
+    answers only a valid proof. Without the secret, it refuses by name.
+    """
+
+    def __init__(
+        self,
+        *,
+        bundle_id: str,
+        secret_ref: str,
+        resolve_secret: SecretResolver,
+        operation: str = GITHUB_AUTHORIZE_OPERATION,
+        caller: BundleOperationCaller = call_bundle_operation,
+    ) -> None:
+        self._bundle_id = clean_text(bundle_id)
+        self._secret_ref = clean_text(secret_ref)
+        self._resolve_secret = resolve_secret
+        self._operation = clean_text(operation) or GITHUB_AUTHORIZE_OPERATION
+        self._caller = caller
+
+    async def __call__(
+        self, *, access_id: str, grantor_subject: str, project_ref: str, repository: str
+    ) -> dict[str, Any]:
+        not_configured = {
+            "ok": False,
+            "error": "project_github_peer_proof_not_configured",
+            "message": "GitHub access waits for the board peer proof.",
+        }
+        if not self._bundle_id or not self._secret_ref:
+            return not_configured
+        secret = clean_text(await self._resolve_secret(self._secret_ref))
+        if len(secret.encode("utf-8")) < MIN_SERVICE_SECRET_BYTES:
+            return not_configured
+        body = sign_github_authorize_request(
+            secret=secret,
+            board_bundle_id=self._bundle_id,
+            access_id=access_id,
+            grantor_subject=grantor_subject,
+            project_ref=project_ref,
+            repository=repository,
+        )
+        try:
+            response = await self._caller(
+                bundle_id=self._bundle_id,
+                operation=self._operation,
+                data=body,
+                route="public",
+                http_method="POST",
+            )
+        except Exception as exc:
+            if "does not support operation" in str(exc):
+                # A board released before W371 has no such operation.
+                return {
+                    "ok": False,
+                    "error": "project_github_board_update_required",
+                    "message": "GitHub access waits for a board update.",
+                }
+            _log_provider_failure(
+                "project_github_provider_unavailable", self._bundle_id, self._operation, exc
+            )
+            raise
+        if not isinstance(response, Mapping):
+            return {"ok": False, "error": "project_github_provider_response_invalid"}
+        try:
+            response = normalize_bundle_operation_result(self._operation, response)
+        except BundleOperationResultError as exc:
+            return {"ok": False, "error": exc.reason}
+        return dict(response)
+
+
+def descriptor_github_authorizer(
+    entrypoint: Any,
+    *,
+    resolve_secret: SecretResolver,
+    caller: BundleOperationCaller = call_bundle_operation,
+) -> BundleOperationGitHubAuthorizer:
+    """The GitHub question goes to the project membership provider's bundle.
+
+    ``project_membership.provider.github_authorize_operation`` names the
+    operation and ``peer_proof_secret_ref`` the shared secret; without
+    either it refuses by name.
+    """
+
+    props = getattr(entrypoint, "bundle_props", None)
+    raw = props.get("project_membership") if isinstance(props, Mapping) else None
+    provider = raw.get("provider") if isinstance(raw, Mapping) else None
+    provider = provider if isinstance(provider, Mapping) else {}
+    return BundleOperationGitHubAuthorizer(
+        bundle_id=clean_text(provider.get("bundle_id")),
+        secret_ref=clean_text(provider.get("peer_proof_secret_ref")),
+        resolve_secret=resolve_secret,
+        operation=clean_text(provider.get("github_authorize_operation")) or GITHUB_AUTHORIZE_OPERATION,
+        caller=caller,
+    )
+
+
 __all__ = [
+    "BundleOperationGitHubAuthorizer",
     "BundleOperationProjectMembershipResolver",
     "RefusingProjectAuthorizationPort",
+    "descriptor_github_authorizer",
     "descriptor_project_authorization_port",
     "project_membership_config",
 ]

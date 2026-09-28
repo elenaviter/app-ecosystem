@@ -105,6 +105,10 @@ def test_operations_are_declared_as_csrf_protected_posts() -> None:
             "project_person_control_revoke",
             "project_person_control_bind_invitation",
             "project_person_my_card_seed",
+            "project_person_github_key_link",
+            "project_person_github_key_unlink",
+            "project_person_github_key_status",
+            "project_person_commit_email_set",
         )
     }
 
@@ -137,6 +141,9 @@ def test_template_names_project_membership_provider() -> None:
             # W319: the agent Card question goes to the same host.
             "agent_card_operation": "project_agent_card_authorize",
             "control_card_operation": "project_control_card_authorize",
+            # W371: the agent GitHub question, signed with a shared secret.
+            "github_authorize_operation": "project_agent_github_authorize",
+            "peer_proof_secret_ref": "project_membership.peer_proof_secret",
         },
         "administrative_roles": ["owner", "admin"],
     }

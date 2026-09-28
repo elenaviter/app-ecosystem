@@ -6236,6 +6236,56 @@ class AutomationAccessService:
             account_scope=account_scope,
         )
 
+    async def project_person_my_card_settings_get(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        target_subject: str = "",
+        request_id: str,
+    ) -> dict[str, Any]:
+        """Read the person-owned settings on a My Card (W371): GitHub link, commit email."""
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_person_controls.my_card_person_properties(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            request_id=request_id,
+        )
+
+    async def project_person_my_card_settings_set(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        changes: Mapping[str, Any],
+        target_subject: str = "",
+        request_id: str,
+        expected_card_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Set or clear person-owned settings on a My Card (W371)."""
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_person_controls.set_my_card_person_properties(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            changes=changes,
+            target_subject=target_subject,
+            request_id=request_id,
+            expected_card_revision=expected_card_revision,
+        )
+
     async def project_operation_authorize(
         self,
         user: Mapping[str, Any],
