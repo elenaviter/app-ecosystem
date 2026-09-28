@@ -448,6 +448,11 @@ mail.
 2. Re-announce every open window from `runtime_windows` on its own channel, and
    reply to each inherited operator wait by its `message_ref`.
 3. Keep the promised notifications and the merge queue as your own.
+4. Check that your machine accepts project-file edits made on the card: if you
+   have not coordinated from it before, ask the operator to run
+   `pb host configure --add-control-kind project.file.edit` there, once
+   per machine, and restart the relay. Until then the card refuses edits and
+   names that command.
 4. Mail addressed by name to the home coordinator while it is unavailable is
    copied to you, marked `redirected_from`. Answer it; the home coordinator
    keeps the original and sees your answer by its correlation.

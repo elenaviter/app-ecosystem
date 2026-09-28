@@ -320,6 +320,16 @@ The endpoint is the one the first machine uses (its `relay.json`,
 `target.endpoint`). It is the deployment's public address and is never written
 into shared documents.
 
+**If a project coordinator will run on this machine** (optional): the operator
+runs, once, `pb host configure --add-control-kind project.file.edit`. A person editing a
+project file on the card has the edit applied by the coordinator's relay, and a
+machine accepts such edits only after this opt-in; until then the card refuses
+the edit and names this command. It is per machine (the relay's receiver
+policy), and one run covers every project coordinated here. Use
+`--add-control-kind`, never `--allow-control-kind`, which replaces the whole
+list and would refuse mail, requests and pings. Then restart the relay (a
+coordinated runtime action) so it reads the new policy.
+
 **Known gap (W261):** `pb` creates `~/.kdcube` readable by the home directory's
 group, which let another user list the mailboxes and relay configuration on the
 first machine. `chmod 700` closes it until W261 lands.
