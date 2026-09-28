@@ -21,7 +21,9 @@ state secret.
 > **their** user token. The App then acts **as that person**, and only where
 > both the person and the App reach: a repository is usable when the person
 > can use it **and** the App is installed on it. Commits and pull requests
-> show the person, marked as made through the App.
+> show the person; GitHub does not label them with the App. The App's use
+> shows in the person's Authorized GitHub Apps and in an organization's audit
+> log.
 
 > **No scopes.** A GitHub App asks for no OAuth scopes. What the token may do
 > is the App's **permissions** (set once, below), narrowed by the person's own
