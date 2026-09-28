@@ -18,6 +18,7 @@ see_also:
   - ./concepts.md
   - ./coordinator.md
   - ./telegram.md
+  - ./github.md
   - ./topology-and-flows.md
   - ./architecture.md
   - ./flows.md
@@ -52,6 +53,10 @@ only this repository can open every page.
 - [Telegram operator channel](telegram.md): which agent mail reaches the
   project people's Telegram, how project channels work, how a Telegram reply
   returns to the board, and the security checks.
+- [GitHub access for agents](github.md): how an agent pushes, pulls and
+  opens pull requests as its person: the one GitHub App, connecting and
+  linking on My Card, Use GitHub on the agent's Card, where each token lives,
+  the flow of every push and gh call, and the board's signed decision.
 - [Cards](cards.md): the project Control Card, a person's Control Card and My
   Card, agent Cards, who edits which and where, and how the project Control
   Card combines with an agent's Card (access rule AND or OR, fail closed).
