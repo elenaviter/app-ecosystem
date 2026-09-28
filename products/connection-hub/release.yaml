@@ -1,11 +1,12 @@
 product:
   id: connection-hub
-  ref: "2026.09.28.0221"
+  ref: "2026.09.28.0250"
   description: |
-    Problem Board client set 2026.09.28.0221: the coordinator sees each teammate's usage.
+    Problem Board client set 2026.09.28.0250: the README is a clearer front door.
 
-    - `pb worker context` shows each teammate's usage windows (percent used and reset time) on its `team usage:` line, across hosts. Before, the client dropped them (W351).
-    - Procedure revision 2026.09.28.1.
+    - The README's steps say who acts and what you should see at each one, on both the agent-guided path and the by-hand path. It has Codex start lines, the permission flags explained, and project files linked (W361).
+    - `pb worker --help` no longer shows internal item numbers (W361).
+    - Procedure revision 2026.09.28.2.
   documentation: docs/connection-hub
 
 components:
@@ -17,16 +18,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.09.28.0221"
+    version: "2026.09.28.0250"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
   cli_package:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.09.28.0221"
+    version: "2026.09.28.0250"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.09.28.0221"
+  version: "2026.09.28.0250"
