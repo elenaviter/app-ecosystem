@@ -184,3 +184,60 @@ def test_the_procedure_sets_it_in_every_existing_clone_now():
     assert "pb worker workspace-report --set-identity" in procedure
     assert "Never commit with an email you made up" in procedure
     assert "reads `matches`, `differs` or `unset` for its commit identity" in procedure
+
+
+# --- W371 review, line 4: the owner's My Card email once their GitHub key answers ---
+
+OWNER_EMAIL = "123+owner@users.noreply.github.com"
+
+
+def test_context_and_the_workspace_report_give_the_owners_email_once_the_key_answered(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    identity, field, config, workspace = _host(tmp_path, monkeypatch)
+    remote = _remote(tmp_path / "remotes", "applications")
+    board = IdentityBoard(identity.worker_name, remote)
+    asyncio.run(relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board).poll_attendances_once())
+    _git("clone", "-q", str(remote), str(workspace / "applications"), cwd=tmp_path)
+
+    # Before the key has answered: the project's email, named as the deploy-key fallback.
+    before = _cli(identity, "context", "--project-ref", "work:project:" + PROJECT_ID)["commit_identity"]
+    assert before["email"] == EMAIL and before["source"] == "project"
+    assert "deploy key" in before["source_note"]
+
+    # The key answered (connect-project, the credential helper or gh recorded it).
+    field.record_github_identity(identity.worker_name, PROJECT_ID, login="owner", commit_email=OWNER_EMAIL)
+    after = _cli(identity, "context", "--project-ref", "work:project:" + PROJECT_ID)["commit_identity"]
+    assert after["email"] == OWNER_EMAIL and after["source"] == "owner_github_key"
+    assert f"git -C {workspace / 'applications'} config user.email {OWNER_EMAIL}" in after["commands"]
+
+    report = _cli(identity, "workspace-report", "--project-ref", "work:project:" + PROJECT_ID, "--set-identity")
+    assert report["commit_identity"] == {"name": ALIAS, "email": OWNER_EMAIL}
+    assert _config(workspace / "applications", "user.email") == OWNER_EMAIL
+
+
+def test_issuing_the_key_records_the_owners_login_and_email_never_the_token(tmp_path, monkeypatch):
+    from project_board.client.github_key import GitHubToken
+
+    identity, field, config, workspace = _host(tmp_path, monkeypatch)
+    remote = _remote(tmp_path / "remotes", "applications")
+    board = IdentityBoard(identity.worker_name, remote)
+    asyncio.run(relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board).poll_attendances_once())
+    field.sync_project_repositories(
+        PROJECT_ID,
+        [{"alias": "applications", "url": "git@github.com:example-org/applications.git", "role": "work"}],
+        revision=9,
+        commit_identity_email=EMAIL,
+    )
+
+    async def issue(self, repository):
+        return GitHubToken(token="ghu_secret", expires_at=0, login="owner", commit_email=OWNER_EMAIL, repository=repository)
+
+    monkeypatch.setattr(cli._GitHubKeySession, "_issue", issue)  # noqa: SLF001
+    args = type("Args", (), {"runtime_kind": identity.runtime_kind, "runtime_session_id": identity.runtime_session_id,
+                             "config": None, "project_ref": "work:project:" + PROJECT_ID})()
+    cli._GitHubKeySession(args).token("example-org/applications")  # noqa: SLF001
+
+    recorded = field.read_github_identity(identity.worker_name, PROJECT_ID)
+    assert (recorded["login"], recorded["commit_email"]) == ("owner", OWNER_EMAIL)
+    assert "ghu_secret" not in str(recorded)

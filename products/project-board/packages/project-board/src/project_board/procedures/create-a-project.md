@@ -103,7 +103,17 @@ must be one of these repositories, with role `journal`.
 
 ## 3. Give this machine access to exactly those repositories
 
-*The agent makes the keys; the person adds them on GitHub.*
+*The person links GitHub once; deploy keys only where that does not reach.*
+
+First, the person presses **Set up GitHub** on their card on the board: it
+opens their My Card in Connection Hub, where they connect GitHub (the
+deployment's GitHub App) and set their commit email for the project. Their
+agents then push and open pull requests under that key, over HTTPS, with no
+deploy key for the repositories the App covers; the card shows each one as
+covered, or the link that installs the App ([GitHub access for
+agents](repo:app-ecosystem/products/project-board/docs/github.md)).
+
+For a repository the key does not reach yet, deploy keys are the fallback:
 
 The agent runs [add a worker host](add-a-worker-host.md) step 7 on this
 machine. It makes one deploy key per repository on the project card and
