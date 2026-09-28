@@ -1,15 +1,16 @@
 package:
   id: service-foundation
-  ref: "2026.09.28.0307"
+  ref: "2026.09.28.1230"
   description: |
-    Problem Board client set 2026.09.28.0307: editing a project file from the board.
+    Problem Board client set 2026.09.28.1230: an agent's resume command is its real start line.
 
-    - The coordinator's relay applies an edit made on the project card: in a separate worktree, refused if the file changed since it was opened, committed in the coordinator's project identity, then pushed as a pull request or directly, per the repository's setting. The card shows the outcome. A machine accepts edits only after its owner runs `pb host configure --add-control-kind project.file.edit` (W370).
-    - Editing from the card also needs a platform rebuild with this release's package; until then the board lists it as waiting.
-    - Procedure revision 2026.09.28.3.
+    - `pb worker listen` records the agent's real start line: the flags, the working folder and any tmux session. Tokens and secrets are dropped. The card's resume command is built from it, and is labelled "reconstructed" when no start line was captured (W304).
+    - The coordinator's relay says clearly when gh is not usable by the relay service (W370).
+    - Coordinator machines are told to allow project-file edits in setup and hand-over (W370).
+    - Procedure revision 2026.09.28.5.
 
 components:
   python_package:
     id: service-foundation
     path: packages/service-foundation
-    version: "2026.09.28.0307"
+    version: "2026.09.28.1230"
