@@ -44,6 +44,17 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:coordinate",),
     },
+    # W371 (coordinator, 2026-09-28): agents get GitHub tokens from Connection
+    # Hub under their owner's GitHub link; the board decides per project and
+    # repository, and the Card must hold this. The worker profile holds it.
+    "project.github.use": {
+        "description": (
+            "May use GitHub on the project's repositories. A read-only check "
+            "the agent makes before asking Connection Hub for a token; "
+            "Connection Hub asks the board again for the exact repository."
+        ),
+        "grants": ("work:relay",),
+    },
     "project.plan.index": {
         "description": (
             "Open any generation-pinned plan page directly in authored order, "
@@ -457,6 +468,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.set_commit_identity",
         "project.set_files",
         "project.files.edit",
+        "project.github.use",
         "project.plan.index",
         "project.plan.item",
         "project.plan.resolve",
