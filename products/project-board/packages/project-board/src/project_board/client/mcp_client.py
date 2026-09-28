@@ -5,7 +5,7 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, Mapping, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
 from app_foundation.data_bus import (
@@ -197,8 +197,12 @@ class ProblemBoardDataBusClient:
         client: FederatedDataBusClient,
         *,
         partition_ref: str,
+        github_key: Callable[[str, str], Awaitable[Any]] | None = None,
     ) -> None:
         self.client = client
+        # W371: the owner's GitHub key for (project_ref, repository), asked of Connection
+        # Hub with this channel's Card; None where the relay has no Card bearer.
+        self.github_key = github_key
         self.partition_ref = str(partition_ref or "").strip()
         if not self.partition_ref:
             raise ValueError("partition_ref is required")

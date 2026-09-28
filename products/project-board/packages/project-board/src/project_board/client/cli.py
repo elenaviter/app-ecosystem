@@ -5506,11 +5506,22 @@ async def _relay(args: Any) -> Any:
                     (admission.get("first_refusal") or {}).get("code") or "unnamed",
                 )
             try:
+                async def github_key(project_ref: str, repository: str) -> GitHubToken:
+                    # The coordinator's card edits push with its owner's GitHub key (W371).
+                    return await issue_token(
+                        post=_post_json,
+                        url=issue_url(host_config.endpoint, host_config.tenant, host_config.platform_project),
+                        bearer=await current_bearer(),
+                        project_ref=project_ref,
+                        repository=repository,
+                    )
+
                 yield ProblemBoardDataBusClient(
                     data_bus,
                     partition_ref=worker_stream_partition(
                         f"card:{profile.access_id}"
                     ),
+                    github_key=github_key,
                 )
             finally:
                 await data_bus.close()

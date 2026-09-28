@@ -81,6 +81,7 @@ from .relay_failures import (
     staged_failure,
 )
 from .local_state_maintenance import run_local_state_maintenance
+from .project_connect import github_repository
 from .project_file_edit import FILE_EDIT_KIND, apply_file_edit
 from .project_files import file_state
 from .read_roots import READ_ROOTS_STATE, head_commit
@@ -2272,6 +2273,21 @@ class ProblemBoardHostRelayAdapter:
             (str(row.get("url") or "") for row in repositories.get("repositories") or [] if row.get("alias") == alias),
             "",
         )
+        # W371: the coordinator's owner's GitHub key, when Connection Hub gives
+        # it for this repository; without it the push goes as before (deploy
+        # key, and gh when it is signed in).
+        github_token = None
+        issuer = getattr(self.client, "github_key", None)
+        repository = github_repository(url)
+        if issuer is not None and repository:
+            try:
+                github_token = await issuer(f"work:project:{self.config.project_id}", repository)
+            except Exception as exc:  # noqa: BLE001 - a refused key falls back, and says why in the log
+                logger.info(
+                    "[relay.file_edit] owner's GitHub key not used for %s: %s",
+                    repository,
+                    getattr(exc, "code", "") or type(exc).__name__,
+                )
         result = await asyncio.to_thread(
             apply_file_edit,
             workspace=self.config.workspace,
@@ -2286,6 +2302,7 @@ class ProblemBoardHostRelayAdapter:
             requested_by=str(requested.get("label") or requested.get("subject") or "a person"),
             edit_id=hashlib.sha256(edit_ref.encode("utf-8")).hexdigest()[:12],
             policy=str(payload.get("file_edits") or ""),
+            github_token=github_token,
         )
         return await publish(result)
 

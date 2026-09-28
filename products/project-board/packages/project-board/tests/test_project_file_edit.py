@@ -433,3 +433,109 @@ def test_the_procedures_name_the_service_sign_in_and_the_fallback_signal():
     assert "--insecure-storage" not in host and "The token is never stored in a file for the service" in host
     assert "`SIGNAL project.file.edited` once" in coordinator
     assert "would refuse mail, requests and pings. When the board does not accept" in coordinator
+
+
+def test_with_the_owners_github_key_the_edit_pushes_over_https_and_gh_needs_no_sign_in(tmp_path):
+    """W371: the coordinator's card edits push and open the pull request with its owner's GitHub key."""
+
+    import base64
+    from types import SimpleNamespace
+
+    bare = tmp_path / "remote.git"
+    seed = _local_repository(tmp_path)
+    _git("clone", "-q", "--bare", str(seed), str(bare), cwd=tmp_path)
+    workspace = tmp_path / "workspace"
+    clone = _clone(bare, workspace, "app-ecosystem")
+    https = "https://github.com/example-org/app-ecosystem.git"
+    calls: list[tuple[list[str], dict]] = []
+
+    def keyed(argv, cwd, timeout, extra_env=None):
+        calls.append((list(argv), dict(extra_env or {})))
+        if argv[0] == "gh":
+            return subprocess.CompletedProcess(argv, 0, "https://github.com/example-org/app-ecosystem/pull/7\n", "")
+        # github.com over HTTPS is played by the bare repository.
+        return project_file_edit._run([str(bare) if part == https else part for part in argv], cwd, timeout)  # noqa: SLF001
+
+    token = SimpleNamespace(token="ghu_owner", commit_email="owner@example.test")
+    result = apply_file_edit(
+        workspace=str(workspace), alias="app-ecosystem", path="facts.md", url="git@github.com:example-org/app-ecosystem.git",
+        branch="main", base_commit=_out("rev-parse", "HEAD", cwd=clone), content="# Facts\n\nKeyed.\n",
+        requested_by="Ana", edit_id="k1", run=keyed, github_token=token, **IDENTITY,
+    )
+
+    assert result["outcome"] == "pr_opened" and result["pr_url"].endswith("/pull/7")
+    push = next(argv for argv, _ in calls if argv[:2] == ["git", "push"])
+    assert push[2] == https, "the push goes over HTTPS with the key"
+    assert all("ghu_owner" not in " ".join(argv) for argv, _ in calls), "the token is never on a command line"
+    env = next(env for argv, env in calls if argv[:2] == ["git", "push"])
+    assert env["GIT_CONFIG_KEY_0"] == "http.https://github.com/.extraheader"
+    assert env["GIT_CONFIG_VALUE_0"] == "AUTHORIZATION: basic " + base64.b64encode(b"x-access-token:ghu_owner").decode()
+    gh_calls = [(argv, env) for argv, env in calls if argv[0] == "gh"]
+    assert [argv[:3] for argv, _ in gh_calls] == [["gh", "pr", "create"]], "no gh sign-in check"
+    assert gh_calls[0][1]["GH_TOKEN"] == "ghu_owner"
+    author = _out("log", "-1", "--format=%an <%ae>", result["commit"], cwd=bare)
+    assert author == "claude-coord@host <owner@example.test>", "the commit carries the owner's My Card email"
+    assert "ghu_owner" not in (clone / ".git" / "config").read_text(encoding="utf-8")
+
+
+def test_the_relay_asks_its_cards_github_key_for_a_github_repository_and_goes_on_without_it(tmp_path, monkeypatch):
+    """W371: the relay's Card asks Connection Hub for the owner's key; a refusal leaves the old path."""
+
+    import asyncio
+    import dataclasses
+    import hashlib
+
+    from project_board.client import relay
+    from project_board.client.github_key import GitHubKeyRefused
+    from project_board.client.io import content_hash
+    from test_commit_identity import _host
+
+    identity, field, config, workspace = _host(tmp_path, monkeypatch)
+    field.create_project(project_id="demo-project-0a1b2c3d", title="Demo", goal="Demo", owner="control-plane")
+    field.sync_project_repositories(
+        "demo-project-0a1b2c3d",
+        [{"alias": "app-ecosystem", "url": "git@github.com:example-org/app-ecosystem.git", "role": "work"}],
+        revision=1,
+        commit_identity_email="agents@example.com",
+    )
+    field.sync_project_files(
+        "demo-project-0a1b2c3d", files=[{"purpose": "facts", "alias": "app-ecosystem", "path": "facts.md"}], revision=1
+    )
+    applied: list[dict] = []
+    monkeypatch.setattr(relay, "apply_file_edit", lambda **kwargs: applied.append(kwargs) or {"outcome": "pr_opened"})
+
+    class Client:
+        def __init__(self, refuse: bool):
+            self.refuse = refuse
+            self.asked = []
+
+        async def github_key(self, project_ref, repository):
+            self.asked.append((project_ref, repository))
+            if self.refuse:
+                raise GitHubKeyRefused("github_not_linked", "Your owner has not connected GitHub on this project.")
+            return "the-owners-token"
+
+        async def action(self, *, object_ref, action, payload=None):
+            return {"ok": True, "object": {}}
+
+    content = "# Facts\n"
+    payload = {
+        "edit_ref": "work:file_edit:20260928T000000Z:edit_0123456789abcdef0123456789abcdef:facts",
+        "alias": "app-ecosystem", "path": "facts.md", "branch": "main", "file_edits": "pull_request",
+        "base_commit": "0" * 40, "content": content,
+        "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "requested_by": {"label": "Ana", "subject": "user-1"},
+    }
+    control = {"kind": "project.file.edit", "project_ref": "work:project:demo-project-0a1b2c3d",
+               "payload": payload, "payload_hash": content_hash(payload)}
+
+    for refuse, expected in ((False, "the-owners-token"), (True, None)):
+        client = Client(refuse)
+        scoped = relay.ProblemBoardHostRelayAdapter(
+            config=dataclasses.replace(config, project_id="demo-project-0a1b2c3d", workspace=str(workspace), worker_alias="claude-coord@host"),
+            field=field,
+            client=client,
+        )
+        asyncio.run(scoped._serve_file_edit(control))  # noqa: SLF001
+        assert client.asked == [("work:project:demo-project-0a1b2c3d", "example-org/app-ecosystem")]
+        assert applied[-1]["github_token"] == expected
