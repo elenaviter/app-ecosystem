@@ -321,17 +321,20 @@ A push that GitHub itself refuses:
 
 ## Status (2026-09-28)
 
-Live on the development deployment: the GitHub App, the connection and
-project link on My Card (one step when started from My Card), the board
-card's GitHub section, and Connection Hub's identity-only Card check.
+Live on the development deployment, end to end:
+- the GitHub App;
+- connecting and linking on My Card, in one step when started from My Card;
+- the board card's GitHub section;
+- Connection Hub's identity-only Card check, with Connection Hub then asking
+  the board as itself.
+
+The first push and pull request under an owner's key went through on
+2026-09-28 at 16:15Z: `git push` through `pb worker git-credential`, and the
+pull request through `pb worker gh`. Connection Hub audited each issued token.
 
 Still landing, under W371:
-- **The board's decision route:** the platform's REST guard in front of
-  `project_agent_github_authorize` must admit the signed question without a
-  bearer. Until it does, token requests end in
-  `project_github_provider_response_invalid`.
 - **Add-to-project:** it adds **Use GitHub** to the agent's Card, leaving the
-  rest of the Card alone.
+  rest of the Card alone, when a person adds the agent.
 - **`pb worker connect-project`:** it takes the commit email from the owner's
   My Card. Today `pb worker context` still names the project-wide email.
 
