@@ -297,6 +297,32 @@ class ProjectAgentCardAccess:
             **changes,
         )
 
+    async def add_operations(
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        project_ref: str,
+        operations: Any,
+        expected_card_revision: int | None = None,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        """Add operations to an agent's Card as an admin of its project, under the owner's key (W371)."""
+
+        decision = await self._authorize(user, access_id=access_id, project_ref=project_ref, action=AGENT_CARD_WRITE)
+        if isinstance(decision, dict):
+            return decision
+        return await self._host.add_operations(
+            self._owner_user(decision),
+            access_id=clean_text(access_id),
+            operations=list(operations or ()),
+            expected_card_revision=expected_card_revision,
+            request_id=request_id,
+            _actor_subject=_subject(user),
+            _delegable_grants=await self._actor_delegable_grants(user, decision.grantor_subject),
+            _extra_record_transform=self._audit(user, decision, action="operations_added", request_id=request_id),
+        )
+
     async def apply_profile(
         self,
         user: Mapping[str, Any],
