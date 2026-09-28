@@ -68,12 +68,15 @@ from connection_hub.delegated_credentials.project_identity_authorization import 
     ProjectOperationRequest,
 )
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
+    MY_CARD_PERSON_PROPERTIES,
+    MY_CARD_SELF_ONLY_PROPERTIES,
     PROJECT_PERSON_MY_CARD_ISSUER_KIND,
     ProjectIdentityLifecycle,
     ProjectIdentityLifecycleError,
     ProjectIdentityLifecycleResult,
     ProjectPersonCardIdentity,
 )
+from connection_hub.delegated_credentials.named_service_policy import clean_text as _clean
 from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_grants,
     normalize_resource_operations,
@@ -964,6 +967,141 @@ class ProjectPersonControlLifecycle:
             "project_identity_edge_removed": edge_removed,
             "project_person_control": identity.to_property(),
             "audit": audit.to_dict(),
+        }
+
+    async def _my_card_actor(
+        self,
+        *,
+        actor_subject: str,
+        project_ref: str,
+        target_subject: str,
+        operation: str,
+        request_id: str,
+    ) -> str | dict[str, Any]:
+        """The person whose My Card is addressed; another person's needs project policy."""
+
+        target = _clean(target_subject) or _clean(actor_subject)
+        if target == _clean(actor_subject):
+            return target
+        authorized = await self._authorize(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target,
+            operation=operation,
+            request_id=request_id,
+        )
+        return authorized if isinstance(authorized, dict) else target
+
+    async def my_card_person_properties(
+        self,
+        *,
+        actor_subject: str,
+        project_ref: str,
+        target_subject: str = "",
+        request_id: str,
+    ) -> dict[str, Any]:
+        """The person-owned settings on a My Card (W371), with the revision read."""
+
+        target = await self._my_card_actor(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            operation=PROJECT_PERSON_CONTROL_READ,
+            request_id=request_id,
+        )
+        if isinstance(target, dict):
+            return target
+        try:
+            properties, revision = await self._project_identities.my_card_properties(
+                project_ref=project_ref,
+                person_subject=target,
+            )
+        except (
+            CardUnavailable,
+            CardServingUnavailable,
+            CardConflict,
+            CardCommitFailed,
+            ProjectIdentityLifecycleError,
+        ) as exc:
+            return self._identity_failure(exc)
+        return {
+            "ok": True,
+            "project_ref": _clean(project_ref),
+            "person_subject": target,
+            "card_revision": revision,
+            "properties": {key: properties[key] for key in MY_CARD_PERSON_PROPERTIES if key in properties},
+        }
+
+    async def set_my_card_person_properties(
+        self,
+        *,
+        actor_subject: str,
+        project_ref: str,
+        changes: Mapping[str, Any],
+        target_subject: str = "",
+        request_id: str,
+        expected_card_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Set or clear person-owned settings on a My Card (W371).
+
+        The person sets their own. A project admin may set another person's
+        settings except the GitHub link, which only its person may make,
+        because it names that person's own GitHub account.
+        """
+
+        unknown = sorted(set(changes or {}) - set(MY_CARD_PERSON_PROPERTIES))
+        if unknown or not changes:
+            return {
+                "ok": False,
+                "error": "project_person_my_card_property_invalid",
+                "properties": unknown,
+                "status": 400,
+            }
+        target = await self._my_card_actor(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            operation=PROJECT_PERSON_CONTROL_UPDATE,
+            request_id=request_id,
+        )
+        if isinstance(target, dict):
+            return target
+        if target != _clean(actor_subject) and set(changes) & MY_CARD_SELF_ONLY_PROPERTIES:
+            return {
+                "ok": False,
+                "error": "project_person_my_card_property_self_only",
+                "properties": sorted(set(changes) & MY_CARD_SELF_ONLY_PROPERTIES),
+                "status": 403,
+            }
+        try:
+            record, changed = await self._project_identities.set_my_card_properties(
+                project_ref=project_ref,
+                person_subject=target,
+                changes=changes,
+                expected_card_revision=expected_card_revision,
+            )
+        except (
+            CardUnavailable,
+            CardServingUnavailable,
+            CardConflict,
+            CardCommitFailed,
+            ProjectIdentityLifecycleError,
+        ) as exc:
+            return self._identity_failure(exc)
+        properties = dict(record.properties or {})
+        if changed:
+            await self._host.notify_change(
+                target,
+                action="project_person_my_card_settings_changed",
+                access=record.to_public_dict(),
+            )
+        return {
+            "ok": True,
+            "project_ref": _clean(project_ref),
+            "person_subject": target,
+            "card_revision": int(record.card_revision),
+            "changed": changed,
+            "properties": {key: properties[key] for key in MY_CARD_PERSON_PROPERTIES if key in properties},
         }
 
     async def seed_my_card(
