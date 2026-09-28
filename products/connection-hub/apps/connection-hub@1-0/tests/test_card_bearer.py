@@ -45,6 +45,9 @@ BUNDLE_ROOT = Path(__file__).resolve().parents[1]
 BOARD_RESOURCE = "http://testserver/api/integrations/bundles/home/demo/problem-board@1-0/public/mcp/problem_board"
 GRANTOR = "a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
 BOARD_OPERATION = application_operation_ref(application_id="problem-board@1-0", operation_id="work.receive")
+BOARD_AUTHORIZE_OPERATION = application_operation_ref(
+    application_id="problem-board@1-0", operation_id="project_agent_github_authorize"
+)
 ISSUE_OPERATION = application_operation_ref(
     application_id="connection-hub@1-0", operation_id="project_agent_github_token_issue"
 )
@@ -158,6 +161,29 @@ def _client(monkeypatch) -> TestClient:
             {"ok": True, "grantor": view.grantor_user_id, "access_id": view.registry_access_id, "client_id": view.client_id}
         )
 
+    @app.post("/issue-then-ask-the-board")
+    async def issue_then_ask(request: Request):
+        # The route's order: authenticate the Card, then ask the board as a
+        # peer call inside this same request (the platform runs the
+        # application-operation check on that call too).
+        denial = await module.authenticate_card_bearer(request, module.card_bearer(request))
+        if denial is not None:
+            return denial
+        under_card = await surface_guard.authorize_delegated_application_operation_request(
+            request=request, operation=BOARD_AUTHORIZE_OPERATION, method="POST"
+        )
+        module.forget_card_bearer(request)
+        as_hub = await surface_guard.authorize_delegated_application_operation_request(
+            request=request, operation=BOARD_AUTHORIZE_OPERATION, method="POST"
+        )
+        return JSONResponse(
+            {
+                "under_card": getattr(under_card, "status_code", 0),
+                "as_hub": getattr(as_hub, "status_code", 0),
+                "credential_left": getattr(request.state, "delegated_credential", None) is not None,
+            }
+        )
+
     return TestClient(app)
 
 
@@ -187,3 +213,17 @@ def test_a_bearer_prefix_is_accepted_and_a_dead_bearer_is_refused(monkeypatch):
     assert prefixed.status_code == 200
     assert dead.status_code == 401
     assert missing.status_code == 401
+
+
+def test_the_board_is_asked_as_connection_hub_not_under_the_agents_card(monkeypatch):
+    """Second blocker of the first push (16:01Z): the peer call to the board ran
+    under the agent's Card and was refused for want of a bearer. Once the Card's
+    facts are read, the route drops them, and the call passes the platform check;
+    the board admits it by the peer proof alone."""
+
+    response = _client(monkeypatch).post(
+        "/issue-then-ask-the-board", headers={"X-Connection-Hub-Card-Bearer": "card-bearer"}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"under_card": 401, "as_hub": 0, "credential_left": False}
