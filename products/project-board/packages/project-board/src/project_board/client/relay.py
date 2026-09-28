@@ -8,7 +8,7 @@ import math
 import os
 import time
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
@@ -424,6 +424,8 @@ class RelayConfig:
     # this channel indexes and serves is read there, never from the host's
     # repository map.
     workspace: str = ""
+    # W304 finding 29: how the runtime was actually started, captured at listen.
+    runtime_launch: Mapping[str, Any] = field(default_factory=dict)
 
     def repository_mapping(self) -> dict[str, Any]:
         return repository_entries(self.source_repositories, self.source_read_roots)
@@ -583,6 +585,7 @@ class RelayConfig:
                 sorted((str(alias), str(url)) for alias, url in raw_repository_urls.items() if str(url).strip())
             ),
             workspace=str(worker.get("working_directory") or "").strip(),
+            runtime_launch=dict(worker.get("runtime_launch") or {}) if isinstance(worker.get("runtime_launch"), Mapping) else {},
         )
 
     @classmethod
@@ -627,6 +630,7 @@ class RelayConfig:
                 alias=channel.worker_alias,
                 worker_name=channel.worker_name,
             )[0],
+            runtime_launch=dict(getattr(channel, "runtime_launch", {}) or {}),
         )
 
     @classmethod
@@ -2364,9 +2368,8 @@ class ProblemBoardHostRelayAdapter:
         generated = build_session_resume_command(
             runtime_kind=self.config.runtime_kind,
             runtime_session_id=self.config.runtime_session_id,
-            working_directory=self.config.working_directory,
-            allowed_roots=self.config.allowed_roots,
-            field_root=self.config.field_root,
+            working_directory=self.config.workspace or self.config.working_directory,
+            launch=self.config.runtime_launch,
         )
         command = str(generated["command"])
         await self.client.action(

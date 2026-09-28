@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -166,6 +166,9 @@ class WorkerChannelConfig:
     # Captured when this exact session enrolls. It stays in the LOCAL host
     # config and lets the relay rebuild a useful resume command later.
     working_directory: str = ""
+    # How the runtime was actually started (W304 finding 29): {argv, cwd,
+    # tmux_session, captured_at}, captured at `pb worker listen`.
+    runtime_launch: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "WorkerChannelConfig":
@@ -213,6 +216,7 @@ class WorkerChannelConfig:
             ),
             state=state,
             working_directory=working_directory,
+            runtime_launch=dict(value.get("runtime_launch") or {}) if isinstance(value.get("runtime_launch"), Mapping) else {},
         )
         return result
 
@@ -231,6 +235,7 @@ class WorkerChannelConfig:
                 if self.working_directory
                 else {}
             ),
+            **({"runtime_launch": dict(self.runtime_launch)} if self.runtime_launch else {}),
         }
 
 
@@ -968,6 +973,7 @@ def enroll_worker_channel(
     capabilities: Sequence[str] = (),
     authorized: bool = False,
     working_directory: str = "",
+    runtime_launch: Mapping[str, Any] | None = None,
 ) -> WorkerChannelConfig:
     path = Path(config_path).expanduser().resolve()
     lock = path.with_suffix(f"{path.suffix}.lock")
@@ -1035,6 +1041,8 @@ def enroll_worker_channel(
                 else existing.state
             ),
             working_directory=selected_working_directory,
+            # A new capture replaces the old; none keeps what the host had.
+            runtime_launch=dict(runtime_launch) if runtime_launch else (dict(existing.runtime_launch) if existing else {}),
         )
         rows = [
             worker.to_mapping()
