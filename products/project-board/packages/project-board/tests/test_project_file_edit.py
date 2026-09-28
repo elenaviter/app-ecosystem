@@ -276,3 +276,18 @@ def test_the_procedures_say_where_card_edits_go_and_how_a_host_opts_in():
     assert "**Edits made on the card come to you.**" in coordinator
     assert "`pb host configure --add-control-kind project.file.edit`" in coordinator
     assert "Never `--allow-control-kind` for this: it replaces the whole list" in coordinator
+
+
+def test_a_file_edit_ref_is_a_contract_kind_that_maps_to_the_result_operation():
+    from project_board.contract.reference_records import reference_for_record
+    from project_board.contract.refs import parse_ref
+    from project_board.contract.worker_operation_contract import PROBLEM_BOARD_OPERATIONS_BY_KIND
+
+    edit_ref = reference_for_record(
+        "file_edit",
+        {"edit_id": "edit_0123456789abcdef0123456789abcdef", "requested_at": "2026-09-28T00:10:00Z",
+         "path": "docs/facts.md", "alias": "ledger"},
+    )
+    assert edit_ref.startswith("work:file_edit:")
+    assert parse_ref(edit_ref).kind == "file_edit"
+    assert PROBLEM_BOARD_OPERATIONS_BY_KIND["work.file_edit"] == ("project.file.edit.result",)

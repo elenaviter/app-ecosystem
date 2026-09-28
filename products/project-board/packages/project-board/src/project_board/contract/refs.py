@@ -18,6 +18,8 @@ KINDS = {
     "mail_reconciliation": "work.mail_reconciliation",
     "lease": "work.lease",
     "journal": "work.journal",
+    # W370: a project-file edit made on the card.
+    "file_edit": "work.file_edit",
     "journal_view": "work.journal_view",
     "session_resume": "work.session_resume",
     "inbox": "work.inbox",

@@ -76,6 +76,15 @@ REFERENCE_POLICIES: dict[str, ReferencePolicy] = {
         "the stable journal entry key",
         "the journal title or summary",
     ),
+    "file_edit": ReferencePolicy(
+        "edit_id",
+        "edit_ref",
+        ("requested_at", "created_at", "updated_at"),
+        ("path", "alias"),
+        "file-edit",
+        "the stable file-edit row key",
+        "the edited file's path",
+    ),
     "journal_view": ReferencePolicy(
         "view_id",
         "view_ref",
