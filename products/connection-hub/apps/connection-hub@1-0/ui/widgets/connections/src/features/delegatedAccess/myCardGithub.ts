@@ -155,3 +155,32 @@ export function linkableAccounts<T extends { provider_id: string }>(
   const providerId = status?.connect?.provider_id || '';
   return providerId ? accounts.filter((account) => account.provider_id === providerId) : [];
 }
+
+// -- the link flow (W371, the operator's first link, 2026-09-28) ------------
+
+// Connect started from My Card for a project links that project on return,
+// without a second press, when exactly one GitHub account is there to link.
+// Only a Connect made here arms it: opening My Card never links on its own,
+// so a person who unlinked on purpose stays unlinked.
+export function linkPendingKey(projectRef: string): string {
+  return `kdc-github-link-pending:${projectRef}`;
+}
+
+export function autoLinkAccount<T extends { account_id: string; provider_id: string }>(
+  status: GithubKeyStatus | null,
+  accounts: T[],
+  pending: boolean,
+): string {
+  if (!pending || status?.connection_state !== 'not_connected') return '';
+  const candidates = linkableAccounts(accounts, status);
+  return candidates.length === 1 ? candidates[0].account_id : '';
+}
+
+// Said on the shared same-origin channel after a link, unlink or email
+// change, so the board re-reads the viewer's GitHub access without a reload.
+export const CONNECTION_HUB_CHANNEL = 'kdcube-connection-hub';
+export const GITHUB_KEY_CHANGED = 'connection_hub.github_key.changed';
+
+export function githubKeyChanged(projectRef: string, connectionState: string): Record<string, string> {
+  return { type: GITHUB_KEY_CHANGED, project_ref: projectRef, connection_state: connectionState };
+}

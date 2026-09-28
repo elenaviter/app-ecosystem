@@ -14,6 +14,13 @@ import { TelegramClaimPage } from './features/identity/TelegramClaimPage';
 import { TelegramMiniAppLinkPanel } from './features/identity/TelegramMiniAppLinkPanel';
 import { DelegatedToKdcubePanel } from './features/delegatedToKdcube/DelegatedToKdcubePanel';
 import { clearDelegatedToKdcubeError, loadDelegatedToKdcube } from './features/delegatedToKdcube/delegatedToKdcubeSlice';
+import {
+  OAUTH_ARMED_EVENT,
+  OAUTH_PENDING_KEY,
+  RETURN_POLL_MS,
+  RETURN_POLL_TRIES,
+  accountsSignature,
+} from './features/delegatedToKdcube/oauthReturn';
 import { ProviderConnectionsPanel, type ProviderSummon } from './features/providerConnections/ProviderConnectionsPanel';
 import { clearProviderConnectionsError, loadProviderConnections } from './features/providerConnections/providerConnectionsSlice';
 import { RemoteMcpPanel } from './features/remoteMcp/RemoteMcpPanel';
@@ -182,6 +189,49 @@ export default function App() {
   // Fallback: a ONE-SHOT focus refresh, armed only while an approval is in
   // flight (sessionStorage flag set when the approval tab is opened) — no
   // standing focus/visibility polling.
+  const connectedAccounts = useAppSelector((s) => s.delegatedToKdcube.accounts);
+  const accountsRef = useRef(connectedAccounts);
+  accountsRef.current = connectedAccounts;
+
+  // While an approval is in flight, re-read the accounts on a bounded clock
+  // until they change (oauthReturn.ts): embedded in the board, neither the
+  // broadcast nor the focus below may arrive (W371, 2026-09-28).
+  useEffect(() => {
+    if (telegramMiniAppMode || claimChallengeId || !runtimeReady) return;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+    const watch = () => {
+      stop();
+      const before = accountsSignature(accountsRef.current);
+      let tries = 0;
+      timer = setInterval(() => {
+        tries += 1;
+        if (tries > RETURN_POLL_TRIES) {
+          stop();
+          return;
+        }
+        void dispatch(loadDelegatedToKdcube()).unwrap().then((result) => {
+          if (accountsSignature(result?.accounts) === before) return;
+          stop();
+          try {
+            sessionStorage.removeItem(OAUTH_PENDING_KEY);
+          } catch {
+            // Nothing to clear.
+          }
+          void refresh();
+        }).catch(() => undefined);
+      }, RETURN_POLL_MS);
+    };
+    window.addEventListener(OAUTH_ARMED_EVENT, watch);
+    return () => {
+      window.removeEventListener(OAUTH_ARMED_EVENT, watch);
+      stop();
+    };
+  }, [telegramMiniAppMode, claimChallengeId, runtimeReady, refresh, dispatch]);
+
   useEffect(() => {
     if (telegramMiniAppMode || claimChallengeId || !runtimeReady) return;
     const consumePending = () => {

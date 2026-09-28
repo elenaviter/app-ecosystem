@@ -2,12 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  GITHUB_KEY_CHANGED,
+  autoLinkAccount,
   commitEmailRequest,
+  githubKeyChanged,
   githubLinkRequest,
   githubStatusLine,
   githubStatusRequest,
   githubUnlinkRequest,
   isMyCard,
+  linkPendingKey,
   linkableAccounts,
   myCardProjectRef,
   openedRepositories,
@@ -100,4 +104,23 @@ test('embedded, the board passes repositories and the section in openParams, whi
   assert.equal(opensGithubSection(openParams, ''), true)
   assert.equal(opensGithubSection(undefined, '?section=github'), true)
   assert.equal(opensGithubSection({}, ''), false)
+})
+
+test('a Connect made here links on return only when it is pending and exactly one GitHub account is there', () => {
+  const status = { connection_state: 'not_connected', connect: { provider_id: 'github', connector_app_id: 'app', claims: [] } }
+  const one = [{ account_id: 'g1', provider_id: 'github' }, { account_id: 's1', provider_id: 'slack' }]
+  const two = [...one, { account_id: 'g2', provider_id: 'github' }]
+  assert.equal(autoLinkAccount(status, one, true), 'g1')
+  assert.equal(autoLinkAccount(status, one, false), '', 'opening My Card never links on its own')
+  assert.equal(autoLinkAccount(status, two, true), '', 'several accounts: the person chooses')
+  assert.equal(autoLinkAccount({ ...status, connection_state: 'connected' }, one, true), '')
+  assert.equal(autoLinkAccount(null, one, true), '')
+  assert.equal(linkPendingKey('work:project:q'), 'kdc-github-link-pending:work:project:q')
+})
+
+test('the change is said in the board\'s terms', () => {
+  assert.deepEqual(githubKeyChanged('work:project:q', 'connected'), {
+    type: GITHUB_KEY_CHANGED, project_ref: 'work:project:q', connection_state: 'connected',
+  })
+  assert.equal(GITHUB_KEY_CHANGED, 'connection_hub.github_key.changed')
 })
