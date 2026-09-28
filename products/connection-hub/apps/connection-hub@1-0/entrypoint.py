@@ -4248,6 +4248,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 or payload.get("basis_access_id")
                 or ""
             ).strip(),
+            initial_profile=str(payload.get("initial_profile") or "").strip(),
             issuer_ref=str(payload.get("issuer_ref") or "").strip(),
             issuer_kind=str(payload.get("issuer_kind") or "").strip(),
             issuer_label=str(payload.get("issuer_label") or "").strip(),
