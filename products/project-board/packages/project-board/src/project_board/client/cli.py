@@ -77,6 +77,7 @@ from .stop_guard import stop_guard_decision
 from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
 from .project_connect import Connector, Machine, connect_repositories, next_step
+from .runtime_launch import capture as capture_runtime_launch
 from .project_files import changed_files, files_context, files_fingerprint, missing_files
 from .workspace_report import build_workspace_report, commit_identity, report_signature
 from .limit_state import (
@@ -3877,6 +3878,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             capabilities=args.capability,
             authorized=same_active_channel,
             working_directory=str(Path.cwd().resolve()),
+            # W304 finding 29: the runtime's real start line, for the card's resume command.
+            runtime_launch=capture_runtime_launch(identity.runtime_kind),
         )
         try:
             previous_worker = field.read_worker(identity.worker_name)
