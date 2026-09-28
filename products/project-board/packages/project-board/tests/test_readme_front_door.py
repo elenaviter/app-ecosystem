@@ -95,7 +95,8 @@ def test_links_are_public_and_resolve_in_this_repository() -> None:
     assert links
     for link in links:
         assert link.startswith(PUBLIC), f"PyPI renders only absolute public links: {link}"
-        assert (REPOSITORY / link[len(PUBLIC):]).is_file(), link
+        # A section anchor (#project-files) points into a page that must exist.
+        assert (REPOSITORY / link[len(PUBLIC):].split("#", 1)[0]).is_file(), link
     for page in ("docs/concepts.md", "docs/cards.md", "docs/add-a-machine.md", "procedures/enroll-an-agent.md"):
         assert any(link.endswith(page) for link in links), page
 
