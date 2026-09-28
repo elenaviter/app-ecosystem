@@ -1407,6 +1407,7 @@ async def test_a_control_card_starts_from_a_profile_without_reading_another_card
         "catalog_version": h.catalog.active.version,
     }
     assert h.persistence.persist_calls == 1, "no other Card was written"
+    assert made["started_from"] == {"profile": profile, "catalog_version": h.catalog.active.version}
 
 
 @pytest.mark.asyncio
@@ -1426,3 +1427,36 @@ async def test_a_control_card_refuses_an_undeclared_profile_and_two_starts(tmp_p
     assert missing["profile"] == "reviewer"
     assert both["ok"] is False and both["error"] == "control_card_initial_selection_ambiguous"
     assert h.persistence.persist_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_a_card_an_older_hub_made_empty_is_started_once_when_the_profile_is_asked_again(tmp_path):
+    """W377 review: an older Connection Hub ignored initial_profile and made the Card empty."""
+
+    h = _Harness(tmp_path, connections=_connections_with_authorization_profiles())
+    empty = await h.service.control_card_create(
+        USER, issuer_ref="work:project:one", issuer_kind="application",
+    )
+    assert empty["ok"] is True and empty["started_from"] == {}
+    assert empty["authority"]["resource_grants"] == {}
+
+    started = await h.service.control_card_create(
+        USER, issuer_ref="work:project:one", issuer_kind="application",
+        initial_profile="coordinator",
+    )
+
+    assert started["ok"] is True, started
+    assert started["started"] is True and started["created"] is False
+    assert started["authority"]["access_id"] == empty["authority"]["access_id"], "the same fixed id"
+    assert started["authority"]["resource_operations"] == {MEMORIES: ["search", "write"]}
+    assert started["started_from"]["profile"] == "coordinator"
+    stored = await h.card(started["authority"]["access_id"])
+    assert stored.card_revision == empty["authority"]["card_revision"] + 1
+    assert stored.provenance["control_card_initial_selection"]["profile"] == "coordinator"
+
+    again = await h.service.control_card_create(
+        USER, issuer_ref="work:project:one", issuer_kind="application",
+        initial_profile="coordinator",
+    )
+    assert again["created"] is False and "started" not in again, "started once"
+    assert (await h.card(started["authority"]["access_id"])).card_revision == stored.card_revision
