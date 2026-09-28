@@ -7,6 +7,7 @@ tags: ["integration", "connections", "oauth", "github", "github-app", "operator-
 keywords: ["github app", "user access token", "refresh token rotation", "installation", "delegated_to_kdcube_oauth_callback", "github client_secret", "github.app"]
 see_also:
   - ./README.md
+  - repo:app-ecosystem/products/project-board/docs/github.md
 ---
 
 # Connection Hub — GitHub setup
@@ -123,3 +124,9 @@ owner:
 
 Only installations the person can reach are listed, so `not_installed` can
 also mean the App is installed there but the person has no access.
+
+## Agents using a person's GitHub key
+
+Problem Board agents push, pull and open pull requests with their person's
+token from this provider: [GitHub access for agents](../../../../../products/project-board/docs/github.md)
+describes the flow, where each token lives and how the board decides.
