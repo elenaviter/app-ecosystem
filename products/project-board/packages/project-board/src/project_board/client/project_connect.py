@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .github_key import clone_config
+from .github_key import DEPLOY_KEY_REMOTE, clone_config
 from .workspace_report import comparable_url
 
 CONNECT_STATES = ("reachable", "needs_key", "unreachable", "left_unchanged")
@@ -180,6 +180,21 @@ class Connector:
     def _key_config(self, folder: Path) -> None:
         for step in clone_config(self.helper, name=self.alias_name, email=self.commit_email):
             self._git(step, folder)
+
+    def _set_deploy_remote(self, folder: Path, url: str) -> None:
+        """Keep this machine's deploy-key route as the `deploykey` remote (W371 fallback)."""
+
+        if not url or url.startswith("https://"):
+            return
+        found = self._git(["remote", "get-url", DEPLOY_KEY_REMOTE], folder)
+        verb = "set-url" if found.returncode == 0 else "add"
+        self._git(["remote", verb, DEPLOY_KEY_REMOTE, url], folder)
+
+    def _key_config_with_deploy_route(self, folder: Path, alias_url: str) -> None:
+        self._key_config(folder)
+        # A new HTTPS clone gains the deploy-key route only when this machine's key reaches it.
+        if alias_url and self._answers(alias_url, through_alias=True):
+            self._set_deploy_remote(folder, alias_url)
 
     def _key_flags(self) -> list[str]:
         return [
@@ -383,7 +398,7 @@ class Connector:
                 through_alias=False,
                 row=row,
                 flags=self._key_flags(),
-                after_clone=self._key_config,
+                after_clone=lambda cloned: self._key_config_with_deploy_route(cloned, alias_url),
             )
             return {**result, "route": "github_key"} if result.get("state") == "reachable" else result
         origin = ""
@@ -428,6 +443,8 @@ class Connector:
         self._key_config(folder)
         switched = origin != https_url
         if switched:
+            # The SSH route stays aside for `pb worker push` when the key is unavailable.
+            self._set_deploy_remote(folder, origin)
             self._git(["remote", "set-url", "origin", https_url], folder)
         # A push URL of its own would keep pushes on the old route.
         self._git(["config", "--unset-all", "remote.origin.pushurl"], folder)

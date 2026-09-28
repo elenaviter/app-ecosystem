@@ -54,8 +54,9 @@ Every step, in the order it happens:
 | after 6 | **machine administrator** | on a host set up before the user installer, remove the root-owned `/opt` install | removing root-owned files needs `sudo` |
 | 7, at 12 | host agent | reconcile this host's deploy keys with the cards of every attended project: grant and revoke sheets | routine; the cards decide |
 | 7, at 12 | **operator** | add each granted deploy key on GitHub, delete each revoked one | only a repository admin can grant or revoke access |
-| 7 | **operator** | create a token for the GitHub identity chosen in step 0 and paste it once, unseen, into `gh` for this user | the identity and its token are the operator's |
-| 7 | host agent | check `gh auth status` and write access for each repository on the card | routine |
+| 7 | **the person** (each agent's owner) | link GitHub on My Card (**Set up GitHub** on their card on the board), set their commit email there, and install the GitHub App on each repository owner | the key is theirs; agents act as them |
+| 7 | host agent | run `pb worker connect-project` and read `github_key: ready` per repository | routine |
+| 7 | **operator**, fallback only | only when an owner has no GitHub key: a machine account's token pasted once, unseen, into `gh` for this user | the identity and its token are the operator's |
 | 8 | either | one empty workspace per agent | routine |
 | 9 | host agent | write one start script per agent, then start one `tmux` session per agent with it | routine |
 | 9 | **operator** decides, host agent applies it | approve unattended command mode: Claude Code's one-time bypass warning or Codex's `--ask-for-approval never` policy | it is the operator's risk decision; the host user and repository deploy keys remain the boundary |
@@ -141,7 +142,7 @@ before anything changes:
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
 | **teammates who may write to these agents** | `*` (the default), any agent that shares a project with them, or named workers such as the coordinator | the host's receiver policy (`receiver_policy.allowed_peer_workers`). `pb setup` writes `*` (operator ruling, 2026-09-26); step 3 narrows it only when the operator chose named workers or none. The board lets an agent in a shared project address them, and, while one of them attends no project, anyone who knows its exact stable name (never its alias) may send it a request, reply or ping; so `*` means "my project teammates, and whoever knows a new agent's id before it joins". It grants no access to anything: it decides whose mail reaches these agents. The operator's own messages reach them either way. |
 | **how the client is installed** | a published `project-board` version (for example `2026.9.26.1900`), or an exact App Ecosystem commit | step 2. A published release is one version from the package index, the default for a machine that only runs agents; exact commits are for a machine of the team that builds Problem Board, or before a release is published (W304 U2). |
-| **GitHub identity for pull requests** | a machine account such as `kdcube-agents`, with write on the project's repositories | agents open their own pull requests and post review verdicts with `gh`. Deploy keys (step 7) only push branches. Which identity signs in, and with what access, is the operator's decision. |
+| **GitHub access** | each agent's owner links GitHub on their My Card for the project, sets their commit email there, and the deployment's GitHub App is installed on each repository owner ([GitHub access for agents](repo:app-ecosystem/products/project-board/docs/github.md)) | agents push, open pull requests and post review verdicts as their owner, over HTTPS with `pb worker git-credential` and `pb worker gh`; nothing is signed in on the machine. A machine account (for example `kdcube-agents`) signed in to `gh`, and deploy keys (step 7), are the fallback, only for an owner with no key. |
 
 **Repositories are not a host decision.** They belong to the project: the
 operator sets them on the project card (Team, project card, repositories), and
@@ -185,11 +186,15 @@ python3 --version; git --version
 echo "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS"   # both set
 sudo -n true && echo sudo-ok
 command -v tmux || echo "tmux missing: ask the machine's admin to install it (apt install tmux, or dnf install tmux)"
+command -v gh || echo "gh missing: brew install gh (macOS); apt install gh, or the GitHub CLI apt repository (Debian, Ubuntu); dnf install gh (Fedora)"
 getent passwd | awk -F: '$3>=1000 && $3<60000 {print $1}'   # other users on the machine
 stat -c '%A %G %n' ~                                         # who can read the home directory
 ```
 
-Needed: Python 3.11 or newer, git, a user-session environment, sudo. Note the
+Needed: Python 3.11 or newer, git, the GitHub CLI (`gh`), a user-session
+environment, sudo. `gh` must be installed but needs no sign-in: with the
+owner's GitHub key, `pb worker gh` hands it the token for each command, and the
+relay finds it by its absolute path even under a service's short `PATH`. Note the
 other users and the home directory's group: they decide how much the user home,
 client state, and workspaces must lock down.
 
@@ -325,7 +330,9 @@ runs, once, `pb host configure --add-control-kind project.file.edit`. A person e
 project file on the card has the edit applied by the coordinator's relay, and a
 machine accepts such edits only after this opt-in; until then the card refuses
 the edit and names this command. It is per machine (the relay's receiver
-policy), and one run covers every project coordinated here. Use
+policy), and one run covers every project coordinated here. The edit's pull
+request opens under the coordinator owner's GitHub key, so `gh` must be
+installed on this machine (step 1); it needs no sign-in. Use
 `--add-control-kind`, never `--allow-control-kind`, which replaces the whole
 list and would refuse mail, requests and pings. Then restart the relay (a
 coordinated runtime action) so it reads the new policy.
@@ -477,8 +484,11 @@ clones over HTTPS with `pb worker git-credential` as each clone's helper, and
 `pb worker gh` runs gh with the key for one command. This host stores no
 GitHub token and needs no deploy key for those repositories. The deploy keys
 below are the **fallback**: for a repository the key does not reach yet (its
-row's `github_key` names why), and for a machine whose owner has not linked
-GitHub.
+row's `github_key` names why), for a machine whose owner has not linked
+GitHub, and for pushing while Connection Hub cannot answer. When origin moves
+to HTTPS, connect-project keeps this machine's deploy-key route as the
+`deploykey` remote, and `pb worker push -- <git push arguments>` uses it only
+after the key was unavailable (never after a refusal), saying so on one line.
 
 One **deploy key per repository**: an SSH key that one repository accepts for
 itself. A personal key would reach every repository its owner can reach, and
@@ -656,12 +666,26 @@ sent by any channel.
 
 ### GitHub CLI for pull requests and review verdicts
 
-Deploy keys push branches; opening a pull request and posting a review verdict
-need `gh`, signed in once for this Linux user with the GitHub identity chosen in
-step 0. The **operator** creates the token (a classic token with `repo` and
-`read:org`, or a fine-grained one with contents and pull requests on the card's
-repositories) and pastes it without it being shown or saved in the shell
-history:
+With the owner's GitHub key (the default, [GitHub access for
+agents](repo:app-ecosystem/products/project-board/docs/github.md)), `gh` only has to be installed (step 1). Nothing is signed in:
+an agent runs `pb worker gh -- pr create ...` (or any gh command), and pb gives
+gh the owner's short-lived token for that one command. Pushes go through
+`pb worker git-credential`, which connect-project names as each clone's helper
+for github.com; commits carry the owner's My Card email.
+
+**When Connection Hub cannot answer** (a platform rebuild, an outage), the key
+is unavailable, not refused. `pb worker push -- <git push arguments>` then
+pushes the same branch through this machine's deploy key, the `deploykey`
+remote connect-project kept, and says so on one line ("owner key unavailable
+(http_502): pushed with the deploy key"). A refusal (not_attending,
+card_denies, github_not_linked…) never falls back, and gh has no fallback: a
+deploy key opens no pull request, so the coordinator opens it later.
+
+**Fallback, only for an owner with no GitHub key:** `gh` signed in once for
+this Linux user with a machine account. The **operator** creates the token (a
+classic token with `repo` and `read:org`, or a fine-grained one with contents
+and pull requests on the card's repositories) and pastes it without it being
+shown or saved in the shell history:
 
 ```bash
 read -rs T && printf '%s\n' "$T" | gh auth login --with-token; unset T
@@ -670,21 +694,19 @@ gh auth status                  # Logged in … (keyring)
 
 The **host agent** then checks write access on each repository on the card:
 `gh repo view <owner>/<repo> --json viewerPermission` reads `WRITE` or `ADMIN`.
-The token lives in the user's keyring, never in a file or an environment
-variable. Every agent of this user shares it, and signs its pull request
-comments with its own name, because GitHub shows only the shared account.
+That token lives in the user's keyring, never in a file or an environment
+variable.
 
-**The relay service has no gh sign-in** (on a machine where a project
-coordinator runs). A project-file edit made on the card is applied by the
-coordinator's relay, which runs as a service (a LaunchAgent on macOS, a systemd
-user service on Linux). A service cannot reach the login keychain that holds
-the interactive sign-in above: on 2026-09-28 the first edit pushed its branch,
-but no pull request was opened, while `gh auth status` from the terminal read
-fine. The relay says so in the edit's result ("gh is not signed in for the
-relay service: …") with the compare link, and the **coordinator** opens the
-pull request from its own session. The token is never stored in a file for the
-service (operator, 2026-09-28); GitHub access issued through the agent's Card
-is being designed.
+**Card edits on the coordinator's machine.** A project-file edit made on the
+card is applied by the coordinator's relay, a service (a LaunchAgent on macOS,
+a systemd user service on Linux) that opted in with
+`pb host configure --add-control-kind project.file.edit` (step 3). It pushes the
+edit's branch and opens its pull request under the **coordinator owner's**
+GitHub key, so `gh` must be installed on that machine. The relay finds gh by its
+absolute path (its own `PATH` is short); when gh is missing, the edit's result
+says so with the places it looked, the coordinator's notice says why, and the
+coordinator opens the pull request from the compare link. No token is stored
+in a file for the service.
 
 ## 8. Give each agent its own workspace
 

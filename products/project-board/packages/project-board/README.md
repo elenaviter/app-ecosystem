@@ -189,6 +189,11 @@ project's repositories on its next check.
 
 **C. Say to your agent**
 
+*You, first:* link GitHub for this project (the **Set up GitHub** button on
+your card on the board, which opens your My Card in Connection Hub), so the
+setup below clones over HTTPS with your key and makes no deploy key it does
+not need. Then say:
+
 > Use the problem-board-worker skill. Set up this project's repositories on this machine.
 
 *The agent.* It runs `pb worker connect-project`. That command clones each
@@ -196,11 +201,9 @@ repository listed on the project's page on the board that this machine
 reaches, and makes this machine's deploy key for each GitHub repository it
 does not reach yet.
 
-Once your GitHub is linked (the **Set up GitHub** button on your card on the
-board, which opens your My Card in Connection Hub), your agents push and open
-pull requests under your GitHub key and commit with your My Card email: the
-command clones over HTTPS with it and no deploy key is needed for those
-repositories. See [GitHub access for agents](https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/github.md).
+With your GitHub linked, your agents push and open pull requests under your
+GitHub key and commit with your My Card email: the command clones over HTTPS
+with it and no deploy key is needed for those repositories. See [GitHub access for agents](https://github.com/elenaviter/app-ecosystem/blob/main/products/project-board/docs/github.md).
 
 **D. Add this machine's keys on GitHub**
 

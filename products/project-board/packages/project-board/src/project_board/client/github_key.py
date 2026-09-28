@@ -71,12 +71,42 @@ def find_gh(*, path: str | None = None, locations: tuple[str, ...] = GH_LOCATION
 
 
 class GitHubKeyRefused(Exception):
-    """A named refusal: no token, and the reason to show."""
+    """A named refusal: no token, and the reason to show.
 
-    def __init__(self, code: str, message: str) -> None:
+    ``availability`` marks a failure to reach an answer (Connection Hub down,
+    a 5xx, a timeout) apart from a refusal (not_attending, card_denies,
+    github_not_linked...): only the first may fall back to the deploy key.
+    """
+
+    def __init__(self, code: str, message: str, *, availability: bool = False) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.availability = availability
+
+
+# The remote connect-project keeps for this machine's deploy key once origin
+# goes over HTTPS: `pb worker push` falls back to it when the key is unavailable.
+DEPLOY_KEY_REMOTE = "deploykey"
+_AVAILABILITY_STATUSES = frozenset({408, 429})
+
+
+def classify_failure(exc: BaseException) -> tuple[str, bool]:
+    """(code, availability) of a failed issue: only availability may fall back."""
+
+    if isinstance(exc, GitHubKeyRefused):
+        return exc.code, exc.availability
+    try:
+        from connection_hub.caller.errors import CredentialError, UpstreamError
+    except ImportError:  # pragma: no cover - the caller package ships with pb
+        CredentialError = UpstreamError = ()  # type: ignore[assignment,misc]
+    if UpstreamError and isinstance(exc, UpstreamError):
+        return str(getattr(exc, "code", "") or "connection_hub_unreachable"), True
+    if CredentialError and isinstance(exc, CredentialError):
+        return str(getattr(exc, "code", "") or "card_credential_refused"), False
+    if isinstance(exc, (TimeoutError, ConnectionError)) or type(exc).__module__.startswith("aiohttp"):
+        return "connection_hub_unreachable", True
+    return str(getattr(exc, "code", "") or type(exc).__name__), False
 
 
 @dataclass(frozen=True)
@@ -149,9 +179,16 @@ async def issue_token(*, post: Post, url: str, bearer: str, project_ref: str, re
         )
     if status in (401, 403) and not result.get("error"):
         raise GitHubKeyRefused("github_key_card_refused", "Connection Hub refused this agent's Card.")
+    if status >= 500 or status in _AVAILABILITY_STATUSES:
+        raise GitHubKeyRefused(
+            f"http_{status}", f"Connection Hub did not answer (HTTP {status}).", availability=True
+        )
     if result.get("ok") is not True or not str(result.get("token") or ""):
         code = str(result.get("error") or f"http_{status}")
-        raise GitHubKeyRefused(code, str(result.get("message") or code))
+        # Connection Hub names its own availability failures (a store, the
+        # project host or the provider unreachable) with an "unavailable" code.
+        unavailable = code.endswith("_unavailable") or int(result.get("status") or 0) == 503
+        raise GitHubKeyRefused(code, str(result.get("message") or code), availability=unavailable)
     return GitHubToken(
         token=str(result["token"]),
         expires_at=int(result.get("expires_at") or 0),
@@ -228,6 +265,23 @@ def clone_config(helper: str, *, name: str = "", email: str = "") -> list[list[s
     return steps
 
 
+def push_through_deploy_key(args: list[str], remotes: set[str]) -> list[str]:
+    """The same `git push` arguments aimed at the deploy-key remote.
+
+    The first positional argument that names a remote is replaced; without
+    one (a bare `git push`, or only a refspec), the deploy-key remote is put
+    first.
+    """
+
+    out = list(args)
+    for index, arg in enumerate(out):
+        if not arg.startswith("-") and arg in remotes:
+            out[index] = DEPLOY_KEY_REMOTE
+            return out
+    positional = next((index for index, arg in enumerate(out) if not arg.startswith("-")), len(out))
+    return [*out[:positional], DEPLOY_KEY_REMOTE, *out[positional:]]
+
+
 def gh_repository(args: list[str], origin_url: str) -> str:
     """The repository a gh command acts on: its -R/--repo, else the clone's origin."""
 
@@ -241,6 +295,9 @@ def gh_repository(args: list[str], origin_url: str) -> str:
 
 __all__ = [
     "CARD_BEARER_HEADER",
+    "DEPLOY_KEY_REMOTE",
+    "classify_failure",
+    "push_through_deploy_key",
     "GH_LOCATIONS",
     "find_gh",
     "CONNECTION_HUB_BUNDLE_ID",

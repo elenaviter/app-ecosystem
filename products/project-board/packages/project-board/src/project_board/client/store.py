@@ -8548,6 +8548,30 @@ class SharedFieldStore:
             path, {"login": str(login or ""), "commit_email": str(commit_email or ""), "recorded_at": utc_now()}
         )
 
+    def record_github_key_outcome(
+        self, worker_name: str, project_id: str, repository: str, *, code: str = "", availability: bool = False
+    ) -> None:
+        """The key's last answer for one repository: empty code when issued, else why not.
+
+        `pb worker push` reads it to fall back to the deploy key only after an
+        availability failure (Connection Hub unreachable), never a refusal.
+        """
+
+        clean_id = component(project_id, field="project_id")
+        path = self._project_dir(clean_id) / "github-key-outcome" / f"{component(worker_name, field='worker_name')}.json"
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        current = read_json(path, required=False) or {}
+        current[str(repository).lower()] = {"code": str(code or ""), "availability": bool(availability), "at": utc_now()}
+        atomic_write_json(path, current)
+
+    def read_github_key_outcome(self, worker_name: str, project_id: str, repository: str) -> dict[str, Any]:
+        path = (
+            self._project_dir(component(project_id, field="project_id"))
+            / "github-key-outcome"
+            / f"{component(worker_name, field='worker_name')}.json"
+        )
+        return dict((read_json(path, required=False) or {}).get(str(repository).lower()) or {})
+
     def read_github_identity(self, worker_name: str, project_id: str) -> dict[str, Any]:
         path = (
             self._project_dir(component(project_id, field="project_id"))
