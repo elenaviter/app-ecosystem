@@ -141,3 +141,15 @@ def test_the_git_credential_command_answers_get_and_refuses_on_stderr_without_st
     stored = io.StringIO()
     assert cli._git_credential_command(SimpleNamespace(action="store"), stdin=io.StringIO("password=x\n"), stdout=stored) == 0  # noqa: SLF001
     assert stored.getvalue() == ""
+
+
+def test_the_card_bearer_rides_its_own_header_never_authorization():
+    """The first real push, 2026-09-28: Authorization made the platform demand a Card operation no Card can hold."""
+
+    from project_board.client import github_key
+
+    assert github_key.CARD_BEARER_HEADER == "X-Connection-Hub-Card-Bearer"
+    source = (__import__("pathlib").Path(cli.__file__)).read_text(encoding="utf-8")
+    post = source[source.index("async def _post_json"):source.index("def _git_credential_command")]
+    assert "CARD_BEARER_HEADER: bearer" in post
+    assert "Authorization" not in post
