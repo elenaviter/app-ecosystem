@@ -469,6 +469,8 @@ class KeyedGitHub(GitHub):
 
     def __call__(self, argv, cwd, timeout, env):
         argv = list(argv)
+        if argv[0] == "git" and argv[1:3] == ["remote", "add"]:
+            return _REAL_RUN(argv, cwd, timeout, env)
         if argv[0] == "git" and argv[1:2] == ["-c"]:
             rest, flags = argv[1:], []
             while rest[:1] == ["-c"]:
@@ -586,3 +588,22 @@ def test_an_existing_clone_moves_to_https_with_the_key_and_ssh_stays_without_it(
     ).connect(listed)
     assert again["state"] == "reachable" and "origin_switched" not in again, "the second run has nothing to move"
 
+
+
+def test_the_ssh_route_is_kept_as_the_deploykey_remote_when_origin_moves_to_https(tmp_path):
+    github = KeyedGitHub({"example-org/app-ecosystem": _remote(tmp_path / "remotes", "app-ecosystem")})
+    github.open.add("example-org/app-ecosystem")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    listed = {"alias": "app-ecosystem", "url": "git@github.com:example-org/app-ecosystem.git"}
+    Connector(_machine(tmp_path), workspace, run=github).connect(listed)
+    github.keyed.add("example-org/app-ecosystem")
+
+    Connector(
+        _machine(tmp_path), workspace, run=github, github_key=_key(github, []), helper=HELPER, alias_name=ALIAS
+    ).connect(listed)
+
+    clone = workspace / "app-ecosystem"
+    assert _GIT_ORIGIN(clone) == "https://github.com/example-org/app-ecosystem.git"
+    kept = subprocess.run(["git", "remote", "get-url", "deploykey"], cwd=str(clone), capture_output=True, text=True, check=True)
+    assert kept.stdout.strip() == "git@github.com:example-org/app-ecosystem.git"

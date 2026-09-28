@@ -205,3 +205,42 @@ def test_gh_is_found_without_the_service_path_and_named_when_missing(tmp_path):
     assert find_gh(path="", locations=(str(tmp_path / "nowhere" / "gh"), str(installed))) == str(installed)
     assert find_gh(path=str(installed.parent), locations=()) == str(installed), "PATH first"
     assert find_gh(path="", locations=(str(tmp_path / "nowhere" / "gh"),)) == ""
+
+
+# --- the deploy-key fallback when the key is unavailable (Connection Hub down, 17:21Z) ---
+
+from project_board.client.github_key import classify_failure, push_through_deploy_key  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "status, body, code, availability",
+    [
+        (502, {}, "http_502", True),
+        (503, {}, "http_503", True),
+        (200, {"ok": False, "error": "project_github_authorization_unavailable", "status": 503}, "project_github_authorization_unavailable", True),
+        (200, {"ok": False, "error": "github_not_linked"}, "github_not_linked", False),
+        (200, {"ok": False, "error": "card_denies"}, "card_denies", False),
+    ],
+)
+def test_an_unavailable_key_is_told_apart_from_a_refusal(status, body, code, availability):
+    with pytest.raises(GitHubKeyRefused) as refused:
+        asyncio.run(issue_token(post=_post(status, body, []), url="u", bearer="b", project_ref="p", repository="o/r"))
+    assert (refused.value.code, refused.value.availability) == (code, availability)
+    assert classify_failure(refused.value) == (code, availability)
+
+
+def test_transport_failures_are_availability_and_a_refused_card_is_not():
+    from connection_hub.caller.errors import CredentialError, UpstreamError
+
+    assert classify_failure(TimeoutError()) == ("connection_hub_unreachable", True)
+    assert classify_failure(ConnectionRefusedError()) == ("connection_hub_unreachable", True)
+    assert classify_failure(UpstreamError("oauth_token_request_failed", "no answer"))[1] is True
+    assert classify_failure(CredentialError("credential_missing", "gone"))[1] is False
+
+
+def test_the_same_push_is_aimed_at_the_deploy_key_remote():
+    remotes = {"origin", "deploykey", "upstream"}
+    assert push_through_deploy_key(["origin", "HEAD:refs/heads/x"], remotes) == ["deploykey", "HEAD:refs/heads/x"]
+    assert push_through_deploy_key(["-u", "origin", "feature"], remotes) == ["-u", "deploykey", "feature"]
+    assert push_through_deploy_key([], remotes) == ["deploykey"]
+    assert push_through_deploy_key(["--force-with-lease"], remotes) == ["--force-with-lease", "deploykey"]

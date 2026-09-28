@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Mapping
@@ -79,7 +80,11 @@ from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
 from .github_key import (
     CARD_BEARER_HEADER,
+    DEPLOY_KEY_REMOTE,
     GitHubKeyRefused,
+    classify_failure,
+    push_through_deploy_key,
+    repository_name,
     GitHubToken,
     card_repositories,
     credential_answer,
@@ -976,6 +981,19 @@ def build_parser() -> argparse.ArgumentParser:
     _agent_identity(command)
     command.add_argument("--project-ref", default="", help="The project, when this agent attends several.")
     command.add_argument("gh_args", nargs=argparse.REMAINDER, help="gh's own arguments, after --.")
+
+    command = worker_commands.add_parser(
+        "push",
+        help=(
+            "git push with your owner's GitHub key; when the key is unavailable (Connection Hub "
+            "unreachable), the same push through this machine's deploy key, said on one line. "
+            "A refusal never falls back. Example: `pb worker push -- origin HEAD:refs/heads/my-branch`."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", default="", help="The project, when this agent attends several.")
+    command.add_argument("git_args", nargs=argparse.REMAINDER, help="git push's own arguments, after --.")
 
     command = worker_commands.add_parser(
         "limit-state",
@@ -3754,7 +3772,17 @@ class _GitHubKeySession:
                 "repository_not_on_card",
                 f"{repository} is not on the project card; the GitHub key serves only those.",
             )
-        token = asyncio.run(self._issue(repository))
+        project_id = parse_ref(self.project_ref).object_id
+        try:
+            token = asyncio.run(self._issue(repository))
+        except Exception as exc:
+            # Kept for `pb worker push`: only an availability failure falls back.
+            code, availability = classify_failure(exc)
+            self.field.record_github_key_outcome(
+                self.identity.worker_name, project_id, repository, code=code, availability=availability
+            )
+            raise
+        self.field.record_github_key_outcome(self.identity.worker_name, project_id, repository)
         if token.commit_email:
             # Who this agent commits as while the key answers: context and the
             # workspace report read it (W371 review, line 4). Never the token.
@@ -3811,10 +3839,19 @@ def _git_credential_command(args: Any, *, stdin: Any = None, stdout: Any = None)
         session = _GitHubKeySession(args)
         repository = credential_repository(parse_credential_request(request), session.on_card)
         out.write(credential_answer(session.token(repository)))
-    except GitHubKeyRefused as exc:
-        print(f"pb GitHub key: {exc.message} ({exc.code})", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 - git gets no answer, and the reason by name, never a traceback
-        print(f"pb GitHub key: {_key_failure(exc)}", file=sys.stderr)
+        code, availability = classify_failure(exc)
+        if availability:
+            detail = str(getattr(exc, "message", "") or "")
+            print(
+                f"pb GitHub key: owner key unavailable ({code}{': ' + detail if detail else ''}): "
+                "push with `pb worker push ...`, which uses this machine's deploy key when it has one",
+                file=sys.stderr,
+            )
+        elif isinstance(exc, GitHubKeyRefused):
+            print(f"pb GitHub key: {exc.message} ({exc.code})", file=sys.stderr)
+        else:
+            print(f"pb GitHub key: {_key_failure(exc)}", file=sys.stderr)
     return 0
 
 
@@ -3838,11 +3875,21 @@ def _gh_command(args: Any) -> int:
         return 2
     try:
         token = _GitHubKeySession(args).token(repository)
-    except GitHubKeyRefused as exc:
-        print(f"pb GitHub key: {exc.message} ({exc.code})", file=sys.stderr)
-        return 1
     except Exception as exc:  # noqa: BLE001 - gh does not run, and the reason is named
-        print(f"pb GitHub key: {_key_failure(exc)}", file=sys.stderr)
+        code, availability = classify_failure(exc)
+        if availability:
+            # A deploy key opens no pull request: gh has no fallback.
+            detail = str(getattr(exc, "message", "") or "")
+            print(
+                f"pb GitHub key: owner key unavailable ({code}{': ' + detail if detail else ''}): "
+                "run it again when Connection Hub is back, "
+                "or push with `pb worker push ...` and ask the coordinator to open the pull request",
+                file=sys.stderr,
+            )
+        elif isinstance(exc, GitHubKeyRefused):
+            print(f"pb GitHub key: {exc.message} ({exc.code})", file=sys.stderr)
+        else:
+            print(f"pb GitHub key: {_key_failure(exc)}", file=sys.stderr)
         return 1
     env = dict(os.environ)
     env.pop("GITHUB_TOKEN", None)
@@ -3852,6 +3899,67 @@ def _gh_command(args: Any) -> int:
     except FileNotFoundError:
         print("pb GitHub key: gh is not installed on this machine.", file=sys.stderr)
         return 127
+
+
+PUSH_FALLBACK_SECONDS = 600
+
+
+def _push_command(args: Any) -> int:
+    """`git push` with the owner's key, and the deploy key when the key is unavailable (W371).
+
+    The credential helper answers only over HTTPS, so it cannot move a push to
+    SSH. This runs the push as given; when it fails and the key's last answer
+    for the repository was an availability failure (Connection Hub
+    unreachable, a 5xx, a timeout), within the last ten minutes, it runs the
+    same push through the `deploykey` remote connect-project kept, and says
+    so. A refusal (not_attending, card_denies, github_not_linked...) never
+    falls back.
+    """
+
+    push_args = list(args.git_args or [])
+    if push_args[:1] == ["--"]:
+        push_args = push_args[1:]
+    first = subprocess.call(["git", "push", *push_args])
+    if first == 0:
+        return 0
+
+    def git_out(*command: str) -> str:
+        try:
+            found = subprocess.run(["git", *command], capture_output=True, text=True, timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        return found.stdout.strip() if found.returncode == 0 else ""
+
+    remotes = set(git_out("remote").split())
+    if DEPLOY_KEY_REMOTE not in remotes:
+        return first
+    target = next((arg for arg in push_args if not arg.startswith("-") and arg in remotes), "origin")
+    repository = repository_name(git_out("remote", "get-url", target))
+    if not repository:
+        return first
+    try:
+        session = _GitHubKeySession(args)
+        outcome = session.field.read_github_key_outcome(
+            session.identity.worker_name, parse_ref(session.project_ref).object_id, repository
+        )
+    except Exception:  # noqa: BLE001 - without the record, no fallback
+        return first
+    recent = False
+    try:
+        at = datetime.fromisoformat(str(outcome.get("at") or "").replace("Z", "+00:00"))
+        recent = (datetime.now(timezone.utc) - at).total_seconds() <= PUSH_FALLBACK_SECONDS
+    except ValueError:
+        recent = False
+    if not (outcome.get("availability") and recent):
+        return first
+    code = str(outcome.get("code") or "unavailable")
+    fallback = push_through_deploy_key(push_args, remotes)
+    result = subprocess.call(["git", "push", *fallback])
+    if result == 0:
+        print(f"pb GitHub key: owner key unavailable ({code}): pushed with the deploy key", file=sys.stderr)
+    else:
+        print(f"pb GitHub key: owner key unavailable ({code}), and the deploy key push failed too", file=sys.stderr)
+    return result
 
 
 def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) -> dict[str, Any]:
@@ -5846,6 +5954,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "worker" and getattr(args, "worker_command", "") == "git-credential":
         # git reads the answer as key=value lines; never an envelope.
         return _git_credential_command(args)
+    if args.command == "worker" and getattr(args, "worker_command", "") == "push":
+        # git's own output and exit code are the command's.
+        return _push_command(args)
     if args.command == "worker" and getattr(args, "worker_command", "") == "gh":
         # gh's own output and exit code are the command's.
         return _gh_command(args)
