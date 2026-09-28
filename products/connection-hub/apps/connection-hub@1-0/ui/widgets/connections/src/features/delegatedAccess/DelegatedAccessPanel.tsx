@@ -5586,7 +5586,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       ) : null}
                       <CatalogDriftNotice drift={cardCatalogDrift(item)} />
                       {!editing && isMyCard(item)
-                        ? <MyCardGithubSection projectRef={myCardProjectRef(item)} />
+                        ? <MyCardGithubSection projectRef={myCardProjectRef(item)} openParams={openParams} />
                         : null}
                       {editing ? (
                         <label className="rename-row">
