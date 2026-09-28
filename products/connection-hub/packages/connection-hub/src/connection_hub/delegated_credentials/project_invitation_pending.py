@@ -50,6 +50,8 @@ from connection_hub.delegated_credentials.controls.snapshot import (
     materialize_control_snapshot,
 )
 from connection_hub.delegated_credentials.project_authorization import (
+    ViewerAuthority,
+    with_viewer_authority,
     PROJECT_INVITATION_CONTROL_CREATE,
     PROJECT_INVITATION_CONTROL_READ,
     PROJECT_INVITATION_CONTROL_REVOKE,
@@ -109,6 +111,7 @@ class ProjectInvitationPendingCards:
     async def _authorize(
         self,
         *,
+        viewer: ViewerAuthority | None = None,
         actor_subject: str,
         project_ref: str,
         invitation_ref: str,
@@ -168,7 +171,7 @@ class ProjectInvitationPendingCards:
             }
         if not decision.allowed:
             return {"ok": False, "error": decision.reason, "status": 403}
-        return request, decision
+        return request, with_viewer_authority(decision, viewer)
 
     async def load(
         self,
@@ -288,6 +291,7 @@ class ProjectInvitationPendingCards:
     async def get(
         self,
         *,
+        viewer: ViewerAuthority | None = None,
         actor_subject: str,
         project_ref: str,
         invitation_ref: str,
@@ -295,6 +299,7 @@ class ProjectInvitationPendingCards:
         request_id: str,
     ) -> dict[str, Any]:
         authorized = await self._authorize(
+            viewer=viewer,
             actor_subject=actor_subject,
             project_ref=project_ref,
             invitation_ref=invitation_ref,
@@ -314,6 +319,7 @@ class ProjectInvitationPendingCards:
     async def create(
         self,
         *,
+        viewer: ViewerAuthority | None = None,
         actor_subject: str,
         project_ref: str,
         invitation_ref: str,
@@ -329,6 +335,7 @@ class ProjectInvitationPendingCards:
         manage_url: str = "",
     ) -> dict[str, Any]:
         authorized = await self._authorize(
+            viewer=viewer,
             actor_subject=actor_subject,
             project_ref=project_ref,
             invitation_ref=invitation_ref,
@@ -549,6 +556,7 @@ class ProjectInvitationPendingCards:
     async def update(
         self,
         *,
+        viewer: ViewerAuthority | None = None,
         actor_subject: str,
         project_ref: str,
         invitation_ref: str,
@@ -566,6 +574,7 @@ class ProjectInvitationPendingCards:
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
     ) -> dict[str, Any]:
         authorized = await self._authorize(
+            viewer=viewer,
             actor_subject=actor_subject,
             project_ref=project_ref,
             invitation_ref=invitation_ref,
@@ -682,6 +691,7 @@ class ProjectInvitationPendingCards:
     async def revoke(
         self,
         *,
+        viewer: ViewerAuthority | None = None,
         actor_subject: str,
         project_ref: str,
         invitation_ref: str,
@@ -689,6 +699,7 @@ class ProjectInvitationPendingCards:
         request_id: str,
     ) -> dict[str, Any]:
         authorized = await self._authorize(
+            viewer=viewer,
             actor_subject=actor_subject,
             project_ref=project_ref,
             invitation_ref=invitation_ref,
