@@ -2210,6 +2210,7 @@ class ProblemBoardHostRelayAdapter:
 
         payload = dict(control.get("payload") or {})
         edit_ref = str(payload.get("edit_ref") or "")
+        requested = payload.get("requested_by") if isinstance(payload.get("requested_by"), Mapping) else {}
 
         async def publish(result: Mapping[str, Any]) -> tuple[str, str]:
             outcome = str(result.get("outcome") or "refused")
@@ -2228,6 +2229,21 @@ class ProblemBoardHostRelayAdapter:
                 try:
                     await self.client.action(object_ref=edit_ref, action="project.file.edit.result", payload=body)
                 except DomainError as exc:
+                    if outcome != "refused":
+                        # Something was written and the board will not say so:
+                        # the coordinator hears it on its next receive.
+                        self.field.add_file_edit_notice(
+                            self.config.worker_name,
+                            self.config.project_id,
+                            {
+                                "edit_id": hashlib.sha256(edit_ref.encode("utf-8")).hexdigest()[:12],
+                                "edit_ref": edit_ref,
+                                "path": f"{payload.get('alias') or ''}:{payload.get('path') or ''}",
+                                "requested_by": str(requested.get("label") or requested.get("subject") or "a person"),
+                                **body,
+                                "not_accepted": exc.code,
+                            },
+                        )
                     return edit_ref, f"File edit {outcome}; the result was not accepted: {exc.code}"
             return edit_ref, f"File edit {outcome}" + (f": {reason}" if reason else "")
 
@@ -2256,7 +2272,6 @@ class ProblemBoardHostRelayAdapter:
             (str(row.get("url") or "") for row in repositories.get("repositories") or [] if row.get("alias") == alias),
             "",
         )
-        requested = payload.get("requested_by") if isinstance(payload.get("requested_by"), Mapping) else {}
         result = await asyncio.to_thread(
             apply_file_edit,
             workspace=self.config.workspace,

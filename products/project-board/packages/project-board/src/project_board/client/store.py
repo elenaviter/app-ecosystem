@@ -8533,6 +8533,34 @@ class SharedFieldStore:
         )
         return read_json(path, required=False) or {}
 
+    def add_file_edit_notice(self, worker_name: str, project_id: str, notice: Mapping[str, Any]) -> None:
+        """Keep an applied edit the board did not accept, for this worker's next receive (W370).
+
+        The board mails the coordinator when it accepts an edit's result; when
+        it refuses the result, this local notice is the only word the
+        coordinator gets that its relay wrote to a repository.
+        """
+
+        clean_id = component(project_id, field="project_id")
+        folder = self._project_dir(clean_id) / "file-edit-notices" / component(worker_name, field="worker_name")
+        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        edit_id = component(str(notice.get("edit_id") or new_id("edit")), field="edit_id")
+        atomic_write_json(folder / f"{edit_id}.json", {**dict(notice), "delivered": False, "recorded_at": utc_now()})
+
+    def take_file_edit_notices(self, worker_name: str, project_id: str) -> list[dict[str, Any]]:
+        """The notices not yet shown to this worker, marked shown: each appears once."""
+
+        clean_id = component(project_id, field="project_id")
+        folder = self._project_dir(clean_id) / "file-edit-notices" / component(worker_name, field="worker_name")
+        taken: list[dict[str, Any]] = []
+        for path in sorted(folder.glob("*.json")) if folder.is_dir() else []:
+            record = read_json(path, required=False) or {}
+            if not record or record.get("delivered"):
+                continue
+            atomic_write_json(path, {**record, "delivered": True})
+            taken.append({key: value for key, value in record.items() if key != "delivered"})
+        return taken
+
     def read_project_files(self, project_id: str) -> dict[str, Any]:
         """The files list; ``known`` is False until a board that sends it answered (W370)."""
 
