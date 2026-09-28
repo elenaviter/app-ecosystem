@@ -96,3 +96,22 @@ def test_a_board_without_the_operation_says_it_needs_an_update() -> None:
     answer = asyncio.run(port(**FIELDS))
 
     assert answer["error"] == "project_github_board_update_required"
+
+
+def test_a_guard_refusal_in_front_of_the_board_is_named():
+    """A platform guard answers with a response object, not the operation's result (16:01Z)."""
+
+    from fastapi.responses import JSONResponse
+
+    async def caller(**kwargs):
+        return JSONResponse({"error": "unauthorized", "reason": "missing_bearer"}, status_code=401)
+
+    port = _module().descriptor_github_authorizer(
+        _entrypoint({"bundle_id": "problem-board@1-0", "peer_proof_secret_ref": "project_membership.peer_proof_secret"}),
+        resolve_secret=_secret,
+        caller=caller,
+    )
+
+    answer = asyncio.run(port(**FIELDS))
+
+    assert answer["error"] == "project_github_provider_denied: missing_bearer"

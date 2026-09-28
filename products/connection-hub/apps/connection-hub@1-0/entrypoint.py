@@ -197,7 +197,7 @@ from connection_hub.mcp_metadata import (
     kdcube_website_url,
 )
 from kdcube_ai_app.infra.redis.client import get_async_redis_client
-from .surfaces.card_bearer import authenticate_card_bearer, card_bearer
+from .surfaces.card_bearer import authenticate_card_bearer, card_bearer, forget_card_bearer
 from .surfaces.delegated_admission import (
     AdmissionHostContext,
     handle_delegated_admission,
@@ -3600,6 +3600,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         )
         if card is None or card.client_id != view.client_id:
             return {"ok": False, "error": "agent_card_not_found", "status": 403}
+        # From here Connection Hub acts as itself: the board is asked with the
+        # peer proof, never under the agent's Card (surfaces/card_bearer.py).
+        forget_card_bearer(request)
 
         async def _resolve_secret(secret_path: str) -> str:
             return await _bundle_secret_value(
