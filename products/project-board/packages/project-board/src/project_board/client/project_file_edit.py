@@ -32,6 +32,10 @@ from .project_connect import github_repository, local_path
 
 FILE_EDIT_KIND = "project.file.edit"
 FILE_EDIT_POLICIES = ("direct", "pull_request")
+GH_SERVICE_FIX = (
+    "The relay service cannot read the login keychain; give it its own sign-in "
+    "(add-a-worker-host step 7, 'The relay service needs its own gh sign-in')."
+)
 # Step one carries the content inline in a control (capped at 64 KB): the
 # board and the relay both refuse more than 60 KB of JSON-escaped content.
 FILE_EDIT_MAX_BYTES = 60 * 1024
@@ -173,6 +177,20 @@ def apply_file_edit(
             }
             if not repo:
                 return result
+            # A relay service (launchd, systemd) cannot open the login keychain
+            # where an interactive `gh auth login` keeps its token: ask first,
+            # so the result says why no pull request was opened (first use,
+            # 2026-09-28).
+            try:
+                signed_in = run(["gh", "auth", "status", "--hostname", "github.com"], tree, timeout)
+            except (OSError, subprocess.TimeoutExpired):
+                return {**result, "reason_code": "gh_unavailable", "reason": "gh is not available on the coordinator's machine"}
+            if signed_in.returncode != 0:
+                return {
+                    **result,
+                    "reason_code": "gh_unavailable",
+                    "reason": f"gh is not signed in for the relay service: {_first_line(signed_in)}. {GH_SERVICE_FIX}",
+                }
             try:
                 opened = run(
                     [
