@@ -607,3 +607,76 @@ def test_the_ssh_route_is_kept_as_the_deploykey_remote_when_origin_moves_to_http
     assert _GIT_ORIGIN(clone) == "https://github.com/example-org/app-ecosystem.git"
     kept = subprocess.run(["git", "remote", "get-url", "deploykey"], cwd=str(clone), capture_output=True, text=True, check=True)
     assert kept.stdout.strip() == "git@github.com:example-org/app-ecosystem.git"
+
+
+def _slow(step: str, *, lock: bool = True):
+    """The real runner, except that one git step stalls after doing its work, as a big clone does."""
+
+    def run(argv, cwd, timeout, env):
+        argv = list(argv)
+        if step in argv:
+            folder = argv[-1] if step == "clone" else str(cwd)
+            leave = f" && touch '{folder}/.git/index.lock'" if lock else ""
+            script = " ".join(f"'{part}'" for part in argv) + leave + " && sleep 30"
+            return _REAL_RUN(["sh", "-c", script], cwd, timeout, env)
+        return _REAL_RUN(argv, cwd, timeout, env)
+
+    return run
+
+
+def test_a_first_clone_cut_off_by_its_limit_leaves_nothing_and_the_next_run_clones(tmp_path):
+    """2026-09-28 ~21:20Z: a first clone of applications hit the 15 s limit and was
+    left half checked out, an empty index and a leftover index.lock."""
+
+    remote = _remote(tmp_path / "remotes", "applications")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    listed = {"alias": "applications", "url": str(remote)}
+
+    cut = Connector(_machine(tmp_path), workspace, timeout=1.0, transfer_timeout=2.0, run=_slow("clone")).connect(listed)
+    assert cut["state"] == "unreachable"
+    assert cut["reason"] == "git clone did not finish within 2s. The partial folder was removed; run again."
+    assert not (workspace / "applications").exists()
+
+    again = Connector(_machine(tmp_path), workspace).connect(listed)
+    assert again["state"] == "reachable" and again["action"] == "cloned"
+    assert not (workspace / "applications" / ".git" / "index.lock").exists()
+
+
+def test_an_update_cut_off_leaves_no_lock_of_its_own_and_keeps_anothers(tmp_path):
+    remote = _remote(tmp_path / "remotes", "applications")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    listed = {"alias": "applications", "url": str(remote)}
+    assert Connector(_machine(tmp_path), workspace).connect(listed)["action"] == "cloned"
+    lock = workspace / "applications" / ".git" / "index.lock"
+
+    cut = Connector(_machine(tmp_path), workspace, timeout=2.0, run=_slow("checkout")).connect(listed)
+    assert cut["state"] == "unreachable" and "nothing was left locked" in cut["reason"]
+    assert not lock.exists()
+    assert (workspace / "applications" / ".git").is_dir(), "an existing clone is never removed"
+
+    # A lock that was there before this run belongs to someone else: kept.
+    lock.write_text("", encoding="utf-8")
+    Connector(_machine(tmp_path), workspace, timeout=2.0, run=_slow("checkout", lock=False)).connect(listed)
+    assert lock.exists()
+
+
+def test_clone_and_fetch_get_the_transfer_limit_and_status_checks_the_short_one(tmp_path):
+    remote = _remote(tmp_path / "remotes", "applications")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    limits: dict[str, float] = {}
+
+    def recording(argv, cwd, timeout, env):
+        if argv[0] == "git":
+            verb = next(part for part in argv[1:] if not part.startswith("-") and "=" not in part)
+            limits.setdefault(verb, timeout)
+        return _REAL_RUN(argv, cwd, timeout, env)
+
+    listed = {"alias": "applications", "url": str(remote)}
+    Connector(_machine(tmp_path), workspace, timeout=15.0, run=recording).connect(listed)
+    Connector(_machine(tmp_path), workspace, timeout=15.0, run=recording).connect(listed)
+    assert limits["clone"] == project_connect.TRANSFER_TIMEOUT_SECONDS == 1800.0
+    assert limits["fetch"] == 1800.0
+    assert limits["status"] == limits["checkout"] == 15.0
