@@ -3,6 +3,7 @@
 // alias key. An optional host bridge lets the scene host route calls when the
 // widget runs embedded.
 
+import { errorDetail } from './errorDetail';
 import { settings } from './settings';
 
 export type ConnectionsCallOperation = <T>(
@@ -180,10 +181,7 @@ async function request<T>(
     parsed = { raw: text };
   }
   if (!response.ok) {
-    const detail = typeof parsed === 'object' && parsed && 'detail' in parsed
-      ? String((parsed as Record<string, unknown>).detail)
-      : text || response.statusText;
-    throw new Error(detail || `${operation} failed: ${response.status}`);
+    throw new Error(errorDetail(parsed, text || response.statusText) || `${operation} failed: ${response.status}`);
   }
   return unwrap<T>(operation, parsed);
 }

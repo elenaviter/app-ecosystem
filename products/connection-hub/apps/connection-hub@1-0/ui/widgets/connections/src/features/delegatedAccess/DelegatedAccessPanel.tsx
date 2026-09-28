@@ -87,6 +87,8 @@ import {
   pendingPresetMode,
   randomNonce,
   splitEditedOperations,
+  submittedInvocationModes,
+  withDefaultInvocationModes,
   type InvocationMode,
 } from './invocationChoice';
 import {
@@ -1531,6 +1533,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         removeApplicationOperationRole(current, operationRef)
       ));
     }
+    if (checked) {
+      setCreateInvocationModes((current) => withDefaultInvocationModes(current, APPLICATION_API_RESOURCE, [operationRef]));
+    }
     setResourceOperations((current) => {
       const selected = new Set(current[APPLICATION_API_RESOURCE] || []);
       if (checked) selected.add(operationRef);
@@ -1575,6 +1580,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       next[resource.resource] = Array.from(selected);
       return next;
     });
+    if (checked) {
+      setCreateInvocationModes((current) => withDefaultInvocationModes(current, resource.resource, [operation]));
+    }
     if (!checked) {
       setCreateInvocationModes((current) => {
         const next = { ...current };
@@ -1601,6 +1609,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           ...operations.flatMap((operation) => operation.grants || []),
         ])),
       }));
+      setCreateInvocationModes((current) => withDefaultInvocationModes(
+        current,
+        resource.resource,
+        operations.map((operation) => operation.name),
+      ));
       return;
     }
     const operationNames = new Set(operations.map((operation) => operation.name));
@@ -1684,18 +1697,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           ),
         })
       : undefined;
-    const invocationModes = Object.fromEntries(
-      selectedResourceEntries.map(([resource]) => [
-        resource,
-        resource === APPLICATION_API_RESOURCE
-          ? {}
-          : Object.fromEntries(
-            (resourceOperations[resource] || []).map((operation) => [
-              operation,
-              createInvocationModes[`${resource}:${operation}`],
-            ]),
-          ),
-      ]),
+    const invocationModes = submittedInvocationModes(
+      selectedResourceEntries.map(([resource]) => resource),
+      resourceOperations,
+      createInvocationModes,
     );
     if (oauthDraft) {
       setOAuthDraftError('');

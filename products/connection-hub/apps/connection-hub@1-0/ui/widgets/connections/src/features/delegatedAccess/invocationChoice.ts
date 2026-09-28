@@ -184,3 +184,47 @@ export function splitEditedOperations(
   });
   return { kept, focused, missingChoice };
 }
+
+/** What a newly selected operation is used as until the person chooses (2026-09-28).
+ *
+ *  The consent draft proposes "Every time" (``always``) for every operation it
+ *  selects. An operation the person adds on the page (a resource added, "All",
+ *  one operation, an application operation) starts the same way, so Approve
+ *  never submits a selected operation without a choice and the platform's
+ *  "every selected outer operation requires Once or Always" is never reached. */
+export const DEFAULT_INVOCATION_MODE: InvocationMode = 'always';
+
+/** Modes keyed `${resource}:${operation}`, with the default for each operation that has none. */
+export function withDefaultInvocationModes(
+  current: Record<string, InvocationMode>,
+  resource: string,
+  operations: string[],
+): Record<string, InvocationMode> {
+  const next = { ...current };
+  for (const operation of operations) {
+    const key = `${resource}:${operation}`;
+    if (!next[key]) next[key] = DEFAULT_INVOCATION_MODE;
+  }
+  return next;
+}
+
+/** The invocation policies a create or consent form submits: one mode for every selected operation.
+ *
+ *  Application operations (resource ``*``) have no Once/Always control on the
+ *  page (the role decides what they run as), but the platform still wants a
+ *  policy for each selected one, so they carry their recorded mode or the
+ *  default. Until 2026-09-28 they were sent as ``{}``, which the consent
+ *  route refused whenever an application operation was selected. */
+export function submittedInvocationModes(
+  selectedResources: string[],
+  resourceOperations: Record<string, string[]>,
+  modes: Record<string, InvocationMode | undefined>,
+): Record<string, Record<string, InvocationMode>> {
+  return Object.fromEntries(selectedResources.map((resource) => [
+    resource,
+    Object.fromEntries((resourceOperations[resource] || []).map((operation) => [
+      operation,
+      modes[`${resource}:${operation}`] || DEFAULT_INVOCATION_MODE,
+    ])),
+  ]));
+}
