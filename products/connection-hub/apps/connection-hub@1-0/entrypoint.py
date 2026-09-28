@@ -261,6 +261,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "project_agent_card_get",
     "project_agent_card_update",
     "project_agent_card_apply_profile",
+    "project_agent_card_add_operations",
     "agent_card_share",
     "agent_card_unshare",
     "agent_card_shares",
@@ -284,6 +285,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "delegated_access_revoke",
     "delegated_access_update",
     "delegated_access_apply_profile",
+    "delegated_access_add_operations",
     "delegated_agent_grant_create",
     "delegated_to_kdcube_connect_credential",
     "delegated_to_kdcube_disconnect",
@@ -2770,6 +2772,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_agent_card_get": {"visibility": {"user_types": []}},
                             "project_agent_card_update": {"visibility": {"user_types": []}},
                             "project_agent_card_apply_profile": {"visibility": {"user_types": []}},
+                            "project_agent_card_add_operations": {"visibility": {"user_types": []}},
                             "agent_card_share": {"visibility": {"user_types": []}},
                             "agent_card_unshare": {"visibility": {"user_types": []}},
                             "agent_card_shares": {"visibility": {"user_types": []}},
@@ -4636,6 +4639,41 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
 
     @api(
         method="POST",
+        alias="project_agent_card_add_operations",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_agent_card_add_operations"),
+    )
+    async def project_agent_card_add_operations(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Add operations to an agent's Card as an admin of its project, keeping the rest (W371)."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        try:
+            expected = _expected_card_revision(payload)
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+        return await (await self._project_agent_card_access(request)).add_operations(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            operations=_safe_list(payload.get("operations")),
+            expected_card_revision=expected,
+            request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
         alias="project_agent_card_apply_profile",
         route="operations",
         csrf=True,
@@ -5565,6 +5603,41 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 exc,
             )
             return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+
+    @api(
+        method="POST",
+        alias="delegated_access_add_operations",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_access_add_operations"),
+    )
+    async def delegated_access_add_operations(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Add operations to the owner's OAuth Card in place, keeping everything else (W371)."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        try:
+            expected = _expected_card_revision(payload)
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+        access_service = await _automation_access_service(self, request)
+        return await access_service.add_operations(
+            user,
+            access_id=str(payload.get("access_id") or "").strip(),
+            operations=_safe_list(payload.get("operations")),
+            expected_card_revision=expected,
+            request_id=_audit_request_id(request),
+        )
 
     @api(
         method="POST",
