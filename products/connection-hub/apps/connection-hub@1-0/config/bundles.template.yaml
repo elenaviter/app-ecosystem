@@ -429,7 +429,10 @@ bundles:
             resources:
             - resource: "*"
               label: "All platform and application APIs"
-              admin_only: true
+              # W379 (operator, 2026-09-28): offered by the signed-in person's
+              # role against the grants below, like every other row; a Card
+              # never carries more than that person may delegate.
+              description: "Every platform and application API this deployment offers, now and later, bounded by the roles the approving person may delegate."
               grants:
               - "kdcube:role:registered"
               - "kdcube:role:paid"

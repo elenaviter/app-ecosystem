@@ -61,8 +61,11 @@ class Host:
         self.found = found
         self.calls: list[tuple[str, dict]] = []
 
-    async def control_card_get(self, user, *, control_id):
-        self.calls.append(("control_card_get", {"user": dict(user), "control_id": control_id}))
+    async def control_card_get(self, user, *, control_id, _delegable_grants=None, _platform_admin=None):
+        self.calls.append(("control_card_get", {
+            "user": dict(user), "control_id": control_id,
+            "_delegable_grants": _delegable_grants, "_platform_admin": _platform_admin,
+        }))
         if not self.found:
             return {"ok": False, "error": "control_card_not_found", "status": 404}
         return {"ok": True, "control_card": {"control_id": control_id}, "access": {"access_id": control_id}}
@@ -110,8 +113,11 @@ def test_a_project_admin_opens_the_control_card_under_the_creators_key_and_may_e
     assert result["ok"] is True and result["control_card"]["control_id"] == CONTROL
     assert result["access"]["via"] == "project_admin" and result["access"]["can_edit"] is True
     assert result["access"]["project_ref"] == PROJECT
+    # Stored under the creator; offered by the reading person's own role (W379).
     assert host.calls == [("control_card_get", {"user": {"user_id": CREATOR, "roles": [], "permissions": []},
-                                                "control_id": CONTROL})]
+                                                "control_id": CONTROL,
+                                                "_delegable_grants": ["work:coordinate", "work:relay"],
+                                                "_platform_admin": False})]
     assert [call["action"] for call in port.calls] == ["read"]
 
 

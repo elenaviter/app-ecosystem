@@ -101,6 +101,15 @@ class RefusingAgentCardAuthorizationPort:
         raise AgentCardAuthorizationError(self._reason)
 
 
+
+def _platform_admin(user: Mapping[str, Any]) -> bool:
+    """The acting person's own platform-admin fact, from their roles (W379)."""
+
+    from connection_hub.authority_projection import authority_has_platform_privilege
+
+    roles = user.get("roles") if isinstance(user, Mapping) else ()
+    return authority_has_platform_privilege(list(roles or ()))
+
 def _subject(user: Mapping[str, Any]) -> str:
     for key in ("user_id", "sub", "id"):
         value = clean_text(user.get(key))
@@ -292,7 +301,7 @@ class ProjectAgentCardAccess:
             self._owner_user(decision),
             access_id=clean_text(access_id),
             _delegable_grants=delegable,
-            _platform_admin=False,
+            _platform_admin=_platform_admin(user),
             _record_transform=self._audit(user, decision, action="updated", request_id=request_id),
             **changes,
         )
@@ -320,6 +329,7 @@ class ProjectAgentCardAccess:
             request_id=request_id,
             _actor_subject=_subject(user),
             _delegable_grants=await self._actor_delegable_grants(user, decision.grantor_subject),
+            _actor_platform_admin=_platform_admin(user),
             _extra_record_transform=self._audit(user, decision, action="operations_added", request_id=request_id),
         )
 
@@ -344,5 +354,6 @@ class ProjectAgentCardAccess:
             request_id=request_id,
             _actor_subject=_subject(user),
             _delegable_grants=await self._actor_delegable_grants(user, decision.grantor_subject),
+            _actor_platform_admin=_platform_admin(user),
             _extra_record_transform=self._audit(user, decision, action="profile_applied", request_id=request_id),
         )
