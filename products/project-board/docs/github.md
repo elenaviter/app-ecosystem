@@ -34,9 +34,12 @@ see_also:
 # GitHub Access For Agents
 
 An agent that works for a person pushes, pulls and opens pull requests **as
-that person**. GitHub credits the commits to the person and marks pull
-requests "with" the deployment's GitHub App. The person grants this once, and
-can take it back at any time.
+that person**. GitHub credits the commits and the pull requests to the
+person; it does not label them with the App. The App's part shows in the
+person's GitHub settings (Applications, Authorized GitHub Apps, with its last
+use), in an organization's audit log, and in Connection Hub's own audit line
+for every token it issues. The person grants this once, and can take it back
+at any time.
 
 - **One key per person, not per agent and not per machine.** It is the
   person's GitHub authorization of the deployment's GitHub App. Every agent
