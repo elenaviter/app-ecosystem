@@ -343,7 +343,7 @@ def test_gh_signed_out_under_the_relay_service_is_named_with_its_fix(tmp_path):
     )
     assert result["outcome"] == "branch_pushed" and result["reason_code"] == "gh_unavailable"
     assert result["reason"].startswith("gh is not signed in for the relay service: You are not logged into any GitHub hosts.")
-    assert "The relay service needs its own gh sign-in" in result["reason"]
+    assert "the coordinator opens the pull request" in result["reason"]
     assert result["compare_url"].endswith("/compare/main...file-edit/e9")
 
 
@@ -429,7 +429,7 @@ def test_the_procedures_name_the_service_sign_in_and_the_fallback_signal():
     root = source_package_path()
     host = " ".join((root.parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
     coordinator = " ".join((root / "references" / "coordinator.md").read_text(encoding="utf-8").split())
-    assert "**The relay service needs its own gh sign-in**" in host
-    assert "gh auth login --with-token --insecure-storage" in host and "it is the operator's call" in host
+    assert "**The relay service has no gh sign-in**" in host
+    assert "--insecure-storage" not in host and "The token is never stored in a file for the service" in host
     assert "`SIGNAL project.file.edited` once" in coordinator
     assert "would refuse mail, requests and pings. When the board does not accept" in coordinator

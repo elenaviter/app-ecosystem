@@ -348,7 +348,8 @@ result (an older Card, for example), your next `pb worker receive` shows
 `SIGNAL project.file.edited` once, with the path, who edited, the commit or
 branch and the board's refusal code: the edit was written, so review it all the
 same. A pushed branch whose result says "gh is not signed in for the relay
-service" needs the service's own sign-in (add-a-worker-host step 7).
+service" is yours to open as a pull request, from your own session
+(add-a-worker-host step 7).
 
 Practice that helps any coordinator or worker goes in this procedure,
 through a change request. Private agent memory holds only that agent's

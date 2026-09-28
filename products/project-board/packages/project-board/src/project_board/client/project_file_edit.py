@@ -33,8 +33,8 @@ from .project_connect import github_repository, local_path
 FILE_EDIT_KIND = "project.file.edit"
 FILE_EDIT_POLICIES = ("direct", "pull_request")
 GH_SERVICE_FIX = (
-    "The relay service cannot read the login keychain; give it its own sign-in "
-    "(add-a-worker-host step 7, 'The relay service needs its own gh sign-in')."
+    "The relay service cannot read the login keychain, so the branch is pushed and "
+    "the coordinator opens the pull request (add-a-worker-host step 7)."
 )
 # Step one carries the content inline in a control (capped at 64 KB): the
 # board and the relay both refuse more than 60 KB of JSON-escaped content.

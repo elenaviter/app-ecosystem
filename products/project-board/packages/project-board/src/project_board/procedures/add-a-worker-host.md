@@ -661,23 +661,17 @@ The token lives in the user's keyring, never in a file or an environment
 variable. Every agent of this user shares it, and signs its pull request
 comments with its own name, because GitHub shows only the shared account.
 
-**The relay service needs its own gh sign-in** (on a machine where a project
+**The relay service has no gh sign-in** (on a machine where a project
 coordinator runs). A project-file edit made on the card is applied by the
 coordinator's relay, which runs as a service (a LaunchAgent on macOS, a systemd
-user service on Linux). A service may not reach the login keychain that holds
+user service on Linux). A service cannot reach the login keychain that holds
 the interactive sign-in above: on 2026-09-28 the first edit pushed its branch,
-but no pull request was opened, and `gh auth status` from the terminal read
+but no pull request was opened, while `gh auth status` from the terminal read
 fine. The relay says so in the edit's result ("gh is not signed in for the
-relay service: …"). The **operator** chooses one of two ways:
-
-- give the service a sign-in it can read: `read -rs T && printf '%s\n' "$T" |
-  gh auth login --with-token --insecure-storage; unset T` stores the token in
-  `~/.config/gh/hosts.yml` (mode 600) instead of the keyring. This departs
-  from "never in a file" above, on this machine only, and it is the operator's
-  call;
-- or keep the keyring only: edits made on the card then arrive as a pushed
-  branch with its compare link, and the coordinator opens the pull request
-  from its own session.
+relay service: …") with the compare link, and the **coordinator** opens the
+pull request from its own session. The token is never stored in a file for the
+service (operator, 2026-09-28); GitHub access issued through the agent's Card
+is being designed.
 
 ## 8. Give each agent its own workspace
 
