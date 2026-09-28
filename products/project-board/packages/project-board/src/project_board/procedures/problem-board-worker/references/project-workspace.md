@@ -59,7 +59,8 @@ Each entry has an `alias`, a `url`, a `role` (`work`, `journal` or
 command, for every repository of the record (W304 finding 19). It clones or fast-forwards each repository as the rules below say. For a
 GitHub repository, it first asks for your owner's GitHub key (W371): when
 your owner has connected GitHub on the project's My Card and the GitHub App
-covers the repository, a new clone is made over HTTPS and every clone gets
+covers the repository, a new clone is made over HTTPS, an existing one's origin
+moves to HTTPS (`origin_switched: ssh_to_https`; fetch and push), and every clone gets
 `pb worker git-credential` as its credential helper for github.com, with your
 owner's commit email. No token is stored: git asks the helper each time. The
 row's `github_key` reads `ready` or the reason it is not (`github_not_linked`,

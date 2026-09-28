@@ -322,7 +322,8 @@ the journal repository included, and names one state each (`connected[]`).
 agents](repo:app-ecosystem/products/project-board/docs/github.md)). For each
 GitHub repository the command asks Connection Hub for your owner's key; each
 row's `github_key` reads `ready` or the reason it is not. When it is ready, a
-new clone is made over HTTPS and every clone gets `pb worker git-credential`
+new clone is made over HTTPS, an existing one's origin moves to HTTPS
+(`origin_switched: ssh_to_https`; fetch and push), and every clone gets `pb worker git-credential`
 as its credential helper for github.com, and your commits carry your owner's
 My Card email (`pb worker context` then names it with `source:
 owner_github_key`). No token is stored: git asks the helper each time. Open
