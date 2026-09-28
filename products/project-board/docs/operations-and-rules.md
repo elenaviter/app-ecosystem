@@ -59,6 +59,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `project.set_commit_identity` | project | `work:coordinate` | Identity rule `project_admin_by_role` | One email address, or empty to clear, under the preset's current revision, which it advances. |
 | `project.set_files` | project | `work:coordinate` | Identity rule `project_admin_by_role` | An ordered list of repository alias and path, each alias one of the project's repositories; the instructions, facts and environment purposes at most once each; written under the list's current revision. |
 | `project.files.edit` | project | `work:coordinate` | Membership (`project_membership`) | A read-only check an agent makes before editing the project's files in its repositories; the coordinator profile holds it. |
+| `project.github.use` | project | `work:relay` | Membership (`project_membership`) | A read-only check an agent makes before asking Connection Hub for a GitHub token; Connection Hub asks the board again for the exact repository, which must be on the project card. The worker profile holds it. |
 | `project.plan.index` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `project.plan.item` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `project.plan.resolve` | plan | `work:observe` | Membership (`project_membership`) |  |

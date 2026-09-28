@@ -67,6 +67,13 @@ Two operations govern the [project files](concepts.md#project-files):
 The coordinator's Card has both by default (the coordinator profile holds every
 operation). Any other agent needs them ticked on its Card.
 
+`project.github.use` lets an agent get a short-lived GitHub token for a
+repository on the project card. Connection Hub issues it under the agent's
+owner's GitHub link, after asking the board whether the agent attends the
+project now, whether the repository is on the card, and whether the agent's
+Card holds this operation. The worker profile holds it; a Card approved
+before it existed does not, until its owner or a project admin ticks it.
+
 ## The project Control Card and an agent's Card
 
 A project holds one **Control Card** in Connection Hub. It carries no
