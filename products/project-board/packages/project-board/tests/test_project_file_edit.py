@@ -133,7 +133,9 @@ def test_a_remote_repository_gets_a_pull_request_or_a_pushed_branch_without_gh(t
     assert _out("rev-parse", "refs/heads/file-edit/e5", cwd=bare) == opened["commit"]
     # main itself is untouched: the coordinator merges the pull request.
     assert _out("rev-parse", "refs/heads/main", cwd=bare) == base
-    assert seen[0][:9] == ["gh", "pr", "create", "--repo", "kdcube/applications", "--base", "main", "--head", "file-edit/e5"]
+    # gh is asked whether it is signed in first, then opens the pull request.
+    assert seen[0][:3] == ["gh", "auth", "status"]
+    assert seen[1][:9] == ["gh", "pr", "create", "--repo", "kdcube/applications", "--base", "main", "--head", "file-edit/e5"]
 
     def without_gh(argv, cwd, timeout):
         if argv[0] == "gh":
@@ -316,3 +318,118 @@ def test_the_edit_opt_in_is_named_where_a_coordinator_machine_is_set_up_or_hande
     readme = text(Path(__file__).resolve().parents[1] / "README.md")
     assert "The machine where a project's coordinator runs applies the file edits people make on the board" in readme
     assert command in readme
+
+
+def test_gh_signed_out_under_the_relay_service_is_named_with_its_fix(tmp_path):
+    """First use, 2026-09-28: the launchd relay could not read the login keychain, so no pull request."""
+
+    bare = tmp_path / "remote.git"
+    seed = _local_repository(tmp_path)
+    _git("clone", "-q", "--bare", str(seed), str(bare), cwd=tmp_path)
+    workspace = tmp_path / "workspace"
+    clone = _clone(bare, workspace, "applications")
+
+    def keychain_locked(argv, cwd, timeout):
+        if argv[:3] == ["gh", "auth", "status"]:
+            return subprocess.CompletedProcess(argv, 1, "", "You are not logged into any GitHub hosts. To log in, run: gh auth login\n")
+        if argv[0] == "gh":
+            raise AssertionError("no pull request is attempted when gh is signed out")
+        return project_file_edit._run(argv, cwd, timeout)  # noqa: SLF001
+
+    result = apply_file_edit(
+        workspace=str(workspace), alias="applications", path="facts.md", url="git@github.com:kdcube/applications.git",
+        branch="main", base_commit=_out("rev-parse", "HEAD", cwd=clone), content="# Facts\n\nX.\n",
+        requested_by="Ana", edit_id="e9", run=keychain_locked, **IDENTITY,
+    )
+    assert result["outcome"] == "branch_pushed" and result["reason_code"] == "gh_unavailable"
+    assert result["reason"].startswith("gh is not signed in for the relay service: You are not logged into any GitHub hosts.")
+    assert "the coordinator opens the pull request" in result["reason"]
+    assert result["compare_url"].endswith("/compare/main...file-edit/e9")
+
+
+def test_an_applied_edit_the_board_refuses_reaches_the_coordinator_once_on_receive(tmp_path, monkeypatch):
+    """First use, 2026-09-28: the Card withheld the result, so the board never mailed the coordinator."""
+
+    import asyncio
+    import dataclasses
+    import hashlib
+
+    from project_board.client import relay
+    from project_board.client.io import content_hash
+    from project_board.contract.errors import DomainError
+    from test_commit_identity import _host
+    from test_workspace_report import _cli
+
+    identity, field, config, workspace = _host(tmp_path, monkeypatch)
+    source = _local_repository(tmp_path / "remote-side")
+    project_id = "demo-project-0a1b2c3d"
+    field.create_project(project_id=project_id, title="Demo", goal="Demo", owner="control-plane")
+    field.sync_project_repositories(
+        project_id, [{"alias": "ledger", "url": str(source), "role": "work"}], revision=1,
+        commit_identity_email="agents@example.com",
+    )
+    field.sync_project_files(project_id, files=[{"purpose": "facts", "alias": "ledger", "path": "facts.md"}], revision=1)
+    clone = _clone(source, workspace, "ledger")
+
+    class RefusingBoard:
+        async def action(self, *, object_ref, action, payload=None):
+            raise DomainError("work_worker_operation_withheld_by_control_card", "withheld")
+
+    scoped = relay.ProblemBoardHostRelayAdapter(
+        config=dataclasses.replace(config, project_id=project_id, workspace=str(workspace), worker_alias="claude-coord@host"),
+        field=field, client=RefusingBoard(),
+    )
+    content = "# Facts\n\nEdited on the card.\n"
+    payload = {
+        "edit_ref": "work:file_edit:20260928T095000Z:edit_0123456789abcdef0123456789abcdef:facts",
+        "alias": "ledger", "path": "facts.md", "branch": "main", "file_edits": "direct",
+        "base_commit": _out("rev-parse", "HEAD", cwd=clone), "content": content,
+        "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        "requested_by": {"label": "Ana", "subject": "user-1"},
+    }
+    control = {"kind": "project.file.edit", "project_ref": f"work:project:{project_id}", "payload": payload, "payload_hash": content_hash(payload)}
+    _, summary = asyncio.run(scoped._serve_file_edit(control))  # noqa: SLF001
+    assert summary == "File edit committed; the result was not accepted: work_worker_operation_withheld_by_control_card"
+
+    [notice] = field.take_file_edit_notices(identity.worker_name, project_id)
+    assert notice["outcome"] == "committed" and notice["requested_by"] == "Ana" and notice["path"] == "ledger:facts.md"
+    assert notice["not_accepted"] == "work_worker_operation_withheld_by_control_card" and len(notice["commit"]) == 40
+    # Taken once: the next take is empty.
+    assert field.take_file_edit_notices(identity.worker_name, project_id) == []
+
+    # Through receive: a second refused edit shows as a signal once, then not again.
+    from project_board.client import cli, host_config
+
+    second = {**payload, "edit_ref": payload["edit_ref"] + "-2", "content": "# Facts\n\nAgain.\n",
+              "content_sha256": hashlib.sha256(b"# Facts\n\nAgain.\n").hexdigest(),
+              "base_commit": _out("rev-parse", "HEAD", cwd=source)}
+    asyncio.run(scoped._serve_file_edit({**control, "payload": second, "payload_hash": content_hash(second)}))  # noqa: SLF001
+    host = host_config.HostRelayConfig.load(monkeypatch_env_config())
+    received = {"signals": [], "projects": [{"project_ref": f"work:project:{project_id}"}]}
+    first = cli._with_project_files_signals(dict(received), host, field, identity)  # noqa: SLF001
+    edited = [signal for signal in first.get("signals") or [] if signal["kind"] == "project.file.edited"]
+    assert len(edited) == 1 and edited[0]["requested_by"] == "Ana" and edited[0]["outcome"] == "committed"
+    assert edited[0]["not_accepted"] == "work_worker_operation_withheld_by_control_card"
+    assert "the board did not accept its result" in edited[0]["next"]
+    later = cli._with_project_files_signals(dict(received), host, field, identity)  # noqa: SLF001
+    assert not [signal for signal in later.get("signals") or [] if signal["kind"] == "project.file.edited"]
+
+
+def monkeypatch_env_config() -> str:
+    import os
+
+    return os.environ["PROBLEM_BOARD_CONFIG"]
+
+
+def test_the_procedures_name_the_service_sign_in_and_the_fallback_signal():
+    from pathlib import Path
+
+    from project_board.client.procedures import source_package_path
+
+    root = source_package_path()
+    host = " ".join((root.parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
+    coordinator = " ".join((root / "references" / "coordinator.md").read_text(encoding="utf-8").split())
+    assert "**The relay service has no gh sign-in**" in host
+    assert "--insecure-storage" not in host and "The token is never stored in a file for the service" in host
+    assert "`SIGNAL project.file.edited` once" in coordinator
+    assert "would refuse mail, requests and pings. When the board does not accept" in coordinator

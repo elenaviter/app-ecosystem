@@ -3726,6 +3726,19 @@ def _with_project_files_signals(received: dict[str, Any], config: Any, field: An
             continue
         if not record.get("known"):
             continue
+        # W370: an applied edit whose result the board refused (first use, 2026-09-28).
+        for notice in field.take_file_edit_notices(identity.worker_name, project_id):
+            signals.append(
+                {
+                    "kind": "project.file.edited",
+                    "project_ref": project_ref,
+                    **{key: notice.get(key) for key in ("path", "requested_by", "outcome", "commit", "pr_url", "reason", "not_accepted")},
+                    "next": (
+                        "Your relay applied a project-file edit made on the card, and the board did not accept its "
+                        "result: review the commit or branch named here, merge it or tell the coordinator's operator."
+                    ),
+                }
+            )
         seen = field.read_project_files_seen(identity.worker_name, project_id)
         changes = changed_files(seen, record, files_fingerprint(workspace, record))
         if changes:
