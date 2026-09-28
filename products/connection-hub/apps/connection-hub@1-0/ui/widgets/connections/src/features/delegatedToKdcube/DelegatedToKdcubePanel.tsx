@@ -4,6 +4,7 @@ import { AccountRow, type AccountStatusTone } from '../../components/AccountRow'
 import { PaneGroup } from '../../components/Pane';
 import { InfoMark } from '../../components/InfoMark';
 import { ConsentPlan, type ConsentPlanAction } from './ConsentPlan';
+import { armOAuthReturn } from './oauthReturn';
 import type {
   DelegatedToKdcubeAccount,
   DelegatedToKdcubeClaim,
@@ -299,13 +300,9 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     });
     if (result?.authorize_url) {
       console.info('[connect-route] launchOAuth -> opening provider tab', result.authorize_url);
-      // Arms the one-shot focus refresh in App: when the user returns from
-      // the provider tab, the widget re-fetches once (no standing polling).
-      try {
-        sessionStorage.setItem('kdc-oauth-pending', '1');
-      } catch {
-        // Storage unavailable: the BroadcastChannel push still covers it.
-      }
+      // Arms the return watch in App: the one-shot focus refresh and a
+      // bounded re-read until the accounts change (oauthReturn.ts).
+      armOAuthReturn();
       window.open(result.authorize_url, '_blank', 'noopener,noreferrer');
     } else {
       console.warn('[connect-route] launchOAuth got NO authorize_url — nothing opened', {
