@@ -954,7 +954,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Where this Linux user's deploy keys and SSH config are (default ~/.ssh).",
     )
-    command.add_argument("--timeout-seconds", type=float, default=15.0, help="Per git call (default 15).")
+    command.add_argument("--timeout-seconds", type=float, default=15.0, help="Per git status check (default 15).")
+    command.add_argument(
+        "--transfer-timeout-seconds",
+        type=float,
+        default=1800.0,
+        help="Per git clone or fetch, which moves the repository (default 1800).",
+    )
 
     command = worker_commands.add_parser(
         "git-credential",
@@ -3976,6 +3982,7 @@ def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) 
         Machine(host_id=str(config.host_id), ssh_dir=ssh_dir),
         Path(workspace),
         timeout=max(1.0, float(args.timeout_seconds)),
+        transfer_timeout=max(1.0, float(getattr(args, "transfer_timeout_seconds", 1800.0))),
         # W371: the owner's GitHub key first; the deploy key when it is refused.
         github_key=key_session.token if key_session is not None else None,
         helper=key_session.helper() if key_session is not None else "",

@@ -28,13 +28,21 @@ differs is named with its path and never overwritten. Revoking keys stays in
 add-a-worker-host step 7, which sees every project of the host.
 
 Every call takes list arguments, no shell, a timeout, and never waits on a
-prompt.
+prompt. Clone and fetch move a whole repository, so they get their own limit
+(``TRANSFER_TIMEOUT_SECONDS``), far above the short one for status checks: on
+2026-09-28 a first clone of a large repository was cut off at 15 s and left
+half checked out, with an empty index and a leftover index.lock. A git that
+runs out of time is killed with every process it started; a clone cut off or
+failed removes its partial folder, and an update leaves no lock of its own,
+so the next run starts clean.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shutil
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,19 +71,39 @@ GRANT_STEPS = (
 Runner = Callable[[Sequence[str], "Path | None", float, "Mapping[str, str] | None"], "subprocess.CompletedProcess[str]"]
 
 
+# A first clone of a large repository takes minutes; status checks stay short.
+TRANSFER_TIMEOUT_SECONDS = 1800.0
+
+
 def _run(
     argv: Sequence[str], cwd: Path | None, timeout: float, env: Mapping[str, str] | None = None
 ) -> "subprocess.CompletedProcess[str]":
-    return subprocess.run(
+    """One command with a limit; past it, the command and everything it started are killed.
+
+    git clone runs helpers (remote-https, index-pack) that outlive a killed
+    parent and keep writing, so the whole process group goes.
+    """
+
+    process = subprocess.Popen(
         list(argv),
         cwd=str(cwd) if cwd else None,
         env=dict(env) if env is not None else None,
         stdin=subprocess.DEVNULL,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
-        check=False,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            process.kill()
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(list(argv), process.returncode, stdout, stderr)
 
 
 _SCP_FORM = re.compile(r"^(?:[\w.-]+@)?([^:/\s@]+):(?!//)(.+)$")
@@ -137,6 +165,7 @@ class Connector:
         workspace: Path,
         *,
         timeout: float = 15.0,
+        transfer_timeout: float = TRANSFER_TIMEOUT_SECONDS,
         run: Runner | None = None,
         github_key: Callable[[str], Any] | None = None,
         helper: str = "",
@@ -145,6 +174,7 @@ class Connector:
         self.machine = machine
         self.workspace = workspace
         self.timeout = timeout
+        self.transfer_timeout = max(float(transfer_timeout), float(timeout))
         self.run = run or _run
         # gh auth status, asked once per run: "" when signed in, else why not.
         self._gh_signed_in: str | None = None
@@ -256,8 +286,11 @@ class Connector:
 
     # -- git -------------------------------------------------------------
 
-    def _git(self, args: Sequence[str], cwd: Path, *, through_alias: bool = False) -> "subprocess.CompletedProcess[str]":
-        return self.run(["git", *args], cwd, self.timeout, self._ssh_env(through_alias))
+    def _git(
+        self, args: Sequence[str], cwd: Path, *, through_alias: bool = False, transfer: bool = False
+    ) -> "subprocess.CompletedProcess[str]":
+        limit = self.transfer_timeout if transfer else self.timeout
+        return self.run(["git", *args], cwd, limit, self._ssh_env(through_alias))
 
     def _answers(self, url: str, *, through_alias: bool) -> bool:
         try:
@@ -465,20 +498,33 @@ class Connector:
         flags: Sequence[str] = (),
         after_clone: Callable[[Path], None] | None = None,
     ) -> dict[str, Any]:
+        lock = folder / ".git" / "index.lock"
+        # A lock that was there before this run belongs to someone else; one
+        # this run's killed git leaves behind is removed.
+        lock_was_there = lock.exists()
+        cloning = False
         try:
             if exists:
                 dirty = self._git(["status", "--porcelain"], folder)
                 if dirty.returncode != 0 or dirty.stdout.strip():
                     current = self._git(["branch", "--show-current"], folder).stdout.strip()
                     return row("left_unchanged", f"uncommitted changes on {current or 'a detached head'}; not updated.")
-                fetched = self._git(["fetch", "--prune", "origin"], folder, through_alias=through_alias)
+                fetched = self._git(["fetch", "--prune", "origin"], folder, through_alias=through_alias, transfer=True)
                 if fetched.returncode != 0:
                     return row("unreachable", f"git fetch failed (exit {fetched.returncode}).")
                 action = "updated"
             else:
-                cloned = self._git([*flags, "clone", "--quiet", source, str(folder)], self.workspace, through_alias=through_alias)
+                cloning = True
+                cloned = self._git(
+                    [*flags, "clone", "--quiet", source, str(folder)],
+                    self.workspace,
+                    through_alias=through_alias,
+                    transfer=True,
+                )
                 if cloned.returncode != 0:
-                    return row("unreachable", f"git clone failed (exit {cloned.returncode}).")
+                    removed = self._remove_partial_clone(folder)
+                    return row("unreachable", f"git clone failed (exit {cloned.returncode}).{removed}")
+                cloning = False
                 if after_clone is not None:
                     after_clone(folder)
                 action = "cloned"
@@ -496,9 +542,27 @@ class Connector:
                         action=action,
                         branch=branch,
                     )
-        except (OSError, subprocess.TimeoutExpired):
-            return row("unreachable", f"git did not answer within {int(self.timeout)}s.")
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            limit = getattr(exc, "timeout", None) or (self.transfer_timeout if cloning else self.timeout)
+            if cloning:
+                removed = self._remove_partial_clone(folder)
+                return row("unreachable", f"git clone did not finish within {int(limit)}s.{removed}")
+            if not lock_was_there and lock.exists():
+                lock.unlink(missing_ok=True)
+            return row("unreachable", f"git did not answer within {int(limit)}s; nothing was left locked. Run again.")
         return row("reachable", "", action=action, branch=branch)
+
+    def _remove_partial_clone(self, folder: Path) -> str:
+        """A clone that did not finish leaves nothing behind, so the next run clones afresh."""
+
+        try:
+            inside = folder.resolve().is_relative_to(self.workspace.resolve()) and folder.resolve() != self.workspace.resolve()
+        except OSError:
+            inside = False
+        if not inside or not folder.exists():
+            return ""
+        shutil.rmtree(folder, ignore_errors=True)
+        return " The partial folder was removed; run again." if not folder.exists() else f" Remove {folder} by hand before running again."
 
 
 def _with(row: Callable[..., dict[str, Any]], **fixed: Any) -> Callable[..., dict[str, Any]]:
