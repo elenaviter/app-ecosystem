@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { postOp } from '../../api/client';
+import { armOAuthReturn } from '../delegatedToKdcube/oauthReturn';
 import { startDelegatedToKdcubeOAuth } from '../delegatedToKdcube/delegatedToKdcubeSlice';
 import {
+  CONNECTION_HUB_CHANNEL,
+  autoLinkAccount,
   commitEmailRequest,
+  githubKeyChanged,
   githubLinkRequest,
   githubStatusLine,
   githubStatusRequest,
   githubUnlinkRequest,
+  linkPendingKey,
   linkableAccounts,
   openedRepositories,
   opensGithubSection,
@@ -30,6 +35,36 @@ async function run(request: OperationRequest, fallback: string): Promise<GithubK
 
 const BADGE = { ok: 'badge badge-ok', warn: 'badge badge-warn', off: 'badge badge-neutral' } as const;
 
+function readFlag(key: string): boolean {
+  try {
+    return sessionStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key: string, on: boolean): void {
+  try {
+    if (on) sessionStorage.setItem(key, '1');
+    else sessionStorage.removeItem(key);
+  } catch {
+    // Storage unavailable: the in-memory flag still carries this page's connect.
+  }
+}
+
+// Tell the board (another frame of the same origin) that this project's key changed.
+function announce(projectRef: string, connectionState: string): void {
+  const message = githubKeyChanged(projectRef, connectionState);
+  try {
+    const channel = new BroadcastChannel(CONNECTION_HUB_CHANNEL);
+    channel.postMessage(message);
+    channel.close();
+  } catch {
+    // No BroadcastChannel: the host message below and the board's own re-read cover it.
+  }
+  if (window.parent !== window) window.parent.postMessage(message, '*');
+}
+
 // The GitHub key and commit email on a person's project My Card (W371).
 export function MyCardGithubSection({
   projectRef,
@@ -48,11 +83,20 @@ export function MyCardGithubSection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [email, setEmail] = useState('');
+  // A Connect started here links this project on return (point 2 of the
+  // operator's first link); kept in session storage across a re-mount.
+  const pendingKey = linkPendingKey(projectRef);
+  const linkPending = useRef(readFlag(pendingKey));
+  const lastAnnounced = useRef('');
 
   const refresh = useCallback(async () => {
     const result = await run(githubStatusRequest(projectRef, repositories), 'GitHub status failed');
     setStatus(result);
     setEmail(result.commit_email || '');
+    const state = String(result.connection_state || '');
+    if (lastAnnounced.current && lastAnnounced.current !== state) announce(projectRef, state);
+    lastAnnounced.current = state;
+    return result;
   }, [projectRef, repositories]);
 
   // Re-read when the person's connected accounts change: returning from the
@@ -78,7 +122,9 @@ export function MyCardGithubSection({
     setError('');
     try {
       await work();
-      await refresh();
+      const result = await refresh();
+      // Link, unlink and email all change what the board card shows.
+      announce(projectRef, String(result.connection_state || ''));
     } catch (err) {
       setError(textError(err));
     } finally {
@@ -95,13 +141,24 @@ export function MyCardGithubSection({
       accountId,
     })).unwrap();
     if (!result?.authorize_url) throw new Error('GitHub sign-in could not start');
-    try {
-      sessionStorage.setItem('kdc-oauth-pending', '1');
-    } catch {
-      // Storage unavailable: the BroadcastChannel push still refreshes.
+    // A new connection links this project when it lands; a reconnect keeps its link.
+    if (!accountId) {
+      linkPending.current = true;
+      writeFlag(pendingKey, true);
     }
+    armOAuthReturn();
     window.open(result.authorize_url, '_blank', 'noopener,noreferrer');
   });
+
+  // Point 2: the account a Connect made here brought back is linked for this
+  // project without a second press, when it is the only GitHub account.
+  useEffect(() => {
+    const accountId = autoLinkAccount(status, accounts || [], linkPending.current);
+    if (!accountId || busy) return;
+    linkPending.current = false;
+    writeFlag(pendingKey, false);
+    void act(() => run(githubLinkRequest(projectRef, accountId), 'GitHub was not linked'));
+  }, [status, accounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Opened for this section (the board's "Connect GitHub"): bring it into view once.
   useEffect(() => {
