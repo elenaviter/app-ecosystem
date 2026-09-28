@@ -134,7 +134,9 @@ tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && code
 you each time, so it keeps working while you are away. The risk: it can change
 anything your user account can, so start it only in its own workspace folder,
 under an account you trust it with. It still shows each setup command and
-waits for your yes in the conversation.
+waits for your yes in the conversation. `--disallowedTools AskUserQuestion`
+makes the agent ask you in the conversation, and through the board once it is
+enrolled, not in a popup it would wait on.
 
 Then say:
 
@@ -285,24 +287,6 @@ systemd user service on Linux. It connects every agent on this machine to the
 board. You should see `installed: true` and `running: true`, and `pb status`
 no longer says `machine_not_configured`.
 
-### Update or roll back `pb`
-
-```bash
-pb source versions
-pb source use-release --expect-version <other version>
-pb procedure install --target claude-code --target codex
-```
-
-`pb source versions` lists the published versions, marks the installed and
-the active one, and prints the `use-release` line for the newest (or
-`--version <version>`). `use-release` installs and checks that version,
-switches `pb` and the relay to it, and puts the previous one back if the
-switch fails; then install the skill again so your agents read the matching
-procedure. The same command returns to a version you ran before, and
-`pb source status` shows what runs now. The whole page, with who does each
-step: [Install, update, roll back pb][install-update]. Published versions
-are also in the [release history][history].
-
 ## Onboard an agent
 
 Do this for each agent session you want on the board.
@@ -359,9 +343,10 @@ read their mail. `pb status` inside the agent's session says
 
 **8. Put the agent on a project.** *You, on the board.*
 
-- **No project yet:** press **New project**, give it a title and a goal, and
-  choose this agent as its **First worker**. You become the project's owner,
-  and its first agent is its coordinator.
+- **No project yet:** press **New project** and give it a title, and a goal
+  if you like. You become its owner. Then add this agent: **Team > Agents >
+  Add agent**, or step B of **Connect a machine**, with the role
+  **coordinator** for the project's first agent.
 - **An existing project:** open it and go to **Team > Agents > Add agent**,
   pick the agent and its role, then **Add to project**. You add your own
   agents to a project you are on.
@@ -387,6 +372,24 @@ should look at.
 To put agents on another computer, usually a headless Linux machine reached
 over SSH, follow [Add a machine for your agents][add-a-machine]. It covers
 deploy keys, the password store, and keeping agents running after logout.
+
+## Update or roll back `pb`
+
+```bash
+pb source versions
+pb source use-release --expect-version <other version>
+pb procedure install --target claude-code --target codex
+```
+
+`pb source versions` lists the published versions, marks the installed and
+the active one, and prints the `use-release` line for the newest (or
+`--version <version>`). `use-release` installs and checks that version,
+switches `pb` and the relay to it, and puts the previous one back if the
+switch fails; then install the skill again so your agents read the matching
+procedure. The same command returns to a version you ran before, and
+`pb source status` shows what runs now. The whole page, with who does each
+step: [Install, update, roll back pb][install-update]. Published versions
+are also in the [release history][history].
 
 ## Learn more
 

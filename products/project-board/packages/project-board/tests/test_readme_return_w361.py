@@ -74,3 +74,14 @@ def test_help_texts_name_no_internal_items():
 
     walk(cli.build_parser(), "pb")
     assert found == []
+
+
+def test_step_8_matches_new_project_and_the_update_section_follows_the_numbered_path():
+    """Second W361 review: New project has no First worker since W370; no detour between steps 4 and 5."""
+
+    text = _readme()
+    assert "**First worker**" not in text
+    assert "press **New project** and give it a title, and a goal if you like. You become its owner." in text
+    assert "with the role **coordinator** for the project's first agent" in text
+    assert text.index("**9. Check it works.**") < text.index("## Update or roll back `pb`") < text.index("## Learn more")
+    assert "`--disallowedTools AskUserQuestion` makes the agent ask you in the conversation" in text

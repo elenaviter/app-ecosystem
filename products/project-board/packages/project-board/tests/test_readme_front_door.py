@@ -84,8 +84,9 @@ def test_the_path_names_the_commands_a_stranger_types() -> None:
 
 
 def test_updating_and_rolling_back_is_explained_after_the_setup() -> None:
-    update = README.index("### Update or roll back `pb`")
-    assert README.index("**4. ") < update < README.index("## Onboard an agent")
+    # W361 second review: after the numbered path (step 9), not a detour between steps 4 and 5.
+    update = README.index("## Update or roll back `pb`")
+    assert README.index("**9. ") < update < README.index("## Learn more")
     assert "https://pypi.org/project/project-board/#history" in README
 
 
