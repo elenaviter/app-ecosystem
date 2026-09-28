@@ -62,6 +62,9 @@ class DelegatedToKdcubeAdapter(ABC):
     def authorize_extra_params(self) -> dict[str, Any]:
         return {}
 
+    def token_request_headers(self) -> dict[str, str]:
+        return {"Content-Type": "application/x-www-form-urlencoded"}
+
     def extract_token(self, raw: dict[str, Any]) -> dict[str, Any]:
         return dict(raw or {})
 
@@ -114,7 +117,7 @@ class DelegatedToKdcubeAdapter(ABC):
                 response = await client.post(
                     self.token_url,
                     data=data,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    headers=self.token_request_headers(),
                 )
         except httpx.HTTPError as exc:
             raise RuntimeError(f"{self.adapter_id} token exchange failed: {exc}") from exc
@@ -160,7 +163,7 @@ class DelegatedToKdcubeAdapter(ABC):
                 response = await client.post(
                     self.token_url,
                     data=data,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    headers=self.token_request_headers(),
                 )
         except httpx.HTTPError as exc:
             raise RuntimeError(f"{self.adapter_id} token refresh failed: {exc}") from exc

@@ -144,7 +144,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.28.6"
+    assert package["revision"] == "2026.09.28.7"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -1729,3 +1729,20 @@ def test_a_worker_searches_before_filing_and_tells_the_coordinator():
     assert "mail the coordinator the new item's key and title" in rule
     skill = " ".join(_read("SKILL.md").split())
     assert "Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14" in skill
+
+
+def test_a_shared_name_is_settled_in_one_exchange() -> None:
+    # 2026-09-27: two agents crossed four times over one field, each "final"
+    # crossing the other's. The owner decides a crossing in one message that
+    # ends with "do not reply". The skill points at the rule, the reference
+    # carries it.
+    skill = _words(_read("SKILL.md"))
+    assert "a shared name or field is settled in one exchange" in skill
+    assert "(rule 15)" in skill
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "Rule 15. A shared name or field is settled in one exchange" in collaboration
+    assert "proposes it once, complete, and the other adopts it word for word" in collaboration
+    assert "do not answer the crossing with another final" in collaboration
+    assert 'ends with "do not reply"' in collaboration
+    assert "when it is not clear who owns it, the coordinator decides" in collaboration
+    assert "is settled without a reply" in collaboration
