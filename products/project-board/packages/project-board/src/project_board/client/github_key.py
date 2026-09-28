@@ -21,8 +21,10 @@ other than github.com or a repository not on the card it holds.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
+import shutil
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 from urllib.parse import urlsplit
@@ -40,6 +42,32 @@ GIT_USERNAME = "x-access-token"
 _REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
 
 Post = Callable[[str, Mapping[str, Any], str], Awaitable[tuple[int, Any]]]
+
+
+# Where gh is installed when the process PATH does not say: a relay service
+# (launchd, systemd) runs with /usr/bin:/bin:/usr/sbin:/sbin, and Homebrew puts
+# gh in /opt/homebrew/bin (W371 line 5, 2026-09-28 17:18Z).
+GH_LOCATIONS = (
+    "/opt/homebrew/bin/gh",
+    "/usr/local/bin/gh",
+    "~/.local/bin/gh",
+    "/home/linuxbrew/.linuxbrew/bin/gh",
+    "/usr/bin/gh",
+    "/snap/bin/gh",
+)
+
+
+def find_gh(*, path: str | None = None, locations: tuple[str, ...] = GH_LOCATIONS) -> str:
+    """The absolute path of gh: PATH first, then the usual install locations; empty when none."""
+
+    found = shutil.which("gh", path=os.environ.get("PATH", "") if path is None else path)
+    if found:
+        return found
+    for location in locations:
+        candidate = os.path.expanduser(location)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return ""
 
 
 class GitHubKeyRefused(Exception):
@@ -213,6 +241,8 @@ def gh_repository(args: list[str], origin_url: str) -> str:
 
 __all__ = [
     "CARD_BEARER_HEADER",
+    "GH_LOCATIONS",
+    "find_gh",
     "CONNECTION_HUB_BUNDLE_ID",
     "GIT_USERNAME",
     "GitHubKeyRefused",
