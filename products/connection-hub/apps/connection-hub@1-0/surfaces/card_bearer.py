@@ -63,4 +63,26 @@ async def authenticate_card_bearer(request: Any, token: str) -> Any:
     return denial
 
 
-__all__ = ["CARD_BEARER_HEADER", "authenticate_card_bearer", "card_bearer"]
+def forget_card_bearer(request: Any) -> None:
+    """Drop the agent's delegated credential from the request once its facts are read.
+
+    Connection Hub then asks the project host as itself: the peer call runs
+    inside this request, and a request carrying the agent's Card made the
+    platform hold that call to the agent Card's selected application
+    operations (``authorize_delegated_application_operation_request``), which
+    found no bearer and refused it, before the board saw it (second blocker of
+    the first real push, 2026-09-28, 16:01Z). The peer proof in the body is
+    that call's only admission.
+    """
+
+    state = getattr(request, "state", None)
+    if state is None:
+        return
+    try:
+        state.delegated_credential = None
+    except Exception:  # noqa: BLE001 - a request state that refuses the reset keeps nothing to forget
+        pass
+    surface_guard._store_live_card_composition(request, None)  # noqa: SLF001
+
+
+__all__ = ["CARD_BEARER_HEADER", "authenticate_card_bearer", "card_bearer", "forget_card_bearer"]

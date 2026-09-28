@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
@@ -408,12 +409,37 @@ class BundleOperationGitHubAuthorizer:
             )
             raise
         if not isinstance(response, Mapping):
+            # A platform guard in front of the host answers with a response
+            # object, not the operation's result: name what it said.
+            denied = _guard_denial(response)
+            if denied:
+                return {
+                    "ok": False,
+                    "error": f"project_github_provider_denied: {denied}",
+                    "message": "The platform refused the question to the project host before it ran.",
+                }
             return {"ok": False, "error": "project_github_provider_response_invalid"}
         try:
             response = normalize_bundle_operation_result(self._operation, response)
         except BundleOperationResultError as exc:
             return {"ok": False, "error": exc.reason}
         return dict(response)
+
+
+def _guard_denial(response: Any) -> str:
+    """The reason in a guard's refusal response (status and JSON body), else empty."""
+
+    status = getattr(response, "status_code", None)
+    if not isinstance(status, int) or status < 400:
+        return ""
+    body: Any = getattr(response, "body", b"")
+    try:
+        parsed = json.loads(bytes(body).decode("utf-8")) if body else {}
+    except (TypeError, ValueError):
+        parsed = {}
+    parsed = parsed if isinstance(parsed, Mapping) else {}
+    reason = clean_text(parsed.get("reason") or parsed.get("error") or parsed.get("error_description"))
+    return reason or f"http_{status}"
 
 
 def descriptor_github_authorizer(
