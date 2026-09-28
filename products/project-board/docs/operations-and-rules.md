@@ -156,6 +156,7 @@ The board's own page calls these for a signed-in person; no Card holds them.
 | `journal.view.get` | Membership (`project_membership`) |  |
 | `journal.views.list` | Membership (`project_membership`) |  |
 | `project.github_access` | Identity rule `person_views_people_only` | A person on the project reads their own GitHub key on the project, from Connection Hub under their session; it carries no token. |
+| `work.back_to_todo` | Identity rule `project_admin_by_role` | Only a Working item with no active assignment, with a reason kept on it; assigning and releasing still never change status, and a status edit never changes the assignment. An agent uses work.status.set with status todo. |
 | `project.file.view.request` | Membership (`project_membership`) | Only a file on the project's list, served by an agent that attends the project; the board keeps no content, only an expiring view stamped with its commit. |
 | `project.people.history` | Membership (`project_membership`) | Thread privacy events are not shown. |
 | `project.people.invitation.withdraw` | Identity rule `project_admin_by_role` |  |
