@@ -539,3 +539,44 @@ def test_the_relay_asks_its_cards_github_key_for_a_github_repository_and_goes_on
         asyncio.run(scoped._serve_file_edit(control))  # noqa: SLF001
         assert client.asked == [("work:project:demo-project-0a1b2c3d", "example-org/app-ecosystem")]
         assert applied[-1]["github_token"] == expected
+
+
+def test_the_relay_runs_gh_by_absolute_path_and_names_where_it_looked_when_it_is_missing(tmp_path):
+    """W371 line 5: the edit pushed under the owner's key but gh was not on the service PATH."""
+
+    from types import SimpleNamespace
+
+    bare = tmp_path / "remote.git"
+    seed = _local_repository(tmp_path)
+    _git("clone", "-q", "--bare", str(seed), str(bare), cwd=tmp_path)
+    workspace = tmp_path / "workspace"
+    clone = _clone(bare, workspace, "app-ecosystem")
+    https = "https://github.com/example-org/app-ecosystem.git"
+    ran: list[list[str]] = []
+
+    def keyed(argv, cwd, timeout, extra_env=None):
+        ran.append(list(argv))
+        if argv[0] != "git":
+            return subprocess.CompletedProcess(argv, 0, "https://github.com/example-org/app-ecosystem/pull/8\n", "")
+        return project_file_edit._run([str(bare) if part == https else part for part in argv], cwd, timeout)  # noqa: SLF001
+
+    token = SimpleNamespace(token="ghu_owner", commit_email="owner@example.test")
+    common = dict(
+        workspace=str(workspace), alias="app-ecosystem", path="facts.md",
+        url="git@github.com:example-org/app-ecosystem.git", branch="main", requested_by="Ana",
+        run=keyed, github_token=token, **IDENTITY,
+    )
+
+    opened = apply_file_edit(
+        **common, base_commit=_out("rev-parse", "HEAD", cwd=clone), content="# Facts\n\nOne.\n",
+        edit_id="g1", gh_path="/opt/homebrew/bin/gh",
+    )
+    assert opened["outcome"] == "pr_opened"
+    assert ["/opt/homebrew/bin/gh", "pr", "create"] == next(argv for argv in ran if argv[0] != "git")[:3]
+
+    missing = apply_file_edit(
+        **common, base_commit=_out("rev-parse", "HEAD", cwd=clone), content="# Facts\n\nTwo.\n",
+        edit_id="g2", gh_path="",
+    )
+    assert missing["outcome"] == "branch_pushed" and missing["reason_code"] == "gh_unavailable"
+    assert "/opt/homebrew/bin/gh" in missing["reason"] and "where the relay looks" in missing["reason"]

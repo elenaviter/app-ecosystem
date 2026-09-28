@@ -29,6 +29,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from .github_key import GH_LOCATIONS, find_gh
 from .project_connect import github_repository, local_path
 
 FILE_EDIT_KIND = "project.file.edit"
@@ -119,6 +120,7 @@ def apply_file_edit(
     timeout: float = 30.0,
     run: Runner | None = None,
     github_token: Any = None,
+    gh_path: str | None = None,
 ) -> dict[str, Any]:
     """Apply one edit; never raises for a git or gh failure, which is a ``refused`` outcome.
 
@@ -127,6 +129,10 @@ def apply_file_edit(
     request with it, and the commit carries the owner's My Card email.
     """
 
+    # gh by absolute path, found without the service's PATH (W371 line 5);
+    # an injected runner is a test double and keeps the plain name.
+    if gh_path is None:
+        gh_path = find_gh() if run is None else "gh"
     run = run or _run
     policy = policy if policy in FILE_EDIT_POLICIES else default_policy(url)
     repo = github_repository(url)
@@ -213,13 +219,23 @@ def apply_file_edit(
             }
             if not repo:
                 return result
+            if not gh_path:
+                return {
+                    **result,
+                    "reason_code": "gh_unavailable",
+                    "reason": (
+                        "gh is not installed where the relay looks (its PATH, then "
+                        + ", ".join(GH_LOCATIONS)
+                        + "): install it there, and until then the coordinator opens the pull request"
+                    ),
+                }
             # A relay service (launchd, systemd) cannot open the login keychain
             # where an interactive `gh auth login` keeps its token: ask first,
             # so the result says why no pull request was opened (first use,
             # 2026-09-28).
             try:
                 # With the owner's key gh needs no sign-in of its own (W371).
-                signed_in = None if key_env is not None else run(["gh", "auth", "status", "--hostname", "github.com"], tree, timeout)
+                signed_in = None if key_env is not None else run([gh_path, "auth", "status", "--hostname", "github.com"], tree, timeout)
             except (OSError, subprocess.TimeoutExpired):
                 return {**result, "reason_code": "gh_unavailable", "reason": "gh is not available on the coordinator's machine"}
             if signed_in is not None and signed_in.returncode != 0:
@@ -231,7 +247,7 @@ def apply_file_edit(
             try:
                 opened = call(
                     [
-                        "gh", "pr", "create", "--repo", repo, "--base", branch, "--head", edit_branch,
+                        gh_path, "pr", "create", "--repo", repo, "--base", branch, "--head", edit_branch,
                         "--title", message, "--body", f"Edited on the board by {requested_by}. Review and merge.",
                     ],
                     tree,
