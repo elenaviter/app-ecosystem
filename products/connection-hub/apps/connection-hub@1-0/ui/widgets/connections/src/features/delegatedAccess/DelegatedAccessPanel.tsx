@@ -184,6 +184,8 @@ import {
   type ControlCompositionMode,
 } from './controlCardPreview';
 import { renderOperationGroups } from './OperationGroups';
+import { MyCardGithubSection } from './MyCardGithubSection';
+import { isMyCard, myCardProjectRef } from './myCardGithub';
 
 interface EffectiveCompositionView {
   mode: ControlCompositionMode;
@@ -5583,6 +5585,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         </div>
                       ) : null}
                       <CatalogDriftNotice drift={cardCatalogDrift(item)} />
+                      {!editing && isMyCard(item)
+                        ? <MyCardGithubSection projectRef={myCardProjectRef(item)} />
+                        : null}
                       {editing ? (
                         <label className="rename-row">
                           <span className="card-field-label">Name</span>
