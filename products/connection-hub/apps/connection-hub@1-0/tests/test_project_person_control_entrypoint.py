@@ -141,6 +141,9 @@ def test_template_names_project_membership_provider() -> None:
             # W319: the agent Card question goes to the same host.
             "agent_card_operation": "project_agent_card_authorize",
             "control_card_operation": "project_control_card_authorize",
+            # W371: the agent GitHub question, signed with a shared secret.
+            "github_authorize_operation": "project_agent_github_authorize",
+            "peer_proof_secret_ref": "project_membership.peer_proof_secret",
         },
         "administrative_roles": ["owner", "admin"],
     }

@@ -229,3 +229,158 @@ async def test_an_admin_sets_another_persons_commit_email_through_the_same_path(
 
     assert result["person_subject"] == "platform-owner-1"
     assert access.sets[0]["target_subject"] == "platform-owner-1"
+
+
+# --- the issue path: an attending agent gets its owner's token ---
+
+from connection_hub.project_github_key import AgentGitHubTokenIssuer  # noqa: E402
+from connection_hub.project_peer_proof import (  # noqa: E402
+    sign_github_authorize_request,
+    verify_github_authorize_request,
+)
+
+SECRET = "s" * 40
+BOARD = "problem-board@1-0"
+AGENT = "agent-card-1"
+
+
+def _allow(owner: str = PERSON):
+    calls: list[dict[str, Any]] = []
+
+    async def authorize(**fields: Any) -> dict[str, Any]:
+        calls.append(fields)
+        return {"ok": True, "decision": {"allowed": True, "reason": "", "owner_subject": owner}}
+
+    authorize.calls = calls  # type: ignore[attr-defined]
+    return authorize
+
+
+async def _ready_owner() -> tuple[_Access, DelegatedToKdcubeStore]:
+    access, store = _Access(), _store()
+    await _connect(store)
+    key = _key(access, store)
+    await key.link(project_ref=PROJECT_REF, request_id="r")
+    await key.commit_email_set(project_ref=PROJECT_REF, email="person@example.test", request_id="r")
+    return access, store
+
+
+def _issuer(access: _Access, store: DelegatedToKdcubeStore, authorize: Any, audit: list) -> AgentGitHubTokenIssuer:
+    return AgentGitHubTokenIssuer(
+        access=access, config=_config(), store_for=lambda owner: store, authorize=authorize, audit=audit.append
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_attending_agent_gets_its_owners_token_and_the_audit_never_holds_it():
+    access, store = await _ready_owner()
+    authorize, audit = _allow(), []
+
+    result = await _issuer(access, store, authorize, audit).issue(
+        grantor_subject=PERSON, access_id=AGENT, project_ref=PROJECT_REF, repository="example-org/app-ecosystem.git"
+    )
+
+    assert result["ok"] is True
+    assert result["token"] == "ghu_live"
+    assert result["repository"] == "example-org/app-ecosystem"
+    assert result["commit_email"] == "person@example.test" and result["login"] == "person"
+    assert authorize.calls == [
+        {"access_id": AGENT, "grantor_subject": PERSON, "project_ref": PROJECT_REF, "repository": "example-org/app-ecosystem"}
+    ]
+    assert audit == [
+        {
+            "event": "project_github_token",
+            "project_ref": PROJECT_REF,
+            "repository": "example-org/app-ecosystem",
+            "access_id": AGENT,
+            "owner_subject": PERSON,
+            "outcome": "issued",
+            "login": "person",
+        }
+    ]
+    assert "ghu_live" not in str(audit)
+
+
+@pytest.mark.asyncio
+async def test_the_boards_refusal_is_named_and_no_token_is_read():
+    access, store = await _ready_owner()
+    audit: list = []
+
+    async def refuse(**fields: Any) -> dict[str, Any]:
+        return {"ok": True, "decision": {"allowed": False, "reason": "repository_not_on_card", "owner_subject": PERSON}}
+
+    result = await _issuer(access, store, refuse, audit).issue(
+        grantor_subject=PERSON, access_id=AGENT, project_ref=PROJECT_REF, repository="example-org/private"
+    )
+
+    assert result["error"] == "repository_not_on_card" and result["status"] == 403
+    assert "token" not in result
+    assert audit[-1]["outcome"] == "refused" and audit[-1]["reason"] == "repository_not_on_card"
+
+
+@pytest.mark.asyncio
+async def test_an_owner_the_board_does_not_confirm_is_refused():
+    access, store = await _ready_owner()
+
+    result = await _issuer(access, store, _allow(owner="someone-else"), []).issue(
+        grantor_subject=PERSON, access_id=AGENT, project_ref=PROJECT_REF, repository="example-org/app-ecosystem"
+    )
+
+    assert result["error"] == "grantor_mismatch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "missing, error",
+    [(MY_CARD_GITHUB_PROPERTY, "github_not_linked"), (MY_CARD_COMMIT_EMAIL_PROPERTY, "commit_email_not_set")],
+)
+async def test_an_owner_without_a_link_or_email_gets_a_named_refusal(missing, error):
+    access, store = await _ready_owner()
+    access.properties.pop(missing)
+
+    result = await _issuer(access, store, _allow(), []).issue(
+        grantor_subject=PERSON, access_id=AGENT, project_ref=PROJECT_REF, repository="example-org/app-ecosystem"
+    )
+
+    assert result["error"] == error
+    assert "owner has not" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_board_that_cannot_be_asked_refuses_and_a_bad_repository_is_not_asked():
+    access, store = await _ready_owner()
+
+    async def unavailable(**fields: Any) -> dict[str, Any]:
+        raise RuntimeError("no route")
+
+    board_down = await _issuer(access, store, unavailable, []).issue(
+        grantor_subject=PERSON, access_id=AGENT, project_ref=PROJECT_REF, repository="example-org/app-ecosystem"
+    )
+    authorize = _allow()
+    bad = await _issuer(access, store, authorize, []).issue(
+        grantor_subject=PERSON, access_id=AGENT, project_ref=PROJECT_REF, repository="https://evil.example/x/y"
+    )
+
+    assert board_down["error"] == "project_github_authorization_unavailable" and board_down["status"] == 503
+    assert bad["error"] == "github_repository_invalid" and authorize.calls == []
+
+
+def test_the_peer_proof_verifies_and_rejects_any_change():
+    body = sign_github_authorize_request(
+        secret=SECRET,
+        board_bundle_id=BOARD,
+        access_id=AGENT,
+        grantor_subject=PERSON,
+        project_ref=PROJECT_REF,
+        repository="example-org/app-ecosystem",
+        now=1_000_000,
+    )
+
+    assert verify_github_authorize_request(secret=SECRET, board_bundle_id=BOARD, body=body, now=1_000_010).allowed
+    for field, value in (("repository", "example-org/other"), ("grantor_subject", "someone-else"), ("access_id", "agent-2")):
+        forged = {**body, field: value}
+        assert not verify_github_authorize_request(secret=SECRET, board_bundle_id=BOARD, body=forged, now=1_000_010).allowed
+    assert not verify_github_authorize_request(secret="t" * 40, board_bundle_id=BOARD, body=body, now=1_000_010).allowed
+    assert not verify_github_authorize_request(secret=SECRET, board_bundle_id="other@1-0", body=body, now=1_000_010).allowed
+    late = verify_github_authorize_request(secret=SECRET, board_bundle_id=BOARD, body=body, now=1_000_400)
+    assert late.reason == "timestamp_outside_window"
+    assert verify_github_authorize_request(secret=SECRET, board_bundle_id=BOARD, body={**body, "service_proof": None}).reason == "service_proof_missing"

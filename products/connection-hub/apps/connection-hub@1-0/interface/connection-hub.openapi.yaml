@@ -1307,6 +1307,40 @@ paths:
                 type: object
                 additionalProperties: true
 
+  /bundles/{tenant}/{project}/{bundle_id}/public/project_agent_github_token_issue:
+    post:
+      tags: [Delegated Access]
+      summary: Issue an attending agent its owner's GitHub token for one repository.
+      description: |
+        The agent's delegated Card bearer authenticates the call; the owner
+        and Card come from its verified facts. The project host decides
+        attendance, the Card's GitHub use and the repository (a question
+        Connection Hub signs with the shared peer-proof secret), then the
+        owner's My Card link issues the token. The token is returned only
+        in this response.
+      operationId: project_agent_github_token_issue
+      security:
+        - DelegatedBearer: []
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_ref, repository]
+              properties:
+                project_ref:
+                  type: string
+                repository:
+                  type: string
+      responses:
+        "200":
+          description: The token with its expiry, login and commit email, or a named refusal.
+
   /bundles/{tenant}/{project}/{bundle_id}/public/delegated_admission:
     post:
       tags: [Delegated Admission]

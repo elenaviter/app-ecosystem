@@ -121,6 +121,13 @@ bundles:
           # asked of the same host under the person's session; the host names
           # the Card's creator, under whose key the Card is stored.
           control_card_operation: "project_control_card_authorize"
+          # W371: "may this agent use GitHub for this repository", asked for
+          # an agent (no person session), so Connection Hub signs it with a
+          # secret shared with the host alone (bundles.secrets:
+          # project_membership.peer_proof_secret). Without it, GitHub tokens
+          # are refused by name.
+          github_authorize_operation: "project_agent_github_authorize"
+          peer_proof_secret_ref: "project_membership.peer_proof_secret"
         administrative_roles:
         - owner
         - admin

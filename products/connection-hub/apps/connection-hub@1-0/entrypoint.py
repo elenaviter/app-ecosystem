@@ -169,7 +169,8 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube
 )
 import connection_hub.delegated_to_kdcube.providers  # noqa: F401
 from connection_hub.delegated_to_kdcube.refresh_lock import RedisRefreshLock
-from connection_hub.project_github_key import ProjectGitHubKey
+from connection_hub.delegated_credentials.credential_view import DelegatedCredentialView
+from connection_hub.project_github_key import AgentGitHubTokenIssuer, ProjectGitHubKey
 from connection_hub.delegated_credentials.oauth.metadata import (
     authorization_server_metadata,
     protected_resource_metadata,
@@ -212,6 +213,7 @@ from .services.project_invitation_binding import (
 )
 from .services.project_membership import (
     descriptor_agent_card_port,
+    descriptor_github_authorizer,
     descriptor_control_card_port,
     descriptor_project_authorization_port,
 )
@@ -319,6 +321,7 @@ CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     "authority_provider_entrypoint_resolve",
     "delegated_admission",
     "federated_data_bus_claim",
+    "project_agent_github_token_issue",
     "oauth",
     "request_authenticate",
     "telegram_connection_edge_complete",
@@ -3552,6 +3555,79 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return await oauth_revoke(request)
 
         return JSONResponse(status_code=404, content={"error": "oauth_route_not_found", "path": path})
+
+    # ── an attending agent's GitHub token (W371) ────────────────────────────
+
+    @api(method="POST", alias="project_agent_github_token_issue", route="public")
+    async def project_agent_github_token_issue(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Give an attending agent its owner's GitHub token for one repository.
+
+        The agent's Card bearer authenticates the call (the relay attaches it
+        from the host's native store); the owner and the Card come from its
+        verified facts. The project host decides attendance, the Card's
+        GitHub use and the repository; then the owner's My Card link issues.
+        """
+
+        payload = _payload(data, **kwargs)
+        await _bind_delegated_client_request_config(self, request)
+        denial = await authorize_delegated_mcp_proxy_request(
+            request=request,
+            body=b"{}",
+            auth=_delegated_gateway_auth_config(self),
+        )
+        if denial is not None:
+            return denial
+        view = DelegatedCredentialView.from_request(request)
+        if not (view.present and view.grantor_user_id and view.registry_access_id and view.client_id):
+            return {"ok": False, "error": "agent_credential_missing", "status": 401}
+        access = await _automation_access_service(self, request)
+        card = await access.card_for_access_id(
+            grantor_subject=view.grantor_user_id,
+            access_id=view.registry_access_id,
+        )
+        if card is None or card.client_id != view.client_id:
+            return {"ok": False, "error": "agent_card_not_found", "status": 403}
+
+        async def _resolve_secret(secret_path: str) -> str:
+            return await _bundle_secret_value(
+                self,
+                secret_path=secret_path,
+                trace_scope="project_membership.peer_proof",
+                warn_missing=True,
+            )
+
+        async def _client_secret_resolver(*, provider_id: str, connector_app_id: str, connector_app: Any) -> str:
+            return await _delegated_to_kdcube_client_secret(
+                self,
+                provider_id=provider_id,
+                connector_app_id=connector_app_id,
+                connector_app=connector_app,
+            )
+
+        def _audit(event: Dict[str, Any]) -> None:
+            LOGGER.info("[connection-hub.github] %s", json.dumps(event, sort_keys=True))
+
+        issuer = AgentGitHubTokenIssuer(
+            access=access,
+            config=delegated_to_kdcube_config(getattr(self, "bundle_props", {}) or {}),
+            store_for=lambda owner: DelegatedToKdcubeStore(user_id=owner, bundle_id=BUNDLE_ID),
+            authorize=descriptor_github_authorizer(self, resolve_secret=_resolve_secret),
+            client_secret_resolver=_client_secret_resolver,
+            refresh_lock=_delegated_to_kdcube_refresh_lock(self),
+            audit=_audit,
+        )
+        return await issuer.issue(
+            grantor_subject=view.grantor_user_id,
+            access_id=view.registry_access_id,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            repository=str(payload.get("repository") or "").strip(),
+            request_id=_audit_request_id(request),
+        )
 
     # ── direct protected-service admission ──────────────────────────────────
 

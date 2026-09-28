@@ -247,6 +247,7 @@ It is disabled by default.
 
 | Alias | Method | Route | Purpose |
 | --- | --- | --- | --- |
+| `project_agent_github_token_issue` | POST | public | An attending agent's Card bearer asks for its owner's GitHub token for one `repository` (`owner/name`) of `project_ref`. The owner and the Card come from the bearer's verified facts. The project host (`project_membership.provider`) decides attendance, the Card's `project.github.use` and whether the repository is on the project card, answering a question Connection Hub signs with `peer_proof_secret_ref`. Then the owner's My Card link issues the token through the broker. Returns `token`, `expires_at`, `login` and `commit_email`. The audit log line never holds the token. Named refusals include `github_not_linked`, `commit_email_not_set`, `github_reconnect_required`, `project_github_peer_proof_not_configured`, `project_github_board_update_required`, and the host's `not_attending`, `repository_not_on_card`, `card_denies`, `worker_unknown` and `grantor_mismatch`. |
 | `delegated_admission` | POST | public | Authenticate the protected service, reject replay, resolve the opaque bearer to its current card, intersect it with the active catalog and optional account scope, then return a bounded allow/deny decision. |
 
 ```http

@@ -272,7 +272,134 @@ class ProjectGitHubKey:
         return {**base, "connection_state": CONNECTED}
 
 
+class AgentGitHubTokenIssuer:
+    """Give an attending agent its owner's GitHub token for one repository (W371).
+
+    The caller has already authenticated the agent's Card bearer: the
+    grantor (the agent's owner) and the Card's access id come from verified
+    credential facts, never from the payload. The project host decides
+    attendance, the Card's `project.github.use` and whether the repository
+    is on the project card; this class then reads the owner's My Card and
+    issues through the broker (one refresh at a time per account). The
+    token is returned to the caller only; the audit line names the project,
+    repository, agent and owner, and never the token.
+    """
+
+    def __init__(
+        self,
+        *,
+        access: Any,
+        config: DelegatedToKdcubeConfig,
+        store_for: Callable[[str], Any],
+        authorize: Callable[..., Awaitable[Mapping[str, Any]]],
+        client_secret_resolver: Callable[..., Any] | None = None,
+        refresh_lock: RefreshLock | None = None,
+        audit: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
+        self.access = access
+        self.config = config
+        self.store_for = store_for
+        self.authorize = authorize
+        self.client_secret_resolver = client_secret_resolver
+        self.refresh_lock = refresh_lock
+        self.audit = audit or (lambda event: None)
+
+    def _refused(self, event: dict[str, Any], error: str, message: str, *, status: int = 409) -> dict[str, Any]:
+        self.audit({**event, "outcome": "refused", "reason": error})
+        return _refusal(error, message, status=status)
+
+    async def issue(
+        self,
+        *,
+        grantor_subject: str,
+        access_id: str,
+        project_ref: str,
+        repository: str,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        wanted = _repositories([repository])
+        event = {
+            "event": "project_github_token",
+            "project_ref": as_str(project_ref),
+            "repository": wanted[0] if wanted else as_str(repository)[:200],
+            "access_id": as_str(access_id),
+            "owner_subject": as_str(grantor_subject),
+        }
+        if not wanted or not as_str(project_ref):
+            return self._refused(event, "github_repository_invalid", "Name the repository as owner/name.", status=400)
+        provider = github_provider(self.config)
+        if provider is None:
+            return self._refused(event, "github_provider_not_configured", "GitHub is not set up in Connection Hub.", status=503)
+        try:
+            answer = await self.authorize(
+                access_id=as_str(access_id),
+                grantor_subject=as_str(grantor_subject),
+                project_ref=as_str(project_ref),
+                repository=wanted[0],
+            )
+        except Exception:  # noqa: BLE001 - the project host is an availability boundary
+            return self._refused(
+                event, "project_github_authorization_unavailable", "The project host could not be asked.", status=503
+            )
+        if answer.get("ok") is not True:
+            error = as_str(answer.get("error")) or "project_github_authorization_unavailable"
+            return self._refused(event, error, as_str(answer.get("message")) or "The project host refused the question.", status=503)
+        decision = answer.get("decision") if isinstance(answer.get("decision"), Mapping) else {}
+        if decision.get("allowed") is not True:
+            reason = as_str(decision.get("reason")) or "github_access_refused"
+            return self._refused(event, reason, "The project does not allow this agent GitHub access here.", status=403)
+        if as_str(decision.get("owner_subject")) != as_str(grantor_subject):
+            return self._refused(event, "grantor_mismatch", "The project names another owner for this agent.", status=403)
+
+        settings = await self.access.project_person_my_card_settings_get(
+            {"user_id": as_str(grantor_subject)}, project_ref=as_str(project_ref), request_id=request_id
+        )
+        if settings.get("ok") is not True:
+            return self._refused(event, as_str(settings.get("error")) or "project_identity_my_card_missing", "Your owner has no My Card on this project.")
+        properties = settings.get("properties") or {}
+        link = properties.get(MY_CARD_GITHUB_PROPERTY)
+        email = properties.get(MY_CARD_COMMIT_EMAIL_PROPERTY)
+        if not isinstance(link, Mapping) or not as_str(link.get("account_id")):
+            return self._refused(event, "github_not_linked", "Your owner has not connected GitHub on this project.")
+        commit_email = as_str(email.get("email")) if isinstance(email, Mapping) else ""
+        if not commit_email:
+            return self._refused(event, "commit_email_not_set", "Your owner has not set a commit email on this project.")
+        store = self.store_for(as_str(grantor_subject))
+        account = await store.get_account(as_str(link.get("account_id")))
+        if account is None:
+            return self._refused(event, "github_not_linked", "Your owner's GitHub connection was removed; they connect it again.")
+        broker = DelegatedToKdcubeBroker(
+            config=self.config,
+            store=store,
+            client_secret_resolver=self.client_secret_resolver,
+            refresh_lock=self.refresh_lock,
+        )
+        verdict = await broker.ensure_claim(
+            provider_id=provider.provider_id,
+            claim=_claim(provider),
+            connector_app_id=account.connector_app_id or _connector_app_id(provider),
+            account_id=account.account_id,
+        )
+        if not verdict.ok or verdict.credential is None:
+            return self._refused(
+                event, "github_reconnect_required", "Your owner's GitHub connection needs reconnecting in Connection Hub."
+            )
+        credential = verdict.credential.credential
+        login = as_str(account.display_name)
+        self.audit({**event, "outcome": "issued", "login": login})
+        return {
+            "ok": True,
+            "project_ref": as_str(project_ref),
+            "repository": wanted[0],
+            "token": as_str(credential.get("access_token")),
+            "expires_at": int(credential.get("expires_at") or 0),
+            "login": login,
+            "commit_email": commit_email,
+        }
+
+
 __all__ = [
+    "AgentGitHubTokenIssuer",
     "CONNECTED",
     "NEEDS_RECONNECT",
     "NOT_CONNECTED",
