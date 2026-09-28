@@ -998,3 +998,110 @@ def test_host_switch_failure_restores_release_receipts_and_launcher(
         assert relay_source.read_selection(
             relay_source.client_source_root(config)
         ) == previous
+
+
+def _installed_host_config(home: Path) -> Path:
+    """A target config where installed hosts keep it (W378, dev-main's layout)."""
+
+    config = (
+        home / ".kdcube" / "client-runtime" / "problem-board" / "targets"
+        / "board" / "demo" / "apps" / "problem-board" / "hosts" / "dev-main" / "relay.json"
+    )
+    config.parent.mkdir(parents=True)
+    config.write_text("{}", encoding="utf-8")
+    return config
+
+
+def test_a_released_pb_runs_the_snapshot_an_installed_host_selected(tmp_path: Path, monkeypatch) -> None:
+    """W378 (operator, 2026-09-28 19:00Z): following Set up a machine on a host
+    that runs pb from a snapshot installed the released pb, which looked for the
+    snapshot beside the selection and printed "release ... is missing". The host
+    keeps it in its release store; the selection names that path."""
+
+    repository, _code_entrypoint_path, _paths = _source_repository(tmp_path)
+    commit = _git(repository, "rev-parse", "HEAD")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    config = _installed_host_config(tmp_path / "home")
+    release_root = relay_source.client_release_root(config)
+    assert release_root != relay_source.client_source_root(config)
+    release = source_composite.export_client_release(
+        app_ecosystem_repository=repository,
+        app_ecosystem_ref=commit,
+        root=release_root,
+    )
+    relay_source.write_selection(
+        relay_source.client_source_root(config), relay_source.snapshot_selection(release)
+    )
+
+    command = entrypoint._selected_command(
+        ["status", "--config", str(config)],
+        current_source={"mode": "released", "version": "2026.9.28.307"},
+        config_path=config,
+    )
+
+    assert command is not None
+    assert command[1] == str(release.script)
+    assert command[2:] == ("status", "--config", str(config))
+
+
+def test_a_snapshot_that_is_really_gone_names_what_was_found_and_the_next_command(tmp_path: Path, monkeypatch) -> None:
+    repository, _code_entrypoint_path, _paths = _source_repository(tmp_path)
+    commit = _git(repository, "rev-parse", "HEAD")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    config = _installed_host_config(tmp_path / "home")
+    release_root = relay_source.client_release_root(config)
+    release = source_composite.export_client_release(
+        app_ecosystem_repository=repository,
+        app_ecosystem_ref=commit,
+        root=release_root,
+    )
+    relay_source.write_selection(
+        relay_source.client_source_root(config), relay_source.snapshot_selection(release)
+    )
+    shutil.rmtree(release.path)
+
+    with pytest.raises(DomainError) as refusal:
+        entrypoint._selected_command(
+            ["status", "--config", str(config)],
+            current_source={"mode": "released", "version": "2026.9.28.307"},
+            config_path=config,
+        )
+
+    error = refusal.value
+    assert error.code == "work_client_source_release_missing"
+    message = str(error)
+    assert release.release_id[:12] in message and commit[:12] in message
+    assert "pb source use-release --expect-version 2026.9.28.307" in message
+    assert error.details["next_command"] == "pb source use-release --expect-version 2026.9.28.307"
+    assert str(release.path) in error.details["searched"]
+
+
+def test_a_fresh_machine_and_a_machine_on_a_release_run_the_released_pb_itself(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    config = _installed_host_config(tmp_path / "home")
+    released = {"mode": "released", "version": "2026.9.28.307"}
+    # Fresh: no selection yet, so the released pb runs itself (pb setup comes next).
+    assert entrypoint._selected_command(["status", "--config", str(config)], current_source=released, config_path=config) is None
+    # On this release: the same.
+    relay_source.write_selection(relay_source.client_source_root(config), relay_source.released_selection("2026.9.28.307"))
+    assert entrypoint._selected_command(["status", "--config", str(config)], current_source=released, config_path=config) is None
+
+
+def test_the_snapshot_runs_in_the_environment_the_host_installed_for_it(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    repository, _code_entrypoint_path, _paths = _source_repository(tmp_path)
+    config = _installed_host_config(tmp_path / "home")
+    release = source_composite.export_client_release(
+        app_ecosystem_repository=repository,
+        app_ecosystem_ref=_git(repository, "rev-parse", "HEAD"),
+        root=relay_source.client_release_root(config),
+    )
+    relay_source.write_selection(relay_source.client_source_root(config), relay_source.snapshot_selection(release))
+    python = release.path / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    command = entrypoint._selected_command(
+        ["status"], current_source={"mode": "released", "version": "2026.9.28.307"}, config_path=config
+    )
+    assert command is not None and command[0] == str(python)

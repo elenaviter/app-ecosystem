@@ -11,10 +11,12 @@ from project_board.client import cli
 from project_board.client.host_config import resolve_host_config_path
 from project_board.client.relay_source import (
     CLIENT_SOURCE_PATHS,
+    client_release_root,
     client_source_root,
     describe_source,
     selected_release,
 )
+from project_board.client.release_install import VENV_DIR, default_release_root
 from project_board.client.relay_logging import (
     configure_relay_logging as configure_relay_file_logging,
 )
@@ -99,8 +101,42 @@ def _selected_command(
                 details={"selected": selected, "installed": observed},
             )
         return None
-    release = selected_release(root, selected)
-    return (sys.executable, str(release.script), *argv)
+    try:
+        release = selected_release(
+            root,
+            selected,
+            release_roots=(client_release_root(config), default_release_root()),
+        )
+    except DomainError as exc:
+        if exc.code != "work_client_source_release_missing":
+            raise
+        raise _missing_snapshot(exc, observed) from exc
+    # W378: the snapshot runs in the environment the host installed for it,
+    # when there is one, not in the released bootstrap that found it.
+    python = release.path / VENV_DIR / "bin" / "python"
+    return (str(python) if python.is_file() else sys.executable, str(release.script), *argv)
+
+
+def _missing_snapshot(error: DomainError, observed: Mapping[str, object]) -> DomainError:
+    """The refusal a person can act on (W378): what was found, and the one command next."""
+
+    version = str(observed.get("version") or "")
+    launcher = Path.home() / ".local" / "bin" / "pb"
+    next_command = f"pb source use-release --expect-version {version}" if version else "pb source versions"
+    lines = [str(error)]
+    if launcher.exists() and Path(sys.argv[0]).resolve() != launcher.resolve():
+        lines.append(f"This machine's own pb is {launcher}; run that one to keep the snapshot.")
+    lines.append(f"To run this released pb {version} instead, run: {next_command}")
+    return DomainError(
+        error.code,
+        " ".join(lines),
+        details={
+            **dict(error.details or {}),
+            "installed_version": version,
+            "launcher": str(launcher) if launcher.exists() else "",
+            "next_command": next_command,
+        },
+    )
 
 
 def _brief_requested(argv: list[str]) -> bool:
