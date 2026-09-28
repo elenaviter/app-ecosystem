@@ -105,6 +105,10 @@ def test_operations_are_declared_as_csrf_protected_posts() -> None:
             "project_person_control_revoke",
             "project_person_control_bind_invitation",
             "project_person_my_card_seed",
+            "project_person_github_key_link",
+            "project_person_github_key_unlink",
+            "project_person_github_key_status",
+            "project_person_commit_email_set",
         )
     }
 

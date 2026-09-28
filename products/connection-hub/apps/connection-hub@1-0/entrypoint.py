@@ -168,6 +168,8 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_to_kdcube
     state_digest,
 )
 import connection_hub.delegated_to_kdcube.providers  # noqa: F401
+from connection_hub.delegated_to_kdcube.refresh_lock import RedisRefreshLock
+from connection_hub.project_github_key import ProjectGitHubKey
 from connection_hub.delegated_credentials.oauth.metadata import (
     authorization_server_metadata,
     protected_resource_metadata,
@@ -264,6 +266,10 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "project_person_control_revoke",
     "project_person_control_bind_invitation",
     "project_person_my_card_seed",
+    "project_person_github_key_link",
+    "project_person_github_key_unlink",
+    "project_person_github_key_status",
+    "project_person_commit_email_set",
     "control_card_attach",
     "control_card_detach",
     "control_card_revoke",
@@ -1548,6 +1554,38 @@ async def _delegated_to_kdcube_client_secret(
     )
 
 
+def _delegated_to_kdcube_refresh_lock(entrypoint: Any) -> RedisRefreshLock:
+    """One provider-token refresh at a time per connected account, across processes (W371)."""
+
+    tenant, project = _runtime_tenant_project(entrypoint)
+    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    return RedisRefreshLock(
+        redis,
+        prefix=f"kdcube:connection-hub:{tenant}:{project}:delegated-to-kdcube:refresh-lock:",
+    )
+
+
+async def _project_github_key(entrypoint: Any, request: Any, user: Mapping[str, Any]) -> ProjectGitHubKey:
+    platform_user_id = str(user.get("user_id") or "").strip()
+
+    async def _client_secret_resolver(*, provider_id: str, connector_app_id: str, connector_app: Any) -> str:
+        return await _delegated_to_kdcube_client_secret(
+            entrypoint,
+            provider_id=provider_id,
+            connector_app_id=connector_app_id,
+            connector_app=connector_app,
+        )
+
+    return ProjectGitHubKey(
+        access=await _automation_access_service(entrypoint, request),
+        user=user,
+        config=delegated_to_kdcube_config(getattr(entrypoint, "bundle_props", {}) or {}),
+        store=DelegatedToKdcubeStore(user_id=platform_user_id, bundle_id=BUNDLE_ID),
+        client_secret_resolver=_client_secret_resolver,
+        refresh_lock=_delegated_to_kdcube_refresh_lock(entrypoint),
+    )
+
+
 DELEGATED_TO_KDCUBE_BROADCAST_CHANNEL = "kdcube-connection-hub"
 
 
@@ -2737,6 +2775,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_person_control_revoke": {"visibility": {"user_types": []}},
                             "project_person_control_bind_invitation": {"visibility": {"user_types": []}},
                             "project_person_my_card_seed": {"visibility": {"user_types": []}},
+                            "project_person_github_key_link": {"visibility": {"user_types": []}},
+                            "project_person_github_key_unlink": {"visibility": {"user_types": []}},
+                            "project_person_github_key_status": {"visibility": {"user_types": []}},
+                            "project_person_commit_email_set": {"visibility": {"user_types": []}},
                             "project_operation_authorize": {"visibility": {"user_types": []}},
                             "control_card_attach": {"visibility": {"user_types": []}},
                             "control_card_detach": {"visibility": {"user_types": []}},
@@ -4785,6 +4827,118 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             resource_operations=dict(payload.get("resource_operations") or {}),
             named_service_operations=payload.get("named_service_operations", {}),
             account_scope=dict(payload.get("account_scope") or {}),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_github_key_link",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_github_key_link"),
+    )
+    async def project_person_github_key_link(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Link the signed-in person's GitHub connection to their My Card for a project (W371)."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (await _project_github_key(self, request, user)).link(
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            account_id=str(payload.get("account_id") or "").strip(),
+            request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_github_key_unlink",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_github_key_unlink"),
+    )
+    async def project_person_github_key_unlink(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Remove the GitHub link from the person's My Card; the connection itself stays."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (await _project_github_key(self, request, user)).unlink(
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_github_key_status",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_github_key_status"),
+    )
+    async def project_person_github_key_status(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """connected | needs_reconnect | not_connected, and the App's coverage of the given repositories."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (await _project_github_key(self, request, user)).status(
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            repositories=payload.get("repositories") if isinstance(payload.get("repositories"), list) else (),
+            request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_commit_email_set",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_commit_email_set"),
+    )
+    async def project_person_commit_email_set(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Set a person's commit email on their My Card; a project admin may set another person's."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (await _project_github_key(self, request, user)).commit_email_set(
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            email=str(payload.get("email") or "").strip(),
+            target_subject=str(payload.get("target_subject") or "").strip(),
+            request_id=_audit_request_id(request),
         )
 
     @api(

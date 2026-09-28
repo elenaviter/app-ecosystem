@@ -1160,3 +1160,174 @@ async def test_the_project_held_composition_keeps_the_control_card_guards(change
         compose_with_project_held_control(my_card, dataclasses.replace(control, **change))
     if reason:
         assert refused.value.reason == reason
+
+
+# --- W371: person-owned settings on My Card (GitHub link, commit email) ---
+
+from connection_hub.delegated_credentials.project_identity_lifecycle import (  # noqa: E402
+    MY_CARD_COMMIT_EMAIL_PROPERTY,
+    MY_CARD_GITHUB_PROPERTY,
+)
+
+
+class _UpdatingHost(_Host):
+    """Creation as in _Host, plus revision-fenced writes of an existing Card."""
+
+    async def _persist_record(self, record, *, expected_revision):
+        key = (record.grantor_subject, record.access_id)
+        current = self.records.get(key)
+        if current is None:
+            assert expected_revision == 0
+        else:
+            assert current[0].card_revision == expected_revision
+            assert record.card_revision == expected_revision + 1
+        self.records[key] = (record, CARD_STATE_ACTIVE)
+
+
+def _my_card(host: _Host, person: str = TARGET) -> CardAuthority:
+    card_id = ProjectPersonCardIdentity.build(project_ref=PROJECT_REF, person_subject=person).my_card_id
+    return host.records[(person, card_id)][0].authority
+
+
+async def _with_my_card() -> tuple[_UpdatingHost, _Port]:
+    host = _UpdatingHost()
+    port = _Port()
+    created = await _create(_lifecycle(host, port))
+    assert created["ok"] is True, created
+    port.requests.clear()
+    host.notifications.clear()
+    return host, port
+
+
+@pytest.mark.asyncio
+async def test_a_person_sets_their_own_my_card_settings_without_asking_the_project() -> None:
+    host, port = await _with_my_card()
+    before = _my_card(host)
+    email = {"email": "person@example.test", "set_by": TARGET, "set_at": 1}
+    link = {"provider_id": "github", "account_id": "acct-1", "login": "person", "linked_at": 1}
+
+    result = await _lifecycle(host, port).set_my_card_person_properties(
+        actor_subject=TARGET,
+        project_ref=PROJECT_REF,
+        changes={MY_CARD_COMMIT_EMAIL_PROPERTY: email, MY_CARD_GITHUB_PROPERTY: link},
+        request_id="request-settings",
+    )
+
+    assert result["ok"] is True, result
+    assert result["changed"] is True
+    assert result["properties"] == {MY_CARD_GITHUB_PROPERTY: link, MY_CARD_COMMIT_EMAIL_PROPERTY: email}
+    after = _my_card(host)
+    assert after.card_revision == before.card_revision + 1
+    assert after.control_card == before.control_card, "the Control Card binding is kept"
+    assert after.resource_grants == before.resource_grants
+    assert port.requests == [], "one's own My Card settings need no project decision"
+    assert [action for _, action in host.notifications] == ["project_person_my_card_settings_changed"]
+
+    read = await _lifecycle(host, port).my_card_person_properties(
+        actor_subject=TARGET, project_ref=PROJECT_REF, request_id="request-read"
+    )
+    assert read["properties"] == result["properties"]
+    assert read["card_revision"] == after.card_revision
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_setting_writes_nothing_and_none_clears_a_key() -> None:
+    host, port = await _with_my_card()
+    email = {"email": "person@example.test", "set_by": TARGET, "set_at": 1}
+    lifecycle = _lifecycle(host, port)
+    await lifecycle.set_my_card_person_properties(
+        actor_subject=TARGET, project_ref=PROJECT_REF, changes={MY_CARD_COMMIT_EMAIL_PROPERTY: email}, request_id="r1"
+    )
+    revision = _my_card(host).card_revision
+
+    same = await lifecycle.set_my_card_person_properties(
+        actor_subject=TARGET, project_ref=PROJECT_REF, changes={MY_CARD_COMMIT_EMAIL_PROPERTY: email}, request_id="r2"
+    )
+    cleared = await lifecycle.set_my_card_person_properties(
+        actor_subject=TARGET, project_ref=PROJECT_REF, changes={MY_CARD_COMMIT_EMAIL_PROPERTY: None}, request_id="r3"
+    )
+
+    assert same["changed"] is False and same["card_revision"] == revision
+    assert cleared["changed"] is True and cleared["properties"] == {}
+    assert MY_CARD_COMMIT_EMAIL_PROPERTY not in _my_card(host).properties
+
+
+@pytest.mark.asyncio
+async def test_only_the_named_settings_can_be_written() -> None:
+    host, port = await _with_my_card()
+
+    result = await _lifecycle(host, port).set_my_card_person_properties(
+        actor_subject=TARGET,
+        project_ref=PROJECT_REF,
+        changes={PROJECT_PERSON_CONTROL_PROPERTY: {"forged": True}},
+        request_id="request-forge",
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "project_person_my_card_property_invalid"
+    assert result["status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_a_project_admin_sets_another_persons_commit_email_but_not_their_github_link() -> None:
+    host, port = await _with_my_card()
+    lifecycle = _lifecycle(host, port)
+    email = {"email": "owner@example.test", "set_by": ADMIN, "set_at": 1}
+
+    set_email = await lifecycle.set_my_card_person_properties(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        changes={MY_CARD_COMMIT_EMAIL_PROPERTY: email},
+        request_id="request-migrate",
+    )
+    set_link = await lifecycle.set_my_card_person_properties(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        changes={MY_CARD_GITHUB_PROPERTY: {"account_id": "admins-own"}},
+        request_id="request-link",
+    )
+
+    assert set_email["ok"] is True and set_email["person_subject"] == TARGET
+    assert _my_card(host).properties[MY_CARD_COMMIT_EMAIL_PROPERTY] == email
+    assert [request.operation for request in port.requests] == [PROJECT_PERSON_CONTROL_UPDATE] * 2
+    assert set_link["error"] == "project_person_my_card_property_self_only"
+    assert set_link["status"] == 403
+    assert MY_CARD_GITHUB_PROPERTY not in _my_card(host).properties
+
+
+@pytest.mark.asyncio
+async def test_a_member_cannot_set_another_persons_settings() -> None:
+    host, _ = await _with_my_card()
+    member_port = _Port(deny_operations=frozenset({PROJECT_PERSON_CONTROL_UPDATE}))
+
+    result = await _lifecycle(host, member_port).set_my_card_person_properties(
+        actor_subject="platform-user-9",
+        project_ref=PROJECT_REF,
+        target_subject=TARGET,
+        changes={MY_CARD_COMMIT_EMAIL_PROPERTY: {"email": "x@example.test"}},
+        request_id="request-member",
+    )
+
+    assert result == {"ok": False, "error": "project_person_control_decided_by_admin", "status": 403}
+
+
+@pytest.mark.asyncio
+async def test_a_stale_revision_and_a_missing_my_card_are_named() -> None:
+    host, port = await _with_my_card()
+    lifecycle = _lifecycle(host, port)
+
+    stale = await lifecycle.set_my_card_person_properties(
+        actor_subject=TARGET,
+        project_ref=PROJECT_REF,
+        changes={MY_CARD_COMMIT_EMAIL_PROPERTY: {"email": "p@example.test"}},
+        expected_card_revision=_my_card(host).card_revision - 1,
+        request_id="request-stale",
+    )
+    missing = await lifecycle.my_card_person_properties(
+        actor_subject="platform-user-not-on-project", project_ref=PROJECT_REF, request_id="request-missing"
+    )
+
+    assert stale == {"ok": False, "error": "project_identity_my_card_revision_conflict", "status": 409}
+    assert missing == {"ok": False, "error": "project_identity_my_card_missing", "status": 409}

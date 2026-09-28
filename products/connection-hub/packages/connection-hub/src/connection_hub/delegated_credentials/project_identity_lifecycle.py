@@ -52,6 +52,16 @@ AuthorityFromRecord = Callable[[Any], CardAuthority]
 RecordFromAuthority = Callable[[CardAuthority], Any]
 
 
+# Person-owned settings kept on My Card (W371). The GitHub link names the
+# person's GitHub connected account; the commit email is what their agents'
+# commits carry on this project.
+MY_CARD_GITHUB_PROPERTY = "connection_hub.github"
+MY_CARD_COMMIT_EMAIL_PROPERTY = "connection_hub.commit_email"
+MY_CARD_PERSON_PROPERTIES = (MY_CARD_GITHUB_PROPERTY, MY_CARD_COMMIT_EMAIL_PROPERTY)
+# Only the person may set these; a project admin may set the others for them.
+MY_CARD_SELF_ONLY_PROPERTIES = frozenset({MY_CARD_GITHUB_PROPERTY})
+
+
 class ProjectIdentityLifecycleError(ValueError):
     """A project identity edge or companion My Card is invalid."""
 
@@ -500,6 +510,72 @@ class ProjectIdentityLifecycle:
             my_card=ProjectCardResolution.current(my_authority),
         )
 
+    async def _my_card_record(self, *, project_ref: str, person_subject: str) -> Any:
+        expected = ProjectPersonCardIdentity.build(
+            project_ref=project_ref,
+            person_subject=person_subject,
+        )
+        loaded = await self._host._load_record_any_state(
+            expected.my_card_id,
+            grantor_subject=expected.person_subject,
+        )
+        if loaded is None:
+            raise ProjectIdentityLifecycleError("project_identity_my_card_missing")
+        record, state = loaded
+        if state != CARD_STATE_ACTIVE:
+            raise ProjectIdentityLifecycleError("project_identity_my_card_not_active")
+        identity = ProjectPersonCardIdentity.from_my_card(self._authority(record, state))
+        if identity.edge_ref != expected.edge_ref:
+            raise ProjectIdentityLifecycleError("project_identity_edge_conflict")
+        return record
+
+    async def my_card_properties(
+        self,
+        *,
+        project_ref: str,
+        person_subject: str,
+    ) -> tuple[dict[str, Any], int]:
+        """The person's own My Card properties and the Card revision they were read at."""
+
+        record = await self._my_card_record(project_ref=project_ref, person_subject=person_subject)
+        return copy.deepcopy(dict(record.properties or {})), int(record.card_revision)
+
+    async def set_my_card_properties(
+        self,
+        *,
+        project_ref: str,
+        person_subject: str,
+        changes: Mapping[str, Any],
+        expected_card_revision: int | None = None,
+    ) -> tuple[Any, bool]:
+        """Merge ``changes`` into My Card properties (None removes a key); (record, changed).
+
+        Only the named keys move: the rest of the Card, its grants and its
+        Control Card binding, are kept, and the write is fenced on the
+        revision read.
+        """
+
+        record = await self._my_card_record(project_ref=project_ref, person_subject=person_subject)
+        if expected_card_revision is not None and int(expected_card_revision) != int(record.card_revision):
+            raise ProjectIdentityLifecycleError("project_identity_my_card_revision_conflict")
+        merged = copy.deepcopy(dict(record.properties or {}))
+        for key, value in dict(changes or {}).items():
+            if value is None:
+                merged.pop(key, None)
+            else:
+                merged[key] = copy.deepcopy(value)
+        if merged == dict(record.properties or {}):
+            return record, False
+        updated = self._record_from_authority(
+            dataclasses.replace(
+                self._authority(record, CARD_STATE_ACTIVE),
+                properties=merged,
+                card_revision=record.card_revision + 1,
+            )
+        )
+        await self._host._persist_record(updated, expected_revision=record.card_revision)
+        return updated, True
+
     async def end(
         self,
         *,
@@ -561,6 +637,10 @@ class ProjectIdentityLifecycle:
 
 
 __all__ = [
+    "MY_CARD_COMMIT_EMAIL_PROPERTY",
+    "MY_CARD_GITHUB_PROPERTY",
+    "MY_CARD_PERSON_PROPERTIES",
+    "MY_CARD_SELF_ONLY_PROPERTIES",
     "PROJECT_IDENTITY_EDGE_PROVENANCE",
     "PROJECT_PERSON_MY_CARD_CLIENT_PREFIX",
     "PROJECT_PERSON_MY_CARD_ISSUER_KIND",

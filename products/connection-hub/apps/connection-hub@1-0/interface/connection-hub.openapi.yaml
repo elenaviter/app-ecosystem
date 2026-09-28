@@ -483,6 +483,123 @@ paths:
         "200":
           description: Seeded or already-seeded My Card, or a structured refusal.
 
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_github_key_link:
+    post:
+      tags: [Delegated Access]
+      summary: Link the person's GitHub connection to their My Card for a project.
+      description: >
+        The signed-in person's `github.app` connected account is recorded on their
+        My Card for `project_ref`; no token is stored on the Card.
+      operationId: project_person_github_key_link
+      x-kdcube-result-alias: project_person_github_key_link
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_ref]
+              properties:
+                project_ref:
+                  type: string
+                account_id:
+                  type: string
+      responses:
+        "200":
+          description: The result, or a structured refusal.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_github_key_unlink:
+    post:
+      tags: [Delegated Access]
+      summary: Remove the GitHub link from the person's My Card.
+      description: >
+        The GitHub connection itself stays connected.
+      operationId: project_person_github_key_unlink
+      x-kdcube-result-alias: project_person_github_key_unlink
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_ref]
+              properties:
+                project_ref:
+                  type: string
+      responses:
+        "200":
+          description: The result, or a structured refusal.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_github_key_status:
+    post:
+      tags: [Delegated Access]
+      summary: Read the person's GitHub key state and repository coverage for a project.
+      description: >
+        Returns `connection_state` (connected, needs_reconnect, not_connected) and,
+        for the given repositories, per-owner App coverage with install links.
+      operationId: project_person_github_key_status
+      x-kdcube-result-alias: project_person_github_key_status
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_ref]
+              properties:
+                project_ref:
+                  type: string
+                repositories:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: The result, or a structured refusal.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_commit_email_set:
+    post:
+      tags: [Delegated Access]
+      summary: Set the commit email on a My Card.
+      description: >
+        The person sets their own; a project administrator may set another
+        person's with `target_subject`. An empty email clears it.
+      operationId: project_person_commit_email_set
+      x-kdcube-result-alias: project_person_commit_email_set
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project_ref, email]
+              properties:
+                project_ref:
+                  type: string
+                email:
+                  type: string
+                target_subject:
+                  type: string
+      responses:
+        "200":
+          description: The result, or a structured refusal.
+
   /bundles/{tenant}/{project}/{bundle_id}/operations/project_operation_authorize:
     post:
       tags: [Delegated Access]
