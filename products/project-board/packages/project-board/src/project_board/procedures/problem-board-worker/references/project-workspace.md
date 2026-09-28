@@ -62,7 +62,11 @@ your owner has connected GitHub on the project's My Card and the GitHub App
 covers the repository, a new clone is made over HTTPS, an existing one's origin
 moves to HTTPS (`origin_switched: ssh_to_https`; fetch and push), and every clone gets
 `pb worker git-credential` as its credential helper for github.com, with your
-owner's commit email. No token is stored: git asks the helper each time. The
+owner's commit email. Push with `pb worker push -- <git push arguments>`: it is
+`git push`, and when your owner's key is unavailable (Connection Hub cannot
+answer) it pushes the same branch through this machine's deploy key, the
+`deploykey` remote connect-project kept, and says so; after a refusal it never
+does. No token is stored: git asks the helper each time. The
 row's `github_key` reads `ready` or the reason it is not (`github_not_linked`,
 `commit_email_not_set`, `card_denies`, `not_attending`,
 `repository_not_on_card`: tell your owner its words; [GitHub access for

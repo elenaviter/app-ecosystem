@@ -429,8 +429,12 @@ def test_the_procedures_name_the_service_sign_in_and_the_fallback_signal():
     root = source_package_path()
     host = " ".join((root.parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
     coordinator = " ".join((root / "references" / "coordinator.md").read_text(encoding="utf-8").split())
-    assert "**The relay service has no gh sign-in**" in host
-    assert "--insecure-storage" not in host and "The token is never stored in a file for the service" in host
+    # W371: the relay opens the edit's pull request under the coordinator
+    # owner's key; gh is installed, found by absolute path, never signed in
+    # with a token file for the service.
+    assert "**Card edits on the coordinator's machine.**" in host
+    assert "--insecure-storage" not in host and "No token is stored in a file for the service" in host
+    assert "so `gh` must be installed on that machine" in host
     assert "`SIGNAL project.file.edited` once" in coordinator
     assert "would refuse mail, requests and pings. When the board does not accept" in coordinator
 

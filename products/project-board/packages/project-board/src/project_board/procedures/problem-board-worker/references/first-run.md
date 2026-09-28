@@ -304,8 +304,8 @@ Its steps, word for word as the panel shows them:
 
 1. **Pick the project**
 2. **Add the agent**
-3. **Say to your agent**: "Use the problem-board-worker skill. Set up this project's repositories on this machine."
-4. **Your GitHub key for this project**: "Your agents push and open pull requests under your GitHub key, linked on your My Card for this project in Connection Hub."
+3. **Your GitHub key for this project**: "Your agents push and open pull requests under your GitHub key, linked on your My Card for this project in Connection Hub." It comes before the sentence, so the setup clones over HTTPS with the key and makes no deploy key it does not need.
+4. **Say to your agent**: "Use the problem-board-worker skill. Set up this project's repositories on this machine."
 5. **Add this machine's keys on GitHub** (fallback, "Needed only for a repository your GitHub key does not reach yet."): "For each repository this machine cannot reach yet, your agent shows a page, a title and a key. Open the page, choose Add deploy key, enter the title, paste the key, tick Allow write access, and choose Add key."
 6. **Tell your agent the keys are added**: "Your agent runs the setup again: it clones what it can now reach, and each repository shows as reachable here."
 
