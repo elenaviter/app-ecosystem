@@ -11,6 +11,7 @@ from connection_hub.delegated_to_kdcube.providers.generic_oauth import (
     GenericOAuthAdapter,
     GenericOIDCAdapter,
 )
+from connection_hub.delegated_to_kdcube.providers.github import GitHubAppAdapter
 from connection_hub.delegated_to_kdcube.providers.google import GoogleOAuthAdapter
 from connection_hub.delegated_to_kdcube.providers.linkedin import (
     LinkedInMemberAdapter,
@@ -21,6 +22,7 @@ __all__ = [
     "EmailAppPasswordAdapter",
     "GenericOAuthAdapter",
     "GenericOIDCAdapter",
+    "GitHubAppAdapter",
     "GoogleOAuthAdapter",
     "LinkedInMemberAdapter",
     "SlackUserTokenAdapter",

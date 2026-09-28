@@ -1,13 +1,14 @@
 ---
 id: connection-hub@1-0/integrations/README
 title: "Connection Hub — Integrations Setup (overview)"
-summary: "Common setup shared by every connection-hub provider — the single OAuth callback URL, the hub-level state secret, and the apply/refresh step — plus links to the per-provider setup articles (Google, Slack, iCloud, and generic OAuth/OIDC)."
+summary: "Common setup shared by every connection-hub provider — the single OAuth callback URL, the hub-level state secret, and the apply/refresh step — plus links to the per-provider setup articles (Google, Slack, GitHub, iCloud, and generic OAuth/OIDC)."
 status: "active"
 tags: ["integration", "connections", "oauth", "admin", "operator-setup", "prerequisites", "mcp", "named-services", "delegated-credentials"]
 keywords: ["connection hub setup", "delegated_to_kdcube_oauth_callback", "oauth_state_secret", "connector app", "provider setup"]
 see_also:
   - ./google.md
   - ./slack.md
+  - ./github.md
   - ./icloud.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md
   - https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
@@ -32,6 +33,7 @@ Per-provider steps:
 | --- | --- | --- |
 | Google (Gmail) | OAuth connector app | [google.md](./google.md) |
 | Slack | OAuth connector app | [slack.md](./slack.md) |
+| GitHub | GitHub App (`github.app`, user tokens) | [github.md](./github.md) |
 | iCloud | App-specific password (no OAuth) | [icloud.md](./icloud.md) |
 | Standard OAuth/OIDC service | `oauth2.generic` or `oidc.generic` connector app | See the [SDK guide](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md) and [task recipe](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md). |
 
@@ -47,14 +49,14 @@ export PUBLIC_HOST="https://YOUR_PUBLIC_HTTPS_HOST"     # e.g. your ngrok host
 ## The one delegated to KDCube OAuth callback URL
 
 The delegated to KDCube hub uses a **single** redirect URI for every OAuth
-provider/connector app:
+provider/connector app, the GitHub App's included:
 
 ```bash
 echo "$PUBLIC_HOST/api/integrations/bundles/$TENANT/$PROJECT/$BUNDLE_ID/public/delegated_to_kdcube_oauth_callback"
 ```
 
 Register this exact URL as an authorized redirect URI on **each** OAuth provider
-(Google, Slack). iCloud is not OAuth and needs no redirect URI.
+(Google, Slack, the GitHub App's callback URL). iCloud is not OAuth and needs no redirect URI.
 
 ## Hub-level state secret
 
@@ -240,7 +242,9 @@ Connected tokens are **user-scoped**, so any other bundle acting for that user
 Connection Hub stores connected-account metadata as user properties and provider
 credentials as user secrets. OAuth access tokens are expected to expire. For
 OAuth providers that return a refresh token, the SDK broker refreshes the access
-token before returning the credential to application code.
+token before returning the credential to application code, one refresh at a
+time per connected account (a provider such as GitHub invalidates the old
+refresh token on use; see [github.md](./github.md)).
 
 The Connections widget should not treat every stored account as equally healthy.
 It receives these non-secret fields from the catalog:
