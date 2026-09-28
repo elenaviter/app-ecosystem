@@ -3613,9 +3613,44 @@ def _project_workspace(args: Any, config: Any, field: Any, identity: Any) -> tup
             "(`pb host configure --add-allow-root <path>`).",
         )
     # W368: the project's commit identity, the agent's alias and the project's email.
+    # W371: the owner's My Card email when their GitHub key has answered; the
+    # project's email stays the deploy-key fallback.
     alias = str(getattr(recorded, "worker_alias", "") or "").strip()
-    email = str(record.get("commit_identity_email") or "").strip()
+    email = _commit_email(field, identity.worker_name, parsed.object_id, record)[0]
     return project_ref, parsed, record, workspace, alias, email
+
+
+def _context_commit_identity(
+    field: Any, channel: Any, project_id: str, repositories: Mapping[str, Any], workspace: str
+) -> dict[str, Any]:
+    """What this agent commits as (W368), from the owner's My Card when the GitHub key answered (W371)."""
+
+    email, source = _commit_email(field, str(getattr(channel, "worker_name", "") or ""), project_id, repositories)
+    identity = commit_identity(
+        str(getattr(channel, "worker_alias", "") or ""), email, workspace, repositories.get("repositories") or []
+    )
+    if not identity:
+        return identity
+    identity["source"] = source
+    identity["source_note"] = (
+        "Your owner's commit email on their My Card, as their GitHub key gave it."
+        if source == "owner_github_key"
+        else "The project's email, for pushes by deploy key. Once your owner's GitHub key answers "
+        "(`pb worker connect-project`), commits carry their My Card email instead."
+    )
+    return identity
+
+
+def _commit_email(field: Any, worker_name: str, project_id: str, record: Mapping[str, Any]) -> tuple[str, str]:
+    """(email, source): the owner's My Card email when the GitHub key answered, else the project's."""
+
+    reader = getattr(field, "read_github_identity", None)
+    recorded = reader(worker_name, project_id) if callable(reader) and worker_name else {}
+    owner = str((recorded or {}).get("commit_email") or "").strip()
+    if owner:
+        return owner, "owner_github_key"
+    project = str(record.get("commit_identity_email") or "").strip()
+    return project, ("project" if project else "")
 
 
 def _workspace_report_command(
@@ -3677,6 +3712,7 @@ class _GitHubKeySession:
                 "This session has no worker channel on this host: run pb worker listen first.",
             )
         field = SharedFieldStore(self.config.field_root)
+        self.field = field
         self.project_ref = str(getattr(args, "project_ref", "") or "").strip() or _attended_project_ref(
             field, self.identity.worker_name
         )
@@ -3717,7 +3753,17 @@ class _GitHubKeySession:
                 "repository_not_on_card",
                 f"{repository} is not on the project card; the GitHub key serves only those.",
             )
-        return asyncio.run(self._issue(repository))
+        token = asyncio.run(self._issue(repository))
+        if token.commit_email:
+            # Who this agent commits as while the key answers: context and the
+            # workspace report read it (W371 review, line 4). Never the token.
+            self.field.record_github_identity(
+                self.identity.worker_name,
+                parse_ref(self.project_ref).object_id,
+                login=token.login,
+                commit_email=token.commit_email,
+            )
+        return token
 
 
 async def _post_json(url: str, body: Mapping[str, Any], bearer: str) -> tuple[int, Any]:
@@ -5120,11 +5166,8 @@ def _worker_project_context(
         "repositories_revision": repositories["revision"],
         # W368: what this agent commits as in the project, with the exact
         # commands that set it in each clone. Empty when the project sets none.
-        "commit_identity": commit_identity(
-            str(getattr(channel, "worker_alias", "") or ""),
-            str(repositories.get("commit_identity_email") or ""),
-            workspace,
-            repositories["repositories"],
+        "commit_identity": _context_commit_identity(
+            field, channel, parsed.object_id, repositories, workspace
         ),
         **journal_state,
         **journal,

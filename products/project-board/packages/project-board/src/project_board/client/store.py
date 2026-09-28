@@ -8533,6 +8533,29 @@ class SharedFieldStore:
         )
         return read_json(path, required=False) or {}
 
+    def record_github_identity(self, worker_name: str, project_id: str, *, login: str, commit_email: str) -> None:
+        """Who this worker commits as when its owner's GitHub key answers (W371).
+
+        Written each time the key is issued (connect-project, the credential
+        helper, pb worker gh): the owner's GitHub login and My Card commit
+        email, never the token. context and the workspace report read it.
+        """
+
+        clean_id = component(project_id, field="project_id")
+        path = self._project_dir(clean_id) / "github-identity" / f"{component(worker_name, field='worker_name')}.json"
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        atomic_write_json(
+            path, {"login": str(login or ""), "commit_email": str(commit_email or ""), "recorded_at": utc_now()}
+        )
+
+    def read_github_identity(self, worker_name: str, project_id: str) -> dict[str, Any]:
+        path = (
+            self._project_dir(component(project_id, field="project_id"))
+            / "github-identity"
+            / f"{component(worker_name, field='worker_name')}.json"
+        )
+        return read_json(path, required=False) or {}
+
     def add_file_edit_notice(self, worker_name: str, project_id: str, notice: Mapping[str, Any]) -> None:
         """Keep an applied edit the board did not accept, for this worker's next receive (W370).
 
