@@ -30,6 +30,10 @@ from connection_hub.delegated_to_kdcube.models import (
     as_str,
     as_str_list,
 )
+from connection_hub.delegated_to_kdcube.refresh_lock import (
+    RefreshLock,
+    default_refresh_lock,
+)
 from connection_hub.delegated_to_kdcube.store import DelegatedToKdcubeStore
 
 
@@ -59,11 +63,13 @@ class DelegatedToKdcubeBroker:
         store: DelegatedToKdcubeStore,
         client_secret_resolver: Callable[..., Any] | None = None,
         refresh_skew_seconds: int = 120,
+        refresh_lock: RefreshLock | None = None,
     ) -> None:
         self.config = config
         self.store = store
         self.client_secret_resolver = client_secret_resolver
         self.refresh_skew_seconds = max(0, int(refresh_skew_seconds or 0))
+        self.refresh_lock = refresh_lock or default_refresh_lock()
 
     async def ensure_claim(
         self,
@@ -416,14 +422,60 @@ class DelegatedToKdcubeBroker:
         )
         if not client_secret:
             return None
-        try:
-            refreshed = await adapter.refresh_credential(
-                credential,
-                client_id=connector_app.client_id,
-                client_secret=client_secret,
+        # One refresh at a time per credential (refresh_lock.py): a provider
+        # that rotates refresh tokens (GitHub Apps) invalidates the old one on
+        # use, so a second concurrent refresh would lose the connection.
+        async with self.refresh_lock.hold(f"{self.store.user_id}:{credential_id}") as held:
+            current = await self.store.get_credential(credential_id) or credential
+            if self._refreshed_elsewhere(adapter, seen=credential, current=current):
+                return current
+            if not held:
+                return None
+            try:
+                refreshed = await adapter.refresh_credential(
+                    current,
+                    client_id=connector_app.client_id,
+                    client_secret=client_secret,
+                )
+            except Exception:
+                # No retry: a rejected refresh token stays rejected, and the
+                # caller marks the account for reconnect.
+                LOGGER.warning(
+                    "[delegated.broker] refresh failed provider=%s account=%s credential_id=%s",
+                    provider_id,
+                    account_id,
+                    credential_id,
+                )
+                return None
+            return await self._store_refreshed(
+                refreshed,
+                credential=current,
+                provider_id=provider_id,
+                claim=claim,
+                connector_app_id=connector_app_id,
+                account_id=account_id,
+                credential_id=credential_id,
             )
-        except Exception:
-            return None
+
+    def _refreshed_elsewhere(self, adapter: Any, *, seen: dict[str, Any], current: dict[str, Any]) -> bool:
+        """Another holder refreshed after this caller read the credential."""
+
+        if current is seen:
+            return False
+        rotated = as_str(current.get("access_token")) != as_str(seen.get("access_token"))
+        return rotated and not adapter.credential_refresh_needed(current, skew_seconds=self.refresh_skew_seconds)
+
+    async def _store_refreshed(
+        self,
+        refreshed: dict[str, Any],
+        *,
+        credential: dict[str, Any],
+        provider_id: str,
+        claim: str,
+        connector_app_id: str,
+        account_id: str,
+        credential_id: str,
+    ) -> dict[str, Any]:
         refreshed.update(
             {
                 "provider_id": provider_id,
@@ -559,6 +611,7 @@ def broker_for_user(
     store: DelegatedToKdcubeStore | None = None,
     store_factory: StoreFactory | None = None,
     client_secret_resolver: Callable[..., Any] | None = None,
+    refresh_lock: RefreshLock | None = None,
 ) -> DelegatedToKdcubeBroker:
     from connection_hub.delegated_to_kdcube.models import CONNECTION_HUB_BUNDLE_ID
 
@@ -574,6 +627,7 @@ def broker_for_user(
         config=config,
         store=resolved_store,
         client_secret_resolver=client_secret_resolver,
+        refresh_lock=refresh_lock,
     )
 
 
