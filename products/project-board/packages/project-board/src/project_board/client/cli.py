@@ -323,7 +323,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="ALIAS=https://... remote URL the board links for repo:ALIAS refs.",
     )
-    command.add_argument("--allow-control-kind", action="append")
+    command.add_argument(
+        "--allow-control-kind",
+        action="append",
+        help="Set the kinds this host accepts; replaces the whole list. To accept one more, use --add-control-kind.",
+    )
+    command.add_argument(
+        "--add-control-kind",
+        action="append",
+        default=[],
+        help="Accept one more control kind, keeping the rest (e.g. project.file.edit on the coordinator's host).",
+    )
+    command.add_argument(
+        "--remove-control-kind",
+        action="append",
+        default=[],
+        help="Stop accepting one control kind, keeping the rest.",
+    )
     peers = command.add_mutually_exclusive_group()
     peers.add_argument("--allow-peer-worker", action="append")
     peers.add_argument("--deny-all-peers", action="store_true")
@@ -1985,6 +2001,8 @@ def _host_command(args: Any) -> dict[str, Any]:
             source_repositories=repositories,
             source_repository_urls=parse_source_repositories(args.set_source_repo_url),
             allowed_control_kinds=args.allow_control_kind,
+            add_control_kinds=args.add_control_kind,
+            remove_control_kinds=args.remove_control_kind,
             allowed_peer_workers=peer_workers,
             max_control_bytes=args.max_control_bytes,
             allow_session_resume_view=args.allow_session_resume_view,

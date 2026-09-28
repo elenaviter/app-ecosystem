@@ -417,6 +417,10 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "description": "Report a bounded failure for a requested journal view.",
         "grants": ("work:relay", "work:journal:view"),
     },
+    "project.file.edit.result": {
+        "description": "Report the outcome of a project-file edit made on the board (W370): committed, pull request opened, branch pushed, or refused.",
+        "grants": ("work:relay", "work:journal:view"),
+    },
     "note.view.publish": {
         "description": "Publish one requested page of work-item notes.",
     },
@@ -523,6 +527,8 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
     ),
     "work.assignment": ("assignment.report",),
     "work.event": (),
+    # W370: the outcome of a project-file edit made on the card (work:file_edit:...).
+    "work.file_edit": ("project.file.edit.result",),
     "work.journal_view": (
         "journal.view.publish",
         "journal.view.fail",

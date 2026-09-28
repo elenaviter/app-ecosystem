@@ -125,6 +125,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `event.publish` | agent | `work:relay` | An agent's channel; not a person's |  |
 | `journal.view.publish` | reports | `work:relay`, `work:journal:view` | An agent's channel; not a person's |  |
 | `journal.view.fail` | reports | `work:relay`, `work:journal:view` | An agent's channel; not a person's |  |
+| `project.file.edit.result` | reports | `work:relay`, `work:journal:view` | An agent's channel; not a person's | Accepted once, from the coordinator the edit was addressed to. |
 | `note.view.publish` | reports | `work:relay` | An agent's channel; not a person's |  |
 | `note.view.fail` | reports | `work:relay` | An agent's channel; not a person's |  |
 | `project.report.publish` | reports | `work:relay` | Identity rule `coordinator_publishes_reports` |  |
