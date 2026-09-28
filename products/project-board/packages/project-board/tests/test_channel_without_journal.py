@@ -229,3 +229,57 @@ def test_a_close_that_failed_to_queue_is_finished_by_the_next_relay(tmp_path):
     restarted._reconcile_journal_binding(BINDING)
 
     assert [event["metadata"]["state"] for event in field.events] == ["unavailable", "available"]
+
+
+def test_two_projects_on_one_relay_each_bind_their_journal_and_say_so_once(tmp_path, caplog):
+    """2026-09-28 ~21:57Z: a second project's journal looked unbound on dev-main's
+    shared relay. It had bound 12 s after its Path existed; the relay logged only
+    gaps, so a project that bound left no line. Each channel binds its own project
+    and logs the first bind and each rebind."""
+
+    import logging
+
+    from project_board.client.journals import worker_journal_root
+    from project_board.client.io import read_json
+
+    host, _identity, channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    adapters = {}
+    for project, worker in (("quickstart", "worker-quickstart"), ("maintenance", "worker-maintenance")):
+        workspace = tmp_path / "workspaces" / worker
+        (workspace / "applications" / ".git").mkdir(parents=True)
+        (workspace / "applications" / "docs" / "journal" / "projects" / project).mkdir(parents=True)
+        config = dataclasses.replace(
+            relay.RelayConfig.from_host_channel(host, channel, project_id=project),
+            worker_name=worker,
+            journal_workspace_root=tmp_path / "journal-workspace",
+            workspace=str(workspace),
+            create_missing_journal_home=True,
+        )
+        field.register_worker(worker_name=worker, runtime_kind=config.runtime_kind, capabilities=[], authority_label="authority:codex-api")
+        adapters[project] = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=object())
+
+    def binding(project, revision=1):
+        return {"journal_binding": {
+            "project_ref": f"work:project:{project}",
+            "journal_home_ref": f"repo:applications/docs/journal/projects/{project}",
+            "project_artifact_ref": "",
+            "revision": revision,
+        }}
+
+    relay._logged_journal_bindings.clear()
+    with caplog.at_level(logging.INFO, logger="project_board.client.relay"):
+        for project, adapter in adapters.items():
+            assert adapter._reconcile_journal_binding(binding(project))["state"] == "bound"
+            assert adapter._reconcile_journal_binding(binding(project))["state"] == "bound"
+        adapters["maintenance"]._reconcile_journal_binding(binding("maintenance", revision=2))
+
+    lines = [record.getMessage() for record in caplog.records if "journal" in record.getMessage() and "bound" in record.getMessage()]
+    assert lines == [
+        "Problem Board journal bound for work:project:quickstart on worker=worker-quickstart: repo:applications/docs/journal/projects/quickstart (revision 1)",
+        "Problem Board journal bound for work:project:maintenance on worker=worker-maintenance: repo:applications/docs/journal/projects/maintenance (revision 1)",
+        "Problem Board journal rebound for work:project:maintenance on worker=worker-maintenance: repo:applications/docs/journal/projects/maintenance (revision 2)",
+    ]
+    for project, worker in (("quickstart", "worker-quickstart"), ("maintenance", "worker-maintenance")):
+        catalog = read_json(worker_journal_root(tmp_path / "journal-workspace", worker) / ".problem-board" / "catalog.json")
+        assert list(catalog["bindings"]) == [f"work:project:{project}"]

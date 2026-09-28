@@ -133,6 +133,10 @@ LOCAL_JOURNAL_MAPPING_CODES = frozenset(
 # Attendance adapters are rebuilt every cycle, so the once-per-gap log line
 # is remembered at module scope, keyed by relay, project, and code.
 _reported_journal_gaps: set[tuple[str, str, str]] = set()
+# The binding each channel last logged per project (relay, worker, project) ->
+# (journal home, revision): the first bind and each rebind get one INFO line,
+# so a project that bound is visible in the log, not only one that did not.
+_logged_journal_bindings: dict[tuple[str, str, str], tuple[str, int]] = {}
 # W304 D13: one event when a project's journal becomes unavailable on this
 # machine, one when it is back. The incident lives in a durable record in the
 # field store, so a restart never repeats or loses either event.
@@ -1501,6 +1505,19 @@ class ProblemBoardHostRelayAdapter:
         _reported_journal_gaps.difference_update(
             {key for key in _reported_journal_gaps if key[:2] == (self.config.relay_id, project_ref)}
         )
+        channel = (self.config.relay_id, self.config.worker_name, project_ref)
+        bound = (str(result["journal_home_ref"]), int(result.get("revision") or 0))
+        previous = _logged_journal_bindings.get(channel)
+        if previous != bound:
+            _logged_journal_bindings[channel] = bound
+            logger.info(
+                "Problem Board journal %s for %s on worker=%s: %s (revision %s)",
+                "bound" if previous is None else "rebound",
+                project_ref,
+                self.config.worker_name,
+                bound[0],
+                bound[1],
+            )
         return {
             "state": "bound",
             "journal_home_ref": result["journal_home_ref"],

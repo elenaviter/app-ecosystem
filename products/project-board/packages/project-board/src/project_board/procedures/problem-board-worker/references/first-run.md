@@ -369,7 +369,9 @@ the fallback:
 If this agent will coordinate the project, its machine needs one opt-in, once
 per machine, by the operator: `pb host configure --add-control-kind project.file.edit`
 (add-a-worker-host step 3). Without it the card refuses file edits and names
-the command.
+the command. The operator also presses **Refresh coordinator Card** on this agent's row in
+**Team > Agents**: it gives its Card the coordinator shape (the coordinator
+profile).
 
 It then sets the project's commit identity in each clone and reports the
 workspace, so the panel shows each repository as reachable, or "not reachable
