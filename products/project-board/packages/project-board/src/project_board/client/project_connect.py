@@ -393,6 +393,12 @@ class Connector:
             if comparable_url(origin, resolve_host=resolve) != comparable_url(url, resolve_host=resolve):
                 return row("left_unchanged", f"{folder} has origin {origin or 'none'}, the project lists {url}.")
             source = origin
+            if key == "ready":
+                # W371 review: the helper answers https://github.com only, so an
+                # SSH origin kept pushing with the deploy key. With the owner's key
+                # ready, origin (fetch and push) goes over HTTPS; SSH stays only
+                # where the key does not answer.
+                return self._update_over_key(folder, origin, repo, branch, row)
         else:
             # Project-workspace step 2: a new clone goes through github-<alias> when it resolves to github.com.
             source = alias_url if repo and self._resolve(alias)[0] == "github.com" else url
@@ -411,10 +417,24 @@ class Connector:
             if exists:
                 # The same repository, through the key that reaches it.
                 self._git(["remote", "set-url", "origin", alias_url], folder)
-        if key == "ready" and exists:
-            # An existing clone keeps its origin and gains the key for pushes and gh.
-            self._key_config(folder)
         return self._clone_or_update(folder, source, branch, exists=exists, through_alias=through_alias, row=row)
+
+    def _update_over_key(
+        self, folder: Path, origin: str, repo: str, branch: str, row: Callable[..., dict[str, Any]]
+    ) -> dict[str, Any]:
+        """An existing clone, moved to the owner's key: helper, HTTPS origin, then fetched as usual."""
+
+        https_url = f"https://github.com/{repo}.git"
+        self._key_config(folder)
+        switched = origin != https_url
+        if switched:
+            self._git(["remote", "set-url", "origin", https_url], folder)
+        # A push URL of its own would keep pushes on the old route.
+        self._git(["config", "--unset-all", "remote.origin.pushurl"], folder)
+        result = self._clone_or_update(folder, https_url, branch, exists=True, through_alias=False, row=row)
+        if result.get("state") == "reachable":
+            result = {**result, "route": "github_key"}
+        return {**result, "origin_switched": "ssh_to_https"} if switched else result
 
     def _clone_or_update(
         self,

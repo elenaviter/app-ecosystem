@@ -548,20 +548,41 @@ def test_a_refused_key_is_named_and_the_deploy_key_path_runs_as_before(tmp_path)
     assert connector.commit_email == ""
 
 
-def test_an_existing_clone_keeps_its_origin_and_gains_the_key(tmp_path):
+def test_an_existing_clone_moves_to_https_with_the_key_and_ssh_stays_without_it(tmp_path):
+    """W371 review: the helper answers https://github.com only, so an SSH origin
+    kept pushing with the deploy key. With the owner's key ready, origin goes
+    over HTTPS (fetch and push); without it, the clone keeps its SSH origin."""
+
     github = KeyedGitHub({"example-org/app-ecosystem": _remote(tmp_path / "remotes", "app-ecosystem")})
     github.open.add("example-org/app-ecosystem")
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     listed = {"alias": "app-ecosystem", "url": "git@github.com:example-org/app-ecosystem.git"}
     assert Connector(_machine(tmp_path), workspace, run=github).connect(listed)["action"] == "cloned"
-    github.keyed.add("example-org/app-ecosystem")
+    clone = workspace / "app-ecosystem"
+    subprocess.run(["git", "config", "remote.origin.pushurl", "git@github.com:example-org/app-ecosystem.git"],
+                   cwd=str(clone), check=True)
 
+    # The key does not answer: nothing moves.
+    unkeyed = Connector(
+        _machine(tmp_path), workspace, run=github, github_key=_key(github, []), helper=HELPER, alias_name=ALIAS
+    ).connect(listed)
+    assert unkeyed["state"] == "reachable" and "origin_switched" not in unkeyed
+    assert _GIT_ORIGIN(clone) == "git@github.com:example-org/app-ecosystem.git"
+
+    github.keyed.add("example-org/app-ecosystem")
     row = Connector(
         _machine(tmp_path), workspace, run=github, github_key=_key(github, []), helper=HELPER, alias_name=ALIAS
     ).connect(listed)
 
-    clone = workspace / "app-ecosystem"
     assert row["state"] == "reachable" and row["action"] == "updated" and row["github_key"] == "ready"
-    assert _GIT_ORIGIN(clone) == "git@github.com:example-org/app-ecosystem.git"
+    assert row["route"] == "github_key" and row["origin_switched"] == "ssh_to_https"
+    assert _GIT_ORIGIN(clone) == "https://github.com/example-org/app-ecosystem.git"
+    assert _config_values(clone, "remote.origin.pushurl") == [], "pushes follow origin"
     assert _config_values(clone, "credential.https://github.com.helper") == ["", HELPER]
+
+    again = Connector(
+        _machine(tmp_path), workspace, run=github, github_key=_key(github, []), helper=HELPER, alias_name=ALIAS
+    ).connect(listed)
+    assert again["state"] == "reachable" and "origin_switched" not in again, "the second run has nothing to move"
+
