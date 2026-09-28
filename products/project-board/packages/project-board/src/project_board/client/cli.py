@@ -235,11 +235,11 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--endpoint", required=True)
     setup.add_argument(
         "--tenant", default="",
-        help="Optional: read from the endpoint; when given it must agree (W304 finding 18).",
+        help="Optional: read from the endpoint; when given it must agree.",
     )
     setup.add_argument(
         "--platform-project", default="",
-        help="Optional: read from the endpoint; when given it must agree (W304 finding 18).",
+        help="Optional: read from the endpoint; when given it must agree.",
     )
     setup.add_argument("--host-id", default="")
     setup.add_argument("--host-label", default="Local machine")
@@ -874,7 +874,7 @@ def build_parser() -> argparse.ArgumentParser:
     command = worker_commands.add_parser(
         "workspace-report",
         help=(
-            "Tell the board what your project workspace holds (W337): for each "
+            "Tell the board what your project workspace holds: for each "
             "repository on the project card, whether <workspace>/<alias> is a "
             "checkout of the listed URL that answers (verified), or unreachable "
             "and why. Run it after setting the workspace up and after any "
@@ -895,14 +895,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "First set each clone's repository-local user.name and user.email to this agent's "
-            "alias and the project's commit email (W368); worktrees inherit them."
+            "alias and the project's commit email; worktrees inherit them."
         ),
     )
 
     command = worker_commands.add_parser(
         "connect-project",
         help=(
-            "Set up this machine for the project you attend (W304 finding 19): for each "
+            "Set up this machine for the project you attend: for each "
             "repository on the project card, clone or fast-forward what this machine "
             "reaches, make this machine's deploy key for a GitHub repository it does not "
             "reach yet and print the grant the person adds on GitHub, then set the "
@@ -923,7 +923,7 @@ def build_parser() -> argparse.ArgumentParser:
         "limit-state",
         help=(
             "Record what the coding-agent runtime itself says about its usage "
-            "limit (W26). Claude Code runs this as its statusLine command and as "
+            "limit. Claude Code runs this as its statusLine command and as "
             "its StopFailure hook for rate_limit: the JSON arrives on stdin, the "
             "state is recorded for the relay, and one status line is printed."
         ),
@@ -945,7 +945,7 @@ def build_parser() -> argparse.ArgumentParser:
     command = worker_commands.add_parser(
         "stop-guard",
         help=(
-            "Claude Code's Stop hook (W182): when an attending worker's turn ends with "
+            "Claude Code's Stop hook: when an attending worker's turn ends with "
             "no pb worker watch running, block the stop once with the commands that "
             "re-arm it. Reads the hook JSON on stdin; never blocks anything else."
         ),
@@ -956,7 +956,7 @@ def build_parser() -> argparse.ArgumentParser:
         "workspace",
         help=(
             "Declare where on this host you edit one repository for one assignment, so the "
-            "relay can publish the tracked files you have in flight (W278). Local only. "
+            "relay can publish the tracked files you have in flight. Local only. "
             "--list shows the declarations, --clear forgets them."
         ),
     )
@@ -1109,7 +1109,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument(
         "--reviewer",
         help=(
-            "Who reviews a completed result (W326): an agent's stable worker name, or operator. "
+            "Who reviews a completed result: an agent's stable worker name, or operator. "
             "Without it the acting coordinator reviews and routes it."
         ),
     )
@@ -1125,7 +1125,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "One line naming the module, path prefixes or runtime surface this work will change. "
-            "Set it with the first working report, again only when the boundary grows (W278)."
+            "Set it with the first working report, again only when the boundary grows."
         ),
     )
     command.add_argument(
@@ -1322,7 +1322,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument(
         "--reviewer",
         help=(
-            "Who reviews a completed result (W326): an agent's stable worker name, or operator. "
+            "Who reviews a completed result: an agent's stable worker name, or operator. "
             "Without it the acting coordinator reviews and routes it."
         ),
     )
@@ -1338,7 +1338,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "One line naming the module, path prefixes or runtime surface this work will change. "
-            "Set it with the first working report, again only when the boundary grows (W278)."
+            "Set it with the first working report, again only when the boundary grows."
         ),
     )
     command.add_argument(
