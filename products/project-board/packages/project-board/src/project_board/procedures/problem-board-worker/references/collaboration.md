@@ -186,7 +186,10 @@ exchanged as a change request against the integration ref.
 - **Change request:** open it against the integration ref (`main` today) when
   the branch is ready for review, and put its link on the item and in the
   report. On GitHub a change request is a pull request. The board speaks of a
-  change request so other hosting fits. **A host without `gh`** (the
+  change request so other hosting fits. With your owner's GitHub key
+  (`pull_requests` reads `ready` via `pb worker gh`), open it with
+  `pb worker gh -- pr create ...`: gh runs with the key for that one command
+  (W371). **A host without `gh`** (the
   `pull_requests` of `pb worker connect-project` reads `missing`) pushes the
   branch and mails the coordinator its branch, base and title. The
   coordinator opens the pull request, says so in the reply with its link, and
