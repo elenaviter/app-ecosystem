@@ -825,8 +825,20 @@ def snapshot_selection(
     return value
 
 
-def selected_release(root: Path, selection: Mapping[str, Any] | None = None) -> RelaySourceRelease:
-    """Resolve and verify the release named by a snapshot selection."""
+def selected_release(
+    root: Path,
+    selection: Mapping[str, Any] | None = None,
+    *,
+    release_roots: tuple[Path, ...] = (),
+) -> RelaySourceRelease:
+    """Resolve and verify the release named by a snapshot selection.
+
+    W378: an installed host keeps its snapshots in the host-wide release store
+    (``client-runtime/tools/problem-board/releases``), not beside the selection,
+    and the selection records the path. A pb of any layout looks beside the
+    selection, in each given release store, then at the recorded path, and a
+    refusal names every place it looked.
+    """
 
     selected = dict(selection or read_selection(root))
     if selected.get("mode") != "snapshot":
@@ -840,12 +852,33 @@ def selected_release(root: Path, selection: Mapping[str, Any] | None = None) -> 
     identity = str(
         selected.get("commit") if legacy else selected.get("release_id") or ""
     )
-    release = read_release(Path(root) / RELEASES_DIR / identity)
-    if release is None or release.release_id != identity:
+    candidates = [Path(base) / RELEASES_DIR / identity for base in (root, *release_roots)]
+    recorded = str(selected.get("release_path") or "").strip()
+    if recorded and Path(recorded).name == identity:
+        candidates.append(Path(recorded).expanduser())
+    searched: list[str] = []
+    release = None
+    for candidate in candidates:
+        if str(candidate) in searched:
+            continue
+        searched.append(str(candidate))
+        found = read_release(candidate)
+        if found is not None and found.release_id == identity:
+            release = found
+            break
+    if release is None:
+        commit = str(selected.get("commit") or "")
         raise DomainError(
             "work_client_source_release_missing",
-            f"The selected Project Board code release {identity[:12]} is missing.",
-            details={"release_id": identity, "root": str(root)},
+            f"This machine selected Project Board code snapshot {identity[:12]}"
+            + (f" (App Ecosystem commit {commit[:12]})" if commit else "")
+            + f", and it is not in the {len(searched)} place(s) pb looked.",
+            details={
+                "release_id": identity,
+                "commit": commit,
+                "root": str(root),
+                "searched": searched,
+            },
         )
     required_paths = (
         APP_ECOSYSTEM_SOURCE_PATHS_V1
