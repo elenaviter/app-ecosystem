@@ -570,20 +570,27 @@ tree, which stages whatever it holds at that instant.
    machine fetches that ref, so no machine loads another machine's working
    tree. The steps below decide nothing a working tree holds: they check that
    the commit the ref names is the one to release, and prove it loaded.
-2. **Read the dashboard first**, and act on each row. The row says what a
-   worker is about to change and `git status` says what has changed. A
-   `source_in_flight` row with targets under the tree you are about to
-   stage, and a tree that is dirty anywhere, holds the action until that
-   worker commits or clears, whether or not git shows the named path yet:
-   the write git cannot see yet is the one you can still avoid staging. The
-   same row with a clean tree is a worker that has declared and not begun,
-   and a reload then stages committed state only: ask its owner, now or
-   after, and act on the answer, because the holder decides its own hold.
-   Name the row's owner in the announcement either way. A `reload` row is
-   a request and never a hold: a `source_in_flight` row says do not stage
-   me and a `reload` row says please stage me, and a coordinator that
-   treats every row as a hold is blocked by the request asking it to
-   proceed.
+2. **Read the dashboard first**, map every row to its concrete worktree or
+   runtime boundary, and act on that relationship. The row says what a worker
+   is about to change and `git status` says what has changed; neither makes a
+   hold by itself. A commit-addressed action stages the approved commit from
+   its clean release tree. A `source_in_flight` row for an isolated worker
+   worktree is therefore informational: that worktree cannot
+   change the candidate, so record its owner in the announcement and proceed.
+   The row holds the action only when at least one of these is true:
+
+   - the worker can write the same filesystem tree the action will stage, and
+     that tree is dirty or can still change after preflight;
+   - the approved candidate is meant to include the worker's in-flight commit,
+     but that commit has not been integrated onto the released ref; or
+   - the runtime action would interrupt or conflict with the worker's current
+     local or runtime operation.
+
+   For a real hold, ask its owner for the release condition, record it, and
+   wait for that condition. A `reload` row requests activation of its named
+   commit; apply the same three conditions and proceed when none applies. This
+   keeps dashboard intent visible without
+   reviving the old shared-working-tree assumption on isolated worktrees.
 3. **Announce** the action, the tree, the approved commit per tree (full
    sha: that commit, not the tree, is what the action loads), and what it
    releases (a worker may
@@ -600,9 +607,11 @@ tree, which stages whatever it holds at that instant.
    condition is met and verified (the named commit on `HEAD`, the row's paths
    clean) the action may run with the hold quoted. A worker that has not
    answered is asked once more with the deadline. Running without its answer
-   is allowed only when its dashboard row and `git status` both show nothing
-   of that worker's under the tree being staged, and the announcement records
-   the missing answer and that reason.
+   is allowed when the exact release tree is clean at the approved
+   commit and the worker's dashboard row maps to another isolated worktree or
+   otherwise meets none of the three hold conditions above. The announcement
+   records the missing answer, the mapped worktree or runtime boundary, and
+   that reason.
 4. **Immediately before**: `git status --porcelain` on the tree and a
    `pb worker receive`. Both are evidence about that moment and neither is the
    guarantee: the tree can change between the check and the staging, and the

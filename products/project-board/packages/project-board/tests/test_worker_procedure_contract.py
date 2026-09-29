@@ -725,13 +725,16 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "work_review_self_forbidden" in coordinator
     assert "an `idempotency_key` you generate for this decision" in coordinator
     assert "Read the dashboard first" in coordinator
-    # The row is intent, git is history (coordinator, 2026-09-20 22:12Z).
+    # The row is intent, git is history, and the concrete worktree relationship
+    # decides whether either can affect the candidate (operator, 2026-09-29).
     assert "The row says what a worker is about to change and `git status` says what has changed" in coordinator
-    assert "and a tree that is dirty anywhere, holds the action" in coordinator
-    assert "whether or not git shows the named path yet" in coordinator
-    # A declared row over a clean tree is the safe moment, not the unsafe one (2026-09-20 22:21Z).
-    assert "The same row with a clean tree is a worker that has declared and not begun" in coordinator
-    assert "ask its owner, now or after, and act on the answer" in coordinator
+    assert "map every row to its concrete worktree or runtime boundary" in coordinator
+    assert "neither makes a hold by itself" in coordinator
+    assert "an isolated worker worktree is therefore informational" in coordinator
+    assert "that worktree cannot change the candidate" in coordinator
+    assert "the same filesystem tree the action will stage" in coordinator
+    assert "the approved candidate is meant to include the worker's in-flight commit" in coordinator
+    assert "the runtime action would interrupt or conflict with the worker's current" in coordinator
     assert "Collect one `ready` or `hold` from every attending worker" in coordinator
     assert "neither is the guarantee" in coordinator
     assert "A bundle reload returns before the widget build finishes" in _words(profile)
@@ -739,14 +742,18 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "Say what loaded" in coordinator
     # The four things the first list did not carry (coordinator review, 2026-09-20).
     assert "A `hold` names what releases it" in coordinator
-    assert "Running without its answer is allowed only when" in coordinator
-    assert "the announcement records the missing answer and that reason" in coordinator
+    assert "Running without its answer is allowed when" in coordinator
+    assert "the mapped worktree or runtime boundary" in coordinator
+    assert "The announcement records the missing answer" in coordinator
+    assert "and that reason" in coordinator
     assert "diff the touched entry against the live `config/bundles.yaml` first" in _words(profile)
     assert "never by the first match of a block" in _words(profile)
     assert "a widget has three states after a reload" in _words(profile)
     assert "that case cannot occur" in coordinator
-    # A reload row asks for a stage, it does not hold one (coordinator 2026-09-20 23:11Z, filed 2026-09-21).
-    assert "A `reload` row is a request and never a hold" in coordinator
+    # A reload row asks for activation; the same concrete-boundary predicate
+    # decides whether any independent work actually holds it.
+    assert "A `reload` row requests activation of its named commit" in coordinator
+    assert "apply the same three conditions and proceed when none applies" in coordinator
     assert "targets `bundle:<id>` and `procedure:<package>@<revision>`" in coordinator
     assert "Read this when the coordinator relays a test window" in window
     assert "Only the coordinator deploys" in window
