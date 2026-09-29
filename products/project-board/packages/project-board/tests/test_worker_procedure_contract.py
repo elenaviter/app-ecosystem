@@ -753,11 +753,71 @@ def test_situational_references_open_on_their_trigger() -> None:
     # A reload row asks for activation; the same concrete-boundary predicate
     # decides whether any independent work actually holds it.
     assert "A `reload` row requests activation of its named commit" in coordinator
-    assert "apply the same three conditions and proceed when none applies" in coordinator
+    assert "Apply the same three conditions to it and proceed when none applies" in coordinator
+    assert "A worker answers the announcement with the same three conditions" in coordinator
     assert "targets `bundle:<id>` and `procedure:<package>@<revision>`" in coordinator
-    assert "Read this when the coordinator relays a test window" in window
+    assert "Read this when the coordinator announces a runtime action or relays a test window" in _words(window)
     assert "Only the coordinator deploys" in window
     assert "Read this when starting or resuming a Claude Code worker" in wake
+
+
+def test_a_release_waits_only_on_a_real_hold_and_a_freeze_is_named() -> None:
+    # W368 (coordinator review of PR358, 2026-09-29): every worker develops in
+    # its own worktree, so an exact-commit release holds only on the same
+    # three conditions everywhere, and pausing every worker is reserved for a
+    # global test freeze the requester names.
+    window = _words(_read("references/test-window.md"))
+    signals = _words(_read("references/signals.md"))
+    runtime = _words(_read("references/runtime-actions.md"))
+
+    assert "## An exact-commit release" in _read("references/test-window.md")
+    assert "## A global test freeze" in _read("references/test-window.md")
+    assert "Your own worktree is not that tree, so what you have in it, committed or not, cannot change what loads" in window
+    assert "Answer `ready`, and keep working" in window
+    assert "you can write the same filesystem tree the action will stage" in window
+    assert "a commit of yours that is not yet integrated onto the released ref" in window
+    assert "the action would interrupt or conflict with a local or runtime operation you are running" in window
+    assert "asks for a global test freeze by that name, and then every attending worker stops" in window
+    assert "In a freeze it starts once every worker has reported paused" in window
+    assert "Answering mail is fine" in window
+    assert "the deploy lands in the middle of the next change" not in window
+    assert "only once every worker has reported clean" not in window
+
+    assert "the coordinator checks each worker's real holds before it loads the approved commit" in signals
+    assert "A global test freeze the requester names: finish, commit, report paused, stop, wait" in signals
+    assert "an uncommitted patch a reload would run" not in signals
+
+    assert "a worker in the middle of a call through the relay says wait, because the restart interrupts it" in runtime
+    assert "nothing in a worker's own worktree is a reason to wait" in runtime
+    assert "uncommitted relay patch" not in runtime
+
+
+def test_quota_availability_weighs_capacity_size_and_reset() -> None:
+    # W368 (coordinator, 2026-09-29): a pool at 97% with its reset minutes away
+    # takes new work from that reset on.
+    coordinator = _words(_read("references/coordinator.md"))
+
+    assert "Availability is three figures read together: the capacity left in the window, the task's expected size, and the time until the window's `resets_at`" in coordinator
+    assert "a task that fits in the capacity left before the reset proceeds" in coordinator
+    assert "A pool at 97% of its weekly window with the reset ten minutes away takes new work from that reset on" in coordinator
+    assert "waits for the reset or goes to a pool with capacity" in coordinator
+    assert "An agent gets an assignment only for a task that fits the capacity it has before its reset, or one that starts after the reset" in coordinator
+    assert "An agent out of quota gets no assignment" not in coordinator
+
+
+def test_a_returning_worker_starts_from_the_current_procedure() -> None:
+    # Operator, 2026-09-29 17:02Z: on a project authorized to develop Problem
+    # Board, a returning worker is brought to the current revision first.
+    coordinator = _words(_read("references/coordinator.md"))
+
+    assert "A returning worker starts from the current procedure" in coordinator
+    assert "A project authorized to develop Problem Board (a maintainer project, as its facts page states)" in coordinator
+    assert "an installed skill copy stays at the revision it was installed with" in coordinator
+    assert "Compares the host's selected source (`pb source status`) and installed procedure revision (`pb procedure verify`)" in coordinator
+    assert "Starts the update or reinstall the host's policy allows" in coordinator
+    assert "Asks the worker to reread the complete current skill, and the worker confirms the revision before it begins" in coordinator
+    assert "A worker whose info line says paused, restricted or do not use is left asleep until it is legitimately resumed" in coordinator
+    assert "A project that consumes Problem Board follows its published-release policy" in coordinator
 
 
 def test_delivery_reference_keeps_its_runtime_facts() -> None:

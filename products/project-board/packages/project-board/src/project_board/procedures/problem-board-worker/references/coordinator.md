@@ -277,6 +277,8 @@ The coordinator reads every pool's usage at each work boundary, before it starts
 | 80% | No new large tasks. What is in hand is finished and committed. |
 | 90% | Every agent in the pool commits and pushes, writes a one-line progress note on its item, and pauses at its next safe boundary. The coordinator keeps about 5% for mail and settlement. |
 
+**Weigh the task against what is left and when it resets.** Availability is three figures read together: the capacity left in the window, the task's expected size, and the time until the window's `resets_at`. Decide per task: a task that fits in the capacity left before the reset proceeds, and a task that can start after a near reset is taken for that time. A pool at 97% of its weekly window with the reset ten minutes away takes new work from that reset on. A task larger than what is left before a distant reset waits for the reset or goes to a pool with capacity (Worker budgets). The 80% and 90% rows apply this rule to the 5-hour window: they name when large tasks stop and when the pool pauses.
+
 Before a pause, the coordinator:
 1. writes the resume plan: who resumes what, from which note, and the reset time;
 2. checks that every session in the pool has its wake: a Claude Code watch with its guard prompt, or a Codex relay subscription. The session then wakes after the reset without anyone prompting it.
@@ -285,7 +287,7 @@ After the reset, it reads usage again before it resumes, then resumes by the pla
 
 **A paused agent says so on its card.** An agent that consciously decides not to work, because of quota, waiting for a person, or a block, sets `pb worker info "Paused by choice: <reason>, resumes <time>"` and clears it with `pb worker info --clear` when it resumes. The coordinator checks that every paused agent shows the line.
 
-Weekly caps the operator sets per pool stay in force, and they live on the facts page. An agent out of quota gets no assignment.
+Weekly caps the operator sets per pool stay in force, and they live on the facts page. An agent gets an assignment only for a task that fits the capacity it has before its reset, or one that starts after the reset.
 
 ## Set a teammate up to work
 
@@ -312,6 +314,26 @@ then the agent re-reads the skill and continues from it, reporting anything
 still unclear. Why: on 2026-09-26 the coordinator told a new agent its
 workspace path directly, it cloned into it, and the flow the operator wanted
 tested was never tested (operator, 2026-09-26).
+
+**A returning worker starts from the current procedure** (operator,
+2026-09-29). A project authorized to develop Problem Board (a maintainer
+project, as its facts page states) changes reviewed procedure and client
+source while a worker is idle, and an installed skill copy stays at the
+revision it was installed with. When a worker is resumed, or returns after a
+long idle period, before it gets substantive work the coordinator:
+
+1. Compares the host's selected source (`pb source status`) and installed
+   procedure revision (`pb procedure verify`) with the current reviewed or
+   published revision.
+2. Starts the update or reinstall the host's policy allows (runtime actions,
+   Client Source Selection, and `pb procedure install`).
+3. Asks the worker to reread the complete current skill, and the worker
+   confirms the revision before it begins.
+
+A worker whose info line says paused, restricted or do not use is left
+asleep until it is legitimately resumed: waking it only to update spends its
+budget for nothing. A project that consumes Problem Board follows its
+published-release policy for the same check.
 
 ## Keep everything known in the project journal
 
@@ -572,7 +594,7 @@ tree, which stages whatever it holds at that instant.
    the commit the ref names is the one to release, and prove it loaded.
 2. **Read the dashboard first**, map every row to its concrete worktree or
    runtime boundary, and act on that relationship. The row says what a worker
-   is about to change and `git status` says what has changed; neither makes a
+   is about to change and `git status` says what has changed, and neither makes a
    hold by itself. A commit-addressed action stages the approved commit from
    its clean release tree. A `source_in_flight` row for an isolated worker
    worktree is therefore informational: that worktree cannot
@@ -580,17 +602,19 @@ tree, which stages whatever it holds at that instant.
    The row holds the action only when at least one of these is true:
 
    - the worker can write the same filesystem tree the action will stage, and
-     that tree is dirty or can still change after preflight;
+     that tree is dirty or can still change after preflight
    - the approved candidate is meant to include the worker's in-flight commit,
-     but that commit has not been integrated onto the released ref; or
+     but that commit has not been integrated onto the released ref
    - the runtime action would interrupt or conflict with the worker's current
-     local or runtime operation.
+     local or runtime operation
 
    For a real hold, ask its owner for the release condition, record it, and
    wait for that condition. A `reload` row requests activation of its named
-   commit; apply the same three conditions and proceed when none applies. This
-   keeps dashboard intent visible without
-   reviving the old shared-working-tree assumption on isolated worktrees.
+   commit. Apply the same three conditions to it and proceed when none applies.
+   A worker answers the announcement with the same three conditions
+   ([test-window](test-window.md)). Why: every worker develops in its own
+   worktree, so only a shared tree, a missing commit or a running operation can
+   change what the action loads.
 3. **Announce** the action, the tree, the approved commit per tree (full
    sha: that commit, not the tree, is what the action loads), and what it
    releases (a worker may

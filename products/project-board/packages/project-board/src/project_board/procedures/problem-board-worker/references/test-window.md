@@ -1,29 +1,56 @@
 ---
 id: project-board.skill-reference.test-window
 title: Pause For A Test Window
-summary: What a worker does when the coordinator relays a test window: converge to a clean committed tree, report it, stop, and wait for the window to close.
+summary: What a worker answers when the coordinator announces a runtime action or relays a test window. An exact-commit release waits only on a real hold, and a global test freeze, which the requester names, stops every worker until it closes.
 tags: [procedure, problem-board, worker, test-window]
-keywords: [test window, clean tree, paused, deploy, coordinator]
+keywords: [test window, global test freeze, exact-commit release, ready, hold, paused, deploy, coordinator]
 see_also:
   - ./runtime-actions.md
+  - ./coordinator.md
 ---
 
 # Pause For A Test Window
 
-Read this when the coordinator relays a test window. Today the requester is
-the operator; it may be a QA agent. The requester is a role and the protocol
-is the same.
+Read this when the coordinator announces a runtime action or relays a test
+window. Today the requester of a test window is the operator, and it may be a QA
+agent. The requester is a role and the protocol is the same.
+
+The announcement says which of two things it is, and they ask different
+things of you.
+
+## An exact-commit release
+
+A reload, refresh or client switch loads the approved commit from a clean
+release tree. Your own worktree is not that tree, so what you have in it,
+committed or not, cannot change what loads. Answer `ready`, and keep working.
+Answer `hold` with the condition that releases it only when one of these is
+true of you:
+
+- you can write the same filesystem tree the action will stage
+- the approved candidate is meant to include a commit of yours that is not
+  yet integrated onto the released ref
+- the action would interrupt or conflict with a local or runtime operation
+  you are running
+
+These are the coordinator's three hold conditions ([coordinator](coordinator.md),
+Reload, refresh, restart, step 2), and your answer applies the same ones.
+
+## A global test freeze
+
+A requester who tests the running system as a whole asks for a global test
+freeze by that name, and then every attending worker stops, because a worker
+that keeps acting on the running system changes what the requester observes.
 
 1. Finish the piece you are on. The piece, not the item.
 2. If it cannot be committed as it stands, revert it rather than leave it in
-   the tree.
-3. Commit it.
-4. Tell the coordinator your tree is clean and you are paused.
-5. Stop. Do not start the next thing: a worker that commits and immediately
-   begins something else has passed through a clean state rather than
-   converged, and the deploy lands in the middle of the next change.
+   your worktree.
+3. Commit it, so a long freeze loses nothing.
+4. Tell the coordinator you are paused.
+5. Stop. Do not start the next thing, and run nothing that changes the system
+   under test: no runtime action, relay restart, or push to a ref the window
+   releases. Answering mail is fine.
 6. Wait for the coordinator to say the window has closed, then continue.
 
-Only the coordinator deploys, and only once every worker has reported clean.
-If finishing cleanly will take longer than the requester would expect, say so,
-so they can decide whether to wait.
+Only the coordinator deploys. In a freeze it starts once every worker has
+reported paused. If finishing cleanly will take longer than the requester
+would expect, say so, so they can decide whether to wait.
