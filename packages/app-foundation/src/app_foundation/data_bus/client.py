@@ -256,6 +256,9 @@ def _is_socketio_timeout(error: BaseException) -> bool:
     return isinstance(error, SocketIOTimeoutError)
 
 
+_NAMESPACE_ADMISSION_TIMEOUT_SECONDS = 30.0
+
+
 class FederatedDataBusClient:
     """One bundle-scoped Socket.IO session with correlated terminal replies.
 
@@ -524,9 +527,12 @@ class FederatedDataBusClient:
                 socketio_path="socket.io",
                 transports=["websocket", "polling"],
                 auth=self._handshake_auth,
-                # Card verification can outlast python-socketio's one-second
-                # namespace default even though the transport is healthy.
-                wait_timeout=15.0,
+                # Card verification and delivery of the namespace completion
+                # packet can outlast python-socketio's one-second default. A
+                # 15-second bound still raced its cleanup on a busy relay:
+                # the server had accepted the namespace, but the client
+                # callback arrived while connect() was closing the transport.
+                wait_timeout=_NAMESPACE_ADMISSION_TIMEOUT_SECONDS,
             )
         except Exception as exc:
             refusal = self._connect_refusal

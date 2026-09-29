@@ -70,12 +70,14 @@ The Data Bus client API is under `app_foundation.data_bus`:
 The client constructs transport envelopes and correlates replies. The
 application owns subjects, operation names, domain authorization, and the
 meaning of pushed events. It refuses an expired claim before connection and
-bounds event waits by claim expiry. Initial namespace admission waits up to 15
-seconds so server-side Card verification is not cut off by the Socket.IO
-client's one-second default. A Data Bus receipt broadcast by the session for
-another peer is ignored by this client; it cannot wake an application event
-loop. An ingress acknowledgement timeout leaves acceptance unknown; a terminal
-result received before that timeout is returned.
+bounds event waits by claim expiry. Initial namespace admission waits up to 30
+seconds so server-side Card verification and delivery of its completion packet
+are not cut off by the Socket.IO client's one-second default or by a busy
+client event loop at the former 15-second boundary. This connection-only bound
+does not change ingress or correlated-outcome timeouts. A Data Bus receipt
+broadcast by the session for another peer is ignored by this client; it cannot
+wake an application event loop. An ingress acknowledgement timeout leaves
+acceptance unknown; a terminal result received before that timeout is returned.
 An accepted request without a terminal result is also outcome unknown. In
 either unknown case, the product preserves the original message and operation
 identity for a retry. Client errors include the logical connection generation,

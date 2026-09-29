@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import socket
+from contextlib import asynccontextmanager
 from typing import Any, Callable
 
 import pytest
+import socketio
+import uvicorn
 from socketio.exceptions import TimeoutError as SocketIOTimeoutError
 
 from app_foundation.data_bus import (
@@ -132,6 +136,45 @@ async def _client(
     )
     await client.connect()
     return client
+
+
+@asynccontextmanager
+async def _delayed_socketio_server(delay_seconds: float):
+    """A real default-namespace server whose admission answer is delayed."""
+
+    sio = socketio.AsyncServer(async_mode="asgi")
+    accepted = asyncio.Event()
+
+    @sio.event
+    async def connect(sid: str, environ: dict[str, Any], auth: Any) -> bool:
+        await asyncio.sleep(delay_seconds)
+        accepted.set()
+        return True
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(
+            socketio.ASGIApp(sio),
+            host="127.0.0.1",
+            port=port,
+            lifespan="off",
+            log_level="critical",
+        )
+    )
+    server_task = asyncio.create_task(server.serve(sockets=[listener]))
+    while not server.started:
+        if server_task.done():
+            await server_task
+        await asyncio.sleep(0.01)
+    try:
+        yield f"http://127.0.0.1:{port}", accepted
+    finally:
+        server.should_exit = True
+        await server_task
 
 
 def test_claim_repr_does_not_disclose_token() -> None:
@@ -357,30 +400,22 @@ async def test_legacy_claim_keyword_still_opens_a_federated_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_waits_fifteen_seconds_for_namespace_admission() -> None:
-    class SlowNamespaceSocket(_Socket):
-        async def connect(self, *args: Any, **kwargs: Any) -> None:
-            # Model the production failure: governed Card verification finishes
-            # after python-socketio's one-second namespace default. Keep one
-            # real second in this test so removing the explicit wait recreates
-            # the observed early close rather than merely checking a keyword.
-            admission_seconds = 1.05
-            await asyncio.sleep(admission_seconds)
-            if float(kwargs.get("wait_timeout", 1.0)) < admission_seconds:
-                raise SocketIOTimeoutError()
-            await super().connect(*args, **kwargs)
+async def test_connect_waits_through_a_delayed_real_namespace_admission() -> None:
+    # The relay saw the server finish namespace admission just before the
+    # client's 15-second boundary, but python-socketio delivered the connect
+    # callback while its timeout cleanup was already closing the transport.
+    # Exercise the actual python-socketio completion event: a fake connect()
+    # that merely checks a keyword cannot reproduce this boundary.
+    admission_seconds = 15.1
+    async with _delayed_socketio_server(admission_seconds) as (url, accepted):
+        client = FederatedDataBusClient(platform_url=url, credential=_claim())
 
-    socket = SlowNamespaceSocket()
-    client = FederatedDataBusClient(
-        platform_url="https://platform.example",
-        credential=_claim(),
-        socket_factory=lambda: socket,
-    )
+        await client.connect()
 
-    await client.connect()
-
-    assert socket.connect_kwargs["wait_timeout"] == 15.0
-    await client.close()
+        assert accepted.is_set()
+        assert client.connected
+        assert client.socket_id
+        await client.close()
 
 
 def test_client_rejects_ambiguous_or_missing_credentials() -> None:
