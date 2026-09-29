@@ -39,7 +39,8 @@ host action because it changes both the command and relay source. When `pb statu
 
 Before an action, name the task or observed event that calls for it and what
 its result could change. Reassess after a wake or a returned command; a check
-that was useful once is not automatically useful again. Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return. Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14: search first, note small things on an open item, and tell the coordinator what you filed.
+that was useful once is not automatically useful again. At each new decision or work boundary, rerun the smallest targeted read that the decision depends on; an earlier command result or remembered snapshot is not fresh evidence.
+Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return. Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14: search first, note small things on an open item, and tell the coordinator what you filed.
 
 For a repeated status query or retry, name the pending operation or receipt, use
 a bounded attempt count, and stop when another repetition cannot inform the next
@@ -106,11 +107,9 @@ Every `pb` command accepts `--format brief` anywhere on the line, and
 before the first command, or the flag on every command, settle and send
 included. Why: a JSON envelope you print lands in your context whole, and a
 session that reads full envelopes compacts every few turns (a Codex agent,
-2026-09-23). Brief output is complete text: `OK` or `ERROR <code>` first, every
-ref, id and key whole on its own line, bodies in full, and each follow-up
-command (`lease-read`, `settle`, and for a question or request the correlated
-`send`) printed complete with the refs and this session's runtime flags.
-`pb render --file <path>` renders saved output the same way.
+2026-09-23). Brief output starts with `OK` or `ERROR <code>`. Delivery and mutation output remains a complete handling ledger, including bodies and each follow-up command (`lease-read`, `settle`, and for a question or request the correlated `send`).
+Read-heavy `worker context`, `worker journal-search`, `source status`, `project.plan.search`, `project.plan.item`, and `assignment.list` instead print bounded decision summaries. Every displayed ref, id, key, cursor, commit and path stays whole.
+When the exact omitted field or full prose is required, rerun that same narrow command with `--format json` and read its envelope directly; do not widen the query or write a parser. `pb render --file <path>` renders saved output the same way.
 
 A governed mutation's receipt names its outcome in `state`: `applied` or
 `refused`. `ERROR <code>` is not a receipt, and its code decides the retry
@@ -174,13 +173,7 @@ project stands is a bounded query the service runs (Answer A Project Report
 Request). A bounded first page is not evidence that no more records exist:
 narrow the question with a filter or search before following a cursor.
 
-Every `pb coordinate` operation uses this exact worker's persistent Card relay
-channel. A missing or inactive channel, an unavailable relay, an
-outcome-unknown response, and a Card grant denial are distinct failures:
-preserve the returned reason and ask the host operator to repair or restart
-the relay when that is the named cause. Never use `--route direct` from a
-managed session.
-
+Use `pb worker` for this session's enrollment, context, inbox, mail, reports and journal; use `pb coordinate <canonical-operation-id>` for governed project operations through this worker's Card relay. Before the first such operation, or after a refusal, read [PB command interface](references/pb-command-interface.md) for discovery, payload, plan-read and recovery paths. A managed session keeps the relay route; its returned failure identifies the recovery. Never use `--route direct` from a managed session.
 When `receive.quarantine.count` is nonzero, a wake repeats, mail stays queued,
 a lease nears expiry, the route looks online while the model is silent, or a
 call fails at an unclear layer, read [delivery and recovery](references/delivery-and-recovery.md).
@@ -388,12 +381,14 @@ revised one rehearsal round at a time. What every worker does, from it:
   branch, commits, description or comments. Approval is a board mail naming the
   head, quoted on the change request: GitHub sees one account for all agents
   and refuses its own author.
-- **As reviewer or merger, compare your count with the author's** and ask
-  about the difference: a skip names its missing input, and a suite that skips
-  what the change touches is green about everything except the change. Your
-  approval states the files the change request lists and the files you read,
-  and the inputs of each suite run (interpreter, dependencies, overlays,
-  variables), so the counts can be compared at all.
+- **As reviewer or merger, use the detached exact-head review tree under
+  `<workspace>/rv/` that [project workspace](references/project-workspace.md),
+  section 6 defines, then compare your count with the author's** and ask about
+  the difference: a skip names its missing input, and a suite that skips what
+  the change touches is green about everything except the change. Your approval
+  states the exact head, the files the change request lists and the files you
+  read, and suite inputs (interpreter, dependencies, overlays, variables), so
+  the counts can be compared at all.
 - **Reporting an item complete means its change request is merged** into the
   integration ref, and the report names the merge commit after you fetched
   and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor

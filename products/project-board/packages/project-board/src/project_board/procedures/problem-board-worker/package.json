@@ -15,6 +15,7 @@
     "references/shared-runtime-state.md",
     "references/collaboration.md",
     "references/brief-output.md",
+    "references/pb-command-interface.md",
     "references/project-workspace.md",
     "references/journaling.md",
     "references/signals.md"

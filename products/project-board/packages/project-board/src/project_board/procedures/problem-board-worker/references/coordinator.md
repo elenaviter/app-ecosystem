@@ -60,6 +60,11 @@ successor inherits none of that.
   the operator only what is theirs. Why: "cant you ask?" (2026-09-15).
 - Before routing, discuss the need with the candidates, then decide, then route.
   A brief carries the intention and the need; the worker derives the constraints.
+- Before editing durable implementation work, route it to an available suitable
+  worker and record the durable assignment so the Card visibly names who is
+  responsible. The coordinator implements it directly only when no suitable
+  working hand is available or when completing a narrow integration correction
+  already in flight.
 - Let a worker finish its current step before switching it; queue the next thing.
   An operator's remark about what a worker is doing is information, not an order.
 - When a worker runs short of tokens, move its unstarted work to agents with budget
@@ -75,6 +80,33 @@ successor inherits none of that.
   Once the operator gives it, you run the whole window yourself: announce, collect ready,
   back up the board tables, execute, verify, report, update the facts table. Do not
   ask the operator about the mechanics.
+
+## Refresh the evidence you decide from
+
+Freshness belongs to the decision boundary, not to the session. Immediately
+before routing, review, hand-over, merge ordering, or a client/runtime choice,
+rerun the smallest read that supplies that decision's facts. A result from an
+earlier boundary, a compacted conversation, or private memory is not current
+evidence.
+
+- Refresh the project, holder, team, quotas, repositories and workspace with
+  `pb worker context --project-ref <project-ref> --format brief`.
+- Search only the named subject in the journal with
+  `pb worker journal-search --project-ref <project-ref> --query <subject>
+  --limit <small-number> --format brief`.
+- Use `project.plan.search` with the subject and a small `limit`, then
+  `project.plan.item` for the exact returned key or ref. Do not page or assemble
+  the plan to make a decision about one subject.
+- Use `assignment.list` with the worker plus the narrow refs, status or query
+  that the ownership decision needs; keep its `limit` small.
+- Run `pb source status --format brief` immediately before deciding which
+  client or relay source is actually selected and running.
+
+These brief reads keep every displayed ref, cursor and commit copyable whole.
+If a decision needs a field or prose omitted by the summary, rerun that same
+narrow command with `--format json` and read the full envelope directly. Do
+not replace a fresh targeted read with local `jq`, a hand-written parser, or a
+large cached snapshot.
 
 ## Accept, return, cancel
 
@@ -535,6 +567,53 @@ section says.
    2026-09-25 six items (W318 to W323) went out with none, and the order
    (W322 needs W323, W318 needs W313) lived only in one coordinator's head,
    which a context reset or a hand-over loses.
+
+### Route through Problem Board's worker CLI, with the complete assignment payload
+
+The coordinator uses the same installed worker interface as every other
+agent. `pb worker context --project-ref <project-ref>` supplies the stable
+worker name, project workspace and repository evidence. `pb coordinate
+project.plan.item --object-ref <project-ref> --payload-json
+'{"item_key":"<Wn>"}'` supplies the current item, its complete canonical refs
+and revision. The published operation procedure supplies the payload below;
+`pb coordinate --help` supplies the common transport arguments. Route it with:
+
+```bash
+pb coordinate assignment.assign \
+  --object-ref <project-ref> \
+  --payload-file <assignment.json>
+```
+
+```json
+{
+  "work_ref": "<identity_ref copied whole from project.plan.item>",
+  "worker_name": "<stable worker_name from pb worker context>",
+  "title": "<assignment title>",
+  "task": {"instructions": "<bounded briefing; the item carries acceptance>"},
+  "expected_ownership_version": 0,
+  "source_repositories": [
+    {
+      "repository_ref": "repo:<registered-alias>/<exact-relative-scope>",
+      "base_commit": "<full commit>",
+      "branch": "work/w<N>-<slug>"
+    }
+  ],
+  "source_repository_ref": "<copy source_repositories[0].repository_ref>",
+  "source_base_commit": "<copy source_repositories[0].base_commit>",
+  "source_branch": "<copy source_repositories[0].branch>",
+  "idempotency_key": "<stable key for this routing decision>"
+}
+```
+
+`expected_ownership_version` is `0` only for a never-assigned item; for a move
+or reissue copy the current assignment row's value. Work touching no repository
+uses an explicit empty `source_repositories` and omits the one-repository mirror.
+Every `repo:` value is copied from current project or item evidence. If no
+authoritative read exposes it, fix that record or the CLI projection first;
+never guess it from a clone name. When the operation is refused, preserve the
+returned code and fields, consult the operation procedure and retry only the
+documented recovery; an outcome-unknown result repeats the identical request
+under the same idempotency key.
 
 ### Bind every repository the work touches when you assign
 
