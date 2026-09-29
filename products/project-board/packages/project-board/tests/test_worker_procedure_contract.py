@@ -144,7 +144,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.28.14"
+    assert package["revision"] == "2026.09.29.1"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -725,13 +725,16 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "work_review_self_forbidden" in coordinator
     assert "an `idempotency_key` you generate for this decision" in coordinator
     assert "Read the dashboard first" in coordinator
-    # The row is intent, git is history (coordinator, 2026-09-20 22:12Z).
+    # The row is intent, git is history, and the concrete worktree relationship
+    # decides whether either can affect the candidate (operator, 2026-09-29).
     assert "The row says what a worker is about to change and `git status` says what has changed" in coordinator
-    assert "and a tree that is dirty anywhere, holds the action" in coordinator
-    assert "whether or not git shows the named path yet" in coordinator
-    # A declared row over a clean tree is the safe moment, not the unsafe one (2026-09-20 22:21Z).
-    assert "The same row with a clean tree is a worker that has declared and not begun" in coordinator
-    assert "ask its owner, now or after, and act on the answer" in coordinator
+    assert "map every row to its concrete worktree or runtime boundary" in coordinator
+    assert "neither makes a hold by itself" in coordinator
+    assert "an isolated worker worktree is therefore informational" in coordinator
+    assert "that worktree cannot change the candidate" in coordinator
+    assert "the same filesystem tree the action will stage" in coordinator
+    assert "the approved candidate is meant to include the worker's in-flight commit" in coordinator
+    assert "the runtime action would interrupt or conflict with the worker's current" in coordinator
     assert "Collect one `ready` or `hold` from every attending worker" in coordinator
     assert "neither is the guarantee" in coordinator
     assert "A bundle reload returns before the widget build finishes" in _words(profile)
@@ -739,18 +742,110 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "Say what loaded" in coordinator
     # The four things the first list did not carry (coordinator review, 2026-09-20).
     assert "A `hold` names what releases it" in coordinator
-    assert "Running without its answer is allowed only when" in coordinator
-    assert "the announcement records the missing answer and that reason" in coordinator
+    assert "Running without its answer is allowed when" in coordinator
+    assert "the mapped worktree or runtime boundary" in coordinator
+    assert "The announcement records the missing answer" in coordinator
+    assert "and that reason" in coordinator
     assert "diff the touched entry against the live `config/bundles.yaml` first" in _words(profile)
     assert "never by the first match of a block" in _words(profile)
     assert "a widget has three states after a reload" in _words(profile)
     assert "that case cannot occur" in coordinator
-    # A reload row asks for a stage, it does not hold one (coordinator 2026-09-20 23:11Z, filed 2026-09-21).
-    assert "A `reload` row is a request and never a hold" in coordinator
+    # A reload row asks for activation; the same concrete-boundary predicate
+    # decides whether any independent work actually holds it.
+    assert "A `reload` row requests activation of its named commit" in coordinator
+    assert "Apply the same three conditions to it and proceed when none applies" in coordinator
+    assert "A worker answers the announcement with the same three conditions" in coordinator
     assert "targets `bundle:<id>` and `procedure:<package>@<revision>`" in coordinator
-    assert "Read this when the coordinator relays a test window" in window
+    assert "Read this when the coordinator announces a runtime action or relays a test window" in _words(window)
     assert "Only the coordinator deploys" in window
     assert "Read this when starting or resuming a Claude Code worker" in wake
+
+
+def test_a_release_waits_only_on_a_real_hold_and_a_freeze_is_named() -> None:
+    # W368 (coordinator review of PR358, 2026-09-29): every worker develops in
+    # its own worktree, so an exact-commit release holds only on the same
+    # three conditions everywhere, and pausing every worker is reserved for a
+    # global test freeze the requester names.
+    window = _words(_read("references/test-window.md"))
+    signals = _words(_read("references/signals.md"))
+    runtime = _words(_read("references/runtime-actions.md"))
+
+    assert "## An exact-commit release" in _read("references/test-window.md")
+    assert "## A global test freeze" in _read("references/test-window.md")
+    assert "Your own worktree is not that tree, so what you have in it, committed or not, cannot change what loads" in window
+    assert "Answer `ready`, and keep working" in window
+    assert "you can write the same filesystem tree the action will stage" in window
+    assert "a commit of yours that is not yet integrated onto the released ref" in window
+    assert "the action would interrupt or conflict with a local or runtime operation you are running" in window
+    assert "asks for a global test freeze by that name, and then every attending worker stops" in window
+    assert "In a freeze it starts once every worker has reported paused" in window
+    assert "Answering mail is fine" in window
+    assert "the deploy lands in the middle of the next change" not in window
+    assert "only once every worker has reported clean" not in window
+
+    assert "the coordinator checks each worker's real holds before it loads the approved commit" in signals
+    assert "A global test freeze the requester names: finish, commit, report paused, stop, wait" in signals
+    assert "an uncommitted patch a reload would run" not in signals
+
+    assert "a worker in the middle of a call through the relay says wait, because the restart interrupts it" in runtime
+    assert "nothing in a worker's own worktree is a reason to wait" in runtime
+    assert "uncommitted relay patch" not in runtime
+
+
+def test_quota_availability_weighs_capacity_size_and_reset() -> None:
+    # W368 (coordinator, 2026-09-29): a pool at 97% with its reset minutes away
+    # takes new work from that reset on.
+    coordinator = _words(_read("references/coordinator.md"))
+
+    assert "Availability is three figures read together: the capacity left in the window, the task's expected size, and the time until the window's `resets_at`" in coordinator
+    assert "a task whose next bounded phase fits in the capacity left before the reset proceeds" in coordinator
+    assert "A pool at 97% of its weekly window with the reset ten minutes away can still take a bounded action, or start work that safely crosses the reset" in coordinator
+    # W368 return (2026-09-29): 80% and 90% are planning triggers, and a pause
+    # comes from the limit, the info line, or a step that cannot fit.
+    assert "The percentages are planning triggers for that decision" in coordinator
+    assert "No new large task starts unless its next bounded phase fits in the capacity left or safely crosses the reset" in coordinator
+    assert "Every agent in the pool reaches a safe checkpoint" in coordinator
+    assert "Work continues while the next bounded step fits" in coordinator
+    # W368 re-review: a step that safely crosses a near reset is allowed, and
+    # deferring one step never pauses the whole agent.
+    assert "Deferring a step and pausing an agent are different" in coordinator
+    assert "A step that neither fits before the reset nor safely crosses it is deferred" in coordinator
+    assert "An agent pauses only when its runtime reports the limit reached, or its info line says paused or do not use" in coordinator
+    assert "when its next step cannot fit before the reset" not in coordinator
+    assert "pauses at its next safe boundary" not in coordinator
+    assert "waits for the reset or goes to a pool with capacity" in coordinator
+    assert "An agent gets an assignment when the task's next bounded phase fits the capacity it has before its reset, safely crosses the reset, or starts after it" in coordinator
+    assert "An agent gets an assignment only for a task that fits" not in coordinator
+    assert "An agent out of quota gets no assignment" not in coordinator
+
+
+def test_the_coordinator_routes_implementation_to_a_worker() -> None:
+    # Operator, 2026-09-29: the coordinator designs and routes; it implements
+    # only for a recorded reason, and personal ability is not one.
+    coordinator = _words(_read("references/coordinator.md"))
+
+    assert "The coordinator routes implementation" in coordinator
+    assert "Once an implementable deliverable exists, it routes the implementation to a capable, usable worker with a durable assignment" in coordinator
+    assert "It implements itself only when no suitable worker exists" in coordinator
+    assert "when a machine-local resource or an authority only the coordinator holds requires it" in coordinator
+    assert "when briefing and reviewing a delegate would cost more than the bounded task" in coordinator
+    assert "it records that reason on the item" in coordinator
+    assert "Being able to do the work is not one of these reasons" in coordinator
+
+
+def test_a_returning_worker_starts_from_the_current_procedure() -> None:
+    # Operator, 2026-09-29 17:02Z: on a project authorized to develop Problem
+    # Board, a returning worker is brought to the current revision first.
+    coordinator = _words(_read("references/coordinator.md"))
+
+    assert "A returning worker starts from the current procedure" in coordinator
+    assert "A project authorized to develop Problem Board (a maintainer project, as its facts page states)" in coordinator
+    assert "an installed skill copy stays at the revision it was installed with" in coordinator
+    assert "Compares the host's selected source (`pb source status`) and installed procedure revision (`pb procedure verify`)" in coordinator
+    assert "Starts the update or reinstall the host's policy allows" in coordinator
+    assert "Asks the worker to reread the complete current skill, and the worker confirms the revision before it begins" in coordinator
+    assert "A worker whose info line says paused, restricted or do not use is left asleep until it is legitimately resumed" in coordinator
+    assert "A project that consumes Problem Board follows its published-release policy" in coordinator
 
 
 def test_delivery_reference_keeps_its_runtime_facts() -> None:

@@ -197,8 +197,10 @@ it from that selection.
 To agree: announce what you restart and why with a shared-write entry of kind
 `relay_restart` whose target names the host (for example `host:development-one`,
 summary "I am restarting the relay: <why>"), and mail each agent on that host.
-Collect their ready: a worker mid-call or holding an uncommitted relay patch
-says wait. Then restart, report the result, and clear the entry.
+Collect their ready: a worker in the middle of a call through the relay says
+wait, because the restart interrupts it. The restart reloads the recorded
+source, so nothing in a worker's own worktree is a reason to wait. Then
+restart, report the result, and clear the entry.
 
 **Verify in the running artifact, not in the checkout.** A green suite says the
 source is correct and nothing about what is running, and a commit hash says
