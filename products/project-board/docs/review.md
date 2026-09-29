@@ -74,7 +74,14 @@ In the board's work-item dialog a person edits the Status and Assignee
 fields. A save runs two independent steps: a changed assignee is an assign
 (or a release, when cleared), and a changed status is a status edit.
 Selecting Working requires an assignee; selecting Cancelled requires a
-reason. Delete refuses an assigned item, or an item another item depends on.
+reason. Review and Done do not require a detour through Working before an
+assignee can change. When both fields change, one transaction applies the
+review decision first when there is one, then the selected ownership, and
+either all of the save succeeds or none of it does. The comparison uses the
+assignee the dialog displayed and resolves legacy aliases and worker ids to
+the stable worker name, so a status-only save does not invent a reassignment
+from implementation or review history. Delete refuses an assigned item, or
+an item another item depends on.
 
 ## Entering review
 
