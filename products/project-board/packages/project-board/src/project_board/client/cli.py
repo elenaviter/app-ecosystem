@@ -61,6 +61,13 @@ from .prose_arguments import (
 )
 from .commands import load_json
 from .relay_pacing import channel_reconnect_state
+from .coordinate_contract import coordinate_contract, require_coordinate_shape
+from .coordinate_recovery import (
+    CoordinateRecovery,
+    error_outcome,
+    mutation_idempotency_key,
+    recovery_identity,
+)
 from .coordinate_queue import (
     DEFAULT_COORDINATE_TIMEOUT_SECONDS,
     CoordinateQueue,
@@ -469,7 +476,10 @@ def build_parser() -> argparse.ArgumentParser:
             "Invoke a canonical Problem Board operation against the governed "
             "endpoint using the card this session already holds. The operation "
             "ids are the ones the catalog publishes, so there is no second "
-            "namespace to learn: worker.retire is worker.retire on every surface."
+            "namespace to learn: worker.retire is worker.retire on every surface. "
+            "pb coordinate <operation> --contract prints the operation's object, "
+            "payload fields and a copyable command, and each call is checked "
+            "against that shape before it is sent."
         ),
     )
     coordinate.add_argument(
@@ -483,6 +493,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     coordinate.add_argument("--payload-json", default="", help="Inline JSON object payload.")
     coordinate.add_argument("--payload-file", default="", help="File holding a JSON object payload, or - for stdin.")
+    coordinate.add_argument(
+        "--contract",
+        action="store_true",
+        help=(
+            "Print the operation's object, payload fields and a copyable command "
+            "from the operation catalog, and send nothing."
+        ),
+    )
     coordinate.add_argument(
         "--route",
         choices=("relay", "direct"),
@@ -2289,9 +2307,34 @@ def _raise_if_send_channel_reconnecting(
         )
 
 
+def _coordinate_payload(args: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if getattr(args, "payload_file", "") and getattr(args, "payload_json", ""):
+        raise ValueError("pass only one of --payload-file and --payload-json")
+    if getattr(args, "payload_file", ""):
+        payload = load_json(args.payload_file)
+        refuse_unresolved_payload_slots(payload, argument="--payload-file")
+    elif getattr(args, "payload_json", ""):
+        value = json.loads(args.payload_json)
+        if isinstance(value, Mapping):
+            guard_inline_payload_prose(value, argument="--payload-json", file_argument="--payload-file")
+            refuse_unresolved_payload_slots(value, argument="--payload-json")
+        if not isinstance(value, dict):
+            raise ValueError("--payload-json must be a JSON object")
+        payload = value
+    return payload
+
+
 def _coordinate_command(args: Any) -> dict[str, Any]:
     """Call any canonical operation through this exact worker's Card channel."""
 
+    action = str(args.action or "")
+    if bool(getattr(args, "contract", False)):
+        return coordinate_contract(action)
+    payload = _coordinate_payload(args)
+    object_ref = str(args.object_ref or "")
+    # The catalog shows a misplaced or missing field before any relay is used.
+    require_coordinate_shape(action, object_ref, payload)
     identity = _identity(args)
     path = resolve_host_config_path(getattr(args, "config", None))
     config = HostRelayConfig.load(path)
@@ -2314,22 +2357,6 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
                 "required_action": f"pb worker authorize {channel.profile} --device",
             },
         )
-    payload: dict[str, Any] = {}
-    if args.payload_file and args.payload_json:
-        raise ValueError("pass only one of --payload-file and --payload-json")
-    if args.payload_file:
-        payload = load_json(args.payload_file)
-        refuse_unresolved_payload_slots(payload, argument="--payload-file")
-    elif args.payload_json:
-        value = json.loads(args.payload_json)
-        if isinstance(value, Mapping):
-            guard_inline_payload_prose(value, argument="--payload-json", file_argument="--payload-file")
-            refuse_unresolved_payload_slots(value, argument="--payload-json")
-        if not isinstance(value, dict):
-            raise ValueError("--payload-json must be a JSON object")
-        payload = value
-    action = str(args.action or "")
-    object_ref = str(args.object_ref or "")
     if str(getattr(args, "route", "relay") or "relay") == "direct":
         return asyncio.run(
             _coordinate_direct(
@@ -2360,50 +2387,160 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
     # behind "the relay did not claim the operation".
     _raise_if_channel_reconnecting(path, channel.worker_name)
     queue = CoordinateQueue(config.field_root)
-    request = queue.submit(
+    key = mutation_idempotency_key(payload)
+    recovery = CoordinateRecovery(config.field_root) if key else None
+    if recovery is not None:
+        # The key is held for this exact request before the relay can see it.
+        prior, created = recovery.reserve(
+            channel.worker_name,
+            key,
+            action=action,
+            object_ref=object_ref,
+            payload=payload,
+        )
+        if not created:
+            recovered = _recover_prior_mutation(
+                queue, recovery, prior, worker_name=channel.worker_name, key=key
+            )
+            if recovered is not None:
+                return recovered
+    request_id = new_id("coordinate")
+    if recovery is not None:
+        # The attempt is registered under its queue request id before the
+        # queue can expose it, so no release can happen while it may reach
+        # the service. A key released because every earlier attempt had no
+        # effect is reserved again here.
+        recovery.begin_attempt(
+            channel.worker_name,
+            key,
+            action=action,
+            object_ref=object_ref,
+            payload=payload,
+            request_id=request_id,
+        )
+    try:
+        request = queue.submit(
+            worker_name=channel.worker_name,
+            worker_identity=channel.worker_identity,
+            runtime_kind=channel.runtime_kind,
+            runtime_session_id=channel.runtime_session_id,
+            action=action,
+            object_ref=object_ref,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+            request_id=request_id,
+        )
+    except BaseException:
+        if recovery is not None:
+            _settle_interrupted_publication(
+                queue, recovery, channel.worker_name, key,
+                action=action, object_ref=object_ref, payload=payload,
+                request_id=request_id,
+            )
+        raise
+    if recovery is not None:
+        recovery.record_submission(
+            channel.worker_name,
+            key,
+            action=action,
+            object_ref=object_ref,
+            payload=payload,
+            request_id=request_id,
+            token=request_id,
+        )
+    try:
+        response = _await_coordinate_response(
+            queue,
+            path,
+            worker_name=channel.worker_name,
+            request_id=request_id,
+            timeout_seconds=timeout_seconds,
+        )
+    except DomainError as exc:
+        if recovery is not None:
+            _record_unfinished_mutation(
+                recovery, channel.worker_name, key, exc, request_id=request_id
+            )
+        raise
+    return _finish_coordinate_response(
+        response,
+        recovery=recovery,
         worker_name=channel.worker_name,
-        worker_identity=channel.worker_identity,
-        runtime_kind=channel.runtime_kind,
-        runtime_session_id=channel.runtime_session_id,
-        action=action,
-        object_ref=object_ref,
-        payload=payload,
-        timeout_seconds=timeout_seconds,
+        key=key,
+        request_id=request_id,
     )
-    request_id = str(request["request_id"])
+
+
+def _settle_interrupted_publication(
+    queue: Any,
+    recovery: CoordinateRecovery,
+    worker_name: str,
+    key: str,
+    *,
+    action: str,
+    object_ref: str,
+    payload: Mapping[str, Any],
+    request_id: str,
+) -> None:
+    """Decide an attempt whose publication raised, from the queue itself.
+
+    A request the queue holds was published and may apply, so it is recorded
+    as submitted with an unknown outcome. Only a request the queue provably
+    does not hold is abandoned. When the queue cannot be read, the attempt
+    stays publishing, which holds the key (W404, fifth review finding).
+    """
+
+    try:
+        published = queue.holds(worker_name=worker_name, request_id=request_id)
+    except BaseException:  # noqa: BLE001 - unknown stays held
+        return
+    try:
+        if published:
+            recovery.record_submission(
+                worker_name, key, action=action, object_ref=object_ref,
+                payload=payload, request_id=request_id, token=request_id,
+            )
+        else:
+            recovery.abandon_attempt(worker_name, key, request_id)
+    except BaseException:  # noqa: BLE001 - unknown stays held
+        return
+
+
+def _await_coordinate_response(
+    queue: Any,
+    path: Any,
+    *,
+    worker_name: str,
+    request_id: str,
+    timeout_seconds: float,
+) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_seconds
     next_channel_check = time.monotonic() + 1.0
     while time.monotonic() < deadline:
-        response = queue.take_response(
-            worker_name=channel.worker_name,
-            request_id=request_id,
-        )
+        response = queue.take_response(worker_name=worker_name, request_id=request_id)
         if response is not None:
-            return _coordinate_response(response)
+            return response
         if time.monotonic() >= next_channel_check:
             next_channel_check = time.monotonic() + 1.0
-            reconnect = channel_reconnect_state(path, channel.worker_name)
+            reconnect = channel_reconnect_state(path, worker_name)
             if reconnect is not None:
                 # Only a request no relay ever claimed is withdrawn; a claimed
                 # one stays for the relay to finish or reconcile.
                 withdrawn = queue.cancel_pending_if_unclaimed(
-                    worker_name=channel.worker_name,
+                    worker_name=worker_name,
                     request_id=request_id,
                 )
                 if withdrawn is not None:
-                    raise _channel_reconnecting_error(channel.worker_name, reconnect)
+                    raise _channel_reconnecting_error(worker_name, reconnect)
         time.sleep(0.05)
-    cancelled = queue.cancel_pending(
-        worker_name=channel.worker_name,
-        request_id=request_id,
-    )
+    cancelled = queue.cancel_pending(worker_name=worker_name, request_id=request_id)
     if cancelled is not None and not bool(cancelled.get("claimed_once")):
         raise DomainError(
             "work_coordinate_relay_unavailable",
             "The worker relay did not claim the governed operation before its deadline.",
             status=504,
             details={
-                "worker_name": channel.worker_name,
+                "worker_name": worker_name,
                 "request_id": request_id,
                 "timeout_seconds": timeout_seconds,
             },
@@ -2414,25 +2551,114 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             "The relay claimed the governed operation but no result arrived before the deadline.",
             status=504,
             details={
-                "worker_name": channel.worker_name,
+                "worker_name": worker_name,
                 "request_id": request_id,
-                "transport_attempts": int(
-                    cancelled.get("transport_attempts") or 0
-                ),
+                "transport_attempts": int(cancelled.get("transport_attempts") or 0),
             },
         )
-    response = queue.take_response(
-        worker_name=channel.worker_name,
-        request_id=request_id,
-    )
+    response = queue.take_response(worker_name=worker_name, request_id=request_id)
     if response is not None:
-        return _coordinate_response(response)
+        return response
     raise DomainError(
         "work_coordinate_outcome_unknown",
         "The relay claimed the governed operation but no result arrived before the deadline.",
         status=504,
-        details={"worker_name": channel.worker_name, "request_id": request_id},
+        details={"worker_name": worker_name, "request_id": request_id},
     )
+
+
+def _finish_coordinate_response(
+    response: Mapping[str, Any],
+    *,
+    recovery: CoordinateRecovery | None,
+    worker_name: str,
+    key: str,
+    request_id: str,
+) -> dict[str, Any]:
+    """The service's answer; the ledger records it against its own attempt."""
+
+    try:
+        result = _coordinate_response(response)
+    except DomainError as exc:
+        if recovery is not None:
+            _record_unfinished_mutation(recovery, worker_name, key, exc, request_id=request_id)
+        raise
+    if recovery is not None:
+        recovery.settle_attempt(worker_name, key, request_id, "applied", receipt=result)
+    return result
+
+
+def _record_unfinished_mutation(
+    recovery: CoordinateRecovery,
+    worker_name: str,
+    key: str,
+    error: DomainError,
+    *,
+    request_id: str,
+) -> None:
+    """Record what this error proves about its own attempt, and say how to retry.
+
+    A raised error and a queued error envelope reach this one decision. The
+    ledger releases the key only when every attempt under it is proved to
+    have had no effect, and never touches a recorded receipt.
+    """
+
+    record = recovery.settle_attempt(
+        worker_name, key, request_id, error_outcome(error)
+    )
+    if record is None:
+        return
+    if record.get("state") == "applied":
+        error.details["recovery"] = recovery_identity(record, source="local_receipt")
+        error.details["retry"] = (
+            "An earlier attempt of this exact request applied. Run the same "
+            "command unchanged to get its receipt."
+        )
+        return
+    error.details["recovery"] = recovery_identity(record, source="pending")
+    error.details["retry"] = (
+        "Run the same command unchanged. The client returns the receipt "
+        "if it arrived, or resends this exact request under the same key."
+    )
+
+
+def _recover_prior_mutation(
+    queue: Any,
+    recovery: CoordinateRecovery,
+    prior: Mapping[str, Any],
+    *,
+    worker_name: str,
+    key: str,
+) -> dict[str, Any] | None:
+    """The earlier outcome of this exact request, when there is one to report.
+
+    Every late response is taken and recorded against its own attempt before
+    deciding, so an error for one attempt cannot hide another's receipt.
+    """
+
+    receipt = prior.get("receipt")
+    if prior.get("state") == "applied" and isinstance(receipt, Mapping):
+        result = dict(receipt)
+        result["recovery"] = recovery_identity(prior, source="local_receipt")
+        return result
+    applied: dict[str, Any] | None = None
+    for request_id in reversed([str(value) for value in prior.get("request_ids") or []]):
+        late = queue.take_response(worker_name=worker_name, request_id=request_id)
+        if late is None:
+            continue
+        try:
+            result = _finish_coordinate_response(
+                late, recovery=recovery, worker_name=worker_name, key=key, request_id=request_id
+            )
+        except DomainError:
+            continue
+        applied = applied or result
+    record = recovery.read(worker_name, key)
+    if record is not None and record.get("state") == "applied":
+        result = dict(applied or record.get("receipt") or {})
+        result["recovery"] = recovery_identity(record, source="late_relay_response")
+        return result
+    return None
 
 
 def _project_id(project_ref: str) -> str:

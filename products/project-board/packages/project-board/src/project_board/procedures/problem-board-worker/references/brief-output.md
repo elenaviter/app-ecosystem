@@ -90,7 +90,9 @@ which of three things happened. Read it before any retry.
 - The request was refused before any write, on its shape or its admission:
   `work_value_required`, a `field_*_invalid` code, an authorization refusal.
   Nothing applied. Fix what the code names. Repeating the same request repeats
-  the refusal.
+  the refusal. On the `pb coordinate` path, `work_coordinate_shape_invalid` and
+  `work_coordinate_operation_unknown` come from the operation catalog before
+  anything is sent, and name the corrected command.
 - The outcome is unknown: the request may have applied and its response been
   lost, or it may never have arrived. `work_coordinate_outcome_unknown` names
   this class on the `pb coordinate` path (the relay claimed the request and no
@@ -100,7 +102,19 @@ which of three things happened. Read it before any retry.
   the write applied, the replay returns the original receipt marked
   `(replayed)` and writes nothing, and if it did not, it applies once. A fresh
   key is a second write, and after an unknown outcome it is the one thing that
-  can double the effect.
+  can double the effect. On `pb coordinate`, run the same command unchanged:
+  the client keeps each key's exact request, returns the receipt when the late
+  response arrived (`recovery.source` names where it came from), and otherwise
+  resends that exact request. A different request under a key already sent is
+  refused locally as `work_coordinate_idempotency_key_reused`, naming the
+  original request, before anything is sent.
+  `work_coordinate_response_too_large` is in this class too: the operation may
+  have applied and only its result did not fit the queue. Every error that
+  prints `recovery` and `retry` fields is in this class, and the key stays
+  held for that exact request until a receipt settles it, or until every
+  attempt sent under it is proved to have had no effect. A refusal of a later
+  attempt says nothing about an earlier one, and `recovery.attempts` shows
+  each attempt's outcome.
 
 The envelope's shape alone cannot tell these apart, so the reader does not
 classify by `ERROR`. It classifies by the code, and a code it does not know is

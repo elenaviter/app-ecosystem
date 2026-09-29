@@ -95,9 +95,13 @@ class CoordinateQueue:
         object_ref: str,
         payload: Mapping[str, Any],
         timeout_seconds: float = DEFAULT_COORDINATE_TIMEOUT_SECONDS,
+        request_id: str = "",
     ) -> dict[str, Any]:
+        """Publish one request. A caller that must track it across an
+        interruption names its ``request_id`` before publishing (W404)."""
+
         timeout = max(1.0, min(float(timeout_seconds), 600.0))
-        request_id = new_id("coordinate")
+        request_id = component(request_id, field="request_id") if request_id else new_id("coordinate")
         row = {
             "schema": COORDINATE_REQUEST_SCHEMA,
             "request_id": request_id,
@@ -166,6 +170,27 @@ class CoordinateQueue:
             self._path("pending", row["worker_name"], request_id), row
         )
         return row
+
+    def holds(self, *, worker_name: str, request_id: str) -> bool:
+        """Whether this request was published: pending, claimed or answered.
+
+        The scan runs under the worker's queue lock, the same lock every
+        queue transition takes, so a claim, a requeue or a completion cannot
+        move the request between the locations while they are read. Only a
+        missing file counts as absent; any other error propagates, so an
+        unreadable queue is never taken as proof that nothing was published
+        (W404, sixth review finding).
+        """
+
+        clean_worker = component(worker_name, field="worker_name")
+        with exclusive_lock(self._lock_path(clean_worker)):
+            for state in ("pending", "leased", "responses"):
+                try:
+                    os.stat(self._path(state, clean_worker, request_id))
+                except FileNotFoundError:
+                    continue
+                return True
+            return False
 
     @staticmethod
     def expired(request: Mapping[str, Any]) -> bool:
