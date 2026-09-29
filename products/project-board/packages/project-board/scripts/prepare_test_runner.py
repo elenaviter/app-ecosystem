@@ -36,10 +36,12 @@ FIRST_PARTY_REQUIREMENT = re.compile(
 OVERLAY_RUNTIME_REQUIREMENTS = (
     "filelock>=3.16,<4",
     "json5>=0.12,<1",
+    "jwcrypto>=1.5.6,<2",
     "keyring>=25,<26",
     "mcp==2.0.0",
     "packaging>=23,<27",
     "platformdirs>=4,<5",
+    "readchar>=4.0.5",
 )
 class RunnerError(RuntimeError):
     """A preparation or preflight failure with an operator-facing message."""
@@ -161,6 +163,16 @@ def _filtered_platform_requirements(kdcube_root: Path) -> tuple[str, Path]:
     return "\n".join(output) + "\n", source
 
 
+def _portable_platform_requirements(platform_text: str, kdcube_root: Path) -> str:
+    """Replace the executable include path with its checkout-relative identity."""
+    absolute_include = f"-r {(kdcube_root / AWS_REQUIREMENTS).resolve()}"
+    portable_include = f"-r {AWS_REQUIREMENTS}"
+    return "\n".join(
+        portable_include if line == absolute_include else line
+        for line in platform_text.splitlines()
+    ) + "\n"
+
+
 def _atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -244,6 +256,13 @@ def _inputs(
     project_board_root = app_ecosystem_root / PROJECT_BOARD_RELATIVE
     pyproject = project_board_root / "pyproject.toml"
     platform_text, platform_source = _filtered_platform_requirements(kdcube_root)
+    portable_platform_text = _portable_platform_requirements(
+        platform_text, kdcube_root
+    )
+    included_requirements = kdcube_root / AWS_REQUIREMENTS
+    included_requirements_sha256 = hashlib.sha256(
+        included_requirements.read_bytes()
+    ).hexdigest()
     test_requirements = _read_test_requirements(pyproject)
     python = _python_identity(base_python)
     dependency_input = {
@@ -251,7 +270,10 @@ def _inputs(
             "implementation": python["implementation"],
             "version_info": python["version_info"],
         },
-        "platform_requirements_sha256": _sha256_text(platform_text),
+        "platform_requirements_sha256": _sha256_text(portable_platform_text),
+        "platform_includes_sha256": {
+            AWS_REQUIREMENTS: included_requirements_sha256,
+        },
         "overlay_runtime_requirements": list(OVERLAY_RUNTIME_REQUIREMENTS),
         "project_board_test_requirements": list(test_requirements),
     }
@@ -263,7 +285,11 @@ def _inputs(
         ),
         "platform_requirements": {
             "source": str(platform_source.resolve()),
-            "filtered_sha256": _sha256_text(platform_text),
+            "filtered_sha256": _sha256_text(portable_platform_text),
+            "generated_sha256": _sha256_text(platform_text),
+            "included_sha256": {
+                AWS_REQUIREMENTS: included_requirements_sha256,
+            },
         },
         "project_board_test_extra": {
             "source": str(pyproject.resolve()),
