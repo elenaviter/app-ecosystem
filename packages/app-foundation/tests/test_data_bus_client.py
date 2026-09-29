@@ -356,6 +356,33 @@ async def test_legacy_claim_keyword_still_opens_a_federated_session() -> None:
     assert socket.connect_kwargs["auth"]["federated_token"] == claim.federated_token
 
 
+@pytest.mark.asyncio
+async def test_connect_waits_fifteen_seconds_for_namespace_admission() -> None:
+    class SlowNamespaceSocket(_Socket):
+        async def connect(self, *args: Any, **kwargs: Any) -> None:
+            # Model the production failure: governed Card verification finishes
+            # after python-socketio's one-second namespace default. Keep one
+            # real second in this test so removing the explicit wait recreates
+            # the observed early close rather than merely checking a keyword.
+            admission_seconds = 1.05
+            await asyncio.sleep(admission_seconds)
+            if float(kwargs.get("wait_timeout", 1.0)) < admission_seconds:
+                raise SocketIOTimeoutError()
+            await super().connect(*args, **kwargs)
+
+    socket = SlowNamespaceSocket()
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=_claim(),
+        socket_factory=lambda: socket,
+    )
+
+    await client.connect()
+
+    assert socket.connect_kwargs["wait_timeout"] == 15.0
+    await client.close()
+
+
 def test_client_rejects_ambiguous_or_missing_credentials() -> None:
     claim = _claim()
     with pytest.raises(ValueError, match="either credential or claim"):
