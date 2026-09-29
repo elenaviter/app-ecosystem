@@ -1449,6 +1449,29 @@ def test_delegation_is_not_free_and_its_reason_is_stated():
     assert "Why: a delegation that costs more to brief and check than it saves spends the same shared budget twice" in coordinator
 
 
+def test_coordinator_routes_with_the_public_cli_contract_not_named_service_source():
+    """Operator 2026-09-29: named services exist but are not this procedure's interface."""
+
+    raw = _read("references/coordinator.md")
+    coordinator = " ".join(raw.split())
+    assert "### Route through the worker CLI, with the complete assignment payload" in raw
+    assert "pb coordinate assignment.assign" in coordinator
+    for field in (
+        '"work_ref"',
+        '"worker_name"',
+        '"expected_ownership_version"',
+        '"source_repositories"',
+        '"source_repository_ref"',
+        '"source_base_commit"',
+        '"source_branch"',
+        '"idempotency_key"',
+    ):
+        assert field in raw
+    assert "it does not use the named-service or MCP surfaces" in coordinator
+    assert "Do not open `named_service.py`" in coordinator
+    assert "never guess it from a clone name" in coordinator
+
+
 def test_the_kdcube_profile_gives_deploy_worktrees_a_gitdir_the_container_can_read():
     """W262 line 4 proof (dev-main 2026-09-26): an absolute gitdir left the receipt without git evidence."""
 

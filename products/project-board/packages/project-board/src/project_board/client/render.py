@@ -609,6 +609,8 @@ def _source_identity(value: Any) -> str:
     fields = [f"source={mode}"]
     if mode == "released":
         fields.append(f"version={value.get('version') or 'unknown'}")
+        if value.get("release_id"):
+            fields.append(f"release={value['release_id']}")
     elif mode == "checkout":
         fields.extend(
             (
@@ -1006,6 +1008,14 @@ def _team_usage_lines(team: Sequence[Any]) -> list[str]:
             # "usage ok" already lists the windows without resets; say it once.
             head = "usage ok" if state.get("kind") == "ok" else limit_state_line(state)
             status = f"{head} · {windows}" if windows else limit_state_line(state)
+            # A team row is the last sample relayed by that worker, not a claim
+            # that the sample is fresh now. Keep its existing provenance so a
+            # coordinator can judge it without inventing a freshness threshold.
+            status = f"last reported {status}"
+            source = str(state.get("source") or "").strip()
+            observed = str(state.get("observed_at") or "").strip()
+            status += f" · source {source or 'not reported'}"
+            status += f" · observed {observed or 'not reported'}"
         else:
             status = "not reported"
         lines.append(f"  {label}{where}: {status}")
