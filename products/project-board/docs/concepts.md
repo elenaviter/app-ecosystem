@@ -142,7 +142,7 @@ message fixes the item.
 | Status | Meaning |
 | --- | --- |
 | `todo` | Work has not started. The item may already have an assignee. |
-| `working` | Work has started. Working needs an assignee. |
+| `working` | Work has started. The assignee may be empty; status does not decide it. |
 | `review` | A result is ready for a qualified reviewer. |
 | `done` | A qualified reviewer accepted the result and its evidence. |
 | `cancelled` | Work ended without acceptance, with a durable reason. |
@@ -159,6 +159,9 @@ person on the project, admin or member.
 Assignment history and reviewer routing never replace its displayed value.
 The current list on a worker Card contains the item exactly when this field
 names the worker.
+Explicit assignee edits are valid at any status; a combined edit applies both
+selected fields atomically. [Work Item Review](review.md#assignment-and-status-are-separate-facts)
+owns the save and historical-assignment semantics.
 
 **The ownership version** counts on the assignment: 1 when first routed, plus
 one on every move of ownership (reassignment, release, a return from review,

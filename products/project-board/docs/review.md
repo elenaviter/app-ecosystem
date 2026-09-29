@@ -48,7 +48,7 @@ todo --working status--> working --assignment.completed--> review
 | State | What it asserts |
 | --- | --- |
 | `todo` | Work has not started. The item may already have an assignee. |
-| `working` | Work has started. Working needs an assignee. A released item keeps this status until a status edit changes it. A blocked assignment stays `working` and records its reason separately. |
+| `working` | Work has started. The assignee may be empty; assignment and status are independent. A released item keeps this status until a status edit changes it. A blocked assignment stays `working` and records its reason separately. |
 | `review` | A versioned result is ready for a qualified reviewer. Work completed under an assignment carries its assignment evidence; work managed by a person carries the immutable item version as evidence. |
 | `done` | A qualified reviewer accepted the submitted result and its evidence. |
 | `cancelled` | Work ended without acceptance. Who cancelled it, when, and why stay on the record. |
@@ -57,7 +57,7 @@ todo --working status--> working --assignment.completed--> review
 
 - **Assigning never changes status.** `assignment.assign` records who owns
   the item. The item moves to `working` when the owner reports `working`, or
-  when Working is set on an assigned item: by an agent whose Card holds
+  when Working is set on an item: by an agent whose Card holds
   `work.status.set`, or by any person on the project, admin or member.
 - **A status edit changes only the status.** `work.status.set` leaves the
   assignee, the assignment state and the ownership version as they are, for
@@ -66,7 +66,8 @@ todo --working status--> working --assignment.completed--> review
   `assignment.return` (release), or a reassignment. A review decision may
   settle assignment history, but it does not replace or clear the item's
   assignee.
-- **The one business rule:** Working needs an assignee.
+- **No status-dependent assignee restriction.** Any status can keep an empty
+  assignee or receive an explicit assignee edit.
 
 Why: routing work to an agent says nothing about whether the work has
 started, and moving work back to Todo says nothing about who holds it.
@@ -74,9 +75,10 @@ started, and moving work back to Todo says nothing about who holds it.
 In the board's work-item dialog a person edits the Status and Assignee
 fields. A save runs two independent steps: a changed assignee is an assign
 (or a release, when cleared), and a changed status is a status edit.
-Selecting Working requires an assignee; selecting Cancelled requires a
-reason. Review and Done do not require a detour through Working before an
-assignee can change. When both fields change, one transaction applies the
+Selecting Cancelled requires a reason, but no status restricts the assignee.
+Working may be explicitly unassigned; Review-to-Cancelled may select a new
+worker. No detour through another status is needed. When both fields change,
+one transaction applies the
 review decision first when there is one, then the selected ownership, and
 either all of the save succeeds or none of it does. The dialog always displays
 and submits `item.assignee`, for Todo, Working, Review, Done and Cancelled.
@@ -86,6 +88,10 @@ compare the selected value with the stored assignee. A status-only save does
 not read, derive, clear or recreate the assignee; an explicit assignee edit
 sets it once. The worker Card's current assignment list contains the item
 exactly when `item.assignee` names that worker.
+An explicit clear after a review has closed ownership clears only the item
+field and preserves that closed assignment as history. A new selection creates
+the new ownership after the decision, without rewriting the prior ownership
+evidence.
 Delete refuses an assigned item, or an item another item depends on.
 
 ## Entering review
