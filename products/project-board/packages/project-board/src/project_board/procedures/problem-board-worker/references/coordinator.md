@@ -167,9 +167,11 @@ large cached snapshot.
    `done` for accept, `todo` with the same assignee for return (the worker
    keeps the assignment, its ownership version advances, and it reworks
    against the new version), `cancelled` for cancel, and the assignment state
-   beside it. To hand returned work to someone else, release it with
-   `assignment.return` and its reason, then assign. Mail about the decision is
-   commentary.
+   beside it. To hand returned work to someone else, change its assignee: that
+   one edit notifies the new assignee and makes the item theirs, in any status
+   and with the status left as it is. Assignee and status are independent
+   edits in either order, and neither needs a review command first (operator,
+   2026-09-29, delivered by W398). Mail about the decision is commentary.
 
 6. **Route reviews (W326). Route a review in the turn it arrives.** An item
    that enters Review with no reviewer named comes to you as the acting

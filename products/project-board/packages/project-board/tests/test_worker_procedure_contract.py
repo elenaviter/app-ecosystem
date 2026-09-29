@@ -2026,3 +2026,7 @@ def test_the_coordinator_reconciles_an_overdue_worker_before_rerouting() -> None
     assert "or an assignment or a review has no reported start" in coordinator
     assert "its info line and its current usage with the reset time" in coordinator
     assert "A worker out of quota or restricted is rerouted or waited for with that reason, not woken again" in coordinator
+    # Assignee and status are independent edits (operator, via codex-main 2026-09-29 22:00Z).
+    assert "To hand returned work to someone else, change its assignee: that one edit notifies the new assignee and makes the item theirs" in coordinator
+    assert "Assignee and status are independent edits in either order, and neither needs a review command first" in coordinator
+    assert "release it with `assignment.return` and its reason, then assign" not in coordinator
