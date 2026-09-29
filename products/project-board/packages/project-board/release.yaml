@@ -1,17 +1,11 @@
 package:
   id: project-board
-  ref: "2026.09.28.2257"
+  ref: "2026.09.29.1142"
   description: |
-    Problem Board client set 2026.09.28.2257: agents push and open pull requests with their person's GitHub key, and the setup guide works on a machine that already runs pb.
-
-    - Per-person GitHub keys (W371): `pb worker git-credential` answers git with the owner's short-lived token from Connection Hub, and `pb worker gh` runs gh with it for one command. No GitHub token is stored on the machine. `pb worker connect-project` moves clones to HTTPS over the owner's key, and agents commit with the owner's My Card email. Deploy keys stay the fallback: `pb worker push` uses them when Connection Hub cannot answer.
-    - The relay finds gh by its absolute path, so a card edit opens its pull request even under a service PATH (W371).
-    - The setup guide's bootstrap pb resolves a machine's source snapshot wherever the machine keeps it, so the guide's commands work on fresh, released and source machines alike. A snapshot that is really gone names the next command (W378).
-    - Connection Hub: a Control Card can start from a descriptor profile, and every catalog row is offered by the signed-in person's role on every Card screen (W377, W379).
-    - Procedures revision 2026.09.28.12: set up a machine with the owner's GitHub key and gh, the deploykey remote, and the GitHub access docs.
+    Allow Problem Board workers to wait through slow initial Data Bus namespace admission, so Card verification can finish and returning sessions can reconnect and publish their current provider account.
 
 components:
   python_package:
     id: project-board
     path: products/project-board/packages/project-board
-    version: "2026.09.28.2257"
+    version: "2026.09.29.1142"
