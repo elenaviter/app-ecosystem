@@ -484,22 +484,29 @@ it, what you touched (Rule 3), and what you are waiting on.
   rework to the same branch. A reviewer who returns an item names who acts
   next and on what (W403 C5, 2026-09-29).
 
-- **The implementer and the reviewer are two responsibilities.** The item
-  keeps its implementer at every status, Review included ("worked by"), so a
-  return comes back to that worker. The reviewer is a separate field. What a
-  board view and the `project.plan.index` `assignee` filter show is who must
-  act now: the reviewer while the item is in Review, the implementer
-  otherwise (W391). Neither the status nor the reviewer replaces the
-  implementer (W403 C4, 2026-09-29). There is no new status. Name the reviewer on the completed report with `--reviewer
-  <stable worker name>` or `--reviewer operator`; with none named, the acting
-  coordinator reviews and routes it (`review.assign`). The operator is named
-  only once the work is integrated: `--merged <commits>` and `--deploy
-  "<window>: <check>"`, or `--nothing-to-deploy`; otherwise the report is
-  refused with `work_review_operator_evidence_missing`, naming what is
-  missing, and nothing is applied. Why: the operator's review list held every
-  item in Review, most with nothing for the operator to look at (W314, W287,
-  W300 on 2026-09-25, W326); a list of what is really the operator's needs a
-  named reviewer on every item.
+- **The assignee is the current owner, in every status.** `item.assignee`
+  names who holds the item now, Review and Done included, and every
+  current-work list and filter reads that one field. Only an ownership act
+  changes it: `assignment.assign`, a release, a reassignment, or an explicit
+  assignee edit. A status change never selects, substitutes or clears anyone.
+  The reviewer is a separate field: naming a reviewer (`--reviewer` on the
+  completed report, or `review.assign`) records who decides the result, and
+  does not rewrite the assignee or move the item between Cards. When a
+  review should sit on the reviewer's own list, the router assigns it to
+  them explicitly. Earlier implementers and reviewers stay in the item's
+  history. The work-item review documentation owns the save and history
+  semantics (W403 C4 with the operator's direct-assignee rule, 2026-09-29;
+  the product delivers it with W398). Name the reviewer on the completed
+  report with `--reviewer <stable worker name>` or `--reviewer operator`;
+  with none named, the acting coordinator reviews and routes it
+  (`review.assign`). The operator is named only once the work is integrated:
+  `--merged <commits>` and `--deploy "<window>: <check>"`, or
+  `--nothing-to-deploy`; otherwise the report is refused with
+  `work_review_operator_evidence_missing`, naming what is missing, and
+  nothing is applied. Why: a list derived from the reviewer could not show
+  one worker's own work and its reviews apart, and the operator's review
+  list held items with nothing for the operator to look at (W314, W287, W300
+  on 2026-09-25, W326).
 - **Only a durably authorized reviewer decides.** A review decision (accept,
   return) comes from the reviewer the board names for that item, against the
   exact head under review, through the existing authorization and revision

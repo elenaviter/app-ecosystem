@@ -1969,7 +1969,7 @@ def test_assigned_work_includes_reviews_and_one_read_before_idle() -> None:
     assert "read your responsibilities once" in words
     assert "`pb coordinate assignment.list`" in skill
     assert 'with `{"assignee": "<your stable name>"}`' in skill
-    assert "it matches the reviewer while an item is in Review" in words
+    assert 'the same with `{"status": "review"}` for the items whose `reviewer` names you' in skill
     assert "`pb worker outbox-status` for each outbox id whose outcome you do not know" in words
     assert "A read that fails leaves you unknown, not idle" in words
 
@@ -1995,9 +1995,14 @@ def test_the_implementer_and_the_reviewer_are_two_responsibilities() -> None:
     # W403 C4, C5, C7: the implementer persists through Review, a return is a
     # new start, and only the reviewer the board names decides.
     collaboration = _words(_read("references/collaboration.md"))
-    assert "**The implementer and the reviewer are two responsibilities.**" in collaboration
-    assert "The item keeps its implementer at every status, Review included" in collaboration
-    assert "the reviewer while the item is in Review, the implementer otherwise (W391)" in collaboration
+    # W403 acceptance 5 with the operator's direct-assignee rule (codex-main, 2026-09-29 21:28Z).
+    assert "**The assignee is the current owner, in every status.**" in collaboration
+    assert "every current-work list and filter reads that one field" in collaboration
+    assert "A status change never selects, substitutes or clears anyone" in collaboration
+    assert "does not rewrite the assignee or move the item between Cards" in collaboration
+    assert "the router assigns it to them explicitly" in collaboration
+    assert "acting assignee" not in collaboration
+    assert "(W391)" not in collaboration
     assert "In review, the reviewer is who must act" not in collaboration
     assert "the return is work to begin now, like an assignment notice" in collaboration
     assert "Your terminal report under the old version stays final" in collaboration
