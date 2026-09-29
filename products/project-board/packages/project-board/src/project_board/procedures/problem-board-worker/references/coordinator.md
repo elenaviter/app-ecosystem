@@ -80,6 +80,42 @@ successor inherits none of that.
   Once the operator gives it, you run the whole window yourself: announce, collect ready,
   back up the board tables, execute, verify, report, update the facts table. Do not
   ask the operator about the mechanics.
+- Deliver a cross-layer item as independently verifiable activations. When one
+  layer is reviewed, compatible with the counterparts already running, reversible
+  through its normal runtime action, and useful on its own, run its approved
+  window and mark that layer live while the unfinished layers remain Working. A
+  later layer may hold it only when the earlier layer's own compatibility or
+  acceptance depends on that later layer. Report each layer separately with its
+  source head, review state, activation receipt and live verification. Why: W393's
+  safe compact client was held behind unfinished server evidence, leaving the
+  expensive reads live after their replacement was ready (operator, 2026-09-29).
+
+## Refresh the evidence you decide from
+
+Freshness belongs to the decision boundary, not to the session. Immediately
+before routing, review, hand-over, merge ordering, or a client/runtime choice,
+rerun the smallest read that supplies that decision's facts. A result from an
+earlier boundary, a compacted conversation, or private memory is not current
+evidence.
+
+- Refresh the project, holder, team, quotas, repositories and workspace with
+  `pb worker context --project-ref <project-ref> --format brief`.
+- Search only the named subject in the journal with
+  `pb worker journal-search --project-ref <project-ref> --query <subject>
+  --limit <small-number> --format brief`.
+- Use `project.plan.search` with the subject and a small `limit`, then
+  `project.plan.item` for the exact returned key or ref. Do not page or assemble
+  the plan to make a decision about one subject.
+- Use `assignment.list` with the worker plus the narrow refs, status or query
+  that the ownership decision needs; keep its `limit` small.
+- Run `pb source status --format brief` immediately before deciding which
+  client or relay source is actually selected and running.
+
+These brief reads keep every displayed ref, cursor and commit copyable whole.
+If a decision needs a field or prose omitted by the summary, rerun that same
+narrow command with `--format json` and read the full envelope directly. Do
+not replace a fresh targeted read with local `jq`, a hand-written parser, or a
+large cached snapshot.
 
 ## Refresh the evidence you decide from
 

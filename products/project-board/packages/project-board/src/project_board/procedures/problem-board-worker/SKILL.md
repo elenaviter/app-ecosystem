@@ -319,9 +319,8 @@ move status ([ownership](references/identity-and-authorization.md)).
   have applied. Read that row, then retry the same report unchanged. Changed
   content or an invented source event is a different report, not recovery.
 - A `project.report` request reaches only the coordinator: before answering one, read [project-report](references/project-report.md).
-- Journal every completed move, and put each kind of knowledge where it belongs: [journaling](references/journaling.md). Each signal of this skill and the test that pins it: [signals](references/signals.md).
-- Author the complete journal Markdown, front matter included, under the
-  `local_journal_directory` from `pb worker context`. Keep the operator's exact
+- Journal every completed move only when the project declares role `journal`; no role means no journal work. The role is repository agnostic and every change is item-scoped: [journaling](references/journaling.md). Each signal of this skill and the test that pins it: [signals](references/signals.md).
+- Author the complete journal Markdown, front matter included, at the configured relative path in the current item's worktree. Keep the operator's exact
   ruling, artifact refs, failure text, alternatives, blast radius, verification
   and next action when they matter; manufacture no empty sections or generic
   tags. The front matter needs a unique
@@ -331,7 +330,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   status and attribution make retrieval better. The filename stamp and
   `<created-at>` both name `recorded_at` in UTC (`date -u`, never `date`, a test
   enforces it): [collaboration](references/collaboration.md), finding ten.
-- After writing the file, run `pb worker journal-index --project-ref ... --repository-journal-ref ...`; it indexes the existing file without rewriting it and returns its index, validation, and receipt steps.
+- After the journal change request is merged, fetch and fast-forward the clean journal clone, then run `pb worker journal-index --project-ref ... --repository-journal-ref ...`; an unmerged entry correctly returns `journal_entry_not_found`. The command does not rewrite the file and returns its index, validation and receipt steps.
   After interruption, inspect with `pb worker journal-index-status --project-ref ... --operation-id ...`, then run `pb worker journal-index-resume --operation-id ...` for the first incomplete step. Status is observation only: it does not rebuild, enqueue, or repair. Do not rerun the original command to guess what happened.
   For a pre-ledger validation use `journal-index-status --project-ref ... --outbox-id ... --repository-journal-ref ...`; it distinguishes an accepted plan revision from an absent receipt.
   Search with `pb worker journal-search --query ...` (`--project-ref ...` to name the project explicitly); legacy files remain searchable under a path-derived identity and status names compatibility issues.
