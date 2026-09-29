@@ -6,6 +6,7 @@ import json
 
 from project_board.client import cli
 from project_board.client.render import render_envelope
+from project_board.client.store import SharedFieldStore
 
 
 PROJECT_REF = "work:project:compact-coordinator-evidence"
@@ -331,6 +332,163 @@ def test_worker_context_marks_old_usage_as_a_provenanced_report() -> None:
     )
 
 
+def test_compact_worker_and_team_rows_show_relay_reported_runtime_identity(
+    tmp_path,
+) -> None:
+    model_observed = "2026-09-29T12:30:00Z"
+    account_observed = "2026-09-29T12:31:00Z"
+    runtime_model = {
+        "model": "gpt-5.6-sol",
+        "effort": "xhigh",
+        "source": "codex-rollout",
+        "observed_at": model_observed,
+    }
+    runtime_account = {
+        "provider": "openai",
+        "account_id": "account-1",
+        "email": "agent@example.test",
+        "source": "host-auth",
+        "observed_at": account_observed,
+    }
+    worker_text = _brief(
+        {
+            "workers": [
+                {
+                    "worker_alias": "codex-main",
+                    "worker_name": "codex-01",
+                    "runtime_kind": "codex",
+                    "pool_status": "active",
+                    "reachability": {
+                        "state": "listening",
+                        "session_state": "attached",
+                        "reachable": True,
+                    },
+                    "runtime_model": runtime_model,
+                    "board_record": {
+                        "runtime_account": {
+                            key: value
+                            for key, value in runtime_account.items()
+                            if key not in {"source", "observed_at"}
+                        },
+                        "runtime_account_source": "host-auth",
+                        "runtime_account_observed_at": account_observed,
+                    },
+                }
+            ]
+        }
+    )
+
+    assert (
+        "runtime: model gpt-5.6-sol · reasoning effort xhigh · state reported "
+        f"· source codex-rollout · observed {model_observed}"
+        in worker_text
+    )
+    assert (
+        "provider account: provider openai · account_id account-1 · "
+        "email agent@example.test · state reported · source host-auth "
+        f"· observed {account_observed}"
+        in worker_text
+    )
+    _assert_budget(worker_text, lines=15, bytes_=4_000)
+
+    store = SharedFieldStore(tmp_path / "field")
+    store.initialize(field_id="compact-runtime-evidence")
+    store.create_project(
+        project_id="compact-runtime-evidence",
+        title="Compact runtime evidence",
+        goal="Keep relay reports visible.",
+        owner="operator",
+    )
+    store.sync_project_team(
+        "compact-runtime-evidence",
+        [
+            {
+                "worker_alias": "codex-main",
+                "worker_name": "codex-01",
+                "runtime_kind": "codex",
+                "presence": "online",
+                "runtime_model": runtime_model,
+                "runtime_account": runtime_account,
+            }
+        ],
+    )
+    [stored_member] = store.read_project_team("compact-runtime-evidence")
+    assert stored_member["runtime_model"] == runtime_model
+    assert stored_member["runtime_account"] == runtime_account
+
+    context_text = _brief(
+        {
+            "project_ref": PROJECT_REF,
+            "workspace": "/workspaces/codex-main",
+            "repositories": [],
+            "team": [stored_member],
+        }
+    )
+    assert f"source codex-rollout · observed {model_observed}" in context_text
+    assert f"source host-auth · observed {account_observed}" in context_text
+    _assert_budget(context_text, lines=25, bytes_=5_000)
+
+
+def test_compact_worker_and_team_rows_name_missing_and_stale_runtime_identity() -> None:
+    missing = _brief(
+        {
+            "workers": [
+                {
+                    "worker_alias": "new-worker",
+                    "worker_name": "codex-new",
+                    "runtime_kind": "codex",
+                    "pool_status": "active",
+                    "reachability": {
+                        "state": "listening",
+                        "session_state": "attached",
+                        "reachable": True,
+                    },
+                }
+            ]
+        }
+    )
+    assert (
+        "runtime: model missing · reasoning effort missing · state missing "
+        "· source not reported · observed not reported"
+        in missing
+    )
+    assert (
+        "provider account: missing · state missing · source not reported "
+        "· observed not reported"
+        in missing
+    )
+
+    stale = _brief(
+        {
+            "project_ref": PROJECT_REF,
+            "workspace": "/workspaces/codex-main",
+            "repositories": [],
+            "team": [
+                {
+                    "worker_alias": "stale-worker",
+                    "worker_name": "codex-stale",
+                    "runtime_kind": "codex",
+                    "presence": "stale",
+                    "runtime_model": {
+                        "model": "gpt-5.6-sol",
+                        "effort": "high",
+                        "source": "codex-rollout",
+                        "observed_at": "2026-09-25T01:00:00Z",
+                    },
+                    "runtime_account": {
+                        "account_id": "account-old",
+                        "source": "host-auth",
+                        "observed_at": "2026-09-25T01:01:00Z",
+                    },
+                }
+            ],
+        }
+    )
+    assert "reasoning effort high · state stale · source codex-rollout" in stale
+    assert "account_id account-old · state stale · source host-auth" in stale
+    _assert_budget(missing + stale, lines=40, bytes_=7_000)
+
+
 def _plan_search_item(index: int) -> dict:
     return {
         "item_key": f"W{393 + index}",
@@ -436,6 +594,48 @@ def test_plan_item_keeps_actionable_refs_and_bounds_the_complete_body() -> None:
     assert "attachments: 12 of 15 shown in brief" in text
     assert "notes" not in text and "OMITTED_TAIL" not in text
     _assert_budget(text, lines=75, bytes_=20_000)
+
+
+def test_plan_item_shows_the_latest_actionable_review_return_reason() -> None:
+    item = {
+        "item_key": "W393",
+        "status": "working",
+        "title": "Compact coordinator reads",
+        "identity_ref": IDENTITY_REF,
+        "item_ref": EXACT_REF,
+        "revision": 18,
+        "review_history": [
+            {
+                "decision": "return",
+                "timestamp": "2026-09-29T12:00:00Z",
+                "reason": "Older return reason.",
+            },
+            {
+                "decision": "return",
+                "operation": "review.return",
+                "timestamp": "2026-09-29T14:18:36Z",
+                "actor": {"label": "codex-review"},
+                "reason": "Rebase the overlapping server change, then add runtime identity. "
+                + LONG_PROSE,
+            },
+        ],
+    }
+
+    text = _brief({"operation": "project.plan.item", "object": item})
+
+    assert (
+        "latest review return: decision return · at 2026-09-29T14:18:36Z "
+        "· by codex-review"
+        in text
+    )
+    assert (
+        "latest review return reason: Rebase the overlapping server change, "
+        "then add runtime identity. decision evidence"
+        in text
+    )
+    assert "Older return reason" not in text
+    assert "OMITTED_TAIL" not in text
+    _assert_budget(text, lines=20, bytes_=5_000)
 
 
 def _assignment(index: int) -> dict:

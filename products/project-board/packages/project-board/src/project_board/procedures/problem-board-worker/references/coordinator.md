@@ -60,6 +60,11 @@ successor inherits none of that.
   the operator only what is theirs. Why: "cant you ask?" (2026-09-15).
 - Before routing, discuss the need with the candidates, then decide, then route.
   A brief carries the intention and the need; the worker derives the constraints.
+- Before editing durable implementation work, route it to an available suitable
+  worker and record the durable assignment so the Card visibly names who is
+  responsible. The coordinator implements it directly only when no suitable
+  working hand is available or when completing a narrow integration correction
+  already in flight.
 - Let a worker finish its current step before switching it; queue the next thing.
   An operator's remark about what a worker is doing is information, not an order.
 - When a worker runs short of tokens, move its unstarted work to agents with budget
