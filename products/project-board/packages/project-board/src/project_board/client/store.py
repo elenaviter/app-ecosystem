@@ -3929,6 +3929,16 @@ class SharedFieldStore:
                         "wake_delivery_state": str(subscription.get("wake_delivery_state") or ""),
                     },
                 )
+            pending = self.pending_worker_mail_count_snapshot(clean_name)
+            if pending <= 0:
+                # A stale exhausted marker with nothing waiting is not a
+                # stranded session: a recovery would only spend a turn.
+                raise DomainError(
+                    "field_worker_wake_recovery_not_needed",
+                    "No mail is waiting for this session; nothing needs a wake.",
+                    status=409,
+                    details={"wake_id": clean_wake_id, "pending_messages": pending},
+                )
             prior = subscription.get("wake_recovery")
             if (
                 isinstance(prior, Mapping)
@@ -3949,7 +3959,7 @@ class SharedFieldStore:
                 "requested_at": now,
                 "requested_by": bounded_text(requested_by, field="requested_by", maximum=256),
                 "retry_exhausted_since": exhausted,
-                "pending_message_refs": len(list(subscription.get("last_wake_message_refs") or [])),
+                "pending_messages": pending,
                 "state": "reserved",
                 "submission_id": "",
                 "reason": "",

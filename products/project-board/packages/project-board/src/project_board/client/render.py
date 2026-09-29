@@ -1093,6 +1093,14 @@ def _native_delivery_lines(worker: Mapping[str, Any], reach: Mapping[str, Any]) 
     exhausted = str(reach.get("wake_retry_exhausted_since") or "")
     recovery = reach.get("wake_recovery") if isinstance(reach.get("wake_recovery"), Mapping) else {}
     last = reach.get("last_wake_recovery") if isinstance(reach.get("last_wake_recovery"), Mapping) else {}
+    try:
+        pending = int(reach.get("pending_messages") or 0)
+    except (TypeError, ValueError):
+        pending = 0
+    current_recovery = bool(recovery) and str(recovery.get("wake_id") or "") == wake_id
+    if wake_id and exhausted and pending <= 0 and not current_recovery:
+        # An exhausted marker with nothing waiting is not a stall.
+        wake_id = ""
     if wake_id and exhausted:
         lines.append(
             "NOTE: native delivery stalled: wake {} taken without a receive and its one retry used since {}; "
@@ -1103,7 +1111,7 @@ def _native_delivery_lines(worker: Mapping[str, Any], reach: Mapping[str, Any]) 
                 reach.get("last_inbox_check_at") or "-",
             )
         )
-        if recovery and str(recovery.get("wake_id") or "") == wake_id:
+        if current_recovery:
             lines.append(
                 "recovery: {} at {}{} · resolved only by the worker's receive of this wake; do not submit again{}".format(
                     recovery.get("state"),

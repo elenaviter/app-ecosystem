@@ -65,6 +65,11 @@ def stranded(tmp_path, monkeypatch):
     # Every acknowledgement deadline is already past, as it was by 18:46Z.
     monkeypatch.setattr(store_module, "_future", lambda seconds: "2020-01-01T00:00:00Z")
     field = _field(tmp_path)
+    for number in range(3):
+        field.send_mail(
+            "", sender="control-plane", recipient=WORKER, kind="request",
+            subject=f"Pending {number}", body="Waiting behind the wake.", idempotency_key=f"pending-{number}",
+        )
     _consumed(field, retry=False, submission="sub-initial")
     _consumed(field, retry=True, submission="sub-retry")
     field.record_worker_session_queue_reconciliation(
@@ -179,9 +184,9 @@ def test_a_definite_failure_allows_one_more_recovery_and_an_unknown_one_does_not
     config = _Config(stranded.root)
     failed = recover_worker_wake(
         config, worker_name=WORKER, wake_id=WAKE, requested_by="coordinator",
-        notifier=_notifier({"delivered": False, "reason": "codex_queue_failed"}, []),
+        notifier=_notifier({"delivered": False, "reason": "codex_command_not_found"}, []),
     )
-    assert failed["recovery"]["state"] == "failed"
+    assert failed["recovery"]["state"] == "failed", "the queue process never started"
     unknown = recover_worker_wake(
         config, worker_name=WORKER, wake_id=WAKE, requested_by="coordinator",
         notifier=_notifier({"delivered": False, "state": "unreachable", "reason": "TimeoutExpired"}, []),
@@ -265,3 +270,50 @@ def test_the_coordinator_procedure_owns_detect_diagnose_recover_and_recheck():
     assert "tell the operator in the project conversation (kind `blocked`)" in coordinator
     assert "Do not submit again" in coordinator
     assert "[coordinator](coordinator.md), Recover a stalled Codex delivery" in delivery
+
+
+# W405 review findings (codex-app, 2026-09-29 23:44Z).
+
+
+def test_an_exhausted_marker_with_nothing_pending_is_not_a_stall(tmp_path, monkeypatch):
+    monkeypatch.setattr(store_module, "_future", lambda seconds: "2020-01-01T00:00:00Z")
+    field = _field(tmp_path)
+    _consumed(field, retry=False, submission="sub-initial")
+    _consumed(field, retry=True, submission="sub-retry")
+    field.record_worker_session_queue_reconciliation(
+        WORKER, expected_wake_id=WAKE, result={"reconciled": True, "queued_submission_ids": []}
+    )
+    # A fresh inbox check that did not name the stale wake; no mail waits.
+    field.check_in_worker_listener(WORKER, inbox_checked=True)
+    assert _subscription(field).get("wake_retry_exhausted_since")
+    text = _brief({"workers": field.list_workers()})
+    assert "native delivery stalled" not in text and "wake-recover" not in text
+    with pytest.raises(DomainError) as refused:
+        recover_worker_wake(_Config(field.root), worker_name=WORKER, wake_id=WAKE, requested_by="c", notifier=_notifier({"delivered": True}, []))
+    assert refused.value.code == "field_worker_wake_recovery_not_needed"
+    assert refused.value.details["pending_messages"] == 0
+
+
+def test_a_queue_process_that_exits_nonzero_after_admission_is_not_retried(stranded, monkeypatch):
+    import subprocess
+
+    from project_board.client import session_delivery
+
+    monkeypatch.setattr(session_delivery, "_codex_executable", lambda: Path("/bin/echo"))
+    admitted = []
+
+    def queue_then_fail(command, **kwargs):
+        admitted.append(command)
+        return subprocess.CompletedProcess(
+            command, 1, stdout=f"Queued message sub-accepted-{len(admitted)} for thread {SESSION}.\n", stderr="late error"
+        )
+
+    monkeypatch.setattr(session_delivery.subprocess, "run", queue_then_fail)
+    config = _Config(stranded.root)
+    first = recover_worker_wake(config, worker_name=WORKER, wake_id=WAKE, requested_by="coordinator", notifier=session_delivery.notify_agent_session)
+    assert first["recovery"]["state"] == "outcome_unknown", "a nonzero exit is not proof that nothing was queued"
+    assert first["recovery"]["submission_id"] == "sub-accepted-1", "the admission it printed is kept"
+    with pytest.raises(DomainError) as held:
+        recover_worker_wake(config, worker_name=WORKER, wake_id=WAKE, requested_by="coordinator", notifier=session_delivery.notify_agent_session)
+    assert held.value.code == "field_worker_wake_recovery_exists"
+    assert len(admitted) == 1, "never a second native submission for the same wake"

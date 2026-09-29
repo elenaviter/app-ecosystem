@@ -30,8 +30,10 @@ from .session_delivery import CODEX_QUEUE_ADAPTER, delivery_adapter, notify_agen
 from .store import SharedFieldStore
 
 # Native queue results that prove nothing was queued: another recovery of the
-# same wake is then allowed. Anything else unclear is an unknown outcome.
-DEFINITE_FAILURES = frozenset({"codex_command_not_found", "codex_queue_failed"})
+# same wake is then allowed. Only a missing command qualifies: the queue
+# process was never started. A queue process that exits nonzero may already
+# have admitted the prompt, so that is an unknown outcome.
+DEFINITE_FAILURES = frozenset({"codex_command_not_found"})
 
 
 def recover_worker_wake(
