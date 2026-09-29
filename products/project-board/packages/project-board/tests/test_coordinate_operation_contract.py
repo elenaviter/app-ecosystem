@@ -708,7 +708,16 @@ def test_a_publishing_attempt_is_never_released_by_a_concurrent_refusal(tmp_path
 # queue published the request abandoned it as if it had never been sent.
 
 
-@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit, RuntimeError])
+def _sigint():
+    """A real SIGINT delivered to this process, as the reviewer's probe sends it."""
+
+    import signal
+
+    signal.raise_signal(signal.SIGINT)
+    raise AssertionError("SIGINT did not interrupt")
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit, RuntimeError, _sigint])
 def test_an_interrupt_after_publication_keeps_the_key(submits, monkeypatch, tmp_path, interrupt):
     host, identity, channel = make_host(tmp_path)
     monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
@@ -723,7 +732,8 @@ def test_an_interrupt_after_publication_keeps_the_key(submits, monkeypatch, tmp_
         raise interrupt()
 
     monkeypatch.setattr(CoordinateQueue, "submit", publish_then_interrupt)
-    with pytest.raises(interrupt):
+    expected = KeyboardInterrupt if interrupt is _sigint else interrupt
+    with pytest.raises(expected):
         cli._coordinate_command(args)
     (claimed,) = queue.claim(worker_name=channel.worker_name, limit=10)
     record = recovery.read(channel.worker_name, "accept-w18")
