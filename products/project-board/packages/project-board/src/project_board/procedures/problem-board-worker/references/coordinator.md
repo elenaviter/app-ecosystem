@@ -470,7 +470,8 @@ keeps one, accumulates beside them from the first day.
 ## Check a silent worker, do not wait for it
 
 When a reply you are waiting for is overdue (a `ready`, a change request
-head, a result), check the worker's state yourself. Do this after about ten
+head, a result), or an assignment or a review has no reported start, check
+the worker's state yourself. Do this after about ten
 minutes, or at once when a window or a merge waits on that one worker:
 
 1. **The wake:** the relay log's `Problem Board wake pushed` and
@@ -483,6 +484,10 @@ minutes, or at once when a window or a merge waits on that one worker:
    the session is in a long turn or is not running.
 3. **Its board state:** `pb worker list` (heartbeat) and its assignments
    (latest report, estimate).
+4. **What stops it:** its info line and its current usage with the reset
+   time (`pb worker context` team rows, where missing usage is unknown), and
+   any `blocked` report or blocker it named. A worker out of quota or
+   restricted is rerouted or waited for with that reason, not woken again.
 
 Then act on what you found:
 

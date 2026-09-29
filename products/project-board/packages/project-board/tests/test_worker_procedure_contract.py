@@ -2014,3 +2014,7 @@ def test_the_coordinator_reconciles_an_overdue_worker_before_rerouting() -> None
     assert "not a reason to reroute its work, and not a polling loop" in coordinator
     assert "advances the ownership version so the former owner's reports are fenced" in coordinator
     assert "name in it the checkpoint the successor starts from" in coordinator
+    # W403 acceptance 4: the check covers unstarted work, quota and blockers.
+    assert "or an assignment or a review has no reported start" in coordinator
+    assert "its info line and its current usage with the reset time" in coordinator
+    assert "A worker out of quota or restricted is rerouted or waited for with that reason, not woken again" in coordinator
