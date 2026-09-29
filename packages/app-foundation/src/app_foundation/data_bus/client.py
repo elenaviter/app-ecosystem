@@ -233,16 +233,13 @@ def _default_socket_factory() -> Any:
         raise RuntimeError(
             "Install app-foundation with the data-bus extra to use FederatedDataBusClient."
         ) from exc
-    # A dropped socket reconnects on its own. The delay doubles from one
-    # second and stops at ten: a channel whose runtime is up is expected back
-    # within ten seconds of a transport drop, and the relay that owns the
-    # session waits that long before it tears the client down and opens a new
-    # one (a full reopen costs a fresh credential and minutes of backoff).
+    # App Foundation owns reconnects. python-socketio's private reconnect loop
+    # calls connect() without retaining the caller's wait_timeout, so a slow
+    # namespace admission falls back to its one-second default after every
+    # transport drop. Keeping that loop off lets every attempt use the same
+    # explicit namespace-outcome wait as the initial connection.
     return socketio.AsyncClient(
-        reconnection=True,
-        reconnection_attempts=0,
-        reconnection_delay=1,
-        reconnection_delay_max=10,
+        reconnection=False,
         logger=False,
         engineio_logger=False,
     )
@@ -257,18 +254,21 @@ def _is_socketio_timeout(error: BaseException) -> bool:
 
 
 _NAMESPACE_ADMISSION_TIMEOUT_SECONDS = 30.0
+_RECONNECT_DELAY_SECONDS = 1.0
+_RECONNECT_DELAY_MAX_SECONDS = 10.0
 
 
 class FederatedDataBusClient:
     """One bundle-scoped Socket.IO session with correlated terminal replies.
 
-    The first handshake presents ``credential``. When the socket drops, the
-    Socket.IO client reconnects on its own, and every reconnect handshake asks
-    ``credential_source`` for the credential that is valid at that moment. A
-    delegated bearer captured at the first connect has usually lapsed by the
-    time a long-lived socket drops, so presenting it again is refused as
-    expired on every attempt and the session only returns when its owner tears
-    the client down and opens a new one minutes later. The source gets a
+    The first handshake presents ``credential``. When the production socket
+    drops, App Foundation reconnects it with the same namespace-admission
+    bound, and every reconnect handshake asks ``credential_source`` for the
+    credential that is valid at that moment. A delegated bearer captured at
+    the first connect has usually lapsed by the time a long-lived socket drops,
+    so presenting it again is refused as expired on every attempt and the
+    session only returns when its owner tears the client down and opens a new
+    one minutes later. The source gets a
     :class:`HandshakeAttempt` naming the episode's attempt number and the
     server's refusal of the previous attempt, so it can refresh on its own
     clock, re-mint once after a refusal, and leave a second refusal to the
@@ -283,6 +283,7 @@ class FederatedDataBusClient:
         claim: DataBusClaim | None = None,
         credential_source: CredentialSource | None = None,
         socket_factory: SocketFactory | None = None,
+        namespace_admission_timeout_seconds: float = _NAMESPACE_ADMISSION_TIMEOUT_SECONDS,
         ingress_timeout_seconds: float = 15.0,
         outcome_timeout_seconds: float = 60.0,
         event_queue_size: int = 256,
@@ -309,6 +310,13 @@ class FederatedDataBusClient:
         self._episode_attempt = 0
         self._episode_refusal: dict[str, Any] | None = None
         self.socket = (socket_factory or _default_socket_factory)()
+        # A custom socket factory owns its reconnect policy. The production
+        # socket above deliberately disables python-socketio reconnects so
+        # this client can retain the namespace-admission bound on every try.
+        self._owns_reconnect = socket_factory is None
+        self.namespace_admission_timeout_seconds = max(
+            0.1, float(namespace_admission_timeout_seconds)
+        )
         self.ingress_timeout_seconds = max(0.1, float(ingress_timeout_seconds))
         self.outcome_timeout_seconds = max(0.1, float(outcome_timeout_seconds))
         self._clock = clock
@@ -319,6 +327,15 @@ class FederatedDataBusClient:
         self._connected = asyncio.Event()
         self._close_lock = asyncio.Lock()
         self._closed = False
+        self._reconnect_task: asyncio.Task[None] | None = None
+        self._reconnect_delay_seconds = _RECONNECT_DELAY_SECONDS
+        self._namespace_outcome: asyncio.Future[
+            tuple[str, dict[str, Any] | None]
+        ] | None = None
+        # A callback that arrives after our deadline belongs to the transport
+        # we just closed. Ignore it until a new owned attempt begins instead
+        # of resurrecting a connection whose cleanup has already won.
+        self._ignore_namespace_callbacks = False
         self._connection_generation = 0
         self._socket_id = ""
         # The server's answer when it refuses the namespace: python-socketio
@@ -390,6 +407,14 @@ class FederatedDataBusClient:
         return str(getattr(self.socket, "sid", "") or "")
 
     async def _on_connect(self) -> None:
+        if self._ignore_namespace_callbacks:
+            logger.info(
+                "Data Bus socket lifecycle event=late_connect_ignored "
+                "connection_generation=%d%s",
+                self._connection_generation,
+                self._lifecycle_log_suffix(),
+            )
+            return
         previous_generation = self._connection_generation
         previous_socket_id = self._socket_id
         self._connection_generation += 1
@@ -397,6 +422,9 @@ class FederatedDataBusClient:
         self._episode_attempt = 0
         self._episode_refusal = None
         self._connected.set()
+        outcome = self._namespace_outcome
+        if outcome is not None and not outcome.done():
+            outcome.set_result(("connected", None))
         logger.info(
             "Data Bus socket lifecycle event=%s connection_generation=%d "
             "socket_id=%s previous_generation=%d previous_socket_id=%s%s",
@@ -409,8 +437,19 @@ class FederatedDataBusClient:
         )
 
     async def _on_connect_error(self, data: Any = None) -> None:
+        if self._ignore_namespace_callbacks:
+            logger.info(
+                "Data Bus socket lifecycle event=late_connect_error_ignored "
+                "connection_generation=%d%s",
+                self._connection_generation,
+                self._lifecycle_log_suffix(),
+            )
+            return
         self._connect_refusal = _refusal_payload(data)
         self._episode_refusal = dict(self._connect_refusal)
+        outcome = self._namespace_outcome
+        if outcome is not None and not outcome.done():
+            outcome.set_result(("refused", dict(self._connect_refusal)))
         logger.warning(
             "Data Bus socket lifecycle event=%s attempted_generation=%d "
             "socket_id=%s current_generation=%d current_socket_id=%s "
@@ -444,6 +483,13 @@ class FederatedDataBusClient:
                 "reason": reason,
             }
         )
+        if (
+            self._owns_reconnect
+            and self._connection_generation
+            and not self._closed
+            and (self._reconnect_task is None or self._reconnect_task.done())
+        ):
+            self._reconnect_task = asyncio.create_task(self._reconnect())
 
     def _queue_event(self, event: Mapping[str, Any]) -> None:
         if self._events.full():
@@ -516,7 +562,18 @@ class FederatedDataBusClient:
                 message,
                 details={"expires_at": self._client_side_expiry},
             )
+        await self._connect_namespace()
+
+    async def _connect_namespace(self) -> None:
+        """Open the transport, then own the namespace outcome and its deadline."""
+
         self._connect_refusal = None
+        self._ignore_namespace_callbacks = False
+        loop = asyncio.get_running_loop()
+        outcome: asyncio.Future[tuple[str, dict[str, Any] | None]] = (
+            loop.create_future()
+        )
+        self._namespace_outcome = outcome
         try:
             # The auth is a coroutine function, not a payload: python-socketio
             # resolves a callable once per namespace handshake, on this connect
@@ -527,14 +584,15 @@ class FederatedDataBusClient:
                 socketio_path="socket.io",
                 transports=["websocket", "polling"],
                 auth=self._handshake_auth,
-                # Card verification and delivery of the namespace completion
-                # packet can outlast python-socketio's one-second default. A
-                # 15-second bound still raced its cleanup on a busy relay:
-                # the server had accepted the namespace, but the client
-                # callback arrived while connect() was closing the transport.
-                wait_timeout=_NAMESPACE_ADMISSION_TIMEOUT_SECONDS,
+                # Return once Engine.IO is open. App Foundation waits below
+                # for its own connect/connect_error outcome, so Socket.IO
+                # cannot race a late namespace callback with private timeout
+                # cleanup or silently restore its one-second reconnect bound.
+                wait=False,
             )
         except Exception as exc:
+            if self._namespace_outcome is outcome:
+                self._namespace_outcome = None
             refusal = self._connect_refusal
             if refusal is None or _transport_failed(exc):
                 # The transport failed before the server answered. python-socketio
@@ -544,13 +602,74 @@ class FederatedDataBusClient:
                 # reading it as a refusal ended the relay process (dev-main,
                 # 2026-09-26 03:55Z). Callers classify this as transient.
                 self._connect_refusal = None
+                self._episode_refusal = None
                 raise
             raise DataBusIngressRejected(
                 str(refusal.get("code") or "data_bus_connect_refused"),
                 str(refusal.get("message") or "The Data Bus refused this connection."),
                 details=refusal,
             ) from exc
-        self._connected.set()
+        try:
+            state, refusal = await asyncio.wait_for(
+                asyncio.shield(outcome),
+                timeout=self.namespace_admission_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            self._ignore_namespace_callbacks = True
+            await self.socket.disconnect()
+            try:
+                from socketio.exceptions import ConnectionError as SocketIOConnectionError
+            except ImportError:  # pragma: no cover - connect requires the extra
+                raise
+            raise SocketIOConnectionError(
+                "One or more namespaces failed to connect"
+            ) from exc
+        finally:
+            if self._namespace_outcome is outcome:
+                self._namespace_outcome = None
+        if state == "refused":
+            await self.socket.disconnect()
+            refusal = dict(refusal or {})
+            raise DataBusIngressRejected(
+                str(refusal.get("code") or "data_bus_connect_refused"),
+                str(refusal.get("message") or "The Data Bus refused this connection."),
+                details=refusal,
+            )
+
+    async def _reconnect(self) -> None:
+        """Retry a dropped production socket without Socket.IO's wait default."""
+
+        delay = self._reconnect_delay_seconds
+        try:
+            while not self._closed:
+                await asyncio.sleep(delay)
+                if self._closed:
+                    return
+                try:
+                    await self._connect_namespace()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - reconnect stays resident
+                    logger.warning(
+                        "Data Bus socket lifecycle event=reconnect_attempt_failed "
+                        "connection_generation=%d delay_seconds=%g error=%s%s",
+                        self._connection_generation,
+                        delay,
+                        type(exc).__name__,
+                        self._lifecycle_log_suffix(),
+                    )
+                    delay = min(delay * 2, _RECONNECT_DELAY_MAX_SECONDS)
+                    continue
+                return
+        finally:
+            if asyncio.current_task() is self._reconnect_task:
+                self._reconnect_task = None
+                # A transport can drop immediately after its namespace
+                # callback, before this task unwinds. _on_disconnect cannot
+                # replace a reconnect task that is still running, so close
+                # that narrow handoff race here.
+                if self._owns_reconnect and not self._closed and not self.connected:
+                    self._reconnect_task = asyncio.create_task(self._reconnect())
 
     async def _handshake_auth(self) -> dict[str, Any]:
         """The auth payload for one handshake, resolved when the transport is up.
@@ -573,6 +692,11 @@ class FederatedDataBusClient:
                 dict(self._episode_refusal) if self._episode_refusal else None
             ),
         )
+        # The value describes only the immediately preceding handshake. A
+        # refusal from this attempt will set it again in _on_connect_error;
+        # a transport failure or timeout must leave the next attempt with no
+        # claimed server answer.
+        self._episode_refusal = None
         presented = "resolved"
         try:
             resolved = self._credential_source(attempt)
@@ -627,9 +751,10 @@ class FederatedDataBusClient:
     async def wait_until_connected(self, timeout_seconds: float) -> bool:
         """True when the socket is connected within ``timeout_seconds``.
 
-        A dropped socket reconnects on its own. An owner that would otherwise
-        tear this client down and open a new one waits here first, for the
-        bound it accepts, and keeps the session when the socket comes back.
+        App Foundation reconnects its production socket after a drop. An owner
+        that would otherwise tear this client down and open a new one waits
+        here first, for the bound it accepts, and keeps the session when the
+        socket comes back.
         """
 
         if self.connected:
@@ -648,7 +773,12 @@ class FederatedDataBusClient:
         async with self._close_lock:
             if self._closed:
                 return
+            self._closed = True
             self._connected.clear()
+            reconnect_task = self._reconnect_task
+            if reconnect_task is not None and reconnect_task is not asyncio.current_task():
+                reconnect_task.cancel()
+                await asyncio.gather(reconnect_task, return_exceptions=True)
             shutdown = getattr(self.socket, "shutdown", None)
             if callable(shutdown):
                 # python-socketio disconnect() is a no-op while disconnected and
@@ -657,7 +787,6 @@ class FederatedDataBusClient:
                 await shutdown()
             else:  # pragma: no cover - compatibility with older socket factories
                 await self.socket.disconnect()
-            self._closed = True
             logger.info(
                 "Data Bus socket lifecycle event=closed connection_generation=%d "
                 "socket_id=%s%s",
