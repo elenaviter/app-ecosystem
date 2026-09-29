@@ -80,8 +80,11 @@ review decision first when there is one, then the selected ownership, and
 either all of the save succeeds or none of it does. The comparison uses the
 assignee the dialog displayed and resolves legacy aliases and worker ids to
 the stable worker name, so a status-only save does not invent a reassignment
-from implementation or review history. Delete refuses an assigned item, or
-an item another item depends on.
+from implementation or review history. A routing, assigned, working or blocked
+assignment is current responsibility and supplies that displayed value; a
+completed, accepted, returned or cancelled assignment is history, so the
+dialog displays and submits the item's acting assignee or reviewer instead.
+Delete refuses an assigned item, or an item another item depends on.
 
 ## Entering review
 
