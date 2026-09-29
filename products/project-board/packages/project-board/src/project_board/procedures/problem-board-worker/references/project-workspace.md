@@ -276,7 +276,7 @@ still means a journal the project declares that this agent cannot read yet
 
 **A board that predates project files** sends no list: `project_files` is
 absent, and the purpose refs come from the journal home as before
-(`project_card: unknown`, or `known` with the goal and facts of 2026.09.28.2257).
+(`project_card: unknown`, or `known` with the goal and facts of 2026.09.29.1142).
 
 ## 5. Project state comes from your clone, and nothing else
 
