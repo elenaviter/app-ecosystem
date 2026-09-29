@@ -114,13 +114,17 @@ $PROJECT_BOARD"
 
 `prepare` owns the third-party environment. It filters the three first-party
 distributions from the platform requirements because the suite uses source
-overlays, installs the explicit overlay runtime closure, and reads the test
+overlays, installs the explicit overlay runtime closure (including `readchar`
+for KDCube CLI and `jwcrypto` for Connection Hub), and reads the test
 requirements directly from Project Board's
 `project.optional-dependencies.test`. That test extra is the only declaration
 of `pytest-xdist`; `execnet` is its resolved dependency. The command writes a
 full installed-distribution receipt and reuses the environment when the input
-fingerprint is unchanged. The default root is deliberately separate from both
-the installed `pb` client/relay and every KDCube runtime environment.
+fingerprint is unchanged. Absolute include paths are written only into the
+generated pip input; the fingerprint uses the checkout-relative include plus
+the included file's content hash, so byte-identical checkouts on the same host
+reuse one environment. The default root is deliberately separate from both the
+installed `pb` client/relay and every KDCube runtime environment.
 
 Run a focused touched-area file first (replace the value with the file changed
 by the work):

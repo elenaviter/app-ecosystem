@@ -87,6 +87,8 @@ def test_project_board_test_extra_is_the_xdist_source_of_truth(tmp_path: Path) -
         "pytest-xdist>=3.8,<4",
     )
     assert not any("xdist" in value for value in module.OVERLAY_RUNTIME_REQUIREMENTS)
+    assert "jwcrypto>=1.5.6,<2" in module.OVERLAY_RUNTIME_REQUIREMENTS
+    assert "readchar>=4.0.5" in module.OVERLAY_RUNTIME_REQUIREMENTS
 
 
 def test_project_board_test_extra_must_supply_xdist(tmp_path: Path) -> None:
@@ -178,6 +180,82 @@ def test_prepare_reuses_a_complete_matching_runner_without_pip(
     assert receipt["action"] == "reused"
     assert receipt["test_dependencies"]["pytest-xdist"] == "3.8.0"
     assert receipt["test_dependencies"]["execnet"] == "2.1.1"
+
+
+def test_prepare_reuses_runner_across_byte_identical_checkout_roots_without_pip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    first_kdcube, first_app_ecosystem = _sources(tmp_path / "worker-a")
+    second_kdcube, second_app_ecosystem = _sources(tmp_path / "worker-b")
+    runner_root = tmp_path / "runner"
+    base_python = Path(sys.executable)
+    calls: list[tuple[str, ...]] = []
+    probe = {
+        "interpreter": {
+            "executable": str(runner_root / "venv/bin/python"),
+            "implementation": "CPython",
+            "version": "3.13.3",
+        },
+        "installed_distributions": {
+            "execnet": "2.1.1",
+            "pytest": "8.4.2",
+            "pytest-asyncio": "1.2.0",
+            "pytest-xdist": "3.8.0",
+        },
+        "test_dependencies": {
+            "execnet": "2.1.1",
+            "pytest": "8.4.2",
+            "pytest-asyncio": "1.2.0",
+            "pytest-xdist": "3.8.0",
+        },
+        "failures": [],
+    }
+
+    monkeypatch.setattr(module, "_git_commit", lambda _path: "a" * 40)
+    monkeypatch.setattr(module, "_environment_probe", lambda *_args: probe)
+
+    real_run = module._run
+
+    def fake_run(arguments, *, capture_output=False):
+        command = tuple(str(value) for value in arguments)
+        if command[1:3] == ("-m", "venv"):
+            runner_python = Path(command[3]) / "bin/python"
+            runner_python.parent.mkdir(parents=True)
+            runner_python.write_text("", encoding="utf-8")
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[1:4] == ("-m", "pip", "install"):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return real_run(arguments, capture_output=capture_output)
+
+    monkeypatch.setattr(module, "_run", fake_run)
+
+    first = module.prepare(
+        runner_root=runner_root,
+        kdcube_root=first_kdcube,
+        app_ecosystem_root=first_app_ecosystem,
+        base_python=base_python,
+    )
+    first_calls = list(calls)
+    second = module.prepare(
+        runner_root=runner_root,
+        kdcube_root=second_kdcube,
+        app_ecosystem_root=second_app_ecosystem,
+        base_python=base_python,
+    )
+
+    assert first["action"] == "prepared"
+    assert second["action"] == "reused"
+    assert first["dependency_fingerprint"] == second["dependency_fingerprint"]
+    assert calls == first_calls
+    generated = (
+        runner_root / "inputs/requirements-chat-processor.txt"
+    ).read_text(encoding="utf-8")
+    assert f"-r {(second_kdcube / 'requirements-aws.txt').resolve()}" in generated
+    assert str(first_kdcube.resolve()) not in generated
 
 
 def test_check_fails_before_pytest_when_the_dependency_inputs_changed(
