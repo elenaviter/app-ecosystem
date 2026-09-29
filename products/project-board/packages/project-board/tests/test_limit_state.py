@@ -110,8 +110,10 @@ def test_a_limit_clears_when_its_reset_time_has_passed():
     state = {"kind": "rate_limited", "source": "codex-rollout", "windows": [], "reached": "primary", "resets_at": "2026-09-23T21:00:00Z", "observed_at": "2026-09-23T19:40:00Z"}
     assert limit_state_at(state, now="2026-09-23T20:30:00Z")["kind"] == "rate_limited"
     cleared = limit_state_at(state, now="2026-09-23T21:00:00Z")
-    assert cleared["kind"] == "ok"
+    # W403: the reset ends the limit; nothing measured the usage since.
+    assert cleared["kind"] == "unknown"
     assert cleared["cleared_at"] == "2026-09-23T21:00:00Z"
+    assert cleared["reached"] == "primary" and cleared["observed_at"] == "2026-09-23T19:40:00Z"
     assert limit_state_at(None, now="2026-09-23T21:00:00Z") is None
 
 
@@ -123,9 +125,10 @@ def test_the_listener_row_carries_the_state_for_codex_and_the_recorded_one_for_c
     codex = session_with_limit_state(listener, runtime_kind="codex", runtime_session_id=SESSION, now="2026-09-21T16:00:00Z", sessions_root=tmp_path)
     assert codex["limit_state"]["kind"] == "rate_limited"
     assert codex["session_id"] == SESSION
-    # Past the reset, the same rollout reads ok, so the board clears it.
+    # Past the reset the limit no longer holds, and the same rollout measured
+    # nothing since, so it reads unknown until Codex reports again (W403).
     later = session_with_limit_state(listener, runtime_kind="codex", runtime_session_id=SESSION, now="2026-09-21T17:00:00Z", sessions_root=tmp_path)
-    assert later["limit_state"]["kind"] == "ok"
+    assert later["limit_state"]["kind"] == "unknown"
     # No rollout on this host: the row has no field, which is "not reported".
     absent = session_with_limit_state(listener, runtime_kind="codex", runtime_session_id="other", now="2026-09-21T16:00:00Z", sessions_root=tmp_path)
     assert "limit_state" not in absent
@@ -335,3 +338,18 @@ def test_every_window_is_labelled_by_its_length_nearest_its_limit_first():
         "windows": claude["windows"],
     }
     assert limit_state_line(limited) == "rate limited (5 h), resets 02:50Z"
+
+
+def test_a_codex_snapshot_that_measured_no_window_is_unknown_not_ok():
+    # W403, 2026-09-29: the Card read limit ok for a Codex session whose
+    # provider console showed it out of limit; an empty snapshot is not ok.
+    for empty in ({}, {"primary": None, "secondary": None, "rate_limit_reached_type": None, "plan_type": "pro"},
+                  {"primary": {"window_minutes": 300}, "secondary": {"used_percent": None}}):
+        state = limit_state_from_codex(empty, observed_at="2026-09-29T19:00:00Z")
+        assert state["kind"] == "unknown", empty
+        assert state["observed_at"] == "2026-09-29T19:00:00Z"
+    # A named exhaustion or a spend control still speaks without windows.
+    assert limit_state_from_codex({"rate_limit_reached_type": "primary"})["kind"] == "rate_limited"
+    assert limit_state_from_codex({"spend_control_reached": True})["kind"] == "out_of_tokens"
+    # One measured window below its limit is ok.
+    assert limit_state_from_codex({"primary": {"used_percent": 10.0, "window_minutes": 300}})["kind"] == "ok"

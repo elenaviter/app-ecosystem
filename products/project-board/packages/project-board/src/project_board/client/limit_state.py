@@ -22,8 +22,10 @@ writes about itself:
   ``pb worker`` command receives them and records the state in the field.
 
 The state is one small record on the session row, projected in the relay
-heartbeat and shown on the worker's card. It clears when the runtime reports a
-lower value or the reset time passes.
+heartbeat and shown on the worker's card. It reads ok only when the runtime
+measured a window below its limit. A passed reset time ends a limit, and until
+the runtime measures again the state reads unknown: a reset is a time, not a
+measurement (W403).
 """
 
 from __future__ import annotations
@@ -226,6 +228,11 @@ def limit_state_from_codex(
             }
         )
     reached = str(rate_limits.get("rate_limit_reached_type") or "").strip()
+    measured = [window for window in windows if window["used_percent"] is not None]
+    if not measured and not reached and not rate_limits.get("spend_control_reached"):
+        # W403, 2026-09-29: a snapshot with no window measured nothing. The
+        # Card showed it as a green ok for a session its provider had stopped.
+        return unknown_state(SOURCE_CODEX_ROLLOUT, observed_at=observed_at)
     exhausted = [
         window for window in windows
         if window["used_percent"] is not None and window["used_percent"] >= 100
@@ -364,10 +371,12 @@ def limit_state_from_claude_stop_failure(
 
 
 def limit_state_at(state: Mapping[str, Any] | None, *, now: str) -> dict[str, Any] | None:
-    """The state as it stands at ``now``: a limit whose reset has passed reads ok.
+    """The state as it stands at ``now``: a limit whose reset has passed reads unknown.
 
     Kept separate from the readers so a stale rollout (an agent that stopped
-    writing) still clears on the board when its window turns over.
+    writing) no longer holds the limit on the board once its window turns
+    over. The reset ends the limit, but nothing measured the usage since, so
+    the state is unknown until the runtime reports again, never ok (W403).
     """
 
     if not isinstance(state, Mapping):
@@ -376,7 +385,7 @@ def limit_state_at(state: Mapping[str, Any] | None, *, now: str) -> dict[str, An
     resets_at = str(current.get("resets_at") or "")
     if current.get("kind") in (KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS) and resets_at:
         if _utc(now) and resets_at <= _utc(now):
-            current["kind"] = KIND_OK
+            current["kind"] = KIND_UNKNOWN
             current["cleared_at"] = resets_at
     return current
 
