@@ -718,6 +718,10 @@ def test_operator_runtime_and_conduct_rules() -> None:
     assert "(references/runtime-actions.md)" in skill and "(references/test-window.md)" in skill
     assert "(references/coordinator.md)" in skill
     assert "an agent types `pb relay-service install` only after the operator approves it" in words
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "Deliver a cross-layer item as independently verifiable activations" in coordinator
+    assert "mark that layer live while the unfinished layers remain Working" in coordinator
+    assert "source head, review state, activation receipt and live verification" in coordinator
     assert "the item wins, and whoever sent the message fixes the item" in words
     assert "Stop and say which two things conflict, quoting both" in words
     assert "that worker hears it before anyone else" in words
