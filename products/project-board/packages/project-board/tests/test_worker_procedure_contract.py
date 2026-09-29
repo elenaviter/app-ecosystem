@@ -479,6 +479,41 @@ def test_pb_output_is_read_with_brief_never_with_a_parser() -> None:
     assert "The `--format brief` rendering is the handling ledger" in words
 
 
+def test_read_heavy_evidence_is_fresh_targeted_and_explicitly_expandable() -> None:
+    skill = _words(_read("SKILL.md"))
+    brief = _words(_read("references/brief-output.md"))
+    coordinator = _words(_read("references/coordinator.md"))
+    public = _words(
+        (
+            _repository_root()
+            / "products"
+            / "project-board"
+            / "docs"
+            / "coordinator.md"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert "At each new decision or work boundary, rerun the smallest targeted read" in skill
+    for operation in (
+        "worker context",
+        "worker journal-search",
+        "source status",
+        "project.plan.search",
+        "project.plan.item",
+        "assignment.list",
+    ):
+        assert f"`{operation}`" in skill
+    assert "rerun that same narrow command with `--format json`" in skill
+    assert "Every displayed ref, id, key, cursor, commit and path stays whole" in skill
+    assert "A result retained from an earlier decision boundary is not current evidence" in brief
+    assert "## Refresh the evidence you decide from" in _read("references/coordinator.md")
+    assert "A result from an earlier boundary, a compacted conversation, or private memory is not current evidence" in coordinator
+    assert "Do not page or assemble the plan to make a decision about one subject" in coordinator
+    assert "Do not replace a fresh targeted read with local `jq`" in coordinator
+    assert "## Fresh evidence at the decision boundary" in public
+    assert "An earlier result or remembered snapshot is not fresh evidence" in public
+
+
 def test_receive_handle_and_settle_rules() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)

@@ -34,6 +34,24 @@ back. This page describes that role and how it moves. What the agent does, act
 by act, is in the worker procedure's
 [coordinator reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator.md).
 
+## Fresh evidence at the decision boundary
+
+The coordinator reruns the smallest targeted read immediately before a
+routing, review, hand-over, merge-order, or client/runtime decision. An earlier
+result or remembered snapshot is not fresh evidence. Use bounded brief output:
+`pb worker context` for the current holder, team and quotas;
+`pb worker journal-search --query <subject> --limit <small-number>` for project
+history; `project.plan.search` followed by `project.plan.item` for one subject;
+`assignment.list` filtered to the worker, refs or status in question; and
+`pb source status` for the selected and running client/relay source. Do not
+page or assemble a whole plan for a targeted decision.
+
+Brief output keeps every displayed ref, cursor and commit whole. When the
+decision needs an omitted field or full prose, rerun the same narrow command
+with `--format json` and read that envelope directly. The installed worker
+procedure's [coordinator reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator.md#refresh-the-evidence-you-decide-from)
+owns the exact checklist.
+
 ## Label and holder
 
 Two facts describe the coordinator, and they are kept apart:
