@@ -583,3 +583,122 @@ def test_the_key_is_released_only_when_every_attempt_had_no_effect(submits, monk
     assert refused.value.code == "work_item_revision_conflict"
     assert CoordinateRecovery(host.field_root).read(channel.worker_name, "accept-w14") is None
     assert len(submits) == 2
+
+
+# W404 third review return (codex-app, 2026-09-29 21:41Z): a retry published
+# into the queue before it was registered lost the key when an earlier
+# attempt's refusal released it, and a changed payload was then sent.
+
+
+def test_a_queued_retry_keeps_the_key_while_an_earlier_refusal_is_handled(submits, monkeypatch, tmp_path):
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    queue = CoordinateQueue(host.field_root)
+    recovery = CoordinateRecovery(host.field_root)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w15"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+
+    def outcome_unknown(queue_, path, *, worker_name, request_id, timeout_seconds):
+        raise DomainError("work_coordinate_outcome_unknown", "unknown", status=504)
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", outcome_unknown)
+    with pytest.raises(DomainError):
+        cli._coordinate_command(args)
+    (first,) = recovery.read(channel.worker_name, "accept-w15")["request_ids"]
+    (claimed,) = queue.claim(worker_name=channel.worker_name, limit=10)
+    assert claimed["request_id"] == first
+
+    # The unchanged retry is queued; before it is registered, attempt 1's
+    # genuine refusal arrives and its normal handler settles it.
+    queued = CoordinateQueue.submit
+
+    def submit_then_first_refusal(self, **values):
+        request = queued(self, **values)
+        refusal = {"ok": False, "request_id": first, "error": {"code": "work_item_revision_conflict", "message": "changed", "status": 409}}
+        with pytest.raises(DomainError):
+            cli._finish_coordinate_response(refusal, recovery=recovery, worker_name=channel.worker_name, key="accept-w15", request_id=first)
+        return request
+
+    monkeypatch.setattr(CoordinateQueue, "submit", submit_then_first_refusal)
+    with pytest.raises(DomainError) as retried:
+        cli._coordinate_command(args)
+    assert retried.value.code == "work_coordinate_outcome_unknown", "the retry was registered, not work_coordinate_recovery_missing"
+    record = recovery.read(channel.worker_name, "accept-w15")
+    assert record is not None and record["publishing"] == []
+    second = record["request_ids"][1]
+    assert record["attempts"] == {first: "refused", second: "unknown"}
+
+    changed = _args("review.accept", object_ref=PROJECT, payload=dict(payload, expected_revision=8), config=str(host.path), identity=identity)
+    with pytest.raises(DomainError) as reused:
+        cli._coordinate_command(changed)
+    assert reused.value.code == "work_coordinate_idempotency_key_reused"
+    queued_payloads = [row["payload"] for row in queue.claim(worker_name=channel.worker_name, limit=10)]
+    assert dict(payload, expected_revision=8) not in queued_payloads, "the changed request is never dispatched"
+
+
+def test_a_definite_publication_failure_releases_only_an_unqueued_key(submits, monkeypatch, tmp_path):
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    recovery = CoordinateRecovery(host.field_root)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w16"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+    queued = CoordinateQueue.submit
+    failing = {"on": True}
+
+    def submit(self, **values):
+        if failing["on"]:
+            raise DomainError("work_coordinate_request_too_large", "too large", status=413)
+        return queued(self, **values)
+
+    monkeypatch.setattr(CoordinateQueue, "submit", submit)
+    with pytest.raises(DomainError):
+        cli._coordinate_command(args)
+    assert recovery.read(channel.worker_name, "accept-w16") is None, "nothing was queued: the key is free"
+
+    failing["on"] = False
+    monkeypatch.setattr(cli, "_await_coordinate_response", lambda *a, **k: (_ for _ in ()).throw(DomainError("work_coordinate_outcome_unknown", "unknown", status=504)))
+    with pytest.raises(DomainError):
+        cli._coordinate_command(args)
+    failing["on"] = True
+    with pytest.raises(DomainError):
+        cli._coordinate_command(args)
+    record = recovery.read(channel.worker_name, "accept-w16")
+    assert record is not None and len(record["request_ids"]) == 1 and record["publishing"] == []
+
+
+def test_a_publishing_attempt_is_never_released_by_a_concurrent_refusal(tmp_path):
+    import threading
+
+    recovery = CoordinateRecovery(tmp_path)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w17"}
+    request = {"action": "review.accept", "object_ref": PROJECT, "payload": payload}
+    missing: list[int] = []
+
+    for round_number in range(40):
+        key = f"accept-w17-{round_number}"
+        body = dict(request, payload=dict(payload, idempotency_key=key))
+        recovery.reserve("w", key, **body)
+        recovery.record_submission("w", key, request_id="r1", **body)
+        start = threading.Barrier(2)
+
+        def publisher():
+            start.wait()
+            token = recovery.begin_attempt("w", key, **body)
+            try:
+                recovery.record_submission("w", key, request_id="r2", token=token, **body)
+            except DomainError:
+                missing.append(round_number)
+
+        def refuser():
+            start.wait()
+            recovery.settle_attempt("w", key, "r1", "refused")
+
+        threads = [threading.Thread(target=publisher), threading.Thread(target=refuser)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        record = recovery.read("w", key)
+        assert record is not None, round_number
+        assert record["attempts"].get("r2") == "unknown"
+    assert missing == []

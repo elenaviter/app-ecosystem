@@ -27,6 +27,11 @@ when every attempt is proved to have had no effect, because a later attempt's
 refusal says nothing about an earlier attempt that may have applied. An
 applied receipt is final for the key: no later submission, uncertainty or
 refusal downgrades or deletes it. Each decision is taken under the lock.
+
+An attempt is registered as publishing before the queue can expose it, and
+becomes its request id once queued. A key with a publishing attempt is never
+released, so a concurrent retry that is already in the queue keeps the key
+held even when every attempt registered so far was refused.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -68,6 +74,12 @@ STATE_APPLIED = "applied"
 ATTEMPT_UNKNOWN = "unknown"
 NO_EFFECT_OUTCOMES = frozenset({"refused", "not_sent"})
 ATTEMPT_OUTCOMES = frozenset({STATE_APPLIED, ATTEMPT_UNKNOWN, *NO_EFFECT_OUTCOMES})
+
+
+def _publishing(record: Mapping[str, Any]) -> list[str]:
+    """Attempts registered and not yet queued, or not yet known to have failed."""
+
+    return [str(value) for value in record.get("publishing") or []]
 
 
 def _attempts(record: Mapping[str, Any]) -> dict[str, str]:
@@ -136,12 +148,74 @@ class CoordinateRecovery:
                 "payload": dict(payload),
                 "request_hash": request_hash,
                 "request_ids": [],
+                "publishing": [],
                 "state": "reserved",
                 "first_sent_at": utc_now(),
                 "updated_at": utc_now(),
             }
             atomic_write_json(path, record)
             return record, True
+
+    def begin_attempt(
+        self,
+        worker_name: str,
+        key: str,
+        *,
+        action: str,
+        object_ref: str,
+        payload: Mapping[str, Any],
+    ) -> str:
+        """Register one attempt as publishing, before the queue can expose it.
+
+        Returns the attempt's token. The key is reserved again for this exact
+        request when an earlier release freed it, and a different request
+        under a held key is refused here, before anything is sent.
+        """
+
+        path = self._path(worker_name, key)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        request_hash = coordinate_request_hash(action, object_ref, payload)
+        token = uuid.uuid4().hex
+        with exclusive_lock(self._lock(worker_name)):
+            record = self.read(worker_name, key)
+            if record is None:
+                record = {
+                    "schema": COORDINATE_RECOVERY_SCHEMA,
+                    "idempotency_key": key,
+                    "action": str(action),
+                    "object_ref": str(object_ref),
+                    "payload": dict(payload),
+                    "request_hash": request_hash,
+                    "request_ids": [],
+                    "publishing": [],
+                    "state": "reserved",
+                    "first_sent_at": utc_now(),
+                }
+            elif record.get("request_hash") != request_hash:
+                raise idempotency_key_reused(key, record)
+            record["publishing"] = [*_publishing(record), token]
+            record["updated_at"] = utc_now()
+            atomic_write_json(path, record)
+            return token
+
+    def abandon_attempt(self, worker_name: str, key: str, token: str) -> None:
+        """Drop an attempt the queue definitely did not accept.
+
+        The record goes with it only when nothing was ever queued under the
+        key and no other attempt is publishing.
+        """
+
+        with exclusive_lock(self._lock(worker_name)):
+            record = self.read(worker_name, key)
+            if record is None:
+                return
+            record["publishing"] = [value for value in _publishing(record) if value != token]
+            path = self._path(worker_name, key)
+            if not record.get("request_ids") and not record["publishing"]:
+                path.unlink(missing_ok=True)
+                return
+            record["updated_at"] = utc_now()
+            atomic_write_json(path, record)
 
     def record_submission(
         self,
@@ -152,8 +226,12 @@ class CoordinateRecovery:
         object_ref: str,
         payload: Mapping[str, Any],
         request_id: str,
+        token: str = "",
     ) -> dict[str, Any]:
-        """Add the queue request id this exact request went out under."""
+        """Add the queue request id this exact request went out under.
+
+        ``token`` names the publishing attempt the request id replaces.
+        """
 
         request_hash = coordinate_request_hash(action, object_ref, payload)
         with exclusive_lock(self._lock(worker_name)):
@@ -171,6 +249,7 @@ class CoordinateRecovery:
             if request_id not in request_ids:
                 request_ids.append(request_id)
             record["request_ids"] = request_ids
+            record["publishing"] = [value for value in _publishing(record) if value != token]
             attempts = _attempts(record)
             attempts.setdefault(request_id, ATTEMPT_UNKNOWN)
             record["attempts"] = attempts
@@ -179,14 +258,6 @@ class CoordinateRecovery:
             record["updated_at"] = utc_now()
             atomic_write_json(self._path(worker_name, key), record)
             return record
-
-    def release_unsent(self, worker_name: str, key: str) -> None:
-        """Drop a reservation no request ever went out under."""
-
-        with exclusive_lock(self._lock(worker_name)):
-            record = self.read(worker_name, key)
-            if record is not None and not record.get("request_ids"):
-                self._path(worker_name, key).unlink(missing_ok=True)
 
     def settle_attempt(
         self,
@@ -225,7 +296,11 @@ class CoordinateRecovery:
                 record["receipt"] = dict(receipt or {})
                 atomic_write_json(path, record)
                 return record
-            if attempts and all(value in NO_EFFECT_OUTCOMES for value in attempts.values()):
+            if (
+                attempts
+                and not _publishing(record)
+                and all(value in NO_EFFECT_OUTCOMES for value in attempts.values())
+            ):
                 path.unlink(missing_ok=True)
                 return None
             record["state"] = "outcome_unknown"
@@ -313,6 +388,7 @@ def recovery_identity(record: Mapping[str, Any], *, source: str) -> dict[str, An
         "request_hash": str(record.get("request_hash") or ""),
         "request_ids": list(record.get("request_ids") or []),
         "attempts": _attempts(record),
+        "publishing": len(_publishing(record)),
         "first_sent_at": str(record.get("first_sent_at") or ""),
         "state": str(record.get("state") or ""),
     }

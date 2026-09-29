@@ -2404,15 +2404,18 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             )
             if recovered is not None:
                 return recovered
-            # Every earlier attempt was proved to have had no effect, so the
-            # key was released: this exact request starts over under it.
-            recovery.reserve(
-                channel.worker_name,
-                key,
-                action=action,
-                object_ref=object_ref,
-                payload=payload,
-            )
+    token = ""
+    if recovery is not None:
+        # The attempt is registered before the queue can expose it, so no
+        # release can happen while it may reach the service. A key released
+        # because every earlier attempt had no effect is reserved again here.
+        token = recovery.begin_attempt(
+            channel.worker_name,
+            key,
+            action=action,
+            object_ref=object_ref,
+            payload=payload,
+        )
     try:
         request = queue.submit(
             worker_name=channel.worker_name,
@@ -2426,7 +2429,7 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
         )
     except BaseException:
         if recovery is not None:
-            recovery.release_unsent(channel.worker_name, key)
+            recovery.abandon_attempt(channel.worker_name, key, token)
         raise
     request_id = str(request["request_id"])
     if recovery is not None:
@@ -2437,6 +2440,7 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             object_ref=object_ref,
             payload=payload,
             request_id=request_id,
+            token=token,
         )
     try:
         response = _await_coordinate_response(
