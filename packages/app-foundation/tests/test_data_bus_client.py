@@ -450,6 +450,7 @@ async def test_reconnect_uses_the_owned_namespace_wait_beyond_one_second() -> No
         )
         client._reconnect_delay_seconds = 0.01
         await client.connect()
+        first_socket = client.socket
 
         await server.disconnect(accepted_sids[0])
         for _ in range(100):
@@ -461,6 +462,7 @@ async def test_reconnect_uses_the_owned_namespace_wait_beyond_one_second() -> No
         assert await client.wait_until_connected(3.0) is True
         assert client.connection_generation == 2
         assert len(accepted_sids) == 2
+        assert client.socket is not first_socket
         assert client.socket.reconnection is False
         await client.close()
 
@@ -740,6 +742,48 @@ async def test_namespace_timeout_disconnects_once_and_ignores_a_late_callback() 
     assert not client.connected
     assert client.connection_generation == 0
     assert socket.disconnect_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_retired_transport_cannot_complete_the_next_namespace_attempt() -> None:
+    from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+    first = _PendingNamespaceSocket()
+    second = _PendingNamespaceSocket()
+    second.namespace_sid = "socketio-2"
+    sockets = iter((first, second))
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=_claim(),
+        socket_factory=lambda: next(sockets),
+        namespace_admission_timeout_seconds=0.1,
+    )
+
+    with pytest.raises(SocketIOConnectionError, match="namespaces failed to connect"):
+        await client.connect()
+
+    second_attempt = asyncio.create_task(client.connect())
+    while second.connect_args is None:
+        await asyncio.sleep(0)
+
+    # Engine.IO may already have queued either callback from the transport
+    # whose deadline expired. Once a new attempt exists, neither old answer may
+    # resolve its outcome or advance the logical connection generation.
+    await first.handlers["connect"]()
+    await first.handlers["connect_error"]({"message": "stale refusal"})
+    await asyncio.sleep(0)
+    assert not second_attempt.done()
+    assert client.connection_generation == 0
+    assert not client.connected
+
+    await second.handlers["connect"]()
+    await second_attempt
+
+    assert client.socket is second
+    assert client.connected
+    assert client.connection_generation == 1
+    assert client.socket_id == "socketio-2"
+    await client.close()
 
 
 class _RestartingPlatformSocket(_Socket):

@@ -309,9 +309,9 @@ class FederatedDataBusClient:
         self._handshakes = 0
         self._episode_attempt = 0
         self._episode_refusal: dict[str, Any] | None = None
-        self.socket = (socket_factory or _default_socket_factory)()
+        self._socket_factory = socket_factory or _default_socket_factory
         # A custom socket factory owns its reconnect policy. The production
-        # socket above deliberately disables python-socketio reconnects so
+        # factory deliberately disables python-socketio reconnects so
         # this client can retain the namespace-admission bound on every try.
         self._owns_reconnect = socket_factory is None
         self.namespace_admission_timeout_seconds = max(
@@ -332,10 +332,13 @@ class FederatedDataBusClient:
         self._namespace_outcome: asyncio.Future[
             tuple[str, dict[str, Any] | None]
         ] | None = None
-        # A callback that arrives after our deadline belongs to the transport
-        # we just closed. Ignore it until a new owned attempt begins instead
-        # of resurrecting a connection whose cleanup has already won.
-        self._ignore_namespace_callbacks = False
+        # Every App Foundation-owned attempt gets a new Socket.IO client and
+        # an identity captured by its callbacks. Engine.IO dispatches packet
+        # handlers in background tasks, so a packet from a retired transport
+        # can run after the next attempt starts. Its token must remain retired
+        # instead of being reset for the new attempt.
+        self.socket: Any
+        self._active_socket_token: object | None = None
         self._connection_generation = 0
         self._socket_id = ""
         # The server's answer when it refuses the namespace: python-socketio
@@ -346,10 +349,45 @@ class FederatedDataBusClient:
         # Labels are diagnostic coordinates supplied by the owning product.
         # They must never contain credentials or other secret material.
         self._lifecycle_labels = _normalize_lifecycle_labels(lifecycle_labels)
-        self.socket.on("connect", self._on_connect)
-        self.socket.on("connect_error", self._on_connect_error)
-        self.socket.on("disconnect", self._on_disconnect)
-        self.socket.on("chat_service", self._on_service_event)
+        self._activate_socket(self._socket_factory())
+
+    def _activate_socket(self, socket: Any) -> object:
+        """Make one transport current and bind callbacks to its identity."""
+
+        token = object()
+        self.socket = socket
+        self._active_socket_token = token
+
+        async def on_connect() -> None:
+            await self._on_connect(socket, token)
+
+        async def on_connect_error(data: Any = None) -> None:
+            await self._on_connect_error(socket, token, data)
+
+        async def on_disconnect(*args: Any) -> None:
+            await self._on_disconnect(socket, token, *args)
+
+        async def on_service_event(payload: Any) -> None:
+            await self._on_service_event(socket, token, payload)
+
+        socket.on("connect", on_connect)
+        socket.on("connect_error", on_connect_error)
+        socket.on("disconnect", on_disconnect)
+        socket.on("chat_service", on_service_event)
+        return token
+
+    def _socket_is_active(self, socket: Any, token: object) -> bool:
+        return self.socket is socket and self._active_socket_token is token
+
+    def _deactivate_socket(self, socket: Any, token: object) -> None:
+        if self._socket_is_active(socket, token):
+            self._active_socket_token = None
+
+    def _socket_for_namespace_attempt(self) -> tuple[Any, object]:
+        token = self._active_socket_token
+        if token is None:
+            token = self._activate_socket(self._socket_factory())
+        return self.socket, token
 
     @property
     def _client_side_expiry(self) -> int:
@@ -395,8 +433,9 @@ class FederatedDataBusClient:
             for key, value in self._lifecycle_labels
         )
 
-    def _current_socket_id(self) -> str:
-        get_sid = getattr(self.socket, "get_sid", None)
+    def _current_socket_id(self, socket: Any | None = None) -> str:
+        selected = self.socket if socket is None else socket
+        get_sid = getattr(selected, "get_sid", None)
         if callable(get_sid):
             try:
                 value = get_sid()
@@ -404,10 +443,10 @@ class FederatedDataBusClient:
                 value = ""
             if value:
                 return str(value)
-        return str(getattr(self.socket, "sid", "") or "")
+        return str(getattr(selected, "sid", "") or "")
 
-    async def _on_connect(self) -> None:
-        if self._ignore_namespace_callbacks:
+    async def _on_connect(self, socket: Any, token: object) -> None:
+        if self._closed or not self._socket_is_active(socket, token):
             logger.info(
                 "Data Bus socket lifecycle event=late_connect_ignored "
                 "connection_generation=%d%s",
@@ -418,7 +457,7 @@ class FederatedDataBusClient:
         previous_generation = self._connection_generation
         previous_socket_id = self._socket_id
         self._connection_generation += 1
-        self._socket_id = self._current_socket_id()
+        self._socket_id = self._current_socket_id(socket)
         self._episode_attempt = 0
         self._episode_refusal = None
         self._connected.set()
@@ -436,8 +475,10 @@ class FederatedDataBusClient:
             self._lifecycle_log_suffix(),
         )
 
-    async def _on_connect_error(self, data: Any = None) -> None:
-        if self._ignore_namespace_callbacks:
+    async def _on_connect_error(
+        self, socket: Any, token: object, data: Any = None
+    ) -> None:
+        if self._closed or not self._socket_is_active(socket, token):
             logger.info(
                 "Data Bus socket lifecycle event=late_connect_error_ignored "
                 "connection_generation=%d%s",
@@ -456,7 +497,7 @@ class FederatedDataBusClient:
             "connection_active=%s generation_replaced=false reason=%s%s",
             "reconnect_refused" if self._connection_generation else "connect_refused",
             self._connection_generation + 1,
-            self._current_socket_id() or "unassigned",
+            self._current_socket_id(socket) or "unassigned",
             self._connection_generation,
             self._socket_id or "none",
             str(self.connected).lower(),
@@ -464,7 +505,17 @@ class FederatedDataBusClient:
             self._lifecycle_log_suffix(),
         )
 
-    async def _on_disconnect(self, *args: Any) -> None:
+    async def _on_disconnect(
+        self, socket: Any, token: object, *args: Any
+    ) -> None:
+        if not self._socket_is_active(socket, token):
+            logger.info(
+                "Data Bus socket lifecycle event=late_disconnect_ignored "
+                "connection_generation=%d%s",
+                self._connection_generation,
+                self._lifecycle_log_suffix(),
+            )
+            return
         self._connected.clear()
         reason = _connection_reason(args[0] if args else None)
         logger.info(
@@ -483,6 +534,8 @@ class FederatedDataBusClient:
                 "reason": reason,
             }
         )
+        if self._owns_reconnect:
+            self._deactivate_socket(socket, token)
         if (
             self._owns_reconnect
             and self._connection_generation
@@ -499,7 +552,11 @@ class FederatedDataBusClient:
                 pass
         self._events.put_nowait(dict(event))
 
-    async def _on_service_event(self, payload: Any) -> None:
+    async def _on_service_event(
+        self, socket: Any, token: object, payload: Any
+    ) -> None:
+        if not self._socket_is_active(socket, token):
+            return
         envelope = _mapping(payload)
         body = _mapping(envelope.get("data"))
         message_id = str(body.get("message_id") or "").strip()
@@ -567,8 +624,8 @@ class FederatedDataBusClient:
     async def _connect_namespace(self) -> None:
         """Open the transport, then own the namespace outcome and its deadline."""
 
+        socket, socket_token = self._socket_for_namespace_attempt()
         self._connect_refusal = None
-        self._ignore_namespace_callbacks = False
         loop = asyncio.get_running_loop()
         outcome: asyncio.Future[tuple[str, dict[str, Any] | None]] = (
             loop.create_future()
@@ -579,7 +636,7 @@ class FederatedDataBusClient:
             # resolves a callable once per namespace handshake, on this connect
             # and on every reconnect it runs itself, so each handshake can
             # present the credential that is valid at that moment.
-            await self.socket.connect(
+            await socket.connect(
                 self.platform_url,
                 socketio_path="socket.io",
                 transports=["websocket", "polling"],
@@ -594,6 +651,7 @@ class FederatedDataBusClient:
             if self._namespace_outcome is outcome:
                 self._namespace_outcome = None
             refusal = self._connect_refusal
+            self._deactivate_socket(socket, socket_token)
             if refusal is None or _transport_failed(exc):
                 # The transport failed before the server answered. python-socketio
                 # still fires connect_error for that, with "Connection error", so
@@ -615,8 +673,8 @@ class FederatedDataBusClient:
                 timeout=self.namespace_admission_timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
-            self._ignore_namespace_callbacks = True
-            await self.socket.disconnect()
+            self._deactivate_socket(socket, socket_token)
+            await socket.disconnect()
             try:
                 from socketio.exceptions import ConnectionError as SocketIOConnectionError
             except ImportError:  # pragma: no cover - connect requires the extra
@@ -628,7 +686,8 @@ class FederatedDataBusClient:
             if self._namespace_outcome is outcome:
                 self._namespace_outcome = None
         if state == "refused":
-            await self.socket.disconnect()
+            self._deactivate_socket(socket, socket_token)
+            await socket.disconnect()
             refusal = dict(refusal or {})
             raise DataBusIngressRejected(
                 str(refusal.get("code") or "data_bus_connect_refused"),

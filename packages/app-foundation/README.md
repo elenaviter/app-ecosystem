@@ -75,9 +75,10 @@ bounds event waits by claim expiry. Namespace admission has a configurable
 reconnect attempts, so server-side Card verification and delivery of its
 completion packet are not cut off by the Socket.IO client's one-second default
 or by a busy client event loop at the former 15-second boundary. On deadline
-the client closes that transport once and ignores a completion callback that
-lost the deadline race. This connection-only bound does not change ingress or
-correlated-outcome timeouts. A Data Bus receipt
+the client retires and closes that transport once. Each App Foundation-owned
+attempt has a distinct transport identity, so an acceptance or refusal queued
+by an earlier attempt cannot complete a later attempt. This connection-only
+bound does not change ingress or correlated-outcome timeouts. A Data Bus receipt
 broadcast by the session for another peer is ignored by this client; it cannot
 wake an application event loop. An ingress acknowledgement timeout leaves
 acceptance unknown; a terminal result received before that timeout is returned.
