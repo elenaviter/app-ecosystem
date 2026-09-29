@@ -200,6 +200,39 @@ class CoordinateRecovery:
                 continue
 
 
+# Queue, relay and client codes that prove this request id never reached the
+# service: it was refused, withdrawn or expired before any relay sent it.
+NOT_SENT_CODES = frozenset(
+    {
+        "work_coordinate_request_expired",
+        "work_coordinate_request_invalid",
+        "work_coordinate_request_too_large",
+        "work_coordinate_worker_mismatch",
+        "work_coordinate_transport_identity_unavailable",
+        "work_coordinate_relay_unavailable",
+        "work_coordinate_channel_reconnecting",
+    }
+)
+
+
+def error_outcome(error: DomainError) -> str:
+    """What an error proves about the mutation it answered.
+
+    ``not_sent``: this request id never reached the service. ``refused``: the
+    service answered with a domain refusal, so nothing applied under the key.
+    ``unknown``: anything else, including a claimed request that expired, a
+    transport failure, a result too large to queue, an invalid or missing
+    result, and a server error. Only proof frees a key; the default keeps it.
+    """
+
+    code = str(error.code or "")
+    if code in NOT_SENT_CODES:
+        return "not_sent"
+    if not code or code == "domain_error" or code.startswith(("data_bus_", "work_coordinate_")):
+        return "unknown"
+    return "refused" if 400 <= int(error.status or 0) < 500 else "unknown"
+
+
 def idempotency_key_reused(key: str, prior: Mapping[str, Any]) -> DomainError:
     """The local refusal of a different request under a key already used."""
 
@@ -238,6 +271,8 @@ def recovery_identity(record: Mapping[str, Any], *, source: str) -> dict[str, An
 
 
 __all__ = [
+    "NOT_SENT_CODES",
+    "error_outcome",
     "COORDINATE_RECOVERY_SCHEMA",
     "CoordinateRecovery",
     "coordinate_request_hash",

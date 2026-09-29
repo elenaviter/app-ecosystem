@@ -15,9 +15,11 @@ import pytest
 
 from project_board.client import cli
 from project_board.client.coordinate_queue import CoordinateQueue
+from project_board.client.coordinate_queue import MAX_COORDINATE_RESPONSE_BYTES
 from project_board.client.coordinate_recovery import (
     CoordinateRecovery,
     coordinate_request_hash,
+    error_outcome,
 )
 from project_board.contract.errors import DomainError
 from project_board.contract.operation_shapes import (
@@ -277,6 +279,8 @@ def test_the_worker_procedure_points_to_the_operation_contract():
     assert "`work_coordinate_shape_invalid` and `work_coordinate_operation_unknown` come from the operation catalog before anything is sent" in brief
     assert "On `pb coordinate`, run the same command unchanged" in brief
     assert "`work_coordinate_idempotency_key_reused`, naming the original request" in brief
+    assert "`work_coordinate_response_too_large` is in this class too" in brief
+    assert "Every error that prints `recovery` and `retry` fields is in this class" in brief
 
 
 def test_two_calls_racing_with_one_key_cannot_both_be_sent(submits, monkeypatch, tmp_path):
@@ -326,3 +330,136 @@ def test_two_calls_racing_with_one_key_cannot_both_be_sent(submits, monkeypatch,
     record = CoordinateRecovery(host.field_root).read(channel.worker_name, "race")
     assert record["payload"] == first_payload
     assert len(record["request_ids"]) == 1
+
+
+def _expire_after_claim(queue, worker_name, request_id):
+    """The queue's own expiry of a claimed request: the relay took it, then went quiet."""
+
+    (request,) = queue.claim(worker_name=worker_name)
+    assert request["request_id"] == request_id
+    leased = queue._path("leased", worker_name, request_id)  # noqa: SLF001
+    row = json.loads(leased.read_text(encoding="utf-8"))
+    row["expires_at"] = "2020-01-01T00:00:00Z"
+    row["lease_expires_at"] = "2020-01-01T00:00:00Z"
+    leased.write_text(json.dumps(row), encoding="utf-8")
+    assert queue.claim(worker_name=worker_name) == []
+
+
+def _relay_fails_at_expiry(queue, worker_name, request_id):
+    """The relay at expiry: data_bus_outcome_unknown goes through queue.fail."""
+
+    (request,) = queue.claim(worker_name=worker_name)
+    queue.fail(request, DomainError("data_bus_outcome_unknown", "no answer from the bus", status=504))
+
+
+def _oversized_success(queue, worker_name, request_id):
+    """An applied result too large for the queue is replaced by an error."""
+
+    (request,) = queue.claim(worker_name=worker_name)
+    queue.complete(request, result={"operation": "review.accept", "blob": "x" * (MAX_COORDINATE_RESPONSE_BYTES + 1)})
+
+
+@pytest.mark.parametrize(
+    ("relay", "code"),
+    [
+        (_expire_after_claim, "work_coordinate_outcome_unknown"),
+        (_relay_fails_at_expiry, "data_bus_outcome_unknown"),
+        (_oversized_success, "work_coordinate_response_too_large"),
+    ],
+)
+def test_a_queued_uncertain_result_keeps_the_request_for_its_unchanged_retry(
+    submits, monkeypatch, tmp_path, relay, code
+):
+    # W404 review return (codex-app, 2026-09-29): these three queued error
+    # envelopes freed the key as if the service had refused, so a retry could
+    # send a changed request while the first one may have applied.
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    queue = CoordinateQueue(host.field_root)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w9"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+
+    def relay_then_answer(queue_, path, *, worker_name, request_id, timeout_seconds):
+        relay(queue, worker_name, request_id)
+        response = queue.take_response(worker_name=worker_name, request_id=request_id)
+        assert response is not None and response["ok"] is False
+        return response
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", relay_then_answer)
+    with pytest.raises(DomainError) as uncertain:
+        cli._coordinate_command(args)
+    assert uncertain.value.code == code
+    record = CoordinateRecovery(host.field_root).read(channel.worker_name, "accept-w9")
+    assert record is not None, "an uncertain result keeps the reservation"
+    assert record["state"] == "outcome_unknown"
+    assert record["payload"] == payload
+    assert record["request_hash"] == coordinate_request_hash("review.accept", PROJECT, payload)
+    assert len(record["request_ids"]) == 1
+    shown = uncertain.value.details["recovery"]
+    assert shown["idempotency_key"] == "accept-w9"
+    assert shown["request_hash"] == record["request_hash"]
+    assert shown["request_ids"] == record["request_ids"]
+    assert "unchanged" in uncertain.value.details["retry"]
+
+    changed = dict(payload, expected_revision=8)
+    with pytest.raises(DomainError) as reused:
+        cli._coordinate_command(
+            _args("review.accept", object_ref=PROJECT, payload=changed, config=str(host.path), identity=identity)
+        )
+    assert reused.value.code == "work_coordinate_idempotency_key_reused"
+    assert len(submits) == 1, "a changed request under the unresolved key is never sent"
+
+    with pytest.raises(DomainError):
+        cli._coordinate_command(args)
+    assert len(submits) == 2
+    assert submits[1]["payload"] == payload, "the retry is the exact same request"
+
+
+def test_an_unsent_retry_does_not_free_a_key_an_earlier_attempt_may_have_applied(
+    submits, monkeypatch, tmp_path
+):
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w10"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+    errors = iter(
+        [
+            DomainError("work_coordinate_outcome_unknown", "unknown", status=504),
+            DomainError("work_coordinate_relay_unavailable", "not claimed", status=504),
+        ]
+    )
+
+    def answer(queue_, path, *, worker_name, request_id, timeout_seconds):
+        raise next(errors)
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", answer)
+    for _ in range(2):
+        with pytest.raises(DomainError):
+            cli._coordinate_command(args)
+    record = CoordinateRecovery(host.field_root).read(channel.worker_name, "accept-w10")
+    assert record is not None and record["state"] == "outcome_unknown"
+    assert len(record["request_ids"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("code", "status", "outcome"),
+    [
+        ("work_coordinate_request_expired", 504, "not_sent"),
+        ("work_coordinate_request_invalid", 400, "not_sent"),
+        ("work_coordinate_request_too_large", 413, "not_sent"),
+        ("work_coordinate_relay_unavailable", 504, "not_sent"),
+        ("work_coordinate_channel_reconnecting", 503, "not_sent"),
+        ("work_item_revision_conflict", 409, "refused"),
+        ("work_review_operator_evidence_missing", 400, "refused"),
+        ("work_coordinate_outcome_unknown", 504, "unknown"),
+        ("work_coordinate_response_too_large", 502, "unknown"),
+        ("work_coordinate_response_invalid", 502, "unknown"),
+        ("work_coordinate_relay_failed", 502, "unknown"),
+        ("data_bus_outcome_unknown", 504, "unknown"),
+        ("data_bus_connect_refused", 503, "unknown"),
+        ("work_store_unavailable", 503, "unknown"),
+        ("", 400, "unknown"),
+    ],
+)
+def test_only_proof_frees_a_key(code, status, outcome):
+    assert error_outcome(DomainError(code, "message", status=status)) == outcome

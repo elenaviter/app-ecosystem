@@ -64,6 +64,7 @@ from .relay_pacing import channel_reconnect_state
 from .coordinate_contract import coordinate_contract, require_coordinate_shape
 from .coordinate_recovery import (
     CoordinateRecovery,
+    error_outcome,
     mutation_idempotency_key,
     recovery_identity,
 )
@@ -2513,13 +2514,13 @@ def _finish_coordinate_response(
     worker_name: str,
     key: str,
 ) -> dict[str, Any]:
-    """The service's answer; a receipt is kept for its key, a refusal frees it."""
+    """The service's answer; a receipt is kept for its key, only a proved refusal frees it."""
 
     try:
         result = _coordinate_response(response)
-    except DomainError:
+    except DomainError as exc:
         if recovery is not None:
-            recovery.forget(worker_name, key)
+            _record_unfinished_mutation(recovery, worker_name, key, exc)
         raise
     if recovery is not None:
         recovery.record_state(worker_name, key, "applied", receipt=result)
@@ -2529,21 +2530,30 @@ def _finish_coordinate_response(
 def _record_unfinished_mutation(
     recovery: CoordinateRecovery, worker_name: str, key: str, error: DomainError
 ) -> None:
-    """Keep an uncertain request for its retry, and say how to retry it."""
+    """Free the key only on proof that nothing applied; keep it otherwise.
 
-    if error.code == "work_coordinate_outcome_unknown":
-        record = recovery.record_state(worker_name, key, "outcome_unknown")
-        if record is not None:
-            error.details["recovery"] = recovery_identity(record, source="pending")
-            error.details["retry"] = (
-                "Run the same command unchanged. The client returns the receipt "
-                "if it arrived, or resends this exact request under the same key."
-            )
-        return
+    A raised error and a queued error envelope reach this one decision, so an
+    expired claim, a transport failure or an oversized result keeps the exact
+    request, its hash and every request id for the unchanged retry.
+    """
+
     record = recovery.read(worker_name, key)
-    if record is not None and len(record.get("request_ids") or []) <= 1:
-        # The request never reached the service (not claimed, or withdrawn).
+    if record is None:
+        return
+    outcome = error_outcome(error)
+    if outcome == "refused" or (
+        # Only when no earlier request id under this key could have reached it.
+        outcome == "not_sent" and len(record.get("request_ids") or []) <= 1
+    ):
         recovery.forget(worker_name, key)
+        return
+    record = recovery.record_state(worker_name, key, "outcome_unknown")
+    if record is not None:
+        error.details["recovery"] = recovery_identity(record, source="pending")
+        error.details["retry"] = (
+            "Run the same command unchanged. The client returns the receipt "
+            "if it arrived, or resends this exact request under the same key."
+        )
 
 
 def _recover_prior_mutation(

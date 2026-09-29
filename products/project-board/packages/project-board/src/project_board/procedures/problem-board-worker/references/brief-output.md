@@ -108,6 +108,10 @@ which of three things happened. Read it before any retry.
   resends that exact request. A different request under a key already sent is
   refused locally as `work_coordinate_idempotency_key_reused`, naming the
   original request, before anything is sent.
+  `work_coordinate_response_too_large` is in this class too: the operation may
+  have applied and only its result did not fit the queue. Every error that
+  prints `recovery` and `retry` fields is in this class, and the key stays
+  held for that exact request until a receipt or a service refusal settles it.
 
 The envelope's shape alone cannot tell these apart, so the reader does not
 classify by `ERROR`. It classifies by the code, and a code it does not know is
