@@ -683,7 +683,7 @@ def test_a_publishing_attempt_is_never_released_by_a_concurrent_refusal(tmp_path
 
         def publisher():
             start.wait()
-            token = recovery.begin_attempt("w", key, **body)
+            token = recovery.begin_attempt("w", key, request_id="r2", **body)
             try:
                 recovery.record_submission("w", key, request_id="r2", token=token, **body)
             except DomainError:
@@ -702,3 +702,64 @@ def test_a_publishing_attempt_is_never_released_by_a_concurrent_refusal(tmp_path
         assert record is not None, round_number
         assert record["attempts"].get("r2") == "unknown"
     assert missing == []
+
+
+# W404 fifth finding (codex-app, 2026-09-29 22:27Z): an interrupt after the
+# queue published the request abandoned it as if it had never been sent.
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit, RuntimeError])
+def test_an_interrupt_after_publication_keeps_the_key(submits, monkeypatch, tmp_path, interrupt):
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    queue = CoordinateQueue(host.field_root)
+    recovery = CoordinateRecovery(host.field_root)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w18"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+    published = CoordinateQueue.submit
+
+    def publish_then_interrupt(self, **values):
+        published(self, **values)
+        raise interrupt()
+
+    monkeypatch.setattr(CoordinateQueue, "submit", publish_then_interrupt)
+    with pytest.raises(interrupt):
+        cli._coordinate_command(args)
+    (claimed,) = queue.claim(worker_name=channel.worker_name, limit=10)
+    record = recovery.read(channel.worker_name, "accept-w18")
+    assert record is not None, "the published request may apply: the key stays held"
+    assert record["request_ids"] == [claimed["request_id"]]
+    assert record["attempts"] == {claimed["request_id"]: "unknown"} and record["publishing"] == []
+
+    monkeypatch.setattr(CoordinateQueue, "submit", published)
+    with pytest.raises(DomainError) as reused:
+        cli._coordinate_command(
+            _args("review.accept", object_ref=PROJECT, payload=dict(payload, expected_revision=8), config=str(host.path), identity=identity)
+        )
+    assert reused.value.code == "work_coordinate_idempotency_key_reused"
+    assert len(submits) == 1, "the changed request is never dispatched"
+
+
+def test_an_interrupt_before_publication_frees_the_key_and_an_unreadable_queue_holds_it(submits, monkeypatch, tmp_path):
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    recovery = CoordinateRecovery(host.field_root)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w19"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+
+    def interrupt_first(self, **values):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(CoordinateQueue, "submit", interrupt_first)
+    with pytest.raises(KeyboardInterrupt):
+        cli._coordinate_command(args)
+    assert recovery.read(channel.worker_name, "accept-w19") is None, "never published: the key is free"
+
+    def unreadable(self, **values):
+        raise OSError("queue not readable")
+
+    monkeypatch.setattr(CoordinateQueue, "holds", unreadable)
+    with pytest.raises(KeyboardInterrupt):
+        cli._coordinate_command(args)
+    record = recovery.read(channel.worker_name, "accept-w19")
+    assert record is not None and len(record["publishing"]) == 1, "unknown publication stays held"

@@ -2404,17 +2404,19 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             )
             if recovered is not None:
                 return recovered
-    token = ""
+    request_id = new_id("coordinate")
     if recovery is not None:
-        # The attempt is registered before the queue can expose it, so no
-        # release can happen while it may reach the service. A key released
-        # because every earlier attempt had no effect is reserved again here.
-        token = recovery.begin_attempt(
+        # The attempt is registered under its queue request id before the
+        # queue can expose it, so no release can happen while it may reach
+        # the service. A key released because every earlier attempt had no
+        # effect is reserved again here.
+        recovery.begin_attempt(
             channel.worker_name,
             key,
             action=action,
             object_ref=object_ref,
             payload=payload,
+            request_id=request_id,
         )
     try:
         request = queue.submit(
@@ -2426,12 +2428,16 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             object_ref=object_ref,
             payload=payload,
             timeout_seconds=timeout_seconds,
+            request_id=request_id,
         )
     except BaseException:
         if recovery is not None:
-            recovery.abandon_attempt(channel.worker_name, key, token)
+            _settle_interrupted_publication(
+                queue, recovery, channel.worker_name, key,
+                action=action, object_ref=object_ref, payload=payload,
+                request_id=request_id,
+            )
         raise
-    request_id = str(request["request_id"])
     if recovery is not None:
         recovery.record_submission(
             channel.worker_name,
@@ -2440,7 +2446,7 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             object_ref=object_ref,
             payload=payload,
             request_id=request_id,
-            token=token,
+            token=request_id,
         )
     try:
         response = _await_coordinate_response(
@@ -2463,6 +2469,41 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
         key=key,
         request_id=request_id,
     )
+
+
+def _settle_interrupted_publication(
+    queue: Any,
+    recovery: CoordinateRecovery,
+    worker_name: str,
+    key: str,
+    *,
+    action: str,
+    object_ref: str,
+    payload: Mapping[str, Any],
+    request_id: str,
+) -> None:
+    """Decide an attempt whose publication raised, from the queue itself.
+
+    A request the queue holds was published and may apply, so it is recorded
+    as submitted with an unknown outcome. Only a request the queue provably
+    does not hold is abandoned. When the queue cannot be read, the attempt
+    stays publishing, which holds the key (W404, fifth review finding).
+    """
+
+    try:
+        published = queue.holds(worker_name=worker_name, request_id=request_id)
+    except BaseException:  # noqa: BLE001 - unknown stays held
+        return
+    try:
+        if published:
+            recovery.record_submission(
+                worker_name, key, action=action, object_ref=object_ref,
+                payload=payload, request_id=request_id, token=request_id,
+            )
+        else:
+            recovery.abandon_attempt(worker_name, key, request_id)
+    except BaseException:  # noqa: BLE001 - unknown stays held
+        return
 
 
 def _await_coordinate_response(

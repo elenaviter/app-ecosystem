@@ -39,7 +39,6 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -164,18 +163,21 @@ class CoordinateRecovery:
         action: str,
         object_ref: str,
         payload: Mapping[str, Any],
+        request_id: str,
     ) -> str:
         """Register one attempt as publishing, before the queue can expose it.
 
-        Returns the attempt's token. The key is reserved again for this exact
-        request when an earlier release freed it, and a different request
-        under a held key is refused here, before anything is sent.
+        The attempt is registered under the queue request id it will be
+        published with, so an interruption at any point leaves a known
+        identity. The key is reserved again for this exact request when an
+        earlier release freed it, and a different request under a held key is
+        refused here, before anything is sent. Returns the request id.
         """
 
         path = self._path(worker_name, key)
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         request_hash = coordinate_request_hash(action, object_ref, payload)
-        token = uuid.uuid4().hex
+        token = str(request_id)
         with exclusive_lock(self._lock(worker_name)):
             record = self.read(worker_name, key)
             if record is None:
