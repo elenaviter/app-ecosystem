@@ -731,6 +731,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _host_config(command)
 
+    wake_recover_help = (
+        "Recover one Codex session whose wake was taken twice without a "
+        "receive while mail waits: name the worker and its "
+        "outstanding wake from pb worker list. One recovery per wake; only "
+        "the worker's own receive resolves it."
+    )
+    command = worker_commands.add_parser(
+        "wake-recover", help=wake_recover_help, description=wake_recover_help
+    )
+    _host_config(command)
+    command.add_argument("--worker", required=True, help="The stranded session's stable worker name.")
+    command.add_argument("--wake-id", required=True, help="Its outstanding wake, as pb worker list shows it.")
+    command.add_argument("--requested-by", default="", help="Who asks, for the record (defaults to this host).")
+
     command = worker_commands.add_parser(
         "listen", help="Enroll this exact session and begin its inbox lifecycle."
     )
@@ -4448,6 +4462,17 @@ def _worker_command(args: Any) -> dict[str, Any]:
             "config": str(path),
             "workers": SharedFieldStore(config.field_root).list_workers(),
         }
+    if args.worker_command == "wake-recover":
+        from .wake_recovery import recover_worker_wake
+
+        path = resolve_host_config_path(getattr(args, "config", None))
+        config = HostRelayConfig.load(path)
+        return recover_worker_wake(
+            config,
+            worker_name=str(args.worker or "").strip(),
+            wake_id=str(args.wake_id or "").strip(),
+            requested_by=str(args.requested_by or "").strip() or f"host:{config.host_id}",
+        )
     identity = _identity(args)
     if args.worker_command == "whoami":
         return {

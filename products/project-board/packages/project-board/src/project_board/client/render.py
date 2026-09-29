@@ -230,6 +230,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_deliveries(result, flags)
     if isinstance(result.get("workers"), list):
         return _render_worker_list(result)
+    if isinstance(result.get("recovery"), Mapping) and isinstance(result.get("queue_result"), Mapping):
+        return _render_wake_recovery(result)
     if "settlement_summary" in result and "settled_at" in result:
         return _render_settled(result)
     if not result:
@@ -1071,6 +1073,74 @@ def _render_worker_list(result: Mapping[str, Any]) -> list[str]:
                 f"NOTE: a Claude Code worker overdue by {int(overdue)} s has no running watch. "
                 "Its session cannot be reached through the board until its guard or its operator restarts it."
             )
+        lines.extend(_native_delivery_lines(worker, reach))
+    return lines
+
+
+def _native_delivery_lines(worker: Mapping[str, Any], reach: Mapping[str, Any]) -> list[str]:
+    """What a stranded Codex wake needs from a coordinator, in two lines (W405).
+
+    Transport (relay, Card) says nothing about whether the model received its
+    mail. A wake taken twice without a receive, with mail still pending, is
+    the state no automatic path will change; it is named here with the one
+    supported recovery. An idle Codex with nothing pending prints nothing.
+    """
+
+    if worker.get("runtime_kind") != "codex" or worker.get("pool_status") == "retired":
+        return []
+    lines: list[str] = []
+    wake_id = str(reach.get("outstanding_wake_id") or "")
+    exhausted = str(reach.get("wake_retry_exhausted_since") or "")
+    recovery = reach.get("wake_recovery") if isinstance(reach.get("wake_recovery"), Mapping) else {}
+    last = reach.get("last_wake_recovery") if isinstance(reach.get("last_wake_recovery"), Mapping) else {}
+    if wake_id and exhausted:
+        lines.append(
+            "NOTE: native delivery stalled: wake {} taken without a receive and its one retry used since {}; "
+            "pending {}; last inbox check {}.".format(
+                wake_id,
+                exhausted,
+                reach.get("pending_messages"),
+                reach.get("last_inbox_check_at") or "-",
+            )
+        )
+        if recovery and str(recovery.get("wake_id") or "") == wake_id:
+            lines.append(
+                "recovery: {} at {}{} · resolved only by the worker's receive of this wake; do not submit again{}".format(
+                    recovery.get("state"),
+                    recovery.get("recorded_at") or recovery.get("requested_at"),
+                    f" · submission {recovery['submission_id']}" if recovery.get("submission_id") else "",
+                    " (the last call failed before queuing: one more recovery is allowed)"
+                    if recovery.get("state") == "failed"
+                    else "",
+                )
+            )
+        else:
+            lines.append(
+                f"recover once: pb worker wake-recover --worker {worker.get('worker_name')} --wake-id {wake_id}"
+            )
+    elif last.get("resolved_at"):
+        lines.append(
+            "last recovery: wake {} resolved by the worker's receive at {}".format(
+                last.get("wake_id"), last.get("resolved_at")
+            )
+        )
+    return lines
+
+
+def _render_wake_recovery(result: Mapping[str, Any]) -> list[str]:
+    recovery = result.get("recovery") or {}
+    queue = result.get("queue_result") or {}
+    lines = [
+        f"wake recovery: {recovery.get('state')} · worker {result.get('worker_name')} · wake {result.get('wake_id')}",
+        "queue: adapter {} · delivered {} · submission {}{}".format(
+            queue.get("adapter"),
+            queue.get("delivered"),
+            queue.get("queued_submission_id") or "-",
+            f" · reason {queue['reason']}" if queue.get("reason") else "",
+        ),
+    ]
+    if result.get("next"):
+        lines.append(f"next: {result['next']}")
     return lines
 
 
