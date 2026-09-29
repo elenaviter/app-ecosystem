@@ -753,8 +753,9 @@ they stand now. What every agent on the shared host does:
    the operator is not an exception: the announcement says so and runs
    anyway, which is still an announcement. The cost of a silent action
    lands on the agents who learn of it from their own broken channel
-   (round 2, finding six). After merging a journal change request it
-   fast-forwards the shared checkouts, since the index reads them (finding
+   (round 2, finding six). After merging a journal change request, the worker
+   that indexes it fast-forwards its clean journal clone first, since the index
+   reads merged content from that clone rather than the item worktree (finding
    nine).
 8. **Acceptance is the behaviour observed live**, not the suites on the
    branch: the coordinator verifies the way the operator would, after the

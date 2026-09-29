@@ -145,8 +145,11 @@ own SSH alias, `github-<alias>`, so a clone there has an origin such as
 github.com in the SSH configuration. A new clone uses that alias whenever it
 exists, since the deploy key is what grants access on that host.
 
-The journal repository (role `journal`) is cloned like any other: the
-project's history lives there, and you read it before acting on a subject.
+The journal repository (role `journal`) is optional and cloned like any other.
+The project may assign that role to any repository and path; no common
+procedure assumes a repository name. When present, the project's history lives
+there, and you read it before acting on a subject. When absent, journal work
+does not apply and decisions and findings stay on the plan item.
 
 A folder whose `origin` is not the declared URL stops there (exit 3): the
 project card changed the alias, or the folder holds another repository. Do not
@@ -283,9 +286,12 @@ absent, and the purpose refs come from the journal home as before
 `pb worker context` reads the project's journal home and every page in it
 (setup, facts, environment, instructions, runtime profiles) from your own
 clone, `<workspace>/<alias>/<path>`, for every worker, coordinator included.
-Your journal entries are written there, `pb worker journal-index` indexes that
-clone into an index of your own, `pb worker journal-search` searches it, and a
-journal view you serve to the board is read from it. No host-wide checkout is
+Merged journal entries are indexed there by `pb worker journal-index`,
+`pb worker journal-search` searches them, and a journal view you serve to the
+board is read from there. Entries are authored on an item's branch in its
+worktree, never in this clean clone. After the journal change request is
+merged, fetch and fast-forward the clean clone before indexing; an unmerged
+entry correctly returns `journal_entry_not_found`. No host-wide checkout is
 ever a source, however current it looks: another worker's or a person's
 checkout lags, or carries edits you cannot see, and a page read there looks
 like no page.
@@ -314,8 +320,7 @@ disturb the work in hand, and a disk does not fill with forgotten copies
 | Folder | What it is |
 | --- | --- |
 | `<workspace>/<alias>` | **the clean clone** from step 2. It stays on its declared branch, is clean, and is fetched and fast-forwarded (`git merge --ff-only origin/<branch>`), not only fetched. Step 5, the relay's journal views and every test overlay read its working tree. A work branch, a work in progress or a tool's commit here would change what they read. If the fast-forward refuses, the clone is not clean: stop and report it, never reset it. |
-| `<workspace>/wt/<item>-<alias>` | one worktree per assignment and repository, on the assignment's work branch: `git -C <workspace>/<alias> worktree add <workspace>/wt/<item>-<alias> -b <branch> origin/<base>`. A change pair across repositories is one worktree in each. |
-| `<workspace>/wt/journal-<alias>` | one long-lived worktree on `work/journal-<agent-alias>`, for journal entries and project pages (one open journal change request per agent at a time), so a journal change never shares a checkout with code |
+| `<workspace>/wt/<item>-<alias>` | one worktree per assignment and repository, on the assignment's work branch: `git -C <workspace>/<alias> worktree add <workspace>/wt/<item>-<alias> -b <branch> origin/<base>`. A change pair across repositories is one worktree in each. A journal edit reuses this worktree when the item already binds the journal repository; otherwise it gets `<workspace>/wt/<item>-<journal-alias>` and a feature-bound branch and change request of its own. No per-agent journal worktree or branch spans unrelated items. |
 | `<workspace>/rv/<item>-<alias>-<short sha>` | one worktree per review, returned-item check or tested merge, **detached** at the exact commit you examine: `git -C <workspace>/<alias> worktree add --detach <path> <sha>`. A review never moves anyone's branch. |
 
 - **Nothing goes to a temporary or hidden folder outside the workspace.** A
@@ -325,10 +330,12 @@ disturb the work in hand, and a disk does not fill with forgotten copies
   for main against main). A change pair points each at its partner worktree,
   for example `AE=<workspace>/wt/<item>-app-ecosystem`. The suite prints each
   tree's head, and the report quotes them.
-- **Writing tools run in a worktree, never in the clean clone.** `pb plan sync`
+- **Writing tools run in an item worktree, never in the clean clone.** `pb plan sync`
   and `pb plan import` resolve the journal home from `pb worker context`,
   which is the clean clone. Until they take an explicit journal path, run them
-  from your journal worktree with that path. `scripts/release-pb` runs in its
+  from the item's repository worktree with that path (including its item-scoped
+  journal worktree when the journal repository is otherwise not in the item).
+  `scripts/release-pb` runs in its
   own `wt/release-<version>` tree from `origin/main`.
 
 **Remove what is finished.** When the item is done or cancelled **and** its

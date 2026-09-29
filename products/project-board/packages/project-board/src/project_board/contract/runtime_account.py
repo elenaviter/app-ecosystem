@@ -7,6 +7,7 @@ It is display and change-detection metadata, never authorization authority.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 from .errors import DomainError
@@ -108,8 +109,46 @@ def changed_runtime_account(
     }
 
 
+def _evidence_observed_at(value: Mapping[str, Any] | None) -> datetime | None:
+    if not isinstance(value, Mapping):
+        return None
+    raw = value.get("observed_at")
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    text = str(raw or "").strip().replace("Z", "+00:00")
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def runtime_account_evidence_advances(
+    current: Mapping[str, Any] | None,
+    incoming: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether an explicit host sample advances stored evidence.
+
+    Evidence is a last-observation register. Equal timestamps are replays, and
+    older packets may neither overwrite an account nor clear it as missing.
+    The service validates new evidence before this ordering check; malformed
+    timestamps therefore never become a later observation here.
+    """
+
+    if not isinstance(incoming, Mapping) or not incoming:
+        return False
+    incoming_at = _evidence_observed_at(incoming)
+    if incoming_at is None:
+        return False
+    current_at = _evidence_observed_at(current)
+    return current_at is None or incoming_at > current_at
+
+
 __all__ = [
     "RUNTIME_ACCOUNT_FIELDS",
     "changed_runtime_account",
     "normalize_runtime_account",
+    "runtime_account_evidence_advances",
 ]
