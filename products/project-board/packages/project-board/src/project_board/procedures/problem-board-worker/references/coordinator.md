@@ -281,6 +281,10 @@ environment page:
   pool, with its reset time when known. Their limits are coupled, not
   independent capacity. Record `Not known yet` instead of assuming that two
   workers have independent limits.
+- each pool's plan, as the operator states it. Plans differ in the size of
+  their windows, so the same used percent is a different amount of work left
+  on two plans: compare a pool's remaining room, never its percent against
+  another pool's.
 
 Use only this routing heuristic:
 
@@ -291,7 +295,11 @@ Use only this routing heuristic:
 2. **Independent quota available?** Route portable work, including review,
    research and planning, to another host or an independent quota pool first,
    subject to the skills and access the work needs.
-3. **Reset soon enough?** When a host-local worker or its quota pool is running
+3. **Reset soon enough?** At each routing decision read the pool's current
+   five-hour use and its reset, with the observation time, and weigh them
+   against the size of the task: a large task goes to a pool with room left
+   in its five-hour window, and a smaller plan's window runs out sooner.
+   When a host-local worker or its quota pool is running
    short and the reset is not soon enough for the work, replan before
    exhaustion. Move unstarted portable work, leave the scarce worker only the
    cheap or locality-required steps it can finish, and hand over the exact
@@ -299,7 +307,12 @@ Use only this routing heuristic:
    instead of churning ownership.
 
 Do not build a scheduler or assign token scores. The routing inventory and
-these three questions are the whole rule.
+these three questions are the whole rule. Usage belongs to the account and
+its pool, not to one worker: a shared pool's consumption is not charged to
+the worker you happen to read it from, and a plan's price says nothing about
+its window size. How fast a pool is spending is read from successive
+observations of the same account, window and reset, each with its observed
+time.
 
 **The coordinator routes implementation** (operator, 2026-09-29). A
 coordinator investigates, diagnoses and designs. Once an implementable

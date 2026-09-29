@@ -2030,3 +2030,9 @@ def test_the_coordinator_reconciles_an_overdue_worker_before_rerouting() -> None
     assert "To hand returned work to someone else, change its assignee: that one edit notifies the new assignee and makes the item theirs" in coordinator
     assert "Assignee and status are independent edits in either order, and neither needs a review command first" in coordinator
     assert "release it with `assignment.return` and its reason, then assign" not in coordinator
+    # Plans and pools (operator, relayed by codex-main 2026-09-29 23:19Z).
+    assert "each pool's plan, as the operator states it" in coordinator
+    assert "compare a pool's remaining room, never its percent against another pool's" in coordinator
+    assert "read the pool's current five-hour use and its reset, with the observation time, and weigh them against the size of the task" in coordinator
+    assert "a shared pool's consumption is not charged to the worker you happen to read it from" in coordinator
+    assert "a plan's price says nothing about its window size" in coordinator
