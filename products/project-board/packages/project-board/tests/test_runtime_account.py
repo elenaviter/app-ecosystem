@@ -85,7 +85,7 @@ async def test_claude_account_comes_from_oauth_account_metadata(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_missing_vendor_account_is_a_safe_error(tmp_path):
+async def test_missing_and_unreadable_vendor_accounts_are_distinct_safe_errors(tmp_path):
     auth = tmp_path / ".codex" / "auth.json"
     auth.parent.mkdir(parents=True)
     auth.write_text(json.dumps({"tokens": {"access_token": "do-not-show"}}))
@@ -93,17 +93,29 @@ async def test_missing_vendor_account_is_a_safe_error(tmp_path):
     with pytest.raises(DomainError) as raised:
         await read_runtime_account("codex", home=tmp_path)
 
-    assert raised.value.code == "work_runtime_account_unavailable"
+    assert raised.value.code == "work_runtime_account_missing"
     assert "do-not-show" not in str(raised.value)
+
+    auth.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(DomainError) as unreadable:
+        await read_runtime_account("codex", home=tmp_path)
+    assert unreadable.value.code == "work_runtime_account_unavailable"
 
 
 @pytest.mark.asyncio
-async def test_each_relay_heartbeat_reads_and_sends_the_current_account(tmp_path):
+async def test_each_relay_heartbeat_states_reported_stale_or_missing_account(tmp_path):
     host, _identity, channel = make_host(tmp_path)
     calls: list[dict] = []
-    accounts = [
+    observations = [
         {"account_id": "acct-one", "email": "one@example.test", "organization": ""},
-        {"account_id": "acct-two", "email": "two@example.test", "organization": ""},
+        DomainError(
+            "work_runtime_account_unavailable",
+            "The coding runtime account file could not be read.",
+        ),
+        DomainError(
+            "work_runtime_account_missing",
+            "The coding runtime did not report a signed-in account.",
+        ),
     ]
 
     class Client:
@@ -112,7 +124,10 @@ async def test_each_relay_heartbeat_reads_and_sends_the_current_account(tmp_path
             return {"object": {}}
 
     async def account_reader():
-        return accounts.pop(0)
+        observation = observations.pop(0)
+        if isinstance(observation, Exception):
+            raise observation
+        return observation
 
     adapter = relay.ProblemBoardHostRelayAdapter(
         config=relay.RelayConfig.from_host_channel(host, channel, project_id="attendance"),
@@ -123,6 +138,13 @@ async def test_each_relay_heartbeat_reads_and_sends_the_current_account(tmp_path
 
     await adapter._heartbeat_with_republish({"availability": "available"})  # noqa: SLF001
     await adapter._heartbeat_with_republish({"availability": "available"})  # noqa: SLF001
+    await adapter._heartbeat_with_republish({"availability": "available"})  # noqa: SLF001
 
     assert calls[0]["payload"]["runtime_account"]["account_id"] == "acct-one"
-    assert calls[1]["payload"]["runtime_account"]["account_id"] == "acct-two"
+    assert calls[0]["payload"]["runtime_account_evidence"]["state"] == "reported"
+    assert calls[0]["payload"]["runtime_account_evidence"]["source"] == "host-report"
+    assert calls[0]["payload"]["runtime_account_evidence"]["observed_at"]
+    assert "runtime_account" not in calls[1]["payload"]
+    assert calls[1]["payload"]["runtime_account_evidence"]["state"] == "stale"
+    assert "runtime_account" not in calls[2]["payload"]
+    assert calls[2]["payload"]["runtime_account_evidence"]["state"] == "missing"

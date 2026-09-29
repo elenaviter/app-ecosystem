@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import json
+from typing import Any
 
-from project_board.client import cli
+from project_board.client import cli, relay
 from project_board.client.render import render_envelope
 from project_board.client.store import SharedFieldStore
+from project_board.contract.errors import DomainError
+from test_attendance_materializes_project import _fresh_host
 
 
 PROJECT_REF = "work:project:compact-coordinator-evidence"
@@ -429,6 +434,203 @@ def test_compact_worker_and_team_rows_show_relay_reported_runtime_identity(
     _assert_budget(context_text, lines=25, bytes_=5_000)
 
 
+def test_team_runtime_identity_reaches_context_from_real_heartbeat_evidence(
+    tmp_path, monkeypatch
+) -> None:
+    """The server-shaped team projection is derived from what the relay sends."""
+
+    project_id = PROJECT_REF.rsplit(":", 1)[-1]
+    host, identity, field, base_config = _fresh_host(tmp_path)
+    field.create_project(
+        project_id=project_id,
+        title="Compact coordinator evidence",
+        goal="Keep current team runtime evidence visible.",
+        owner="operator",
+    )
+    field.sync_worker_attendances(identity.worker_name, [PROJECT_REF])
+    model_observed = "2026-09-29T12:30:00Z"
+    field.record_runtime_model(
+        identity.worker_name,
+        {
+            "model": "gpt-5.6-sol",
+            "effort": "xhigh",
+            "source": "codex-rollout",
+            "observed_at": model_observed,
+        },
+    )
+    account_observations: list[Any] = [
+        {
+            "account_id": "account-1",
+            "email": "agent@example.test",
+            "organization": "org-1",
+        },
+        DomainError(
+            "work_runtime_account_unavailable",
+            "The coding runtime account file could not be read.",
+        ),
+        DomainError(
+            "work_runtime_account_missing",
+            "The coding runtime did not report a signed-in account.",
+        ),
+    ]
+
+    async def account_reader() -> dict[str, str]:
+        observation = account_observations.pop(0)
+        if isinstance(observation, Exception):
+            raise observation
+        return observation
+
+    class ProducerContractBoard:
+        """The server contract, driven only by fields the real relay publishes."""
+
+        def __init__(self) -> None:
+            self.heartbeats: list[dict[str, Any]] = []
+            self.runtime_model: dict[str, Any] = {}
+            self.runtime_account: dict[str, Any] = {}
+
+        def _consume(self, payload: dict[str, Any]) -> None:
+            sessions = payload.get("agent_sessions")
+            if isinstance(sessions, list):
+                session = next(
+                    (row for row in sessions if isinstance(row, dict)), {}
+                )
+                model = session.get("runtime_model")
+                self.runtime_model = (
+                    {**model, "state": "reported"}
+                    if isinstance(model, dict) and model
+                    else {}
+                )
+            evidence = payload.get("runtime_account_evidence")
+            if not isinstance(evidence, dict):
+                return  # A legacy/unrelated omission means unchanged.
+            state = str(evidence.get("state") or "")
+            if state == "reported":
+                account = payload.get("runtime_account")
+                assert isinstance(account, dict) and account.get("account_id")
+                self.runtime_account = {
+                    **account,
+                    "source": evidence["source"],
+                    "observed_at": evidence["observed_at"],
+                    "state": "reported",
+                }
+            elif state == "stale":
+                if self.runtime_account:
+                    self.runtime_account = {**self.runtime_account, "state": "stale"}
+            elif state == "missing":
+                self.runtime_account = {}
+
+        async def action(
+            self,
+            *,
+            object_ref: str,
+            action: str,
+            payload: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            if action == "worker.heartbeat":
+                heartbeat = dict(payload or {})
+                self.heartbeats.append(heartbeat)
+                self._consume(heartbeat)
+                return {
+                    "ok": True,
+                    "object": {
+                        "team": [
+                            {
+                                "worker_alias": "codex-main",
+                                "worker_name": identity.worker_name,
+                                "role": "coordinator",
+                                "runtime_kind": "codex",
+                                "host_label": "host-one",
+                                "pool_status": "active",
+                                "presence": "online",
+                                "runtime_model": self.runtime_model,
+                                "runtime_account": self.runtime_account,
+                            }
+                        ]
+                    },
+                }
+            if action == "control.pull":
+                return {"ok": True, "object": {"lease_id": "", "items": []}}
+            return {"ok": True, "object": {"ref": object_ref}}
+
+    board = ProducerContractBoard()
+    adapter = relay.ProblemBoardHostRelayAdapter(
+        config=dataclasses.replace(base_config, project_id=project_id),
+        field=field,
+        client=board,
+        runtime_account_reader=account_reader,
+    )
+    monkeypatch.setenv("PROBLEM_BOARD_CONFIG", str(host.path))
+
+    def poll_and_render() -> str:
+        asyncio.run(
+            adapter._poll_project_once(  # noqa: SLF001 - heartbeat boundary
+                agent_sessions=adapter._listener_sessions(),  # noqa: SLF001
+                force_heartbeat=True,
+            )
+        )
+        context = cli._worker_command(  # noqa: SLF001 - CLI result under test
+            cli.build_parser().parse_args(
+                [
+                    "worker",
+                    "context",
+                    "--runtime-kind",
+                    identity.runtime_kind,
+                    "--runtime-session-id",
+                    identity.runtime_session_id,
+                    "--project-ref",
+                    PROJECT_REF,
+                ]
+            )
+        )
+        return _brief(context)
+
+    reported_text = poll_and_render()
+    first = board.heartbeats[0]
+    first_evidence = first["runtime_account_evidence"]
+    assert first["project_ref"] == PROJECT_REF
+    assert first["agent_sessions"][0]["runtime_model"]["model"] == "gpt-5.6-sol"
+    assert first["agent_sessions"][0]["runtime_model"]["effort"] == "xhigh"
+    assert first["runtime_account"]["account_id"] == "account-1"
+    assert first_evidence["state"] == "reported"
+    assert first_evidence["source"] == "host-report"
+    assert first_evidence["observed_at"]
+    assert (
+        "model gpt-5.6-sol · reasoning effort xhigh · state reported "
+        f"· source codex-rollout · observed {model_observed}"
+    ) in reported_text
+    assert (
+        "account_id account-1 · email agent@example.test · organization org-1 "
+        "· state reported · source host-report "
+        f"· observed {first_evidence['observed_at']}"
+    ) in reported_text
+
+    stale_text = poll_and_render()
+    second = board.heartbeats[1]
+    assert "agent_sessions" not in second  # unchanged, not missing
+    assert "runtime_account" not in second
+    assert second["runtime_account_evidence"]["state"] == "stale"
+    assert "model gpt-5.6-sol · reasoning effort xhigh · state reported" in stale_text
+    assert (
+        "account_id account-1 · email agent@example.test · organization org-1 "
+        "· state stale · source host-report "
+        f"· observed {first_evidence['observed_at']}"
+    ) in stale_text
+
+    missing_text = poll_and_render()
+    third = board.heartbeats[2]
+    assert "agent_sessions" not in third
+    assert "runtime_account" not in third
+    assert third["runtime_account_evidence"]["state"] == "missing"
+    [stored_member] = field.read_project_team(project_id)
+    assert stored_member["runtime_model"]["model"] == "gpt-5.6-sol"
+    assert stored_member["runtime_account"] == {}
+    assert "model gpt-5.6-sol · reasoning effort xhigh · state reported" in missing_text
+    assert (
+        "provider account: missing · state missing · source not reported "
+        "· observed not reported"
+    ) in missing_text
+
+
 def test_compact_worker_and_team_rows_name_missing_and_stale_runtime_identity() -> None:
     missing = _brief(
         {
@@ -456,6 +658,24 @@ def test_compact_worker_and_team_rows_name_missing_and_stale_runtime_identity() 
         "provider account: missing · state missing · source not reported "
         "· observed not reported"
         in missing
+    )
+    unprovenanced = _brief(
+        {
+            "workers": [
+                {
+                    "worker_alias": "unprovenanced-worker",
+                    "worker_name": "codex-unprovenanced",
+                    "runtime_kind": "codex",
+                    "pool_status": "active",
+                    "runtime_account": {"account_id": "account-without-provenance"},
+                }
+            ]
+        }
+    )
+    assert (
+        "provider account: account_id account-without-provenance · state reported "
+        "· source not reported · observed not reported"
+        in unprovenanced
     )
 
     stale = _brief(
@@ -486,7 +706,7 @@ def test_compact_worker_and_team_rows_name_missing_and_stale_runtime_identity() 
     )
     assert "reasoning effort high · state stale · source codex-rollout" in stale
     assert "account_id account-old · state stale · source host-auth" in stale
-    _assert_budget(missing + stale, lines=40, bytes_=7_000)
+    _assert_budget(missing + unprovenanced + stale, lines=55, bytes_=9_000)
 
 
 def _plan_search_item(index: int) -> dict:

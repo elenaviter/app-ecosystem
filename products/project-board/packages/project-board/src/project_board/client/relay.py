@@ -762,14 +762,32 @@ class ProblemBoardHostRelayAdapter:
         # view in the same cycle refuses with the cause instead of "unbound".
         self._journal_mapping_gap: dict[str, Any] | None = None
 
-    async def _runtime_account(self) -> dict[str, str]:
-        """Read identification metadata for an actual publish or heartbeat."""
+    async def _runtime_account(
+        self,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Read one account sample and state what that sample established.
+
+        A missing evidence object means "legacy sender / unchanged" to the
+        board, so a current relay always sends one. A failed read is ``stale``
+        rather than ``missing``: the board may retain the last successful
+        identity while making its age explicit. Only a successful empty read,
+        or a relay with no applicable reader, positively establishes
+        ``missing``.
+        """
 
         if self._runtime_account_reader is None:
-            return {}
+            return {}, {
+                "state": "missing",
+                "source": "host-report",
+                "observed_at": utc_now(),
+            }
         try:
             account = normalize_runtime_account(await self._runtime_account_reader())
         except DomainError as exc:
+            definitely_missing = exc.code in {
+                "work_runtime_account_missing",
+                "work_runtime_account_unsupported",
+            }
             if self._runtime_account_error_state.get("code") != exc.code:
                 logger.warning(
                     "Problem Board could not read runtime account identity "
@@ -778,12 +796,21 @@ class ProblemBoardHostRelayAdapter:
                     exc.code,
                 )
                 self._runtime_account_error_state["code"] = exc.code
-            return {}
+            return {}, {
+                "state": "missing" if definitely_missing else "stale",
+                "source": "host-report",
+                "observed_at": utc_now(),
+            }
         self._runtime_account_error_state["code"] = ""
-        return account
+        return account, {
+            "state": "reported" if account else "missing",
+            "source": "host-report",
+            "observed_at": utc_now(),
+        }
 
     async def _add_runtime_account(self, payload: dict[str, Any]) -> None:
-        account = await self._runtime_account()
+        account, evidence = await self._runtime_account()
+        payload["runtime_account_evidence"] = evidence
         if account:
             payload["runtime_account"] = account
 
@@ -3628,7 +3655,10 @@ class ProblemBoardHostRelayAdapter:
             self._materialize_attended_project(heartbeat_result)
             journal_workspace = self._reconcile_journal_binding(heartbeat_result)
             # The team travels with every project heartbeat so a worker can
-            # address a teammate from its packet without asking the control plane.
+            # address a teammate from its packet without asking the control
+            # plane. Runtime identity, when the board reports it, remains
+            # nested on that authoritative roster. Replacing the snapshot
+            # means an omitted model or account is never inherited or made up.
             if isinstance(heartbeat_result.get("team"), list):
                 try:
                     self.field.sync_project_team(

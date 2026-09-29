@@ -1010,7 +1010,7 @@ def _runtime_account_brief(worker: Mapping[str, Any]) -> str:
         or carrier.get("provider_account_source")
         or worker.get("runtime_account_source")
         or worker.get("provider_account_source")
-        or ("host-report" if fields else "")
+        or ""
     ).strip() or "not reported"
     observed = str(
         account.get("observed_at")
