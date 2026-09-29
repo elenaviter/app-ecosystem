@@ -11,8 +11,47 @@ from project_board.client import relay
 from project_board.client.runtime_account import read_runtime_account
 from project_board.client.store import SharedFieldStore
 from project_board.contract.errors import DomainError
+from project_board.contract.runtime_account import runtime_account_evidence_advances
 
 from relay_helpers import make_host
+
+
+def test_runtime_account_evidence_advances_only_for_a_newer_observation():
+    current = {
+        "state": "reported",
+        "source": "host-report",
+        "observed_at": "2026-09-29T12:02:00Z",
+    }
+
+    assert runtime_account_evidence_advances(
+        current,
+        {
+            "state": "stale",
+            "source": "host-report",
+            "observed_at": "2026-09-29T12:03:00Z",
+        },
+    )
+    for observed_at in (
+        "2026-09-29T12:01:00Z",
+        "2026-09-29T12:02:00Z",
+    ):
+        assert not runtime_account_evidence_advances(
+            current,
+            {
+                "state": "missing",
+                "source": "host-report",
+                "observed_at": observed_at,
+            },
+        )
+    assert runtime_account_evidence_advances(
+        {},
+        {
+            "state": "reported",
+            "source": "host-report",
+            "observed_at": "2026-09-29T12:00:00Z",
+        },
+    )
+    assert not runtime_account_evidence_advances(current, {})
 
 
 def _jwt(claims: dict) -> str:
