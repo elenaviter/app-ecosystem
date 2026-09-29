@@ -69,7 +69,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `project.references.migrate` | plan | `work:coordinate` | Their project Card | Applies exactly the rewrite a preview returned. The owner may always (owner_exempt_from_card). |
 | `project.plan.embedding_status` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `plan.item.create` | plan | `work:coordinate` | Their project Card | The owner may always (owner_exempt_from_card). |
-| `work.status.set` | work | `work:coordinate` | Their project Card | Working needs an assignee; entering review needs review.look_at and review.could_not_verify. The assignee and the assignment stay as they are. The owner may always (owner_exempt_from_card). |
+| `work.status.set` | work | `work:coordinate` | Their project Card | Entering review needs review.look_at and review.could_not_verify. The assignee and the assignment stay as they are, including an empty assignee in Working. The owner may always (owner_exempt_from_card). |
 | `work.accept` | work | `work:review` | Their project Card | An alias of review.accept, with its rules. |
 | `review.accept` | review | `work:review` | Their project Card | No one accepts their own work (work_review_self_forbidden). An agent decides a review only as the item's named reviewer or the acting coordinator (work_review_not_reviewer). |
 | `review.return` | review | `work:review` | Their project Card | A reason is required. An agent decides a review only as the item's named reviewer or the acting coordinator (work_review_not_reviewer). |
