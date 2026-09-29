@@ -372,6 +372,9 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
                 member.get("presence") or "-",
             )
         )
+        lines[-1] += (
+            f" · {_runtime_model_brief(member)} · {_runtime_account_brief(member)}"
+        )
         # Stable worker names are addresses; keep them on their own copyable line.
         lines.append(f"team[{index}].worker_name = {name}")
         if _present(member.get("info_text")):
@@ -920,6 +923,111 @@ def _render_settled(result: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _worker_metadata_is_stale(worker: Mapping[str, Any]) -> bool:
+    """Use reported worker/session state as the freshness signal; never guess by age."""
+
+    if str(worker.get("presence") or "").strip().lower() in {
+        "stale",
+        "offline",
+    }:
+        return True
+    reachability = worker.get("reachability")
+    if not isinstance(reachability, Mapping):
+        return False
+    return str(reachability.get("state") or "").strip().lower() in {
+        "detached",
+        "never_listened",
+        "not_listening",
+        "retired",
+        "stale",
+    }
+
+
+def _reported_evidence_state(
+    record: Mapping[str, Any], *, present: bool, stale: bool
+) -> str:
+    if not present:
+        return "missing"
+    reported = str(record.get("state") or "").strip().lower()
+    if stale or reported in {"expired", "offline", "stale"}:
+        return "stale"
+    return reported or "reported"
+
+
+def _runtime_model_brief(worker: Mapping[str, Any]) -> str:
+    record = worker.get("runtime_model")
+    record = record if isinstance(record, Mapping) else {}
+    model = str(record.get("model_display") or record.get("model") or "").strip()
+    effort = str(
+        record.get("reasoning_effort") or record.get("effort") or ""
+    ).strip()
+    state = _reported_evidence_state(
+        record,
+        present=bool(model or effort),
+        stale=_worker_metadata_is_stale(worker),
+    )
+    source = str(record.get("source") or "").strip() or "not reported"
+    observed = str(
+        record.get("observed_at") or record.get("recorded_at") or ""
+    ).strip() or "not reported"
+    return (
+        f"runtime: model {model or 'missing'} · reasoning effort {effort or 'missing'} "
+        f"· state {state} · source {source} · observed {observed}"
+    )
+
+
+def _runtime_account_brief(worker: Mapping[str, Any]) -> str:
+    carrier: Mapping[str, Any] = worker
+    account = worker.get("runtime_account")
+    if not isinstance(account, Mapping):
+        account = worker.get("provider_account")
+    board_record = worker.get("board_record")
+    if not isinstance(account, Mapping) and isinstance(board_record, Mapping):
+        carrier = board_record
+        account = board_record.get("runtime_account")
+        if not isinstance(account, Mapping):
+            account = board_record.get("provider_account")
+    account = account if isinstance(account, Mapping) else {}
+    fields = []
+    for key, label in (
+        ("provider", "provider"),
+        ("account_id", "account_id"),
+        ("account_label", "label"),
+        ("email", "email"),
+        ("organization", "organization"),
+    ):
+        value = str(account.get(key) or "").strip()
+        if value:
+            fields.append(f"{label} {value}")
+    state = _reported_evidence_state(
+        account,
+        present=bool(fields),
+        stale=_worker_metadata_is_stale(worker),
+    )
+    source = str(
+        account.get("source")
+        or carrier.get("runtime_account_source")
+        or carrier.get("provider_account_source")
+        or worker.get("runtime_account_source")
+        or worker.get("provider_account_source")
+        or ("host-report" if fields else "")
+    ).strip() or "not reported"
+    observed = str(
+        account.get("observed_at")
+        or carrier.get("runtime_account_observed_at")
+        or carrier.get("provider_account_observed_at")
+        or carrier.get("observed_at")
+        or worker.get("runtime_account_observed_at")
+        or worker.get("provider_account_observed_at")
+        or ""
+    ).strip() or "not reported"
+    identity = " · ".join(fields) if fields else "missing"
+    return (
+        f"provider account: {identity} · state {state} · source {source} "
+        f"· observed {observed}"
+    )
+
+
 def _render_worker_list(result: Mapping[str, Any]) -> list[str]:
     """One line per worker, then the reachability facts that tell a dead path.
 
@@ -951,6 +1059,8 @@ def _render_worker_list(result: Mapping[str, Any]) -> list[str]:
         )
         lines.append(_worker_limits_line(worker.get("runtime_limit_state")))
         lines.append(_usage_line(worker.get("runtime_limit_state")))
+        lines.append(_runtime_model_brief(worker))
+        lines.append(_runtime_account_brief(worker))
         for ref in worker.get("attended_project_refs") or []:
             lines.append(f"attends: {ref}")
         if worker.get("worker_ref"):
@@ -1023,6 +1133,32 @@ def _team_usage_lines(team: Sequence[Any]) -> list[str]:
 
 
 _RECEIPT_OUTCOMES = ("applied", "refused")
+
+
+def _latest_actionable_review_return(
+    item: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    if str(item.get("status") or "").strip().lower() in {"cancelled", "done"}:
+        return None
+    history = [
+        entry
+        for entry in item.get("review_history") or []
+        if isinstance(entry, Mapping)
+    ]
+    if not history:
+        return None
+    _index, latest = max(
+        enumerate(history),
+        key=lambda pair: (
+            str(pair[1].get("timestamp") or pair[1].get("created_at") or ""),
+            pair[0],
+        ),
+    )
+    decision = str(latest.get("decision") or "").strip().lower()
+    operation = str(latest.get("operation") or "").strip().lower()
+    if decision not in {"return", "returned"} and operation != "review.return":
+        return None
+    return latest
 
 
 def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
@@ -1114,6 +1250,31 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
                 lines.append(
                     f"review.{key}: {_preview(_joined(value), maximum_bytes=_LONG_PREVIEW_BYTES)}"
                 )
+    latest_return = _latest_actionable_review_return(item)
+    if latest_return is not None:
+        actor = latest_return.get("actor")
+        actor = actor if isinstance(actor, Mapping) else {}
+        lines.append(
+            "latest review return: decision {} · at {} · by {}".format(
+                latest_return.get("decision") or "return",
+                latest_return.get("timestamp")
+                or latest_return.get("created_at")
+                or "not reported",
+                actor.get("label")
+                or actor.get("ref")
+                or latest_return.get("actor_principal_key")
+                or "not reported",
+            )
+        )
+        lines.append(
+            "latest review return reason: {}".format(
+                _preview(
+                    latest_return.get("reason"),
+                    maximum_bytes=_LONG_PREVIEW_BYTES,
+                )
+                or "not reported"
+            )
+        )
     assignment = item.get("assignment")
     if isinstance(assignment, Mapping):
         lines.append(

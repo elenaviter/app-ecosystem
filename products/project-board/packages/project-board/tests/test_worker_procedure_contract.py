@@ -1281,6 +1281,8 @@ def test_the_coordinator_reference_opens_with_what_the_coordinator_is_for() -> N
         "Name items by key and title, never a bare number.",
         "You drive the team; you do not wait for it.",
         "Ask the worker; do not infer from files.",
+        "Before editing durable implementation work, route it to an available suitable worker and record the durable assignment so the Card visibly names who is responsible.",
+        "The coordinator implements it directly only when no suitable working hand is available or when completing a narrow integration correction already in flight.",
         "tell that worker first, then the operator",
         "The runtime is the operator's; the mechanics are yours.",
         "No runtime window (reload, refresh, client switch) without the operator's go.",
