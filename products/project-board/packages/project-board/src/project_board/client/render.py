@@ -11,9 +11,9 @@ reply never correlated. Neither failure was in Problem Board.
 Three rules follow, and this module is where they live:
 
 * A worker does not parse. ``--format brief`` on any command, or ``pb render``
-  on saved output, prints what the worker needs. Delivery and mutation output
-  remains complete; read-heavy collection and context operations have explicit
-  compact renderers. ``--format json`` remains the full-detail view.
+  on saved output, prints what the worker needs. Delivery output remains
+  complete; read-heavy operations and oversized item/assignment receipts have
+  explicit compact renderers. ``--format json`` remains the full-detail view.
 * Nothing is ever silent. An error envelope renders as ``ERROR``. Text that is
   not an envelope renders as ``UNREADABLE`` followed by the text itself.
 * A displayed locator is never shortened. Actionable refs print complete on
@@ -1340,6 +1340,13 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
             item.get("updated_at") or item.get("item_updated_at") or "-",
         )
     )
+    if "_mutation_replayed" in item or "_mutation_noop" in item:
+        lines.append(
+            "mutation: replayed {} · changed {}".format(
+                bool(item.get("_mutation_replayed")),
+                not bool(item.get("_mutation_noop")),
+            )
+        )
     if _present(item.get("summary")):
         lines.append(
             f"summary: {_preview(item['summary'], maximum_bytes=_LONG_PREVIEW_BYTES)}"
@@ -1763,10 +1770,72 @@ def _render_assignment_list(operation: str, page: Mapping[str, Any]) -> list[str
     return lines
 
 
+def _render_assignment_receipt(operation: str, assignment: Mapping[str, Any]) -> list[str]:
+    lines = [f"operation: {operation}"]
+    for key in ("applied", "replayed", "disposition"):
+        if key in assignment:
+            lines.append(f"{key}: {assignment[key]}")
+    lines.append(
+        "assignment: state {} · ownership {} · worker {} · updated {}".format(
+            assignment.get("state") or "-",
+            assignment.get("ownership_version", "?"),
+            assignment.get("worker_name") or "-",
+            assignment.get("updated_at") or "-",
+        )
+    )
+    if _present(assignment.get("title")):
+        lines.append(f"title: {_preview(assignment['title'], maximum_bytes=220)}")
+    for key in (
+        "ref", "assignment_ref", "project_ref", "identity_ref", "work_ref",
+        "versioned_work_ref", "work_version_ref", "control_ref",
+        "current_control_ref", "result_ref", "source_event_ref",
+    ):
+        if _present(assignment.get(key)):
+            lines.append(f"{key}: {assignment[key]}")
+    task_preview = _assignment_task_preview(assignment.get("task"))
+    if task_preview:
+        lines.append(f"task preview: {task_preview}")
+    for key in ("result_summary", "settlement_summary", "assignee_limit_warning"):
+        if _present(assignment.get(key)):
+            lines.append(f"{key}: {_preview(assignment[key], maximum_bytes=_LONG_PREVIEW_BYTES)}")
+    limit = assignment.get("assignee_limit")
+    if isinstance(limit, Mapping):
+        lines.append(f"assignee limit: {limit_state_line(limit)}")
+        usage = usage_windows_line(limit)
+        if usage:
+            lines.append(f"assignee usage: {usage}")
+    sources = assignment.get("sources") or assignment.get("source_repositories") or []
+    if not sources and isinstance(assignment.get("source"), Mapping):
+        sources = [assignment["source"]]
+    if not sources and assignment.get("source_repository_ref"):
+        sources = [{
+            "repository_ref": assignment.get("source_repository_ref"),
+            "base_commit": assignment.get("source_base_commit"),
+            "branch": assignment.get("source_branch"),
+        }]
+    shown_sources, source_count = _bounded(sources, maximum=_BRIEF_REFS)
+    for index, source in enumerate(shown_sources):
+        if not isinstance(source, Mapping):
+            continue
+        for key in ("repository_ref", "base_commit", "branch"):
+            if _present(source.get(key)):
+                lines.append(f"source[{index}].{key}: {source[key]}")
+    _note_omitted(lines, "sources", shown=len(shown_sources), total=source_count)
+    report = assignment.get("report")
+    if isinstance(report, Mapping):
+        for key in ("state", "source_event_ref", "result_ref"):
+            if _present(report.get(key)):
+                lines.append(f"report.{key}: {report[key]}")
+        if _present(report.get("summary")):
+            lines.append(f"report.summary: {_preview(report['summary'])}")
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
 def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
     operation = str(result.get("operation") or "")
     obj = result.get("object")
-    if isinstance(obj, Mapping) and operation == "project.plan.item":
+    if isinstance(obj, Mapping) and operation in {"project.plan.item", "plan.item.update"}:
         item = obj.get("item") if isinstance(obj.get("item"), Mapping) else obj
         return _render_plan_item(operation, item)
     if isinstance(obj, Mapping) and operation == "project.plan.search":
@@ -1775,6 +1844,8 @@ def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
         return _render_plan_notes(operation, obj)
     if isinstance(obj, Mapping) and operation == "assignment.list":
         return _render_assignment_list(operation, obj)
+    if isinstance(obj, Mapping) and operation in {"assignment.assign", "assignment.return", "assignment.report"}:
+        return _render_assignment_receipt(operation, obj)
     lines = [f"operation: {operation}"]
     if isinstance(obj, Mapping) and isinstance(obj.get("item"), Mapping):
         item = obj["item"]

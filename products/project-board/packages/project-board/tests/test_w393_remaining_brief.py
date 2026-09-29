@@ -131,3 +131,75 @@ def test_inspect_keeps_actionable_wake_attention_bounded():
     assert "HIDDEN_TAIL" not in text
     assert len(text.splitlines()) <= 55
     assert len(text.encode()) <= 8_000
+
+
+def test_plan_item_update_receipt_keeps_revision_and_refs_without_body_echo():
+    item_ref = "work:plan:node:w393:" + "i" * 100
+    exact = item_ref + ":revision-31"
+    text = brief({
+        "operation": "plan.item.update",
+        "object": {
+            "item_key": "W393", "title": "Compact output", "status": "working",
+            "identity_ref": item_ref, "item_ref": exact, "revision": 31,
+            "description": LONG, "summary": LONG,
+            "acceptance": [LONG] * 30, "notes": [LONG] * 100,
+            "_mutation_replayed": True, "_mutation_noop": True,
+        },
+    })
+    assert f"identity_ref: {item_ref}" in text
+    assert f"item_ref: {exact}" in text
+    assert "revision 31" in text
+    assert "mutation: replayed True · changed False" in text
+    assert "description preview: diagnostic history" in text
+    assert "acceptance lines: 5 of 30 shown in brief" in text
+    assert "HIDDEN_TAIL" not in text and "notes" not in text
+    assert len(text.splitlines()) <= 30
+    assert len(text.encode()) <= 8_000
+
+
+def test_assignment_receipt_keeps_outcome_refs_and_limit_without_task_history():
+    assignment_ref = "work:assignment:" + "a" * 128
+    control_ref = "work:control:" + "c" * 128
+    text = brief({
+        "operation": "assignment.assign",
+        "object": {
+            "assignment_ref": assignment_ref,
+            "project_ref": "work:project:compact-output",
+            "work_ref": "work:plan:node:w393:" + "w" * 100,
+            "current_control_ref": control_ref,
+            "state": "assigned", "ownership_version": 9,
+            "worker_name": "codex-app", "title": "Compact output",
+            "task": {"instructions": LONG, "private_material": LONG},
+            "source_repositories": [{"repository_ref": "repo:app-ecosystem/products/project-board",
+                                     "base_commit": "b" * 40, "branch": "work/w393"}],
+            "assignee_limit": {"kind": "rate_limited", "reached": "five_hour",
+                               "resets_at": "2026-09-30T03:47:20Z"},
+            "assignee_limit_warning": LONG,
+            "reports": [LONG] * 100,
+            "applied": True, "replayed": False,
+        },
+    })
+    assert "applied: True" in text and "replayed: False" in text
+    assert f"assignment_ref: {assignment_ref}" in text
+    assert f"current_control_ref: {control_ref}" in text
+    assert "ownership 9" in text
+    assert "assignee limit: rate limited" in text
+    assert "source[0].base_commit: " + "b" * 40 in text
+    assert "HIDDEN_TAIL" not in text and "private_material" not in text
+    assert "reports" not in text
+    assert len(text.splitlines()) <= 30
+    assert len(text.encode()) <= 8_000
+
+    refused = brief({
+        "operation": "assignment.report",
+        "object": {
+            "ref": assignment_ref, "state": "refused", "ownership_version": 9,
+            "applied": True, "replayed": False, "disposition": "applied",
+            "report": {"state": "refused", "source_event_ref": "event-ref-9",
+                       "summary": LONG},
+        },
+    })
+    assert "applied: True" in refused
+    assert "assignment: state refused" in refused
+    assert "report.source_event_ref: event-ref-9" in refused
+    assert "HIDDEN_TAIL" not in refused
