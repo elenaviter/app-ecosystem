@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import socket
+from contextlib import asynccontextmanager
 from typing import Any, Callable
 
 import pytest
+import socketio
+import uvicorn
 from socketio.exceptions import TimeoutError as SocketIOTimeoutError
 
 from app_foundation.data_bus import (
@@ -50,6 +54,7 @@ class _Socket:
         # connect_error, or None to accept. None means accept everything.
         self.refuse: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None
         self.shutdown_calls = 0
+        self.disconnect_calls = 0
 
     def on(self, event: str, handler: Any) -> None:
         self.handlers[event] = handler
@@ -84,6 +89,7 @@ class _Socket:
         return True
 
     async def disconnect(self) -> None:
+        self.disconnect_calls += 1
         self.connected = False
         await self.handlers["disconnect"]("client disconnect")
 
@@ -132,6 +138,51 @@ async def _client(
     )
     await client.connect()
     return client
+
+
+@asynccontextmanager
+async def _delayed_socketio_server(*delay_seconds: float):
+    """A real server with one delay for each successive namespace admission."""
+
+    sio = socketio.AsyncServer(async_mode="asgi")
+    accepted = asyncio.Event()
+    accepted_sids: list[str] = []
+    attempt = 0
+
+    @sio.event
+    async def connect(sid: str, environ: dict[str, Any], auth: Any) -> bool:
+        nonlocal attempt
+        selected = delay_seconds[min(attempt, len(delay_seconds) - 1)]
+        attempt += 1
+        await asyncio.sleep(selected)
+        accepted_sids.append(sid)
+        accepted.set()
+        return True
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    port = listener.getsockname()[1]
+    server = uvicorn.Server(
+        uvicorn.Config(
+            socketio.ASGIApp(sio),
+            host="127.0.0.1",
+            port=port,
+            lifespan="off",
+            log_level="critical",
+        )
+    )
+    server_task = asyncio.create_task(server.serve(sockets=[listener]))
+    while not server.started:
+        if server_task.done():
+            await server_task
+        await asyncio.sleep(0.01)
+    try:
+        yield f"http://127.0.0.1:{port}", sio, accepted_sids, accepted
+    finally:
+        server.should_exit = True
+        await server_task
 
 
 def test_claim_repr_does_not_disclose_token() -> None:
@@ -357,30 +408,74 @@ async def test_legacy_claim_keyword_still_opens_a_federated_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_waits_fifteen_seconds_for_namespace_admission() -> None:
-    class SlowNamespaceSocket(_Socket):
-        async def connect(self, *args: Any, **kwargs: Any) -> None:
-            # Model the production failure: governed Card verification finishes
-            # after python-socketio's one-second namespace default. Keep one
-            # real second in this test so removing the explicit wait recreates
-            # the observed early close rather than merely checking a keyword.
-            admission_seconds = 1.05
-            await asyncio.sleep(admission_seconds)
-            if float(kwargs.get("wait_timeout", 1.0)) < admission_seconds:
-                raise SocketIOTimeoutError()
-            await super().connect(*args, **kwargs)
+async def test_connect_waits_through_a_delayed_real_namespace_admission() -> None:
+    # The relay saw the server finish namespace admission just before the
+    # client's 15-second boundary, but python-socketio delivered the connect
+    # callback while its timeout cleanup was already closing the transport.
+    # Exercise the actual python-socketio completion event: a fake connect()
+    # that merely checks a keyword cannot reproduce this boundary.
+    admission_seconds = 1.1
+    async with _delayed_socketio_server(admission_seconds) as (
+        url,
+        _server,
+        _accepted_sids,
+        accepted,
+    ):
+        client = FederatedDataBusClient(
+            platform_url=url,
+            credential=_claim(),
+            namespace_admission_timeout_seconds=2.0,
+        )
 
-    socket = SlowNamespaceSocket()
+        await client.connect()
+
+        assert accepted.is_set()
+        assert client.connected
+        assert client.socket_id
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_uses_the_owned_namespace_wait_beyond_one_second() -> None:
+    async with _delayed_socketio_server(0.0, 1.1) as (
+        url,
+        server,
+        accepted_sids,
+        _accepted,
+    ):
+        client = FederatedDataBusClient(
+            platform_url=url,
+            credential=_claim(),
+            namespace_admission_timeout_seconds=2.0,
+        )
+        client._reconnect_delay_seconds = 0.01
+        await client.connect()
+        first_socket = client.socket
+
+        await server.disconnect(accepted_sids[0])
+        for _ in range(100):
+            if not client.connected:
+                break
+            await asyncio.sleep(0.01)
+        assert not client.connected
+
+        assert await client.wait_until_connected(3.0) is True
+        assert client.connection_generation == 2
+        assert len(accepted_sids) == 2
+        assert client.socket is not first_socket
+        assert client.socket.reconnection is False
+        await client.close()
+
+
+def test_namespace_admission_default_is_at_least_thirty_seconds() -> None:
+    socket = _Socket()
     client = FederatedDataBusClient(
         platform_url="https://platform.example",
         credential=_claim(),
         socket_factory=lambda: socket,
     )
 
-    await client.connect()
-
-    assert socket.connect_kwargs["wait_timeout"] == 15.0
-    await client.close()
+    assert client.namespace_admission_timeout_seconds >= 30.0
 
 
 def test_client_rejects_ambiguous_or_missing_credentials() -> None:
@@ -565,12 +660,18 @@ class _RefusingSocket(_Socket):
         self.refusal = refusal
 
     async def connect(self, *args: Any, **kwargs: Any) -> None:
-        from socketio.exceptions import ConnectionError as SocketIOConnectionError
-
         self.connect_args = args
         self.connect_kwargs = dict(kwargs)
         await self.handlers["connect_error"](self.refusal)
-        raise SocketIOConnectionError("One or more namespaces failed to connect: /")
+
+
+class _PendingNamespaceSocket(_Socket):
+    """Engine.IO opened, but the namespace has not answered yet."""
+
+    async def connect(self, *args: Any, **kwargs: Any) -> None:
+        self.connect_args = args
+        self.connect_kwargs = dict(kwargs)
+        self.connected = True
 
 
 class _UnreachableSocket(_Socket):
@@ -597,6 +698,8 @@ async def test_a_namespace_refusal_is_raised_as_ingress_rejected_with_the_server
     assert refusal.value.message == "delegated Card bearer was not accepted"
     assert refusal.value.details["code"] == "delegated_card_bearer_rejected"
     assert not client.connected
+    assert socket.connect_kwargs["wait"] is False
+    assert socket.disconnect_calls == 1
 
 
 @pytest.mark.asyncio
@@ -612,6 +715,75 @@ async def test_a_bare_server_rejection_is_still_ingress_rejected_without_a_code(
 
     assert refusal.value.code == "data_bus_connect_refused"
     assert refusal.value.message == "Connection rejected by server"
+
+
+@pytest.mark.asyncio
+async def test_namespace_timeout_disconnects_once_and_ignores_a_late_callback() -> None:
+    from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+    socket = _PendingNamespaceSocket()
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=_claim(),
+        socket_factory=lambda: socket,
+        namespace_admission_timeout_seconds=0.1,
+    )
+
+    with pytest.raises(SocketIOConnectionError, match="namespaces failed to connect"):
+        await client.connect()
+
+    assert socket.connect_kwargs["wait"] is False
+    assert socket.disconnect_calls == 1
+    assert not client.connected
+
+    # The completion packet lost the deadline/cleanup race. It cannot revive
+    # the closed transport or advance the logical connection generation.
+    await socket.handlers["connect"]()
+    assert not client.connected
+    assert client.connection_generation == 0
+    assert socket.disconnect_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_retired_transport_cannot_complete_the_next_namespace_attempt() -> None:
+    from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+    first = _PendingNamespaceSocket()
+    second = _PendingNamespaceSocket()
+    second.namespace_sid = "socketio-2"
+    sockets = iter((first, second))
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=_claim(),
+        socket_factory=lambda: next(sockets),
+        namespace_admission_timeout_seconds=0.1,
+    )
+
+    with pytest.raises(SocketIOConnectionError, match="namespaces failed to connect"):
+        await client.connect()
+
+    second_attempt = asyncio.create_task(client.connect())
+    while second.connect_args is None:
+        await asyncio.sleep(0)
+
+    # Engine.IO may already have queued either callback from the transport
+    # whose deadline expired. Once a new attempt exists, neither old answer may
+    # resolve its outcome or advance the logical connection generation.
+    await first.handlers["connect"]()
+    await first.handlers["connect_error"]({"message": "stale refusal"})
+    await asyncio.sleep(0)
+    assert not second_attempt.done()
+    assert client.connection_generation == 0
+    assert not client.connected
+
+    await second.handlers["connect"]()
+    await second_attempt
+
+    assert client.socket is second
+    assert client.connected
+    assert client.connection_generation == 1
+    assert client.socket_id == "socketio-2"
+    await client.close()
 
 
 class _RestartingPlatformSocket(_Socket):
@@ -921,12 +1093,9 @@ async def test_the_socket_receives_a_coroutine_function_as_auth() -> None:
     await client.close()
 
 
-def test_the_default_socket_reconnects_on_its_own_and_caps_the_delay_at_ten_seconds() -> None:
+def test_the_default_socket_leaves_reconnect_ownership_to_app_foundation() -> None:
     from app_foundation.data_bus.client import _default_socket_factory
 
     socket = _default_socket_factory()
 
-    assert socket.reconnection is True
-    assert socket.reconnection_attempts == 0
-    assert socket.reconnection_delay == 1
-    assert socket.reconnection_delay_max == 10
+    assert socket.reconnection is False
