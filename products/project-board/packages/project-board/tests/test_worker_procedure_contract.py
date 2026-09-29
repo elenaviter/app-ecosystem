@@ -545,7 +545,7 @@ def test_receive_handle_and_settle_rules() -> None:
 def test_assignment_rules() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)
-    assert "It is work to begin, not a notification to acknowledge" in words
+    assert "Either is work to begin now, not a notification to acknowledge" in words
     for field in ("payload.work_ref", "payload.assignment_ref", "payload.ownership_version", "payload.expected_reaction"):
         assert f"`{field}`" in skill
     assert "work_assignment_version_conflict" in skill
@@ -660,7 +660,8 @@ def test_repository_sharing_rules() -> None:
     assert "regression written for a finding fails without the fix" in words
     assert "list every place the rule you changed is enforced" in words
     assert "Approval is a board mail naming the head, quoted on the change request" in words
-    assert "Reporting an item complete means its change request is merged" in words
+    assert "A `completed` report submits the source for review" in words
+    assert "Reporting an item complete means its change request is merged" not in words
     # Documentation is part of the item that changes the behaviour it describes (operator, 2026-09-21 09:39Z).
     assert "when behaviour a doc describes changes, the doc changes in the same item" in words
     assert "because undocumented behaviour is how a diagnosis goes wrong" in words
@@ -1947,3 +1948,69 @@ def test_a_shared_name_is_settled_in_one_exchange() -> None:
     assert 'ends with "do not reply"' in collaboration
     assert "when it is not clear who owns it, the coordinator decides" in collaboration
     assert "is settled without a reply" in collaboration
+
+
+def test_assigned_work_includes_reviews_and_one_read_before_idle() -> None:
+    # W403 C1, C2, C3 (Rule 7 result, 2026-09-29): a review request is work to
+    # begin like an assignment, an inability to start is said at the first safe
+    # boundary, and idle is decided by one responsibility read, not by silence.
+    skill = _read("SKILL.md")
+    words = _words(skill)
+    assert "## Receive Assigned Work" in skill
+    assert "## Receive An Assignment" not in skill
+    assert "Receive An Assignment" not in _read("references/signals.md")
+    assert "kind `assign` to implement an item, or a `request` titled `Review W…` to review one" in words
+    assert "settling the notice is not progress" in words
+    assert "A review is begun the same way" in words
+    assert "When you cannot start either kind, say so at the first safe boundary" in words
+    assert "the actor or event that clears it and the next decision time" in words
+    assert "Silence is never a state" in words
+    assert "An empty inbox is not evidence that there is no work" in words
+    assert "read your responsibilities once" in words
+    assert "`pb coordinate assignment.list`" in skill
+    assert 'with `{"assignee": "<your stable name>"}`' in skill
+    assert "it matches the reviewer while an item is in Review" in words
+    assert "`pb worker outbox-status` for each outbox id whose outcome you do not know" in words
+    assert "A read that fails leaves you unknown, not idle" in words
+
+
+def test_a_completed_report_submits_source_for_review() -> None:
+    # W403 C6: report-only-when-merged deadlocked with review, which reads the
+    # source before it merges. Completed is source-ready, the later milestones
+    # carry their own evidence.
+    skill = _words(_read("SKILL.md"))
+    collaboration = _words(_read("references/collaboration.md"))
+    signals = _words(_read("references/signals.md"))
+    assert "its could-not-verify names what is still to come (merge, activation)" in skill
+    assert "Approval, merge, activation and whole-item acceptance are separate milestones" in skill
+    assert "labels the submitted phase as source-ready" in collaboration
+    assert "That is the ordinary path for every item, with no per-item exception" in collaboration
+    assert "Report `completed` only when the change request is merged" not in collaboration
+    assert "the report is a claim and the clone is the evidence" in collaboration
+    assert "`completed` submits the source for review" in signals
+    assert "complete means merged" not in signals
+
+
+def test_the_implementer_and_the_reviewer_are_two_responsibilities() -> None:
+    # W403 C4, C5, C7: the implementer persists through Review, a return is a
+    # new start, and only the reviewer the board names decides.
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "**The implementer and the reviewer are two responsibilities.**" in collaboration
+    assert "The item keeps its implementer at every status, Review included" in collaboration
+    assert "the reviewer while the item is in Review, the implementer otherwise (W391)" in collaboration
+    assert "In review, the reviewer is who must act" not in collaboration
+    assert "the return is work to begin now, like an assignment notice" in collaboration
+    assert "Your terminal report under the old version stays final" in collaboration
+    assert "A reviewer who returns an item names who acts next and on what" in collaboration
+    assert "**Only a durably authorized reviewer decides.**" in collaboration
+    assert "is evidence for that reviewer to weigh, posted as a note on the item, and it moves nothing by itself" in collaboration
+
+
+def test_the_coordinator_reconciles_an_overdue_worker_before_rerouting() -> None:
+    # W403 C9: ten minutes triggers the check, not a reroute; moving work is a
+    # reassignment that fences the former owner and names the checkpoint.
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "**Ten minutes means reconcile, not reroute.**" in coordinator
+    assert "not a reason to reroute its work, and not a polling loop" in coordinator
+    assert "advances the ownership version so the former owner's reports are fenced" in coordinator
+    assert "name in it the checkpoint the successor starts from" in coordinator

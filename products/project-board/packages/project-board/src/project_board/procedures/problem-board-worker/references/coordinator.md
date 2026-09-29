@@ -500,6 +500,17 @@ window waited on another idle worker until the operator noticed. The operator's 
 "you every time are calm while the workers might be idle for a long time and
 you even do not check their status."
 
+**Ten minutes means reconcile, not reroute.** The ten minutes above trigger
+this check and nothing more. An overdue reply is not a verdict that the worker
+is gone, not a reason to reroute its work, and not a polling loop: act on the
+cause the check found. When the evidence does call for moving the work, do it
+as a reassignment, which advances the ownership version so the former owner's
+reports are fenced, and name in it the checkpoint the successor starts from
+(the resume record, [collaboration](collaboration.md) Rules 6 and 8). Why: a
+worker in a long turn and a worker that is gone look the same for ten
+minutes, and moving live work on silence alone makes two owners (W403 C9,
+2026-09-29, four yes votes).
+
 ## Stay reachable through every window
 
 The coordinator's own notification path is armed at all times:
