@@ -157,9 +157,10 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
         "references/test-window.md",
         "references/first-run.md",
         "references/shared-runtime-state.md",
-        "references/collaboration.md",
-        "references/brief-output.md",
-        "references/project-workspace.md",
+            "references/collaboration.md",
+            "references/brief-output.md",
+            "references/pb-command-interface.md",
+            "references/project-workspace.md",
         "references/journaling.md",
         "references/signals.md",
     }
@@ -1449,12 +1450,26 @@ def test_delegation_is_not_free_and_its_reason_is_stated():
     assert "Why: a delegation that costs more to brief and check than it saves spends the same shared budget twice" in coordinator
 
 
-def test_coordinator_routes_with_the_public_cli_contract_not_named_service_source():
-    """Operator 2026-09-29: named services exist but are not this procedure's interface."""
+def test_worker_and_coordinator_use_the_complete_pb_cli_path():
+    """Operator 2026-09-29: teach the ordinary PB path positively and completely."""
 
+    skill_raw = _read("SKILL.md")
+    skill = " ".join(skill_raw.split())
+    interface_raw = _read("references/pb-command-interface.md")
+    interface = " ".join(interface_raw.split())
     raw = _read("references/coordinator.md")
     coordinator = " ".join(raw.split())
-    assert "### Route through the worker CLI, with the complete assignment payload" in raw
+    assert "[PB command interface](references/pb-command-interface.md)" in skill_raw
+    assert "`pb worker ...` owns this native session's enrollment" in interface
+    assert "`pb coordinate <operation-id> --object-ref <project-ref> ...` invokes one canonical governed project operation" in interface
+    assert "Search for the subject with `project.plan.search`" in interface
+    assert "Read one current item with `project.plan.item`" in interface
+    assert "Read its notes with `plan.notes.list`" in interface
+    assert "Update it with `plan.item.update`" in interface
+    assert "Read the returned code, message and fields as the result" in interface
+    assert "### Route through Problem Board's worker CLI, with the complete assignment payload" in raw
+    assert "pb worker context --project-ref <project-ref>" in coordinator
+    assert "pb coordinate project.plan.item" in coordinator
     assert "pb coordinate assignment.assign" in coordinator
     for field in (
         '"work_ref"',
@@ -1467,9 +1482,22 @@ def test_coordinator_routes_with_the_public_cli_contract_not_named_service_sourc
         '"idempotency_key"',
     ):
         assert field in raw
-    assert "it does not use the named-service or MCP surfaces" in coordinator
-    assert "Do not open `named_service.py`" in coordinator
+    assert '"source_repository_ref": "<copy source_repositories[0].repository_ref>"' in raw
+    assert '"source_base_commit": "<copy source_repositories[0].base_commit>"' in raw
+    assert '"source_branch": "<copy source_repositories[0].branch>"' in raw
     assert "never guess it from a clone name" in coordinator
+    assert "preserve the returned code and fields" in coordinator
+
+
+def test_review_uses_a_detached_exact_head_tree_under_rv():
+    """Operator 2026-09-29: review checkouts are visible, exact and separate from implementation."""
+
+    skill = " ".join(_read("SKILL.md").split())
+    workspace = " ".join(_read("references/project-workspace.md").split())
+    assert "use the detached exact-head review tree under `<workspace>/rv/`" in skill
+    assert "`<workspace>/wt/<item>-<alias>`" in workspace
+    assert "`<workspace>/rv/<item>-<alias>-<short sha>`" in workspace
+    assert "A review tree goes as soon as the verdict is recorded" in workspace
 
 
 def test_the_kdcube_profile_gives_deploy_worktrees_a_gitdir_the_container_can_read():

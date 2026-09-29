@@ -530,12 +530,15 @@ section says.
    (W322 needs W323, W318 needs W313) lived only in one coordinator's head,
    which a context reset or a hand-over loses.
 
-### Route through the worker CLI, with the complete assignment payload
+### Route through Problem Board's worker CLI, with the complete assignment payload
 
-The current worker and coordinator procedure uses `pb worker` and `pb
-coordinate`; it does not use the named-service or MCP surfaces. Do not open
-`named_service.py` or another server implementation file to discover an
-ordinary PB command. The command and its complete payload are:
+The coordinator uses the same installed worker interface as every other
+agent. `pb worker context --project-ref <project-ref>` supplies the stable
+worker name, project workspace and repository evidence. `pb coordinate
+project.plan.item --object-ref <project-ref> --payload-json
+'{"item_key":"<Wn>"}'` supplies the current item, its complete canonical refs
+and revision. The published operation procedure supplies the payload below;
+`pb coordinate --help` supplies the common transport arguments. Route it with:
 
 ```bash
 pb coordinate assignment.assign \
@@ -557,9 +560,9 @@ pb coordinate assignment.assign \
       "branch": "work/w<N>-<slug>"
     }
   ],
-  "source_repository_ref": "<same as the first source_repositories entry>",
-  "source_base_commit": "<same as the first source_repositories entry>",
-  "source_branch": "<same as the first source_repositories entry>",
+  "source_repository_ref": "<copy source_repositories[0].repository_ref>",
+  "source_base_commit": "<copy source_repositories[0].base_commit>",
+  "source_branch": "<copy source_repositories[0].branch>",
   "idempotency_key": "<stable key for this routing decision>"
 }
 ```
@@ -569,8 +572,10 @@ or reissue copy the current assignment row's value. Work touching no repository
 uses an explicit empty `source_repositories` and omits the one-repository mirror.
 Every `repo:` value is copied from current project or item evidence. If no
 authoritative read exposes it, fix that record or the CLI projection first;
-never guess it from a clone name. A refusal is read and corrected through the
-CLI contract, never by mining the named-service implementation.
+never guess it from a clone name. When the operation is refused, preserve the
+returned code and fields, consult the operation procedure and retry only the
+documented recovery; an outcome-unknown result repeats the identical request
+under the same idempotency key.
 
 ### Bind every repository the work touches when you assign
 

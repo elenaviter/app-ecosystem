@@ -173,13 +173,7 @@ project stands is a bounded query the service runs (Answer A Project Report
 Request). A bounded first page is not evidence that no more records exist:
 narrow the question with a filter or search before following a cursor.
 
-Every `pb coordinate` operation uses this exact worker's persistent Card relay
-channel. A missing or inactive channel, an unavailable relay, an
-outcome-unknown response, and a Card grant denial are distinct failures:
-preserve the returned reason and ask the host operator to repair or restart
-the relay when that is the named cause. Never use `--route direct` from a
-managed session.
-
+Use `pb worker` for this session's enrollment, context, inbox, mail, reports and journal; use `pb coordinate <canonical-operation-id>` for governed project operations through this worker's Card relay. Before the first such operation, or after a refusal, read [PB command interface](references/pb-command-interface.md) for discovery, payload, plan-read and recovery paths. A managed session keeps the relay route; its returned failure identifies the recovery. Never use `--route direct` from a managed session.
 When `receive.quarantine.count` is nonzero, a wake repeats, mail stays queued,
 a lease nears expiry, the route looks online while the model is silent, or a
 call fails at an unclear layer, read [delivery and recovery](references/delivery-and-recovery.md).
@@ -387,12 +381,14 @@ revised one rehearsal round at a time. What every worker does, from it:
   branch, commits, description or comments. Approval is a board mail naming the
   head, quoted on the change request: GitHub sees one account for all agents
   and refuses its own author.
-- **As reviewer or merger, compare your count with the author's** and ask
-  about the difference: a skip names its missing input, and a suite that skips
-  what the change touches is green about everything except the change. Your
-  approval states the files the change request lists and the files you read,
-  and the inputs of each suite run (interpreter, dependencies, overlays,
-  variables), so the counts can be compared at all.
+- **As reviewer or merger, use the detached exact-head review tree under
+  `<workspace>/rv/` that [project workspace](references/project-workspace.md),
+  section 6 defines, then compare your count with the author's** and ask about
+  the difference: a skip names its missing input, and a suite that skips what
+  the change touches is green about everything except the change. Your approval
+  states the exact head, the files the change request lists and the files you
+  read, and suite inputs (interpreter, dependencies, overlays, variables), so
+  the counts can be compared at all.
 - **Reporting an item complete means its change request is merged** into the
   integration ref, and the report names the merge commit after you fetched
   and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor
