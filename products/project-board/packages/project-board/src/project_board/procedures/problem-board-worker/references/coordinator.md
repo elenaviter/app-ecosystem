@@ -231,6 +231,15 @@ Use only this routing heuristic:
 Do not build a scheduler or assign token scores. The routing inventory and
 these three questions are the whole rule.
 
+**The coordinator routes implementation** (operator, 2026-09-29). A
+coordinator investigates, diagnoses and designs. Once an implementable
+deliverable exists, it routes the implementation to a capable, usable worker
+with a durable assignment. It implements itself only when no suitable worker
+exists, when a machine-local resource or an authority only the coordinator
+holds requires it, or when briefing and reviewing a delegate would cost more
+than the bounded task, and it records that reason on the item. Being able to
+do the work is not one of these reasons.
+
 **Delegation is not free** (operator, 2026-09-25). Every subagent's reasoning
 spends its provider account's quota, and workers that share an account spend
 one coupled pool. A coordinator delegates, to a subagent or to another worker,

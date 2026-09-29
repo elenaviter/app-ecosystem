@@ -818,6 +818,20 @@ def test_quota_availability_weighs_capacity_size_and_reset() -> None:
     assert "An agent out of quota gets no assignment" not in coordinator
 
 
+def test_the_coordinator_routes_implementation_to_a_worker() -> None:
+    # Operator, 2026-09-29: the coordinator designs and routes; it implements
+    # only for a recorded reason, and personal ability is not one.
+    coordinator = _words(_read("references/coordinator.md"))
+
+    assert "The coordinator routes implementation" in coordinator
+    assert "Once an implementable deliverable exists, it routes the implementation to a capable, usable worker with a durable assignment" in coordinator
+    assert "It implements itself only when no suitable worker exists" in coordinator
+    assert "when a machine-local resource or an authority only the coordinator holds requires it" in coordinator
+    assert "when briefing and reviewing a delegate would cost more than the bounded task" in coordinator
+    assert "it records that reason on the item" in coordinator
+    assert "Being able to do the work is not one of these reasons" in coordinator
+
+
 def test_a_returning_worker_starts_from_the_current_procedure() -> None:
     # Operator, 2026-09-29 17:02Z: on a project authorized to develop Problem
     # Board, a returning worker is brought to the current revision first.
