@@ -105,7 +105,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `control.discard` | agent | `work:coordinate` | Its business rule | Discards only messages the caller sent (work_control_discard_target_denied). |
 | `assignment.assign` | work | `work:coordinate` | Their project Card | Also reopens review, done or cancelled work; assignment never changes status. The owner may always (owner_exempt_from_card). |
 | `assignment.return` | work | `work:coordinate` | Their project Card | The owner's reason is required; the item keeps its status. The owner may always (owner_exempt_from_card). |
-| `assignment.list` | work | `work:relay` | Membership (`project_membership`) | An agent pages its own assignments. |
+| `assignment.list` | work | `work:relay` | Membership (`project_membership`) | An agent pages its own assignments; the active coordinator holder may page any linked worker. |
 | `workspace.shared_write.publish` | agent | `work:relay` | Identity rule `shared_write_agents_only` |  |
 | `workspace.shared_write.list` | agent | `work:relay` | Membership (`project_membership`) |  |
 | `workspace.shared_write.clear` | agent | `work:relay` | Identity rule `shared_write_agents_only` | An agent clears only its own entry. |
