@@ -281,6 +281,7 @@ def test_the_worker_procedure_points_to_the_operation_contract():
     assert "`work_coordinate_idempotency_key_reused`, naming the original request" in brief
     assert "`work_coordinate_response_too_large` is in this class too" in brief
     assert "Every error that prints `recovery` and `retry` fields is in this class" in brief
+    assert "A refusal of a later attempt says nothing about an earlier one" in brief
 
 
 def test_two_calls_racing_with_one_key_cannot_both_be_sent(submits, monkeypatch, tmp_path):
@@ -463,3 +464,122 @@ def test_an_unsent_retry_does_not_free_a_key_an_earlier_attempt_may_have_applied
 )
 def test_only_proof_frees_a_key(code, status, outcome):
     assert error_outcome(DomainError(code, "message", status=status)) == outcome
+
+
+# W404 second review return (codex-app, 2026-09-29): a later attempt's
+# refusal or a late error cannot resolve an earlier attempt, and a receipt is
+# final for its key.
+
+
+def test_a_refused_retry_does_not_resolve_an_earlier_attempt_that_may_have_applied(
+    submits, monkeypatch, tmp_path
+):
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    queue = CoordinateQueue(host.field_root)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w11"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+    answers = iter(["unknown", "card_not_active"])
+
+    def answer(queue_, path, *, worker_name, request_id, timeout_seconds):
+        if next(answers) == "unknown":
+            raise DomainError("work_coordinate_outcome_unknown", "unknown", status=504)
+        request = next(row for row in queue.claim(worker_name=worker_name, limit=10) if row["request_id"] == request_id)
+        queue.complete(request, error={"code": "work_worker_card_not_active", "message": "denied", "status": 403})
+        return queue.take_response(worker_name=worker_name, request_id=request_id)
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", answer)
+    for code in ("work_coordinate_outcome_unknown", "work_worker_card_not_active"):
+        with pytest.raises(DomainError) as raised:
+            cli._coordinate_command(args)
+        assert raised.value.code == code
+    record = CoordinateRecovery(host.field_root).read(channel.worker_name, "accept-w11")
+    assert record is not None, "the second attempt's refusal says nothing about the first"
+    assert record["state"] == "outcome_unknown"
+    first, second = record["request_ids"]
+    assert record["attempts"] == {first: "unknown", second: "refused"}
+    assert raised.value.details["recovery"]["attempts"] == record["attempts"]
+
+    with pytest.raises(DomainError) as reused:
+        cli._coordinate_command(
+            _args("review.accept", object_ref=PROJECT, payload=dict(payload, expected_revision=8), config=str(host.path), identity=identity)
+        )
+    assert reused.value.code == "work_coordinate_idempotency_key_reused"
+    assert len(submits) == 2, "a changed request is never sent under the unresolved key"
+
+
+def test_a_receipt_is_final_for_its_key(tmp_path):
+    recovery = CoordinateRecovery(tmp_path)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w12"}
+    request = {"action": "review.accept", "object_ref": PROJECT, "payload": payload}
+    recovery.reserve("w", "accept-w12", **request)
+    recovery.record_submission("w", "accept-w12", request_id="r1", **request)
+    recovery.record_submission("w", "accept-w12", request_id="r2", **request)
+    recovery.settle_attempt("w", "accept-w12", "r2", "applied", receipt=_receipt())
+
+    for outcome in ("unknown", "refused", "not_sent"):
+        record = recovery.settle_attempt("w", "accept-w12", "r1", outcome)
+        assert record is not None and record["state"] == "applied", outcome
+        assert record["receipt"] == _receipt()
+    late = recovery.record_submission("w", "accept-w12", request_id="r3", **request)
+    assert late["state"] == "applied" and late["receipt"] == _receipt()
+
+
+def test_a_late_error_for_one_attempt_does_not_hide_another_attempts_receipt(
+    submits, monkeypatch, tmp_path
+):
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "require_successful_operation_envelope", lambda *args, **kwargs: None)
+    queue = CoordinateQueue(host.field_root)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w13"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+
+    def outcome_unknown(queue_, path, *, worker_name, request_id, timeout_seconds):
+        raise DomainError("work_coordinate_outcome_unknown", "unknown", status=504)
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", outcome_unknown)
+    for _ in range(2):
+        with pytest.raises(DomainError):
+            cli._coordinate_command(args)
+    first, second = CoordinateRecovery(host.field_root).read(channel.worker_name, "accept-w13")["request_ids"]
+
+    # The first attempt applied; the second was then denied. Both answers are late.
+    requests = {row["request_id"]: row for row in queue.claim(worker_name=channel.worker_name, limit=10)}
+    queue.complete(requests[first], result=_receipt())
+    queue.complete(requests[second], error={"code": "work_worker_unavailable", "message": "denied", "status": 403})
+
+    recovered = cli._coordinate_command(args)
+    assert recovered["state"] == "applied"
+    assert recovered["recovery"]["source"] == "late_relay_response"
+    assert len(submits) == 2, "the receipt is returned, nothing is sent again"
+    record = CoordinateRecovery(host.field_root).read(channel.worker_name, "accept-w13")
+    assert record["attempts"] == {first: "applied", second: "refused"}
+
+
+def test_the_key_is_released_only_when_every_attempt_had_no_effect(submits, monkeypatch, tmp_path):
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w14"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+    queue = CoordinateQueue(host.field_root)
+    answers = iter(["unclaimed", "refused"])
+
+    def answer(queue_, path, *, worker_name, request_id, timeout_seconds):
+        if next(answers) == "unclaimed":
+            queue.cancel_pending(worker_name=worker_name, request_id=request_id)
+            raise DomainError("work_coordinate_relay_unavailable", "not claimed", status=504)
+        (request,) = queue.claim(worker_name=worker_name)
+        queue.complete(request, error={"code": "work_item_revision_conflict", "message": "changed", "status": 409})
+        return queue.take_response(worker_name=worker_name, request_id=request_id)
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", answer)
+    with pytest.raises(DomainError):
+        cli._coordinate_command(args)
+    # Not sent and nothing else: released, so the same command starts over.
+    assert CoordinateRecovery(host.field_root).read(channel.worker_name, "accept-w14") is None
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(args)
+    assert refused.value.code == "work_item_revision_conflict"
+    assert CoordinateRecovery(host.field_root).read(channel.worker_name, "accept-w14") is None
+    assert len(submits) == 2

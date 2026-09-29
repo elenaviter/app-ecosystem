@@ -111,7 +111,10 @@ which of three things happened. Read it before any retry.
   `work_coordinate_response_too_large` is in this class too: the operation may
   have applied and only its result did not fit the queue. Every error that
   prints `recovery` and `retry` fields is in this class, and the key stays
-  held for that exact request until a receipt or a service refusal settles it.
+  held for that exact request until a receipt settles it, or until every
+  attempt sent under it is proved to have had no effect. A refusal of a later
+  attempt says nothing about an earlier one, and `recovery.attempts` shows
+  each attempt's outcome.
 
 The envelope's shape alone cannot tell these apart, so the reader does not
 classify by `ERROR`. It classifies by the code, and a code it does not know is

@@ -20,6 +20,13 @@ the receipt once one arrived. A retry reads it first:
 The key is reserved for one exact request, under the worker's lock, before
 that request can reach the relay: two calls racing with one key and different
 requests cannot both be sent.
+
+Every request id keeps its own outcome (``attempts``): unknown until its
+answer arrives, then applied, refused or not sent. The key is released only
+when every attempt is proved to have had no effect, because a later attempt's
+refusal says nothing about an earlier attempt that may have applied. An
+applied receipt is final for the key: no later submission, uncertainty or
+refusal downgrades or deletes it. Each decision is taken under the lock.
 """
 
 from __future__ import annotations
@@ -55,6 +62,23 @@ def coordinate_request_hash(
 def mutation_idempotency_key(payload: Mapping[str, Any]) -> str:
     value = payload.get("idempotency_key")
     return value.strip() if isinstance(value, str) else ""
+
+
+STATE_APPLIED = "applied"
+ATTEMPT_UNKNOWN = "unknown"
+NO_EFFECT_OUTCOMES = frozenset({"refused", "not_sent"})
+ATTEMPT_OUTCOMES = frozenset({STATE_APPLIED, ATTEMPT_UNKNOWN, *NO_EFFECT_OUTCOMES})
+
+
+def _attempts(record: Mapping[str, Any]) -> dict[str, str]:
+    """Each request id's outcome; an id with none recorded is unknown."""
+
+    known = record.get("attempts")
+    known = dict(known) if isinstance(known, Mapping) else {}
+    return {
+        str(request_id): str(known.get(str(request_id)) or ATTEMPT_UNKNOWN)
+        for request_id in record.get("request_ids") or []
+    }
 
 
 class CoordinateRecovery:
@@ -147,7 +171,11 @@ class CoordinateRecovery:
             if request_id not in request_ids:
                 request_ids.append(request_id)
             record["request_ids"] = request_ids
-            record["state"] = "submitted"
+            attempts = _attempts(record)
+            attempts.setdefault(request_id, ATTEMPT_UNKNOWN)
+            record["attempts"] = attempts
+            if record.get("state") != STATE_APPLIED:
+                record["state"] = "submitted"
             record["updated_at"] = utc_now()
             atomic_write_json(self._path(worker_name, key), record)
             return record
@@ -160,30 +188,49 @@ class CoordinateRecovery:
             if record is not None and not record.get("request_ids"):
                 self._path(worker_name, key).unlink(missing_ok=True)
 
-    def record_state(
+    def settle_attempt(
         self,
         worker_name: str,
         key: str,
-        state: str,
+        request_id: str,
+        outcome: str,
         *,
         receipt: Mapping[str, Any] | None = None,
     ) -> dict[str, Any] | None:
+        """Record one attempt's outcome and decide the key, under the lock.
+
+        ``outcome`` is ``applied`` (with its receipt), ``refused``,
+        ``not_sent`` or ``unknown``. Returns the record, or None once every
+        attempt is proved to have had no effect and the key is released.
+        """
+
+        if outcome not in ATTEMPT_OUTCOMES:
+            raise ValueError(f"unknown attempt outcome {outcome!r}")
         with exclusive_lock(self._lock(worker_name)):
             record = self.read(worker_name, key)
             if record is None:
                 return None
-            record["state"] = state
+            attempts = _attempts(record)
+            if request_id:
+                attempts[request_id] = outcome
+            record["attempts"] = attempts
             record["updated_at"] = utc_now()
-            if receipt is not None:
-                record["receipt"] = dict(receipt)
-            atomic_write_json(self._path(worker_name, key), record)
+            path = self._path(worker_name, key)
+            if record.get("state") == STATE_APPLIED:
+                # A known receipt is final for the key.
+                atomic_write_json(path, record)
+                return record
+            if outcome == STATE_APPLIED:
+                record["state"] = STATE_APPLIED
+                record["receipt"] = dict(receipt or {})
+                atomic_write_json(path, record)
+                return record
+            if attempts and all(value in NO_EFFECT_OUTCOMES for value in attempts.values()):
+                path.unlink(missing_ok=True)
+                return None
+            record["state"] = "outcome_unknown"
+            atomic_write_json(path, record)
             return record
-
-    def forget(self, worker_name: str, key: str) -> None:
-        """Drop a record the service refused or never received."""
-
-        with exclusive_lock(self._lock(worker_name)):
-            self._path(worker_name, key).unlink(missing_ok=True)
 
     def _prune_unlocked(self, worker_name: str) -> None:
         folder = self.root / component(worker_name, field="worker_name")
@@ -265,6 +312,7 @@ def recovery_identity(record: Mapping[str, Any], *, source: str) -> dict[str, An
         "idempotency_key": str(record.get("idempotency_key") or ""),
         "request_hash": str(record.get("request_hash") or ""),
         "request_ids": list(record.get("request_ids") or []),
+        "attempts": _attempts(record),
         "first_sent_at": str(record.get("first_sent_at") or ""),
         "state": str(record.get("state") or ""),
     }

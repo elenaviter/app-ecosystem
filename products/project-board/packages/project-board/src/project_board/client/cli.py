@@ -2404,6 +2404,15 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             )
             if recovered is not None:
                 return recovered
+            # Every earlier attempt was proved to have had no effect, so the
+            # key was released: this exact request starts over under it.
+            recovery.reserve(
+                channel.worker_name,
+                key,
+                action=action,
+                object_ref=object_ref,
+                payload=payload,
+            )
     try:
         request = queue.submit(
             worker_name=channel.worker_name,
@@ -2439,10 +2448,16 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
         )
     except DomainError as exc:
         if recovery is not None:
-            _record_unfinished_mutation(recovery, channel.worker_name, key, exc)
+            _record_unfinished_mutation(
+                recovery, channel.worker_name, key, exc, request_id=request_id
+            )
         raise
     return _finish_coordinate_response(
-        response, recovery=recovery, worker_name=channel.worker_name, key=key
+        response,
+        recovery=recovery,
+        worker_name=channel.worker_name,
+        key=key,
+        request_id=request_id,
     )
 
 
@@ -2513,47 +2528,53 @@ def _finish_coordinate_response(
     recovery: CoordinateRecovery | None,
     worker_name: str,
     key: str,
+    request_id: str,
 ) -> dict[str, Any]:
-    """The service's answer; a receipt is kept for its key, only a proved refusal frees it."""
+    """The service's answer; the ledger records it against its own attempt."""
 
     try:
         result = _coordinate_response(response)
     except DomainError as exc:
         if recovery is not None:
-            _record_unfinished_mutation(recovery, worker_name, key, exc)
+            _record_unfinished_mutation(recovery, worker_name, key, exc, request_id=request_id)
         raise
     if recovery is not None:
-        recovery.record_state(worker_name, key, "applied", receipt=result)
+        recovery.settle_attempt(worker_name, key, request_id, "applied", receipt=result)
     return result
 
 
 def _record_unfinished_mutation(
-    recovery: CoordinateRecovery, worker_name: str, key: str, error: DomainError
+    recovery: CoordinateRecovery,
+    worker_name: str,
+    key: str,
+    error: DomainError,
+    *,
+    request_id: str,
 ) -> None:
-    """Free the key only on proof that nothing applied; keep it otherwise.
+    """Record what this error proves about its own attempt, and say how to retry.
 
-    A raised error and a queued error envelope reach this one decision, so an
-    expired claim, a transport failure or an oversized result keeps the exact
-    request, its hash and every request id for the unchanged retry.
+    A raised error and a queued error envelope reach this one decision. The
+    ledger releases the key only when every attempt under it is proved to
+    have had no effect, and never touches a recorded receipt.
     """
 
-    record = recovery.read(worker_name, key)
+    record = recovery.settle_attempt(
+        worker_name, key, request_id, error_outcome(error)
+    )
     if record is None:
         return
-    outcome = error_outcome(error)
-    if outcome == "refused" or (
-        # Only when no earlier request id under this key could have reached it.
-        outcome == "not_sent" and len(record.get("request_ids") or []) <= 1
-    ):
-        recovery.forget(worker_name, key)
-        return
-    record = recovery.record_state(worker_name, key, "outcome_unknown")
-    if record is not None:
-        error.details["recovery"] = recovery_identity(record, source="pending")
+    if record.get("state") == "applied":
+        error.details["recovery"] = recovery_identity(record, source="local_receipt")
         error.details["retry"] = (
-            "Run the same command unchanged. The client returns the receipt "
-            "if it arrived, or resends this exact request under the same key."
+            "An earlier attempt of this exact request applied. Run the same "
+            "command unchanged to get its receipt."
         )
+        return
+    error.details["recovery"] = recovery_identity(record, source="pending")
+    error.details["retry"] = (
+        "Run the same command unchanged. The client returns the receipt "
+        "if it arrived, or resends this exact request under the same key."
+    )
 
 
 def _recover_prior_mutation(
@@ -2564,21 +2585,32 @@ def _recover_prior_mutation(
     worker_name: str,
     key: str,
 ) -> dict[str, Any] | None:
-    """The earlier outcome of this exact request, when there is one to report."""
+    """The earlier outcome of this exact request, when there is one to report.
+
+    Every late response is taken and recorded against its own attempt before
+    deciding, so an error for one attempt cannot hide another's receipt.
+    """
 
     receipt = prior.get("receipt")
     if prior.get("state") == "applied" and isinstance(receipt, Mapping):
         result = dict(receipt)
         result["recovery"] = recovery_identity(prior, source="local_receipt")
         return result
+    applied: dict[str, Any] | None = None
     for request_id in reversed([str(value) for value in prior.get("request_ids") or []]):
         late = queue.take_response(worker_name=worker_name, request_id=request_id)
         if late is None:
             continue
-        result = _finish_coordinate_response(
-            late, recovery=recovery, worker_name=worker_name, key=key
-        )
-        record = recovery.read(worker_name, key) or prior
+        try:
+            result = _finish_coordinate_response(
+                late, recovery=recovery, worker_name=worker_name, key=key, request_id=request_id
+            )
+        except DomainError:
+            continue
+        applied = applied or result
+    record = recovery.read(worker_name, key)
+    if record is not None and record.get("state") == "applied":
+        result = dict(applied or record.get("receipt") or {})
         result["recovery"] = recovery_identity(record, source="late_relay_response")
         return result
     return None
