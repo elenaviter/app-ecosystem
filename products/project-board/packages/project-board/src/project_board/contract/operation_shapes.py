@@ -198,13 +198,15 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
     'plan.item.create': {   'description': 'Create one plan item; assignment is a separate atomic '
                                            'ownership operation.',
                             'object_ref': 'work:project:<project_id>',
-                            'payload': {'item': 'complete plan-item source'}},
+                            'payload': {   'item': 'complete plan-item source',
+                                           'idempotency_key': 'stable retry key'}},
     'plan.item.update': {   'description': 'Update one plan item under its current revision; new '
                                            'attachment_refs must be staged uploads.',
                             'object_ref': 'work:project:<project_id>',
                             'payload': {   'work_ref': 'canonical plan-node URI',
                                            'expected_revision': 'positive integer',
-                                           'changes': 'supported item fields'}},
+                                           'changes': 'supported item fields',
+                                           'idempotency_key': 'stable retry key'}},
     'work.status.set': {   'description': 'Set a canonical status; the assignee and the assignment '
                                           'stay as they are, and Working needs an assignee. '
                                           'Entering review requires review.look_at and '
@@ -377,7 +379,8 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                            'revision.',
                             'object_ref': 'work:project:<project_id>',
                             'payload': {   'work_ref': 'canonical plan-node URI',
-                                           'expected_revision': 'positive integer'}},
+                                           'expected_revision': 'positive integer',
+                                           'idempotency_key': 'stable retry key'}},
     'plan.note.append': {   'description': "Append one note and advance its item's revision "
                                            'atomically.',
                             'object_ref': 'work:project:<project_id>',
@@ -818,12 +821,18 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
 # them. Only fields a refusal is known for are listed: a field missing from
 # this table is checked by the service, never guessed here.
 PROBLEM_BOARD_OPERATION_REQUIRED: dict[str, tuple[str, ...]] = {
-    "plan.item.create": ("item",),
-    "plan.item.update": ("work_ref", "expected_revision", "changes"),
+    "assignment.assign": ("idempotency_key",),
+    "assignment.return": ("idempotency_key",),
+    "plan.item.create": ("item", "idempotency_key"),
+    "plan.item.delete": ("work_ref", "idempotency_key"),
+    "plan.item.update": ("work_ref", "expected_revision", "changes", "idempotency_key"),
     "plan.note.append": ("work_ref", "text", "expected_revision", "idempotency_key"),
     "review.accept": ("work_ref", "expected_revision", "idempotency_key"),
     "review.return": ("work_ref", "expected_revision", "reason", "idempotency_key"),
     "review.cancel": ("work_ref", "expected_revision", "reason", "idempotency_key"),
+    "project.plan.import": ("idempotency_key",),
+    "project.references.migrate": ("idempotency_key",),
+    "work.accept": ("idempotency_key",),
     "work.status.set": ("work_ref", "status", "expected_revision", "idempotency_key"),
 }
 

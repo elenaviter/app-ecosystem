@@ -68,6 +68,14 @@ def test_every_canonical_operation_has_a_shape():
         assert contract["example"].startswith(f"pb coordinate {operation} "), operation
 
 
+def test_every_required_field_is_documented_in_its_payload():
+    from project_board.contract.operation_shapes import PROBLEM_BOARD_OPERATION_REQUIRED
+
+    for operation, fields in PROBLEM_BOARD_OPERATION_REQUIRED.items():
+        payload = PROBLEM_BOARD_OPERATION_SHAPES[operation]["payload"]
+        assert set(fields) <= set(payload), operation
+
+
 def test_the_plan_item_contract_names_the_project_object_and_one_selector():
     result = cli._coordinate_command(_args("project.plan.item", contract=True))
     contract = result["contract"]
@@ -103,7 +111,14 @@ def test_project_ref_in_the_payload_is_one_local_error_and_nothing_is_sent(submi
 @pytest.mark.parametrize(
     ("action", "payload", "missing"),
     [
-        ("plan.item.create", {}, "item"),
+        ("plan.item.create", {"idempotency_key": "k"}, "item"),
+        # W404 review: the service requires the key for plan edits.
+        ("plan.item.create", {"item": {"key": "W9"}}, "idempotency_key"),
+        (
+            "plan.item.update",
+            {"work_ref": WORK_REF, "expected_revision": 3, "changes": {"title": "t"}},
+            "idempotency_key",
+        ),
         ("review.accept", {"work_ref": WORK_REF, "expected_revision": 3}, "idempotency_key"),
         (
             "review.return",
@@ -262,3 +277,52 @@ def test_the_worker_procedure_points_to_the_operation_contract():
     assert "`work_coordinate_shape_invalid` and `work_coordinate_operation_unknown` come from the operation catalog before anything is sent" in brief
     assert "On `pb coordinate`, run the same command unchanged" in brief
     assert "`work_coordinate_idempotency_key_reused`, naming the original request" in brief
+
+
+def test_two_calls_racing_with_one_key_cannot_both_be_sent(submits, monkeypatch, tmp_path):
+    # W404 review: the key is held for one exact request before either call
+    # can reach the relay, so a different request under it is refused.
+    import threading
+
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    first_in_submit = threading.Event()
+    second_done = threading.Event()
+    original_submit = CoordinateQueue.submit
+
+    def slow_submit(self, **values):
+        first_in_submit.set()
+        second_done.wait(timeout=5)
+        return original_submit(self, **values)  # the fixture's counting submit
+
+    monkeypatch.setattr(CoordinateQueue, "submit", slow_submit)
+
+    def outcome_unknown(queue_, path, *, worker_name, request_id, timeout_seconds):
+        raise DomainError("work_coordinate_outcome_unknown", "unknown", status=504, details={})
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", outcome_unknown)
+    first_payload = {"work_ref": WORK_REF, "expected_revision": 1, "idempotency_key": "race"}
+    second_payload = dict(first_payload, expected_revision=2)
+    outcomes: dict[str, BaseException] = {}
+
+    def run(name, payload):
+        try:
+            cli._coordinate_command(
+                _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+            )
+        except BaseException as exc:  # noqa: BLE001
+            outcomes[name] = exc
+
+    first = threading.Thread(target=run, args=("first", first_payload))
+    first.start()
+    assert first_in_submit.wait(timeout=5)
+    run("second", second_payload)
+    second_done.set()
+    first.join(timeout=5)
+
+    assert outcomes["second"].code == "work_coordinate_idempotency_key_reused"
+    assert outcomes["first"].code == "work_coordinate_outcome_unknown"
+    assert [call["payload"] for call in submits] == [first_payload]
+    record = CoordinateRecovery(host.field_root).read(channel.worker_name, "race")
+    assert record["payload"] == first_payload
+    assert len(record["request_ids"]) == 1

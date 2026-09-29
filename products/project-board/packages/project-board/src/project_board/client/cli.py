@@ -64,7 +64,6 @@ from .relay_pacing import channel_reconnect_state
 from .coordinate_contract import coordinate_contract, require_coordinate_shape
 from .coordinate_recovery import (
     CoordinateRecovery,
-    coordinate_request_hash,
     mutation_idempotency_key,
     recovery_identity,
 )
@@ -2390,27 +2389,35 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
     key = mutation_idempotency_key(payload)
     recovery = CoordinateRecovery(config.field_root) if key else None
     if recovery is not None:
-        recovered = _recover_prior_mutation(
-            queue,
-            recovery,
-            worker_name=channel.worker_name,
-            key=key,
+        # The key is held for this exact request before the relay can see it.
+        prior, created = recovery.reserve(
+            channel.worker_name,
+            key,
             action=action,
             object_ref=object_ref,
             payload=payload,
         )
-        if recovered is not None:
-            return recovered
-    request = queue.submit(
-        worker_name=channel.worker_name,
-        worker_identity=channel.worker_identity,
-        runtime_kind=channel.runtime_kind,
-        runtime_session_id=channel.runtime_session_id,
-        action=action,
-        object_ref=object_ref,
-        payload=payload,
-        timeout_seconds=timeout_seconds,
-    )
+        if not created:
+            recovered = _recover_prior_mutation(
+                queue, recovery, prior, worker_name=channel.worker_name, key=key
+            )
+            if recovered is not None:
+                return recovered
+    try:
+        request = queue.submit(
+            worker_name=channel.worker_name,
+            worker_identity=channel.worker_identity,
+            runtime_kind=channel.runtime_kind,
+            runtime_session_id=channel.runtime_session_id,
+            action=action,
+            object_ref=object_ref,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+        )
+    except BaseException:
+        if recovery is not None:
+            recovery.release_unsent(channel.worker_name, key)
+        raise
     request_id = str(request["request_id"])
     if recovery is not None:
         recovery.record_submission(
@@ -2542,38 +2549,13 @@ def _record_unfinished_mutation(
 def _recover_prior_mutation(
     queue: Any,
     recovery: CoordinateRecovery,
+    prior: Mapping[str, Any],
     *,
     worker_name: str,
     key: str,
-    action: str,
-    object_ref: str,
-    payload: Mapping[str, Any],
 ) -> dict[str, Any] | None:
     """The earlier outcome of this exact request, when there is one to report."""
 
-    prior = recovery.read(worker_name, key)
-    if prior is None:
-        return None
-    if prior.get("request_hash") != coordinate_request_hash(action, object_ref, payload):
-        raise DomainError(
-            "work_coordinate_idempotency_key_reused",
-            (
-                f"The idempotency key {key} was already sent with a different request "
-                f"({prior.get('action')} on {prior.get('object_ref')}, "
-                f"state {prior.get('state')}). Run that request unchanged to recover "
-                "its receipt, or use a new key for a different change. Nothing was sent."
-            ),
-            status=409,
-            details={
-                "original_request": {
-                    "action": prior.get("action"),
-                    "object_ref": prior.get("object_ref"),
-                    "payload": prior.get("payload"),
-                    "request_hash": prior.get("request_hash"),
-                },
-                "recovery": recovery_identity(prior, source="ledger"),
-            },
-        )
     receipt = prior.get("receipt")
     if prior.get("state") == "applied" and isinstance(receipt, Mapping):
         result = dict(receipt)
