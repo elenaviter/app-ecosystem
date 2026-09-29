@@ -84,6 +84,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-25 | Project Board clients switch as complete release environments | Each release owns its interpreter and dependency set, one inert launcher and every relay definition follow the host-wide current pointer, candidate smoke checks precede activation, and failed startup restores the prior release and target receipt. |
 | 2026-09-25 | Deferred join controls refresh attendance in the same relay cycle | A cached not-linked result now triggers an immediate authoritative attendance heartbeat and retries the leased welcome or assignment in place, preserving fail-closed refusal while removing the idle-poll delay. |
 | 2026-09-29 | Coherent work-item status and assignee saves | Review and Done accept real ownership edits without a Working detour, combined saves are atomic, and stable worker identity comparison prevents historical implementation or review state from inventing a reassignment. |
+| 2026-09-29 | Current responsibility and Review field regressions corrected | The mounted Review editor retains its direct Assignee field, selected Todo preserves the assignment period, explicit review routing moves current responsibility, and Card defaults keep contributor history opt-in; corrective source verification and remaining integration boundaries are recorded. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
