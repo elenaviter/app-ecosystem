@@ -43,6 +43,12 @@ def _read_json_object(path: Path) -> Mapping[str, Any]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except DomainError:
         raise
+    except FileNotFoundError as exc:
+        raise DomainError(
+            "work_runtime_account_missing",
+            "The coding runtime did not report a signed-in account.",
+            status=409,
+        ) from exc
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise DomainError(
             "work_runtime_account_unavailable",
@@ -100,7 +106,7 @@ def _codex_account(document: Mapping[str, Any]) -> dict[str, str]:
     tokens = _mapping(document.get("tokens"))
     claims = _jwt_claims(tokens.get("id_token") or document.get("id_token"))
     auth = _mapping(claims.get("https://api.openai.com/auth"))
-    return normalize_runtime_account(
+    account = normalize_runtime_account(
         {
             "account_id": _first_text(
                 tokens.get("account_id"),
@@ -112,13 +118,19 @@ def _codex_account(document: Mapping[str, Any]) -> dict[str, str]:
             "email": _first_text(claims.get("email"), auth.get("email")),
             "organization": _codex_organization(claims, auth),
         },
-        required=True,
     )
+    if not account:
+        raise DomainError(
+            "work_runtime_account_missing",
+            "The coding runtime did not report a vendor account ID.",
+            status=409,
+        )
+    return account
 
 
 def _claude_account(document: Mapping[str, Any]) -> dict[str, str]:
     account = _mapping(document.get("oauthAccount"))
-    return normalize_runtime_account(
+    normalized = normalize_runtime_account(
         {
             "account_id": _first_text(
                 account.get("accountUuid"),
@@ -133,8 +145,14 @@ def _claude_account(document: Mapping[str, Any]) -> dict[str, str]:
                 account.get("organization_id"),
             ),
         },
-        required=True,
     )
+    if not normalized:
+        raise DomainError(
+            "work_runtime_account_missing",
+            "The coding runtime did not report a vendor account ID.",
+            status=409,
+        )
+    return normalized
 
 
 def _read_runtime_account(runtime_kind: str, *, home: Path) -> dict[str, str]:
