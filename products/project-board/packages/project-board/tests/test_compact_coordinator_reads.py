@@ -256,6 +256,81 @@ def test_source_status_keeps_release_and_commit_identity_without_diagnostics() -
     _assert_budget(text, lines=130, bytes_=20_000)
 
 
+def test_source_status_distinguishes_released_sources_with_the_same_version() -> None:
+    version = "2026.09.29.1234"
+    running_release_id = "a" * 64
+    startup_release_id = "b" * 64
+    result = {
+        "schema": "project-board.client-source-status.v2",
+        "running_release": {
+            "mode": "released",
+            "version": version,
+            "release_id": running_release_id,
+        },
+        "selection_matches_bootstrap": True,
+        "relay": {
+            "startup_record": {
+                "pid": 1234,
+                "started_at": "2026-09-29T12:34:56Z",
+                "source": {
+                    "mode": "released",
+                    "version": version,
+                    "release_id": startup_release_id,
+                },
+            }
+        },
+    }
+
+    text = _brief(result)
+
+    assert (
+        f"running pb: source=released version={version} release={running_release_id}"
+        in text
+    )
+    assert (
+        f"startup source: source=released version={version} release={startup_release_id}"
+        in text
+    )
+
+
+def test_worker_context_marks_old_usage_as_a_provenanced_report() -> None:
+    observed_at = "2026-09-25T01:00:00Z"
+    result = {
+        "project_ref": PROJECT_REF,
+        "workspace": "/workspaces/codex-main",
+        "repositories": [],
+        "team": [
+            {
+                "worker_name": "claude-code-old-sample",
+                "worker_alias": "claude-old@host-one",
+                "host_label": "host-one",
+                "limit_state": {
+                    "kind": "ok",
+                    "source": "claude-code-statusline",
+                    "observed_at": observed_at,
+                    "windows": [
+                        {
+                            "name": "seven_day",
+                            "used_percent": 45,
+                            "window_minutes": 10080,
+                            "resets_at": "2026-09-26T10:00:00Z",
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+    text = _brief(result)
+
+    assert (
+        "  claude-old@host-one (claude-code-old-sample) on host-one: "
+        "last reported usage ok · week 45% resets 09-26 10:00Z "
+        f"· source claude-code-statusline · observed {observed_at}"
+        in text
+    )
+
+
 def _plan_search_item(index: int) -> dict:
     return {
         "item_key": f"W{393 + index}",

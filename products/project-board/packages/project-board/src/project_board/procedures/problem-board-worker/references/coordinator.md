@@ -530,6 +530,48 @@ section says.
    (W322 needs W323, W318 needs W313) lived only in one coordinator's head,
    which a context reset or a hand-over loses.
 
+### Route through the worker CLI, with the complete assignment payload
+
+The current worker and coordinator procedure uses `pb worker` and `pb
+coordinate`; it does not use the named-service or MCP surfaces. Do not open
+`named_service.py` or another server implementation file to discover an
+ordinary PB command. The command and its complete payload are:
+
+```bash
+pb coordinate assignment.assign \
+  --object-ref <project-ref> \
+  --payload-file <assignment.json>
+```
+
+```json
+{
+  "work_ref": "<identity_ref copied whole from project.plan.item>",
+  "worker_name": "<stable worker_name from pb worker context>",
+  "title": "<assignment title>",
+  "task": {"instructions": "<bounded briefing; the item carries acceptance>"},
+  "expected_ownership_version": 0,
+  "source_repositories": [
+    {
+      "repository_ref": "repo:<registered-alias>/<exact-relative-scope>",
+      "base_commit": "<full commit>",
+      "branch": "work/w<N>-<slug>"
+    }
+  ],
+  "source_repository_ref": "<same as the first source_repositories entry>",
+  "source_base_commit": "<same as the first source_repositories entry>",
+  "source_branch": "<same as the first source_repositories entry>",
+  "idempotency_key": "<stable key for this routing decision>"
+}
+```
+
+`expected_ownership_version` is `0` only for a never-assigned item; for a move
+or reissue copy the current assignment row's value. Work touching no repository
+uses an explicit empty `source_repositories` and omits the one-repository mirror.
+Every `repo:` value is copied from current project or item evidence. If no
+authoritative read exposes it, fix that record or the CLI projection first;
+never guess it from a clone name. A refusal is read and corrected through the
+CLI contract, never by mining the named-service implementation.
+
 ### Bind every repository the work touches when you assign
 
 An assignment carries `source_repositories`: one entry per repository the
