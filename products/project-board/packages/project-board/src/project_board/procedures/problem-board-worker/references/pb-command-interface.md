@@ -25,8 +25,13 @@ worker --help`, then the selected subcommand's `--help`.
 
 `pb coordinate <operation-id> --object-ref <project-ref> ...` invokes one
 canonical governed project operation through this session's persistent Card
-relay. `pb coordinate --help` gives the transport arguments. The relevant
-procedure's worked command and payload give the operation-specific fields; the
+relay. `pb coordinate --help` gives the transport arguments. Before a call
+you have not made before, `pb coordinate <operation-id> --contract` prints the
+operation's object, payload fields and a copyable command from the operation
+catalog, and sends nothing. Every call is checked against that shape before it
+is sent, so a misplaced or missing field comes back as one local error,
+`work_coordinate_shape_invalid`, with the corrected command. The relevant
+procedure's worked command and payload give the operation-specific values; the
 published [Operations by actor](repo:app-ecosystem/products/project-board/docs/operations-by-actor.md)
 identifies the canonical operation and required authority. An operation keeps
 the same canonical ID wherever the public documentation names it.
@@ -62,7 +67,9 @@ from a current PB read, then call `pb coordinate` through the Card relay.
 Read the returned code, message and fields as the result. Follow the recovery
 named by that output, the operation's procedure or [delivery and recovery](delivery-and-recovery.md).
 A known refusal changes only the field or authority the refusal names. An
-outcome-unknown write is retried unchanged under the same `idempotency_key`;
+outcome-unknown write is retried unchanged under the same `idempotency_key`,
+and the same key with a different request is refused locally as
+`work_coordinate_idempotency_key_reused`;
 the outbox or receipt check comes first when the command prints one. A missing
 or inactive Card channel, unavailable relay, outcome-unknown response and Card
 grant denial are separate cases and keep their separate recoveries.
