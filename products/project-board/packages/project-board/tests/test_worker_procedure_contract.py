@@ -564,6 +564,7 @@ def test_assignment_rules() -> None:
 def test_work_report_and_journal_rules() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)
+    journaling = _words(_read("references/journaling.md"))
     assert "pb worker send --help" in skill and "pb worker settle --help" in skill
     assert "after one coherent patch" in words and "before the next patch begins" in words
     assert "A clock tick or an unchanged idle state is not a work boundary" in words
@@ -596,6 +597,14 @@ def test_work_report_and_journal_rules() -> None:
     assert "A `project.report` request reaches only the coordinator" in words
     assert "work:journal:<created-at>:<entry-id>:<semantic-name>" in skill
     assert "pb worker journal-index" in skill and "pb worker journal-search" in skill
+    assert "no role means no journal work" in words
+    assert "the common procedure never assumes a fixed home" in journaling
+    assert "With no journal role, there is no journal work" in journaling
+    assert "Reuse the item's existing worktree when it already changes the journal repository" in journaling
+    assert "<workspace>/wt/<item>-<journal-alias>" in journaling
+    assert "Never carry a long-lived per-agent journal worktree or branch across unrelated items" in journaling
+    assert "After the journal change request is merged, fetch and fast-forward the clean journal clone" in words
+    assert "an unmerged entry correctly returns `journal_entry_not_found`" in words
     # The semantic segment cap that refused a real entry on 2026-09-21 00:26Z.
     assert "semantic name at most 64 characters of `a-z0-9-`, else `journal_entry_ref_invalid`" in _words(skill)
     assert "pb worker journal-index-status" in skill
@@ -1200,7 +1209,12 @@ def test_an_agent_sets_up_its_workspace_from_the_project_record():
     assert "whenever you are added to a project, set up its workspace from its record: [project workspace](references/project-workspace.md)" in skill
     assert "pb worker context --project-ref <project>" in reference
     assert "the repository lives at `<workspace>/<alias>`" in reference
-    assert "The journal repository (role `journal`) is cloned like any other" in reference
+    assert "The journal repository (role `journal`) is optional and cloned like any other" in reference
+    assert "The project may assign that role to any repository and path" in reference
+    assert "No per-agent journal worktree or branch spans unrelated items" in reference
+    assert "an unmerged entry correctly returns `journal_entry_not_found`" in reference
+    assert "<workspace>/wt/journal-<alias>" not in reference
+    assert "work/journal-<agent-alias>" not in reference
     assert "tell the operator by name, with its alias and URL" in reference
 
 

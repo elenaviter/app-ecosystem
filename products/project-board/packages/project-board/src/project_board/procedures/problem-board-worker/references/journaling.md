@@ -18,9 +18,19 @@ nothing leaves the next reader (a teammate, a successor coordinator, itself
 after a compaction) to rebuild it from mail. How an entry is authored and
 indexed (front matter, `entry_ref`, `journal-index`) is in the skill's section
 *Work, Report, And Journal*; this page says when to write one and what goes
-where. The entry is written in, indexed from, and searched in your own clone
-of the journal repository, never a host-wide checkout
-([project-workspace](project-workspace.md), step 5).
+where. A project journal is optional. When the project declares a repository
+with role `journal`, that role may name any repository and path; the common
+procedure never assumes a fixed home. With no journal role, there is no
+journal work: keep decisions and findings in the plan item.
+
+Author an entry in the current work item's worktree at the configured journal
+path. Reuse the item's existing worktree when it already changes the journal
+repository; otherwise make `<workspace>/wt/<item>-<journal-alias>` on a
+feature-bound branch and open a change request for the item. Never carry a
+long-lived per-agent journal worktree or branch across unrelated items. After
+the change request is merged, fast-forward your clean clone and index and
+search the merged entry there, never from a host-wide checkout
+([project-workspace](project-workspace.md), steps 5 and 6).
 
 ## When to write an entry
 
@@ -33,7 +43,10 @@ Write one entry for each completed move, as the move completes:
 - an assignment completed, with what the reviewer can check.
 
 A move is complete when its result is on the board or in a merged commit, not
-when the work started. One entry per move; a long item gets several.
+when the work started. One entry per move; a long item gets several. Indexing
+comes after the journal change is merged and the clean clone is fast-forwarded.
+An unmerged entry is intentionally absent from that clone, so
+`journal_entry_not_found` before merge is not an indexing failure.
 
 ## What an entry carries
 
