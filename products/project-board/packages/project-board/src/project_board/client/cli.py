@@ -221,8 +221,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Output form for any command, accepted anywhere on the command line: "
-            "json (default, one envelope) or brief (complete readable text, refs "
-            "whole, errors on stdout). PB_FORMAT sets the default."
+            "json (default, the full envelope) or brief (readable delivery and "
+            "receipt ledgers plus bounded summaries for read-heavy commands; "
+            "displayed refs stay whole and errors go to stdout). PB_FORMAT sets "
+            "the default."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1707,8 +1709,10 @@ def build_parser() -> argparse.ArgumentParser:
     command = sub.add_parser(
         "render",
         help=(
-            "Render saved pb output as complete text: refs whole, errors and "
-            "unreadable input visible. Reads stdin unless --file is given."
+            "Render saved pb output as readable text: delivery and receipts stay "
+            "complete, read-heavy results are bounded, displayed refs stay whole, "
+            "and errors or unreadable input stay visible. Reads stdin unless "
+            "--file is given."
         ),
     )
     command.add_argument("--file", default="", help="Saved pb output; stdin when omitted.")

@@ -733,6 +733,50 @@ def _team_limit_state(value: Any) -> dict[str, Any]:
     return state
 
 
+def _team_runtime_model(value: Any) -> dict[str, Any]:
+    """Keep the bounded relay-reported model evidence on a team row."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    model: dict[str, Any] = {}
+    for key, maximum in (
+        ("model", 128),
+        ("model_display", 128),
+        ("effort", 32),
+        ("source", 64),
+        ("observed_at", 64),
+        ("state", 32),
+    ):
+        text = str(value.get(key) or "")[:maximum]
+        if text:
+            model[key] = text
+    if isinstance(value.get("thinking"), bool):
+        model["thinking"] = value["thinking"]
+    return model
+
+
+def _team_runtime_account(value: Any) -> dict[str, Any]:
+    """Keep token-free provider-account identity and its provenance."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    account: dict[str, Any] = {}
+    for key, maximum in (
+        ("provider", 64),
+        ("account_id", 256),
+        ("account_label", 256),
+        ("email", 256),
+        ("organization", 256),
+        ("source", 64),
+        ("observed_at", 64),
+        ("state", 32),
+    ):
+        text = str(value.get(key) or "")[:maximum]
+        if text:
+            account[key] = text
+    return account
+
+
 # W334: the board accepts a held wake's pending count up to this.
 MAX_WAKE_HOLD_PENDING = 1_000_000
 
@@ -8290,6 +8334,24 @@ class SharedFieldStore:
             for member in team:
                 if not isinstance(member, Mapping) or not str(member.get("worker_name") or "").strip():
                     continue
+                runtime_model = _team_runtime_model(member.get("runtime_model"))
+                raw_account = member.get("runtime_account")
+                if not isinstance(raw_account, Mapping):
+                    raw_account = member.get("provider_account")
+                runtime_account = _team_runtime_account(raw_account)
+                if runtime_account:
+                    runtime_account["source"] = str(
+                        runtime_account.get("source")
+                        or member.get("runtime_account_source")
+                        or member.get("provider_account_source")
+                        or ""
+                    )[:64]
+                    runtime_account["observed_at"] = str(
+                        runtime_account.get("observed_at")
+                        or member.get("runtime_account_observed_at")
+                        or member.get("provider_account_observed_at")
+                        or ""
+                    )[:64]
                 rows.append(
                     {
                         "worker_name": str(member.get("worker_name") or "").lower(),
@@ -8305,6 +8367,11 @@ class SharedFieldStore:
                         # W26 line 7: a teammate's usage limit as its runtime
                         # last reported it; empty means not reported.
                         "limit_state": _team_limit_state(member.get("limit_state")),
+                        # W393: the same relay packet carries model, reasoning
+                        # effort and token-free provider-account identity. Keep
+                        # their source and observation time for compact reads.
+                        "runtime_model": runtime_model,
+                        "runtime_account": runtime_account,
                         # W330: the teammate's own line about itself; empty when none.
                         "info_text": str(member.get("info_text") or ""),
                     }
@@ -11519,4 +11586,3 @@ def _review_routing_fields(
     if integration:
         fields["integration"] = integration
     return fields
-

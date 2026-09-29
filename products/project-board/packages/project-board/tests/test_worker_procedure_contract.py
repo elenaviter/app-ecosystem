@@ -144,7 +144,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.29.1"
+    assert package["revision"] == "2026.09.29.2"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -157,9 +157,10 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
         "references/test-window.md",
         "references/first-run.md",
         "references/shared-runtime-state.md",
-        "references/collaboration.md",
-        "references/brief-output.md",
-        "references/project-workspace.md",
+            "references/collaboration.md",
+            "references/brief-output.md",
+            "references/pb-command-interface.md",
+            "references/project-workspace.md",
         "references/journaling.md",
         "references/signals.md",
     }
@@ -477,6 +478,41 @@ def test_pb_output_is_read_with_brief_never_with_a_parser() -> None:
     assert "renders as `UNREADABLE` followed by the text itself, exit code 2" in words
     assert "copied as a whole line or obtained from a rendered command, never assembled" in words
     assert "The `--format brief` rendering is the handling ledger" in words
+
+
+def test_read_heavy_evidence_is_fresh_targeted_and_explicitly_expandable() -> None:
+    skill = _words(_read("SKILL.md"))
+    brief = _words(_read("references/brief-output.md"))
+    coordinator = _words(_read("references/coordinator.md"))
+    public = _words(
+        (
+            _repository_root()
+            / "products"
+            / "project-board"
+            / "docs"
+            / "coordinator.md"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert "At each new decision or work boundary, rerun the smallest targeted read" in skill
+    for operation in (
+        "worker context",
+        "worker journal-search",
+        "source status",
+        "project.plan.search",
+        "project.plan.item",
+        "assignment.list",
+    ):
+        assert f"`{operation}`" in skill
+    assert "rerun that same narrow command with `--format json`" in skill
+    assert "Every displayed ref, id, key, cursor, commit and path stays whole" in skill
+    assert "A result retained from an earlier decision boundary is not current evidence" in brief
+    assert "## Refresh the evidence you decide from" in _read("references/coordinator.md")
+    assert "A result from an earlier boundary, a compacted conversation, or private memory is not current evidence" in coordinator
+    assert "Do not page or assemble the plan to make a decision about one subject" in coordinator
+    assert "Do not replace a fresh targeted read with local `jq`" in coordinator
+    assert "## Fresh evidence at the decision boundary" in public
+    assert "An earlier result or remembered snapshot is not fresh evidence" in public
 
 
 def test_receive_handle_and_settle_rules() -> None:
@@ -1340,6 +1376,8 @@ def test_the_coordinator_reference_opens_with_what_the_coordinator_is_for() -> N
         "Name items by key and title, never a bare number.",
         "You drive the team; you do not wait for it.",
         "Ask the worker; do not infer from files.",
+        "Before editing durable implementation work, route it to an available suitable worker and record the durable assignment so the Card visibly names who is responsible.",
+        "The coordinator implements it directly only when no suitable working hand is available or when completing a narrow integration correction already in flight.",
         "tell that worker first, then the operator",
         "The runtime is the operator's; the mechanics are yours.",
         "No runtime window (reload, refresh, client switch) without the operator's go.",
@@ -1507,6 +1545,56 @@ def test_delegation_is_not_free_and_its_reason_is_stated():
     assert "It does not wait on a delegate with repeated short empty checks or status polls" in coordinator
     assert "Portable work goes first to an independent, less used quota pool" in coordinator
     assert "Why: a delegation that costs more to brief and check than it saves spends the same shared budget twice" in coordinator
+
+
+def test_worker_and_coordinator_use_the_complete_pb_cli_path():
+    """Operator 2026-09-29: teach the ordinary PB path positively and completely."""
+
+    skill_raw = _read("SKILL.md")
+    skill = " ".join(skill_raw.split())
+    interface_raw = _read("references/pb-command-interface.md")
+    interface = " ".join(interface_raw.split())
+    raw = _read("references/coordinator.md")
+    coordinator = " ".join(raw.split())
+    assert "[PB command interface](references/pb-command-interface.md)" in skill_raw
+    assert "`pb worker ...` owns this native session's enrollment" in interface
+    assert "`pb coordinate <operation-id> --object-ref <project-ref> ...` invokes one canonical governed project operation" in interface
+    assert "Search for the subject with `project.plan.search`" in interface
+    assert "Read one current item with `project.plan.item`" in interface
+    assert "Read its notes with `plan.notes.list`" in interface
+    assert "Update it with `plan.item.update`" in interface
+    assert "Read the returned code, message and fields as the result" in interface
+    assert "### Route through Problem Board's worker CLI, with the complete assignment payload" in raw
+    assert "pb worker context --project-ref <project-ref>" in coordinator
+    assert "pb coordinate project.plan.item" in coordinator
+    assert "pb coordinate assignment.assign" in coordinator
+    for field in (
+        '"work_ref"',
+        '"worker_name"',
+        '"expected_ownership_version"',
+        '"source_repositories"',
+        '"source_repository_ref"',
+        '"source_base_commit"',
+        '"source_branch"',
+        '"idempotency_key"',
+    ):
+        assert field in raw
+    assert '"source_repository_ref": "<copy source_repositories[0].repository_ref>"' in raw
+    assert '"source_base_commit": "<copy source_repositories[0].base_commit>"' in raw
+    assert '"source_branch": "<copy source_repositories[0].branch>"' in raw
+    assert "never guess it from a clone name" in coordinator
+    assert "preserve the returned code and fields" in coordinator
+
+
+def test_review_uses_a_detached_exact_head_tree_under_rv():
+    """Operator 2026-09-29: review checkouts are visible, exact and separate from implementation."""
+
+    skill = " ".join(_read("SKILL.md").split())
+    workspace = " ".join(_read("references/project-workspace.md").split())
+    assert "use the detached exact-head review tree under `<workspace>/rv/`" in skill
+    assert "`<workspace>/wt/<item>-<alias>`" in workspace
+    assert "`<workspace>/rv/<item>-<alias>-<short sha>`" in workspace
+    assert "A review tree goes as soon as the verdict is recorded" in workspace
 
 
 def test_the_kdcube_profile_gives_deploy_worktrees_a_gitdir_the_container_can_read():

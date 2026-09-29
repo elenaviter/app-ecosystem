@@ -17,12 +17,21 @@ is unclear, or when a ref has to be copied.
 ## The shape
 
 Every `pb` command accepts `--format brief` anywhere on the line, and
-`PB_FORMAT=brief` makes it the session default. Brief output is complete text:
-`OK` or `ERROR <code>` first, every ref, id and key whole on its own line,
-bodies in full, and each follow-up command (`lease-read`, `settle`, and for a
-question or request the correlated `send`) printed complete with the refs and
-this session's runtime flags. `pb render --file <path>` renders saved output
-the same way.
+`PB_FORMAT=brief` makes it the session default. Brief output starts with `OK`
+or `ERROR <code>`. Delivery and mutation output is the complete handling
+ledger: bodies and each follow-up command (`lease-read`, `settle`, and for a
+question or request the correlated `send`) print with the refs and this
+session's runtime flags. Read-heavy `worker context`, `worker journal-search`,
+`source status`, `project.plan.search`, `project.plan.item`, and
+`assignment.list` print bounded decision summaries instead. Every displayed
+ref, id, key, cursor, commit and path is whole. `pb render --file <path>`
+applies the same brief rendering to saved output.
+
+When one of those summaries omits a field or clips prose that the decision
+actually needs, rerun the same narrow command with `--format json` and read the
+full envelope directly. Do not broaden or page a query to compensate, and do
+not write a JSON parser. A result retained from an earlier decision boundary
+is not current evidence: rerun the targeted read.
 
 ## Bounded output is the session default
 
@@ -36,7 +45,7 @@ export PB_FORMAT=brief
 Settle, send and report print their receipt in brief too. Each of them is one
 more JSON envelope otherwise, and an envelope printed into the model's context
 is read whole, receipt, details and all, where brief output would have
-rendered the same facts in a few lines.
+rendered its handling facts in a few lines.
 
 Why this is written down: on 2026-09-23 a Codex agent compacted every few turns.
 Its own words: "I also amplified it by letting settlement commands print full
