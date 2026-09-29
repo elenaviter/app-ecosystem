@@ -172,13 +172,25 @@ class CoordinateQueue:
         return row
 
     def holds(self, *, worker_name: str, request_id: str) -> bool:
-        """Whether this request was published: pending, claimed or answered."""
+        """Whether this request was published: pending, claimed or answered.
+
+        The scan runs under the worker's queue lock, the same lock every
+        queue transition takes, so a claim, a requeue or a completion cannot
+        move the request between the locations while they are read. Only a
+        missing file counts as absent; any other error propagates, so an
+        unreadable queue is never taken as proof that nothing was published
+        (W404, sixth review finding).
+        """
 
         clean_worker = component(worker_name, field="worker_name")
-        return any(
-            self._path(state, clean_worker, request_id).exists()
-            for state in ("pending", "leased", "responses")
-        )
+        with exclusive_lock(self._lock_path(clean_worker)):
+            for state in ("pending", "leased", "responses"):
+                try:
+                    os.stat(self._path(state, clean_worker, request_id))
+                except FileNotFoundError:
+                    continue
+                return True
+            return False
 
     @staticmethod
     def expired(request: Mapping[str, Any]) -> bool:

@@ -773,3 +773,66 @@ def test_an_interrupt_before_publication_frees_the_key_and_an_unreadable_queue_h
         cli._coordinate_command(args)
     record = recovery.read(channel.worker_name, "accept-w19")
     assert record is not None and len(record["publishing"]) == 1, "unknown publication stays held"
+
+
+# W404 sixth finding (codex-app, 2026-09-29 22:44Z): the presence scan read
+# pending, leased and responses without the queue lock, so a relay requeue
+# between the reads made a published request look absent.
+
+
+def test_the_presence_scan_is_consistent_with_a_concurrent_requeue(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    host, identity, channel = make_host(tmp_path)
+    queue = CoordinateQueue(host.field_root)
+    queue.submit(
+        worker_name=channel.worker_name, worker_identity=channel.worker_identity,
+        runtime_kind=channel.runtime_kind, runtime_session_id=channel.runtime_session_id,
+        action="review.accept", object_ref=PROJECT, payload={"idempotency_key": "k"}, request_id="coordinate_req1",
+    )
+    (claimed,) = queue.claim(worker_name=channel.worker_name, limit=10)
+    requeued = threading.Event()
+
+    def requeue():
+        queue.defer_after_unknown(claimed, error=DomainError("data_bus_outcome_unknown", "unknown", status=504))
+        requeued.set()
+
+    real_path = CoordinateQueue._path
+    started = {"thread": None}
+
+    def path_that_lets_the_relay_move(self, state, worker_name, request_id):
+        if state == "leased" and request_id == "coordinate_req1" and started["thread"] is None:
+            # Pending has been read (absent: the request is claimed). Before
+            # leased is read, the relay tries to requeue it (leased -> pending).
+            started["thread"] = threading.Thread(target=requeue)
+            started["thread"].start()
+            time.sleep(0.3)
+        return real_path(self, state, worker_name, request_id)
+
+    monkeypatch.setattr(CoordinateQueue, "_path", path_that_lets_the_relay_move)
+    assert queue.holds(worker_name=channel.worker_name, request_id="coordinate_req1") is True
+    started["thread"].join(timeout=5)
+    assert requeued.is_set(), "the requeue ran after the scan released the lock"
+    monkeypatch.setattr(CoordinateQueue, "_path", real_path)
+    assert queue.holds(worker_name=channel.worker_name, request_id="coordinate_req1") is True
+    assert queue.holds(worker_name=channel.worker_name, request_id="coordinate_absent") is False
+
+
+def test_an_unreadable_queue_location_is_not_absence(tmp_path, monkeypatch):
+    # Pins behaviour the earlier scan already had; kept so the strict
+    # FileNotFoundError-only absence cannot regress.
+    import os
+
+    host, identity, channel = make_host(tmp_path)
+    queue = CoordinateQueue(host.field_root)
+    real_stat = os.stat
+
+    def denied(path, *args, **kwargs):
+        if "coordinate_req2" in str(path):
+            raise PermissionError("denied")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "stat", denied)
+    with pytest.raises(PermissionError):
+        queue.holds(worker_name=channel.worker_name, request_id="coordinate_req2")
