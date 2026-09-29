@@ -65,6 +65,13 @@ def test_filtered_platform_requirements_replace_the_include_and_source_packages(
     assert "project-board" not in generated
     assert "app-foundation" not in generated
 
+    (kdcube / "requirements-chat-processor.txt").write_text(
+        "project-board\nrequests==2.32.5\n",
+        encoding="utf-8",
+    )
+    generated, _source = module._filtered_platform_requirements(kdcube)
+    assert generated == "requests==2.32.5\n"
+
 
 def test_project_board_test_extra_is_the_xdist_source_of_truth(tmp_path: Path) -> None:
     module = _module()
@@ -193,6 +200,41 @@ def test_check_fails_before_pytest_when_the_dependency_inputs_changed(
     monkeypatch.setattr(module, "_git_commit", lambda _path: "b" * 40)
 
     with pytest.raises(module.RunnerError, match="run prepare first"):
+        module.check(
+            runner_root=runner_root,
+            kdcube_root=kdcube,
+            app_ecosystem_root=app_ecosystem,
+            base_python=Path(sys.executable),
+        )
+
+
+def test_check_requires_prepare_after_a_source_commit_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+    kdcube, app_ecosystem = _sources(tmp_path / "sources")
+    runner_root = tmp_path / "runner"
+    runner_root.mkdir()
+    monkeypatch.setattr(module, "_git_commit", lambda _path: "a" * 40)
+    inputs, _platform_text, _test_requirements = module._inputs(
+        kdcube_root=kdcube,
+        app_ecosystem_root=app_ecosystem,
+        base_python=Path(sys.executable),
+    )
+    (runner_root / "receipt.json").write_text(
+        json.dumps(
+            {
+                "schema_version": module.SCHEMA_VERSION,
+                "dependency_fingerprint": inputs["dependency_fingerprint"],
+                "inputs": inputs,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "_git_commit", lambda _path: "b" * 40)
+
+    with pytest.raises(module.RunnerError, match="current source commits"):
         module.check(
             runner_root=runner_root,
             kdcube_root=kdcube,

@@ -30,7 +30,7 @@ AWS_REQUIREMENTS = "requirements-aws.txt"
 PROJECT_BOARD_RELATIVE = Path("products/project-board/packages/project-board")
 RECEIPT_NAME = "receipt.json"
 FIRST_PARTY_REQUIREMENT = re.compile(
-    r"^\s*(?:connection-hub|project-board|app-foundation)(?:\[|\s|[<>=!~;@])",
+    r"^\s*(?:connection-hub|project-board|app-foundation)(?:\[|\s|[<>=!~;@]|$)",
     re.IGNORECASE,
 )
 OVERLAY_RUNTIME_REQUIREMENTS = (
@@ -370,6 +370,20 @@ def _read_receipt(runner_root: Path) -> dict[str, Any]:
     return value
 
 
+def _source_commits(inputs: dict[str, object]) -> dict[str, str]:
+    sources = inputs.get("sources")
+    if not isinstance(sources, dict):
+        raise RunnerError("The test runner source receipt is incomplete; run prepare again.")
+    commits: dict[str, str] = {}
+    for name, value in sources.items():
+        if not isinstance(value, dict) or not isinstance(value.get("commit"), str):
+            raise RunnerError(
+                "The test runner source receipt is incomplete; run prepare again."
+            )
+        commits[str(name)] = value["commit"]
+    return commits
+
+
 def _activate_runner(runner_root: Path, environment: Path) -> None:
     active = runner_root / "venv"
     temporary = runner_root / f".venv.{os.getpid()}"
@@ -493,6 +507,14 @@ def check(
         raise RunnerError(
             "The prepared runner does not match the current dependency inputs; run prepare first."
         )
+    receipt_inputs = receipt.get("inputs")
+    if not isinstance(receipt_inputs, dict) or _source_commits(
+        receipt_inputs
+    ) != _source_commits(inputs):
+        raise RunnerError(
+            "The prepared runner receipt does not verify the current source commits; "
+            "run prepare first."
+        )
     runner_python = runner_root / "venv" / "bin" / "python"
     probe = _environment_probe(runner_python, test_requirements)
     if probe["installed_distributions"] != receipt.get("installed_distributions"):
@@ -504,10 +526,7 @@ def check(
         "state": "ready",
         "receipt": str(runner_root / RECEIPT_NAME),
         "verified_at": receipt.get("verified_at"),
-        "source_commits": {
-            name: value["commit"]
-            for name, value in inputs["sources"].items()  # type: ignore[union-attr]
-        },
+        "source_commits": _source_commits(inputs),
         "interpreter": probe["interpreter"],
         "test_dependencies": probe["test_dependencies"],
     }
@@ -530,8 +549,6 @@ def _parser() -> argparse.ArgumentParser:
 def _preparation_summary(receipt: dict[str, object]) -> dict[str, object]:
     inputs = receipt["inputs"]
     assert isinstance(inputs, dict)
-    sources = inputs["sources"]
-    assert isinstance(sources, dict)
     installed = receipt["installed_distributions"]
     assert isinstance(installed, dict)
     return {
@@ -541,11 +558,7 @@ def _preparation_summary(receipt: dict[str, object]) -> dict[str, object]:
         "runner_python": receipt["runner_python"],
         "dependency_fingerprint": receipt["dependency_fingerprint"],
         "installed_distribution_count": len(installed),
-        "source_commits": {
-            name: value["commit"]
-            for name, value in sources.items()
-            if isinstance(value, dict) and "commit" in value
-        },
+        "source_commits": _source_commits(inputs),
         "test_dependencies": receipt["test_dependencies"],
         "verified_at": receipt["verified_at"],
     }
