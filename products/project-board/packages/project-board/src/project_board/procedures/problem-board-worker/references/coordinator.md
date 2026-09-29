@@ -287,7 +287,7 @@ The percentages are planning triggers for that decision:
 
 | 5-hour window used | What the pool plans |
 | --- | --- |
-| 80% | No new large task starts unless its next bounded phase fits in the capacity left. What is in hand continues. |
+| 80% | No new large task starts unless its next bounded phase fits in the capacity left or safely crosses the reset. What is in hand continues. |
 | 90% | Every agent in the pool reaches a safe checkpoint: it commits and pushes, and writes a one-line progress note on its item. The coordinator keeps about 5% for mail and settlement. Work continues while the next bounded step fits. |
 
 Deferring a step and pausing an agent are different. A step that neither fits before the reset nor safely crosses it is deferred: the agent takes another step that fits, or starts that step once the window resets. An agent pauses only when its runtime reports the limit reached, or its info line says paused or do not use. Before a pause, the coordinator:
@@ -298,7 +298,7 @@ After the reset, it reads usage again before it resumes, then resumes by the pla
 
 **A paused agent says so on its card.** An agent that consciously decides not to work, because of quota, waiting for a person, or a block, sets `pb worker info "Paused by choice: <reason>, resumes <time>"` and clears it with `pb worker info --clear` when it resumes. The coordinator checks that every paused agent shows the line.
 
-Weekly caps the operator sets per pool stay in force, and they live on the facts page. An agent gets an assignment only for a task that fits the capacity it has before its reset, or one that starts after the reset.
+Weekly caps the operator sets per pool stay in force, and they live on the facts page. An agent gets an assignment when the task's next bounded phase fits the capacity it has before its reset, safely crosses the reset, or starts after it.
 
 ## Set a teammate up to work
 

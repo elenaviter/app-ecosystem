@@ -803,7 +803,7 @@ def test_quota_availability_weighs_capacity_size_and_reset() -> None:
     # W368 return (2026-09-29): 80% and 90% are planning triggers, and a pause
     # comes from the limit, the info line, or a step that cannot fit.
     assert "The percentages are planning triggers for that decision" in coordinator
-    assert "No new large task starts unless its next bounded phase fits in the capacity left" in coordinator
+    assert "No new large task starts unless its next bounded phase fits in the capacity left or safely crosses the reset" in coordinator
     assert "Every agent in the pool reaches a safe checkpoint" in coordinator
     assert "Work continues while the next bounded step fits" in coordinator
     # W368 re-review: a step that safely crosses a near reset is allowed, and
@@ -814,7 +814,8 @@ def test_quota_availability_weighs_capacity_size_and_reset() -> None:
     assert "when its next step cannot fit before the reset" not in coordinator
     assert "pauses at its next safe boundary" not in coordinator
     assert "waits for the reset or goes to a pool with capacity" in coordinator
-    assert "An agent gets an assignment only for a task that fits the capacity it has before its reset, or one that starts after the reset" in coordinator
+    assert "An agent gets an assignment when the task's next bounded phase fits the capacity it has before its reset, safely crosses the reset, or starts after it" in coordinator
+    assert "An agent gets an assignment only for a task that fits" not in coordinator
     assert "An agent out of quota gets no assignment" not in coordinator
 
 
