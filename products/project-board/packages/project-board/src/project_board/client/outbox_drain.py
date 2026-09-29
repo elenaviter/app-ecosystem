@@ -139,7 +139,10 @@ class RelayOutboxDrainServer:
             session = self.session_for(name)
             if session is None or session.closing:
                 continue
-            if not self.pacing.channel_due(name):
+            if not self.pacing.channel_request_due(
+                name,
+                connected=bool(getattr(getattr(session.adapter, "client", None), "connected", False)),
+            ):
                 continue
             project_refs = outbox.ready_project_refs(
                 worker_name=name,

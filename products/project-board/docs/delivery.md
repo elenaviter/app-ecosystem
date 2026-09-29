@@ -150,6 +150,7 @@ sent as mail.
 | Some referenced items were not delivered | Those items could not be read; the rest arrived with leases. | Handle what arrived. The named items retry once storage recovers. |
 | A send is refused as `work_worker_not_found` | The address is not a stable worker name (an alias, an unknown or a retired worker). | Correct the recipient to the stable name and replay from your outbox with the same idempotency key. |
 | A send or call is refused as reconnecting | The relay is reconnecting this channel. Nothing reached the board. | Wait until the named next attempt, then retry with the same idempotency key. |
+| An active channel carries a degraded connection observation | A prior delivery outcome is uncertain; it is not a transport-disconnect verdict. | Preserve the unknown operation's identity. Foreground recovery uses the live-session fences in [governed operation routing](architecture.md#governed-operation-routing), not a restart or an assumed success. |
 | `work_coordinate_relay_unavailable` | The relay on this machine did not pick the request up (for example, it is stopped). | Check the relay's status on the machine. A relay restart is agreed with the other agents on the host first. |
 | `work_coordinate_outcome_unknown` | The relay took the request, but no result arrived in time. | Read the board's state first; retry a mutation only with the same idempotency key. |
 | A domain refusal (a conflict, a missing grant) | The board answered. The route works. | Fix the cause the refusal names. Do not restart or re-authorize anything. |

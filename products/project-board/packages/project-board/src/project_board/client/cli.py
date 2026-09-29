@@ -2262,7 +2262,7 @@ def _channel_reconnecting_error(
 
 def _raise_if_channel_reconnecting(config_path: Any, worker_name: str) -> None:
     reconnect = channel_reconnect_state(config_path, worker_name)
-    if reconnect is not None:
+    if reconnect is not None and reconnect.get("state") != "degraded":
         raise _channel_reconnecting_error(worker_name, reconnect)
 
 
@@ -2301,7 +2301,7 @@ def _raise_if_send_channel_reconnecting(
     reading a queued message as a delivered one."""
 
     reconnect = channel_reconnect_state(config_path, worker_name)
-    if reconnect is not None:
+    if reconnect is not None and reconnect.get("state") != "degraded":
         raise _send_channel_reconnecting_error(
             worker_name, reconnect, idempotency_key=idempotency_key
         )
@@ -2523,7 +2523,7 @@ def _await_coordinate_response(
         if time.monotonic() >= next_channel_check:
             next_channel_check = time.monotonic() + 1.0
             reconnect = channel_reconnect_state(path, worker_name)
-            if reconnect is not None:
+            if reconnect is not None and reconnect.get("state") != "degraded":
                 # Only a request no relay ever claimed is withdrawn; a claimed
                 # one stays for the relay to finish or reconcile.
                 withdrawn = queue.cancel_pending_if_unclaimed(
@@ -4802,8 +4802,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
         channel_row = channel.to_mapping()
         reconnect = channel_reconnect_state(path, identity.worker_name)
         if reconnect is not None and channel.state == "active":
-            # Configured active, but the relay is reconnecting it.
-            channel_row["state"] = "reconnecting"
+            # Preserve uncertainty without claiming a retained socket is
+            # unavailable, or that an old pacing observation proves it live.
+            if reconnect.get("state") != "degraded":
+                channel_row["state"] = "reconnecting"
             channel_row["connection"] = reconnect
         return {
             "config": str(path),

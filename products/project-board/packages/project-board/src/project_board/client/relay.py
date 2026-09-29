@@ -4979,12 +4979,20 @@ class ProblemBoardRelaySupervisor:
         or the runtime is not there, with the doubling otherwise."""
 
         handshake = is_namespace_handshake_timeout(error)
+        session = self._sessions.get(worker_name)
+        retained_connected = bool(
+            self._failure_code(error) == "data_bus_outcome_unknown"
+            and session is not None
+            and not session.closing
+            and getattr(session.adapter.client, "connected", False)
+        )
         return pacing.record_failure(
             worker_name,
             HANDSHAKE_TIMEOUT_REASON if handshake else self._failure_code(error),
             handshake_timeout=handshake,
             runtime_unavailable=not handshake and is_runtime_unavailable(error),
             credential=credential_refused(error),
+            retained_connected=retained_connected,
         )
 
     @staticmethod
@@ -6360,8 +6368,9 @@ class ProblemBoardRelaySupervisor:
         """Start a drain for each worker with ready requests and an open channel.
 
         Returns the worker names a drain was started for. A worker without an
-        open session, or whose channel is backing off, is left to the cycle
-        (pb coordinate already refuses at once while it is reconnecting).
+        open session is left to the cycle. A retained connected session with
+        unknown delivery may recover before periodic backoff, but its live
+        channel/Card fences still apply; unavailable transport remains fenced.
         """
 
         host = HostRelayConfig.load(self.config_path)
@@ -6376,7 +6385,9 @@ class ProblemBoardRelaySupervisor:
             session = self._sessions.get(name)
             if session is None or session.closing:
                 continue
-            if not self._pacing.channel_due(name):
+            if not self._pacing.channel_request_due(
+                name, connected=bool(getattr(session.adapter.client, "connected", False))
+            ):
                 continue
             if not queue.has_ready_work(worker_names=[name]):
                 continue
