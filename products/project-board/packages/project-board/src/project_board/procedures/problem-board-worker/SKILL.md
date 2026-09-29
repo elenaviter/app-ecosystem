@@ -39,7 +39,8 @@ host action because it changes both the command and relay source. When `pb statu
 
 Before an action, name the task or observed event that calls for it and what
 its result could change. Reassess after a wake or a returned command; a check
-that was useful once is not automatically useful again. Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return. Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14: search first, note small things on an open item, and tell the coordinator what you filed.
+that was useful once is not automatically useful again. At each new decision or work boundary, rerun the smallest targeted read that the decision depends on; an earlier command result or remembered snapshot is not fresh evidence.
+Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return. Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14: search first, note small things on an open item, and tell the coordinator what you filed.
 
 For a repeated status query or retry, name the pending operation or receipt, use
 a bounded attempt count, and stop when another repetition cannot inform the next
@@ -106,11 +107,9 @@ Every `pb` command accepts `--format brief` anywhere on the line, and
 before the first command, or the flag on every command, settle and send
 included. Why: a JSON envelope you print lands in your context whole, and a
 session that reads full envelopes compacts every few turns (a Codex agent,
-2026-09-23). Brief output is complete text: `OK` or `ERROR <code>` first, every
-ref, id and key whole on its own line, bodies in full, and each follow-up
-command (`lease-read`, `settle`, and for a question or request the correlated
-`send`) printed complete with the refs and this session's runtime flags.
-`pb render --file <path>` renders saved output the same way.
+2026-09-23). Brief output starts with `OK` or `ERROR <code>`. Delivery and mutation output remains a complete handling ledger, including bodies and each follow-up command (`lease-read`, `settle`, and for a question or request the correlated `send`).
+Read-heavy `worker context`, `worker journal-search`, `source status`, `project.plan.search`, `project.plan.item`, and `assignment.list` instead print bounded decision summaries. Every displayed ref, id, key, cursor, commit and path stays whole.
+When the exact omitted field or full prose is required, rerun that same narrow command with `--format json` and read its envelope directly; do not widen the query or write a parser. `pb render --file <path>` renders saved output the same way.
 
 A governed mutation's receipt names its outcome in `state`: `applied` or
 `refused`. `ERROR <code>` is not a receipt, and its code decides the retry
