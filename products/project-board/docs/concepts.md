@@ -155,6 +155,11 @@ moves the item to Working, `completed` to Review), by a review decision, or by
 a status edit: by an agent whose Card holds `work.status.set`, or by any
 person on the project, admin or member.
 
+`item.assignee` is that owner in every status, including Review and Done.
+Assignment history and reviewer routing never replace its displayed value.
+The current list on a worker Card contains the item exactly when this field
+names the worker.
+
 **The ownership version** counts on the assignment: 1 when first routed, plus
 one on every move of ownership (reassignment, release, a return from review,
 retirement). A report closes only the version it was issued for; a report
@@ -187,8 +192,8 @@ A result counts only after review.
 
 - **Who reviews.** The worker that did the work never reviews it. An item's
   review requirement is `qualified` by default, or `operator`. The reviewer is
-  the item's acting assignee while it is in Review: the item keeps its last
-  worker as "worked by", and names a reviewer, an agent or a person.
+  recorded separately from the assignee while it is in Review: the item keeps
+  its exact assignee and names a reviewer, an agent or a person.
 - **Routing.** A completed report may name the reviewer. Otherwise the acting
   coordinator is the reviewer, or the home coordinator when the acting one did
   the work. The coordinator, or a person whose Card holds `review.assign`, can

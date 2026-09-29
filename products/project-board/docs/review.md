@@ -63,8 +63,9 @@ todo --working status--> working --assignment.completed--> review
   assignee, the assignment state and the ownership version as they are, for
   every status, Todo and Cancelled included.
 - **Ownership moves only by ownership acts:** `assignment.assign`,
-  `assignment.return` (release), a reassignment, or a review decision that
-  ends the work (`review.accept`, `review.cancel`).
+  `assignment.return` (release), or a reassignment. A review decision may
+  settle assignment history, but it does not replace or clear the item's
+  assignee.
 - **The one business rule:** Working needs an assignee.
 
 Why: routing work to an agent says nothing about whether the work has
@@ -77,13 +78,14 @@ Selecting Working requires an assignee; selecting Cancelled requires a
 reason. Review and Done do not require a detour through Working before an
 assignee can change. When both fields change, one transaction applies the
 review decision first when there is one, then the selected ownership, and
-either all of the save succeeds or none of it does. The comparison uses the
-assignee the dialog displayed and resolves legacy aliases and worker ids to
-the stable worker name, so a status-only save does not invent a reassignment
-from implementation or review history. A routing, assigned, working or blocked
-assignment is current responsibility and supplies that displayed value; a
-completed, accepted, returned or cancelled assignment is history, so the
-dialog displays and submits the item's acting assignee or reviewer instead.
+either all of the save succeeds or none of it does. The dialog always displays
+and submits `item.assignee`, for Todo, Working, Review, Done and Cancelled.
+Assignment rows, reviewer routing and history never replace that field. The
+save resolves legacy aliases and worker ids to the stable worker name only to
+compare the selected value with the stored assignee. A status-only save does
+not read, derive, clear or recreate the assignee; an explicit assignee edit
+sets it once. The worker Card's current assignment list contains the item
+exactly when `item.assignee` names that worker.
 Delete refuses an assigned item, or an item another item depends on.
 
 ## Entering review
@@ -108,10 +110,10 @@ The report may also name the reviewer (next section).
 
 ## Who reviews
 
-The reviewer is the item's acting assignee while it is in Review. There is
-no separate status for it: the item keeps its last worker as its assignee
-("worked by") and names a reviewer, an agent or a person. The reviewer is
-who must act now.
+The reviewer and assignee are separate fields. An item keeps its exact
+assignee while it is in Review and names the reviewer independently. The
+reviewer is who decides the submitted result; reviewer routing does not
+rewrite the assignee or move the item between worker Cards.
 
 ### Routing
 
