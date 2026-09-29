@@ -272,16 +272,18 @@ threads through the next runtime upgrade.
 
 The coordinator reads every pool's usage at each work boundary, before it starts a review, a merge or a routing decision: `pb worker list` for this host, `pb worker context` for the team. Its own pool is included. A coordinator that shares an account with its workers spends the same pool it is guarding. The operator ruled this on 2026-09-26, after a shared pool reached 95% unnoticed.
 
-| 5-hour window used | What happens in that pool |
+**Weigh the task against what is left and when it resets** (operator, 2026-09-29). Availability is three figures read together: the capacity left in the window, the task's expected size, and the time until the window's `resets_at`. Decide per task: a task whose next bounded phase fits in the capacity left before the reset proceeds, and a task that can start after a near reset is taken for that time. A pool at 97% of its weekly window with the reset ten minutes away can still take a bounded action, or start work that safely crosses the reset. A task larger than what is left before a distant reset waits for the reset or goes to a pool with capacity (Worker budgets).
+
+The percentages are planning triggers for that decision:
+
+| 5-hour window used | What the pool plans |
 | --- | --- |
-| 80% | No new large tasks. What is in hand is finished and committed. |
-| 90% | Every agent in the pool commits and pushes, writes a one-line progress note on its item, and pauses at its next safe boundary. The coordinator keeps about 5% for mail and settlement. |
+| 80% | No new large task starts unless its next bounded phase fits in the capacity left. What is in hand continues. |
+| 90% | Every agent in the pool reaches a safe checkpoint: it commits and pushes, and writes a one-line progress note on its item. The coordinator keeps about 5% for mail and settlement. Work continues while the next bounded step fits. |
 
-**Weigh the task against what is left and when it resets.** Availability is three figures read together: the capacity left in the window, the task's expected size, and the time until the window's `resets_at`. Decide per task: a task that fits in the capacity left before the reset proceeds, and a task that can start after a near reset is taken for that time. A pool at 97% of its weekly window with the reset ten minutes away takes new work from that reset on. A task larger than what is left before a distant reset waits for the reset or goes to a pool with capacity (Worker budgets). The 80% and 90% rows apply this rule to the 5-hour window: they name when large tasks stop and when the pool pauses.
-
-Before a pause, the coordinator:
-1. writes the resume plan: who resumes what, from which note, and the reset time;
-2. checks that every session in the pool has its wake: a Claude Code watch with its guard prompt, or a Codex relay subscription. The session then wakes after the reset without anyone prompting it.
+An agent pauses when the runtime reports its limit reached, when its info line says paused or do not use, or when its next step cannot fit before the reset. Before a pause, the coordinator:
+1. writes the resume plan on the items: who resumes what, from which note, and the reset time.
+2. checks that every paused session has its wake: a Claude Code watch with its guard prompt, or a Codex relay subscription. The session then wakes after the reset without anyone prompting it.
 
 After the reset, it reads usage again before it resumes, then resumes by the plan.
 

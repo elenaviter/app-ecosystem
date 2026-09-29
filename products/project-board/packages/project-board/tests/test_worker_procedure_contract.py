@@ -798,8 +798,16 @@ def test_quota_availability_weighs_capacity_size_and_reset() -> None:
     coordinator = _words(_read("references/coordinator.md"))
 
     assert "Availability is three figures read together: the capacity left in the window, the task's expected size, and the time until the window's `resets_at`" in coordinator
-    assert "a task that fits in the capacity left before the reset proceeds" in coordinator
-    assert "A pool at 97% of its weekly window with the reset ten minutes away takes new work from that reset on" in coordinator
+    assert "a task whose next bounded phase fits in the capacity left before the reset proceeds" in coordinator
+    assert "A pool at 97% of its weekly window with the reset ten minutes away can still take a bounded action, or start work that safely crosses the reset" in coordinator
+    # W368 return (2026-09-29): 80% and 90% are planning triggers, and a pause
+    # comes from the limit, the info line, or a step that cannot fit.
+    assert "The percentages are planning triggers for that decision" in coordinator
+    assert "No new large task starts unless its next bounded phase fits in the capacity left" in coordinator
+    assert "Every agent in the pool reaches a safe checkpoint" in coordinator
+    assert "Work continues while the next bounded step fits" in coordinator
+    assert "An agent pauses when the runtime reports its limit reached, when its info line says paused or do not use, or when its next step cannot fit before the reset" in coordinator
+    assert "pauses at its next safe boundary" not in coordinator
     assert "waits for the reset or goes to a pool with capacity" in coordinator
     assert "An agent gets an assignment only for a task that fits the capacity it has before its reset, or one that starts after the reset" in coordinator
     assert "An agent out of quota gets no assignment" not in coordinator
