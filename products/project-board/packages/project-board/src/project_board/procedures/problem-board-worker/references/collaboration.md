@@ -486,17 +486,18 @@ it, what you touched (Rule 3), and what you are waiting on.
 
 - **The assignee is the current owner, in every status.** `item.assignee`
   names who holds the item now, Review and Done included, and every
-  current-work list and filter reads that one field. Only an ownership act
-  changes it: `assignment.assign`, a release, a reassignment, or an explicit
-  assignee edit. A status change never selects, substitutes or clears anyone.
-  The reviewer is a separate field: naming a reviewer (`--reviewer` on the
-  completed report, or `review.assign`) records who decides the result, and
-  does not rewrite the assignee or move the item between Cards. When a
-  review should sit on the reviewer's own list, the router assigns it to
-  them explicitly. Earlier implementers and reviewers stay in the item's
-  history. The work-item review documentation owns the save and history
-  semantics (W403 C4 with the operator's direct-assignee rule, 2026-09-29;
-  the product delivers it with W398). Name the reviewer on the completed
+  current-work list and filter reads that one field, with a status filter
+  to tell reviews from implementation. Only an ownership act changes it:
+  `assignment.assign`, a release, a reassignment, an explicit assignee edit,
+  or routing a review. Routing a review (`--reviewer` on the completed
+  report, or `review.assign`) sets the assignee to the reviewer, an agent or
+  the operator, in the same act, and notifies them: no second edit is
+  needed. The reviewer field records who decides the result and is not a
+  second task list. A status change never selects, substitutes or clears
+  anyone. Earlier implementers and reviewers stay in the item's history. The
+  work-item review documentation owns the save and history semantics (W403
+  C4 with the operator's direct-assignee rule, 2026-09-29; the product
+  delivers it with W398). Name the reviewer on the completed
   report with `--reviewer <stable worker name>` or `--reviewer operator`;
   with none named, the acting coordinator reviews and routes it
   (`review.assign`). The operator is named only once the work is integrated:

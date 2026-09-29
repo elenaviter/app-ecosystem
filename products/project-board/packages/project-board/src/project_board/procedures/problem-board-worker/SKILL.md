@@ -305,7 +305,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   detach. A relay heartbeat proves transport, a watch
   heartbeat proves availability checks, and only `pb worker receive` and
   settlement prove model handling.
-- An empty inbox is not evidence that there is no work. At session start, on resume and before `pb worker idle`, read your responsibilities once: `pb coordinate assignment.list` for your implementation work, `project.plan.index` with `{"assignee": "<your stable name>"}` for every item assigned to you, the same with `{"status": "review"}` for the items whose `reviewer` names you, and `pb worker outbox-status` for each outbox id whose outcome you do not know. You are idle only when each is done, started, or deferred with its reason, clearing actor or event and next decision time. A read that fails leaves you unknown, not idle.
+- An empty inbox is not evidence that there is no work. At session start, on resume and before `pb worker idle`, read your responsibilities once: `pb coordinate assignment.list` for your implementation work, `project.plan.index` with `{"assignee": "<your stable name>"}` for every item assigned to you, reviews routed to you included (add `"status": "review"` to see only those), and `pb worker outbox-status` for each outbox id whose outcome you do not know. You are idle only when each is done, started, or deferred with its reason, clearing actor or event and next decision time. A read that fails leaves you unknown, not idle.
 - A correction that must survive an unread inbox belongs in the assigned plan
   item. The coordinator updates the item and sends a short notice naming the
   same stable work ref. Mail wakes the worker; the item retains the corrected

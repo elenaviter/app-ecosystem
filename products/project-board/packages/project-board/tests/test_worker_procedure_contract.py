@@ -1969,7 +1969,8 @@ def test_assigned_work_includes_reviews_and_one_read_before_idle() -> None:
     assert "read your responsibilities once" in words
     assert "`pb coordinate assignment.list`" in skill
     assert 'with `{"assignee": "<your stable name>"}`' in skill
-    assert 'the same with `{"status": "review"}` for the items whose `reviewer` names you' in skill
+    assert 'for every item assigned to you, reviews routed to you included (add `"status": "review"` to see only those)' in skill
+    assert "whose `reviewer` names you" not in skill
     assert "`pb worker outbox-status` for each outbox id whose outcome you do not know" in words
     assert "A read that fails leaves you unknown, not idle" in words
 
@@ -1999,8 +2000,10 @@ def test_the_implementer_and_the_reviewer_are_two_responsibilities() -> None:
     assert "**The assignee is the current owner, in every status.**" in collaboration
     assert "every current-work list and filter reads that one field" in collaboration
     assert "A status change never selects, substitutes or clears anyone" in collaboration
-    assert "does not rewrite the assignee or move the item between Cards" in collaboration
-    assert "the router assigns it to them explicitly" in collaboration
+    # Routing a review is an ownership act (codex-main, 2026-09-29 21:47Z).
+    assert "sets the assignee to the reviewer, an agent or the operator, in the same act, and notifies them: no second edit is needed" in collaboration
+    assert "The reviewer field records who decides the result and is not a second task list" in collaboration
+    assert "does not rewrite the assignee" not in collaboration
     assert "acting assignee" not in collaboration
     assert "(W391)" not in collaboration
     assert "In review, the reviewer is who must act" not in collaboration
