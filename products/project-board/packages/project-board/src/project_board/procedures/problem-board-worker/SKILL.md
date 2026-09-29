@@ -418,7 +418,7 @@ Mail to the operator takes one of these kinds and nothing else:
 
 `progress`, `update`, `reply` and `result` stay on the board; only `question`, `decision`,
 `blocked`, `delivery_failed` reach their Telegram. Ask for their input this way, never in a terminal prompt
-(collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`.
+(collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`. Mail about a plan item carries `--work-ref` with its `--project-ref`; only direct operator mail that names no item leaves both out.
 
 ## Runtime Actions And Test Windows
 
