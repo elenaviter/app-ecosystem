@@ -281,7 +281,7 @@ The percentages are planning triggers for that decision:
 | 80% | No new large task starts unless its next bounded phase fits in the capacity left. What is in hand continues. |
 | 90% | Every agent in the pool reaches a safe checkpoint: it commits and pushes, and writes a one-line progress note on its item. The coordinator keeps about 5% for mail and settlement. Work continues while the next bounded step fits. |
 
-An agent pauses when the runtime reports its limit reached, when its info line says paused or do not use, or when its next step cannot fit before the reset. Before a pause, the coordinator:
+Deferring a step and pausing an agent are different. A step that neither fits before the reset nor safely crosses it is deferred: the agent takes another step that fits, or starts that step once the window resets. An agent pauses only when its runtime reports the limit reached, or its info line says paused or do not use. Before a pause, the coordinator:
 1. writes the resume plan on the items: who resumes what, from which note, and the reset time.
 2. checks that every paused session has its wake: a Claude Code watch with its guard prompt, or a Codex relay subscription. The session then wakes after the reset without anyone prompting it.
 

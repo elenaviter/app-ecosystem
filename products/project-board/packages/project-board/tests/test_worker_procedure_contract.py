@@ -806,7 +806,12 @@ def test_quota_availability_weighs_capacity_size_and_reset() -> None:
     assert "No new large task starts unless its next bounded phase fits in the capacity left" in coordinator
     assert "Every agent in the pool reaches a safe checkpoint" in coordinator
     assert "Work continues while the next bounded step fits" in coordinator
-    assert "An agent pauses when the runtime reports its limit reached, when its info line says paused or do not use, or when its next step cannot fit before the reset" in coordinator
+    # W368 re-review: a step that safely crosses a near reset is allowed, and
+    # deferring one step never pauses the whole agent.
+    assert "Deferring a step and pausing an agent are different" in coordinator
+    assert "A step that neither fits before the reset nor safely crosses it is deferred" in coordinator
+    assert "An agent pauses only when its runtime reports the limit reached, or its info line says paused or do not use" in coordinator
+    assert "when its next step cannot fit before the reset" not in coordinator
     assert "pauses at its next safe boundary" not in coordinator
     assert "waits for the reset or goes to a pool with capacity" in coordinator
     assert "An agent gets an assignment only for a task that fits the capacity it has before its reset, or one that starts after the reset" in coordinator
