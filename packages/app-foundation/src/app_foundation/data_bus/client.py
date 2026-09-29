@@ -524,6 +524,9 @@ class FederatedDataBusClient:
                 socketio_path="socket.io",
                 transports=["websocket", "polling"],
                 auth=self._handshake_auth,
+                # Card verification can outlast python-socketio's one-second
+                # namespace default even though the transport is healthy.
+                wait_timeout=15.0,
             )
         except Exception as exc:
             refusal = self._connect_refusal
