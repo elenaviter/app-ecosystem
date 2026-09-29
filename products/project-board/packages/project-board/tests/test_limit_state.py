@@ -427,3 +427,29 @@ def test_a_refusal_holds_until_a_later_turn_completes_without_one(tmp_path):
     other = [_turn("2026-09-29T20:56:22.086Z", "server_overloaded")]
     session = _spark_rollout(tmp_path / "other", premium=FINE_PREMIUM, turns=other)
     assert codex_limit_state(session, sessions_root=tmp_path / "other", now="2026-09-29T21:20:00Z")["kind"] == "ok"
+
+
+def test_a_measured_bucket_is_reported_when_a_newer_bucket_is_empty(tmp_path):
+    # W403, Spark at 23:01Z on 2026-09-29 (codex-main, metadata only): after
+    # the recovery the rollout held a measured codex bucket (22:52:54.958Z,
+    # 5 h 11%, week 33%) and a served turn 11 ms later, yet pb worker list
+    # said no windows because a newer bucket carried none.
+    session = "01a0daac-91ae-7730-81dd-9ffc77207b92"
+    day = tmp_path / "2026" / "09" / "29"
+    day.mkdir(parents=True)
+    codex = {
+        "limit_id": "codex",
+        "primary": {"used_percent": 11.0, "window_minutes": 300, "resets_at": "2026-09-30T03:47:20Z"},
+        "secondary": {"used_percent": 33.0, "window_minutes": 10080, "resets_at": "2026-10-03T20:27:31Z"},
+        "rate_limit_reached_type": None,
+    }
+    lines = [
+        {"timestamp": "2026-09-29T22:52:54.958Z", "type": "event_msg", "payload": {"type": "token_count", "rate_limits": codex}},
+        {"timestamp": "2026-09-29T22:52:54.969Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "t"}},
+        {"timestamp": "2026-09-29T22:53:10.000Z", "type": "event_msg", "payload": {"type": "token_count", "rate_limits": {"limit_id": "premium", **EMPTY_PREMIUM}}},
+    ]
+    (day / f"rollout-2026-09-29T18-00-00-{session}.jsonl").write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+    state = codex_limit_state(session, sessions_root=tmp_path, now="2026-09-29T23:01:12Z")
+    assert state["kind"] == "ok"
+    assert state["limit_id"] == "codex"
+    assert [(w["name"], w["used_percent"]) for w in state["windows"]] == [("primary", 11.0), ("secondary", 33.0)]
