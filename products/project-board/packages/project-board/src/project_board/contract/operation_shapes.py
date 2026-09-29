@@ -496,6 +496,13 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                           'payload': {   'runtime_kind': 'codex|claude-code|resident|relay',
                                          'runtime_session_id': 'native resumable session id',
                                          'worker_alias': 'optional mutable alias',
+                                         'runtime_account': 'token-free account identity when '
+                                                            'runtime_account_evidence.state is '
+                                                            'reported',
+                                         'runtime_account_evidence': '{state: '
+                                                                     'reported|stale|missing, '
+                                                                     'source: host-report, '
+                                                                     'observed_at}',
                                          'capabilities': ['string'],
                                          'host_id': 'stable logical id',
                                          'host_label': 'operator-readable name',
@@ -530,6 +537,15 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                            'work_ref': 'string',
                                            'agent_sessions': 'bounded session check-in rows from '
                                                              'the LOCAL field',
+                                           'runtime_account': 'token-free account identity when '
+                                                              'runtime_account_evidence.state is '
+                                                              'reported',
+                                           'runtime_account_evidence': '{state: '
+                                                                       'reported|stale|missing, '
+                                                                       'source: host-report, '
+                                                                       'observed_at}; an absent '
+                                                                       'key leaves stored evidence '
+                                                                       'unchanged',
                                            'worker_info': "{text}: the worker's one-line info "
                                                           'note, at most 200 characters; empty '
                                                           'text clears it, an absent key leaves '
@@ -606,12 +622,14 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                             'expected_revision': 'integer item revision',
                                             'idempotency_key': 'string'}},
     'assignment.list': {   'description': "Page one worker's assignments in newest-first order. A "
-                                          'worker reads itself; a project reader names a linked '
-                                          'worker.',
+                                          'worker reads itself; the current active coordinator '
+                                          'holder or a signed-in project reader may name another '
+                                          'linked worker.',
                            'object_ref': 'work:project:<project_id>',
                            'payload': {   'worker_name': 'linked stable worker name; required for '
-                                                         'a project reader and omitted by the '
-                                                         'worker itself',
+                                                         'project readers and coordinator '
+                                                         'cross-worker reads, otherwise omitted by '
+                                                         'a worker reading itself',
                                           'refs': 'assignment URI, plan-node URI, or an array of '
                                                   'either (optional)',
                                           'status': 'assigned|working|blocked|completed|refused|accepted|returned|cancelled '
