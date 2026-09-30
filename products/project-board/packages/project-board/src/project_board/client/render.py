@@ -976,32 +976,49 @@ def _render_message(message: Mapping[str, Any], lease: Mapping[str, Any], projec
 
 
 def _payload_without_body_copies(payload: Any, body: Any) -> Any:
-    """The payload with each exact copy of the body named instead of repeated (W393).
+    """The payload with each prose copy of the body named instead of repeated (W393).
 
     A review notice carries its whole task as the body and again as
-    ``payload.command.instructions``, so brief output printed it twice. A copy
-    that equals the body, ignoring only leading and trailing whitespace, is
-    printed as one line that says so, with its size and a hash prefix shared
-    with the body. Any other text, a near copy included, stays whole. The JSON
-    output is untouched.
+    ``payload.command.instructions``, so brief output printed it twice. A prose
+    copy that equals the body, ignoring only leading and trailing whitespace,
+    is printed as one line that says so, with its size and a hash prefix shared
+    with the body. Any other text, a near copy included, stays whole.
+
+    Identifiers are never replaced, even when the body is only a ref: a field
+    named like a ref, id, key, hash, commit or path keeps its value whole, so
+    it stays directly copyable. Prose means text with whitespace in it. The
+    JSON output is untouched.
     """
 
     text = str(body or "").strip()
-    if not text:
+    if not text or not any(character.isspace() for character in text):
         return payload
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
     marker = f"(identical to the body above: {len(text.encode('utf-8'))} bytes, sha256 {digest})"
 
-    def replace(value: Any) -> Any:
+    def replace(value: Any, key: str) -> Any:
         if isinstance(value, Mapping):
-            return {key: replace(child) for key, child in value.items()}
+            return {name: replace(child, str(name)) for name, child in value.items()}
         if isinstance(value, list):
-            return [replace(child) for child in value]
-        if isinstance(value, str) and value.strip() == text:
+            return [replace(child, key) for child in value]
+        if (
+            isinstance(value, str)
+            and not _is_locator_key(key)
+            and value.strip() == text
+        ):
             return marker
         return value
 
-    return replace(payload)
+    return replace(payload, "")
+
+
+# Payload keys whose values are identifiers a reader copies, never prose.
+_LOCATOR_SUFFIXES = ("ref", "refs", "id", "ids", "key", "hash", "commit", "path", "url", "uri")
+
+
+def _is_locator_key(key: str) -> bool:
+    name = key.lower()
+    return any(name == suffix or name.endswith(f"_{suffix}") for suffix in _LOCATOR_SUFFIXES)
 
 
 def _render_inspect(result: Mapping[str, Any]) -> list[str]:

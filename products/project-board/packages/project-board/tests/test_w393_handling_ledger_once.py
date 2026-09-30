@@ -188,3 +188,26 @@ def test_pb_render_prints_the_same_ledger(tmp_path: Path, capsys, builder):
     assert printed == render_envelope(envelope)
     assert printed.count(f"{TAIL} 7") == 1
     _keeps_the_handling_ledger(printed, message)
+
+
+def test_a_body_that_is_a_locator_leaves_every_payload_locator_whole():
+    # PR371 review, 2026-09-30: with the body equal to a work ref, the first
+    # head replaced work_ref, identity_ref and review_request.item_ref with the
+    # marker, so none of them could be copied.
+    message = _message(8, body=WORK_REF)
+    for field in ("instructions",):
+        message["payload"]["command"][field] = "Review the item named in the body."
+    text = render_envelope(_lease_read(message))
+    lines = text.splitlines()
+    assert "identical to the body above" not in text
+    assert f"  work_ref = {WORK_REF}" in lines
+    assert f"  identity_ref = {WORK_REF}" in lines
+    assert f"  command.review_request.item_ref = {WORK_REF}" in lines
+
+
+def test_a_prose_copy_under_an_identifier_key_stays_whole():
+    message = _message(9)
+    message["payload"]["note_ref"] = message["body"]
+    text = render_envelope(_lease_read(message))
+    assert text.count(f"{TAIL} 9") == 2, "the body, and the identifier-keyed copy kept whole"
+    assert text.count("identical to the body above") == 1, "only the prose instructions are named"
