@@ -155,6 +155,27 @@ async def test_the_last_retry_that_arrives_is_the_live_token():
         assert await _family(pool, authority) == "active"
 
 
+async def _consumed_seconds_ago(pool, authority, seconds: int) -> None:
+    async with pool.acquire() as connection:
+        await connection.execute(
+            f"UPDATE {authority.schema}.connection_hub_oauth_refresh_generations "
+            f"SET consumed_at = now() - ({seconds} * interval '1 second') "
+            "WHERE state = 'consumed'"
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [900, 1140])
+async def test_the_fourth_backoff_retry_is_inside_the_window(seconds):
+    """The relay's fourth channel retry comes 900 s after the failure, up to 1140 s with cycle delay."""
+
+    async with _authority() as (pool, authority, store, held):
+        await _lost(store, held)
+        await _consumed_seconds_ago(pool, authority, seconds)
+        assert await _refresh(store, held, _fingerprint())
+        assert await _family(pool, authority) == "active"
+
+
 @pytest.mark.asyncio
 async def test_a_retry_after_the_window_is_reuse():
     async with _authority() as (pool, authority, store, held):

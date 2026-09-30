@@ -49,9 +49,11 @@ def _json_array(value: Any) -> list[Any]:
 
 
 # W408: how long after a lost refresh response a retry of that same refresh
-# is recognised. It covers the relay's first four channel backoff steps (60,
-# 120, 240 and 480 s). The live retry came 105 s after the loss.
-REFRESH_RETRY_WINDOW_SECONDS = 900
+# is recognised. The relay's channel backoff retries at 60, 180, 420 and 900 s
+# after a failure (cumulative, doubling from 60 s), and each retry can wait up
+# to one 60 s relay cycle more. 1200 s covers the fourth retry at 900 s plus
+# four cycles (1140 s) with slack. The live retry came 105 s after the loss.
+REFRESH_RETRY_WINDOW_SECONDS = 1200
 
 # W408 review: how many times one attempt may be retried. Each retry replaces
 # the previous unused successor, so repeated post-send losses (a flaky tunnel)
