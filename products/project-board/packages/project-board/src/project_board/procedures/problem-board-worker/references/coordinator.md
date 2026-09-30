@@ -65,6 +65,41 @@ successor inherits none of that.
   responsible. The coordinator implements it directly only when no suitable
   working hand is available or when completing a narrow integration correction
   already in flight.
+- Put the team to work before any long operation of your own. A long
+  operation is one you expect to take more than about ten minutes or twenty
+  tool calls: an integration or merge train, a runtime window, a broad suite, a
+  test environment, a long analysis. Before it:
+  1. Read who can take work now: `pb worker context --format brief` for the
+     team and quota pools, `assignment.list` for what each worker holds, and
+     each candidate's last heartbeat and last delivered and acknowledged mail.
+     A worker is available when its session is live, its quota covers the next
+     bounded task before its reset, it reports no blocker, and it acknowledged
+     its last mail. An idle mark on its card alone is not availability.
+  2. Hand each available worker one bounded task or review with a checkpoint
+     it reports, highest priority first.
+  3. Only then start the long operation.
+
+  While a suitable worker is available, do not implement features, write their
+  tests, or recreate test environments yourself. During a long operation, answer
+  each operator message with a correlated reply before your next step. Report
+  each milestone (a merged set, a window opened or closed, a blocker) to
+  `operator` with a notifying kind, so it also reaches their Telegram. Why:
+  on 2026-09-30 the coordinator spent hours integrating and rebuilding test
+  environments while available workers waited for work (operator, 2026-09-30).
+- Keep your context lasting. On 2026-09-30 the coordinator compacted 23 times
+  in 20 hours, each compaction pausing it for 3 to 9 minutes (2.4 hours in
+  total), because about 2.5 million tokens of command output refilled its
+  window every 50 minutes. Measurable bounds:
+  - Read project context (`pb worker context`) once after a session start or
+    a compaction, and again only when a receive names `project.files.changed`
+    or a decision needs a fresh read (below).
+  - Your own scripts print at most about 4,000 characters. Anything larger
+    goes to a file you then search.
+  - End a turn after you settle the batch you received plus at most one
+    follow-up action. Keep a turn under about 25 tool calls.
+  - Reload the worker instructions only when their installed revision
+    changed (the skill's Receive Addressed Input section). A wake, a mail or a
+    compaction is not a reason to reread them.
 - Let a worker finish its current step before switching it; queue the next thing.
   An operator's remark about what a worker is doing is information, not an order.
 - When a worker runs short of tokens, move its unstarted work to agents with budget

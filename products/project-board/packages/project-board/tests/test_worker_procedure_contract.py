@@ -2207,6 +2207,24 @@ def test_the_coordinator_keeps_the_project_announcement_current() -> None:
     assert "the agent holding the project's coordinator role publishes, with no grant step. Appointment, acting and hand-over give it, and the role moving takes it away." in coordinator
 
 
+def test_the_coordinator_puts_the_team_to_work_before_a_long_operation() -> None:
+    # Operator, 2026-09-30: read real availability and hand out bounded work
+    # before any lengthy coordinator operation; stay responsive; the numbers
+    # behind the context bounds come from that day's coordinator rollout.
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "Put the team to work before any long operation of your own." in coordinator
+    assert "each candidate's last heartbeat and last delivered and acknowledged mail" in coordinator
+    assert "An idle mark on its card alone is not availability." in coordinator
+    assert "Hand each available worker one bounded task or review with a checkpoint" in coordinator
+    assert "do not implement features, write their tests, or recreate test environments yourself" in coordinator
+    assert "answer each operator message with a correlated reply before your next step" in coordinator
+    assert "with a notifying kind, so it also reaches their Telegram" in coordinator
+    assert "Keep your context lasting." in coordinator
+    assert "Your own scripts print at most about 4,000 characters." in coordinator
+    assert "Keep a turn under about 25 tool calls." in coordinator
+    assert "A wake, a mail or a compaction is not a reason to reread them." in coordinator
+
+
 def test_an_unchanged_wake_reuses_loaded_instructions() -> None:
     """W417: an agent reread the whole skill on every wake in one continuous
     session, reading "which is read every time" as an instruction. Operator
