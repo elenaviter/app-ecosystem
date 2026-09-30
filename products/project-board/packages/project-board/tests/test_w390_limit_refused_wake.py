@@ -41,7 +41,14 @@ def _rollout(root: Path, turns: list[tuple[str, str]]) -> None:
     }
     lines = [{"timestamp": "2026-09-30T02:01:31.000Z", "type": "event_msg",
               "payload": {"type": "token_count", "rate_limits": codex}}]
+    # As on Spark: each refused turn writes a credits-only snapshot of the
+    # separate "premium" bucket just before it ends. It must not erase the
+    # codex bucket's 100% reading.
+    premium = {"limit_id": "premium", "primary": None, "secondary": None,
+               "credits": {"has_credits": False, "unlimited": False, "balance": "0"}}
     for completed_at, error in turns:
+        lines.append({"timestamp": completed_at, "type": "event_msg",
+                      "payload": {"type": "token_count", "rate_limits": premium}})
         payload = {"type": "task_complete", "turn_id": completed_at}
         if error:
             payload["error"] = {"codex_error_info": error}
