@@ -4300,6 +4300,7 @@ class AutomationAccessService:
         profile: str,
         expected_card_revision: int | None = None,
         request_id: str = "",
+        resources: Iterable[str] | None = None,
         _actor_subject: str = "",
         _delegable_grants: Iterable[str] | None = None,
         _extra_record_transform: Callable[[Any, Any], Any] | None = None,
@@ -4318,6 +4319,13 @@ class AutomationAccessService:
         ``update_access``, so ownership, the administrator preset, the revision
         precondition and pruning apply unchanged, and the new revision carries
         an audit of who applied which profile, from which revision.
+
+        ``resources`` scopes the reset (W420): the declared selectors whose
+        Card resources take the profile. Every other Card resource keeps its
+        selection, even when it declares the same profile, so a service's
+        worker refresh never resets another service's permissions. A scope
+        the Card holds none of is refused. Without it, every resource that
+        declares the profile takes it, as before.
         """
 
         grantor_subject = _subject_from_user(user)
@@ -4332,6 +4340,15 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_requires_access_id"}
         if not name:
             return {"ok": False, "error": "delegated_access_profile_required"}
+        scope: set[str] | None = None
+        if resources is not None:
+            scope = {_clean(item) for item in resources if _clean(item)}
+            if not scope:
+                return {
+                    "ok": False,
+                    "error": "delegated_access_profile_resource_scope_empty",
+                    "status": 400,
+                }
         try:
             existing = await self._load_record(access_id, grantor_subject=grantor_subject)
         except CardUnavailable as exc:
@@ -4380,10 +4397,16 @@ class AutomationAccessService:
         }
         applied: list[dict[str, Any]] = []
         available: set[str] = set()
+        in_scope = 0
         for resource in list(resource_grants):
             row = self._configured_resource(resource, config=catalog_config)
             if row is None:
                 continue
+            if scope is not None:
+                # The Card key or the selector of the row that governs it.
+                if not ({_clean(resource), _clean(getattr(row, "resource", ""))} & scope):
+                    continue
+                in_scope += 1
             declared = {
                 _clean(getattr(item, "name", "")).lower(): item
                 for item in (getattr(row, "authorization_profiles", ()) or ())
@@ -4415,6 +4438,14 @@ class AutomationAccessService:
                         "operations": list(selected_operations.get(key) or ()),
                     }
                 )
+        if scope is not None and not in_scope:
+            return {
+                "ok": False,
+                "error": "delegated_access_profile_resource_not_on_card",
+                "status": 409,
+                "profile": name,
+                "resources": sorted(scope),
+            }
         if not applied:
             return {
                 "ok": False,
@@ -4434,6 +4465,7 @@ class AutomationAccessService:
                 "action": "profile_applied",
                 "profile": name,
                 "applied": applied,
+                **({"resource_scope": sorted(scope)} if scope is not None else {}),
                 # The project path (W319) acts under the owner's key for an
                 # admin of the agent's project: the audit names that admin.
                 "actor_subject": _clean(_actor_subject) or grantor_subject,

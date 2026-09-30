@@ -980,6 +980,26 @@ async def test_apply_profile_forwards_the_card_the_profile_and_the_revision(entr
     assert call["profile"] == "coordinator"
     assert call["expected_card_revision"] == 4
     assert call["request_id"] == "req-1"
+    assert call["resources"] is None, "no scope in the request, none passed"
+
+
+@pytest.mark.asyncio
+async def test_apply_profile_forwards_a_resource_scope_and_refuses_a_malformed_one(entrypoint):
+    """W420: the board's lever scopes the reset to its own resource."""
+
+    scoped = await entrypoint.module.ConnectionHubEntrypoint.delegated_access_apply_profile(
+        entrypoint.instance,
+        data={"access_id": "aut_1", "profile": "worker", "resources": ["*/problem_board*"]},
+    )
+    assert scoped == {"ok": True}
+    assert entrypoint.service.calls[-1]["resources"] == ["*/problem_board*"]
+    before = len(entrypoint.service.calls)
+    bad = await entrypoint.module.ConnectionHubEntrypoint.delegated_access_apply_profile(
+        entrypoint.instance,
+        data={"access_id": "aut_1", "profile": "worker", "resources": "*/problem_board*"},
+    )
+    assert bad["ok"] is False and bad["error"] == "invalid_delegated_access_request"
+    assert len(entrypoint.service.calls) == before
 
 
 @pytest.mark.asyncio
