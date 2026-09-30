@@ -46,6 +46,7 @@ from connection_hub.delegated_credentials.project_identity_authorization import 
 PROJECT_IDENTITY_EDGE_PROVENANCE = "project_identity_edge"
 PROJECT_PERSON_MY_CARD_ISSUER_KIND = "project-person"
 PROJECT_PERSON_MY_CARD_CLIENT_PREFIX = "kdcube-project-person:"
+PROJECT_PERSON_CONTROL_BINDING_LABEL = "Control Card"
 
 
 AuthorityFromRecord = Callable[[Any], CardAuthority]
@@ -363,13 +364,14 @@ def new_project_person_my_card(
             control_id=identity.control_id,
             issuer_ref=identity.project_ref,
             issuer_kind=PROJECT_PERSON_CONTROL_ISSUER_KIND,
-            issuer_label=control_card.issuer_label or control_card.label,
+            issuer_label=PROJECT_PERSON_CONTROL_BINDING_LABEL,
             manage_url=control_card.manage_url,
             control_revision=control_card.card_revision,
+            holder_subject=identity.project_subject,
         ),
         issuer_ref=identity.project_ref,
         issuer_kind=PROJECT_PERSON_MY_CARD_ISSUER_KIND,
-        issuer_label=control_card.issuer_label or control_card.label,
+        issuer_label=PROJECT_PERSON_CONTROL_BINDING_LABEL,
         manage_url=clean_text(manage_url),
     )
     identity.validate_my_card(authority)
@@ -406,6 +408,48 @@ class ProjectIdentityLifecycle:
 
     def _authority(self, record: Any, state: str) -> CardAuthority:
         return dataclasses.replace(self._authority_from_record(record), state=state)
+
+    async def _repair_my_card_binding(
+        self,
+        record: Any,
+        authority: CardAuthority,
+        *,
+        identity: ProjectPersonCardIdentity,
+        control: CardAuthority,
+    ) -> Any:
+        """Refresh only the trusted project-held Control Card pointer.
+
+        Existing My Cards may predate the holder coordinate. Preserve their
+        identity, selection, provenance, and every other authority field.
+        """
+
+        binding = ControlCardBinding(
+            control_id=identity.control_id,
+            issuer_ref=identity.project_ref,
+            issuer_kind=PROJECT_PERSON_CONTROL_ISSUER_KIND,
+            issuer_label=PROJECT_PERSON_CONTROL_BINDING_LABEL,
+            manage_url=control.manage_url,
+            control_revision=control.card_revision,
+            holder_subject=identity.project_subject,
+        )
+        if (
+            authority.control_card == binding
+            and authority.issuer_label == PROJECT_PERSON_CONTROL_BINDING_LABEL
+        ):
+            return record
+        repaired = self._record_from_authority(
+            dataclasses.replace(
+                authority,
+                card_revision=authority.card_revision + 1,
+                control_card=binding,
+                issuer_label=PROJECT_PERSON_CONTROL_BINDING_LABEL,
+            )
+        )
+        await self._host._persist_record(
+            repaired,
+            expected_revision=authority.card_revision,
+        )
+        return repaired
 
     async def ensure(
         self,
@@ -451,6 +495,12 @@ class ProjectIdentityLifecycle:
                     raise ProjectIdentityLifecycleError(
                         "project_identity_initialization_conflict"
                     )
+            my_record = await self._repair_my_card_binding(
+                my_record,
+                my_authority,
+                identity=identity,
+                control=control,
+            )
         my_authority = self._authority(my_record, state)
         identity = ProjectPersonCardIdentity.from_my_card(my_authority)
         edge = identity.edge(control_card=control, my_card=my_authority)
