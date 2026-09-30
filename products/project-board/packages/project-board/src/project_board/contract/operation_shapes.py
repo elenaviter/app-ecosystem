@@ -933,6 +933,16 @@ def operation_one_of(operation: str) -> tuple[tuple[str, ...], ...]:
     return tuple(groups)
 
 
+# Nested objects an operation refuses as null, as its service reads them:
+# plan.item.update refuses changes.review that is not an object
+# (work_item_review_invalid). A nested object not listed here may be null,
+# as review_requirement (read as the default) and work.status.set review
+# (optional) are.
+_STRICT_OBJECTS: dict[str, frozenset[str]] = {
+    "plan.item.update": frozenset({"changes", "changes.review"}),
+}
+
+
 # Payloads whose example needs real types: an integer revision and a nested
 # object, not a string placeholder for every field. Each is a valid call once
 # the angle-bracket values are filled in.
@@ -1085,7 +1095,11 @@ def operation_call_problems(
             })
     described = operation_shape(operation).get("payload")
     if isinstance(described, Mapping):
-        problems.extend(_nested_problems(payload, described, path=""))
+        problems.extend(
+            _nested_problems(
+                payload, described, path="", strict=_STRICT_OBJECTS.get(operation, frozenset())
+            )
+        )
     if operation == "work.status.set" and payload.get("status") not in (None, ""):
         status = canonical_work_status(payload.get("status"))
         if status not in CANONICAL_WORK_STATUSES:
@@ -1101,13 +1115,19 @@ def operation_call_problems(
 
 
 def _nested_problems(
-    value: Mapping[str, Any], described: Mapping[str, Any], *, path: str
+    value: Mapping[str, Any],
+    described: Mapping[str, Any],
+    *,
+    path: str,
+    strict: frozenset[str] = frozenset(),
 ) -> list[dict[str, str]]:
     """Dotted names where the catalog has a nested object, and wrong types.
 
     ``changes["review.look_at"]`` reaches the service as an unknown field
     named ``review.look_at``: the catalog's ``review`` is an object, so the
-    call is refused here with the nested form written out.
+    call is refused here with the nested form written out. A nested object
+    the operation requires to be an object (``strict``) refuses null too.
+    The call's payload is only read, never changed.
     """
 
     problems: list[dict[str, str]] = []
@@ -1119,20 +1139,23 @@ def _nested_problems(
             dotted[name] = child
             continue
         shape = described.get(name)
-        if isinstance(shape, Mapping) and child is not None:
-            where = f"{path}{name}"
-            if not isinstance(child, Mapping):
-                problems.append({
-                    "field": where,
-                    "problem": "type",
-                    "message": f"{where} is an object with the fields "
-                    + ", ".join(sorted(shape)) + ".",
-                })
-            else:
-                problems.extend(_nested_problems(child, shape, path=f"{where}."))
+        if not isinstance(shape, Mapping):
+            continue
+        where = f"{path}{name}"
+        if child is None and where not in strict:
+            continue
+        if not isinstance(child, Mapping):
+            problems.append({
+                "field": where,
+                "problem": "type",
+                "message": f"{where} is an object with the fields "
+                + ", ".join(sorted(shape)) + (". Null is not accepted." if child is None else "."),
+            })
+        else:
+            problems.extend(_nested_problems(child, shape, path=f"{where}.", strict=strict))
     if dotted:
-        corrected = _undotted(value)
         heads = sorted({name.split(".", 1)[0] for name in dotted})
+        corrected = _undotted(value, heads)
         nested = {head: corrected[head] for head in heads}
         where = path.rstrip(".") or "the payload"
         problems.append({
@@ -1142,31 +1165,44 @@ def _nested_problems(
                 f"{', '.join(heads)} in {where} is a nested object, not dotted names: "
                 f"write {json.dumps(_skeleton(nested), separators=(',', ':'))}."
             ),
-            # The same fields with the call's own values, nested: the part of
-            # the payload to resend.
+            # The same fields with the call's own values, the known nested
+            # heads written as objects: the part of the payload to resend.
             "corrected": json.dumps(corrected, separators=(",", ":"), ensure_ascii=False),
         })
     return problems
 
 
-def _undotted(value: Mapping[str, Any]) -> dict[str, Any]:
-    """The same fields with each dotted name written as nested objects."""
+def _undotted(value: Mapping[str, Any], heads: list[str]) -> dict[str, Any]:
+    """A copy with each dotted name under a known nested head written as an object.
 
+    Only names whose head is one of ``heads`` (catalog nested objects) are
+    nested. Every other field keeps its exact name and value, a dotted name
+    the catalog does not know included: that one is the service's to judge.
+    The input is not changed.
+    """
+
+    known = set(heads)
     result: dict[str, Any] = {}
     for key, child in value.items():
-        parts = str(key).split(".")
-        target = result
-        for part in parts[:-1]:
+        name = str(key)
+        parts = name.split(".")
+        if len(parts) == 1 or parts[0] not in known:
+            if isinstance(result.get(name), dict) and isinstance(child, Mapping):
+                result[name] = {**copy.deepcopy(dict(child)), **result[name]}
+            else:
+                result[name] = copy.deepcopy(child)
+            continue
+        target = result.setdefault(parts[0], {})
+        if not isinstance(target, dict):
+            target = copy.deepcopy(dict(target)) if isinstance(target, Mapping) else {}
+            result[parts[0]] = target
+        for part in parts[1:-1]:
             existing = target.get(part)
             if not isinstance(existing, dict):
-                existing = dict(existing) if isinstance(existing, Mapping) else {}
+                existing = copy.deepcopy(dict(existing)) if isinstance(existing, Mapping) else {}
                 target[part] = existing
             target = existing
-        leaf = parts[-1]
-        if isinstance(child, Mapping) and isinstance(target.get(leaf), dict):
-            target[leaf].update(child)
-        else:
-            target[leaf] = child
+        target[parts[-1]] = copy.deepcopy(child)
     return result
 
 

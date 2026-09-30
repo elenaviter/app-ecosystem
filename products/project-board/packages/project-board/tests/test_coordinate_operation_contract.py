@@ -991,3 +991,47 @@ def test_review_assign_says_the_reviewer_becomes_the_assignee():
         assert "reviewer becomes the item's assignee" in text
     example = json.loads(contract["example"].split("--payload-json ", 1)[1].strip("'"))
     assert example["integration"] == {"merged": ["<merge commit>"], "deploy": "<window>: <check>"}
+
+
+# W404 review of d78fd7a4: a null review was sent, and building the
+# correction renamed an unknown field and changed the caller's payload.
+
+
+def test_a_null_review_is_refused_locally_and_nothing_is_sent(submits, tmp_path):
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(
+            _args("plan.item.update", object_ref=PROJECT, payload=_update({"review": None}),
+                  config=str(tmp_path / "no-relay.json"))
+        )
+    assert refused.value.code == "work_coordinate_shape_invalid"
+    assert [(p["field"], p["problem"]) for p in refused.value.details["problems"]] == [("changes.review", "type")]
+    assert "Null is not accepted." in refused.value.details["problems"][0]["message"]
+    assert submits == []
+
+
+def test_null_stays_accepted_where_the_service_reads_it_as_a_default():
+    from project_board.contract.operation_shapes import operation_call_problems
+
+    assert operation_call_problems("plan.item.update", PROJECT, _update({"review_requirement": None})) == []
+    status = {"work_ref": WORK_REF, "expected_revision": 5, "idempotency_key": "s", "status": "working", "review": None}
+    assert operation_call_problems("work.status.set", PROJECT, status) == []
+
+
+def test_the_correction_keeps_unknown_fields_and_leaves_the_call_unchanged():
+    import copy
+
+    from project_board.contract.operation_shapes import operation_call_problems
+
+    changes = {
+        "review": {"could_not_verify": "None"},
+        "review.look_at": "Run the suite.",
+        "a_new_service_field.value": "untouched",
+    }
+    payload = _update(changes)
+    before = copy.deepcopy(payload)
+    [problem] = operation_call_problems("plan.item.update", PROJECT, payload)
+    assert payload == before, "building the correction changes nothing the caller passed"
+    assert json.loads(problem["corrected"]) == {
+        "review": {"could_not_verify": "None", "look_at": "Run the suite."},
+        "a_new_service_field.value": "untouched",
+    }
