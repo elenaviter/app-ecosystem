@@ -242,7 +242,9 @@ The reaction, in order:
    the reviewer can perform and `--review-could-not-verify` with what remains
    unverified (write `None` explicitly when there is no gap). The worker may
    instead set `review.look_at` and `review.could_not_verify` with
-   `plan.item.update` under the current item revision, then report completed.
+   `plan.item.update` under the current item revision, written as the nested
+   object `"changes": {"review": {"look_at": ..., "could_not_verify": ...}}`,
+   then report completed.
    A report without them tells the reviewer nothing about what was checked;
    the new Review transition refuses a named missing field.
    An item already in Review without the submission marker remains reviewable;

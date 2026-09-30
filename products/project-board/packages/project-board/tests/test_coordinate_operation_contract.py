@@ -836,3 +836,217 @@ def test_an_unreadable_queue_location_is_not_absence(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "stat", denied)
     with pytest.raises(PermissionError):
         queue.holds(worker_name=channel.worker_name, request_id="coordinate_req2")
+
+
+# W404 ownership 8, 2026-09-30: root sent plan.item.update with
+# changes["review.look_at"]. The contract said only "supported item fields",
+# the call reached the service, and it was refused work_item_changes_invalid.
+# The service reads changes.review as a nested object.
+
+
+def _update(changes, *, key="w404-nested-1"):
+    return {"work_ref": WORK_REF, "expected_revision": 41, "changes": changes, "idempotency_key": key}
+
+
+def test_the_update_contract_names_every_item_field_and_the_nested_review():
+    from project_board.contract.operation_shapes import PLAN_ITEM_CHANGE_FIELDS
+
+    contract = cli._coordinate_command(_args("plan.item.update", contract=True))["contract"]
+    changes = contract["payload"]["changes"]
+    assert changes == PLAN_ITEM_CHANGE_FIELDS
+    assert set(changes["review"]) == {"look_at", "could_not_verify"}
+    assert "status" not in changes, "lifecycle status has its own operations"
+
+    example = json.loads(contract["example"].split("--payload-json ", 1)[1].strip("'"))
+    assert isinstance(example["expected_revision"], int)
+    assert isinstance(example["changes"]["review"], dict)
+    assert example["changes"]["review"]["could_not_verify"] == "None"
+
+
+def test_a_dotted_review_field_is_one_local_error_with_the_nested_form_and_nothing_is_sent(submits, tmp_path):
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(
+            _args(
+                "plan.item.update",
+                object_ref=PROJECT,
+                payload=_update({"review.look_at": "Run the suite.", "review.could_not_verify": "None", "title": "T"}),
+                config=str(tmp_path / "no-relay.json"),
+            )
+        )
+    assert refused.value.code == "work_coordinate_shape_invalid"
+    [problem] = refused.value.details["problems"]
+    assert problem["problem"] == "dotted"
+    assert problem["field"] == "changes.review.could_not_verify, changes.review.look_at"
+    assert '{"review":{"look_at":"<look_at>","could_not_verify":"<could_not_verify>"}}' in problem["message"]
+    assert json.loads(problem["corrected"]) == {
+        "review": {"look_at": "Run the suite.", "could_not_verify": "None"},
+        "title": "T",
+    }
+    assert "Nothing was sent." in str(refused.value)
+    assert submits == []
+
+
+@pytest.mark.parametrize(
+    ("changes", "field"),
+    [("title=T", "changes"), ({"review": "Run the suite."}, "changes.review")],
+)
+def test_a_changes_value_of_the_wrong_type_is_refused_locally(submits, tmp_path, changes, field):
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(
+            _args("plan.item.update", object_ref=PROJECT, payload=_update(changes), config=str(tmp_path / "no-relay.json"))
+        )
+    assert [(p["field"], p["problem"]) for p in refused.value.details["problems"]] == [(field, "type")]
+    assert submits == []
+
+
+def test_the_nested_update_is_sent_unchanged_under_its_own_request_identity(submits, monkeypatch, tmp_path):
+    host, identity, _channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    payload = _update(
+        {
+            "result": "Merged and active.",
+            "review": {"look_at": "Run the suite.", "could_not_verify": "None"},
+            # A field this client does not list is the service's to judge.
+            "a_field_a_newer_service_accepts": "kept",
+        }
+    )
+
+    def outcome_unknown(queue_, path, *, worker_name, request_id, timeout_seconds):
+        raise DomainError("work_coordinate_outcome_unknown", "No result before the deadline.", status=504)
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", outcome_unknown)
+    with pytest.raises(DomainError) as unknown:
+        cli._coordinate_command(
+            _args("plan.item.update", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+        )
+    assert unknown.value.code == "work_coordinate_outcome_unknown"
+    assert len(submits) == 1
+    assert submits[0]["payload"] == payload
+    assert unknown.value.details["recovery"]["request_hash"] == coordinate_request_hash("plan.item.update", PROJECT, payload)
+
+
+def test_work_status_set_advertises_every_canonical_status_including_working(submits, tmp_path):
+    from project_board.contract.operation_shapes import operation_call_problems
+    from project_board.contract.work_lifecycle import CANONICAL_WORK_STATUSES
+
+    contract = cli._coordinate_command(_args("work.status.set", contract=True))["contract"]
+    assert contract["payload"]["status"].split(" | ") == list(CANONICAL_WORK_STATUSES)
+    assert "working" in contract["payload"]["status"]
+    example = json.loads(contract["example"].split("--payload-json ", 1)[1].strip("'"))
+    assert example["status"] == "working" and isinstance(example["expected_revision"], int)
+    base = {"work_ref": WORK_REF, "expected_revision": 5, "idempotency_key": "status-1"}
+    for status in (*CANONICAL_WORK_STATUSES, "Working"):
+        assert operation_call_problems("work.status.set", PROJECT, {**base, "status": status}) == [], status
+
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(
+            _args("work.status.set", object_ref=PROJECT, payload={**base, "status": "in_progress"},
+                  config=str(tmp_path / "no-relay.json"))
+        )
+    assert [(p["field"], p["problem"]) for p in refused.value.details["problems"]] == [("status", "invalid")]
+    assert submits == []
+
+
+def test_a_dotted_review_on_work_status_set_is_refused_with_the_nested_form(submits, tmp_path):
+    payload = {"work_ref": WORK_REF, "expected_revision": 5, "idempotency_key": "status-2",
+               "status": "review", "review.look_at": "Run the suite.", "review.could_not_verify": "None"}
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(
+            _args("work.status.set", object_ref=PROJECT, payload=payload, config=str(tmp_path / "no-relay.json"))
+        )
+    [problem] = refused.value.details["problems"]
+    assert problem["problem"] == "dotted"
+    assert json.loads(problem["corrected"])["review"] == {"look_at": "Run the suite.", "could_not_verify": "None"}
+    assert submits == []
+
+
+def test_every_example_keeps_each_nested_catalog_field_an_object():
+    """A nested field never appears as a string placeholder (W404, review.assign integration)."""
+
+    def typed(value, shape, path, wrong):
+        if isinstance(shape, dict):
+            if not isinstance(value, dict):
+                wrong.append(path)
+                return
+            for name, child in value.items():
+                typed(child, shape.get(name), f"{path}.{name}", wrong)
+
+    wrong: list[str] = []
+    for operation, shape in PROBLEM_BOARD_OPERATION_SHAPES.items():
+        example = json.loads(operation_contract(operation)["example"].split("--payload-json ", 1)[1].strip("'"))
+        payload = shape.get("payload") if isinstance(shape.get("payload"), dict) else {}
+        for field, value in example.items():
+            typed(value, payload.get(field), f"{operation}:{field}", wrong)
+    assert wrong == []
+
+
+def test_review_assign_says_the_reviewer_becomes_the_assignee():
+    # 2026-09-30 02:37Z: routing W403 to App made App its assignee, reviewer
+    # and acting holder, while the contract said the assignee stays the last worker.
+    from project_board.contract.worker_operation_contract import PROBLEM_BOARD_OPERATION_POLICIES
+
+    contract = operation_contract("review.assign")
+    for text in (contract["description"], PROBLEM_BOARD_OPERATION_POLICIES["review.assign"]["description"]):
+        assert "stays the last worker" not in text
+        assert "reviewer becomes the item's assignee" in text
+    example = json.loads(contract["example"].split("--payload-json ", 1)[1].strip("'"))
+    assert example["integration"] == {"merged": ["<merge commit>"], "deploy": "<window>: <check>"}
+
+
+# W404 review of d78fd7a4: a null review was sent, and building the
+# correction renamed an unknown field and changed the caller's payload.
+
+
+def test_a_null_review_is_refused_locally_and_nothing_is_sent(submits, tmp_path):
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(
+            _args("plan.item.update", object_ref=PROJECT, payload=_update({"review": None}),
+                  config=str(tmp_path / "no-relay.json"))
+        )
+    assert refused.value.code == "work_coordinate_shape_invalid"
+    assert [(p["field"], p["problem"]) for p in refused.value.details["problems"]] == [("changes.review", "type")]
+    assert "Null is not accepted." in refused.value.details["problems"][0]["message"]
+    assert submits == []
+
+
+def test_null_stays_accepted_where_the_service_reads_it_as_a_default():
+    from project_board.contract.operation_shapes import operation_call_problems
+
+    assert operation_call_problems("plan.item.update", PROJECT, _update({"review_requirement": None})) == []
+    status = {"work_ref": WORK_REF, "expected_revision": 5, "idempotency_key": "s", "status": "working", "review": None}
+    assert operation_call_problems("work.status.set", PROJECT, status) == []
+
+
+def test_the_correction_keeps_unknown_fields_and_leaves_the_call_unchanged():
+    import copy
+
+    from project_board.contract.operation_shapes import operation_call_problems
+
+    changes = {
+        "review": {"could_not_verify": "None"},
+        "review.look_at": "Run the suite.",
+        "a_new_service_field.value": "untouched",
+    }
+    payload = _update(changes)
+    before = copy.deepcopy(payload)
+    [problem] = operation_call_problems("plan.item.update", PROJECT, payload)
+    assert payload == before, "building the correction changes nothing the caller passed"
+    assert json.loads(problem["corrected"]) == {
+        "review": {"could_not_verify": "None", "look_at": "Run the suite."},
+        "a_new_service_field.value": "untouched",
+    }
+
+
+@pytest.mark.parametrize("dotted_first", [True, False])
+def test_the_correction_keeps_nested_siblings_in_either_key_order(dotted_first):
+    # W404 review of dbd74c1f: with the dotted name first, the nested
+    # object's sibling was dropped by a shallow merge.
+    from project_board.contract.operation_shapes import operation_call_problems
+
+    dotted = ("review.future_service_field.add", "new")
+    nested = ("review", {"future_service_field": {"keep": "original"}})
+    changes = dict([dotted, nested] if dotted_first else [nested, dotted])
+    [problem] = operation_call_problems("plan.item.update", PROJECT, _update(changes))
+    assert json.loads(problem["corrected"]) == {
+        "review": {"future_service_field": {"keep": "original", "add": "new"}}
+    }

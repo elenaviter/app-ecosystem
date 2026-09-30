@@ -16,7 +16,37 @@ import json
 import re
 from typing import Any, Mapping
 
+from .work_lifecycle import CANONICAL_WORK_STATUSES, canonical_work_status
 from .worker_operation_contract import PROBLEM_BOARD_OPERATIONS
+
+# The item fields plan.item.update changes, each with its type, as the
+# service's item patch accepts them. The service reads this same table.
+# ``review`` is nested: it is an object with its own fields, never a dotted
+# name such as ``review.look_at``. Lifecycle status changes through
+# work.status.set, review and cancellation, and the fields below in
+# PLAN_ITEM_IMMUTABLE_FIELDS through their own operations.
+PLAN_ITEM_CHANGE_FIELDS: dict[str, Any] = {
+    "title": "string",
+    "description": "string",
+    "acceptance": "list of strings",
+    "tags": "list of strings",
+    "keywords": "list of strings",
+    "depends_on": "list of canonical plan-node URIs",
+    "attachment_refs": "list of attachment refs; a new one must be a staged upload",
+    "result": "string",
+    "result_ref": "string",
+    "blocked_reason": "string",
+    "cancel_reason": "string",
+    "review": {
+        "look_at": "string: the concrete steps the reviewer performs",
+        "could_not_verify": "string: what stays unverified; write None when nothing does",
+    },
+    "review_requirement": {"kind": "qualified | operator"},
+    "cancelled_at": "timestamp",
+    "cancelled_by": "principal",
+}
+# Identity, authored position and the assignee: each has its own operation.
+PLAN_ITEM_IMMUTABLE_FIELDS: tuple[str, ...] = ("item_id", "item_ref", "item_key", "ordinal", "assignee")
 
 PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.register': {   'description': 'Register a logical project ref and its signed-in '
                                            "owner; optionally bind the owner's canonical "
@@ -205,7 +235,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                             'object_ref': 'work:project:<project_id>',
                             'payload': {   'work_ref': 'canonical plan-node URI',
                                            'expected_revision': 'positive integer',
-                                           'changes': 'supported item fields',
+                                           'changes': PLAN_ITEM_CHANGE_FIELDS,
                                            'idempotency_key': 'stable retry key'}},
     'work.status.set': {   'description': 'Set a canonical status; the assignee and the assignment '
                                           'stay as they are, including an empty assignee in Working. '
@@ -214,7 +244,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                           'there are no verification gaps.',
                            'object_ref': 'work:project:<project_id>',
                            'payload': {   'work_ref': 'canonical plan-node URI',
-                                          'status': 'todo | review | done | cancelled',
+                                          'status': ' | '.join(CANONICAL_WORK_STATUSES),
                                           'reason': 'required for cancelled',
                                           'review': {   'look_at': 'required when entering review',
                                                         'could_not_verify': 'required when '
@@ -249,7 +279,10 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
     'review.assign': {   'description': 'Name who reviews an item in review (W326): a linked agent '
                                         "other than the one who did the work, or 'operator' (a "
                                         'project admin) once the work is merged and deployed. The '
-                                        "item's assignee stays the last worker.",
+                                        'reviewer becomes the item\'s assignee, its current owner, in '
+                                        'the same write. The assignment history keeps the last '
+                                        'worker as worked_by. integration is required only when a '
+                                        'person reviews.',
                          'object_ref': 'work:project:<project_id>',
                          'payload': {   'work_ref': 'canonical plan-node URI',
                                         'reviewer': 'stable worker name | operator | '
@@ -900,6 +933,64 @@ def operation_one_of(operation: str) -> tuple[tuple[str, ...], ...]:
     return tuple(groups)
 
 
+# Nested objects an operation refuses as null, as its service reads them:
+# plan.item.update refuses changes.review that is not an object
+# (work_item_review_invalid). A nested object not listed here may be null,
+# as review_requirement (read as the default) and work.status.set review
+# (optional) are.
+_STRICT_OBJECTS: dict[str, frozenset[str]] = {
+    "plan.item.update": frozenset({"changes", "changes.review"}),
+}
+
+
+# Payloads whose example needs real types: an integer revision and a nested
+# object, not a string placeholder for every field. Each is a valid call once
+# the angle-bracket values are filled in.
+_EXAMPLE_PAYLOADS: dict[str, dict[str, Any]] = {
+    "plan.item.update": {
+        "work_ref": "<work_ref>",
+        "expected_revision": 12,
+        "changes": {
+            "review": {
+                "look_at": "<the steps the reviewer performs>",
+                "could_not_verify": "None",
+            }
+        },
+        "idempotency_key": "<idempotency_key>",
+    },
+    "work.status.set": {
+        "work_ref": "<work_ref>",
+        "status": "working",
+        "expected_revision": 12,
+        "idempotency_key": "<idempotency_key>",
+    },
+    "review.assign": {
+        "work_ref": "<work_ref>",
+        "reviewer": "operator",
+        "integration": {"merged": ["<merge commit>"], "deploy": "<window>: <check>"},
+    },
+}
+
+
+def _example_value(field: str, description: Any) -> Any:
+    """A placeholder with the field's type: an object stays an object."""
+
+    if isinstance(description, Mapping):
+        return {
+            str(name): _example_value(str(name), child)
+            for name, child in description.items()
+            if "optional" not in str(child)
+        }
+    text = str(description)
+    if "integer" in text:
+        return 1
+    if "[]" in text or text.startswith("list of"):
+        return [f"<{field}>"]
+    if text.startswith("true when"):
+        return True
+    return f"<{field}>"
+
+
 def operation_example(operation: str) -> str:
     """A copyable ``pb coordinate`` command for the operation."""
 
@@ -908,17 +999,18 @@ def operation_example(operation: str) -> str:
     if object_ref.startswith("work:project:"):
         object_ref = "<project-ref>"
     payload = operation_shape(operation).get("payload")
+    described = payload if isinstance(payload, Mapping) else {}
     required = PROBLEM_BOARD_OPERATION_REQUIRED.get(operation, ())
-    example: dict[str, str] = {}
+    example: dict[str, Any] = copy.deepcopy(_EXAMPLE_PAYLOADS.get(operation, {}))
     for group in operation_one_of(operation):
         chosen = "item_key" if "item_key" in group else group[0]
-        example[chosen] = f"<{chosen}>"
+        example.setdefault(chosen, f"<{chosen}>")
     for field in required:
-        example.setdefault(field, f"<{field}>")
-    if not example and isinstance(payload, Mapping):
-        for field, description in payload.items():
+        example.setdefault(field, _example_value(field, described.get(field)))
+    if not example:
+        for field, description in described.items():
             if "optional" not in str(description):
-                example[str(field)] = f"<{field}>"
+                example[str(field)] = _example_value(str(field), description)
     command = f"pb coordinate {operation}"
     if object_ref:
         command += f" --object-ref {object_ref}"
@@ -1001,7 +1093,143 @@ def operation_call_problems(
                 "problem": "missing",
                 "message": f"The payload needs {field}.",
             })
+    described = operation_shape(operation).get("payload")
+    if isinstance(described, Mapping):
+        problems.extend(
+            _nested_problems(
+                payload, described, path="", strict=_STRICT_OBJECTS.get(operation, frozenset())
+            )
+        )
+    if operation == "work.status.set" and payload.get("status") not in (None, ""):
+        status = canonical_work_status(payload.get("status"))
+        if status not in CANONICAL_WORK_STATUSES:
+            problems.append({
+                "field": "status",
+                "problem": "invalid",
+                "message": (
+                    f"status {payload.get('status')!r} is not one of "
+                    + ", ".join(CANONICAL_WORK_STATUSES) + "."
+                ),
+            })
     return problems
+
+
+def _nested_problems(
+    value: Mapping[str, Any],
+    described: Mapping[str, Any],
+    *,
+    path: str,
+    strict: frozenset[str] = frozenset(),
+) -> list[dict[str, str]]:
+    """Dotted names where the catalog has a nested object, and wrong types.
+
+    ``changes["review.look_at"]`` reaches the service as an unknown field
+    named ``review.look_at``: the catalog's ``review`` is an object, so the
+    call is refused here with the nested form written out. A nested object
+    the operation requires to be an object (``strict``) refuses null too.
+    The call's payload is only read, never changed.
+    """
+
+    problems: list[dict[str, str]] = []
+    dotted: dict[str, Any] = {}
+    for key, child in value.items():
+        name = str(key)
+        head = name.split(".", 1)[0]
+        if "." in name and isinstance(described.get(head), Mapping):
+            dotted[name] = child
+            continue
+        shape = described.get(name)
+        if not isinstance(shape, Mapping):
+            continue
+        where = f"{path}{name}"
+        if child is None and where not in strict:
+            continue
+        if not isinstance(child, Mapping):
+            problems.append({
+                "field": where,
+                "problem": "type",
+                "message": f"{where} is an object with the fields "
+                + ", ".join(sorted(shape)) + (". Null is not accepted." if child is None else "."),
+            })
+        else:
+            problems.extend(_nested_problems(child, shape, path=f"{where}.", strict=strict))
+    if dotted:
+        heads = sorted({name.split(".", 1)[0] for name in dotted})
+        corrected = _undotted(value, heads)
+        nested = {head: corrected[head] for head in heads}
+        where = path.rstrip(".") or "the payload"
+        problems.append({
+            "field": ", ".join(f"{path}{name}" for name in sorted(dotted)),
+            "problem": "dotted",
+            "message": (
+                f"{', '.join(heads)} in {where} is a nested object, not dotted names: "
+                f"write {json.dumps(_skeleton(nested), separators=(',', ':'))}."
+            ),
+            # The same fields with the call's own values, the known nested
+            # heads written as objects: the part of the payload to resend.
+            "corrected": json.dumps(corrected, separators=(",", ":"), ensure_ascii=False),
+        })
+    return problems
+
+
+def _undotted(value: Mapping[str, Any], heads: list[str]) -> dict[str, Any]:
+    """A copy with each dotted name under a known nested head written as an object.
+
+    Only names whose head is one of ``heads`` (catalog nested objects) are
+    nested. Every other field keeps its exact name and value, a dotted name
+    the catalog does not know included: that one is the service's to judge.
+    The input is not changed.
+    """
+
+    known = set(heads)
+    result: dict[str, Any] = {}
+    for key, child in value.items():
+        name = str(key)
+        parts = name.split(".")
+        if len(parts) == 1 or parts[0] not in known:
+            if isinstance(result.get(name), dict) and isinstance(child, Mapping):
+                # Dotted names under this head came first: merge the object
+                # beneath them at every depth, so no sibling is lost and the
+                # result does not depend on key order.
+                result[name] = _merged(copy.deepcopy(dict(child)), result[name])
+            else:
+                result[name] = copy.deepcopy(child)
+            continue
+        target = result.setdefault(parts[0], {})
+        if not isinstance(target, dict):
+            target = copy.deepcopy(dict(target)) if isinstance(target, Mapping) else {}
+            result[parts[0]] = target
+        for part in parts[1:-1]:
+            existing = target.get(part)
+            if not isinstance(existing, dict):
+                existing = copy.deepcopy(dict(existing)) if isinstance(existing, Mapping) else {}
+                target[part] = existing
+            target = existing
+        target[parts[-1]] = copy.deepcopy(child)
+    return result
+
+
+def _merged(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    """``base`` with ``overlay`` merged in at every depth, overlay winning a leaf.
+
+    The overlay holds the dotted names, so a dotted leaf wins over the same
+    leaf in the nested object whichever came first in the call.
+    """
+
+    for key, value in overlay.items():
+        if isinstance(value, Mapping) and isinstance(base.get(key), dict):
+            base[key] = _merged(base[key], value)
+        else:
+            base[key] = copy.deepcopy(value)
+    return base
+
+
+def _skeleton(value: Any) -> Any:
+    """The corrected shape with each leaf shown as its field name."""
+
+    if isinstance(value, Mapping):
+        return {key: (_skeleton(child) if isinstance(child, Mapping) else f"<{key}>") for key, child in value.items()}
+    return value
 
 
 def _require_complete_catalog() -> None:
@@ -1014,6 +1242,8 @@ def _require_complete_catalog() -> None:
 _require_complete_catalog()
 
 __all__ = [
+    "PLAN_ITEM_CHANGE_FIELDS",
+    "PLAN_ITEM_IMMUTABLE_FIELDS",
     "PROBLEM_BOARD_OPERATION_REQUIRED",
     "PROBLEM_BOARD_OPERATION_SHAPES",
     "operation_call_problems",

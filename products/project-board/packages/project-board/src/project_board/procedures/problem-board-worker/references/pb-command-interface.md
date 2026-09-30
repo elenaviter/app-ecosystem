@@ -28,8 +28,12 @@ canonical governed project operation through this session's persistent Card
 relay. `pb coordinate --help` gives the transport arguments. Before a call
 you have not made before, `pb coordinate <operation-id> --contract` prints the
 operation's object, payload fields and a copyable command from the operation
-catalog, and sends nothing. Every call is checked against that shape before it
-is sent, so a misplaced or missing field comes back as one local error,
+catalog, and sends nothing. The payload shows each field's type, and a nested
+object as its own fields: `plan.item.update` lists the item fields `changes`
+takes, with `changes.review` as the object `{"look_at", "could_not_verify"}`.
+Every call is checked against that shape before it is sent, so a misplaced or
+missing field, a dotted name such as `review.look_at` where the catalog has a
+nested object, or a value of the wrong type comes back as one local error,
 `work_coordinate_shape_invalid`, with the corrected command. The relevant
 procedure's worked command and payload give the operation-specific values; the
 published [Operations by actor](repo:app-ecosystem/products/project-board/docs/operations-by-actor.md)
