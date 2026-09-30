@@ -32,6 +32,7 @@ from connection_hub.caller.authorization.flow import BrowserAuthorizationFlow
 from connection_hub.caller.authorization.models import (
     OAuthClientRegistration,
     OAuthTokenSet,
+    valid_refresh_attempt,
 )
 from connection_hub.caller.errors import AuthorizationError, ProfileError
 from connection_hub.caller.models import (
@@ -565,15 +566,84 @@ class OAuthProfileSessionService:
                 "The OAuth profile expired and requires browser authorization again.",
             )
         server = await self._discover_server(profile)
-        return await self._oauth.refresh(
-            metadata=server,
-            client=self._registration(profile),
-            resource=(
-                None if metadata.card_kind in _WHOLE_CARD_KINDS else metadata.resource
-            ),
-            refresh_token=token.refresh_token,
-            scope=metadata.scope,
-        )
+        token = await self._with_refresh_attempt(profile, token)
+        try:
+            return await self._oauth.refresh(
+                metadata=server,
+                client=self._registration(profile),
+                resource=(
+                    None if metadata.card_kind in _WHOLE_CARD_KINDS else metadata.resource
+                ),
+                refresh_token=token.refresh_token,
+                scope=metadata.scope,
+                refresh_attempt=token.refresh_attempt,
+            )
+        except AuthorizationError as exc:
+            # An answer with an HTTP status is the server's decision: nothing
+            # was rotated, so no retry of this attempt can ever be needed. A
+            # failure without one (the request may have been processed) keeps
+            # the attempt with the token for the next refresh.
+            if getattr(exc, "status", None) is not None:
+                await self._clear_refresh_attempt(profile, token)
+            raise
+
+    async def _clear_refresh_attempt(
+        self, profile: CallerProfile, token: OAuthTokenSet
+    ) -> None:
+        """Drop a settled attempt id from the stored token, when it is still that token."""
+
+        try:
+            async with self._transaction(self._transaction_lock):
+                current = self._require_oauth_profile(profile.name)
+                stored = self._load_token(current)
+                if (
+                    stored.refresh_token == token.refresh_token
+                    and stored.access_token == token.access_token
+                    and stored.refresh_attempt
+                ):
+                    self._credentials.put(
+                        current.credential_ref, replace(stored, refresh_attempt="")
+                    )
+        except Exception:  # noqa: BLE001 - a stale attempt id is harmless, the refusal is not hidden
+            return
+
+    async def _with_refresh_attempt(
+        self, profile: CallerProfile, token: OAuthTokenSet
+    ) -> OAuthTokenSet:
+        """The token with this refresh's attempt id, stored before the request is sent (W408).
+
+        A refresh whose response is lost after the server rotated leaves this
+        token consumed. Sending the same attempt id with it again lets the
+        server recognise the retry of that refresh. So the id is written to
+        the native store with the token first, and a token that already
+        carries one (a refresh whose outcome was never learned) keeps it.
+        When the store cannot take the id, the refresh goes on without one,
+        which is how every refresh worked before.
+        """
+
+        if valid_refresh_attempt(token.refresh_attempt):
+            return token
+        attempt = secrets.token_urlsafe(32)
+        try:
+            async with self._transaction(self._transaction_lock):
+                current = self._require_oauth_profile(profile.name)
+                stored = self._load_token(current)
+                if (
+                    current.credential_ref != profile.credential_ref
+                    or stored.refresh_token != token.refresh_token
+                    or stored.access_token != token.access_token
+                ):
+                    return token
+                if valid_refresh_attempt(stored.refresh_attempt):
+                    return replace(token, refresh_attempt=stored.refresh_attempt)
+                self._credentials.put(
+                    current.credential_ref, replace(stored, refresh_attempt=attempt)
+                )
+        except AuthorizationError:
+            raise
+        except Exception:  # noqa: BLE001 - no attempt id is today's refresh, never a failure
+            return token
+        return replace(token, refresh_attempt=attempt)
 
     async def _discover_server(self, profile: CallerProfile):
         metadata = self._require_oauth(profile)

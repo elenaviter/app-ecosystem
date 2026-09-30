@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from dataclasses import replace
 from types import SimpleNamespace
@@ -828,7 +829,11 @@ async def test_refresh_failure_preserves_profile_and_complete_token(tmp_path) ->
 
     assert raised.value.code == "oauth_token_request_failed"
     assert profiles.require(profile.name).access_id == "access-agent"
-    assert credentials.values[profile.credential_ref] == original
+    stored = credentials.values[profile.credential_ref]
+    # W408: a failure with no server answer may hide a committed rotation, so
+    # the credential is kept whole together with the attempt id of this refresh.
+    assert dataclasses.replace(stored, refresh_attempt="") == original
+    assert stored.refresh_attempt
 
 
 @pytest.mark.asyncio
