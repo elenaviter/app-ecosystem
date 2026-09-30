@@ -2111,3 +2111,19 @@ def test_review_and_implementation_signals_stay_distinct() -> None:
     skill = _words(_read("SKILL.md"))
     assert "A review is begun the same way: read the item and the exact head the notice names, publish that you started (`pb worker busy-until`" in skill
     assert "`blocked` (or your info line, for a review)" in skill
+
+
+def test_a_done_assignment_notice_is_information_not_work() -> None:
+    # W406, operator ruling 2026-09-30: the assignee is who the item is with
+    # in every status. A Done item's new assignee reported working on it and
+    # undid the completed state, because every assign notice said "begin".
+    skill = _words(_read("SKILL.md"))
+    assert "Only `begin_work` is the work below: `acknowledge_only` (Done, Cancelled) and `await_review` (Review) are information to read and settle, never a reason to report `working`, reopen or change status (W406)." in skill
+    identity = _words(_read("references/identity-and-authorization.md"))
+    assert "`acknowledge_only` (Done or Cancelled) is information." in identity
+    assert "Starting implementation, reporting `working`, or reopening or changing its status because of this notice undoes the operator's decision." in identity
+    assert "`await_review` (Review): the implementation waits for the reviewer." in identity
+    assert "when its status is no longer the one the notice names, the current item decides, and a later edit always wins over an earlier notice." in identity
+    assert "`payload.item_status`" in identity
+    signals = _read("references/signals.md")
+    assert "`test_a_done_assignment_notice_is_information_not_work`" in signals

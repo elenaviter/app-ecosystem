@@ -3523,6 +3523,9 @@ class ProblemBoardHostRelayAdapter:
                         "kind": "control-plane",
                         "label": "Problem Board",
                     },
+                    # W406: the board's view of the item now, which decides
+                    # whether the notice asks for work or only informs.
+                    item_status=str(raw.get("item_status") or ""),
                 )
             except DomainError as exc:
                 if exc.status >= 500:

@@ -220,9 +220,9 @@ implement an item, or a `request` titled `Review W…` to review one. Either is
 work to begin now, not a notification to acknowledge: no other message or
 permission is needed, and settling the notice is not progress. Every
 value in an `assign` notice comes from the durable assignment row, not from prose:
-`payload.work_ref`, `payload.assignment_ref`, `payload.ownership_version` and
-`payload.expected_reaction` (`begin_work`), each with its source and use in
-[ownership](references/identity-and-authorization.md).
+`payload.work_ref`, `payload.assignment_ref`, `payload.ownership_version`, `payload.item_status` and
+`payload.expected_reaction`, each with its source and use in [ownership](references/identity-and-authorization.md).
+Only `begin_work` is the work below: `acknowledge_only` (Done, Cancelled) and `await_review` (Review) are information to read and settle, never a reason to report `working`, reopen or change status (W406).
 
 **Ownership version** counts on the assignment row, not on the item: 1 when
 first routed, plus one on every move of ownership (re-issue, reassignment,
