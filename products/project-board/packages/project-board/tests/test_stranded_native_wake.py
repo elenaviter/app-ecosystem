@@ -22,6 +22,7 @@ from project_board.contract.errors import DomainError
 
 SESSION = "01a0daac-91ae-7730-81dd-9ffc77207b92"
 WORKER = f"codex-{SESSION}"
+REAL_FUTURE = store_module._future
 WAKE = "wake_2e5781298233429ea2001280c4d4b398"
 
 
@@ -265,6 +266,8 @@ def test_the_coordinator_procedure_owns_detect_diagnose_recover_and_recheck():
     assert "A running relay and an active Card prove transport, not that a model received its mail" in coordinator
     assert "`pb worker wake-recover --worker <stable name> --wake-id <id>`" in coordinator
     assert "A second call for the same wake is refused and shows the recorded attempt" in coordinator
+    assert "`reserved` (a call interrupted before its outcome was recorded)" in coordinator
+    assert "A recovery whose mail has since drained still shows, without a stall" in coordinator
     assert "Queue admission is not handling" in coordinator
     assert "resolved by the worker's receive" in coordinator
     assert "tell the operator in the project conversation (kind `blocked`)" in coordinator
@@ -317,3 +320,29 @@ def test_a_queue_process_that_exits_nonzero_after_admission_is_not_retried(stran
         recover_worker_wake(config, worker_name=WORKER, wake_id=WAKE, requested_by="coordinator", notifier=session_delivery.notify_agent_session)
     assert held.value.code == "field_worker_wake_recovery_exists"
     assert len(admitted) == 1, "never a second native submission for the same wake"
+
+
+def test_a_recovery_whose_mail_drained_stays_as_audit_without_a_stall(stranded, monkeypatch):
+    # W405 review (codex-app, 2026-09-30 00:01Z): after a submitted recovery,
+    # the worker pulled and settled its mail without acknowledging that wake.
+    recover_worker_wake(
+        _Config(stranded.root), worker_name=WORKER, wake_id=WAKE, requested_by="coordinator",
+        notifier=_notifier({"delivered": True, "queued_submission_id": "01a0ef59"}, []),
+    )
+    monkeypatch.setattr(store_module, "_future", REAL_FUTURE)
+    for row in stranded.pull_mail("", worker_name=WORKER, lease_owner="session", limit=10):
+        stranded.settle_mail(
+            "", worker_name=WORKER, message_ref=row["message_ref"],
+            lease_id=row["lease"]["lease_id"], lease_owner="session", outcome="acknowledged",
+        )
+    stranded.check_in_worker_listener(WORKER, inbox_checked=True)
+    assert stranded.pending_worker_mail_count_snapshot(WORKER) == 0
+    assert _subscription(stranded)["wake_recovery"]["state"] == "submitted", "the fence stays"
+    text = _brief({"workers": stranded.list_workers()})
+    assert "native delivery stalled" not in text and "recover once" not in text
+    assert f"recovery: submitted for wake {WAKE}" in text and "no mail pending" in text
+    with pytest.raises(DomainError):
+        recover_worker_wake(
+            _Config(stranded.root), worker_name=WORKER, wake_id=WAKE, requested_by="coordinator",
+            notifier=_notifier({"delivered": True}, []),
+        )

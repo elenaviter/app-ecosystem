@@ -538,10 +538,13 @@ turns is not helped by an endless third. That state waits for you.
    list` then prints `last recovery: wake <id> resolved by the worker's
    receive at <time>`, and `last inbox check` moves. Read its replies and
    settlements for the work itself.
-5. **Escalate.** When the recovery stays `submitted` or `outcome_unknown`
-   past a few minutes, or the session is not running, tell the operator in
-   the project conversation (kind `blocked`), naming the worker, the wake,
-   the recovery state and the pending count. Do not submit again.
+5. **Escalate.** When the recovery stays `submitted`, `outcome_unknown` or
+   `reserved` (a call interrupted before its outcome was recorded) past a
+   few minutes, or the session is not running, tell the operator in the
+   project conversation (kind `blocked`), naming the worker, the wake, the
+   recovery state and the pending count. Do not submit again. A recovery
+   whose mail has since drained still shows, without a stall, until the
+   worker's receive of that wake resolves it.
 
 Why: on 2026-09-29 a Spark session sat for four hours with thirteen messages
 behind one exhausted wake while its relay and Card read healthy; one native

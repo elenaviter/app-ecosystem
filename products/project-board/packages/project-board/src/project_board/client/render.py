@@ -1098,8 +1098,18 @@ def _native_delivery_lines(worker: Mapping[str, Any], reach: Mapping[str, Any]) 
     except (TypeError, ValueError):
         pending = 0
     current_recovery = bool(recovery) and str(recovery.get("wake_id") or "") == wake_id
-    if wake_id and exhausted and pending <= 0 and not current_recovery:
-        # An exhausted marker with nothing waiting is not a stall.
+    if wake_id and exhausted and pending <= 0:
+        # An exhausted marker with nothing waiting is not a stall. A recovery
+        # still recorded for that wake stays visible for audit and keeps its
+        # fence, without a stall claim or a new instruction.
+        if current_recovery:
+            return [
+                "recovery: {} for wake {} at {} · no mail pending · unresolved until the worker's receive of this wake; do not submit again".format(
+                    recovery.get("state"),
+                    wake_id,
+                    recovery.get("recorded_at") or recovery.get("requested_at"),
+                )
+            ]
         wake_id = ""
     if wake_id and exhausted:
         lines.append(
