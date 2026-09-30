@@ -2223,7 +2223,9 @@ def test_an_unchanged_wake_reuses_loaded_instructions() -> None:
     assert "`pb procedure verify` names a revision other than the one you loaded" in receive
     # What does not: a notice alone, mail, a turn, or a compaction.
     assert "A coordinator notice alone, new mail, a new turn and a compaction are not that" in receive
-    assert "After a compaction, keep what you still hold and read only the part" in receive
+    assert "Keep the revision you loaded (the `revision=` in this file's first line) in your notes and in any compaction summary or handoff" in receive
+    assert "the baseline `pb procedure verify` is compared with" in receive
+    assert "before an act whose rule you no longer hold, read that act's section of this skill or its reference, not the whole package" in receive
     assert "Editing this package reads its source files, which is authoring, not loading" in receive
     assert "A reference is read when its trigger fires or the task needs it" in receive
     assert "Instructions still in your context stay valid across wakes" in receive
