@@ -64,17 +64,17 @@ change before it, into the host's managed backup folder, never an agent's
 scratch folder, and keeps only the newest once the window's ALL CLEAR is
 verified.
 
-1. **Name the file.** `pb worker backup --project-ref <project> --new --format plain-sql-gzip`
+1. **Name the file.** `pb worker backup --project-ref <project> --new --dump-format plain-sql-gzip`
    prints where to write it: `<backup root>/<project id>/pb-backup-<UTC time>.sql.gz`,
    in a folder only the host user can read. Write the dump there with the
    runtime profile's dump command.
 2. **Record and verify it before the action.**
-   `pb worker backup --project-ref <project> --record <file> --format plain-sql-gzip --label "<action> at <commit>"`
+   `pb worker backup --project-ref <project> --record <file> --dump-format plain-sql-gzip --label "<action> at <commit>"`
    checks the file and adds it to the folder's manifest. A plain SQL gzip dump
    is checked by reading the whole gzip stream (CRC and length) and requiring
    pg_dump's header, its completion marker and at least one `CREATE TABLE`;
    `pg_restore --list` cannot read a plain dump. A custom-format dump
-   (`pg_dump -Fc`, `--format pg-custom`) is checked with `pg_restore --list`
+   (`pg_dump -Fc`, `--dump-format pg-custom`) is checked with `pg_restore --list`
    (`--pg-restore "docker exec -i <container> pg_restore"` when PostgreSQL
    runs in a container). A failed check stops the window before the action.
    Either check proves integrity, never that the backup restores: report

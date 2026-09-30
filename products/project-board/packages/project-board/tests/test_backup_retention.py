@@ -246,8 +246,8 @@ def test_the_runtime_actions_procedure_owns_the_backup_step():
     actions = read(procedures / "runtime-actions.md")
     assert "## Runtime-Window Database Backups" in actions
     for command in (
-        "pb worker backup --project-ref <project> --new --format plain-sql-gzip",
-        "pb worker backup --project-ref <project> --record <file> --format plain-sql-gzip",
+        "pb worker backup --project-ref <project> --new --dump-format plain-sql-gzip",
+        "pb worker backup --project-ref <project> --record <file> --dump-format plain-sql-gzip",
         "pb worker backup --project-ref <project> --prune --all-clear",
         "pb host configure --backup-root",
     ):
@@ -267,3 +267,15 @@ def test_the_runtime_actions_procedure_owns_the_backup_step():
     # No procedure tells anyone to put a dump in a scratch folder any more.
     for page in procedures.glob("*.md"):
         assert "<scratch>/pb-backup" not in page.read_text(encoding="utf-8"), page.name
+
+
+def test_the_dump_format_flag_survives_the_output_format_flag():
+    """Every pb command reads --format as its output form, before parsing."""
+
+    from project_board.client.render import select_format
+
+    argv, chosen = select_format(
+        ["worker", "backup", "--project-ref", PROJECT_REF, "--new", "--dump-format", "pg-custom", "--format", "brief"], {}
+    )
+    args = cli.build_parser().parse_args(argv)
+    assert chosen == "brief" and args.backup_format == "pg-custom" and args.new

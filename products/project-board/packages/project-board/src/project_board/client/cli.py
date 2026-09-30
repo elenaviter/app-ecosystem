@@ -1127,9 +1127,9 @@ def build_parser() -> argparse.ArgumentParser:
     _host_config(command)
     _agent_identity(command)
     command.add_argument("--project-ref", required=True, help="The project whose backups these are.")
-    command.add_argument("--new", action="store_true", help="Print the path to write the next backup of --format to (creates the private folder).")
+    command.add_argument("--new", action="store_true", help="Print the path to write the next backup of --dump-format to (creates the private folder).")
     command.add_argument("--record", default="", metavar="FILE", help="Verify a backup written into the folder and add it to the manifest.")
-    command.add_argument("--format", dest="backup_format", default="plain-sql-gzip", choices=["plain-sql-gzip", "pg-custom"], help="plain-sql-gzip (pg_dump | gzip) or pg-custom (pg_dump -Fc).")
+    command.add_argument("--dump-format", dest="backup_format", default="plain-sql-gzip", choices=["plain-sql-gzip", "pg-custom"], help="plain-sql-gzip (pg_dump | gzip) or pg-custom (pg_dump -Fc). Not --format, which every pb command reads as its output form.")
     command.add_argument("--label", default="", help="With --record: what the backup precedes (the window and its source head).")
     command.add_argument("--pg-restore", default="pg_restore", help="With --record of a pg-custom backup: the pg_restore command; the archive is read on stdin (for example \"docker exec -i <container> pg_restore\").")
     command.add_argument("--prune", action="store_true", help="Keep only the newest backup, which must have passed verification; report only unless --apply.")
@@ -6498,7 +6498,7 @@ def _worker_backup(field: Any, identity: Any, args: argparse.Namespace) -> dict[
     if args.new:
         path = backups.new_backup_path(directory, args.backup_format)
         return {"directory": str(directory), "format": args.backup_format, "write_to": str(path),
-                "next": f"pb worker backup --project-ref {args.project_ref} --record {path} --format {args.backup_format} --label <window and head>"}
+                "next": f"pb worker backup --project-ref {args.project_ref} --record {path} --dump-format {args.backup_format} --label <window and head>"}
     if str(args.record or "").strip():
         entry = backups.record_backup(
             directory,

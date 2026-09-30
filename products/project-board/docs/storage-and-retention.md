@@ -339,8 +339,8 @@ file, its format, size and SHA-256, a label, who recorded it, and its check.
 
 | Command | What it does |
 | --- | --- |
-| `pb worker backup --project-ref P --new --format F` | prints the file to write the next backup to (coordinator) |
-| `pb worker backup --project-ref P --record FILE --format F --label L` | checks the file and adds it to the manifest (coordinator) |
+| `pb worker backup --project-ref P --new --dump-format F` | prints the file to write the next backup to (coordinator) |
+| `pb worker backup --project-ref P --record FILE --dump-format F --label L` | checks the file and adds it to the manifest (coordinator) |
 | `pb worker backup --project-ref P --prune --all-clear E [--apply]` | after a verified ALL CLEAR, keeps the newest backup and deletes the older manifest entries (coordinator) |
 | `pb worker backup --project-ref P` | lists the backups, newest first, and files the manifest does not list (anyone) |
 
