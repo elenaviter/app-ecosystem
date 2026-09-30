@@ -11317,6 +11317,20 @@ class SharedFieldStore:
                     "generation_present": bool(proof.get("generation_present")),
                     "plan_revision": int(proof.get("plan_revision") or 0),
                 }
+        if str(row.get("kind") or "") == "mail.route":
+            proof = row.get("remote_result")
+            notification = proof.get("notification") if isinstance(proof, Mapping) else None
+            if isinstance(notification, Mapping):
+                # Keep Board acceptance distinct from channel outcome, without
+                # projecting arbitrary receipt details or private route metadata.
+                state = str(notification.get("state") or "")
+                known = {
+                    "sent", "partial", "not_connected", "not_configured",
+                    "no_notifier", "failed", "delivery_unknown",
+                }
+                result["notification"] = {
+                    "state": state if state in known else ("not_requested" if not state else "unknown"),
+                }
         return result
 
     def list_mail_deliveries(

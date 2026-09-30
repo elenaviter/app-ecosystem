@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..contract.errors import DomainError
+from ..contract.operator_mail_contract import safe_operator_origin
 from .io import bounded_text
 
 
@@ -202,6 +203,14 @@ def worker_message_with_attachments(
         if isinstance(message.get("payload"), Mapping)
         else {}
     )
+    sender = message.get("sender_identity")
+    if (
+        isinstance(sender, Mapping) and sender.get("kind") == "user"
+        and message.get("kind") in {"request", "reply"}
+    ):
+        projected["operator_origin"] = safe_operator_origin(payload.get("operator_origin"))
+        if "operator_origin" in payload:
+            payload["operator_origin"] = projected["operator_origin"]
     payload.pop("attachments", None)
     if isinstance(payload.get("command"), Mapping):
         command_payload = dict(payload["command"])

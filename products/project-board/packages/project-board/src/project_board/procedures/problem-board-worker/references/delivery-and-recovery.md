@@ -172,6 +172,35 @@ original correlation and reply-to refs, and only then settle. A worker-to-worker
 status message, a settlement summary, terminal output, or a journal entry is not
 the operator reply.
 
+Read `message.operator_origin` in receive or lease-read (also
+`operator_response.origin` in receive). `channel` is `telegram`, `board`, or
+`unknown` for legacy mail without trusted origin; `ref` is opaque. Send the
+normal `pb worker send --recipient operator --kind reply` with the exact
+received `--reply-to`, correlation ID and a stable idempotency key. The client
+preserves the trusted origin automatically. Do not invent a route, infer a
+channel from prose or correlation, change the kind to obtain a notification,
+or use a raw channel API. A Telegram-origin response goes to that originating
+person and private project topic, not the other project operators. With an App
+Ecosystem checkout, the optional public
+[Telegram operator channel](repo:app-ecosystem/products/project-board/docs/telegram.md#reply-in-the-originating-channel)
+explains the routing and delivery contract; it is not needed to operate the
+installed skill.
+
+A worker outbox marked remote `accepted` proves Board acceptance, not Telegram
+delivery. `pb worker outbox-status --outbox-id <outbox-id>` shows the accepted
+mail receipt's `notification.state` separately; `not_requested` means no channel
+notification was requested, and an old receipt without that field proves no
+channel outcome. `sent` records a
+successful SDK send, not that the person read it; `partial`, `not_connected`,
+`not_configured`, `no_notifier` and `failed` are not successful channel delivery. A stopped
+or interrupted return attempt can remain `delivery_unknown`. Report the
+actual outcome in the visible Board conversation and to the coordinator when
+channel recovery is needed. Inspect the existing message/receipt through
+supported reads, or retry the same send with its original idempotency key;
+never use a new key, another person's route or an ad-hoc send to force a
+possibly duplicated post. Settle the lease after the visible correlated Board
+reply is recorded, stating any channel failure or unknown outcome honestly.
+
 When sending the operator a link, address the exact Problem Board conversation
 and message. A deployment root URL is not a conversation link.
 
