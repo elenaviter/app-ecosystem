@@ -1,13 +1,14 @@
 """A wake the provider refused for usage is pushed once more after that limit ends (W390).
 
-Spark, 2026-09-30 (codex-app@spark1, read-only evidence): the five-hour window
-read 100% at 02:01:31Z, resetting at 03:47:20Z. The relay pushed wake
-f02fe0b7 at 02:06:02Z and its one retry at 02:07:11Z. Both native turns ended
-within a second as usage refusals, so the W198 ceiling counted them and the
-wake was exhausted at 02:09:21Z. The single wake-recover at 02:20:54Z went
-into a session the relay was already holding until 03:47:20Z, and its turn
-was refused too. After the reset the relay only deduplicated the exhausted
-wake, and thirteen messages waited with nothing left to wake the session.
+The sequence a Codex worker host lived through (identifiers here are
+synthetic): the five-hour window read 100% at 02:01:31Z, resetting at
+03:47:20Z. The relay pushed a wake at 02:06:02Z and its one retry at
+02:07:11Z. Both native turns ended within a second as usage refusals, so the
+W198 ceiling counted them and the wake was exhausted at 02:09:21Z. The single
+wake-recover at 02:20:54Z went into a session the relay was already holding
+until 03:47:20Z, and its turn was refused too. After the reset the relay only
+deduplicated the exhausted wake, and the pending mail had nothing left to
+wake the session.
 """
 
 from __future__ import annotations
@@ -26,8 +27,8 @@ from project_board.client.store import SharedFieldStore
 from project_board.contract.errors import DomainError
 from relay_helpers import make_host, make_supervisor
 
-SESSION = "01a0daac-91ae-7730-81dd-9ffc77207b92"
-WAKE = "wake_f02fe0b76ae548f09fe5c674d423bbef"
+SESSION = "00000000-0000-4000-8000-00000000a390"
+WAKE = "wake_0000000000000000000000000000a390"
 REAL_FUTURE = store_module._future
 
 

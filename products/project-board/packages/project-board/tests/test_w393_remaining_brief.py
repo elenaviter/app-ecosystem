@@ -15,7 +15,7 @@ def brief(result):
 def test_relay_service_status_keeps_attention_and_bounds_histories():
     channels = [
         {
-            "worker_alias": f"worker-{i}@spark1",
+            "worker_alias": f"worker-{i}@host-two",
             "worker_name": f"worker-{i}-" + "w" * 60,
             "channel_state": "active",
             "relay_diagnostic": {
@@ -50,10 +50,10 @@ def test_relay_service_status_keeps_attention_and_bounds_histories():
     text = brief(result)
     assert "running: True" in text
     assert "relay_offline" in text
-    assert "worker-13@spark1" in text
+    assert "worker-13@host-two" in text
     assert "connection_lost" in text
     assert "channels: 8 of 18 shown in brief" in text
-    assert "worker-17@spark1" not in text
+    assert "worker-17@host-two" not in text
     assert "manager_status" not in text and "HIDDEN_TAIL" not in text
     assert len(text.splitlines()) <= 45
     assert len(text.encode()) <= 8_000
@@ -115,7 +115,7 @@ def test_inspect_keeps_actionable_wake_attention_bounded():
                 "queue_reconciliation_required": True, "last_error": LONG,
             },
         },
-        "channel": {"worker_name": "codex-app", "alias": "codex-app@spark1", "state": "active",
+        "channel": {"worker_name": "codex-app", "alias": "codex-app@host-two", "state": "active",
                     "connection": connection},
         "worker": {"authorization": {"state": "active"}, "relay_diagnostic": {
             "state": "degraded", "code": "handler_error", "message": LONG,

@@ -70,7 +70,7 @@ def recover_worker_wake(
         )
     field = SharedFieldStore(config.field_root)
     # W390: a session held for an agent limit only refuses the turn. On
-    # 2026-09-30 the one recovery of a Spark session was spent that way while
+    # 2026-09-30 the one recovery of a Codex session was spent that way while
     # the relay was already holding its wake until the reset.
     now = utc_now()
     held_until = wake_deferred_until(

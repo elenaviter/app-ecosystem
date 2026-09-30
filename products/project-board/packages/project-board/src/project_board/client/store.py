@@ -4791,7 +4791,7 @@ class SharedFieldStore:
         The W198 ceiling allows a consumed wake one retry: a session that took
         two wakes without receiving is not helped by a third. A wake the
         provider refused for usage says nothing about the session, though:
-        the turn never ran. On 2026-09-30 a Spark session's wake and its retry
+        the turn never ran. On 2026-09-30 a Codex session's wake and its retry
         were both refused for its five-hour limit, the limit reset, and the
         exhausted wake was only deduplicated from then on, so thirteen
         messages waited with nothing left to wake it.
