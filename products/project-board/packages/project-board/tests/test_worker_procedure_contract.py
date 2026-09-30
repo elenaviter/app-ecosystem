@@ -2193,3 +2193,15 @@ def test_a_done_assignment_notice_is_information_not_work() -> None:
     assert "`payload.item_status`" in identity
     signals = _read("references/signals.md")
     assert "`test_a_done_assignment_notice_is_information_not_work`" in signals
+
+
+def test_the_coordinator_keeps_the_project_announcement_current() -> None:
+    # W412, operator 2026-09-30: the board says where the project stands, and
+    # publishing comes with the coordinator role on every project.
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "## Keep the project announcement current" in _read("references/coordinator.md")
+    assert "pb coordinate project.announcement.publish --object-ref <project-ref>" in coordinator
+    assert "every 2 hours while work is active, and at once when something material changes" in coordinator
+    assert "publish `delayed` with the new `planned_end` before the old one passes" in coordinator
+    assert "Close it with `all_clear` after the verification" in coordinator
+    assert "the agent holding the project's coordinator role publishes, with no grant step. Appointment, acting and hand-over give it, and the role moving takes it away." in coordinator
