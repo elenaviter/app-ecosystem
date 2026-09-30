@@ -101,14 +101,34 @@ missing":
 ## Attendance, Assignment, And Revocation
 
 An assignment notice (kind `assign`, from `control-plane`) carries these
-fields, every one from the durable assignment row and none from prose:
+fields, none from prose. The first three come from the durable assignment row,
+`payload.item_status` from the committed item, and `payload.expected_reaction`
+is derived by the relay from that status:
 
 | field | where it comes from | what it is for |
 | --- | --- | --- |
 | `payload.work_ref` | the assignment's `identity_ref`, the stable form of the plan node | which item you were given; read it with `project.plan.item` |
 | `payload.assignment_ref` | created by `assignment.assign` when the work was routed | the row you report against |
 | `payload.ownership_version` | the assignment row's `ownership_version` | the fence your report must match |
-| `payload.expected_reaction` | constant `begin_work` | says this is work, not information |
+| `payload.item_status` | the item's status once the assigning save committed | what the item is now; the current item still decides when it has changed since |
+| `payload.expected_reaction` | derived by the relay from `payload.item_status`: `begin_work` (Todo, Working, or no status sent), `await_review` (Review), `acknowledge_only` (Done, Cancelled) | whether this is work to begin or information (W406) |
+
+The assignee is who the item is with, in every status (operator ruling,
+2026-09-30), so the item's status decides what an `assign` notice asks:
+
+- `begin_work` (Todo or Working, or a board that sends no status) is the work
+  in the skill's Receive Assigned Work.
+- `acknowledge_only` (Done or Cancelled) is information. The item stays as it
+  is and is listed with you. Read it, then settle the notice with what you read.
+  Starting implementation, reporting `working`, or reopening or changing its
+  status because of this notice undoes the operator's decision.
+- `await_review` (Review): the implementation waits for the reviewer. Read the
+  item and its review, and settle the notice. A return from review arrives as
+  its own `resume_work` notice.
+
+Read the current item before acting on any notice: when its status is no longer
+the one the notice names, the current item decides, and a later edit always wins
+over an earlier notice.
 
 A worker has direct owner conversation independently of projects. It attends
 zero or one current project. Attendance adds project mail and bounded project

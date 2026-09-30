@@ -145,7 +145,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.30.5"
+    assert package["revision"] == "2026.09.30.6"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -549,8 +549,8 @@ def test_receive_handle_and_settle_rules() -> None:
 def test_assignment_rules() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)
-    assert "Either is work to begin now, not a notification to acknowledge" in words
-    for field in ("payload.work_ref", "payload.assignment_ref", "payload.ownership_version", "payload.expected_reaction"):
+    assert "A review request, and an `assign` notice whose reaction is `begin_work`, is work to begin now, not a notification to acknowledge" in words
+    for field in ("payload.work_ref", "payload.assignment_ref", "payload.ownership_version", "payload.item_status", "payload.expected_reaction"):
         assert f"`{field}`" in skill
     assert "work_assignment_version_conflict" in skill
     assert "Take the version from the notice, never assume 1" in words
@@ -1327,7 +1327,7 @@ def test_an_assignment_notice_is_settled_after_working_not_after_completion() ->
 
     assert store.MAX_MAIL_HOLD_SECONDS == 3600
     skill = _words(_read("SKILL.md"))
-    reaction = skill[skill.index("The reaction, in order:"):skill.index("`working` and `blocked` are progress reports;")]
+    reaction = skill[skill.index("The `begin_work` reaction, in order:"):skill.index("`working` and `blocked` are progress reports;")]
     assert "2. Report `working` (it sets Working), settle the notice's lease at once (no lease outlives an hour; the row carries the work)" in reaction
     assert "Settle the notice's lease once." not in reaction
     delivery = _words(_read("references/delivery-and-recovery.md"))
@@ -2014,8 +2014,8 @@ def test_assigned_work_includes_reviews_and_one_read_before_idle() -> None:
     assert "## Receive Assigned Work" in skill
     assert "## Receive An Assignment" not in skill
     assert "Receive An Assignment" not in _read("references/signals.md")
-    assert "kind `assign` to implement an item, or a `request` titled `Review W…` to review one" in words
-    assert "settling the notice is not progress" in words
+    assert "kind `assign` when an item is assigned to you, or a `request` titled `Review W…` to review one" in words
+    assert "settling it is not progress" in words
     assert "A review is begun the same way" in words
     assert "When you cannot start either kind, say so at the first safe boundary" in words
     assert "the actor or event that clears it and the next decision time" in words
@@ -2163,3 +2163,33 @@ def test_review_and_implementation_signals_stay_distinct() -> None:
     skill = _words(_read("SKILL.md"))
     assert "A review is begun the same way: read the item and the exact head the notice names, publish that you started (`pb worker busy-until`" in skill
     assert "`blocked` (or your info line, for a review)" in skill
+
+
+def test_a_done_assignment_notice_is_information_not_work() -> None:
+    # W406, operator ruling 2026-09-30: the assignee is who the item is with
+    # in every status. A Done item's new assignee reported working on it and
+    # undid the completed state, because every assign notice said "begin".
+    skill = _words(_read("SKILL.md"))
+    assert "`acknowledge_only` (Done, Cancelled) and `await_review` (Review) are information to read and settle, never a reason to report `working`, reopen or change status." in skill
+    # The opening itself is status-aware (W406 review): it must not order work
+    # on every assign notice before the exception, and the report-working
+    # steps belong to begin_work only.
+    raw = _read("SKILL.md")
+    opening = _words(raw[raw.index("## Receive Assigned Work"):raw.index("**Ownership version**")])
+    assert "The reaction to an `assign` notice follows its `payload.expected_reaction` (W406)." in opening
+    assert "Either is work to begin" not in opening
+    assert "every assign notice" not in opening.lower()
+    assert "comes from the durable assignment row" not in opening
+    assert "the committed item gives `payload.item_status`, and the relay derives `payload.expected_reaction` from that status." in opening
+    assert "The `begin_work` reaction, in order:" in skill
+    assert "The reaction, in order:" not in skill
+    identity = _words(_read("references/identity-and-authorization.md"))
+    assert "every one from the durable assignment row" not in identity
+    assert "`payload.item_status` from the committed item, and `payload.expected_reaction` is derived by the relay from that status" in identity
+    assert "`acknowledge_only` (Done or Cancelled) is information." in identity
+    assert "Starting implementation, reporting `working`, or reopening or changing its status because of this notice undoes the operator's decision." in identity
+    assert "`await_review` (Review): the implementation waits for the reviewer." in identity
+    assert "when its status is no longer the one the notice names, the current item decides, and a later edit always wins over an earlier notice." in identity
+    assert "`payload.item_status`" in identity
+    signals = _read("references/signals.md")
+    assert "`test_a_done_assignment_notice_is_information_not_work`" in signals
