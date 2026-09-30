@@ -12,7 +12,7 @@ see_also:
 
 # Signals Of The Worker Skill
 
-A skill is the condensed knowledge a model sees every time it runs. Each
+A skill is the condensed knowledge a model carries in its context on every turn. Each
 sentence in it is a signal: a rule, when it fires, and what it demands. This
 page is the catalogue of those signals for the `problem-board-worker` package,
 so that whoever maintains the skill can see what is signalled, at what cost,
@@ -37,7 +37,7 @@ read only when its trigger fires.
 experience behind a rule and belongs in a journal entry, where
 `pb worker journal-search` finds it when an agent starts work in that area
 ([journaling](journaling.md)). It does not belong in the skill, and neither
-does a link to it: the link is read every time, which is the cost the removal
+does a link to it: the link sits in every session's context, which is the cost the removal
 was meant to save.
 
 The package tests hold the line. `tests/test_worker_procedure_contract.py`
@@ -65,6 +65,7 @@ means no single test pins it yet.
 | Start Or Resume | Claude Code owns one watch plus one guard that replaces it before the cap | on start, and on every end notice | re-arm then receive, and stop only your own watch | the attachment is time-bounded and its end notice is not a guaranteed wake | `test_start_or_resume_and_the_claude_code_wake_path` |
 | Read pb Output | `--format brief`, never a hand-written parser | on every `pb` command | read the rendering, copy refs as whole lines or from rendered commands | hand-written readers exited silently and truncated refs | `test_pb_output_is_read_with_brief_never_with_a_parser` |
 | Receive Addressed Input | the wake has no body | on any wake | run `pb worker receive`, preserve `--wake-id` and provenance | the queue wake must be acknowledged exactly | `test_receive_handle_and_settle_rules` |
+| Receive Addressed Input | a wake does not reload instructions | on every wake | load the skill once per new session, and again only when `pb procedure verify` shows the installed revision changed by a regular upgrade. keep the loaded revision in notes and handoffs, and after a compaction read the section of the act at hand | rereading an unchanged skill fills the context it is meant to save | `test_an_unchanged_wake_reuses_loaded_instructions` |
 | Receive Addressed Input | reconcile the batch | after every receive | compare counts, recover the inventory when items are missing or output is truncated | an empty `items[]` with held leases is not "no work" | `test_receive_handle_and_settle_rules` |
 | Receive Addressed Input | revision markers are change detection only | on every receive | ask for project data only when the current message needs it | a wake is not a reason to reload a project | `test_receive_handle_and_settle_rules` |
 | Receive Addressed Input | never assemble the plan | on any plan read | one item, a search, one filtered slice, one item's notes | a project grows to a thousand items | `test_receive_handle_and_settle_rules` |
@@ -95,7 +96,7 @@ means no single test pins it yet.
 | An Issue Carries Its Complete Explanation | report the mechanism, grounded in this pass | on any reported issue | file, line, code, fields, commit, command and result, and say what you do not know | a category loses every actionable detail | `test_operator_runtime_and_conduct_rules` |
 | An Issue Carries Its Complete Explanation | a status is held to the same discipline | on any status to the operator or a peer | past, current and future apart; problem apart from thought; done, in progress, planned or blocked, blocked naming what on; criticality stated; every claim by key with its title; "not yet established" said | a status whose numbers were not measured in that pass is well-shaped and wrong | `test_operator_runtime_and_conduct_rules` |
 | Review Foundations And Procedure Gaps | challenge foundations, resolve procedure gaps as semantic revisions | on design decisions and after operating failures | rewrite the owning rule, test, advance the revision, reinstall, tell workers | an append-only note leaves the contradiction in place | `test_operator_runtime_and_conduct_rules` |
-| Review Foundations And Procedure Gaps | the skill carries rules with one clause of reason | on every procedure edit | incidents go to the journal | the skill is read every time | `test_skill_carries_rules_not_stories` |
+| Review Foundations And Procedure Gaps | the skill carries rules with one clause of reason | on every procedure edit | incidents go to the journal | the skill sits in every session's context | `test_skill_carries_rules_not_stories` |
 | Coordinate Research Progressively | one researcher per question | when a question needs research | others continue, findings carry `repo:` references | independent re-reading wastes every other worker | `test_operator_runtime_and_conduct_rules` |
 
 ## Situational signals, opened by one line each

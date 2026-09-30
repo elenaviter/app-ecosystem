@@ -25,7 +25,12 @@ INSTALLED_BY = "installed-by.json"
 INSTALLED_BY_SCHEMA = "problem-board.procedure-installed-by.v1"
 SOURCE_SCHEMA = "problem-board.procedure-source.v1"
 INSTALLED_SCHEMA = "problem-board.procedure-package.v2"
-INSTALLED_SOURCE_ENTRYPOINT = "_source/SKILL.md"
+# The release keeps a verbatim copy of the source entrypoint. It is not named
+# SKILL.md, because skill catalogs that scan for that name would list every
+# retained release as another skill (W417). Releases installed before keep
+# the legacy name, which verification still accepts from their manifest.
+INSTALLED_SOURCE_ENTRYPOINT = "_source/SKILL.source.md"
+LEGACY_SOURCE_ENTRYPOINTS = ("_source/SKILL.md",)
 _REVISION_PATTERN = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
 _RELEASE_PATTERN = r"[0-9a-f]{64}-[0-9a-f]{12}"
 _REVISION_RE = re.compile(rf"^{_REVISION_PATTERN}$")
@@ -698,10 +703,13 @@ def _verify_destination(
 
             source_text = ""
             source_snapshot_ok = False
-            if source_entrypoint_snapshot != INSTALLED_SOURCE_ENTRYPOINT:
+            if source_entrypoint_snapshot not in (
+                INSTALLED_SOURCE_ENTRYPOINT,
+                *LEGACY_SOURCE_ENTRYPOINTS,
+            ):
                 errors.append("The installed source entrypoint snapshot path is invalid.")
             else:
-                snapshot_path = release_root / INSTALLED_SOURCE_ENTRYPOINT
+                snapshot_path = release_root / source_entrypoint_snapshot
                 snapshot_symlink = _first_symlink_component(
                     release_root, snapshot_path
                 )
@@ -772,7 +780,7 @@ def _verify_destination(
 
             expected_release_files = {
                 INSTALLED_MANIFEST,
-                INSTALLED_SOURCE_ENTRYPOINT,
+                source_entrypoint_snapshot,
                 *(path.as_posix() for _, path in clean_references),
             }
             release_paths = (

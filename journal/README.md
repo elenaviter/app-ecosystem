@@ -88,6 +88,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-29 | Retained relay sockets permit fenced foreground recovery | Unknown delivery preserves periodic retry evidence while ready operations may recover on the same currently connected, Card-bound session; unavailable transport, authorization, replacement, and host rate-limit fences remain enforced. |
 | 2026-09-30 | Current assignee fields and Card lists | Review remains a status, all statuses share one current Assignee control, and agent and person Cards offer one current-assignee list including Done without participation-history selectors. |
 | 2026-09-30 | Durable paged work-item action history | A canonical history operation pages indexed actions with bounded limits and reader-bound generation cursors, preserves status, assignee and readable review decision evidence, and links retained identity Cards without granting lifecycle authority. One indexed latest decision keeps return guidance available without a complete ledger. |
+| 2026-09-30 | Unchanged wakes reuse loaded skill instructions | A wake asks for receive and handling. An existing session reloads the worker skill only when its installed revision changed through a regular upgrade, never for mail, a turn or a compaction. Installed releases keep their source copy as SKILL.source.md, so a skill catalog shows one entry per install. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

@@ -127,7 +127,7 @@ A Claude Code `problem_board.inbox_available` watch event and an automatic
 Codex wake contain no task body. After either, run `pb worker receive` in this
 model session. When a Codex wake names `--wake-id`, preserve that exact ID so
 the native queue wake is acknowledged, and preserve the wake's provenance
-(creation time, attempts, host, relay, process) in any duplicate-wake report.
+(creation time, attempts, host, relay, process) in any duplicate-wake report. **A wake asks for receive and handling, not for reloading instructions.** A new session loads this skill completely once. An existing session loads it completely again only when its installed revision actually changed through a regular upgrade, that is when `pb procedure verify` names a revision other than the one you loaded. A coordinator notice alone, new mail, a new turn and a compaction are not that. Keep the revision you loaded (the `revision=` in this file's first line) in your notes and in any compaction summary or handoff: it is the baseline `pb procedure verify` is compared with. After a compaction, before an act whose rule you no longer hold, read that act's section of this skill or its reference, not the whole package. Editing this package reads its source files, which is authoring, not loading. A reference is read when its trigger fires or the task needs it. Instructions still in your context stay valid across wakes, while task evidence does not and is read fresh as Choose A Relevant Next Action says. Why: rereading an unchanged skill fills the context it is meant to save.
 
 ```bash
 pb worker receive --wake-id <wake-id>
@@ -511,7 +511,7 @@ to re-read it. With uncertain ownership or policy, create a work item with the
 evidence and ask. A procedure update is a semantic revision of the affected
 contract, never an append-only note, and it carries the rule with one clause of
 reason. Incidents go to the journal, where search finds them when they are
-needed, and not into this skill, which is read every time.
+needed, and not into this skill, which every session carries in its context.
 
 ## Coordinate Research Progressively
 

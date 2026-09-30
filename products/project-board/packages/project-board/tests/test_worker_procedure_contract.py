@@ -314,7 +314,7 @@ def test_skill_carries_rules_not_stories() -> None:
     ):
         assert story_marker not in skill, story_marker
     assert "Incidents go to the journal, where search finds them" in words
-    assert "not into this skill, which is read every time" in words
+    assert "not into this skill, which every session carries in its context" in words
     assert "carries the rule with one clause of reason" in words
     # 2026.09.23.2 merged the foundation-claims paragraph into Review Foundations,
     # where the same duty already lived, instead of stating it twice.
@@ -2205,3 +2205,34 @@ def test_the_coordinator_keeps_the_project_announcement_current() -> None:
     assert "publish `delayed` with the new `planned_end` before the old one passes" in coordinator
     assert "Close it with `all_clear` after the verification" in coordinator
     assert "the agent holding the project's coordinator role publishes, with no grant step. Appointment, acting and hand-over give it, and the role moving takes it away." in coordinator
+
+
+def test_an_unchanged_wake_reuses_loaded_instructions() -> None:
+    """W417: an agent reread the whole skill on every wake in one continuous
+    session, reading "which is read every time" as an instruction. Operator
+    ruling: an existing session fully reloads only when its installed revision
+    actually changed through a regular upgrade."""
+
+    skill = _read("SKILL.md")
+    words = _words(skill)
+    receive = words[words.index("## Receive Addressed Input"):words.index("## Handle And Settle Each Lease")]
+    assert "**A wake asks for receive and handling, not for reloading instructions.**" in receive
+    # What causes a full load: a new session, and an actual installed-revision change.
+    assert "A new session loads this skill completely once" in receive
+    assert "only when its installed revision actually changed through a regular upgrade" in receive
+    assert "`pb procedure verify` names a revision other than the one you loaded" in receive
+    # What does not: a notice alone, mail, a turn, or a compaction.
+    assert "A coordinator notice alone, new mail, a new turn and a compaction are not that" in receive
+    assert "Keep the revision you loaded (the `revision=` in this file's first line) in your notes and in any compaction summary or handoff" in receive
+    assert "the baseline `pb procedure verify` is compared with" in receive
+    assert "before an act whose rule you no longer hold, read that act's section of this skill or its reference, not the whole package" in receive
+    assert "Editing this package reads its source files, which is authoring, not loading" in receive
+    assert "A reference is read when its trigger fires or the task needs it" in receive
+    assert "Instructions still in your context stay valid across wakes" in receive
+    assert "task evidence does not and is read fresh as Choose A Relevant Next Action says" in receive
+    # No statement of the skill's cost reads as a reread instruction.
+    for relative in ("SKILL.md", "references/signals.md", "references/coordinator.md", "references/collaboration.md"):
+        assert "read every time" not in _read(relative), relative
+    signals = _words(_read("references/signals.md"))
+    assert "again only when `pb procedure verify` shows the installed revision changed by a regular upgrade" in signals
+    assert "compaction lost its text" not in signals
