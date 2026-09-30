@@ -808,6 +808,19 @@ def _team_runtime_account(value: Any) -> dict[str, Any]:
 # W334: the board accepts a held wake's pending count up to this.
 MAX_WAKE_HOLD_PENDING = 1_000_000
 
+
+def _same_work(declared: str, ended: str) -> bool:
+    """One work ref names one job whatever version suffix it carries (W423)."""
+
+    def identity(ref: str) -> str:
+        parts = str(ref or "").split(":")
+        # work:plan:node:<ts>:<key>:<slug>[:<version>] and work:assignment:<ts>:<id>:<slug>
+        if len(parts) >= 6 and parts[:3] == ["work", "plan", "node"]:
+            return ":".join(parts[:6])
+        return str(ref or "")
+
+    return bool(declared and ended) and identity(declared) == identity(ended)
+
 class SharedFieldStore:
     """Canonical project state shared directly by local workers.
 
@@ -4666,6 +4679,8 @@ class SharedFieldStore:
         assignment_ref: str,
         repository_ref: str,
         path: str,
+        kind: str = "implementation",
+        item: str = "",
     ) -> dict[str, Any]:
         """Where on this host the worker edits one repository for one assignment (W278 part B).
 
@@ -4673,8 +4688,21 @@ class SharedFieldStore:
         and publishes the tracked paths that changed, so the board can say
         which files this worker has in flight per repository. One row per
         assignment and repository, replaced when declared again.
+
+        W423: the row also says what the tree serves (``implementation`` or
+        ``review``) and which item, so the workspace sweep can remove it once
+        its job ends. A review tree names the item's work ref as its
+        ``assignment_ref``; the review decision ends it.
         """
 
+        clean_kind = str(kind or "implementation").strip().lower()
+        if clean_kind not in {"implementation", "review"}:
+            raise DomainError(
+                "field_workspace_kind_invalid",
+                "A workspace is an implementation or a review tree.",
+                status=400,
+                details={"kind": clean_kind},
+            )
         clean_assignment = bounded_text(assignment_ref, field="assignment_ref", maximum=1000, required=True)
         clean_repository = bounded_text(repository_ref, field="repository_ref", maximum=512, required=True)
         clean_path = str(Path(str(path or "")).expanduser().resolve())
@@ -4703,6 +4731,8 @@ class SharedFieldStore:
                 "assignment_ref": clean_assignment,
                 "repository_ref": clean_repository,
                 "path": clean_path,
+                "kind": clean_kind,
+                "item": bounded_text(item, field="item", maximum=1000),
                 "declared_at": utc_now(),
             }
             rows.append(declared)
@@ -4733,6 +4763,57 @@ class SharedFieldStore:
                     and (not repository_ref or str(item.get("repository_ref") or "") == str(repository_ref))
                 )
             ]
+            row["workspaces"] = kept
+            atomic_write_json(row_path, row)
+            return len(before) - len(kept)
+
+    def end_workspace(
+        self,
+        worker_name: str,
+        *,
+        reason: str,
+        path: str = "",
+        assignment_ref: str = "",
+    ) -> int:
+        """Record that the job of one or more declared trees ended (W423).
+
+        By path, or every tree of one assignment (or of one reviewed item's
+        work ref). The sweep then removes a tree that is also safe to lose.
+        """
+
+        clean_reason = bounded_text(reason, field="reason", maximum=200, required=True)
+        clean_path = str(Path(str(path)).expanduser().resolve()) if str(path or "").strip() else ""
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        row_path = self._worker_path(clean_name)
+        ended = 0
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(row_path)
+            rows = [dict(item) for item in (row.get("workspaces") or []) if isinstance(item, Mapping)]
+            for item in rows:
+                matches = (
+                    (clean_path and str(item.get("path") or "") == clean_path)
+                    or (assignment_ref and _same_work(str(item.get("assignment_ref") or ""), str(assignment_ref)))
+                )
+                if matches and not item.get("ended_at"):
+                    item["ended_at"] = utc_now()
+                    item["end_reason"] = clean_reason
+                    ended += 1
+            row["workspaces"] = rows
+            atomic_write_json(row_path, row)
+        return ended
+
+    def forget_workspace_path(self, worker_name: str, path: str) -> int:
+        """Drop the declaration of a tree the sweep removed (W423)."""
+
+        clean_path = str(Path(str(path)).expanduser().resolve())
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        row_path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(row_path)
+            before = [dict(item) for item in (row.get("workspaces") or []) if isinstance(item, Mapping)]
+            kept = [item for item in before if str(item.get("path") or "") != clean_path]
             row["workspaces"] = kept
             atomic_write_json(row_path, row)
             return len(before) - len(kept)

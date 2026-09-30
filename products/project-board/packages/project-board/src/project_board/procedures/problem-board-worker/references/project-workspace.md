@@ -338,18 +338,40 @@ disturb the work in hand, and a disk does not fill with forgotten copies
   `scripts/release-pb` runs in its
   own `wt/release-<version>` tree from `origin/main`.
 
-**Remove what is finished.** When the item is done or cancelled **and** its
-change requests are merged or closed, remove its worktrees and local branches:
-`git -C <workspace>/<alias> worktree remove <path>`, then
-`git -C <workspace>/<alias> branch -d <branch>`, then
-`git -C <workspace>/<alias> worktree prune`.
+**Register every tree, and let the sweep remove what is finished (W423).**
+Right after you create a tree, register it against the job it serves:
+
+```bash
+pb worker workspace --assignment-ref <assignment> --repository <repo> --path <workspace>/wt/<item>-<alias> --item <Wn>
+pb worker workspace --kind review --assignment-ref <reviewed item work_ref> --repository <repo> --path <workspace>/rv/<item>-<alias>-<sha> --item <Wn>
+```
+
+A tree's job ends when its review decision is recorded through
+`pb coordinate review.*`, when its branch is merged, or when you say so with
+`pb worker workspace --end --path <path> --reason "<change request closed | released>"`.
+`pb worker workspace --sweep` lists every tree in your workspace, registered or
+not, with its state, size and what `--apply` would do. `--apply` removes a tree
+only when its job ended **and** nothing could be lost: no uncommitted change,
+no untracked file, no commit that no remote has, no other tree linking into it
+(a shared `node_modules`), and not a protected path. It uses
+`git worktree remove` without force, `git branch -d` for a merged branch and
+`git worktree prune`, and names every tree it keeps with the reason. The clean
+clone is never removed.
+
+The sweep also runs without anyone remembering: at session start
+(`pb worker listen`), on `pb worker idle`, and after a review decision recorded
+through `pb coordinate`. Each prints what it removed and kept.
 - Never `rm -rf` a worktree folder, and never remove the clean clone: it holds
-  every worktree's Git data.
+  every worktree's Git data. A tree the sweep keeps is yours to finish, push or
+  remove by hand with `git worktree remove`.
 - Remote branches are the merger's to delete.
 - A review tree goes as soon as the verdict is recorded. Its installed packages
-  (for example a widget's `node_modules`) go with it.
-- Before a pause or the end of a session, read `git worktree list` for each
-  repository and remove every tree whose work is merged or abandoned.
+  (for example a widget's `node_modules`) go with it, unless another tree still
+  links into them.
+- The first real sweep on a host with an existing pile is the operator's
+  decision; until then, `--sweep` without `--apply` shows what would go.
 
 Why: worktrees that were never removed filled one host with about a hundred
-stale folders, and a coordinator's hidden test trees reached 4 GB.
+stale folders, and a coordinator's hidden test trees reached 4 GB; on
+2026-09-30 one agent held 55 finished trees (about 11 GB) and the host disk
+filled. A rule an agent must remember did not hold, so the sweep runs on its own.
