@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { controlIssuerLabel, isPersonIssuer } from '../src/features/delegatedAccess/cardLabels.ts'
+import { controlIssuerLabel, isOpaqueIdentifier, isPersonIssuer } from '../src/features/delegatedAccess/cardLabels.ts'
 import { accessCardFocusRequest } from '../src/features/delegatedAccess/accessCardFocus.ts'
 
 // Operator, 2026-09-26: on a person's Control Card and My Card the composition
@@ -49,4 +49,13 @@ test('every place that names a Control Card by its issuer uses controlIssuerLabe
   assert.doesNotMatch(panel, /binding\?\.issuer_label\s*\|\|\s*linkedControl\?\.binding\?\.issuer_ref/)
   assert.equal(panel.match(/controlIssuerLabel\(/g)?.length, 4)
   assert.match(panel, /record\.issuer_ref && !isPersonIssuer\(record\) \?/)
+})
+
+// W424: a stored label that is only an account id or UUID is not a name.
+test('a UUID or account-id label is never shown as the Control Card name', () => {
+  assert.equal(isOpaqueIdentifier('42d5a4e4-e0e1-7040-f598-86c2845fae28'), true)
+  assert.equal(isOpaqueIdentifier('cognito:42d5a4e4-e0e1-7040-f598-86c2845fae28'), true)
+  assert.equal(isOpaqueIdentifier('Operations desk'), false)
+  assert.equal(controlIssuerLabel({ ...PERSON, issuer_label: '42d5a4e4-e0e1-7040-f598-86c2845fae28' }, { viewerSubject: '02657414-aaaa-4bbb-8ccc-111111111111' }), 'your Control Card')
+  assert.equal(controlIssuerLabel({ control_id: 'c1', issuer_label: '42d5a4e4-e0e1-7040-f598-86c2845fae28' }), 'c1')
 })

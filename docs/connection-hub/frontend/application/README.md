@@ -397,6 +397,22 @@ What the shell owns, and what it does not:
     member reads it.
   - `control_card_id` + `project_ref` + `target_subject` (or `invitation_ref`):
     a person's Control Card in the project (`project_person_control_get`).
+- The **Open Control Card** button on a composed Card (W424) is keyed by the
+  binding's `control_id`:
+  - On a person's My Card (`source` `project-person`), the binding is
+    project-held when its `issuer_kind` is `project` and its `issuer_ref` is
+    a `work:project:` ref. Such a binding is read through the project and
+    the person with `project_person_control_get`: `project_ref` is the
+    binding's `issuer_ref`, `target_subject` is the My Card's
+    `grantor_subject` (the viewer on their own Card, the linked person from a
+    Team link). Without them, it opens nothing.
+  - Any other binding keeps `control_card_get`.
+  - The widget opens the result only when its id equals the binding's
+    `control_id`, because `project_person_control_get` does not check it.
+  - The label, the UUID and the My Card's own `access_id` never select the
+    Card. On a My Card the head reads "Card composed with Control Card (AND)".
+  - A stored issuer label that is only an account id or UUID is never shown
+    as a Control Card's name.
 - Because the widget route is authenticated and an iframe request is not a
   top-level navigation, the shell mounts the widget only after `/profile`
   confirms a session. Signed out, it sends the visitor to the platform
