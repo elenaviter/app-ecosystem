@@ -157,8 +157,9 @@ person on the project, admin or member.
 
 `item.assignee` is that owner in every status, including Review and Done.
 Assignment history and reviewer routing never replace its displayed value.
-The current list on a worker Card contains the item exactly when this field
-names the worker.
+The single current list on an agent or person Card contains the item exactly
+when this field names them, including Done items. Former contributions are not
+current membership and Cards offer no participation-history list.
 Explicit assignee edits are valid at any status; a combined edit applies both
 selected fields atomically. [Work Item Review](review.md#assignment-and-status-are-separate-facts)
 owns the save and historical-assignment semantics.
@@ -194,16 +195,17 @@ the item lists; the download link is short-lived, the file reference is not.
 A result counts only after review.
 
 - **Who reviews.** The worker that did the work never reviews it. An item's
-  review requirement is `qualified` by default, or `operator`. The reviewer is
-  recorded separately from the assignee while it is in Review: the item keeps
-  its exact assignee and names a reviewer, an agent or a person.
+  review requirement is `qualified` by default, or `operator`. Reviewer
+  qualification and routing evidence are recorded separately from the current
+  fields. Review is a status, not a second current-owner control; the item
+  editor always shows the same Status and Assignee fields.
 - **Routing.** A completed report may name the reviewer. Otherwise the acting
   coordinator is the reviewer, or the home coordinator when the acting one did
   the work. The coordinator, or a person whose Card holds `review.assign`, can
   move the review to someone else. A person is named as reviewer only with the
   integration evidence: what was merged, and what was deployed and checked (or
-  that nothing needs deploying). A person's review list shows exactly the items
-  that name them.
+  that nothing needs deploying). A person's Card uses the current-assignee
+  list described above, not a second list selected by historical review roles.
 - **Decisions.** `review.accept` moves the item to `done` and settles the
   assignment. `review.cancel` moves it to `cancelled` and settles it.
   `review.return` moves it to `working` with a reason: the same worker keeps the

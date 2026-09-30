@@ -95,9 +95,13 @@ the new ownership after the decision, without rewriting the prior ownership
 evidence. A person can be selected directly without manufacturing an agent
 assignment. The two fields can be saved separately in either order, including
 while Review or Done remains unchanged; no extra accept, return or reopen
-action is a prerequisite. Worker Cards, rails, panels and their counters default
-to current responsibility. Settled contributor evidence and other history are
-explicit visibility options, not current membership.
+action is a prerequisite. Agent and person Cards, rails, panels and their
+counters have one current-assignee list across all statuses, including Done.
+Former contributions never put an item on that list, and the Card offers no
+participation-history list or visibility switch. Reassignment moves membership
+and counts after the save commits, not while a choice is merely staged.
+The chooser marks the actual current coordinator from project-role evidence;
+a former coordinator or a suggestive alias does not confer that role.
 Delete refuses an assigned item, or an item another item depends on.
 
 ## Entering review
@@ -122,8 +126,9 @@ The report may also name the reviewer (next section).
 
 ## Who reviews
 
-The reviewer and assignee are separate stored fields. The reviewer decides
-the result; the assignee is the item's current responsible recipient. Explicit
+Review-routing and decision-authority metadata are stored separately from the
+item's current fields. Review is a status, not another current-owner control:
+the work-item editor has one Assignee at every status. Explicit
 `review.assign`, or a completed report that explicitly names a reviewer,
 sets both fields in one transaction and moves current Card membership.
 Contributor ownership and `worked_by` remain history. An implicit coordinator
@@ -163,14 +168,16 @@ A person is named in one of two ways (the operator's ruling, 2026-09-26:
 "operator in the project is any person who works in this project. In
 contrary if some specific person is needed then operator:name"):
 
-- `operator`: any person in the project. It appears in every person's review
-  list, and the first person to accept, return or cancel it decides it for
-  all; it then leaves every list.
+- `operator`: any person in the project. While it is the current assignee, the
+  item appears on every person's current-assignee list. The first person to
+  accept, return or cancel it decides the review for all; changing status does
+  not remove current membership.
 - `operator:<user id>`: one named person, when that person must look.
 
-A person's review list (Review Assignments) is the items in `review` whose
-reviewer is that person or `operator` (`status: review` with
-`assignee: @me`), never every item in review.
+A person's Card lists items whose current assignee is that person or
+`operator` (`assignee: @me` with no status restriction), never every item in
+Review or every item they reviewed in the past. Done items remain until an
+explicit assignee edit moves them elsewhere or clears ownership.
 A review is never left on a person by default. When the coordinator routes
 one to a person, it also sends a `decision` mail so the request reaches
 their Telegram.
