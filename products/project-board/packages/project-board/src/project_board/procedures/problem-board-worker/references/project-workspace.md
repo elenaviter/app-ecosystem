@@ -350,6 +350,9 @@ A tree's job ends when its review decision is recorded through
 `pb coordinate review.*`, when its branch moved past the head it was registered
 at and is merged, or when you say so with
 `pb worker workspace --end --path <path> --reason "<change request closed | released>"`.
+Ancestry alone never ends a job: a tree whose head is in main may be work just
+started. An unregistered tree (one made before this rule) therefore ends only
+by `--end --path`.
 `pb worker workspace --sweep` lists every tree in your workspace, registered or
 not, with its state, size and what `--apply` would do. `--apply` removes a tree
 only when its job ended **and** nothing could be lost: no uncommitted change,

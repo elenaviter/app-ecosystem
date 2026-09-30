@@ -42,7 +42,7 @@ def workspace(tmp_path: Path) -> dict[str, Path]:
     clone = ws / "app"
     subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True, capture_output=True)
     git(clone, "checkout", "-q", "-b", "main")
-    commit(clone, "base")
+    base = commit(clone, "base")
     git(clone, "push", "-q", "origin", "main")
     git(clone, "remote", "set-head", "origin", "main")
 
@@ -81,7 +81,7 @@ def workspace(tmp_path: Path) -> dict[str, Path]:
     (evidence / "review-notes.md").write_text("evidence", encoding="utf-8")
     # A leftover directory no clone knows.
     (ws / "wt" / "stray").mkdir()
-    return {"ws": ws, "clone": clone, "merged": merged, "dirty": dirty, "unpushed": unpushed,
+    return {"ws": ws, "clone": clone, "base": base, "merged": merged, "dirty": dirty, "unpushed": unpushed,
             "review": review, "shared": shared, "evidence": evidence}
 
 
@@ -91,6 +91,8 @@ def by_path(trees):
 
 def test_only_ended_clean_pushed_unlinked_trees_are_removed(workspace):
     registrations = [
+        {"path": str(workspace["merged"]), "kind": "implementation", "item": "W2",
+         "base_head": workspace["base"]},
         {"path": str(workspace["review"]), "kind": "review", "item": "W6",
          "ended_at": "2026-09-30T19:00:00Z", "end_reason": "review decision recorded (review.accept)"},
         {"path": str(workspace["unpushed"]), "kind": "implementation", "item": "W4",
@@ -131,13 +133,57 @@ def test_only_ended_clean_pushed_unlinked_trees_are_removed(workspace):
 def test_an_unregistered_leftover_is_found_and_a_job_that_did_not_end_is_kept(workspace):
     trees = inspect_workspace(workspace["ws"], [])
     rows = by_path(trees)
-    # Found without a registration: the merged tree is removable, the dirty one is not.
-    assert rows[str(workspace["merged"])].kind == "unregistered" and rows[str(workspace["merged"])].removable
-    assert rows[str(workspace["dirty"])].kind == "unregistered"
-    assert any("job not ended" in reason for reason in rows[str(workspace["dirty"])].keep)
+    # Found without a registration, and kept: ancestry alone never ends a job,
+    # so even a clean tree whose head is in main stays until its end is recorded.
+    for name in ("merged", "dirty", "shared"):
+        assert rows[str(workspace[name])].kind == "unregistered", name
+        assert not rows[str(workspace[name])].removable, name
+        assert any(reason.startswith("unregistered: job end unknown") for reason in rows[str(workspace[name])].keep), name
+    assert sweep_report(trees)["would_remove"] == []
     # An unregistered, unmerged review tree is kept: nothing says its job ended.
     assert rows[str(workspace["review"])].kind == "review"
     assert not rows[str(workspace["review"])].removable
+    # A recorded end by path (a row with only the end) makes it removable.
+    ended = {"path": str(workspace["merged"]), "ended_at": "2026-09-30T20:00:00Z", "end_reason": "ended by the agent"}
+    rows = by_path(inspect_workspace(workspace["ws"], [ended]))
+    assert rows[str(workspace["merged"])].removable and rows[str(workspace["merged"])].kind == "implementation"
+
+
+def test_a_tree_whose_head_equals_main_is_active_work_not_finished(workspace):
+    """Coordinator ruling: an active newly created tree whose HEAD equals main
+    is not ended, registered or not; ancestry alone cannot infer job-end."""
+
+    clone = workspace["clone"]
+    fresh = workspace["ws"] / "wt" / "w901-app"
+    git(clone, "worktree", "add", "-q", "-b", "work/w901", str(fresh), "origin/main")
+    head = git(fresh, "rev-parse", "HEAD")
+    assert head == git(clone, "rev-parse", "origin/main")
+    for registrations in ([], [{"path": str(fresh), "kind": "implementation", "base_head": head}]):
+        trees = inspect_workspace(workspace["ws"], registrations)
+        assert not by_path(trees)[str(fresh)].removable
+        apply_sweep(trees)
+        assert fresh.exists()
+
+
+def test_ending_an_unregistered_tree_by_path_records_a_row_with_only_its_end(tmp_path):
+    from project_board.client.store import SharedFieldStore
+    from relay_helpers import make_host
+
+    host, identity, _channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.initialize(field_id="sweep")
+    field.register_worker(
+        worker_name=identity.worker_name, worker_identity=identity.worker_identity,
+        runtime_kind=identity.runtime_kind, runtime_session_id=identity.runtime_session_id,
+        capabilities=[], authority_label="connection-hub:test-profile", control_plane_state="published",
+    )
+    (tmp_path / "old-tree").mkdir()
+    assert field.end_workspace(identity.worker_name, reason="finished before registration", path=str(tmp_path / "old-tree")) == 1
+    rows = field.workspaces(identity.worker_name)
+    assert rows == [{"path": str((tmp_path / "old-tree").resolve()), "ended_at": rows[0]["ended_at"],
+                     "end_reason": "finished before registration"}]
+    # Ending it again changes nothing.
+    assert field.end_workspace(identity.worker_name, reason="again", path=str(tmp_path / "old-tree")) == 0
 
 
 def test_a_protected_path_is_never_removed(workspace):

@@ -12,8 +12,9 @@ tree whose job ended and that is safe to lose.
 A tree is removed only when all of these hold:
 
 - its job ended: its registration recorded an end (a review decision, the
-  agent's own ``--end``/``--clear``), or its head is already in the clone's
-  default branch on origin (merged);
+  agent's own ``--end``), or it is a registered tree whose head moved past the
+  head it was registered at and is already in the clone's default branch on
+  origin (merged);
 - nothing is lost: no uncommitted change, no untracked file, no commit that no
   remote has;
 - nothing depends on it: no other tree's symlink points into it, and it is not
@@ -23,9 +24,11 @@ Everything else is kept and named with its reason. Removal is ``git worktree
 remove`` without force, then ``git branch -d`` for a merged local branch, then
 ``git worktree prune``. A clone at the workspace root is never removed.
 
-A registered tree counts as merged only after its head moved past the head it
-was registered at: a fresh tree cut from main is an ancestor of main and would
-otherwise read as finished. Gitignored files (build output, ``node_modules``,
+Ancestry alone never ends a job: a fresh tree cut from main is an ancestor of
+main, and so is an active tree whose agent has not committed yet. A registered
+tree counts as merged only after its head moved past the head it was registered
+at, and an unregistered tree ends only when its end is recorded by path
+(``pb worker workspace --end --path``). Gitignored files (build output, ``node_modules``,
 ignored test results) are not "untracked" to git and go with a removed tree,
 so evidence belongs in a tracked file or a scratch path outside the tree.
 """
@@ -222,16 +225,15 @@ def inspect_workspace(
             tree.unpushed = int(out.strip()) if not code and out.strip().isdigit() else -1
             if default:
                 tree.merged = _git(path, "merge-base", "--is-ancestor", "HEAD", default)[0] == 0
-            if registration is not None:
-                # A registered tree is merged only when it moved past the head
-                # it was registered at: a fresh tree cut from main is an
-                # ancestor of main and must not read as finished. Without that
-                # evidence, only a recorded end ends it.
-                base_head = str(registration.get("base_head") or "")
-                tree.merged = bool(tree.merged and base_head and full_head and full_head != base_head)
+            # Ancestry alone never ends a job (a fresh or not-yet-committed
+            # tree is an ancestor of main). A registered tree is finished by
+            # merge only once it moved past the head it was registered at; an
+            # unregistered tree only by a recorded end.
+            base_head = str((registration or {}).get("base_head") or "")
+            moved_and_merged = bool(tree.merged and base_head and full_head and full_head != base_head)
             if registration and registration.get("ended_at"):
                 tree.ended = str(registration.get("end_reason") or "ended")
-            elif tree.merged:
+            elif moved_and_merged:
                 tree.ended = f"merged into {default}"
             if tree.dirty:
                 tree.keep.append(f"uncommitted changes: {', '.join(tree.dirty[:5])}")
@@ -241,8 +243,10 @@ def inspect_workspace(
                 tree.keep.append("commits no remote has" if tree.unpushed > 0 else "push state unreadable")
             if any(_is_inside(path, guard) or _is_inside(guard, path) for guard in protected_roots):
                 tree.keep.append("protected path (runtime or tool in use)")
-            if not tree.ended:
-                tree.keep.append("job not ended (no recorded end, not merged)")
+            if not tree.ended and registration is None:
+                tree.keep.append("unregistered: job end unknown; record it with pb worker workspace --end --path <tree>")
+            elif not tree.ended:
+                tree.keep.append("job not ended (no recorded end, no merged commit since registration)")
             trees.append(tree)
     # Directories under wt/ and rv/ that no clone knows are leftovers to name.
     for folder in TREE_FOLDERS:

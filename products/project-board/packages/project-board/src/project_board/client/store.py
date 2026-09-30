@@ -4797,6 +4797,9 @@ class SharedFieldStore:
 
         By path, or every tree of one assignment (or of one reviewed item's
         work ref). The sweep then removes a tree that is also safe to lose.
+        A path no declaration names (a tree made before registration existed)
+        gets a row that records only its end: ancestry never ends a job, so
+        this is how an unregistered tree becomes removable.
         """
 
         clean_reason = bounded_text(reason, field="reason", maximum=200, required=True)
@@ -4817,6 +4820,9 @@ class SharedFieldStore:
                     item["ended_at"] = utc_now()
                     item["end_reason"] = clean_reason
                     ended += 1
+            if clean_path and not any(str(item.get("path") or "") == clean_path for item in rows):
+                rows.append({"path": clean_path, "ended_at": utc_now(), "end_reason": clean_reason})
+                ended += 1
             row["workspaces"] = rows
             atomic_write_json(row_path, row)
         return ended
