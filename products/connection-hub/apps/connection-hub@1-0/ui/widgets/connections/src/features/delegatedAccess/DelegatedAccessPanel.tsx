@@ -4834,7 +4834,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (!control || control.state === 'not_controlled') return null;
     const binding = control.binding;
     if (!binding) return null;
-    const label = controlIssuerLabel(binding, issuerViewer);
+    // W424: a My Card's project Control Card is named as such, never by the
+    // account id its stored label may carry.
+    const label = linkedControlOpenTarget(item, binding)?.targetSubject
+      ? 'Control Card'
+      : controlIssuerLabel(binding, issuerViewer);
     const reading = authorityReading(item);
     const controlActive = control.state === 'active' && Boolean(control.authority);
     const effectiveReady = controlActive && (!editing || Boolean(control.control_authority));

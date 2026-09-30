@@ -149,3 +149,8 @@ test('the panel opens the linked Card through the helper and refuses a mismatch'
   assert.match(panel, /if \(!result\.access \|\| !isLinkedControlCard\(result\.access, target\)\) \{/)
   assert.doesNotMatch(panel, /loadControlCard\(\{ controlId: cleanControlId \}\)/)
 })
+
+test('a My Card names its project Control Card "Control Card", never an account UUID', () => {
+  const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /const label = linkedControlOpenTarget\(item, binding\)\?\.targetSubject\s*\? 'Control Card'\s*: controlIssuerLabel\(binding, issuerViewer\);/)
+})

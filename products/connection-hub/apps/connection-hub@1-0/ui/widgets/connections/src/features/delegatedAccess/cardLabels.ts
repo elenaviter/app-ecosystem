@@ -56,6 +56,13 @@ export interface IssuerViewer {
   targetLabel?: string;
 }
 
+const OPAQUE_ID = /^(?:[a-z][a-z0-9_-]*:)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** An account id or UUID (optionally provider-prefixed): never a reader label (W424). */
+export function isOpaqueIdentifier(value: string | undefined): boolean {
+  return OPAQUE_ID.test(String(value || '').trim());
+}
+
 /** Whether a Control Card's issuer is a person (their Control Card for a project). */
 export function isPersonIssuer(fields: ControlIssuerFields): boolean {
   const ref = String(fields.issuer_ref || '');
@@ -73,7 +80,8 @@ export function isPersonIssuer(fields: ControlIssuerFields): boolean {
  */
 export function controlIssuerLabel(fields: ControlIssuerFields, who: IssuerViewer = {}): string {
   const label = String(fields.issuer_label || '').trim();
-  if (label) return label;
+  // W424: a stored label that is only an account id or UUID names nobody.
+  if (label && !isOpaqueIdentifier(label)) return label;
   if (isPersonIssuer(fields)) {
     const issuer = bareSubject(fields.issuer_ref);
     if (issuer && issuer === bareSubject(who.viewerSubject)) return 'your Control Card';

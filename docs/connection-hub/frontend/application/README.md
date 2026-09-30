@@ -410,7 +410,9 @@ What the shell owns, and what it does not:
   the project's own: the My Card source does. The widget opens the result
   only when its id equals the binding's `control_id`
   (`project_person_control_get` does not check it). The displayed label or
-  UUID and the My Card's own `access_id` never select the Card.
+  UUID and the My Card's own `access_id` never select the Card. On a My Card
+  the button reads "Open Control Card". A stored issuer label that is only an
+  account id or UUID is never shown as a Control Card's name.
 - Because the widget route is authenticated and an iframe request is not a
   top-level navigation, the shell mounts the widget only after `/profile`
   confirms a session. Signed out, it sends the visitor to the platform
