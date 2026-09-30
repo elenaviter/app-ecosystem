@@ -26,6 +26,8 @@ from typing import Any, Callable, Mapping
 
 from ..contract.errors import DomainError
 from .host_config import HostRelayConfig
+from .io import utc_now
+from .limit_state import session_with_limit_state, wake_deferred_until
 from .session_delivery import CODEX_QUEUE_ADAPTER, delivery_adapter, notify_agent_session
 from .store import SharedFieldStore
 
@@ -67,6 +69,28 @@ def recover_worker_wake(
             details={"worker_name": worker_name, "runtime_kind": channel.runtime_kind},
         )
     field = SharedFieldStore(config.field_root)
+    # W390: a session held for an agent limit only refuses the turn. On
+    # 2026-09-30 the one recovery of a Codex session was spent that way while
+    # the relay was already holding its wake until the reset.
+    now = utc_now()
+    held_until = wake_deferred_until(
+        session_with_limit_state(
+            field.worker_listener_session(worker_name) or {},
+            runtime_kind=channel.runtime_kind,
+            runtime_session_id=channel.runtime_session_id,
+            now=now,
+            recorded=field.runtime_limit_state(worker_name),
+        ).get("limit_state"),
+        now=now,
+    )
+    if held_until:
+        raise DomainError(
+            "field_worker_wake_recovery_held",
+            "The session is held for its usage limit until the reset, so a recovery "
+            "now would only be refused. The relay wakes it after the reset.",
+            status=409,
+            details={"worker_name": worker_name, "wake_id": wake_id, "held_until": held_until},
+        )
     recovery = field.reserve_wake_recovery(
         worker_name, wake_id=wake_id, requested_by=requested_by
     )
