@@ -546,8 +546,11 @@ The Problem Board main scene includes a Connection Hub pane. Use the shield
 action on any worker card to open that worker's exact delegated-access card in
 that pane. The card address is non-secret; the bearer remains in native
 credential custody. Resource, operation, connected-account, expiry, and
-revocation decisions are made in Connection Hub. Worker retirement and card
-revocation remain separate actions.
+revocation decisions are made in Connection Hub. Retiring a worker also
+revokes the Card its session was enrolled with: the retirement receipt and the
+worker record carry `card_revocation` (`revoked`, `failed` with the Connection
+Hub reason, or `no_card`). A `failed` revocation leaves the Card live and says
+so; retiring the same worker again retries only that Card.
 
 Discard is another distinct operation. The original sender may select several
 earlier messages to one worker. Pending messages are marked discarded without

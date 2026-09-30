@@ -102,7 +102,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `worker.estimate` | agent | `work:relay` | Identity rule `worker_pool_is_its_grantors` | An agent states its own; its owner may state it. |
 | `worker.evict` | agent | `work:coordinate` | Their project Card | Only an agent the caller owns (worker_pool_is_its_grantors), linked to the project. The owner may always (owner_exempt_from_card). |
 | `worker.restore` | agent | `work:coordinate` | Their project Card | Only an agent the caller owns (worker_pool_is_its_grantors), linked to the project. The owner may always (owner_exempt_from_card). |
-| `worker.retire` | agent | `work:coordinate` | Identity rule `worker_pool_is_its_grantors` | Permanent; the retirement names the agent to confirm it. |
+| `worker.retire` | agent | `work:coordinate` | Identity rule `worker_pool_is_its_grantors` | Permanent; the retirement names the agent to confirm it, and revokes the Card the session was enrolled with (a failed revocation is recorded and retried by retiring again). |
 | `control.enqueue` | agent | `work:coordinate` | Their project Card | Only to an agent linked to the project, the caller's own or shared with them. Attachments are staged by a person (attachment_upload_people_only). The owner may always (owner_exempt_from_card). |
 | `control.discard` | agent | `work:coordinate` | Its business rule | Discards only messages the caller sent (work_control_discard_target_denied). |
 | `assignment.assign` | work | `work:coordinate` | Their project Card | Also reopens review, done or cancelled work; assignment never changes status. The owner may always (owner_exempt_from_card). |
@@ -147,6 +147,9 @@ The board's own page calls these for a signed-in person; no Card holds them.
 | `board.get` | Membership (`project_membership`) |  |
 | `timeline.list` | Membership (`project_membership`) | Inbox rows only for the people who read the inbox; a private thread only for its person. |
 | `workers.list` | Membership (`project_membership`) |  |
+| `workers.archive` | Membership (`project_membership`) | Your own retired agents, read-only; a platform admin may ask for everyone's. |
+| `workers.card_reconciliation` | Identity rule `worker_pool_is_its_grantors` | Proposes retired agents whose Card is still live; revokes only the owner's exact agents whose confirmation token is sent back (a platform admin's everyone view is read-only). |
+| `worker.delete` | Identity rule `worker_pool_is_its_grantors` | Permanent; only a retired agent whose Card is revoked, with its name and "delete permanently" typed back. Leaves an attributable tombstone. |
 | `workers.search` | Identity rule `operator_inbox_people_only` |  |
 | `inbox.list` | Identity rule `operator_inbox_people_only` |  |
 | `inbox.summary` | Identity rule `operator_inbox_people_only` |  |

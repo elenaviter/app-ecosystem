@@ -625,8 +625,10 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                           'object_ref': 'work:worker:<runtime-kind>:<native-session-id>',
                           'payload': {'project_ref': 'string', 'worker_name': 'string'}},
     'worker.retire': {   'description': 'Permanently close one exact coding-agent session in '
-                                        'Problem Board while retaining historical attribution. The '
-                                        'Connection Hub Card remains separately revocable.',
+                                        'Problem Board while retaining historical attribution, and '
+                                        'revoke the Connection Hub Card that session was enrolled '
+                                        'with. A failed revocation is recorded on the worker and '
+                                        'retried by retiring it again.',
                          'object_ref': 'work:worker:<runtime-kind>:<native-session-id>',
                          'payload': {   'worker_name': 'string',
                                         'confirm_worker_name': 'same stable worker name',
