@@ -161,7 +161,7 @@ the live-assignment return check.
 
 The serving application owns `ProblemBoardStore.ensure_schema` (domain
 records), `ensure_history` (item action capture and legacy backfill),
-`ControlService.timeline` and
+`ProblemBoardControlService.timeline` and
 `ProblemBoardStore.create_ranked_timeline_search_snapshot` (timeline filters
 and frozen pages). `PAGE_OPERATION_RULES` distinguishes browser-page reads
 from the canonical worker catalog; see
