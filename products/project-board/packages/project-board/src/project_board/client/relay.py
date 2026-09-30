@@ -4979,7 +4979,7 @@ class ProblemBoardRelaySupervisor:
         or the runtime is not there, with the doubling otherwise."""
 
         handshake = is_namespace_handshake_timeout(error)
-        session = self._sessions.get(worker_name)
+        session = getattr(self, "_sessions", {}).get(worker_name)
         retained_connected = bool(
             self._failure_code(error) == "data_bus_outcome_unknown"
             and session is not None

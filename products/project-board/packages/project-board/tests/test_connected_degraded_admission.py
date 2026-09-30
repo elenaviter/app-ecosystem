@@ -154,6 +154,18 @@ def test_relay_restart_does_not_reuse_retained_socket_evidence(tmp_path):
     assert relay_pacing.channel_reconnect_state(host.path, channel.worker_name)["state"] == "reconnecting"
 
 
+def test_failure_recording_without_session_state_does_not_claim_a_retained_socket(tmp_path):
+    config = tmp_path / "relay.json"
+    pacing = relay_pacing.RelayPacing(
+        tmp_path / relay_pacing.PACING_FILENAME, clock=lambda: 1000.0, rng=lambda: 1.0
+    )
+    supervisor = object.__new__(relay.ProblemBoardRelaySupervisor)
+    assert supervisor._record_channel_failure(
+        pacing, "test-worker", DomainError("data_bus_outcome_unknown", "Unknown.", status=504)
+    ) == 60.0
+    assert relay_pacing.channel_reconnect_state(config, "test-worker")["state"] == "reconnecting"
+
+
 def test_unknown_without_a_retained_socket_or_past_retry_time_is_not_admitted(tmp_path):
     host, _identity, channel, supervisor, _session, client = _fixture(tmp_path)
     client.connected = False
