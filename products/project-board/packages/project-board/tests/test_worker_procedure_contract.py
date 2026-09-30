@@ -2223,7 +2223,8 @@ def test_an_unchanged_wake_reuses_loaded_instructions() -> None:
     assert "`pb procedure verify` names a revision other than the one you loaded" in receive
     # What does not: a notice alone, mail, a turn, or a compaction.
     assert "A coordinator notice alone, new mail, a new turn and a compaction are not that" in receive
-    assert "Keep the revision you loaded (the `revision=` in this file's first line) in your notes and in any compaction summary or handoff" in receive
+    assert "Keep the revision you loaded (the `revision=` of the managed-package marker under this file's front matter, which `pb procedure verify` reports as `installed_revision`) in your notes and in any compaction summary or handoff" in receive
+    assert "first line" not in receive  # the installed file opens with YAML front matter; the marker follows it
     assert "the baseline `pb procedure verify` is compared with" in receive
     assert "before an act whose rule you no longer hold, read that act's section of this skill or its reference, not the whole package" in receive
     assert "Editing this package reads its source files, which is authoring, not loading" in receive
