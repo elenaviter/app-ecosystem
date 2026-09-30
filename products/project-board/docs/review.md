@@ -198,8 +198,10 @@ their Telegram.
   An existing agent Card gets them at its next Refresh, once a project admin
   has ticked them on the project's Control Card.
 - **Review requirement.** An item's `review_requirement.kind` is `qualified`
-  by default, or `operator`, which requires a person. A requirement carried
-  on the assignment takes precedence over the item's.
+  by default, or `operator`, which requires a person for every review
+  decision (`work_review_operator_required` for an agent). A requirement
+  carried on the assignment takes precedence over the item's. See
+  [Source approval and final acceptance](#source-approval-and-final-acceptance).
 - **Authority is a Card grant.** A reviewer needs `work:review` and the exact
   review operation on its Card. A missing operation is refused with
   `work_review_operation_required`, naming the operation and the Card to
@@ -248,6 +250,36 @@ ownership version, so the rework needs a new one to report under.
 Handing returned work to someone else is a separate act: release it with
 `assignment.return` and its reason, then `assignment.assign` to the new
 owner. Each step advances the ownership version.
+
+## Source approval and final acceptance
+
+`review.accept` is final acceptance: the item's whole acceptance holds. Source
+approval, a verdict that the submitted source and its evidence are right, is
+not a board decision. W414 (2026-09-30) showed the difference. Its item was
+`qualified`, an agent reviewer accepted the source while the deploy and the
+operator's same-profile reauthorization were still outstanding, and the item
+went Done.
+
+An item whose acceptance needs a deploy, a live test or the operator's proof is
+**operator-final**: `review_requirement` is `{"kind": "operator"}`, set when the
+item is created or routed (`plan.item.update`), and kept by every later edit.
+Its path to Done:
+
+1. The worker submits. Its `review.could_not_verify` names the outstanding
+   proof.
+2. The source reviewer gives its verdict on the change request and records it
+   as an item note naming the exact heads and what is still outstanding. It
+   does not decide the review; an agent's accept, return or cancel of an
+   operator-final item is refused with `work_review_operator_required`.
+3. After the verified deploy, the coordinator routes the Review to the final
+   acceptor with `review.assign` (`operator` or `operator:<user id>`),
+   carrying the integration evidence (merged commits and the deploy check),
+   and sends a `decision` mail.
+4. The person obtains the live proof and accepts. The item becomes Done.
+
+There is one current Status and one Assignee throughout. Notes and the review
+history are evidence, not a second current owner. A worker's `completed`
+report is never final acceptance.
 
 ## What done means
 
