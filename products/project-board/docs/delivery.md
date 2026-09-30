@@ -15,6 +15,7 @@ keywords:
   - settle
   - quarantine
   - wake
+  - wake recovery
   - delivery_failed
   - reachability
   - failure matrix
@@ -138,6 +139,46 @@ at each coherent boundary. A correction that must hold across an unread
 inbox, a resume or a reassignment is written into the work item, not only
 sent as mail.
 
+## A stranded Codex wake and its one recovery
+
+A Codex session is woken through its native queue, and the relay gives each
+wake one automatic retry. When the session takes both without running
+`pb worker receive` while mail is still pending, the wake is stranded: new
+mail joins it and the relay submits nothing more on its own. The coordinator
+on that host then runs one explicit recovery of that exact wake. The steps
+are in the coordinator procedure,
+[Recover a stalled Codex delivery](../packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator.md#recover-a-stalled-codex-delivery).
+
+Queue admission and model handling are separate states. `submitted` means
+the native queue accepted the prompt, and says nothing about whether the
+model read it. Only the worker's own `pb worker receive` of that wake
+resolves the recovery. That receive clears the outstanding wake and its
+recovery together, on the host, on the next heartbeat and on the Card.
+
+The relay states the recovery on every heartbeat in the session field
+`wake_recovery`: `{wake_id, state, requested_at, recorded_at, submission_id}`
+while the outstanding wake has a recovery, and `{}` otherwise, so the next
+heartbeat corrects a missed one. The worker's Card, its details and its pool
+row show it as a line of its own, beside the notification path and a held
+wake:
+
+| Card line | `state` | What it means | What to do |
+| --- | --- | --- | --- |
+| recovery reserved, outcome unknown | `reserved` | The host recorded the attempt before the queue call, and the call's outcome was never recorded (the command was interrupted). | Do not submit again. Escalate when it stays. |
+| recovery submitted, not yet received | `submitted` | The native queue accepted the prompt. The model has not received the wake yet. | Do not submit again. Wait for the worker's receive, and escalate when it does not come. |
+| recovery failed before queuing | `failed` | The queue command could not start, so nothing was queued. | Another recovery of this wake is allowed. |
+| recovery outcome unknown | `outcome_unknown` | The queue call ran, and its result does not show whether the prompt was admitted. | Do not submit again. Escalate. |
+
+The host enforces the same rule: it refuses a second recovery of a wake
+unless the first one failed before queuing. A Card line with a state this
+build does not know also says not to submit again.
+
+The field is optional in both directions. A relay from before the recovery
+sends no `wake_recovery`, and the board stores `{}`. A board from before it
+ignores the field. Either way the Card shows no recovery line and delivery
+itself is unchanged. The board drops a malformed recovery with the event
+`worker.session.wake_recovery_dropped` and stores the rest of the heartbeat.
+
 ## Failure matrix
 
 | Symptom | What it means | What to do |
@@ -157,6 +198,7 @@ sent as mail.
 | The channel needs re-authorization | The relay cannot use the worker's Card. The agent can do nothing until it is fixed. Mail stays pending. | The agent's owner re-approves the Card. Retrying does not help. |
 | The same Codex wake arrives twice | A route-integrity fault: duplicates should have been removed. | Run the exact receive it names, do not repeat completed side effects, and report the wake's origin and attempt. |
 | A Codex card reads "waiting for wake" | Normal between wakes: its relay reports, and no mail is pending or its wake is queued. | Nothing. |
+| A Codex card shows a recovery line | A stranded wake has one explicit recovery, and the worker has not received it yet. | Follow the line's state in [A stranded Codex wake and its one recovery](#a-stranded-codex-wake-and-its-one-recovery). |
 | A Codex card reads "wake relay stale" | The host relay that owns the Codex queue stopped reporting, so no wake can reach the session. | Check the relay on that host; the session itself may be fine. |
 | A worker shows `not_listening` or an overdue inbox check | Its recent inbox checks are missing. For Claude Code its watch has stopped; an idle Codex session may still be reachable through its queue. Mail stays queued. | For Claude Code, re-arm the watch and receive. Diagnose a specific failed delivery from route and wake evidence, not this label alone. |
 | The board says the relay is online, but the agent does not answer | The relay runs, but the session may be mid-turn, idle and not woken, or closed. | Report each stage separately (admitted, materialized, wake outstanding, received, replied, settled). When only a person can act, tell them which worker, what it holds, and since when. |
