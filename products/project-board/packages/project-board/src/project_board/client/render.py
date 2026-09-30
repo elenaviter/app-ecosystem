@@ -1938,21 +1938,9 @@ def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
     if isinstance(obj, Mapping) and operation in {"assignment.assign", "assignment.return", "assignment.report"}:
         return _render_assignment_receipt(operation, obj)
     lines = [f"operation: {operation}"]
-    if isinstance(obj, Mapping) and isinstance(obj.get("item"), Mapping):
-        item = obj["item"]
-        for key in ("item_key", "title", "status", "assignee", "revision", "work_ref"):
-            if item.get(key) not in (None, ""):
-                lines.append(f"{key}: {item[key]}")
-        if item.get("description"):
-            lines.append("description:")
-            lines.extend(_BODY_INDENT + line for line in str(item["description"]).splitlines())
-        for entry in item.get("acceptance") or []:
-            lines.append(f"acceptance: {entry}")
-        rest = {k: v for k, v in item.items() if k not in ("item_key", "title", "status", "assignee", "revision", "work_ref", "description", "acceptance")}
-        lines.extend(_flatten(rest, prefix=""))
-        other = {k: v for k, v in obj.items() if k != "item"}
-        lines.extend(_flatten(other, prefix=""))
-        return lines
+    # The relay's record of this request follows the outcome: a receipt's
+    # state stays the first line after the operation (brief-output.md).
+    recovery = _recovery_lines(result.get("recovery"))
     if isinstance(obj, Mapping) and obj.get("state") in _RECEIPT_OUTCOMES:
         # A governed-mutation receipt. The outcome is the first line, and an
         # empty error slot is not printed: a caller that reads `error = {}`
@@ -1965,14 +1953,153 @@ def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
         # vocabulary, not on the key name.
         state = str(obj.get("state") or "")
         lines.append(f"state: {state}{' (replayed)' if obj.get('replayed') else ''}")
+        lines.extend(recovery)
         rest = {
             k: v
             for k, v in obj.items()
             if k not in ("state", "replayed") and not (k == "error" and not v)
         }
-        lines.extend(_flatten(rest, prefix=""))
+        return lines + _mutation_fields(rest)
+    lines.extend(recovery)
+    if isinstance(obj, Mapping) and isinstance(obj.get("item"), Mapping):
+        # An envelope that nests the item beside its own fields. The item is
+        # shown by its coordinates, never by its body.
+        lines.extend(_mutated_item_lines("item", obj["item"]))
+        return lines + _mutation_fields({k: v for k, v in obj.items() if k != "item"})
+    if isinstance(obj, Mapping) and _is_item_record(obj):
+        # A mutation that answers with the updated item itself (plan.item.update
+        # does, W393). The item carries no receipt state, so none is printed:
+        # the outcome is the recovery line above, when the relay kept one.
+        lines.extend(_mutated_item_lines("item", obj))
+        for flag, label in (("_mutation_replayed", "replayed"), ("_mutation_noop", "unchanged")):
+            if obj.get(flag):
+                lines.append(f"{label}: True")
+        lines.append(_FULL_DETAIL_LINE)
         return lines
     lines.extend(_flatten(obj, prefix=""))
+    return lines
+
+
+# Keys a mutation result carries as whole identifiers: printed complete, never
+# previewed, however long.
+_WHOLE_VALUE_SUFFIXES = ("_ref", "_refs", "_id", "_key", "_hash", "_commit")
+# A nested value up to this many flattened lines is small enough to show
+# whole; a larger one is named and left to --format json.
+_NESTED_FIELD_LINES = 8
+
+
+def _is_item_record(value: Mapping[str, Any]) -> bool:
+    """A plan work item: its key, its identity and a revision.
+
+    A materialized item names its revision ``revision``; the compact item a
+    receipt nests names it ``item_revision``.
+    """
+
+    return (
+        _present(value.get("item_key"))
+        and _present(value.get("identity_ref") or value.get("item_ref"))
+        and ("revision" in value or "item_revision" in value)
+    )
+
+
+def _mutated_item_lines(label: str, item: Mapping[str, Any]) -> list[str]:
+    """A mutated item by its coordinates: key, status, title, refs, revision."""
+
+    title = _preview(item.get("title"), maximum_bytes=220) or "(untitled)"
+    lines = [
+        "{}: {} · {} · {}".format(
+            label, item.get("item_key") or "-", item.get("status") or "-", title
+        )
+    ]
+    for key in ("identity_ref", "item_ref", "work_ref"):
+        if _present(item.get(key)):
+            lines.append(f"{label}.{key}: {item[key]}")
+    lines.append(
+        "{}: revision {} · assignee {} · reviewer {} · updated {}".format(
+            label,
+            item.get("revision", item.get("item_revision", "?")),
+            item.get("assignee") or "-",
+            item.get("reviewer") or "-",
+            item.get("updated_at") or item.get("item_updated_at") or "-",
+        )
+    )
+    return lines
+
+
+def _mutated_assignment_lines(assignment: Mapping[str, Any]) -> list[str]:
+    """An assignment a mutation touched, by its state and coordinates."""
+
+    lines = [
+        "assignment: state {} · ownership {} · worker {} · updated {}".format(
+            assignment.get("state") or "-",
+            assignment.get("ownership_version", "?"),
+            assignment.get("worker_name") or "-",
+            assignment.get("updated_at") or "-",
+        )
+    ]
+    for key in ("assignment_ref", "ref", "current_control_ref"):
+        if _present(assignment.get(key)):
+            lines.append(f"assignment.{key}: {assignment[key]}")
+    return lines
+
+
+def _mutation_fields(fields: Mapping[str, Any]) -> list[str]:
+    """A mutation result's own fields, bounded, as ``key = value``.
+
+    Outcome fields (applied, changed, revisions, statuses) and every ref are
+    printed whole. A nested item or assignment is shown by its coordinates.
+    An error, and any small nested value, is shown whole. A large one (an
+    item body, a task, observed files) is named, and --format json has it.
+    """
+
+    lines: list[str] = []
+    omitted: list[str] = []
+    for key, value in fields.items():
+        name = str(key)
+        if name.startswith("_mutation_"):
+            continue
+        if name in ("item", "work_item") and isinstance(value, Mapping) and value:
+            if _is_item_record(value):
+                lines.extend(_mutated_item_lines(name, value))
+            else:
+                omitted.append(name)
+            continue
+        if name == "assignment" and isinstance(value, Mapping):
+            if value:
+                lines.extend(_mutated_assignment_lines(value))
+                omitted.append("assignment detail")
+            continue
+        if isinstance(value, (Mapping, list, tuple)):
+            flattened = _flatten(value, prefix="", path=name)
+            # An error is the reason for the outcome: always whole.
+            if name == "error" or len(flattened) <= _NESTED_FIELD_LINES:
+                lines.extend(flattened)
+            else:
+                omitted.append(name)
+            continue
+        if isinstance(value, str) and not name.endswith(_WHOLE_VALUE_SUFFIXES):
+            lines.append(f"{name} = {_preview(value, maximum_bytes=_LONG_PREVIEW_BYTES)}")
+            continue
+        lines.append(f"{name} = {value}")
+    if omitted:
+        lines.append("not shown in brief: " + ", ".join(omitted))
+        lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
+def _recovery_lines(recovery: Any) -> list[str]:
+    """The relay's record of this request's delivery (W404), when it kept one."""
+
+    if not isinstance(recovery, Mapping) or not recovery:
+        return []
+    line = "recovery: {} · source {}".format(
+        recovery.get("state") or "-", recovery.get("source") or "-"
+    )
+    if _present(recovery.get("first_sent_at")):
+        line += f" · first sent {recovery['first_sent_at']}"
+    lines = [line]
+    if _present(recovery.get("idempotency_key")):
+        lines.append(f"recovery.idempotency_key: {recovery['idempotency_key']}")
     return lines
 
 
