@@ -376,7 +376,12 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
         lines.append(f"team: {len(team)} · shown {len(team)}")
     full = isinstance(team_filter, Mapping)
     for index, member in enumerate(team):
-        lines.extend(_team_member_lines(index, len(team), member, full=full))
+        lines.extend(
+            _team_member_lines(
+                index, len(team), member, full=full,
+                project_ref=str(result.get("project_ref") or "<project-ref>"),
+            )
+        )
 
     own = result.get("self")
     if isinstance(own, Mapping):
@@ -1392,7 +1397,7 @@ _TEAM_INFO_BYTES = 480
 
 
 def _team_member_lines(
-    index: int, total: int, member: Mapping[str, Any], *, full: bool
+    index: int, total: int, member: Mapping[str, Any], *, full: bool, project_ref: str
 ) -> list[str]:
     """One teammate's scheduling row: who, where, runtime, info, a blocked wake."""
 
@@ -1423,7 +1428,7 @@ def _team_member_lines(
         else:
             lines.append(
                 f"  info: {_preview(info, maximum_bytes=_TEAM_INFO_BYTES)}{suffix} · "
-                f"cut from {size} bytes: pb worker context --member {name}"
+                f"cut from {size} bytes: pb worker context --project-ref {project_ref} --member {name}"
             )
     else:
         lines.append("  info: none")

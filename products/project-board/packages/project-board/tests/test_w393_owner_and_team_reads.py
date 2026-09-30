@@ -92,7 +92,18 @@ def test_a_long_info_line_is_cut_visibly_and_member_shows_it_whole():
     [info] = [line for line in lines if line.startswith("  info: Stopped for the weekly limit")]
     size = len(LONG_INFO.encode())
     assert "INFO_TAIL" not in info
-    assert info.endswith(f"· set 2026-09-28T14:52:00Z · cut from {size} bytes: pb worker context --member {name}")
+    assert info.endswith(
+        f"· set 2026-09-28T14:52:00Z · cut from {size} bytes: "
+        f"pb worker context --project-ref {PROJECT} --member {name}"
+    )
+    # PR372 review: the printed command is complete. The real parser accepts
+    # it with this project and this member, never a usage error.
+    import shlex
+
+    command = shlex.split(info.split(" bytes: ", 1)[1])
+    assert command[:3] == ["pb", "worker", "context"]
+    parsed = cli.build_parser().parse_args(command[1:])
+    assert parsed.project_ref == PROJECT and parsed.member == name
 
     narrowed = cli.context_for_member(_context(team)["result"], "AGENT-1")
     member_lines = _lines({"ok": True, "result": narrowed})

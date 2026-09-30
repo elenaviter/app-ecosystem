@@ -245,7 +245,7 @@ in `pb worker context`: `team[].limit_state.windows[]` carries each window's
 `name`, `used_percent` and `resets_at`. The brief output prints a scheduling
 row for every member (runtime, account, info line, and any held or recovered
 wake the board reports) and one `team usage:` line per member, which names a
-window whose reset has passed. `pb worker context --member <name>` shows one
+window whose reset has passed. `pb worker context --project-ref <project-ref> --member <name>` shows one
 member in full. `pb worker list` shows the same `usage:` line
 for this host's workers. The operator's caps per quota pool (for example "up
 to 70% of the weekly window") live on the project's facts page, next to the
