@@ -33,7 +33,7 @@ such runtime never needs this page.
 **Every action releases, in each repository it loads, the commit its ref
 names** (`releases`: a platform refresh loads `kdcube` and the `app-ecosystem`
 packages it stages, an app reload its app's repository, a client switch
-`app-ecosystem` and `kdcube`). Before it, the coordinator integrates the
+`app-ecosystem`). Before it, the coordinator integrates the
 commits to go live onto each ref, pushes it and fetches it on the runtime's
 machine (worker procedure,
 [coordinator](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator.md),
@@ -168,32 +168,57 @@ Execute the action the table names for the tree, at the commit the ref names:
   `problem-board@1-0`: after the deploy worktree checkout and any
   `kdcube refresh`, and before `kdcube bundle reload problem-board@1-0`, run
   the sync tool from the deploy worktree, so it reads the template of the
-  commit being deployed:
+  commit being deployed. Before planning the window, select an existing
+  prepared Python interpreter with PyYAML and verify the import. If that
+  precondition fails, stop before the window until the prepared environment
+  is supplied; dependency installation is not a window step:
 
   ```bash
+  SYNC_PY=<absolute-path-to-prepared-python>
+  "$SYNC_PY" -c 'import yaml'
   DA=<board deploy worktree>
-  python "$DA/playground/domain-solution/tools/sync_board_descriptor.py" \
+  "$SYNC_PY" "$DA/playground/domain-solution/tools/sync_board_descriptor.py" \
     --deployed <workdir>/config/bundles.yaml            # prints the difference
-  python "$DA/playground/domain-solution/tools/sync_board_descriptor.py" \
+  "$SYNC_PY" "$DA/playground/domain-solution/tools/sync_board_descriptor.py" \
     --deployed <workdir>/config/bundles.yaml --apply    # backup, then writes
   ```
 
-  Any Python with PyYAML runs it. The template is the truth for the entry,
+  The template is the truth for the entry,
   except the deployment's own values the tool names (path, public URLs,
   integrations); it writes only the board's lines and checks every other app
   is unchanged. A refusal names a live key the template lacks: settle it in a
   pull request, never by hand-editing the entry. After the reload run
-  `kdcube bundle catalog check --workdir <workdir>`. When the difference
-  changes an operation's label, description or grants, a Card that selected
-  it keeps the old descriptor digest and the operation stays suspended until
-  the Card's owner accepts the change in Connection Hub: name those
-  operations in the window's announcement. Why: the entry was hand-synced
+  `kdcube bundle catalog check --workdir <workdir>`. Report descriptor drift
+  according to resource authority: for `catalog`, changed selected operations
+  are `in_effect_review`; for `remote_mcp`, they are
+  `suspended_until_accepted`. Wording changes affect digests, but are not
+  themselves a catalog authorization decision. For capability or grant changes,
+  verify Card selection, the project Control Card and resource-enforced grants;
+  new operations are not granted by descriptor sync or by accepting unrelated
+  changes. Name actual refusals, suspensions and required owner actions in the
+  announcement, using Connection Hub's owning
+  [per-resource accepted-state contract](repo:app-ecosystem/docs/connection-hub/package/delegated-cards.md#per-resource-accepted-state).
+  Why: the entry was hand-synced
   twice on 2026-09-26 by two different scratch scripts and still differed
   from the template (W353).
 - **The platform:** `kdcube refresh --build` from clean exports of the
   commits the ref names, with the package selectors above.
-- **The Problem Board client** on the same host: `pb source use-code` with
-  `--expect` and `--expect-kdcube` (worker procedure, runtime actions).
+- **The Problem Board client** on the same host: select only the approved
+  App Ecosystem commit, under the host agreement in the worker procedure's
+  [client source selection](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/problem-board-worker/references/runtime-actions.md#client-source-selection):
+
+  ```bash
+  pb source use-code \
+    --repository <app-ecosystem-repository> \
+    --ref <released-ref> \
+    --expect <approved-app-ecosystem-sha>
+  ```
+
+  Use the full approved commit. This selects the command and relay together,
+  not the KDCube platform or host CLI. Verify their source evidence separately:
+  the platform's `kdcube info --workdir <workdir>` attestation and the host
+  CLI precondition above; the client has `pb source status` and its matching
+  relay startup record below.
 
 Why the deploy worktree: it is the app's only path, read by web requests, the
 Data Bus workers and a restart alike, and nobody edits it, so the commit
@@ -266,8 +291,9 @@ for the tenant and project's workdir
    names that Control Card.
 3. **The Problem Board host client**, on each host whose client moved:
    `pb source status`, and the relay's first stamped startup line
-   (`source=snapshot`, `app_ecosystem=<sha>`, `kdcube=<sha>`): both equal the
-   commits the client switch released.
+   (`source=snapshot`, `app_ecosystem=<sha>`): both equal the
+   App Ecosystem commit the client switch released. The platform source is
+   proved separately by step 1, not by a client-selection argument.
 
 These replace the hand checks this section used to prescribe (a symbol asked
 of the process, `dist/` read inside the container): the attestations read the

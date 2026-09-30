@@ -1152,7 +1152,7 @@ re-authorization.
 | `account_scope: {}` | Bind no provider account; provider-backed use is default-closed. |
 | `account_scope` with content | Replace with the exact provider -> account -> claim selection. |
 | `label` | Rename without changing omitted dimensions. |
-| `accepted_operations` | Per resource, the selected operations whose CHANGED descriptor the grantor reviewed and accepts with this save. Every other changed selected operation keeps the digest the card accepted before and stays suspended. Omitted accepts nothing. |
+| `accepted_operations` | Per resource, the selected operations whose CHANGED descriptor the grantor reviewed and accepts with this save. Other changed selected operations keep their previous accepted digest; omission accepts nothing. Their execution effect follows [per-resource authority](#per-resource-accepted-state), not omission alone. |
 
 The update recomputes outer operations and the materialized `named_services`
 tree from the active catalog available to Connection Hub. For a stored `"*"`,
@@ -1978,11 +1978,25 @@ evidence from the overlay (`remote_mcp.catalog.RemoteMCPResourceRow`). Drift
 and returns a `resources` block with one entry per resource
 (`current`, `changed`, `removed`, or `unknown` for a card written before this
 evidence existed), and a `changed.outer_operations` block for selected
-operations whose descriptor changed. Such an operation carries the effect
-`suspended_until_accepted`: it stays granted on the card but is not to be run
-until the grantor accepts exactly that change, through `accepted_operations`
-on save. A newly advertised operation is reported under `added` and stays
-ungranted. An unrelated catalog change leaves an unchanged resource `current`.
+operations whose descriptor changed. The effect follows the authority that
+enforces the accepted descriptor:
+
+- `catalog`: a changed selected operation carries `in_effect_review`. The
+  deployment's current catalog, Card selection and grants decide execution;
+  an old accepted operation digest does not itself suspend the operation.
+- `remote_mcp`: a changed selected tool carries `suspended_until_accepted`.
+  It stays selected on the Card but cannot run until the grantor accepts
+  exactly that change through `accepted_operations` on save, because the
+  proxy enforces the accepted tool digest on each call.
+
+An operation's name, label, description and grants all contribute to its
+descriptor digest. A wording-only change can therefore produce drift without
+changing capability selection; it is not a universal consent exemption.
+Capability and grant changes still require checking the current catalog,
+selected operations, grant ceilings and the resource's enforcement contract.
+A newly advertised operation is reported under `added` and stays ungranted;
+accepting one changed operation does not grant a new sibling. An unrelated
+catalog change leaves an unchanged resource `current`.
 
 ### Drift projection and Save concurrency
 

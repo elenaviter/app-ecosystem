@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 
 import json
 from pathlib import Path
@@ -1556,6 +1557,57 @@ def test_the_board_descriptor_is_synced_by_the_committed_tool_before_the_reload(
     assert "--apply" in step
     assert "After the reload run `kdcube bundle catalog check --workdir <workdir>`." in step
     assert "never by hand-editing the entry" in step
+
+
+def test_the_profile_client_selection_command_parses_without_a_host_action():
+    """The profile teaches the executable AE-only selection contract, without switching it."""
+    from project_board.client.cli import build_parser
+
+    step = _profile().split("**The Problem Board client**", 1)[1].split(
+        "Why the deploy worktree:", 1
+    )[0]
+    commands = re.findall(r"```bash\n(.*?)```", step, re.DOTALL)
+    assert len(commands) == 1
+    tokens = shlex.split(commands[0].replace("\\\n", " "))
+    assert tokens[:3] == ["pb", "source", "use-code"]
+    parsed = build_parser().parse_args(tokens[1:])
+    assert parsed.repository == "<app-ecosystem-repository>"
+    assert parsed.ref == "<released-ref>"
+    assert parsed.expect == "<approved-app-ecosystem-sha>"
+    assert parsed.retired_expect_kdcube is None
+    assert "--expect-kdcube" not in step
+    assert "separately" in step
+
+
+def test_the_descriptor_sync_uses_an_already_prepared_interpreter():
+    step = _profile().split("**The board's descriptor entry**", 1)[1].split(
+        "**The platform:**", 1
+    )[0]
+    assert "prepared Python interpreter" in _words(step)
+    assert step.index('"$SYNC_PY" -c \'import yaml\'') < step.index(
+        "sync_board_descriptor.py"
+    )
+    assert step.count('"$SYNC_PY" "$DA/playground/domain-solution/tools/sync_board_descriptor.py"') == 2
+    assert "python \"$DA/" not in step
+    assert "python3 \"$DA/" not in step
+    assert "stop before the window" in _words(step)
+
+
+def test_the_profile_and_owning_consent_doc_follow_resource_authority():
+    step = _words(_profile().split("**The board's descriptor entry**", 1)[1].split(
+        "**The platform:**", 1
+    )[0])
+    assert "`catalog`" in step and "`in_effect_review`" in step
+    assert "`remote_mcp`" in step and "`suspended_until_accepted`" in step
+    assert "Wording changes affect digests" in step
+    assert "capability or grant changes" in step
+    assert "new operations are not granted by descriptor sync" in step
+    assert "docs/connection-hub/package/delegated-cards.md#per-resource-accepted-state" in step
+    assert "the operation stays suspended until" not in step
+    owning = _words((_repository_root() / "docs/connection-hub/package/delegated-cards.md").read_text())
+    assert "`catalog`" in owning and "`in_effect_review`" in owning
+    assert "`remote_mcp`" in owning and "`suspended_until_accepted`" in owning
+    assert "Every other changed selected operation keeps the digest the card accepted before and stays suspended" not in owning
 
 
 def test_delegation_is_not_free_and_its_reason_is_stated():
