@@ -1130,6 +1130,24 @@ and the host agent runs the same command with `--no-open --callback-port 18765`
 in place of `--device`. The operator opens the printed URL in their own browser,
 and closes the tunnel after the last agent.
 
+This fallback also applies to an **existing** worker profile when device
+reauthorization fails before consent with `work_relay_device_client_unauthorized`:
+the recorded OAuth client may have been registered for browser authorization
+before the device grant was available. Confirm from non-secret client
+registration metadata that this client still exists and permits
+`authorization_code`, then keep the tunnel open and run on the worker host:
+
+```bash
+pb worker authorize <profile> --no-open --callback-port 18765
+```
+
+Use the same profile named by `pb worker next`, and use its registered callback
+port if fixed. The operator approves in their own browser. This reconnect
+keeps the recorded client and Card; do not use `--replace-card` or register a
+different client. `invalid_client` means the client could not be resolved;
+`invalid_target` or `invalid_scope` points to request binding instead. Diagnose
+those separately before attempting this fallback.
+
 **After the operator approves**, tell each agent in its tmux session, since
 an agent waiting for approval does not check its inbox yet:
 
