@@ -53,7 +53,7 @@ Out of scope: an attacker who holds the whole native credential store. They alre
 
 ## Proposed protocol
 
-**Client.** Before sending a refresh, the client creates a random attempt id (32 bytes, URL-safe). It stores the id with the token in the native credential store before the request leaves. It sends the id as the form field `refresh_attempt`. A successful response replaces the token and clears the id. On a post-send unknown outcome (read failure, a timeout after send, cancellation after send, a failed store write), the id stays with the token. The next refresh of that token sends the same id. A connect failure before send needs no special handling, because the token is still live.
+**Client.** Before sending a refresh, the client creates a random attempt id (32 bytes, URL-safe). It stores the id with the token in the native credential store before the request leaves. When the store cannot take the id, the refresh is not sent at all: the token is still live, and a refresh sent without a stored id could not be retried if its response were lost. The client sends the id as the form field `refresh_attempt`. A successful response replaces the token and clears the id, and so does a refusal with a server status, since nothing rotated. On a post-send unknown outcome (read failure, a timeout after send, cancellation after send, a failed store write), the id stays with the token, and every later refresh of that token sends the same id. A connect failure before send needs no special handling, because the token is still live.
 
 **Server, on rotation.** The new generation records its parent generation and a fingerprint of the request that minted it:
 `sha256(attempt id, client id, resource, requested scope)`. The attempt id itself is never stored or logged.
@@ -62,11 +62,11 @@ Out of scope: an attacker who holds the whole native credential store. They alre
 
 - the request carries an attempt id, and its fingerprint equals the one on the family's current generation.
 - that current generation's parent is the presented generation.
-- the current generation has never been used, and it is not itself the product of a retry (one retry per attempt).
+- the current generation has never been used, and fewer than 5 retries of this attempt minted it (`MAX_REFRESH_RETRIES`).
 - the family is active and unexpired, and the presented generation was consumed within the retry window.
 - the Card behind the family is still live, and its client, resource and scope checks pass as for any refresh.
 
-On a retry, the unused successor is revoked and a new successor is minted from the presented generation, marked as a retry. Anything else, including a second retry of the same attempt, keeps today's rule: the family is revoked.
+On a retry, the unused successor is revoked and a new successor is minted from the presented generation, carrying the retry count. Repeated post-send losses (a flaky tunnel) are therefore retried again, up to the cap. The window runs from the presented generation's first consumption, so retries never extend it. Anything else, including a sixth retry of the same attempt, keeps today's rule: the family is revoked.
 
 **Compatibility.** A server without this protocol ignores `refresh_attempt`. A client without it sends none, and the server applies today's rule. W291 post-rotation issuance compensation is unchanged: rolling back a retried rotation restores the presented generation exactly as it does after an ordinary rotation.
 
@@ -74,17 +74,17 @@ On a retry, the unused successor is revoked and a new successor is minted from t
 
 The window bounds how long after the lost response a retry is recognised. It has to cover the client's real retry schedule. The relay's channel backoff starts at 60 s and doubles to a cap of 1800 s (`relay_pacing.CHANNEL_BACKOFF_BASE_SECONDS` and `CHANNEL_BACKOFF_CAP_SECONDS`), and the live retry came 105 s after the loss. A retry that fails before send keeps the attempt pending for the next backoff step.
 
-The proposal is 900 s, which covers the first four backoff steps (60, 120, 240 and 480 s). A longer window adds little risk, because a retry already needs the attempt id, an unused successor, the same client, resource and scope, and at most one retry. It is a server setting. The reviewer decides the value.
+The proposal is 900 s, which covers the first four backoff steps (60, 120, 240 and 480 s). A longer window adds little risk, because a retry already needs the attempt id, an unused successor, the same client, resource and scope, and at most 5 retries anchored at the first consumption. It is a server constant (`REFRESH_RETRY_WINDOW_SECONDS`). The value is an explicit policy decision for review.
 
 ## Concurrency and fences
 
-- **Concurrent retries.** Two retries with the same attempt are serialised by the generation row locks. The first is accepted, and the second finds a successor marked as a retry, so it is refused as reuse. On one host the profile's refresh lock already allows one refresh at a time.
+- **Concurrent retries.** On one host the profile's refresh lock allows one refresh at a time, so a client never sends two retries of one attempt together. A duplicated delivery of one retry is serialised by the generation row locks: both are retries, the family stays active, and the later successor is the one live token. A client that stored the earlier response then holds a revoked token, and its next refresh is refused as unknown without revoking the family. This residual needs a duplicated POST, which the client never sends itself.
 - **A late original response.** The client never stores a response that arrives after a failure was reported for that call, because the transport call has already ended. If a retry succeeded, its token is the stored one.
 - **A late store write.** The client commits a refresh result only when the stored token is still the one it refreshed, which is the existing compare in `profile_session._commit_refreshed_token`. A stale result is dropped, never written over a newer token.
 - **Revoked, expired or unrelated tokens.** No retry path applies. They are refused exactly as today.
 
 ## What review is asked to decide
 
-1. Whether the attempt-bound single retry is acceptable, against alternatives 1 to 4.
-2. The retry window (proposed 900 s).
+1. Whether the attempt-bound retry (at most 5 per attempt) is acceptable, against alternatives 1 to 4.
+2. The retry window (proposed 900 s), as an explicit policy decision.
 3. Whether a refused retry should revoke the family (proposed: yes, as today) or only refuse the request.
