@@ -74,7 +74,7 @@ On a retry, the unused successor is revoked and a new successor is minted from t
 
 The window bounds how long after the lost response a retry is recognised. It has to cover the client's real retry schedule. The relay's channel backoff starts at 60 s and doubles to a cap of 1800 s (`relay_pacing.CHANNEL_BACKOFF_BASE_SECONDS` and `CHANNEL_BACKOFF_CAP_SECONDS`), and the live retry came 105 s after the loss. A retry that fails before send keeps the attempt pending for the next backoff step.
 
-The proposal is 900 s, which covers the first four backoff steps (60, 120, 240 and 480 s). A longer window adds little risk, because a retry already needs the attempt id, an unused successor, the same client, resource and scope, and at most 5 retries anchored at the first consumption. It is a server constant (`REFRESH_RETRY_WINDOW_SECONDS`). The value is an explicit policy decision for review.
+The relay's channel backoff retries at 60, 180, 420 and 900 s after the failure (cumulative, doubling from 60 s), and each retry can wait up to one 60 s relay cycle more. The proposal is 1200 s: it covers the fourth retry at 900 s plus four cycles (1140 s), with slack, and the tests check retries at 900 and 1140 s inside the window and one just past it outside. A longer window adds little risk, because a retry already needs the attempt id, an unused successor, the same client, resource and scope, and at most 5 retries anchored at the first consumption. It is a server constant (`REFRESH_RETRY_WINDOW_SECONDS`). The value is an explicit policy decision for review.
 
 ## Concurrency and fences
 
@@ -86,5 +86,5 @@ The proposal is 900 s, which covers the first four backoff steps (60, 120, 240 a
 ## What review is asked to decide
 
 1. Whether the attempt-bound retry (at most 5 per attempt) is acceptable, against alternatives 1 to 4.
-2. The retry window (proposed 900 s), as an explicit policy decision.
+2. The retry window (proposed 1200 s), as an explicit policy decision.
 3. Whether a refused retry should revoke the family (proposed: yes, as today) or only refuse the request.
