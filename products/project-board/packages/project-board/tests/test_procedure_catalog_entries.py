@@ -3,7 +3,9 @@
 Skill catalogs that scan a skills directory for SKILL.md listed each retained
 release's verbatim source copy (`_source/SKILL.md`) beside the active skill.
 The copy is now `_source/SKILL.source.md`. A release installed before keeps the
-legacy name, still verifies from its own manifest, and goes at the next prune.
+legacy name and still verifies from its own manifest. It stays as the previous
+release through the upgrade that follows, and goes when the next distinct
+release installs. A same-revision reinstall keeps it.
 """
 
 from __future__ import annotations
@@ -60,7 +62,7 @@ def test_a_legacy_snapshot_release_verifies_and_is_pruned_after_the_next_install
     assert verify_agent_procedure(["claude-code"], home=home)[0]["state"] == "current"
     assert len(_skill_entries(home)) == 2
 
-    # The next install prunes it: one skill entry remains.
+    # The next distinct release prunes it: one skill entry remains.
     monkeypatch.setattr(procedures, "source_package_path", lambda: second_upgrade)
     install_agent_procedure(["claude-code"], home=home)
     assert verify_agent_procedure(["claude-code"], home=home)[0]["state"] == "current"
