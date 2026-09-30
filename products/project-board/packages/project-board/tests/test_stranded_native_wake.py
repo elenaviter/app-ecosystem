@@ -346,3 +346,24 @@ def test_a_recovery_whose_mail_drained_stays_as_audit_without_a_stall(stranded, 
             _Config(stranded.root), worker_name=WORKER, wake_id=WAKE, requested_by="coordinator",
             notifier=_notifier({"delivered": True}, []),
         )
+
+
+def test_the_heartbeat_carries_the_recovery_of_the_outstanding_wake_only(stranded):
+    from project_board.client.relay import _heartbeat_session_projection, session_with_wake_recovery
+
+    session = stranded.worker_listener_session(WORKER)
+    assert session_with_wake_recovery(session)["wake_recovery"] == {}, "no recovery yet"
+    recover_worker_wake(
+        _Config(stranded.root), worker_name=WORKER, wake_id=WAKE, requested_by="coordinator",
+        notifier=_notifier({"delivered": True, "queued_submission_id": "01a0ef59"}, []),
+    )
+    row = session_with_wake_recovery(stranded.worker_listener_session(WORKER))
+    projected = _heartbeat_session_projection(row)
+    assert projected["wake_recovery"]["wake_id"] == WAKE
+    assert projected["wake_recovery"]["state"] == "submitted"
+    assert projected["wake_recovery"]["submission_id"] == "01a0ef59"
+    assert set(projected["wake_recovery"]) == {"wake_id", "state", "requested_at", "recorded_at", "submission_id"}
+
+    stranded.check_in_worker_listener(WORKER, inbox_checked=True, wake_id=WAKE)
+    cleared = _heartbeat_session_projection(session_with_wake_recovery(stranded.worker_listener_session(WORKER)))
+    assert cleared["wake_recovery"] == {}, "the matching receive clears it on the next heartbeat"
