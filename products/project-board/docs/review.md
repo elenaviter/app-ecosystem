@@ -17,6 +17,8 @@ keywords:
   - review.could_not_verify
   - review return
   - ownership version
+  - action history
+  - project.plan.history
 see_also:
   - ./README.md
   - ./concepts.md
@@ -94,7 +96,7 @@ field and preserves that closed assignment as history. A new selection creates
 the new ownership after the decision, without rewriting the prior ownership
 evidence. A person can be selected directly without manufacturing an agent
 assignment. The two fields can be saved separately in either order, including
-while Review or Done remains unchanged; no extra accept, return or reopen
+while Review or Done remains unchanged. No extra accept, return or reopen
 action is a prerequisite. Agent and person Cards, rails, panels and their
 counters have one current-assignee list across all statuses, including Done.
 Former contributions never put an item on that list, and the Card offers no
@@ -102,7 +104,50 @@ participation-history list or visibility switch. Reassignment moves membership
 and counts after the save commits, not while a choice is merely staged.
 The chooser marks the actual current coordinator from project-role evidence;
 a former coordinator or a suggestive alias does not confer that role.
+Its last-implementation hint names the latest contributor with an applied
+working, blocked or completed report. Merely routing the next assignment does
+not replace that evidence. The hint is historical and read-only, never a
+second current owner or an automatic restoration of the previous assignee.
 Delete refuses an assigned item, or an item another item depends on.
+
+### Item action history
+
+An item's history is separate from every Card's current-assignee list.
+`project.plan.history` reads the recorded work, review, ownership, status and
+handoff facts for one item. Each fact retains its stable action ID, timestamp,
+action, source reference and the status and assignee recorded at that action.
+Historical facts that were not recorded are explicitly unknown. The service
+does not infer a past owner from the report author or today's worker alias.
+Repeated rounds remain distinct, while a decision's acknowledgment receipt
+does not add a duplicate decision. Capture is durable with the original write
+and does not depend on retaining its transport notice.
+
+The operation accepts one `work_ref` or `item_key`, a page cursor, and a
+`limit` of 1 to 50 (20 by default). The response is
+`problem-board.work-item-history.v1`, with total `item_count`, page `count`,
+`has_more`, `next_cursor`, and `generation_token`. Pages are newest first,
+with a stable action-ID tie-breaker. A cursor belongs to that item, project,
+reader, limit and generation. When a committed change invalidates it, the
+service refuses with `collection_cursor_stale` and the reader restarts from
+the first page. The item panel requests only the selected page, never a
+complete ledger to sort or slice locally. Ordinary item reads do not embed
+the complete history.
+Review actions include the recorded reviewer, decision time, reason and evidence
+references in their `review` field. Only the selected page joins these records.
+Materialized item reads carry one `latest_review` decision (or null), fetched
+with the scoped index and `LIMIT 1`, so brief client output retains the latest
+actionable return without a full ledger. A later acceptance supersedes it.
+
+Recorded labels remain separate from optional current `assignee_card`
+metadata. That bounded page-scoped target contains only the stable `address`,
+identity `kind`, current `label` and `pool_status`, `available` and
+`participating`. Availability means identity existence/focusability, not
+scheduling capacity or authority. Person identity data comes only from this
+project's membership. Clicking an assignee highlights the existing Project
+Network Card. A retained retired/off-project identity or another project
+person can appear as a read-only identity preview there, without lifecycle
+actions, assignment changes or a participation-history list. A deleted identity
+keeps its recorded ID and label and explicitly says its Card is unavailable.
 
 ## Entering review
 

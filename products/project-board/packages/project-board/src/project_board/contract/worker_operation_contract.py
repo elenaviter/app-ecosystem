@@ -70,6 +70,13 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:observe",),
     },
+    "project.plan.history": {
+        "description": (
+            "Read one bounded newest-first page of durable work-item actions, "
+            "with recorded status and assignee facts and generation-fenced cursors."
+        ),
+        "grants": ("work:observe",),
+    },
     "project.plan.resolve": {
         "description": (
             "Resolve a bounded explicit set of canonical work-item references and "
@@ -481,6 +488,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.github.use",
         "project.plan.index",
         "project.plan.item",
+        "project.plan.history",
         "project.plan.resolve",
         "project.plan.search",
         "project.plan.import",

@@ -160,7 +160,7 @@ Assignment history and reviewer routing never replace its displayed value.
 The single current list on an agent or person Card contains the item exactly
 when this field names them, including Done items. Former contributions are not
 current membership and Cards offer no participation-history list.
-Explicit assignee edits are valid at any status; a combined edit applies both
+Explicit assignee edits are valid at any status. A combined edit applies both
 selected fields atomically. [Work Item Review](review.md#assignment-and-status-are-separate-facts)
 owns the save and historical-assignment semantics.
 
@@ -197,7 +197,7 @@ A result counts only after review.
 - **Who reviews.** The worker that did the work never reviews it. An item's
   review requirement is `qualified` by default, or `operator`. Reviewer
   qualification and routing evidence are recorded separately from the current
-  fields. Review is a status, not a second current-owner control; the item
+  fields. Review is a status, not a second current-owner control. The item
   editor always shows the same Status and Assignee fields.
 - **Routing.** A completed report may name the reviewer. Otherwise the acting
   coordinator is the reviewer, or the home coordinator when the acting one did
