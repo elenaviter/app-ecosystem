@@ -1122,6 +1122,14 @@ def build_parser() -> argparse.ArgumentParser:
     _host_config(command)
     _agent_identity(command)
     command.add_argument("--project-ref", required=True)
+    command.add_argument(
+        "--member",
+        default="",
+        help=(
+            "Show one teammate in full, by stable worker name or alias. "
+            "Without it every teammate has one compact scheduling row."
+        ),
+    )
 
     command = worker_commands.add_parser(
         "send", help="Send mail as this session-bound worker."
@@ -4859,6 +4867,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
         # Never serve a project record as if the agent still attended it
         # (rehearsal gap 7, 2026-09-26): an unlinked agent is told plainly.
         context["attending"] = str(args.project_ref) in attended
+        member = str(getattr(args, "member", "") or "").strip()
+        if member:
+            context = context_for_member(context, member)
         if not context["attending"]:
             context["attendance_note"] = (
                 f"This agent does not attend {args.project_ref} (it was unlinked, or never "
@@ -5394,6 +5405,30 @@ def _worker_journals(config: HostRelayConfig, args: Any) -> JournalWorkspace:
         worker_name=identity.worker_name,
     )
     return _journals_in(config, worker_name=identity.worker_name, workspace=workspace)
+
+
+def context_for_member(context: Mapping[str, Any], member: str) -> dict[str, Any]:
+    """The context narrowed to one teammate, by stable name or alias (W393).
+
+    The team list keeps only the matches, and ``team_filter`` says what was
+    asked and how many of the whole team matched, so a narrowed read is never
+    mistaken for the whole team.
+    """
+
+    wanted = str(member or "").strip().lower()
+    team = [row for row in context.get("team") or [] if isinstance(row, Mapping)]
+    matched = [
+        row for row in team
+        if wanted in {
+            str(row.get("worker_name") or "").lower(),
+            str(row.get("worker_alias") or "").lower(),
+        }
+    ]
+    return {
+        **context,
+        "team": matched,
+        "team_filter": {"member": wanted, "matched": len(matched), "team_total": len(team)},
+    }
 
 
 def _worker_project_context(

@@ -720,6 +720,24 @@ def _team_limit_windows(value: Any) -> list[dict[str, Any]]:
     return windows
 
 
+def _team_wake_record(value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    """The named wake fields of a teammate's session, bounded, or empty."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    record = {
+        field: (value.get(field) if field == "pending" else str(value.get(field) or "")[:128])
+        for field in fields
+        if value.get(field) not in (None, "")
+    }
+    if "pending" in record:
+        try:
+            record["pending"] = max(0, min(int(record["pending"]), 1_000_000))
+        except (TypeError, ValueError):
+            record.pop("pending")
+    return record
+
+
 def _team_limit_state(value: Any) -> dict[str, Any]:
     """The bounded limit a team row keeps: the board already validated it.
 
@@ -8535,6 +8553,17 @@ class SharedFieldStore:
                         "runtime_account": runtime_account,
                         # W330: the teammate's own line about itself; empty when none.
                         "info_text": str(member.get("info_text") or ""),
+                        "info_set_at": str(member.get("info_set_at") or "")[:64],
+                        # W393: a held or recovered native wake, as the board
+                        # reports it for the teammate's live session; empty
+                        # from a board that does not report it.
+                        "wake_hold": _team_wake_record(
+                            member.get("wake_hold"), ("since", "until", "pending")
+                        ),
+                        "wake_recovery": _team_wake_record(
+                            member.get("wake_recovery"),
+                            ("wake_id", "state", "requested_at", "recorded_at"),
+                        ),
                     }
                 )
             record = {"schema": FIELD_SCHEMA, "project_id": clean_id, "members": rows, "updated_at": utc_now()}
