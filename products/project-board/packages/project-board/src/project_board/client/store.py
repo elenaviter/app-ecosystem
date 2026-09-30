@@ -4437,7 +4437,7 @@ class SharedFieldStore:
             # activity, and presence must not read it as one.
             unchanged = all(
                 current.get(key) == incoming.get(key)
-                for key in ("kind", "reached", "resets_at", "windows", "source")
+                for key in ("kind", "reached", "resets_at", "windows", "source", "account_id")
             )
             if incoming.get("source") == "codex-app-server":
                 unchanged = unchanged and all(current.get(key) == incoming.get(key) for key in (
