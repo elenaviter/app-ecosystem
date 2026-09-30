@@ -65,6 +65,56 @@ successor inherits none of that.
   responsible. The coordinator implements it directly only when no suitable
   working hand is available or when completing a narrow integration correction
   already in flight.
+- Put the team to work before any long operation of your own. A long
+  operation is any work you plan that will take more than a few minutes: an
+  integration or merge train, a runtime window, a broad suite, a test
+  environment, a long analysis. Decide this when you plan it, before you start.
+  Before it:
+  1. Read who can take work now: `pb worker context --format brief` for the
+     team and quota pools, `assignment.list` for what each worker holds, and
+     each candidate's last heartbeat and last delivered and acknowledged mail.
+     A worker is available when its session is live, its quota covers the next
+     bounded task before its reset, it reports no blocker, and it acknowledged
+     its last mail. An idle mark on its card alone is not availability.
+  2. Hand each available worker one bounded task or review with a checkpoint
+     it reports, highest priority first.
+  3. Confirm each allocation: the worker's `working` report or an explicit
+     `blocked` report, not the queued mail alone. Reroute what stays
+     unconfirmed ([Check a silent worker](#check-a-silent-worker-do-not-wait-for-it)).
+  4. Only then start the long operation.
+
+  While a suitable worker is available, do not implement features, write their
+  tests, or recreate test environments yourself. During a long operation, answer
+  each operator message with a correlated reply at the next safe boundary of
+  your work, before your next step. Report each milestone (a merged set, a
+  window opened or closed, a blocker with who clears it and the next decision)
+  to `operator` with a notifying kind, so it also reaches their Telegram. Why:
+  on 2026-09-30 the coordinator spent hours integrating and rebuilding test
+  environments while available workers waited for work (operator, 2026-09-30).
+- Keep your context lasting. Measured on 2026-09-30 in the coordinator's own
+  session record: 23 compactions in 20 hours, each preceded by a 3 to 9 minute
+  pause (2.4 hours in total), while about 2.5 million tokens of command output
+  arrived, roughly one context window between compactions. That is a measured
+  association, not a claim about how the harness decides to compact. Bounds:
+  - Read project context (`pb worker context`) at a session start or resume,
+    and again only when a receive names `project.files.changed` or a decision
+    needs a fresh read (below). A compaction alone is not a reason.
+  - Read `pb` output with `--format brief`. A body the brief cuts is read in
+    full with its `lease-read`, never guessed from the cut text.
+  - Your own scripts print at most about 4,000 characters. Anything larger
+    goes to a file you then search.
+  - End a turn at a safe, durable boundary: every lease you acquired is
+    settled or recorded as yours, an authorized window is either finished or
+    at a recorded checkpoint, and pending work is routed to a worker or left
+    to a wake. Then keep the turn short: settle the batch you received plus at
+    most one follow-up action. A turn limit never abandons a window in
+    progress or a held lease.
+  - Reload the worker instructions only when their installed revision
+    changed (the skill's Receive Addressed Input section). A wake, a mail or a
+    compaction is not a reason to reread them.
+  - Use GitHub only through the pb helper (`pb worker git-credential` for git,
+    `pb worker gh -- …` for gh), never the host's own gh login
+    ([GitHub access](repo:app-ecosystem/products/project-board/docs/github.md)).
 - Let a worker finish its current step before switching it; queue the next thing.
   An operator's remark about what a worker is doing is information, not an order.
 - When a worker runs short of tokens, move its unstarted work to agents with budget

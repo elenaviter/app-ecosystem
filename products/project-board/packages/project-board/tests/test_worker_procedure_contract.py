@@ -2207,6 +2207,28 @@ def test_the_coordinator_keeps_the_project_announcement_current() -> None:
     assert "the agent holding the project's coordinator role publishes, with no grant step. Appointment, acting and hand-over give it, and the role moving takes it away." in coordinator
 
 
+def test_the_coordinator_puts_the_team_to_work_before_a_long_operation() -> None:
+    # Operator, 2026-09-30 (and the W428 return): read real availability and
+    # hand out bounded work before any planned multi-minute coordinator
+    # operation, confirm each start, stay responsive, and keep context bounds
+    # that never abandon a window or a held lease.
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "Put the team to work before any long operation of your own." in coordinator
+    assert "any work you plan that will take more than a few minutes" in coordinator
+    assert "each candidate's last heartbeat and last delivered and acknowledged mail" in coordinator
+    assert "An idle mark on its card alone is not availability." in coordinator
+    assert "Hand each available worker one bounded task or review with a checkpoint" in coordinator
+    assert "the worker's `working` report or an explicit `blocked` report, not the queued mail alone" in coordinator
+    assert "do not implement features, write their tests, or recreate test environments yourself" in coordinator
+    assert "with a notifying kind, so it also reaches their Telegram" in coordinator
+    assert "That is a measured association, not a claim about how the harness decides to compact." in coordinator
+    assert "A compaction alone is not a reason." in coordinator
+    assert "A body the brief cuts is read in full with its `lease-read`" in coordinator
+    assert "A turn limit never abandons a window in progress or a held lease." in coordinator
+    assert "A wake, a mail or a compaction is not a reason to reread them." in coordinator
+    assert "never the host's own gh login" in coordinator
+
+
 def test_an_unchanged_wake_reuses_loaded_instructions() -> None:
     """W417: an agent reread the whole skill on every wake in one continuous
     session, reading "which is read every time" as an instruction. Operator
