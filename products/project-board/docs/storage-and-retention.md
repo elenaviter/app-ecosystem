@@ -187,8 +187,10 @@ listed and the time stays bounded.
 A refused `mail.reconciliation.publish` row keeps its receipt under `refused`.
 When the refusal is a Card whose operation list predates the operation
 (`work_worker_operation_not_granted`), the settled row's `remote_result` also
-names `permission_group`, `why` and the `fix` command
-(`pb worker authorize <profile> --device --replace-card`). The relay row counts these
+names `permission_group`, `why` and the `fix`: a project admin presses
+Refresh worker Card on the agent's row in Team > Agents (Refresh coordinator
+Card for the coordinator), which keeps the same Card, client and session
+(W420). The relay row counts these
 as `reconciliation_publications_refused`.
 
 A refused receipt is published again once the Card holds the grant

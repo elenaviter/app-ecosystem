@@ -31,6 +31,15 @@ REFUSAL_CODES = frozenset({"work_worker_operation_not_granted"})
 
 PROFILE_PLACEHOLDER = "<profile>"
 
+# W420 (2026-09-30): the normal fix keeps the same Card, client and session.
+# A project admin refreshes the Card to its role's current defaults; replacing
+# the Card is a separate, deliberate act, not the answer to a missing operation.
+CARD_REFRESH_FIX = (
+    "A project admin presses Refresh worker Card on this agent's row in Team > Agents "
+    "(Refresh coordinator Card for the coordinator); the Card, its client and this "
+    "session stay the same."
+)
+
 
 def replace_card_command(profile: str) -> str:
     """The one command that gives an existing Card a newly declared operation."""
@@ -60,7 +69,8 @@ def actionable_card_refusal(
     operation, the permission group (from the refusal when the service sent
     ``required_grants``, else from this client's own operation policy), an
     operation the Card already holds under the same group when there is one,
-    and the exact ``--replace-card`` command with the worker's profile.
+    and the fix: the normal Card refresh on the same Card (W420), never a
+    replacement Card.
     """
 
     if str(code or "").strip() not in REFUSAL_CODES:
@@ -98,7 +108,7 @@ def actionable_card_refusal(
         "permission_group": group,
         "held_via": held_via,
         "why": why,
-        "fix": replace_card_command(profile),
+        "fix": CARD_REFRESH_FIX,
     }
 
 
@@ -110,9 +120,8 @@ def with_actionable_refusal(
     """An error payload with the actionable fields folded into its details.
 
     Used by the CLI on its way to the renderer, so ``ERROR
-    work_worker_operation_not_granted`` prints ``fix = pb worker authorize
-    <profile> --replace-card`` under ``details`` instead of only the list the
-    Card holds.
+    work_worker_operation_not_granted`` prints the Card refresh as ``fix``
+    under ``details`` instead of only the list the Card holds.
     """
 
     payload = dict(error)
