@@ -126,13 +126,20 @@ test('an agent Card capped by the project Control Card reads it through the proj
   assert.equal(controlCardGetRequest(target).operation, 'project_control_card_get')
 })
 
-test('the backend control_kind decides first, and a plain link stays the viewer own Card', () => {
-  const agentCard = { source: 'grant', issuer_kind: 'application', issuer_ref: 'app', grantor_subject: 'person-3' }
-  assert.equal(controlCardGetRequest(linkedControlOpenTarget(agentCard, {
-    control_id: 'control-person', issuer_ref: 'work:project:q', issuer_kind: 'project', control_kind: 'project_person',
-  })).operation, 'project_person_control_get')
-  assert.deepEqual(linkedControlOpenTarget(agentCard, { control_id: 'control-own', issuer_ref: 'app', issuer_kind: 'application' }), { controlId: 'control-own' })
-  assert.equal(linkedControlOpenTarget(agentCard, { control_id: '  ', issuer_ref: 'x' }), null)
+test('only a My Card bound by the project takes the person route, and it fails closed without coordinates', () => {
+  // issuer_kind "project" alone is not enough: an agent Card of the viewer's
+  // own is not a My Card, so it reads the project's Control Card.
+  const ownAgentCard = { source: 'grant', issuer_kind: 'kdcube_agent_descriptor', issuer_ref: 'agent:y', grantor_subject: 'platform-user-2' }
+  assert.equal(controlCardGetRequest(linkedControlOpenTarget(ownAgentCard, {
+    control_id: 'control-project', issuer_ref: 'work:project:q', issuer_kind: 'project',
+  })).operation, 'project_control_card_get')
+  const myCard = { source: 'project-person', issuer_kind: 'project-person', issuer_ref: 'work:project:q', grantor_subject: '' }
+  assert.equal(linkedControlOpenTarget(myCard, { control_id: 'control-person', issuer_ref: 'work:project:q', issuer_kind: 'project' }), null)
+  assert.equal(linkedControlOpenTarget({ ...myCard, grantor_subject: 'platform-user-2' }, { control_id: 'control-person', issuer_ref: '', issuer_kind: 'project' }), null)
+  // A plain link stays the viewer's own Card; no id opens nothing.
+  const plain = { source: 'grant', issuer_kind: 'application', issuer_ref: 'app', grantor_subject: 'person-3' }
+  assert.deepEqual(linkedControlOpenTarget(plain, { control_id: 'control-own', issuer_ref: 'app', issuer_kind: 'application' }), { controlId: 'control-own' })
+  assert.equal(linkedControlOpenTarget(plain, { control_id: '  ', issuer_ref: 'x' }), null)
 })
 
 test('the panel opens the linked Card through the helper and refuses a mismatch', () => {

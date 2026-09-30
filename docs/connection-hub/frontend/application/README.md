@@ -399,13 +399,17 @@ What the shell owns, and what it does not:
     a person's Control Card in the project (`project_person_control_get`).
 - The **Open <Control Card>** button on a composed Card follows the same
   routes (W424), keyed by the binding's `control_id`:
-  - on a person's My Card, it reads that person's project Control Card
-    through the project and the person: `project_ref` is the binding's
-    `issuer_ref`, `target_subject` is the My Card's `grantor_subject`;
+  - on a person's My Card (`source` `project-person`) whose binding the
+    project issued (`issuer_kind` `project`), it reads that person's project
+    Control Card through the project and the person: `project_ref` is the
+    binding's `issuer_ref`, `target_subject` is the My Card's
+    `grantor_subject`. Without both, it opens nothing;
   - on any other project-issued link, it reads the project's Control Card;
   - otherwise it reads the signed-in person's own Card.
-  A `control_kind` on the binding decides first. The widget opens the result
-  only when its id equals the binding's `control_id`. The displayed label or
+  `issuer_kind` `project` alone does not tell a person's Control Card from
+  the project's own: the My Card source does. The widget opens the result
+  only when its id equals the binding's `control_id`
+  (`project_person_control_get` does not check it). The displayed label or
   UUID and the My Card's own `access_id` never select the Card.
 - Because the widget route is authenticated and an iframe request is not a
   top-level navigation, the shell mounts the widget only after `/profile`
