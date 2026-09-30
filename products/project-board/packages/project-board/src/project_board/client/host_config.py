@@ -281,6 +281,10 @@ class HostRelayConfig:
     workspace_sweep_auto_apply: bool = False
     # Paths the sweep never removes, beyond the installed pb client.
     workspace_sweep_protected: tuple[str, ...] = ()
+    # W423: where runtime-window database backups live on this host, one
+    # folder per project with its manifest (``pb host configure
+    # --backup-root``). Unset, nothing is created: the operator chooses it.
+    backup_root: str = ""
 
     @property
     def effective_agent_workspace_root(self) -> str:
@@ -470,6 +474,7 @@ class HostRelayConfig:
                 for item in (value.get("workspace_sweep") or {}).get("protected_paths") or ()
                 if str(item).strip()
             ),
+            backup_root=str((value.get("backups") or {}).get("root") or ""),
         )
         approved_roots = [Path(root) for root in result.allowed_roots]
         for alias, repository in (
@@ -750,6 +755,7 @@ def update_host_config(
     agent_workspace_root: str | Path | None = None,
     workspace_sweep_auto_apply: bool | None = None,
     workspace_sweep_protected: Sequence[str] | None = None,
+    backup_root: str | Path | None = None,
     remove_disabled_channels: bool = False,
 ) -> HostRelayConfig:
     """Apply one explicit, non-secret host configuration revision."""
@@ -869,6 +875,23 @@ def update_host_config(
                     if str(item).strip()
                 ]
             value["workspace_sweep"] = sweep
+        if backup_root is not None:
+            if str(backup_root).strip():
+                chosen = _absolute(str(backup_root), "backups.root")
+                from .backups import _inside_git_tree
+
+                tree = _inside_git_tree(chosen)
+                if tree is not None:
+                    raise DomainError(
+                        "backup_root_in_git_tree",
+                        f"The backup root {chosen} lies inside the Git working tree {tree}; "
+                        "a backup must never be committed. Choose a folder outside every clone.",
+                        status=400,
+                        details={"backup_root": str(chosen), "git_tree": str(tree)},
+                    )
+                value["backups"] = {**dict(value.get("backups") or {}), "root": str(chosen)}
+            else:
+                value.pop("backups", None)
         value["updated_at"] = utc_now()
         updated = HostRelayConfig.from_mapping(value, path=path)
         atomic_write_json(path, value)

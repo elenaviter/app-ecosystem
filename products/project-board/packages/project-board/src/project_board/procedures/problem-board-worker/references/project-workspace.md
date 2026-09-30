@@ -381,6 +381,11 @@ automatic runs only report what they would remove
   decision, and so is turning automatic removal on; until then, `--sweep`
   without `--apply` shows what would go.
 
+Runtime-window database backups follow the same lifetime rule: they live in
+the host's managed backup folder, never in a workspace or scratch folder, and
+only until the next verified ALL CLEAR keeps the newest one. The coordinator's
+step is in [runtime actions](runtime-actions.md#runtime-window-database-backups).
+
 Why: worktrees that were never removed filled one host with about a hundred
 stale folders, and a coordinator's hidden test trees reached 4 GB; on
 2026-09-30 one agent held 55 finished trees (about 11 GB) and the host disk

@@ -430,6 +430,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="An absolute path the workspace sweep never removes (repeat for several; replaces the list).",
     )
     command.add_argument(
+        "--backup-root",
+        default=None,
+        help=(
+            "Absolute LOCAL folder, outside every Git tree, holding runtime-window database "
+            "backups: one private folder per project with its manifest (pb worker backup). "
+            "An empty value clears it. The operator's choice per host."
+        ),
+    )
+    command.add_argument(
         "--agent-workspace-root",
         default=None,
         help=(
@@ -1106,6 +1115,26 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--reason", default="", help="With --end: why the job ended (change request closed, released, ...).")
     command.add_argument("--sweep", action="store_true", help="List every tree in this agent's workspace with its state and what --apply would remove.")
     command.add_argument("--apply", action="store_true", help="With --sweep: remove the trees whose job ended and that are clean and fully pushed; never with force.")
+
+    command = worker_commands.add_parser(
+        "backup",
+        help=(
+            "Runtime-window database backups in this host's managed folder for one project: "
+            "--new names where to write the next one, --record verifies it and adds it to the "
+            "manifest, --prune keeps only the newest after the ALL CLEAR. Without a mode, lists them."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True, help="The project whose backups these are.")
+    command.add_argument("--new", action="store_true", help="Print the path to write the next backup of --format to (creates the private folder).")
+    command.add_argument("--record", default="", metavar="FILE", help="Verify a backup written into the folder and add it to the manifest.")
+    command.add_argument("--format", dest="backup_format", default="plain-sql-gzip", choices=["plain-sql-gzip", "pg-custom"], help="plain-sql-gzip (pg_dump | gzip) or pg-custom (pg_dump -Fc).")
+    command.add_argument("--label", default="", help="With --record: what the backup precedes (the window and its source head).")
+    command.add_argument("--pg-restore", default="pg_restore", help="With --record of a pg-custom backup: the pg_restore command; the archive is read on stdin (for example \"docker exec -i <container> pg_restore\").")
+    command.add_argument("--prune", action="store_true", help="Keep only the newest backup, which must have passed verification; report only unless --apply.")
+    command.add_argument("--all-clear", default="", help="With --prune: the evidence that the window's ALL CLEAR was verified (its receipt or message).")
+    command.add_argument("--apply", action="store_true", help="With --prune: delete the older backups the manifest lists.")
 
     command = worker_commands.add_parser(
         "idle",
@@ -1992,6 +2021,11 @@ def _host_view(config: HostRelayConfig) -> dict[str, Any]:
             "source_repository_urls": dict(config.source_repository_urls),
             "create_missing_home": config.create_missing_journal_home,
         },
+        "workspace_sweep": {
+            "auto_apply": config.workspace_sweep_auto_apply,
+            "protected_paths": list(config.workspace_sweep_protected),
+        },
+        "backups": {"root": config.backup_root},
         "workers": [worker.to_mapping() for worker in config.workers],
     }
 
@@ -2145,6 +2179,7 @@ def _host_command(args: Any) -> dict[str, Any]:
             agent_workspace_root=args.agent_workspace_root,
             workspace_sweep_auto_apply=getattr(args, "workspace_sweep_auto_apply", None),
             workspace_sweep_protected=getattr(args, "workspace_sweep_protect", None),
+            backup_root=getattr(args, "backup_root", None),
             remove_disabled_channels=bool(getattr(args, "remove_disabled_channels", False)),
         )
         view = _host_view(updated)
@@ -4801,6 +4836,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 else "The board shows this until it passes or you set or clear it again."
             ),
         }
+    if args.worker_command == "backup":
+        return _worker_backup(field, identity, args)
     if args.worker_command == "workspace":
         if getattr(args, "sweep", False):
             return _workspace_sweep(field, identity, args, apply=bool(getattr(args, "apply", False)))
@@ -6425,6 +6462,58 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
         trees, forget=lambda path: field.forget_workspace_path(identity.worker_name, str(path))
     )
     return {"worker": identity.worker_name, "workspace": str(workspace), **result}
+
+
+def _worker_backup(field: Any, identity: Any, args: argparse.Namespace) -> dict[str, Any]:
+    """W423: runtime-window backups in the host's managed folder, the coordinator's manifest.
+
+    Listing is open to any agent on the host; naming, recording and pruning
+    are the coordinator's, because the coordinator runs the window.
+    """
+
+    from . import backups
+
+    parsed = parse_ref(args.project_ref)
+    if parsed.kind != "project":
+        raise ValueError("--project-ref must name a project (work:project:...)")
+    config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
+    writes = bool(args.new or str(args.record or "").strip() or args.prune)
+    if writes:
+        coordinator = field.read_project_coordinator(parsed.object_id)
+        holders = {str((coordinator.get("holder") or {}).get("worker_name") or "").lower()}
+        holders |= {
+            str(member.get("worker_name") or "").lower()
+            for member in field.read_project_team(parsed.object_id)
+            if str(member.get("role") or "") == "coordinator"
+        }
+        if identity.worker_name.lower() not in holders - {""}:
+            raise DomainError(
+                "backup_manifest_coordinator_owned",
+                "The backup folder and its manifest are the coordinator's: the coordinator takes, "
+                "records and prunes runtime-window backups. Listing is open (omit --new, --record and --prune).",
+                status=403,
+                details={"coordinator": sorted(holders - {""})},
+            )
+    directory = backups.backup_directory(config.backup_root, parsed.object_id, create=bool(args.new))
+    if args.new:
+        path = backups.new_backup_path(directory, args.backup_format)
+        return {"directory": str(directory), "format": args.backup_format, "write_to": str(path),
+                "next": f"pb worker backup --project-ref {args.project_ref} --record {path} --format {args.backup_format} --label <window and head>"}
+    if str(args.record or "").strip():
+        entry = backups.record_backup(
+            directory,
+            args.record,
+            args.backup_format,
+            label=args.label,
+            recorded_by=identity.worker_name,
+            pg_restore=backups.pg_restore_command(args.pg_restore),
+        )
+        return {"directory": str(directory), "recorded": entry}
+    if args.prune:
+        return backups.prune_backups(
+            directory, all_clear=args.all_clear, pruned_by=identity.worker_name, apply=bool(args.apply)
+        )
+    return backups.backup_report(directory)
 
 
 def _automatic_sweep(field: Any, identity: Any, args: argparse.Namespace, trigger: str) -> dict[str, Any]:

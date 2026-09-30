@@ -78,7 +78,9 @@ successor inherits none of that.
 
 - No runtime window (reload, refresh, client switch) without the operator's go.
   Once the operator gives it, you run the whole window yourself: announce, collect ready,
-  back up the board tables, execute, verify, report, update the facts table. Do not
+  back up the board tables into the host's backup folder, execute, verify, report,
+  update the facts table, and after the ALL CLEAR keep only the newest backup
+  ([runtime actions](runtime-actions.md#runtime-window-database-backups)). Do not
   ask the operator about the mechanics.
 - Deliver a cross-layer item as independently verifiable activations. When one
   layer is reviewed, compatible with the counterparts already running, reversible
