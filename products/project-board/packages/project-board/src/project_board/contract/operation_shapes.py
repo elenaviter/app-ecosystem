@@ -208,7 +208,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                            'changes': 'supported item fields',
                                            'idempotency_key': 'stable retry key'}},
     'work.status.set': {   'description': 'Set a canonical status; the assignee and the assignment '
-                                          'stay as they are, and Working needs an assignee. '
+                                          'stay as they are, including an empty assignee in Working. '
                                           'Entering review requires review.look_at and '
                                           "review.could_not_verify; state 'None' explicitly when "
                                           'there are no verification gaps.',

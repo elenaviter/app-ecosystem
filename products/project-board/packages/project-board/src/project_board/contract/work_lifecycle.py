@@ -84,7 +84,7 @@ def plan_status_mutation(
     they are. Assignment and status are independent in both directions:
     ownership moves only through
     assignment.assign, assignment.return, a reassignment, or a named review
-    decision. The one business rule kept here is that Working needs an assignee.
+    decision. Any status may retain an explicitly empty assignee (W398).
     Why: a status-only edit must not silently release an existing assignment.
     """
 
@@ -92,13 +92,6 @@ def plan_status_mutation(
     current = canonical_work_status(current_status, strict=True)
     target = canonical_work_status(requested_status, strict=True)
     assignee = str(current_assignee or "").strip()
-    if target == WORKING and not assignee:
-        raise DomainError(
-            "work_item_status_requires_assignment",
-            "Working status requires an assignee. Assign the item first.",
-            status=409,
-            details={"status": target, "required_operation": "assignment.assign"},
-        )
     return WorkStatusMutation(
         status=target,
         assignee=assignee,
