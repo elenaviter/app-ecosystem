@@ -51,15 +51,15 @@ Missing provider-account metadata is displayed as not reported and does not
 block Card authorization because it is identification rather than authority.
 
 The relay reads the host's current login, and a running session keeps the
-account it started with when the host later logs in to another one. So the
-first account the board reads for a session is that session's account, shown
-with where it came from (the host's login when the session was first seen). A
-later, different login is shown beside it as the host login, and the session's
-account stays (W310). `pb worker authorize` authorizes a Card: it is not a
-provider login, and it does not change the session's account. The host login
+account it started with when the host later logs in to another one. The board
+keeps the first host-login reading it takes for a session, shown with where it
+came from (the host's login when the board first saw the session). A later,
+different login is shown beside it as the host login, and the first reading
+stays (W310). `pb worker authorize` authorizes a Card: it is not a provider
+login, and it does not change the first reading. The host login
 is evidence about the host, never proof of the account a running session uses:
 a session first seen after the host moved to another login takes that login
-as its first reading. So the board reads each session's account as `inferred`
+as its first reading. So the board reads each session's account state as `inferred`
 (the host is still on the first reading), `mismatch`, `unknown` or
 `unreported`, and no usage read under a host login counts as the session's
 confirmed capacity.

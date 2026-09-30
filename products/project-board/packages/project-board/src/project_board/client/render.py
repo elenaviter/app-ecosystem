@@ -1585,7 +1585,7 @@ _ACCOUNT_STATE_NOTES = {
     "bound": "the session's account, proven from the session",
     "inferred": "inferred from the host login when the board first saw the session, not proven for the session",
     "mismatch": "first read from the host login, and the host is now logged in to another account",
-    "unknown": "not known: the host login is unread, or an earlier board replaced the session's account with a later login",
+    "unknown": "not known: the host login is unread, or an earlier board replaced the first reading with a later login",
     "unreported": "not reported",
 }
 
