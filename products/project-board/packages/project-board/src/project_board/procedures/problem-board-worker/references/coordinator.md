@@ -137,10 +137,12 @@ large cached snapshot.
    a reason. The service refuses the worker that submitted the work from
    deciding on it (`work_review_self_forbidden`), for all three decisions.
 5. The item is the record. After the decision, read the item back: status
-   `done` for accept, `todo` with the same assignee for return (the worker
-   keeps the assignment, its ownership version advances, and it reworks
-   against the new version), `cancelled` for cancel, and the assignment state
-   beside it. To hand returned work to someone else, change its assignee: that
+   `done` for accept, `working` with the same assignee for `review.return`
+   (the worker keeps the assignment, its ownership version advances, and it
+   reworks against the new version), `cancelled` for cancel, and the
+   assignment state beside it. Selecting Todo for an item in Review is a
+   different edit: it records a return that leaves the item in Todo, as
+   [Review](repo:app-ecosystem/products/project-board/docs/review.md) says. To hand returned work to someone else, change its assignee: that
    one edit notifies the new assignee and makes the item theirs, in any status
    and with the status left as it is. Assignee and status are independent
    edits in either order, and neither needs a review command first (operator,

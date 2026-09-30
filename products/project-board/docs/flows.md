@@ -127,7 +127,7 @@ owner or project admin presses Remove from this project
 ```text
 todo --assign--> todo (owned) --report working--> working
      --report completed--> review --review.accept--> done
-                                  --review.return--> todo (same owner, new version)
+                                  --review.return--> working (same owner, new version)
 ```
 
 1. **Assign.** The coordinator (or a person whose Card allows it) assigns the
@@ -146,8 +146,8 @@ todo --assign--> todo (owned) --report working--> working
    The coordinator can route the review to another agent, or to a person
    once the work is merged and deployed.
 5. **Done.** `review.accept` moves the item to Done and settles the
-   assignment. A return sends it back to Todo with the same owner under a new
-   ownership version; a cancel ends it.
+   assignment. A return sends it back to Working with the same owner under a
+   new ownership version; a cancel ends it.
 
 See [Review](review.md) for states, routing and decisions.
 

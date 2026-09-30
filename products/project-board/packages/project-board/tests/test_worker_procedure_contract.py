@@ -2064,3 +2064,50 @@ def test_no_procedure_file_repeats_a_heading() -> None:
                 repeated.setdefault(str(path.relative_to(OPERATIONAL_PROCEDURE_ROOT)), []).append(heading)
             seen.add(heading)
     assert repeated == {}, f"procedure files repeat these headings: {repeated}"
+
+
+# W403 review, 2026-09-30: the coordinator page said review.return lands in
+# Todo while the service returns to Working, and one signals row gave a review
+# request the implementation reports. Both passed presence checks.
+_RETURN_TO_TODO = re.compile(
+    r"review\.return[^.\n|]{0,60}\btodo\b"
+    r"|return[^.\n|]{0,20}(?:\bto\b|-->)\s*`?todo\b"
+    r"|`todo` with the same assignee for (?:`review\.return`|return)",
+    re.I,
+)
+
+
+def test_review_return_lands_in_working_in_every_owning_text() -> None:
+    docs_root = PACKAGE_ROOT.parents[1] / "docs"
+    sources = [
+        *sorted(OPERATIONAL_PROCEDURE_ROOT.rglob("*.md")),
+        *(sorted(docs_root.glob("*.md")) if docs_root.is_dir() else []),
+        PACKAGE_ROOT / "src" / "project_board" / "contract" / "worker_operation_contract.py",
+        PACKAGE_ROOT / "src" / "project_board" / "contract" / "operation_shapes.py",
+    ]
+    stale = [
+        f"{path.name}: {match.group(0)}"
+        for path in sources
+        for match in _RETURN_TO_TODO.finditer(path.read_text(encoding="utf-8"))
+    ]
+    assert stale == [], f"these texts still send review.return to Todo: {stale}"
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "`working` with the same assignee for `review.return`" in coordinator
+
+
+def test_review_and_implementation_signals_stay_distinct() -> None:
+    rows = [
+        line for line in _read("references/signals.md").splitlines()
+        if line.startswith("| Receive Assigned Work |")
+    ]
+    [implementation] = [row for row in rows if "`assign` notice" in row]
+    [review] = [row for row in rows if "`Review W…` request" in row]
+    assert "Review W" not in implementation
+    assert "report `working`" in implementation and "`blocked` report" in implementation
+    # A reviewer holds no implementation assignment or version to report against.
+    assert "report `working`" not in review and "`blocked`" not in review
+    assert "`busy-until`" in review and "info line" in review
+    # The owning SKILL sequence says the same.
+    skill = _words(_read("SKILL.md"))
+    assert "A review is begun the same way: read the item and the exact head the notice names, publish that you started (`pb worker busy-until`" in skill
+    assert "`blocked` (or your info line, for a review)" in skill

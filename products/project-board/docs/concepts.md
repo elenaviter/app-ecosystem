@@ -206,7 +206,7 @@ A result counts only after review.
   that name them.
 - **Decisions.** `review.accept` moves the item to `done` and settles the
   assignment. `review.cancel` moves it to `cancelled` and settles it.
-  `review.return` moves it to `todo` with a reason: the same worker keeps the
+  `review.return` moves it to `working` with a reason: the same worker keeps the
   assignment under a new ownership version and reworks it. Handing returned
   work to someone else is a separate release and assign.
 - **What done means.** `done` says a qualified reviewer accepted the submitted
