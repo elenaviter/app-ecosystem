@@ -2210,3 +2210,5 @@ def test_every_wait_names_its_actor_and_the_inbox_is_received_before_repeating_i
     assert "A queued wake is not evidence of unanswered mail, and neither is your memory of having asked" in coordinator
     assert "does not reach Telegram" in coordinator
     assert "this rule does not change the transport" in coordinator
+    assert "is refused with `field_operator_response_required`" in coordinator
+    assert "keep it to a pointer at that answer rather than a second report" in coordinator

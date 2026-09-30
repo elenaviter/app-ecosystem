@@ -541,9 +541,13 @@ correlated `reply` in its board inbox, at its next inbox check
 ([Telegram](repo:app-ecosystem/products/project-board/docs/telegram.md)). An
 agent's own `reply`, `update`, `progress` or `result` stays on the board and
 does not reach Telegram. An acknowledgment the operator must see on their
-phone goes as `decision`, `question` or `blocked`. Routing an answer back to
-the channel the question came from is product work (W409), and this rule does
-not change the transport.
+phone goes as `decision`, `question` or `blocked`. Settling a message that
+carries `operator_response` today needs a correlated `reply`: a delivered
+`blocked` answer alone is refused with `field_operator_response_required`.
+Send one substantive answer, and when settlement asks for the `reply` as
+well, keep it to a pointer at that answer rather than a second report. Making
+one answer satisfy settlement and routing it back to the channel the question
+came from is product work (W409), and this rule does not change the transport.
 
 ## Stay reachable through every window
 
