@@ -263,7 +263,7 @@ environment page:
 - for each host, the machine-local resources and capabilities, and the workers
   that can act as hands on that host;
 - the workers that share a provider account or quota, grouped as one quota
-  pool by each session's first-read account (never by the host's later login),
+  pool by each session's first host-login reading (never by a later login),
   with its reset time when known. That grouping is inferred from the host, so
   record it as inferred. A worker whose account reads `unknown` or `mismatch`
   belongs to no pool until the operator confirms it. Their limits are coupled, not

@@ -136,7 +136,7 @@ before anything changes:
 | **the project the agents join** | `Project one` | its project card lists the repositories (alias, URL, role). Step 7 gives this host a deploy key for exactly those, and step 12 clones them into each agent's workspace. The agents reach nothing else through Problem Board. Which repositories a project uses is decided on its card, not per host (W304 finding 15). |
 | workspaces, one per agent | `~/.kdcube/pb/workspaces/agent-one`, `~/.kdcube/pb/workspaces/agent-two` | each agent edits only its own clones. The root is `~/.kdcube/pb/workspaces/<alias>` on every host (operator ruling, 2026-09-25: not in the user's home folder). An existing host keeps its old folders until a planned move. |
 | agent names | `agent-one@host-two`, `agent-two@host-two` | display names on the board. The board addresses a worker by a stable generated name. |
-| runtime of each agent | `claude-code` for both, or one of each | an agent session is described by its runtime, provider account, and session ID. Its stable worker address remains runtime plus session ID, and it keeps the account it was first seen with. One host can run Claude Code and Codex agents side by side, each in its own workspace. Needing another runtime means adding another agent. |
+| runtime of each agent | `claude-code` for both, or one of each | an agent session is described by its runtime, provider account, and session ID. Its stable worker address remains runtime plus session ID, and the board keeps its first host-login reading, as inference. One host can run Claude Code and Codex agents side by side, each in its own workspace. Needing another runtime means adding another agent. |
 | account per runtime | the Claude account for Claude Code agents, the OpenAI account for Codex agents | step 5 logs each runtime in once. Every agent of that runtime under the same Linux user shares its login and its usage. |
 | who approves the agents' Cards | the project's operator | the KDCube user the agents act for. Until a project can have more than one operator (W260), it is the project's operator. |
 | `tmux` on the host | installed by whoever administers the machine | step 9 runs each agent in it. It is a system package, so a user-level install cannot provide it. |
@@ -1042,11 +1042,13 @@ shows the board's answer as `board_alias`.
 
 Identify an agent session with three facts: its coding provider, the provider
 account reported by its host, and its native resumable session ID. Problem
-Board routing remains stable on provider plus session ID. A session keeps the
-provider account it was first seen with: when the host later logs in to
-another account, the board shows that login beside the session's account as a
+Board routing remains stable on provider plus session ID. The board keeps the
+first host-login reading it takes for a session. That reading is inferred, not
+proof of the account the session runs under. When the host later logs in to
+another account, the board shows that login beside the first reading as a
 mismatch, and the worker keeps its mail and assignment address. A session
-started after the new login is a new worker with the new account.
+started after the new login is a new worker, whose first reading is the new
+login.
 
 **Known gap (W271):** until it is authorized, an enrolled worker exists only in
 this host's relay configuration: the board does not list it, and only a shell on
