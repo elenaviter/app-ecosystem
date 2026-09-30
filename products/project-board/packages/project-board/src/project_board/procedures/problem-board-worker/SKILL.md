@@ -215,14 +215,14 @@ correlated conversation first.
 
 ## Receive Assigned Work
 
-Assigned work arrives as one notice from `control-plane`: kind `assign` to
-implement an item, or a `request` titled `Review W…` to review one. Either is
-work to begin now, not a notification to acknowledge: no other message or
-permission is needed, and settling the notice is not progress. Every
-value in an `assign` notice comes from the durable assignment row, not from prose:
-`payload.work_ref`, `payload.assignment_ref`, `payload.ownership_version`, `payload.item_status` and
-`payload.expected_reaction`, each with its source and use in [ownership](references/identity-and-authorization.md).
-Only `begin_work` is the work below: `acknowledge_only` (Done, Cancelled) and `await_review` (Review) are information to read and settle, never a reason to report `working`, reopen or change status (W406).
+Assignments arrive as one notice from `control-plane`: kind `assign` when an item
+is assigned to you, or a `request` titled `Review W…` to review one. The reaction
+to an `assign` notice follows its `payload.expected_reaction` (W406). A review request,
+and an `assign` notice whose reaction is `begin_work`, is work to begin now, not a notification to acknowledge: no other message or permission is needed, and settling it is not progress.
+`acknowledge_only` (Done, Cancelled) and `await_review` (Review) are information to read and settle, never a reason to report `working`, reopen or change status.
+The assignment row gives `payload.work_ref`, `payload.assignment_ref` and
+`payload.ownership_version`, the committed item gives `payload.item_status`, and the relay
+derives `payload.expected_reaction` from that status. Each has its source and use in [ownership](references/identity-and-authorization.md).
 
 **Ownership version** counts on the assignment row, not on the item: 1 when
 first routed, plus one on every move of ownership (re-issue, reassignment,
@@ -230,7 +230,7 @@ release, retirement). A report closes only the ownership it was issued for; a st
 version is refused with `work_assignment_version_conflict` naming the current
 one. Take the version from the notice, never assume 1.
 
-The reaction, in order:
+The `begin_work` reaction, in order:
 
 1. Read the item named by `work_ref`, by key:
    `pb coordinate project.plan.item --object-ref <project-ref>

@@ -101,7 +101,9 @@ missing":
 ## Attendance, Assignment, And Revocation
 
 An assignment notice (kind `assign`, from `control-plane`) carries these
-fields, every one from the durable assignment row and none from prose:
+fields, none from prose. The first three come from the durable assignment row,
+`payload.item_status` from the committed item, and `payload.expected_reaction`
+is derived by the relay from that status:
 
 | field | where it comes from | what it is for |
 | --- | --- | --- |
@@ -109,7 +111,7 @@ fields, every one from the durable assignment row and none from prose:
 | `payload.assignment_ref` | created by `assignment.assign` when the work was routed | the row you report against |
 | `payload.ownership_version` | the assignment row's `ownership_version` | the fence your report must match |
 | `payload.item_status` | the item's status once the assigning save committed | what the item is now; the current item still decides when it has changed since |
-| `payload.expected_reaction` | from `payload.item_status`: `begin_work` (Todo, Working, or none sent), `await_review` (Review), `acknowledge_only` (Done, Cancelled) | whether this is work to begin or information (W406) |
+| `payload.expected_reaction` | derived by the relay from `payload.item_status`: `begin_work` (Todo, Working, or no status sent), `await_review` (Review), `acknowledge_only` (Done, Cancelled) | whether this is work to begin or information (W406) |
 
 The assignee is who the item is with, in every status (operator ruling,
 2026-09-30), so the item's status decides what an `assign` notice asks:
