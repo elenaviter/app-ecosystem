@@ -23,6 +23,7 @@ Three rules follow, and this module is where they live:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 from typing import Any, Iterable, Mapping, Sequence
@@ -958,7 +959,7 @@ def _render_message(message: Mapping[str, Any], lease: Mapping[str, Any], projec
     payload = message.get("payload")
     if payload:
         lines.append("payload:")
-        lines.extend(_flatten(payload, prefix="  "))
+        lines.extend(_flatten(_payload_without_body_copies(payload, body), prefix="  "))
     lines.extend(
         _commands_for(
             message.get("message_ref"),
@@ -972,6 +973,35 @@ def _render_message(message: Mapping[str, Any], lease: Mapping[str, Any], projec
         )
     )
     return lines
+
+
+def _payload_without_body_copies(payload: Any, body: Any) -> Any:
+    """The payload with each exact copy of the body named instead of repeated (W393).
+
+    A review notice carries its whole task as the body and again as
+    ``payload.command.instructions``, so brief output printed it twice. A copy
+    that equals the body, ignoring only leading and trailing whitespace, is
+    printed as one line that says so, with its size and a hash prefix shared
+    with the body. Any other text, a near copy included, stays whole. The JSON
+    output is untouched.
+    """
+
+    text = str(body or "").strip()
+    if not text:
+        return payload
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    marker = f"(identical to the body above: {len(text.encode('utf-8'))} bytes, sha256 {digest})"
+
+    def replace(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {key: replace(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [replace(child) for child in value]
+        if isinstance(value, str) and value.strip() == text:
+            return marker
+        return value
+
+    return replace(payload)
 
 
 def _render_inspect(result: Mapping[str, Any]) -> list[str]:
