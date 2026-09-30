@@ -229,17 +229,21 @@ an unreadable record.
 Finished worktrees filled a host disk before anyone saw it (2026-09-30). The
 relay's heartbeat carries `disk_usage`: the host's free and total bytes for
 the file system that holds the agent's workspace (one `statvfs` per beat) and
-the workspace's own size, which walks the tree and is re-measured at most every
-15 minutes, off the relay's event loop. The board keeps the latest report per
+the workspace's own size. The size walks the tree, which takes tens of seconds
+on a large workspace, so a background task re-measures it at most every 15
+minutes and the heartbeat never waits for it: each beat carries the last
+measured size, or none until the first walk lands (the card then shows
+"measuring"). The board keeps the latest report per
 agent, shows it on the agent card ("disk … free (…%) · workspace …") and in
 the project team context, and drops a malformed report with a
 `worker.disk_usage_dropped` event instead of failing the heartbeat.
 
 When a host crosses below the alert threshold (default 10% free; the board's
-`PROBLEM_BOARD_DISK_ALERT_FREE_PERCENT` changes it), the operator gets a
+bundle property `disk_alert_free_percent` changes it), the operator gets a
 `decision` mail and the acting coordinator a mail naming the machine, its
-largest agent workspaces and `pb worker workspace --sweep`. One alert per
-crossing: the host must recover above the threshold before it alerts again.
+largest agent workspaces and `pb worker workspace --sweep`. One alert per host
+crossing, however many agents run there: the state is kept per host, and a
+report above the threshold from any of its agents re-arms it.
 
 ## Owner And Worker Conversation
 

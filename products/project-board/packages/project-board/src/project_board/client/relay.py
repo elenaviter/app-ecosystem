@@ -3910,8 +3910,12 @@ class ProblemBoardHostRelayAdapter:
 
         A host disk filled with finished worktrees before anyone saw it. Free
         and total bytes of the workspace's file system are read every beat
-        (one statvfs); the workspace's own size walks the tree, so it is
-        measured at most every DISK_USAGE_REMEASURE_SECONDS, off the event loop.
+        (one statvfs). The workspace's own size walks the tree, which takes
+        tens of seconds on a large workspace and is slowest on the nearly full
+        disk this exists for, so the heartbeat never waits for it: the walk
+        runs as a background task at most every DISK_USAGE_REMEASURE_SECONDS,
+        and each beat carries the last measured size, or none until the
+        first measurement lands.
         """
 
         workspace = str(getattr(self.config, "workspace", "") or getattr(self.config, "working_directory", "") or "")
@@ -3921,17 +3925,39 @@ class ProblemBoardHostRelayAdapter:
             usage = shutil.disk_usage(workspace)
         except OSError:
             return
-        now = time.monotonic()
-        measured_at = getattr(self, "_workspace_bytes_measured", None)
-        if measured_at is None or now - measured_at >= DISK_USAGE_REMEASURE_SECONDS:
-            self._workspace_bytes = await asyncio.to_thread(directory_bytes, Path(workspace))
-            self._workspace_bytes_measured = now
-        payload["disk_usage"] = {
+        self._schedule_workspace_measure(workspace)
+        report: dict[str, Any] = {
             "host_free_bytes": int(usage.free),
             "host_total_bytes": int(usage.total),
             "workspace_path": workspace,
-            "workspace_bytes": int(getattr(self, "_workspace_bytes", 0) or 0),
         }
+        measured = getattr(self, "_workspace_bytes", None)
+        if measured is not None and getattr(self, "_workspace_bytes_path", "") == workspace:
+            report["workspace_bytes"] = int(measured)
+        payload["disk_usage"] = report
+
+    def _schedule_workspace_measure(self, workspace: str) -> None:
+        running = getattr(self, "_workspace_measure_task", None)
+        if running is not None and not running.done():
+            return
+        measured_at = getattr(self, "_workspace_bytes_measured", None)
+        if (
+            measured_at is not None
+            and getattr(self, "_workspace_bytes_path", "") == workspace
+            and time.monotonic() - measured_at < DISK_USAGE_REMEASURE_SECONDS
+        ):
+            return
+
+        async def measure() -> None:
+            try:
+                size = await asyncio.to_thread(directory_bytes, Path(workspace))
+            except Exception:  # noqa: BLE001 - a failed walk leaves the last size and retries next interval
+                size = getattr(self, "_workspace_bytes", None)
+            self._workspace_bytes = size
+            self._workspace_bytes_path = workspace
+            self._workspace_bytes_measured = time.monotonic()
+
+        self._workspace_measure_task = asyncio.get_running_loop().create_task(measure())
 
     def _add_workspace_report(self, payload: dict[str, Any], project_ref: str, entry: Mapping[str, Any]) -> None:
         report = entry.get("report") if entry else None
