@@ -661,13 +661,18 @@ def qualify_limit_state(
     state: Mapping[str, Any] | None,
     host_login: Mapping[str, Any] | None,
 ) -> Mapping[str, Any] | None:
-    """Name the account a usage sample was read under, when that is known (W310).
+    """Name the host login a usage sample was read under, when that can be inferred (W310).
 
     The sample names the host's login only when the login file last changed
     before the sample was taken (whole seconds, so the same second does not
     count). A sample from before the host's last login keeps no account: a
     later login never relabels earlier usage. A sample that already names an
     account keeps it.
+
+    This is inference from the host's login file, never proof of the account
+    a running native session uses, and the sample says so with
+    ``account_source`` ``host_login_file``. The board never counts it as the
+    session's confirmed capacity.
     """
 
     if not isinstance(state, Mapping) or not state or state.get("account_id"):
@@ -677,7 +682,7 @@ def qualify_limit_state(
     changed_at = _utc(login.get("changed_at"))
     observed_at = _utc(state.get("observed_at"))
     if account_id and changed_at and observed_at and changed_at < observed_at:
-        return {**state, "account_id": account_id}
+        return {**state, "account_id": account_id, "account_source": "host_login_file"}
     return state
 
 
