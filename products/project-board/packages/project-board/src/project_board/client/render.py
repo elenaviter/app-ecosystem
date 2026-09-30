@@ -1535,20 +1535,25 @@ def _latest_actionable_review_return(
 ) -> Mapping[str, Any] | None:
     if str(item.get("status") or "").strip().lower() in {"cancelled", "done"}:
         return None
-    history = [
-        entry
-        for entry in item.get("review_history") or []
-        if isinstance(entry, Mapping)
-    ]
-    if not history:
-        return None
-    _index, latest = max(
-        enumerate(history),
-        key=lambda pair: (
-            str(pair[1].get("timestamp") or pair[1].get("created_at") or ""),
-            pair[0],
-        ),
-    )
+    if "latest_review" in item:
+        latest = item["latest_review"]
+        if not isinstance(latest, Mapping):
+            return None
+    else:
+        # Compatibility with pre-pagination servers only. New item reads
+        # supply one bounded latest decision, including explicit null.
+        history = [
+            entry for entry in item.get("review_history") or []
+            if isinstance(entry, Mapping)
+        ]
+        if not history:
+            return None
+        _index, latest = max(
+            enumerate(history),
+            key=lambda pair: (
+                str(pair[1].get("timestamp") or pair[1].get("created_at") or ""), pair[0],
+            ),
+        )
     decision = str(latest.get("decision") or "").strip().lower()
     operation = str(latest.get("operation") or "").strip().lower()
     if decision not in {"return", "returned"} and operation != "review.return":
@@ -1669,6 +1674,14 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
                 )
                 or "not reported"
             )
+        )
+        evidence, evidence_count = _bounded(
+            latest_return.get("evidence") or [], maximum=_BRIEF_REFS,
+        )
+        for ref in evidence:
+            lines.append(f"latest review return evidence: {ref}")
+        _note_omitted(
+            lines, "latest review return evidence refs", shown=len(evidence), total=evidence_count,
         )
     assignment = item.get("assignment")
     if isinstance(assignment, Mapping):

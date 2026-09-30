@@ -132,6 +132,28 @@ def _budget(text: str, *, lines: int, bytes_: int) -> None:
     assert HIDDEN not in text, text
 
 
+def test_bounded_latest_decision_preserves_return_reason_without_review_ledger() -> None:
+    item = _item(returns=0)
+    item.pop("review_history")
+    decision = _review_return(3)
+    decision["actor"] = {"ref": "reviewer-three", "label": "Recorded reviewer three"}
+    decision["reason"] = "Restore readable review evidence."
+    decision["evidence"] = ["https://example.org/review/3"]
+    item["latest_review"] = decision
+    text = _brief(item, operation="project.plan.item")
+    assert "latest review return reason: Restore readable review evidence." in text
+    assert "Recorded reviewer three" in text
+    assert "https://example.org/review/3" in text
+    assert "review_history" not in item
+
+
+@pytest.mark.parametrize("latest", [None, {"decision": "accept", "operation": "review.accept"}])
+def test_latest_decision_supersedes_a_legacy_return(latest) -> None:
+    item = _item(returns=1)
+    item["latest_review"] = latest
+    assert "latest review return" not in _brief(item, operation="project.plan.item")
+
+
 RECOVERY = {
     "state": "applied",
     "source": "local_receipt",

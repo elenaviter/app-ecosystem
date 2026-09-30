@@ -132,6 +132,11 @@ service refuses with `collection_cursor_stale` and the reader restarts from
 the first page. The item panel requests only the selected page, never a
 complete ledger to sort or slice locally. Ordinary item reads do not embed
 the complete history.
+Review actions include the recorded reviewer, decision time, reason and evidence
+references in their `review` field. Only the selected page joins these records.
+Materialized item reads carry one `latest_review` decision (or null), fetched
+with the scoped index and `LIMIT 1`, so brief client output retains the latest
+actionable return without a full ledger. A later acceptance supersedes it.
 
 Recorded labels remain separate from optional current `assignee_card`
 metadata. That bounded page-scoped target contains only the stable `address`,
