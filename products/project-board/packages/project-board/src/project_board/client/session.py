@@ -336,6 +336,7 @@ def _operator_response_contract(message: Mapping[str, Any]) -> dict[str, Any] | 
             message.get("correlation_id") or payload.get("command_ref") or ""
         ),
         "reply_to": str(message.get("message_ref") or ""),
+        "origin": dict(payload.get("operator_origin") or {"ref": "", "channel": "unknown"}),
         "instruction": (
             "Send the operator a visible correlated reply before settling this "
             "conversation message. Settlement records handling; it does not create "
