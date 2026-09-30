@@ -22,6 +22,12 @@ A tree is removed only when all of these hold:
 Everything else is kept and named with its reason. Removal is ``git worktree
 remove`` without force, then ``git branch -d`` for a merged local branch, then
 ``git worktree prune``. A clone at the workspace root is never removed.
+
+A registered tree counts as merged only after its head moved past the head it
+was registered at: a fresh tree cut from main is an ancestor of main and would
+otherwise read as finished. Gitignored files (build output, ``node_modules``,
+ignored test results) are not "untracked" to git and go with a removed tree,
+so evidence belongs in a tracked file or a scratch path outside the tree.
 """
 
 from __future__ import annotations
@@ -201,7 +207,8 @@ def inspect_workspace(
             if registration is not None and kind not in {"implementation", "review"}:
                 kind = "implementation"
             branch = entry.get("branch", "").removeprefix("refs/heads/")
-            tree = Tree(path=path, clone=clone, kind=kind, branch=branch, head=entry.get("HEAD", "")[:12],
+            full_head = entry.get("HEAD", "")
+            tree = Tree(path=path, clone=clone, kind=kind, branch=branch, head=full_head[:12],
                         registration=registration)
             if not path.is_dir():
                 tree.keep.append("missing on disk; git worktree prune clears it")
@@ -215,6 +222,13 @@ def inspect_workspace(
             tree.unpushed = int(out.strip()) if not code and out.strip().isdigit() else -1
             if default:
                 tree.merged = _git(path, "merge-base", "--is-ancestor", "HEAD", default)[0] == 0
+            if registration is not None:
+                # A registered tree is merged only when it moved past the head
+                # it was registered at: a fresh tree cut from main is an
+                # ancestor of main and must not read as finished. Without that
+                # evidence, only a recorded end ends it.
+                base_head = str(registration.get("base_head") or "")
+                tree.merged = bool(tree.merged and base_head and full_head and full_head != base_head)
             if registration and registration.get("ended_at"):
                 tree.ended = str(registration.get("end_reason") or "ended")
             elif tree.merged:

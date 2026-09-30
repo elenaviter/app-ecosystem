@@ -414,6 +414,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     command.add_argument(
+        "--workspace-sweep-auto-apply",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Let the automatic workspace sweep (session start, idle, review decision) remove "
+            "finished, clean, fully pushed trees on this host. Off by default: it only reports "
+            "what it would remove. The operator's decision per host."
+        ),
+    )
+    command.add_argument(
+        "--workspace-sweep-protect",
+        action="append",
+        default=None,
+        help="An absolute path the workspace sweep never removes (repeat for several; replaces the list).",
+    )
+    command.add_argument(
         "--agent-workspace-root",
         default=None,
         help=(
@@ -2127,6 +2143,8 @@ def _host_command(args: Any) -> dict[str, Any]:
             idle_reconcile_ceiling_seconds=args.idle_poll_interval,
             create_missing_journal_home=args.create_missing_journal_home,
             agent_workspace_root=args.agent_workspace_root,
+            workspace_sweep_auto_apply=getattr(args, "workspace_sweep_auto_apply", None),
+            workspace_sweep_protected=getattr(args, "workspace_sweep_protect", None),
             remove_disabled_channels=bool(getattr(args, "remove_disabled_channels", False)),
         )
         view = _host_view(updated)
@@ -6371,16 +6389,16 @@ __all__ = ["build_parser", "main"]
 
 
 
-def _workspace_root(args: argparse.Namespace) -> Path | None:
-    """This agent's workspace: its channel's working directory, or None."""
+def _sweep_host(args: argparse.Namespace) -> tuple[Path | None, Any]:
+    """This agent's workspace (its channel's working directory) and the host config."""
 
     try:
         config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
         channel = config.worker(_identity(args))
     except Exception:  # noqa: BLE001 - no channel means nothing to sweep
-        return None
+        return None, None
     directory = str(getattr(channel, "working_directory", "") or "")
-    return Path(directory) if directory else None
+    return (Path(directory) if directory else None), config
 
 
 def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, apply: bool, only_ended: bool = False) -> dict[str, Any]:
@@ -6392,12 +6410,12 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
 
     from . import workspace_sweep
 
-    workspace = _workspace_root(args)
+    workspace, config = _sweep_host(args)
     if workspace is None or not workspace.is_dir():
         return {"worker": identity.worker_name, "workspace": str(workspace or ""), "state": "no_workspace"}
     registrations = field.workspaces(identity.worker_name)
     protected = [Path(__file__).resolve().parents[1]]
-    protected += [Path(item) for item in os.environ.get("PB_WORKSPACE_SWEEP_PROTECT", "").split(os.pathsep) if item]
+    protected += [Path(item) for item in getattr(config, "workspace_sweep_protected", ()) or ()]
     trees = workspace_sweep.inspect_workspace(workspace, registrations, protected=protected, measure=not only_ended)
     if only_ended:
         trees = [tree for tree in trees if tree.ended or tree.kind == "clone"]
@@ -6413,9 +6431,20 @@ def _automatic_sweep(field: Any, identity: Any, args: argparse.Namespace, trigge
     """The sweep that runs without agent memory (W423): never fails the command it follows."""
 
     try:
-        result = _workspace_sweep(field, identity, args, apply=True, only_ended=True)
+        _workspace, config = _sweep_host(args)
+        # W423: the first real sweep on a host is the operator's decision. Until
+        # the host turns auto-apply on, the triggers only report.
+        auto_apply = bool(getattr(config, "workspace_sweep_auto_apply", False))
+        result = _workspace_sweep(field, identity, args, apply=auto_apply, only_ended=True)
     except Exception as exc:  # noqa: BLE001 - housekeeping must not break the real command
         return {"trigger": trigger, "state": "failed", "reason": f"{type(exc).__name__}: {exc}"[:300]}
+    if not auto_apply:
+        return {
+            "trigger": trigger,
+            "state": "report_only",
+            "would_remove": list(result.get("would_remove") or []),
+            "enable": "pb host configure --workspace-sweep-auto-apply (the operator's decision for this host)",
+        }
     return {
         "trigger": trigger,
         "removed": [row["path"] for row in result.get("removed") or []],

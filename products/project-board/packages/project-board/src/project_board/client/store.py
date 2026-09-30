@@ -809,6 +809,20 @@ def _team_runtime_account(value: Any) -> dict[str, Any]:
 MAX_WAKE_HOLD_PENDING = 1_000_000
 
 
+def _git_head(path: Path) -> str:
+    """The worktree's HEAD commit, or empty when it cannot be read."""
+
+    import subprocess
+
+    try:
+        completed = subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(path), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, check=False, stdin=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
 def _same_work(declared: str, ended: str) -> bool:
     """One work ref names one job whatever version suffix it carries (W423)."""
 
@@ -4731,6 +4745,10 @@ class SharedFieldStore:
                 "assignment_ref": clean_assignment,
                 "repository_ref": clean_repository,
                 "path": clean_path,
+                # W423: the head at registration. A tree counts as merged only
+                # after it moves past this head, so a fresh tree cut from main
+                # is never mistaken for finished work.
+                "base_head": _git_head(Path(clean_path)),
                 "kind": clean_kind,
                 "item": bounded_text(item, field="item", maximum=1000),
                 "declared_at": utc_now(),

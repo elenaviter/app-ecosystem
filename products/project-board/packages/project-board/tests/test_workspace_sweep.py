@@ -147,6 +147,62 @@ def test_a_protected_path_is_never_removed(workspace):
     assert apply_sweep(trees)["removed"] == []
 
 
+def test_a_fresh_registered_tree_is_not_finished_work(workspace):
+    """Review return on #394: a tree just cut from origin/main is an ancestor of
+    main; registered with its base head and no commit since, it is kept."""
+
+    clone = workspace["clone"]
+    fresh = workspace["ws"] / "wt" / "w900-app"
+    git(clone, "worktree", "add", "-q", "-b", "work/w900", str(fresh), "origin/main")
+    base = git(fresh, "rev-parse", "HEAD")
+    registration = {"path": str(fresh), "kind": "implementation", "item": "W900", "base_head": base}
+    rows = by_path(inspect_workspace(workspace["ws"], [registration]))
+    assert not rows[str(fresh)].removable
+    assert any("job not ended" in reason for reason in rows[str(fresh)].keep)
+    # Without a base head, a registered tree ends only by a recorded end.
+    rows = by_path(inspect_workspace(workspace["ws"], [{"path": str(fresh), "kind": "implementation"}]))
+    assert not rows[str(fresh)].removable
+    # Once it moved past its base and that head is merged, it is finished.
+    commit(fresh, "w900")
+    git(fresh, "push", "-q", "origin", "work/w900")
+    git(clone, "merge", "-q", "--ff-only", "origin/work/w900")
+    git(clone, "push", "-q", "origin", "main")
+    git(clone, "fetch", "-q", "origin")
+    rows = by_path(inspect_workspace(workspace["ws"], [registration]))
+    assert rows[str(fresh)].removable and rows[str(fresh)].ended.startswith("merged into")
+
+
+def test_automatic_apply_is_off_until_the_host_turns_it_on(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+
+    def sweep(field, identity, args, *, apply, only_ended=False):
+        calls.append(apply)
+        return {"would_remove": ["/ws/wt/w2-app"], "removed": [], "kept": [], "failed": []}
+
+    monkeypatch.setattr(cli, "_workspace_sweep", sweep)
+    monkeypatch.setattr(cli, "_sweep_host", lambda _args: (Path("/ws"), SimpleNamespace(workspace_sweep_auto_apply=False)))
+    report = cli._automatic_sweep(object(), object(), object(), "session_start")
+    assert calls == [False]
+    assert report["state"] == "report_only" and report["would_remove"] == ["/ws/wt/w2-app"]
+    assert "pb host configure --workspace-sweep-auto-apply" in report["enable"]
+    monkeypatch.setattr(cli, "_sweep_host", lambda _args: (Path("/ws"), SimpleNamespace(workspace_sweep_auto_apply=True)))
+    cli._automatic_sweep(object(), object(), object(), "idle")
+    assert calls == [False, True]
+
+
+def test_the_host_config_carries_the_sweep_opt_in_and_protected_paths(tmp_path):
+    from project_board.client.host_config import HostRelayConfig
+
+    source = tmp_path / "config.json"
+    parser = cli.build_parser()
+    args = parser.parse_args(["host", "configure", "--workspace-sweep-auto-apply", "--workspace-sweep-protect", "/srv/runtime"])
+    assert args.workspace_sweep_auto_apply is True and args.workspace_sweep_protect == ["/srv/runtime"]
+    assert HostRelayConfig.__dataclass_fields__["workspace_sweep_auto_apply"].default is False
+    del source
+
+
 def test_the_automatic_sweep_never_fails_the_command_it_follows(monkeypatch):
     def broken(*_args, **_kwargs):
         raise RuntimeError("disk unreadable")
@@ -173,6 +229,8 @@ def test_the_procedure_owns_registration_the_sweep_and_its_triggers():
     assert "pb worker workspace --kind review --assignment-ref <reviewed item work_ref>" in workspace
     assert "`--apply` removes a tree only when its job ended **and** nothing could be lost" in workspace
     assert "at session start (`pb worker listen`), on `pb worker idle`, and after a review decision recorded through `pb coordinate`" in workspace
+    assert "Until the operator turns it on for the host, these automatic runs only report what they would remove (`pb host configure --workspace-sweep-auto-apply`" in workspace
+    assert "Gitignored files (build output, `node_modules`, ignored test results or screenshots) go with a removed tree" in workspace
     assert "The first real sweep on a host with an existing pile is the operator's decision" in workspace
     assert "Never `rm -rf` a worktree folder" in workspace
     skill = (procedures / "SKILL.md").read_text(encoding="utf-8")

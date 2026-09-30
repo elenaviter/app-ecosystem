@@ -347,7 +347,8 @@ pb worker workspace --kind review --assignment-ref <reviewed item work_ref> --re
 ```
 
 A tree's job ends when its review decision is recorded through
-`pb coordinate review.*`, when its branch is merged, or when you say so with
+`pb coordinate review.*`, when its branch moved past the head it was registered
+at and is merged, or when you say so with
 `pb worker workspace --end --path <path> --reason "<change request closed | released>"`.
 `pb worker workspace --sweep` lists every tree in your workspace, registered or
 not, with its state, size and what `--apply` would do. `--apply` removes a tree
@@ -356,11 +357,16 @@ no untracked file, no commit that no remote has, no other tree linking into it
 (a shared `node_modules`), and not a protected path. It uses
 `git worktree remove` without force, `git branch -d` for a merged branch and
 `git worktree prune`, and names every tree it keeps with the reason. The clean
-clone is never removed.
+clone is never removed. Gitignored files (build output, `node_modules`,
+ignored test results or screenshots) go with a removed tree: keep evidence in a
+tracked file or a scratch path outside it.
 
 The sweep also runs without anyone remembering: at session start
 (`pb worker listen`), on `pb worker idle`, and after a review decision recorded
-through `pb coordinate`. Each prints what it removed and kept.
+through `pb coordinate`. Until the operator turns it on for the host, these
+automatic runs only report what they would remove
+(`pb host configure --workspace-sweep-auto-apply`; `--workspace-sweep-protect
+<path>` adds a path it never removes).
 - Never `rm -rf` a worktree folder, and never remove the clean clone: it holds
   every worktree's Git data. A tree the sweep keeps is yours to finish, push or
   remove by hand with `git worktree remove`.
@@ -369,7 +375,8 @@ through `pb coordinate`. Each prints what it removed and kept.
   (for example a widget's `node_modules`) go with it, unless another tree still
   links into them.
 - The first real sweep on a host with an existing pile is the operator's
-  decision; until then, `--sweep` without `--apply` shows what would go.
+  decision, and so is turning automatic removal on; until then, `--sweep`
+  without `--apply` shows what would go.
 
 Why: worktrees that were never removed filled one host with about a hundred
 stale folders, and a coordinator's hidden test trees reached 4 GB; on
