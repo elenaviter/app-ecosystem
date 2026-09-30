@@ -1035,3 +1035,18 @@ def test_the_correction_keeps_unknown_fields_and_leaves_the_call_unchanged():
         "review": {"could_not_verify": "None", "look_at": "Run the suite."},
         "a_new_service_field.value": "untouched",
     }
+
+
+@pytest.mark.parametrize("dotted_first", [True, False])
+def test_the_correction_keeps_nested_siblings_in_either_key_order(dotted_first):
+    # W404 review of dbd74c1f: with the dotted name first, the nested
+    # object's sibling was dropped by a shallow merge.
+    from project_board.contract.operation_shapes import operation_call_problems
+
+    dotted = ("review.future_service_field.add", "new")
+    nested = ("review", {"future_service_field": {"keep": "original"}})
+    changes = dict([dotted, nested] if dotted_first else [nested, dotted])
+    [problem] = operation_call_problems("plan.item.update", PROJECT, _update(changes))
+    assert json.loads(problem["corrected"]) == {
+        "review": {"future_service_field": {"keep": "original", "add": "new"}}
+    }

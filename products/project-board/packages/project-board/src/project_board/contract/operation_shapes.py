@@ -1188,7 +1188,10 @@ def _undotted(value: Mapping[str, Any], heads: list[str]) -> dict[str, Any]:
         parts = name.split(".")
         if len(parts) == 1 or parts[0] not in known:
             if isinstance(result.get(name), dict) and isinstance(child, Mapping):
-                result[name] = {**copy.deepcopy(dict(child)), **result[name]}
+                # Dotted names under this head came first: merge the object
+                # beneath them at every depth, so no sibling is lost and the
+                # result does not depend on key order.
+                result[name] = _merged(copy.deepcopy(dict(child)), result[name])
             else:
                 result[name] = copy.deepcopy(child)
             continue
@@ -1204,6 +1207,21 @@ def _undotted(value: Mapping[str, Any], heads: list[str]) -> dict[str, Any]:
             target = existing
         target[parts[-1]] = copy.deepcopy(child)
     return result
+
+
+def _merged(base: dict[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
+    """``base`` with ``overlay`` merged in at every depth, overlay winning a leaf.
+
+    The overlay holds the dotted names, so a dotted leaf wins over the same
+    leaf in the nested object whichever came first in the call.
+    """
+
+    for key, value in overlay.items():
+        if isinstance(value, Mapping) and isinstance(base.get(key), dict):
+            base[key] = _merged(base[key], value)
+        else:
+            base[key] = copy.deepcopy(value)
+    return base
 
 
 def _skeleton(value: Any) -> Any:
