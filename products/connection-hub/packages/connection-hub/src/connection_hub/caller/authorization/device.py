@@ -139,6 +139,7 @@ class DeviceAuthorizationFlow:
         client_metadata_url: str | None = None,
         requested_access_id: str = "",
         expected_card_revision: int | None = None,
+        continuity_refresh_token: str = "",
         presenter: Presenter,
         timeout_seconds: float | None = None,
     ) -> DeviceAuthorizationGrant:
@@ -165,6 +166,7 @@ class DeviceAuthorizationFlow:
             scope=scope,
             requested_access_id=requested_access_id,
             expected_card_revision=expected_card_revision,
+            continuity_refresh_token=continuity_refresh_token,
         )
         presenter(prompt)
         interval = prompt.interval
@@ -205,6 +207,7 @@ class DeviceAuthorizationFlow:
                     "device_client_mismatch": "oauth_device_client_mismatch",
                     "device_card_mismatch": "oauth_device_card_mismatch",
                     "device_card_revision_conflict": "oauth_device_card_revision_conflict",
+                    "card_continuity_required": "oauth_device_card_continuity_required",
                     "device_authorization_restart_required": (
                         "oauth_device_authorization_restart_required"
                     ),

@@ -1118,17 +1118,32 @@ Cards](repo:app-ecosystem/docs/connection-hub/package/delegated-cards.md#descrip
 Device mode is defined in [first-time setup](first-time-setup.md#authorize-a-headless-host).
 
 Device login is proven live end to end (two Claude Code agents on a headless
-Linux host, 2026-09-24 and 2026-09-25). If it fails, the fallback is the callback
-through an SSH tunnel. The **operator** leaves the
-tunnel open on their own machine:
+Linux host, 2026-09-24 and 2026-09-25) and is built into the server: there is no
+callback, port, tunnel or manual step to fall back to (operator, 2026-09-30). When
+it fails, the refusal code names the cause; report it to the operator and change
+nothing.
 
-```bash
-ssh -i ~/.ssh/<key> -N -L 18765:127.0.0.1:18765 <user>@<host>
-```
+An **existing** worker profile needs no fallback for device reauthorization.
+Its recorded OAuth client may have been registered for browser authorization
+before the device grant was available; the Connection Hub release with the W414
+Card continuity check gives every existing public native client the device grant, so
+`pb worker authorize <profile> --device` works for it, with the same client and
+Card. Against a server without that release, the command stops with
+`work_relay_device_client_unauthorized`, naming the missing release: have the
+operator deploy it, then run the same command again. Do not use callback ports,
+tunnels, `--replace-card` or a different client for this case. `invalid_client`
+means the client could not be resolved; `invalid_target` or `invalid_scope`
+points to request binding instead.
 
-and the host agent runs the same command with `--no-open --callback-port 18765`
-in place of `--device`. The operator opens the printed URL in their own browser,
-and closes the tunnel after the last agent.
+Device login re-authorizes an existing Card only with **continuity proof** from
+the machine asking: the command sends the Card's last refresh token from this
+profile's stored credential, and the server accepts it only when it belongs to
+one of that Card's credential families for the same client, revoked families
+included (operator, 2026-09-30). A link and code alone never re-authorize an
+existing Card. A new Card still rests on the approver checking the request, so
+approve only a request you started. A host whose stored credential is gone, or holds another
+Card's, stops with `work_relay_card_continuity_required` and the Card is not
+touched: report it to the operator, who decides whether the Card is replaced.
 
 **After the operator approves**, tell each agent in its tmux session, since
 an agent waiting for approval does not check its inbox yet:

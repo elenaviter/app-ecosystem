@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from connection_hub.caller.errors import AuthorizationError
 from project_board.client import authorization, cli
 from project_board.contract.errors import DomainError
 
@@ -280,6 +281,104 @@ async def test_reconnect_passes_device_mode_and_keeps_the_same_card(monkeypatch,
     assert kwargs["device_presenter"] is authorization._device_authorization_presenter  # noqa: SLF001
     assert response["profile"]["access_id"] == existing.access_id
     assert response["card_preserved"] is True
+
+
+@pytest.mark.asyncio
+async def test_worker_device_refusal_names_the_server_release_and_the_same_command_recovers(
+    monkeypatch, tmp_path
+):
+    """W414: an existing browser-only client refused for device login is fixed by
+    the server release's migration; pb names that release, never a callback, a
+    port or a tunnel, and the same --device command then keeps the same Card."""
+
+    class LoginRequired(Exception):
+        code = "oauth_profile_login_required"
+
+    refusal = AuthorizationError(
+        "oauth_reconnect_device_client_unauthorized",
+        "The server refused this profile's recorded OAuth client for device login.",
+    )
+    existing = _profile()
+    oauth = SimpleNamespace(
+        reconnect=AsyncMock(
+            side_effect=[
+                refusal,
+                SimpleNamespace(profile=existing, probe=_probe()),
+            ]
+        )
+    )
+    profile_service = SimpleNamespace(
+        probe_profile=AsyncMock(side_effect=LoginRequired("sign in again")),
+        disconnect=AsyncMock(),
+    )
+    _install_services(
+        monkeypatch,
+        tmp_path,
+        existing=existing,
+        oauth=oauth,
+        profile_service=profile_service,
+    )
+
+    with pytest.raises(DomainError) as raised:
+        await authorization.authorize_worker_profile(
+            "host.json", profile_name=existing.name, device=True
+        )
+    assert raised.value.code == "work_relay_device_client_unauthorized"
+    message = str(raised.value)
+    assert "has not deployed the Connection Hub release" in message
+    assert "run this same command again" in message
+    for crutch in ("callback", "tunnel", "--no-open", "port", "--replace-card"):
+        assert crutch not in message, crutch
+
+    # After the server release, the same device command reconnects the same Card.
+    recovered = await authorization.authorize_worker_profile(
+        "host.json", profile_name=existing.name, device=True
+    )
+    assert oauth.reconnect.await_args.kwargs.get("device") is True
+    assert "callback_port" not in oauth.reconnect.await_args.kwargs or not oauth.reconnect.await_args.kwargs["callback_port"]
+    assert recovered["profile"]["access_id"] == existing.access_id
+    assert recovered["card_preserved"] is True
+    profile_service.disconnect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_worker_device_login_without_card_continuity_is_named_and_touches_nothing(
+    monkeypatch, tmp_path
+):
+    """W414: the server re-authorizes an existing Card by device login only with
+    the Card's last refresh token as proof. Without it pb names the refusal,
+    never disconnects the profile, and offers no workaround."""
+
+    class LoginRequired(Exception):
+        code = "oauth_profile_login_required"
+
+    existing = _profile()
+    oauth = SimpleNamespace(
+        reconnect=AsyncMock(
+            side_effect=AuthorizationError(
+                "oauth_reconnect_card_continuity_required",
+                "The Card was not re-authorized.",
+            )
+        )
+    )
+    profile_service = SimpleNamespace(
+        probe_profile=AsyncMock(side_effect=LoginRequired("sign in again")),
+        disconnect=AsyncMock(),
+    )
+    _install_services(
+        monkeypatch, tmp_path, existing=existing, oauth=oauth, profile_service=profile_service
+    )
+
+    with pytest.raises(DomainError) as raised:
+        await authorization.authorize_worker_profile(
+            "host.json", profile_name=existing.name, device=True
+        )
+    assert raised.value.code == "work_relay_card_continuity_required"
+    message = str(raised.value)
+    assert "tell the operator" in message
+    for crutch in ("callback", "tunnel", "--no-open", "port", "--replace-card"):
+        assert crutch not in message, crutch
+    profile_service.disconnect.assert_not_awaited()
 
 
 @pytest.mark.asyncio

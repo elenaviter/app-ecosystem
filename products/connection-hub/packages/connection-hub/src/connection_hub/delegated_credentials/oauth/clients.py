@@ -20,6 +20,7 @@ import re
 from typing import Any, Dict, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
+from connection_hub.delegated_credentials.oauth.device import DEVICE_GRANT_TYPE
 from connection_hub.delegated_credentials.oauth.config import (
     DEFAULT_CLAUDE_REDIRECT_URIS,
     DEFAULT_DCR_REDIRECT_URIS,
@@ -33,6 +34,31 @@ CLIENT_REGISTRATION_PRE_REGISTERED = "pre_registered"
 CLIENT_REGISTRATION_DYNAMIC = "dynamic_client_registration"
 CLIENT_REGISTRATION_METADATA_DOCUMENT = "client_id_metadata_document"
 DYNAMIC_CLIENT_ID_PREFIX = "dcr-"
+
+
+def public_native_grant_types(
+    grant_types: Any,
+    *,
+    application_type: str,
+    token_endpoint_auth_method: str,
+) -> list[str]:
+    """The grants a dynamically registered client holds (W414, operator 2026-09-30).
+
+    Device login is built in: every public native client (application type
+    ``native``, token endpoint authentication ``none``, where pb and local
+    profiles live) holds the device grant, whatever it asked for. Any other
+    client keeps exactly the grants it registered.
+    """
+
+    grants = [str(item) for item in (grant_types or ("authorization_code", "refresh_token"))]
+    grants = list(dict.fromkeys(grants))
+    if (
+        str(application_type or "native").strip().lower() == "native"
+        and str(token_endpoint_auth_method or "none").strip() == "none"
+        and DEVICE_GRANT_TYPE not in grants
+    ):
+        grants.append(DEVICE_GRANT_TYPE)
+    return grants
 
 MAX_PUBLIC_CLIENT_METADATA_KEYS = 64
 MAX_PUBLIC_CLIENT_METADATA_DEPTH = 3
@@ -230,6 +256,26 @@ def client_from_record(record: dict) -> "PublicClient":
             if isinstance(metadata.get("client_metadata"), Mapping)
             else {}
         ),
+    )
+
+
+def client_holds_device_grant(client: "PublicClient") -> bool:
+    """Whether a client may start device login (W414, operator 2026-09-30).
+
+    Device login is built in for public native dynamic clients, so one
+    registered before it holds it without a stored change. Only a handler that
+    checks Card continuity before a device request may use this: an older
+    handler reads the stored grants, which the release migration changes only
+    after every process runs the checked handler.
+    """
+
+    if DEVICE_GRANT_TYPE in client.grant_types:
+        return True
+    return (
+        client.registration_kind == CLIENT_REGISTRATION_DYNAMIC
+        and client.client_id.startswith(DYNAMIC_CLIENT_ID_PREFIX)
+        and str(client.application_type or "").strip().lower() == "native"
+        and str(client.token_endpoint_auth_method or "").strip() == "none"
     )
 
 

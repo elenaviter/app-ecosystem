@@ -488,6 +488,35 @@ async def authorize_worker_profile(
                         **options,
                     )
                 except Exception as reconnect_error:
+                    if (
+                        device
+                        and getattr(reconnect_error, "code", "")
+                        == "oauth_reconnect_card_continuity_required"
+                    ):
+                        raise DomainError(
+                            "work_relay_card_continuity_required",
+                            "Connection Hub re-authorizes an existing Card by device login only "
+                            "with proof that this machine held it (the Card's last refresh "
+                            "token), and this profile's stored credential does not prove it. "
+                            "The Card was not re-authorized; tell the operator.",
+                            status=409,
+                            details={"profile": profile_name},
+                        ) from reconnect_error
+                    if (
+                        device
+                        and getattr(reconnect_error, "code", "")
+                        == "oauth_reconnect_device_client_unauthorized"
+                    ):
+                        raise DomainError(
+                            "work_relay_device_client_unauthorized",
+                            "Connection Hub refused this profile's recorded client for device login: "
+                            "the server has not deployed the Connection Hub release that gives existing "
+                            "clients device login (the W414 Card continuity check). Ask the operator to deploy "
+                            "it, then run this same command again; the profile, its client and its Card "
+                            "stay the same.",
+                            status=409,
+                            details={"profile": profile_name},
+                        ) from reconnect_error
                     raise _connection_hub_error(reconnect_error) from reconnect_error
                 if result.profile.access_id != existing.access_id:
                     raise DomainError(

@@ -69,11 +69,15 @@ def test_37_joining_sends_the_welcome_notice_and_the_agent_reports_ready():
     assert "tell the coordinator it is ready, naming anything it could not reach" in words
 
 
-def test_16_device_login_is_proven_live_and_the_tunnel_is_the_fallback():
+def test_16_device_login_is_proven_live_and_has_no_tunnel_fallback():
+    # W414, operator 2026-09-30: device login is built in, with no callback,
+    # port, tunnel or manual step anywhere; a failure is a named refusal.
     words = " ".join(HOST.split())
     assert "Known gap: device login is not yet proven live" not in words
     assert "Device login is proven live end to end" in words
-    assert "If it fails, the fallback is the callback through an SSH tunnel." in words
+    assert "there is no callback, port, tunnel or manual step to fall back to" in words
+    assert "the fallback is the callback" not in words
+    assert "--callback-port 18765" not in words
 
 
 def test_u4_agent_workspaces_live_under_kdcube():

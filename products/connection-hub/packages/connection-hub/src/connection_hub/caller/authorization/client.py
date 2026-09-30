@@ -216,6 +216,7 @@ class OAuthClient:
         scope: str = "",
         requested_access_id: str = "",
         expected_card_revision: int | None = None,
+        continuity_refresh_token: str = "",
     ):
         from connection_hub.caller.authorization.device import DeviceAuthorizationPrompt
 
@@ -245,6 +246,10 @@ class OAuthClient:
                     "The recorded Card revision is invalid.",
                 )
             payload["expected_card_revision"] = str(revision)
+        if continuity_refresh_token:
+            # W414: re-authorizing an existing Card proves the requester held
+            # it, with the Card's last refresh token (sent only to its issuer).
+            payload["continuity_refresh_token"] = str(continuity_refresh_token)
         response = await self._transport.post_form(
             metadata.device_authorization_endpoint,
             payload,

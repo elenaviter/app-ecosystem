@@ -224,14 +224,33 @@ Allowed MCP tool result
 
 RFC 8628 is the alternate front door into the same Card editor and token
 issuer. It changes how the human and client rendezvous; it does not create a
-second authority model. The public client must register
-`urn:ietf:params:oauth:grant-type:device_code`; the device endpoint rejects an
-ordinary authorization-code client with `unauthorized_client`:
+second authority model. The client must hold
+`urn:ietf:params:oauth:grant-type:device_code`; the device endpoint rejects a
+client without it with `unauthorized_client`. Every public native dynamic
+client (application type `native`, token endpoint authentication `none`) holds
+it: registration adds it whatever the client asked for and reports the stored
+grants, and the device endpoint that checks Card continuity (below) grants it
+to a client registered before it. Web clients and provisioned clients keep
+exactly the grants they were given.
+
+The grant must never reach a device endpoint that does not check Card
+continuity, because such a handler would let any holder of a public client_id
+request an existing Card without proof. So the stored grants change only
+through an explicit release step, never through schema setup: after every
+process serves the checked endpoint, the operator runs the KDCube command
+`grant-device-to-public-native-clients --every-process-checks-card-continuity`.
+It adds only that grant to existing public native dynamic clients, is
+idempotent, and logs and prints how many clients it changed
+(`device_grant_migration`). During a mixed-process rollout an old handler
+still reads the unchanged stored grants and refuses.
+
+The flow:
 
 ```text
 Headless client
   | POST /oauth/device_authorization
   | client_id, resource, scope, optional existing access_id
+  | with access_id: continuity_refresh_token (the Card's last refresh token)
   v
 short-lived device request
   | returns private device_code plus public verification URI and user_code
@@ -255,6 +274,35 @@ revision conflict, and replay are distinct outcomes. A consumed or expired
 device code never mints a token. The browser URL contains only the public user
 code; the private device code and issued tokens stay out of URLs, device
 records, output, and ordinary logs.
+
+A request that names an existing Card (`access_id`) must carry that Card's
+continuity proof: a refresh token this machine holds for it, sent as
+`continuity_refresh_token`. The endpoint hashes it and accepts it only when it
+is a generation of one of that Card's credential families for the same client,
+tenant and project; a revoked family still counts, so a machine recovering
+after a revocation can prove it. Proof is not renewal: it only lets the device
+request start, and the owner's fresh consent in the Card editor still decides.
+Without the proof the endpoint answers `card_continuity_required` before any
+device request exists, so a link and code alone never re-authorize an existing
+Card. The proof is checked and discarded, never stored with the device request
+or logged. Only the durable PostgreSQL authority keeps generation records; the
+Redis migration-source store answers "not proven" for every request, so on that
+backend no existing Card is re-authorized by device login.
+
+The device request records the one Card whose continuity it proved, or none.
+Consent enforces it: when the Card the editor would edit already exists (any
+state), and it is not the proven one, the draft read and the decision both
+refuse with `card_continuity_required` before anything is resolved or saved,
+and the polling client receives the same code. So leaving out `access_id` does
+not skip the proof: a request without proven continuity may create a new Card
+and never reaches an existing one.
+
+A request without `access_id` for a client that has no Card yet creates a new
+Card through the ordinary editor and needs no proof. That path still depends on the approver checking the
+request (the editor shows the requesting client's self-reported machine
+labels, which are not identity proof), so device login is not phishing-proof
+for new Cards. The owner-started one-time code is the planned replacement for
+both paths.
 
 The card editor is the OAuth decision screen. For a device login it labels the
 request and displays the same public user code as the requesting terminal, so
@@ -907,7 +955,9 @@ deployment-specific store is required. The solution-level durability design note
 | Bad redirect URI on authorize/token | Request fails; codes are not delivered to unvalidated redirects. |
 | Missing or invalid PKCE verifier | Token request fails with `invalid_grant`. |
 | Device request has not been approved | Token polling returns `authorization_pending` and no token is minted. |
-| Client did not register the device grant | Device authorization returns `unauthorized_client` before a device code is created. |
+| Client does not hold the device grant | Device authorization returns `unauthorized_client` before a device code is created. |
+| Existing Card requested without its continuity proof, or with a token from another Card, family or client | Device authorization returns `card_continuity_required` before a device code is created. |
+| Device request without proven continuity whose consent would reach an existing Card | The draft read and the decision refuse with `card_continuity_required` before anything is resolved or saved; polling returns the same code and no token is minted. |
 | Device client polls before the advertised interval | Token polling returns `slow_down`, increases the interval by five seconds, and no token is minted. |
 | User denies or the device request expires | Polling returns `access_denied` or `expired_token`; the request cannot mint a token. |
 | Device code is consumed by another poller | The atomic winner receives the approved authority; every later poll returns `device_code_replayed`. |

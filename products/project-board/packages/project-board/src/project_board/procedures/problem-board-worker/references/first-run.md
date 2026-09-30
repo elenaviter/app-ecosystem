@@ -278,9 +278,9 @@ work with.
   may not be the one signed in to the browser this host would open, a second
   person or another account. A pasted callback link does not work in another
   browser; the device link and code do. Why: on 2026-09-26 a second person's
-  enrollment opened the first person's browser session. Only when device
-  login fails, use the named callback fallback of add-a-worker-host step 11,
-  never combined with `--device`.
+  enrollment opened the first person's browser session. Device login has no
+  callback or tunnel fallback (operator, 2026-09-30): when it fails, report
+  its named refusal code to the operator and change nothing.
   After asking, confirm the approval yourself: `pb worker inspect` shows the
   Card active and `next` moved past `authorize_profile`. Check a few times at
   the person's pace, then continue on your own; do not wait to be told

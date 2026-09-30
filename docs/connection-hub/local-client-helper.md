@@ -182,6 +182,26 @@ Card-preserving reconnect from a headless host. Device mode is mutually
 exclusive with `--no-open` and `--callback-port` because it has no callback
 listener.
 
+An older profile may have been registered for browser Authorization Code before
+device authorization was available. Reconnect still uses that profile's recorded
+`client_id`, so the Card stays the same. Device login is built into the server:
+every public native dynamic client (application type `native`, token endpoint
+authentication `none`) holds the device grant. New registrations get it, and
+the Connection Hub release with the W414 Card continuity check grants it to
+existing clients itself; a release step later records it in their stored
+registrations, adding only that grant and changing nothing else. After
+that release, `connection-hub profile reconnect <profile> --device` works for an
+older profile with the same client and Card. Against a server without that
+release, the reconnect stops with `oauth_reconnect_device_client_unauthorized`,
+naming the missing release: have the operator deploy it, then run the same
+command again. The reconnect sends the Card's last refresh token from the
+profile's stored credential as continuity proof, and the server checks it
+against that Card's credential families; a profile whose stored credential is
+gone stops with `oauth_reconnect_card_continuity_required` and the Card is not
+touched. An unknown or removed client still returns `invalid_client`;
+`invalid_target` and `invalid_scope` identify request binding problems. Do not
+replace the Card or register a different client.
+
 ### Manually Issued Profile
 
 For an existing short-lived delegated caller bearer:

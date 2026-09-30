@@ -22,6 +22,7 @@ from connection_hub.delegated_credentials.oauth.authority_store import (
 )
 from connection_hub.delegated_credentials.oauth.clients import (
     DYNAMIC_CLIENT_ID_PREFIX,
+    public_native_grant_types,
 )
 from connection_hub.delegated_credentials.resource_operations import (
     normalize_resource_grants,
@@ -578,8 +579,11 @@ class GrantStore:
         record = {
             "client_id": client_id,
             "redirect_uris": list(redirect_uris),
-            "grant_types": list(
-                grant_types or ("authorization_code", "refresh_token")
+            # W414: a public native client always holds the device grant.
+            "grant_types": public_native_grant_types(
+                grant_types,
+                application_type=application_type,
+                token_endpoint_auth_method="none",
             ),
             "token_endpoint_auth_method": "none",
             "application_type": application_type,
@@ -602,6 +606,31 @@ class GrantStore:
             json.dumps(record),
         )
         return record
+
+    async def card_continuity_proven(
+        self,
+        *,
+        refresh_token: str,
+        client_id: str,
+        access_id: str,
+    ) -> bool:
+        """Whether the refresh token proves the requester held this Card (W414).
+
+        Only the durable PostgreSQL authority keeps every generation of a
+        family. The Redis migration source has no generation records, so it
+        answers "not proven" for every request and fails closed: on that
+        backend no device login re-authorizes an existing Card.
+        """
+
+        if self._authority_store is None:
+            return False
+        return await self._authority_call(
+            "device.card_continuity",
+            "card_continuity_proven",
+            refresh_token=refresh_token,
+            client_id=client_id,
+            access_id=access_id,
+        )
 
     async def get_client_record(self, client_id: str) -> Optional[Dict[str, Any]]:
         if self._authority_store is not None:
