@@ -646,6 +646,30 @@ def limit_state_line(state: Mapping[str, Any] | None) -> str:
     return "limit unknown"
 
 
+def qualify_limit_state(
+    state: Mapping[str, Any] | None,
+    host_login: Mapping[str, Any] | None,
+) -> Mapping[str, Any] | None:
+    """Name the account a usage sample was read under, when that is known (W310).
+
+    The sample names the host's login only when the login file last changed
+    before the sample was taken (whole seconds, so the same second does not
+    count). A sample from before the host's last login keeps no account: a
+    later login never relabels earlier usage. A sample that already names an
+    account keeps it.
+    """
+
+    if not isinstance(state, Mapping) or not state or state.get("account_id"):
+        return state
+    login = host_login if isinstance(host_login, Mapping) else {}
+    account_id = str(login.get("account_id") or "").strip()
+    changed_at = _utc(login.get("changed_at"))
+    observed_at = _utc(state.get("observed_at"))
+    if account_id and changed_at and observed_at and changed_at < observed_at:
+        return {**state, "account_id": account_id}
+    return state
+
+
 def session_with_limit_state(
     session: Mapping[str, Any],
     *,
@@ -701,6 +725,7 @@ __all__ = [
     "limit_state_from_codex",
     "limit_state_line",
     "read_codex_limit_evidence",
+    "qualify_limit_state",
     "read_codex_rate_limits",
     "limit_state_from_codex_evidence",
     "session_with_limit_state",

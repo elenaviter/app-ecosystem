@@ -4350,7 +4350,7 @@ class SharedFieldStore:
             # activity, and presence must not read it as one.
             unchanged = all(
                 current.get(key) == incoming.get(key)
-                for key in ("kind", "reached", "resets_at", "windows", "source")
+                for key in ("kind", "reached", "resets_at", "windows", "source", "account_id")
             )
             recorded_at = str(current.get("recorded_at") or "")
             if unchanged and recorded_at and (_seconds_since(recorded_at) or 0) < 60:

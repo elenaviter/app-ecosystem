@@ -111,7 +111,9 @@ from .limit_state import (
     limit_state_from_claude_statusline,
     limit_state_from_claude_stop_failure,
     limit_state_line,
+    qualify_limit_state,
 )
+from .runtime_account import read_host_login
 from .render import (
     FORMATS,
     FORMAT_BRIEF,
@@ -6149,6 +6151,10 @@ def _limit_state_command(args: argparse.Namespace, *, stdin: Any = None) -> int:
                 # status line and nothing is recorded or said.
                 identity = None
             if identity is not None:
+                # W310: the sample names the host login it was read under.
+                state = dict(
+                    qualify_limit_state(state, read_host_login("claude-code")) or state
+                )
                 field.record_runtime_limit_state(identity.worker_name, state)
                 # W327: the same status line names the model and its effort.
                 model = (

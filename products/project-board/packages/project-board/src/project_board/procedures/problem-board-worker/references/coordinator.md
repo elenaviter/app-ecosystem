@@ -245,7 +245,12 @@ in `pb worker context`: `team[].limit_state.windows[]` carries each window's
 `name`, `used_percent` and `resets_at`. The brief output prints a scheduling
 row for every member (runtime, account, info line, and any held or recovered
 wake the board reports) and one `team usage:` line per member, which names a
-window whose reset has passed. `pb worker context --project-ref <project-ref> --member <name>` shows one
+window whose reset has passed. A `team usage:` line that says "not this
+session's capacity" was read under another login, or under a login the board
+cannot tie to the session: it is not that worker's room, and it does not
+count toward the worker's pool (W310). The account part of a member's row says
+when the host is now logged in to another account, or when the session's
+account is not known. `pb worker context --project-ref <project-ref> --member <name>` shows one
 member in full. `pb worker list` shows the same `usage:` line
 for this host's workers. The operator's caps per quota pool (for example "up
 to 70% of the weekly window") live on the project's facts page, next to the
@@ -256,7 +261,9 @@ environment page:
 - for each host, the machine-local resources and capabilities, and the workers
   that can act as hands on that host;
 - the workers that share a provider account or quota, grouped as one quota
-  pool, with its reset time when known. Their limits are coupled, not
+  pool by each session's own account (never by the host's later login), with
+  its reset time when known. A worker whose account reads `unknown` belongs to
+  no pool until that is known. Their limits are coupled, not
   independent capacity. Record `Not known yet` instead of assuming that two
   workers have independent limits.
 - each pool's plan, as the operator states it. Plans differ in the size of
