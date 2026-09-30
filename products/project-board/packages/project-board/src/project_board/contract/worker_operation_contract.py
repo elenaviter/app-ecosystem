@@ -144,7 +144,8 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "description": (
             "Name who reviews an item in review (W326): a linked agent, or a "
             "project admin once the work is merged and deployed. The coordinator "
-            "routes reviews; the item's assignee stays the last worker."
+            "routes reviews. The reviewer becomes the item's assignee, and the "
+            "assignment history keeps the last worker."
         ),
         "grants": ("work:coordinate",),
     },
