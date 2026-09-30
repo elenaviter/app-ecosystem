@@ -349,11 +349,28 @@ class GrantStore:
     async def get_refresh_token_state(
         self,
         refresh_token: str,
+        *,
+        refresh_request_fingerprint: str = "",
     ) -> Optional[RefreshTokenState]:
+        """The live generation, or the consumed one a retried refresh replaces (W408).
+
+        ``refresh_request_fingerprint`` binds a retry to the request it
+        retries (``authority_store.refresh_request_fingerprint``). Only the
+        durable authority store recognises a retry. Without it, or on the
+        legacy Redis path, a consumed token is reuse as always.
+        """
+
         token = str(refresh_token or "").strip()
         if not token:
             return None
         if self._authority_store is not None:
+            if refresh_request_fingerprint:
+                return await self._authority_call(
+                    "refresh_token.read",
+                    "get_refresh_token_state",
+                    token,
+                    refresh_request_fingerprint=refresh_request_fingerprint,
+                )
             return await self._authority_call(
                 "refresh_token.read",
                 "get_refresh_token_state",
@@ -666,6 +683,7 @@ class GrantStore:
         resource: Optional[str] = None,
         card_kind: Optional[str] = None,
         state: Optional[RefreshTokenState] = None,
+        refresh_request_fingerprint: str = "",
     ) -> Optional[str]:
         """Rotate a refresh token and persist any freshly resolved authority.
 
@@ -674,7 +692,9 @@ class GrantStore:
         consistency, while the pointer remains the authority on every use.
         """
         token = str(refresh_token or "").strip()
-        current = state or await self.get_refresh_token_state(token)
+        current = state or await self.get_refresh_token_state(
+            token, refresh_request_fingerprint=refresh_request_fingerprint
+        )
         if current is None:
             return None
         if current.token != token:
@@ -738,6 +758,11 @@ class GrantStore:
                 replacement,
                 ttl_seconds=self._refresh_ttl,
                 expected_generation=current.raw,
+                **(
+                    {"refresh_request_fingerprint": refresh_request_fingerprint}
+                    if refresh_request_fingerprint
+                    else {}
+                ),
             )
 
         # A generated-token collision must not consume the old token. The Lua

@@ -200,6 +200,15 @@ def authorization_server_metadata_urls(issuer: str) -> tuple[str, ...]:
     return (appended,) if appended == standard else (appended, standard)
 
 
+_REFRESH_ATTEMPT_RE = re.compile(r"^[A-Za-z0-9_-]{16,256}$")
+
+
+def valid_refresh_attempt(value: Any) -> bool:
+    """Whether ``value`` is a well-formed refresh attempt id (W408)."""
+
+    return isinstance(value, str) and bool(_REFRESH_ATTEMPT_RE.fullmatch(value))
+
+
 @dataclass(frozen=True, slots=True)
 class ProtectedResourceMetadata:
     resource: str
@@ -433,6 +442,11 @@ class OAuthTokenSet:
     scope: str = ""
     access_id: str | None = None
     card_kind: str | None = None
+    # W408: the id of the refresh this token is being renewed by, stored with
+    # the token before the request is sent. A refresh whose response was lost
+    # is retried with the same id, which lets the server tell that retry from
+    # reuse. Empty when no refresh is in flight.
+    refresh_attempt: str = field(default="", repr=False)
 
     @classmethod
     def from_mapping(
@@ -539,6 +553,11 @@ class OAuthTokenSet:
                 "scope": self.scope,
                 "access_id": self.access_id,
                 "card_kind": self.card_kind,
+                **(
+                    {"refresh_attempt": self.refresh_attempt}
+                    if valid_refresh_attempt(self.refresh_attempt)
+                    else {}
+                ),
             },
             ensure_ascii=True,
             sort_keys=True,
@@ -599,4 +618,9 @@ class OAuthTokenSet:
             scope=scope,
             access_id=access_id,
             card_kind=card_kind,
+            refresh_attempt=(
+                str(payload.get("refresh_attempt") or "")
+                if valid_refresh_attempt(payload.get("refresh_attempt"))
+                else ""
+            ),
         )

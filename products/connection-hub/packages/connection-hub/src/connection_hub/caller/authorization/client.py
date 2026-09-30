@@ -10,6 +10,7 @@ from connection_hub.caller.authorization.models import (
     AuthorizationServerMetadata,
     OAuthClientRegistration,
     OAuthTokenSet,
+    valid_refresh_attempt,
     validate_resource_identifier,
     validate_web_url,
 )
@@ -356,6 +357,7 @@ class OAuthClient:
         refresh_token: str,
         scope: str = "",
         now: int | None = None,
+        refresh_attempt: str = "",
     ) -> OAuthTokenSet:
         if not metadata.supports_refresh:
             raise AuthorizationError(
@@ -373,6 +375,10 @@ class OAuthClient:
         normalized_scope = str(scope or "").strip()
         if normalized_scope:
             payload["scope"] = _oauth_value(normalized_scope)
+        if valid_refresh_attempt(refresh_attempt):
+            # W408: a server that knows it recognises a retry of this same
+            # refresh; one that does not ignores it.
+            payload["refresh_attempt"] = refresh_attempt
         response = await self._transport.post_form(metadata.token_endpoint, payload)
         return OAuthTokenSet.from_mapping(
             response,
