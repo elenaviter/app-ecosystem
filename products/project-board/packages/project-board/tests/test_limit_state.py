@@ -355,7 +355,7 @@ def test_a_codex_snapshot_that_measured_no_window_is_unknown_not_ok():
     assert limit_state_from_codex({"primary": {"used_percent": 10.0, "window_minutes": 300}})["kind"] == "ok"
 
 
-def _spark_rollout(tmp_path, *, premium, turns, session="01a0daac-91ae-7730-81dd-9ffc77207b92"):
+def _spark_rollout(tmp_path, *, premium, turns, session="00000000-0000-4000-8000-00000000a390"):
     """The shape the Spark session wrote on 2026-09-29 (metadata only, W403)."""
 
     day = tmp_path / "2026" / "09" / "29"
@@ -434,7 +434,7 @@ def test_a_measured_bucket_is_reported_when_a_newer_bucket_is_empty(tmp_path):
     # the recovery the rollout held a measured codex bucket (22:52:54.958Z,
     # 5 h 11%, week 33%) and a served turn 11 ms later, yet pb worker list
     # said no windows because a newer bucket carried none.
-    session = "01a0daac-91ae-7730-81dd-9ffc77207b92"
+    session = "00000000-0000-4000-8000-00000000a390"
     day = tmp_path / "2026" / "09" / "29"
     day.mkdir(parents=True)
     codex = {

@@ -339,6 +339,9 @@ WAKE_OBSERVATION_FIELDS = (
     "wake_consumed_observed_at",
     "wake_consumed_retries",
     "wake_retry_exhausted_since",
+    # W390: the ended limit an exhausted wake was re-armed for, once.
+    "wake_limit_rearmed_for",
+    "wake_limit_rearmed_at",
     "wake_queued_confirmed_at",
     # W405: the explicit recovery of an exhausted consumed wake belongs to
     # that wake; a matching receive or a new wake clears it.
@@ -4792,6 +4795,71 @@ class SharedFieldStore:
         return self._session_with_presence(
             listener_without_legacy_fields(listener)
         )
+
+    def rearm_limit_consumed_wake(
+        self,
+        worker_name: str,
+        *,
+        wake_id: str,
+        refused_at: str,
+        cleared_at: str,
+    ) -> bool:
+        """Give an exhausted wake one more push once the limit that refused it ends (W390).
+
+        The W198 ceiling allows a consumed wake one retry: a session that took
+        two wakes without receiving is not helped by a third. A wake the
+        provider refused for usage says nothing about the session, though:
+        the turn never ran. On 2026-09-30 a Codex session's wake and its retry
+        were both refused for its five-hour limit, the limit reset, and the
+        exhausted wake was only deduplicated from then on, so thirteen
+        messages waited with nothing left to wake it.
+
+        This re-arms the wake once per ended limit: the newest turn was a
+        usage refusal no earlier than the wake's first attempt, and that
+        limit's reset (``cleared_at``) has passed. It returns whether it
+        re-armed. Any other exhausted wake keeps the ceiling.
+        """
+
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        clean_wake_id = bounded_text(wake_id, field="wake_id", maximum=128, required=True)
+        clean_cleared = str(cleared_at or "").strip()
+        clean_refused = str(refused_at or "").strip()
+        now = utc_now()
+        if not clean_cleared or not clean_refused or clean_cleared > now:
+            return False
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            listener = listener_without_legacy_fields(row.get("listener"))
+            if not listener or listener.get("state") == "detached":
+                return False
+            subscription = dict(listener.get("subscription") or {})
+            if str(subscription.get("outstanding_wake_id") or "") != clean_wake_id:
+                return False
+            if not str(subscription.get("wake_retry_exhausted_since") or ""):
+                return False
+            if str(subscription.get("wake_limit_rearmed_for") or "") == clean_cleared:
+                return False
+            first_attempt = str(subscription.get("wake_first_attempt_at") or "")
+            if first_attempt and clean_refused < first_attempt:
+                # The refusal came before this wake: the wake itself was
+                # taken by a session that could run, and the ceiling stands.
+                return False
+            subscription["wake_consumed_retries"] = 0
+            subscription.pop("wake_retry_exhausted_since", None)
+            subscription["wake_limit_rearmed_for"] = clean_cleared
+            subscription["wake_limit_rearmed_at"] = now
+            # Due now: the next relay cycle pushes it once.
+            subscription["wake_ack_deadline_at"] = now
+            subscription["revision"] = int(subscription.get("revision") or 0) + 1
+            listener.update(
+                subscription=subscription,
+                revision=int(listener.get("revision") or 0) + 1,
+            )
+            row.update(listener=listener, updated_at=now)
+            atomic_write_json(path, row)
+            return True
 
     def prepare_worker_session_wake(
         self,

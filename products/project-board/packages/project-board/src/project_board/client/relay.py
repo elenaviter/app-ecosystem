@@ -280,6 +280,17 @@ async def _http_download(url: str) -> bytes:
             return await response.read()
 
 
+def _limit_ended_after_refusal(state: Any) -> bool:
+    """The runtime refused a turn for usage and that limit has since reset (W390)."""
+
+    return (
+        isinstance(state, Mapping)
+        and bool(state.get("refusal"))
+        and bool(state.get("cleared_at"))
+        and not str(state.get("resets_at") or "")
+    )
+
+
 def _deadline_passed(value: Any) -> bool:
     """A missing or unreadable wake deadline counts as passed."""
 
@@ -4742,16 +4753,14 @@ class ProblemBoardRelaySupervisor:
         # the runtime named, said once per reset in the log, and the mail
         # stays pending for the wake that follows the reset.
         now = utc_now()
-        deferred_until = wake_deferred_until(
-            session_with_limit_state(
-                listener,
-                runtime_kind=channel.runtime_kind,
-                runtime_session_id=channel.runtime_session_id,
-                now=now,
-                recorded=field.runtime_limit_state(channel.worker_name),
-            ).get("limit_state"),
+        limit_state = session_with_limit_state(
+            listener,
+            runtime_kind=channel.runtime_kind,
+            runtime_session_id=channel.runtime_session_id,
             now=now,
-        )
+            recorded=field.runtime_limit_state(channel.worker_name),
+        ).get("limit_state")
+        deferred_until = wake_deferred_until(limit_state, now=now)
         if deferred_until:
             # W334: the card shows the hold from this same decision.
             field.record_wake_hold(channel.worker_name, until=deferred_until, pending=len(pending_refs))
@@ -4815,6 +4824,30 @@ class ProblemBoardRelaySupervisor:
         outstanding_wake_id = str(
             subscription.get("outstanding_wake_id") or ""
         )
+        if outstanding_wake_id and _limit_ended_after_refusal(limit_state):
+            # W390: the wake was refused for usage, not ignored, and that
+            # limit has ended: one more push, once per ended limit.
+            if field.rearm_limit_consumed_wake(
+                channel.worker_name,
+                wake_id=outstanding_wake_id,
+                refused_at=str(limit_state.get("observed_at") or ""),
+                cleared_at=str(limit_state.get("cleared_at") or ""),
+            ):
+                logger.warning(
+                    "Problem Board wake re-armed worker=%s wake_id=%s reason=limit_ended "
+                    "refusal=%s cleared_at=%s pending=%d",
+                    channel.worker_name,
+                    outstanding_wake_id,
+                    limit_state.get("refusal"),
+                    limit_state.get("cleared_at"),
+                    len(pending_refs),
+                )
+                listener = field.worker_listener_session(channel.worker_name) or {}
+                subscription = (
+                    dict(listener.get("subscription") or {})
+                    if isinstance(listener.get("subscription"), Mapping)
+                    else {}
+                )
         if outstanding_wake_id:
             coalesced = field.coalesce_worker_session_wake(
                 channel.worker_name,

@@ -20,10 +20,10 @@ from project_board.client.store import SharedFieldStore
 from project_board.client.wake_recovery import recover_worker_wake
 from project_board.contract.errors import DomainError
 
-SESSION = "01a0daac-91ae-7730-81dd-9ffc77207b92"
+SESSION = "00000000-0000-4000-8000-00000000a390"
 WORKER = f"codex-{SESSION}"
 REAL_FUTURE = store_module._future
-WAKE = "wake_2e5781298233429ea2001280c4d4b398"
+WAKE = "wake_0000000000000000000000000000a405"
 
 
 def _field(tmp_path: Path) -> SharedFieldStore:

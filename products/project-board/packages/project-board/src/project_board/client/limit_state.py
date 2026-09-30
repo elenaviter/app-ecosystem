@@ -270,13 +270,17 @@ def limit_state_from_codex_evidence(
     """
 
     states: list[dict[str, Any]] = []
+    # Each bucket as measured, before a passed reset turns it unknown: a
+    # refusal is tied to the bucket that was exhausted when it happened.
+    measured: list[dict[str, Any]] = []
     for bucket, snapshot in dict(evidence.get("buckets") or {}).items():
         state = limit_state_from_codex(
             snapshot.get("rate_limits"), observed_at=str(snapshot.get("observed_at") or "")
         )
+        state["limit_id"] = bucket
+        measured.append(dict(state))
         if now:
             state = limit_state_at(state, now=now) or state
-        state["limit_id"] = bucket
         states.append(state)
     limited = sorted(
         (s for s in states if s["kind"] in (KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS)),
@@ -287,6 +291,24 @@ def limit_state_from_codex_evidence(
     refusal = CODEX_USAGE_REFUSALS.get(str((turn or {}).get("error") or ""))
     if refusal:
         exhausted = limited[0] if limited else None
+        refused_at = _utc(turn.get("completed_at"))
+        cleared = [
+            s for s in measured
+            if s["kind"] in (KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS)
+            and refused_at
+            and str(s.get("resets_at") or "") >= refused_at
+            and now
+            and str(s.get("resets_at") or "") <= _utc(now)
+        ]
+        # W390: when the refusal came from a bucket whose reset has since
+        # passed, the refusal still stands (nothing served a turn), and
+        # ``cleared_at`` names that reset. The relay may then push one wake,
+        # the only way a turn can show whether the session is served again.
+        cleared_at = (
+            str(max(cleared, key=lambda s: str(s.get("resets_at") or ""))["resets_at"])
+            if exhausted is None and cleared
+            else ""
+        )
         return {
             "kind": exhausted["kind"] if exhausted else refusal,
             "source": SOURCE_CODEX_ROLLOUT,
@@ -296,6 +318,7 @@ def limit_state_from_codex_evidence(
             "observed_at": _utc(turn.get("completed_at")),
             "refusal": str(turn["error"]),
             "limit_id": exhausted["limit_id"] if exhausted else "",
+            **({"cleared_at": cleared_at} if cleared_at else {}),
         }
     if limited:
         return limited[0]

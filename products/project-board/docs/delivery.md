@@ -145,8 +145,11 @@ A Codex session is woken through its native queue, and the relay gives each
 wake one automatic retry. When the session takes both without running
 `pb worker receive` while mail is still pending, the wake is stranded: new
 mail joins it and the relay submits nothing more on its own. The coordinator
-on that host then runs one explicit recovery of that exact wake. The steps
-are in the coordinator procedure,
+on that host then runs one explicit recovery of that exact wake. A wake the
+provider refused for usage is not stranded this way: the turn never ran, so
+once that limit's reset passes the relay pushes the wake once more itself,
+and a recovery is refused while the relay still holds the session for its
+limit. The steps are in the coordinator procedure,
 [Recover a stalled Codex delivery](../packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator.md#recover-a-stalled-codex-delivery).
 
 Queue admission and model handling are separate states. `submitted` means
