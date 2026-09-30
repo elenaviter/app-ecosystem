@@ -193,6 +193,32 @@ def _oauth_failure(code: str) -> AuthorizationError:
 
 
 @pytest.mark.asyncio
+async def test_device_request_for_an_existing_card_carries_its_continuity_proof():
+    """W414: the Card's last refresh token goes in the device request body as
+    continuity proof; it is never sent when none is held."""
+    transport = _Transport()
+    transport.values["https://auth.example.test/oauth/device_authorization"] = {
+        "device_code": "private-device-code",
+        "user_code": "BCDF-GHJK",
+        "verification_uri": "https://auth.example.test/device",
+        "expires_in": 600,
+        "interval": 5,
+    }
+    client = OAuthClient(transport=transport)
+    registration = OAuthClientRegistration(client_id="device-client", redirect_uris=())
+    for proof in ("held-refresh-token", ""):
+        await client.request_device_authorization(
+            metadata=_metadata(),
+            client=registration,
+            resource="https://runtime.example.test/mcp",
+            requested_access_id="aut_existing",
+            continuity_refresh_token=proof,
+        )
+    assert transport.forms[0][1]["continuity_refresh_token"] == "held-refresh-token"
+    assert "continuity_refresh_token" not in transport.forms[1][1]
+
+
+@pytest.mark.asyncio
 async def test_device_flow_honors_pending_and_slow_down_before_returning_token():
     token = OAuthTokenSet(
         access_token="access",

@@ -183,15 +183,15 @@ def test_first_run_guides_the_user_from_the_state_command() -> None:
         assert step in first_run, step
     # W367: the command always carries --device (operator, 2026-09-26).
     assert "Give them the exact `pb worker authorize <profile> --device`" in first_run
-    assert "Use callback flags (`--no-open --callback-port`) only as the named fallback in add-a-worker-host step 11 when device login fails, never together with `--device`" in skill
+    assert "Device login has no callback or tunnel fallback (operator, 2026-09-30)" in skill
     assert "missing identification does not block Card authorization" in skill
-    # W305, 2026-09-24: the skill once said "never callback flags" while the
-    # host procedure kept the tunnel as its only recovery from a failed device
-    # login, so an agent following the skill would refuse that recovery.
-    assert "never callback flags" not in skill
+    # W305, 2026-09-24: the skill and the host procedure must agree on what a
+    # failed device login does. W414 (operator, 2026-09-30): neither offers a
+    # callback or tunnel; both name the refusal for the operator.
     host = _words((OPERATIONAL_PROCEDURE_ROOT / "add-a-worker-host.md").read_text(encoding="utf-8"))
     assert "pb worker authorize <profile> --device" in host
-    assert "runs the same command with `--no-open --callback-port 18765` in place of `--device`" in host
+    assert "there is no callback, port, tunnel or manual step to fall back to" in host
+    assert "--no-open --callback-port" not in host
     assert "prints `Provider account not reported` and continues authorization" in host
     assert "the credential goes to the native store" in skill
     # The package owns the setup coordinate meanings and source install path.

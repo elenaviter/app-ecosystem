@@ -184,24 +184,23 @@ listener.
 
 An older profile may have been registered for browser Authorization Code before
 device authorization was available. Reconnect still uses that profile's recorded
-`client_id`; it cannot register a replacement device client without changing the
-Card identity. If the device endpoint returns `unauthorized_client` for this
-recorded client, inspect its non-secret registration metadata. A client that
-exists and allows `authorization_code` but lacks the device grant can reconnect
-through its existing browser callback instead. On a headless host, have the
-approver open an SSH tunnel from their own machine to the host's loopback port,
-then run on the host:
-
-```bash
-connection-hub profile reconnect coding-agent --no-open --callback-port 18765
-```
-
-The approver opens the printed authorization URL in their own browser and
-approves the same Card. The profile and native credential store remain on the
-host. Use the callback port registered for a fixed-port client. An unknown or
-removed client returns `invalid_client` and requires operator diagnosis;
+`client_id`, so the Card stays the same. Device login is built into the server:
+every public native dynamic client (application type `native`, token endpoint
+authentication `none`) holds the device grant. New registrations get it, and
+the Connection Hub release with the W414 Card continuity check grants it to
+existing clients itself; a release step later records it in their stored
+registrations, adding only that grant and changing nothing else. After
+that release, `connection-hub profile reconnect <profile> --device` works for an
+older profile with the same client and Card. Against a server without that
+release, the reconnect stops with `oauth_reconnect_device_client_unauthorized`,
+naming the missing release: have the operator deploy it, then run the same
+command again. The reconnect sends the Card's last refresh token from the
+profile's stored credential as continuity proof, and the server checks it
+against that Card's credential families; a profile whose stored credential is
+gone stops with `oauth_reconnect_card_continuity_required` and the Card is not
+touched. An unknown or removed client still returns `invalid_client`;
 `invalid_target` and `invalid_scope` identify request binding problems. Do not
-replace the Card or register a different client as a reconnect workaround.
+replace the Card or register a different client.
 
 ### Manually Issued Profile
 

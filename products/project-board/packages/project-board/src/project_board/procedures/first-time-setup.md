@@ -306,17 +306,22 @@ host-scoped profile store, direct endpoint, and exact enrolled channel
 itself; do not copy an internal interpreter or state-root environment
 assignment. All workers on this host and target share one metadata store,
 while each worker has its own profile and Card. The same command reconnects
-an existing profile to its recorded Card after credential loss; deliberate
-Card replacement is documented in the [operator procedure](operator.md).
+an existing profile to its recorded Card when its credential has expired or
+been revoked; deliberate Card replacement is documented in the
+[operator procedure](operator.md).
 
-### Fallback: A Browser Callback
+Reconnecting an existing Card carries its continuity proof, the last refresh
+token of this profile's stored credential, and the server checks it against
+that Card's credential families. A profile whose stored credential is gone
+stops with `work_relay_card_continuity_required` and the Card is not touched;
+the operator decides whether it is replaced.
 
-Only when device login fails (an account or deployment that does not offer
-it), the agent names the callback fallback of
-[add a worker host](add-a-worker-host.md) step 11: the same profile action
-with `--no-open --callback-port <port>`, and the person opens the printed URL
-in their own browser. Device mode cannot be combined with `--no-open` or
-`--callback-port`.
+### When Device Login Fails
+
+Device login is built into the server and has no callback or tunnel fallback
+(operator, 2026-09-30). A failure stops with a named refusal code: report it to
+the operator as printed and change nothing. [Add a worker host](add-a-worker-host.md)
+step 11 lists the codes.
 
 For a new registration, the Card title contains
 `<provider>:<alias>:<native-session-id>`. Its collapsed client metadata names the

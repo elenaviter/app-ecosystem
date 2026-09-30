@@ -59,6 +59,23 @@ Probe = Callable[..., Awaitable[ProbeResult]]
 _WHOLE_CARD_KINDS = frozenset({CARD_KIND_AGENT, CARD_KIND_AUTOMATION})
 
 
+def _device_continuity_refusal(
+    error: AuthorizationError, *, endpoint: str | None
+) -> bool:
+    """The device endpoint refused an existing-Card login for missing continuity (W414)."""
+
+    details = getattr(error, "details", {})
+    if not isinstance(details, Mapping) or not endpoint:
+        return False
+    parsed = urlsplit(endpoint)
+    safe_endpoint = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    return (
+        error.code == "oauth_token_request_failed"
+        and details.get("oauth_error") == "card_continuity_required"
+        and details.get("url") == safe_endpoint
+    )
+
+
 def _device_reconnect_refusal(
     error: AuthorizationError, *, endpoint: str | None
 ) -> bool:
@@ -277,6 +294,10 @@ class OAuthProfileSessionService:
                         "oauth_device_authorization_unavailable",
                         "Device authorization is unavailable in this process.",
                     )
+                # W414: the Card's last refresh token proves this machine held
+                # it; the server re-authorizes an existing Card only with it.
+                held = self._credentials.get(profile.credential_ref)
+                continuity = str(getattr(held, "refresh_token", "") or "")
                 try:
                     grant = await self._device_authorization.authorize_discovered(
                         protected_resource_metadata_url=(
@@ -287,10 +308,21 @@ class OAuthProfileSessionService:
                         scope=metadata.scope,
                         provisioned_client_id=client_id,
                         requested_access_id=profile.access_id,
+                        continuity_refresh_token=continuity,
                         presenter=device_presenter,
                         timeout_seconds=timeout_seconds,
                     )
                 except AuthorizationError as error:
+                    if _device_continuity_refusal(
+                        error,
+                        endpoint=discovered.authorization_server.device_authorization_endpoint,
+                    ):
+                        raise AuthorizationError(
+                            "oauth_reconnect_card_continuity_required",
+                            "The server re-authorizes an existing Card by device login only "
+                            "with proof that this machine held it, and this profile's stored "
+                            "credential does not prove it. The Card was not re-authorized.",
+                        ) from error
                     if not _device_reconnect_refusal(
                         error,
                         endpoint=discovered.authorization_server.device_authorization_endpoint,
@@ -298,10 +330,11 @@ class OAuthProfileSessionService:
                         raise
                     raise AuthorizationError(
                         "oauth_reconnect_device_client_unauthorized",
-                        "The recorded OAuth client was refused for device authorization. "
-                        "Reconnect this profile with its existing browser callback "
-                        "or have the server operator inspect that client's registration; "
-                        "using another client would change the Card.",
+                        "The server refused this profile's recorded OAuth client for device "
+                        "login: it has not deployed the Connection Hub release that gives "
+                        "existing clients device login (the W414 Card continuity check). After "
+                        "it is deployed, run the same device login again; the client and "
+                        "the Card stay the same.",
                     ) from error
             else:
                 grant = await self._authorization.authorize_discovered(

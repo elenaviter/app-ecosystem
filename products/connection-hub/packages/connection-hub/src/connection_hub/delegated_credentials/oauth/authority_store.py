@@ -4,6 +4,7 @@ import json
 import secrets
 import uuid
 from dataclasses import dataclass
+import logging
 from typing import Any, Mapping, Protocol
 
 from connection_hub.delegated_credentials.devices.authority import (
@@ -21,6 +22,9 @@ from connection_hub.delegated_credentials.oauth.authority_schema import (
     oauth_authority_schema_sql,
 )
 from connection_hub.delegated_credentials.oauth.bearers import bearer_sha256
+from connection_hub.delegated_credentials.oauth.device import DEVICE_GRANT_TYPE
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _json_object(value: Any) -> dict[str, Any]:
@@ -171,6 +175,10 @@ class OAuthAuthorityStore(Protocol):
 
     async def revoke_card_credentials(self, registry_access_id: str) -> bool: ...
 
+    async def card_continuity_proven(
+        self, *, refresh_token: str, client_id: str, access_id: str
+    ) -> bool: ...
+
 
 class PostgresOAuthAuthorityStore:
     """Transactional PostgreSQL authority for OAuth clients and credentials.
@@ -204,6 +212,89 @@ class PostgresOAuthAuthorityStore:
                 await connection.execute(
                     profile_device_authority_schema_sql(self.schema)
                 )
+
+    async def card_continuity_proven(
+        self,
+        *,
+        refresh_token: str,
+        client_id: str,
+        access_id: str,
+    ) -> bool:
+        """Whether a refresh token is one this Card's credential family issued (W414).
+
+        A device login that re-authorizes an existing Card must come from the
+        machine that held it. The proof is the Card's last refresh token: its
+        hash is one of the family's generations, for this client and this
+        Card. A revoked or expired family still proves continuity, because
+        revocation only marks rows, and consent is still required.
+        """
+
+        token = str(refresh_token or "")
+        client = str(client_id or "").strip()
+        access = str(access_id or "").strip()
+        if not token or not client or not access:
+            return False
+        async with self._pool.acquire() as connection:
+            found = await connection.fetchval(
+                f"""
+                SELECT 1
+                  FROM {self.schema}.{TABLE_REFRESH_GENERATIONS} generation
+                  JOIN {self.schema}.{TABLE_FAMILIES} family
+                    ON family.family_id = generation.family_id
+                 WHERE generation.token_sha256 = $1
+                   AND family.client_id = $2
+                   AND family.registry_access_id = $3
+                   AND family.tenant = $4
+                   AND family.project = $5
+                 LIMIT 1
+                """,
+                bearer_sha256(token),
+                client,
+                access,
+                self.tenant,
+                self.project,
+            )
+        return found is not None
+
+    async def grant_device_to_public_native_clients(self) -> int:
+        """W414 release migration (operator, 2026-09-30): the device grant for existing clients.
+
+        Every stored public native dynamic client (``dcr-`` id, application
+        type ``native``, token endpoint authentication ``none``) that lacks the
+        device grant gains it, and nothing else about the row changes: not its
+        revision, redirect URIs, metadata, last use or expiry. Idempotent; it
+        logs how many rows it changed.
+
+        It is never part of :meth:`ensure_schema`. A handler older than the
+        W414 Card continuity check would let a migrated client re-authorize
+        any Card without proof, so the release runs this explicitly, from the
+        KDCube side, only after every process serves the checked handler.
+        """
+
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                return await self._grant_device_to_public_native_clients(connection)
+
+    async def _grant_device_to_public_native_clients(self, connection: Any) -> int:
+        status = await connection.execute(
+            f"""
+            UPDATE {self.schema}.{TABLE_CLIENTS}
+               SET grant_types = grant_types || to_jsonb($1::text)
+             WHERE client_id LIKE 'dcr-%'
+               AND application_type = 'native'
+               AND token_endpoint_auth_method = 'none'
+               AND jsonb_typeof(grant_types) = 'array'
+               AND NOT grant_types ? $1
+            """,
+            DEVICE_GRANT_TYPE,
+        )
+        changed = int(str(status or "UPDATE 0").rsplit(" ", 1)[-1] or 0)
+        LOGGER.info(
+            "[connection_hub.oauth] device_grant_migration schema=%s clients_updated=%d",
+            self.schema,
+            changed,
+        )
+        return changed
 
     async def _revoke_refresh_family(
         self,

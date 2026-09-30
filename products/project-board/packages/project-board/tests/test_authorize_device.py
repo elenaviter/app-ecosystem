@@ -73,4 +73,6 @@ def test_the_skill_tells_the_approver_to_use_their_own_device() -> None:
     assert "pb worker authorize <profile> --device" in step
     assert "never drop `--device`" in step
     assert "own device" in step and "pb worker inspect" in step
-    assert "only as the named fallback" in step
+    # W414 (operator, 2026-09-30): device login is built in; no callback fallback.
+    assert "Device login has no callback or tunnel fallback" in step
+    assert "--callback-port" not in step
