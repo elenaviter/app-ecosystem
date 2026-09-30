@@ -252,3 +252,37 @@ async def test_without_a_durable_authority_no_card_continuity_is_proven() -> Non
     assert not await store.card_continuity_proven(
         refresh_token="anything", client_id="dcr-any", access_id="con_any"
     )
+
+
+# The live shape on a PostgreSQL authority (2026-09-30): a browser-first public
+# native client registered before W414, whose Card's family was revoked by the
+# W408 lost-response sequence. The machine kept its previous refresh token
+# (the response carrying the successor never arrived) and presents it again;
+# reuse detection revokes the family. That kept token still proves continuity,
+# and the unmigrated client is device-capable only through the checked handler.
+@pytest.mark.asyncio
+async def test_the_live_shape_recovers_with_the_token_the_machine_kept() -> None:
+    from connection_hub.delegated_credentials.oauth.store import RefreshTokenReuseDetected
+
+    async with _authority() as (pool, authority):
+        await _insert(pool, authority, "dcr-browser-first", grants=BROWSER_ONLY)
+        record = {"registry_access_id": "con_infra_card", "client_id": "dcr-browser-first", "sub": "google:owner"}
+        kept = await authority.create_refresh_token(record, ttl_seconds=600)
+        successor = await authority.rotate_refresh_token(kept, record, ttl_seconds=600)
+        assert successor  # committed by the server; its response was lost
+        with pytest.raises(RefreshTokenReuseDetected):
+            await authority.get_refresh_token_state(kept)
+        assert await authority.get_refresh_token_state(successor) is None  # the family is revoked
+
+        stored = await GrantStore(
+            object(), tenant=authority.tenant, project=authority.project, authority_store=authority
+        ).get_client_record("dcr-browser-first")
+        assert stored["grant_types"] == BROWSER_ONLY  # no stored change before the release step
+        assert client_holds_device_grant(client_from_record(stored))
+
+        assert await authority.card_continuity_proven(
+            refresh_token=kept, client_id="dcr-browser-first", access_id="con_infra_card"
+        )
+        assert not await authority.card_continuity_proven(
+            refresh_token=kept, client_id="dcr-browser-first", access_id="con_other_card"
+        )
