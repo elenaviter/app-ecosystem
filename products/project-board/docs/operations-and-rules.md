@@ -62,6 +62,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `project.github.use` | project | `work:relay` | Membership (`project_membership`) | A read-only check an agent makes before asking Connection Hub for a GitHub token; Connection Hub asks the board again for the exact repository, which must be on the project card. The worker profile holds it. |
 | `project.plan.index` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `project.plan.item` | plan | `work:observe` | Membership (`project_membership`) |  |
+| `project.plan.history` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `project.plan.resolve` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `project.plan.search` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `project.plan.import` | plan | `work:coordinate` | Their project Card | Replaces the whole plan from a complete package. The owner may always (owner_exempt_from_card). |

@@ -145,6 +145,17 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                                         'item_key)',
                                             'item_key': 'case-insensitive project-scoped item key '
                                                         '(use this or work_ref)'}},
+    'project.plan.history': {
+        'description': 'Read one generation-pinned newest-first action-history page for one work item.',
+        'object_ref': 'work:project:<project_id>',
+        'payload': {
+            'work_ref': 'canonical work:plan:node URI (use this or item_key)',
+            'item_key': 'case-insensitive project-scoped item key (use this or work_ref)',
+            'cursor': 'opaque generation-bound continuation cursor (optional)',
+            'limit': 'integer 1..50 (optional, default 20)',
+            'generation_token': 'explicit history generation fence (optional)',
+        },
+    },
     'project.plan.resolve': {   'description': 'Resolve a bounded explicit set of current '
                                                'plan-item references and project-scoped keys in '
                                                'one indexed PostgreSQL query, naming every absent '
