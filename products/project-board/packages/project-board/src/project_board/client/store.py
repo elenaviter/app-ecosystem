@@ -46,6 +46,7 @@ from ..contract.worker_identity import (
     WorkerSessionIdentity,
     normalize_worker_alias,
 )
+from .assignment_notice import assignment_notice_text
 from .io import (
     atomic_write_json,
     id_stem,
@@ -1418,8 +1419,15 @@ class SharedFieldStore:
         assignment: Mapping[str, Any],
         recipient: str,
         sender_identity: Mapping[str, Any] | None = None,
+        item_status: str = "",
     ) -> dict[str, Any]:
-        """Create one URI-only inbox notice for an assignment ownership version."""
+        """Create one URI-only inbox notice for an assignment ownership version.
+
+        ``item_status`` is the item's committed status as the board sent it
+        (W406). It decides what the notice asks: Todo or Working is work to
+        begin, Review waits for the review, Done or Cancelled is information
+        only. A board that sends none gets the notice it always got.
+        """
 
         parsed_assignment = parse_ref(str(assignment.get("assignment_ref") or ""))
         if parsed_assignment.kind != "assignment":
@@ -1487,31 +1495,21 @@ class SharedFieldStore:
                 "expected_reaction": "resume_work",
             }
         else:
-            subject = (
-                f"Assignment available: {notice_work_ref}"
-                if notice_work_ref
-                else "Assignment available"
-            )
-            body = (
-                "You have been assigned work.\n\n"
-                f"Work item: {notice_work_ref or '(not recorded)'}\n"
-                f"Assignment: {assignment_ref}\n"
-                f"Ownership version: {ownership_version}\n\n"
-                "Read the item, do the work, report against this assignment ref "
-                "and this ownership version, and commit what you wrote. This is "
-                "work to begin, not a notification to acknowledge.\n\n"
-                "  pb coordinate project.plan.item --object-ref <project-ref> "
-                "--payload-json '{\"item_key\":\"<Wn>\"}'\n"
-                "  pb worker report --assignment-ref <assignment> "
-                "--ownership-version <version>\n"
+            subject, body, reaction = assignment_notice_text(
+                status=item_status,
+                work_ref=notice_work_ref,
+                assignment_ref=assignment_ref,
+                ownership_version=ownership_version,
             )
             payload = {
                 "assignment_id": assignment_id,
                 "assignment_ref": assignment_ref,
                 "work_ref": notice_work_ref,
                 "ownership_version": ownership_version,
-                "expected_reaction": "begin_work",
+                "expected_reaction": reaction,
             }
+            if item_status:
+                payload["item_status"] = item_status
         return self.send_mail(
             project_id,
             sender="control-plane",
@@ -8491,6 +8489,7 @@ class SharedFieldStore:
                 assignment=assignment_receipt,
                 recipient=recipient,
                 sender_identity=sender_identity,
+                item_status=str((assignment or {}).get("item_status") or ""),
             )
         delivered = self.send_mail(
             parsed_project.object_id if parsed_project is not None else "",
