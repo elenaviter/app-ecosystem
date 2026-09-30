@@ -98,10 +98,16 @@ def test_notes_keep_page_coordinates_and_every_ref_without_repeating_item():
 def test_inspect_keeps_actionable_wake_attention_bounded():
     wake = "wake_" + "w" * 128
     refs = ["work:mail:" + "m" * 100 + str(i) for i in range(100)]
+    connection = {
+        "state": "degraded", "attempts": 7, "schedule": "periodic",
+        "next_attempt_at": "2026-09-29T20:10:00Z", "reason": LONG,
+        "last_error_code": "connection_lost", "last_error_summary": LONG,
+    }
     text = brief({
         "session": {
             "state": "working", "inbox_check_state": "current",
             "last_message_refs": refs, "last_control_refs": refs,
+            "connection": connection,
             "subscription": {
                 "adapter": "codex-queue", "state": "attached",
                 "wake_delivery_state": "retry_exhausted",
@@ -109,9 +115,8 @@ def test_inspect_keeps_actionable_wake_attention_bounded():
                 "queue_reconciliation_required": True, "last_error": LONG,
             },
         },
-        "channel": {"worker_name": "codex-app", "alias": "codex-app@spark1", "state": "reconnecting",
-                    "connection": {"state": "reconnecting", "next_attempt_at": "2026-09-29T20:10:00Z",
-                                   "last_error_code": "connection_lost", "last_error_summary": LONG}},
+        "channel": {"worker_name": "codex-app", "alias": "codex-app@spark1", "state": "active",
+                    "connection": connection},
         "worker": {"authorization": {"state": "active"}, "relay_diagnostic": {
             "state": "degraded", "code": "handler_error", "message": LONG,
             "recent": [{"code": "old_error", "message": LONG}] * 20,
@@ -124,7 +129,10 @@ def test_inspect_keeps_actionable_wake_attention_bounded():
     assert f"outstanding_wake_id: {wake}" in text
     assert "wake attention: queue reconciliation required" in text
     assert "wake attention state: retry_exhausted" in text
+    assert "channel: active" in text
+    assert "channel.connection: state degraded · attempts 7 · schedule periodic" in text
     assert "next attempt 2026-09-29T20:10:00Z" in text
+    assert "session.connection:" not in text
     assert "connection_lost" in text and "handler_error" in text
     assert "active mail leases: 2" in text
     assert "last message refs: 12 of 100 shown in brief" in text
@@ -132,29 +140,54 @@ def test_inspect_keeps_actionable_wake_attention_bounded():
     assert len(text.splitlines()) <= 55
     assert len(text.encode()) <= 8_000
 
+    session_only = brief({
+        "session": {"state": "working", "subscription": {}, "connection": connection},
+        "channel": {"worker_name": "codex-app", "state": "active"},
+        "worker": {},
+    })
+    assert "session.connection: state degraded · attempts 7 · schedule periodic" in session_only
+    assert "HIDDEN_TAIL" not in session_only
 
-def test_plan_item_update_receipt_keeps_revision_and_refs_without_body_echo():
+
+def test_plan_item_update_receipt_keeps_outcome_revisions_and_refs():
     item_ref = "work:plan:node:w393:" + "i" * 100
     exact = item_ref + ":revision-31"
     text = brief({
         "operation": "plan.item.update",
         "object": {
-            "item_key": "W393", "title": "Compact output", "status": "working",
-            "identity_ref": item_ref, "item_ref": exact, "revision": 31,
-            "description": LONG, "summary": LONG,
-            "acceptance": [LONG] * 30, "notes": [LONG] * 100,
-            "_mutation_replayed": True, "_mutation_noop": True,
+            "command_ref": "", "state": "applied", "operation": "plan.item.update",
+            "project_ref": "work:project:compact-output",
+            "work_ref": exact, "identity_ref": item_ref,
+            "expected_revision": 30, "observed_revision": 31,
+            "result_ref": exact, "summary": "Status set.",
+            "error": {}, "replayed": True, "changed": False,
         },
     })
-    assert f"identity_ref: {item_ref}" in text
-    assert f"item_ref: {exact}" in text
-    assert "revision 31" in text
-    assert "mutation: replayed True · changed False" in text
-    assert "description preview: diagnostic history" in text
-    assert "acceptance lines: 5 of 30 shown in brief" in text
-    assert "HIDDEN_TAIL" not in text and "notes" not in text
-    assert len(text.splitlines()) <= 30
-    assert len(text.encode()) <= 8_000
+    assert text.splitlines()[2] == "state: applied (replayed)"
+    assert f"identity_ref = {item_ref}" in text
+    assert f"work_ref = {exact}" in text and f"result_ref = {exact}" in text
+    assert "expected_revision = 30" in text
+    assert "observed_revision = 31" in text
+    assert "changed = False" in text
+    assert "error = {}" not in text
+    assert "item: -" not in text and "revision ?" not in text
+    assert len(text.splitlines()) <= 15
+    assert len(text.encode()) <= 4_000
+
+    refused = brief({
+        "operation": "plan.item.update",
+        "object": {
+            "state": "refused", "operation": "plan.item.update",
+            "identity_ref": item_ref, "expected_revision": 30,
+            "observed_revision": 31,
+            "error": {"code": "revision_conflict", "message": "Revision changed."},
+        },
+    })
+    assert "state: refused" in refused
+    assert "expected_revision = 30" in refused
+    assert "observed_revision = 31" in refused
+    assert "revision_conflict" in refused
+    assert "item: -" not in refused
 
 
 def test_assignment_receipt_keeps_outcome_refs_and_limit_without_task_history():

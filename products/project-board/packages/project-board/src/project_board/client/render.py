@@ -998,17 +998,27 @@ def _render_inspect(result: Mapping[str, Any]) -> list[str]:
     ]
     if session.get("inbox_check_state") == "stale":
         lines.append("NOTE: inbox checks are stale. For a Claude Code worker this means its watch has stopped.")
-    connection = channel.get("connection")
-    if isinstance(connection, Mapping) and connection:
+    channel_connection = channel.get("connection")
+    for label, connection in (
+        ("channel.connection", channel_connection),
+        ("session.connection", session.get("connection")),
+    ):
+        if not isinstance(connection, Mapping) or not connection:
+            continue
+        if label == "session.connection" and connection == channel_connection:
+            continue
         lines.append(
-            "connection: state {} · next attempt {}".format(
-                connection.get("state") or "reconnecting",
+            "{}: state {} · attempts {} · schedule {} · next attempt {}".format(
+                label,
+                connection.get("state") or "not reported",
+                connection.get("attempts", "?"),
+                _preview(connection.get("schedule"), maximum_bytes=100) or "-",
                 connection.get("next_attempt_at") or "not reported",
             )
         )
-        for key in ("last_error", "last_error_code", "last_error_summary"):
+        for key in ("reason", "last_error", "last_error_code", "last_error_summary"):
             if _present(connection.get(key)):
-                lines.append(f"connection.{key}: {_preview(connection[key])}")
+                lines.append(f"{label}.{key}: {_preview(connection[key])}")
     diagnostic = worker.get("relay_diagnostic")
     if isinstance(diagnostic, Mapping) and diagnostic:
         lines.append(f"relay diagnostic: {_diagnostic_summary(diagnostic)}")
@@ -1340,13 +1350,6 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
             item.get("updated_at") or item.get("item_updated_at") or "-",
         )
     )
-    if "_mutation_replayed" in item or "_mutation_noop" in item:
-        lines.append(
-            "mutation: replayed {} · changed {}".format(
-                bool(item.get("_mutation_replayed")),
-                not bool(item.get("_mutation_noop")),
-            )
-        )
     if _present(item.get("summary")):
         lines.append(
             f"summary: {_preview(item['summary'], maximum_bytes=_LONG_PREVIEW_BYTES)}"
@@ -1835,7 +1838,7 @@ def _render_assignment_receipt(operation: str, assignment: Mapping[str, Any]) ->
 def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
     operation = str(result.get("operation") or "")
     obj = result.get("object")
-    if isinstance(obj, Mapping) and operation in {"project.plan.item", "plan.item.update"}:
+    if isinstance(obj, Mapping) and operation == "project.plan.item":
         item = obj.get("item") if isinstance(obj.get("item"), Mapping) else obj
         return _render_plan_item(operation, item)
     if isinstance(obj, Mapping) and operation == "project.plan.search":
