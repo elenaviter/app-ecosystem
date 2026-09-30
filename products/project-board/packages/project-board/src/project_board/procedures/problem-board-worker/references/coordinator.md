@@ -131,12 +131,24 @@ large cached snapshot.
    occurring. A claim is derived from the observation that would falsify it
    and carries that observation's timestamp. A name, a timer or a threshold is
    not one.
-4. `review.accept`, `review.return` and `review.cancel` take the item
+4. An item whose acceptance needs a deploy, a live test or the operator's
+   proof is operator-final: set `review_requirement` to `{"kind": "operator"}`
+   when you create or route it (`plan.item.update`). Its source reviewer
+   records source approval as a change-request verdict and an item note
+   (`Source approved: <repository> <head> .... Outstanding: <proof>.`), not
+   as an accept, which the service refuses to an agent; a source defect is
+   returned with `review.return` as usual. After the
+   verified deploy, route the Review to the person with `review.assign`
+   (`operator` or `operator:<user id>`, with the merged commits and the
+   deploy check) and a `decision` mail; their accept is final. Never accept
+   such an item as done on source alone (W414, 2026-09-30). [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-final-acceptance)
+   owns the rule.
+5. `review.accept`, `review.return` and `review.cancel` take the item
    `work_ref` looked up from `project.plan.item`, its `expected_revision`, and
    an `idempotency_key` you generate for this decision. Return and cancel take
    a reason. The service refuses the worker that submitted the work from
    deciding on it (`work_review_self_forbidden`), for all three decisions.
-5. The item is the record. After the decision, read the item back: status
+6. The item is the record. After the decision, read the item back: status
    `done` for accept, `working` with the same assignee for `review.return`
    (the worker keeps the assignment, its ownership version advances, and it
    reworks against the new version), `cancelled` for cancel, and the
@@ -148,7 +160,7 @@ large cached snapshot.
    edits in either order, and neither needs a review command first (operator,
    2026-09-29, delivered by W398). Mail about the decision is commentary.
 
-6. **Route reviews (W326). Route a review in the turn it arrives.** An item
+7. **Route reviews (W326). Route a review in the turn it arrives.** An item
    that enters Review with no reviewer named comes to you as the acting
    coordinator, with a review request in your inbox. Handle it in the turn it
    arrives and decide who reviews:

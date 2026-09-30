@@ -202,6 +202,15 @@ exchanged as a change request against the integration ref.
   comment reaches nobody on the board; on 2026-09-26 a request for one test sat
   unseen on a board change request for 1 h 45 min. A review that names a local path is not a
   review, because the path is bound to one machine and one user.
+- **A source verdict is not final acceptance.** When an item's acceptance
+  still needs a deploy, a live test or the operator's proof, the reviewer
+  approves the source on the change request and in an item note,
+  `Source approved: <repository> <head> .... Outstanding: <proof>.` It does not accept the item: on an
+  operator-final item (`review_requirement.kind` operator) the service
+  refuses that, and on a `qualified` item an accept closes it as Done. So ask
+  the coordinator to make such an item operator-final (W414, 2026-09-30).
+  [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-final-acceptance)
+  owns the rule.
 - **The coordinator merges after approval.** Nobody merges their own change
   request. A merge advances the integration ref, from which runtimes release.
 - **A change across several repositories** links every change request to the
