@@ -85,6 +85,7 @@ The package contracts are:
 - [Connection Hub architecture and semantic requirements](connection-hub-architecture.md)
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
 - [Durable PostgreSQL authority generations](package/durable-authority-generations.md)
+- [Refresh retry after a lost token response](package/refresh-retry-after-lost-response.md) (proposed, W408)
 - [Delegated secret administration](package/delegated-secret-administration.md)
 - [Aggregate delegated MCP gateway](package/delegated-mcp-gateway.md)
 - [Custom MCP connectors and governed invocation](custom-mcp-connector.md)
