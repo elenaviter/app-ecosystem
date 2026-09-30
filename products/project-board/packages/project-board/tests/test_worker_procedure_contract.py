@@ -2193,3 +2193,20 @@ def test_a_done_assignment_notice_is_information_not_work() -> None:
     assert "`payload.item_status`" in identity
     signals = _read("references/signals.md")
     assert "`test_a_done_assignment_notice_is_information_not_work`" in signals
+
+
+def test_every_wait_names_its_actor_and_the_inbox_is_received_before_repeating_it() -> None:
+    """W413: on 2026-09-30 an approval sat unread for half an hour while the
+    coordinator kept reporting the policy as awaiting an unnamed approver."""
+
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "## Name who a wait is on, and receive before you repeat it" in _read("references/coordinator.md")
+    for field in ("**Who acts.**", "**What exactly.**", "**The request.**", "**Since when.**"):
+        assert field in coordinator
+    assert "The role `project operator`, unless the decision needs one named person" in coordinator
+    assert "record who actually made it and when" in coordinator
+    assert "**Receive before you declare or repeat an awaiting-operator blocker.**" in coordinator
+    assert "run `pb worker receive`, look for the reply correlated to the request" in coordinator
+    assert "A queued wake is not evidence of unanswered mail, and neither is your memory of having asked" in coordinator
+    assert "does not reach Telegram" in coordinator
+    assert "this rule does not change the transport" in coordinator
