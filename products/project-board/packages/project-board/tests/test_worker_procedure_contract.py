@@ -2212,3 +2212,23 @@ def test_every_wait_names_its_actor_and_the_inbox_is_received_before_repeating_i
     assert "this rule does not change the transport" in coordinator
     assert "is refused with `field_operator_response_required`" in coordinator
     assert "keep it to a pointer at that answer rather than a second report" in coordinator
+
+
+def test_an_operator_restriction_reaches_the_card_before_the_coordinator_routes_from_it() -> None:
+    """W413 return: a resumption with a shared-usage ceiling reached the Facts
+    and the mail, not the agent's card, although Route step 0 said to read it."""
+
+    coordinator = _words(_read("references/coordinator.md"))
+    route = coordinator[coordinator.index("## Route 0."):coordinator.index("1. Need, then discussion")]
+    assert "**Carry an operator restriction to the card before routing from it.**" in route
+    assert "Record the ruling in the project Facts" in route
+    assert "publish the exact restriction with `pb worker info`" in route
+    assert "A paused worker is not woken for this" in route
+    assert "`on_board = True`" in route
+    assert "fresh `pb worker context` team shows the same `info_text`" in route
+    assert "Routine progress goes in the task and in `pb worker busy-until`" in route
+    assert "this was an execution failure" in route
+    # Publishing stays owned by collaboration Rule 6, The info line.
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "### The info line" in _read("references/collaboration.md")
+    assert "says `on_board = True` once the board has it" in collaboration

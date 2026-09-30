@@ -3,7 +3,7 @@ id: project-board.worker-reference.coordinator
 title: Accept, Route, Reload, Refresh
 summary: The coordinator's checklist for review decisions, capacity-aware routing, teammate setup, shared project knowledge, and runtime actions, placed where each act happens so the rule is present when it is applied.
 tags: [procedure, problem-board, coordinator, review, routing, runtime]
-keywords: [waiting actor, awaiting operator, stale blocker, receive before repeating, recorded approver, quota thresholds, paused by choice, resume plan, wake after reset, what the coordinator is for, merge, stacked change request, retarget base, tested merged tree, HEAD^{tree}, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, integrate onto the ref, runtime profile, receipt names the commit, verify the artifact, what loaded]
+keywords: [operator restriction, info line on_board, team row info_text, waiting actor, awaiting operator, stale blocker, receive before repeating, recorded approver, quota thresholds, paused by choice, resume plan, wake after reset, what the coordinator is for, merge, stacked change request, retarget base, tested merged tree, HEAD^{tree}, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, integrate onto the ref, runtime profile, receipt names the commit, verify the artifact, what loaded]
 see_also:
   - runtime-actions.md
   - test-window.md
@@ -681,6 +681,29 @@ section says.
    publishes there what the operator told it about itself (not to be used
    actively, reviews only), and routing past it spends a quota or a session
    the operator reserved.
+
+   **Carry an operator restriction to the card before routing from it.**
+   When the operator sets or changes a restriction on a worker (a cap, a
+   pause, reviews only, a resumption):
+   - Record the ruling in the project Facts: what holds, who ruled, since
+     when.
+   - Ask that worker, when it is active, to publish the exact restriction
+     with `pb worker info` ([collaboration](collaboration.md), Rule 6, The
+     info line). A paused worker is not woken for this. Until it returns,
+     the Facts row is what routing reads.
+   - Before you say the restriction is in place, or route from it, check
+     that the worker's `pb worker info` answered `on_board = True` and that
+     its row in a fresh `pb worker context` team shows the same `info_text`.
+   - The info line carries only the persistent restriction. Routine progress
+     goes in the task and in `pb worker busy-until`, so a progress note never
+     replaces it.
+
+   Why: on 2026-09-30 the operator let one paused agent resume under a
+   weekly ceiling on its shared account's total usage. The ruling reached the
+   project Facts and the team's mail, and the agent's card showed no
+   restriction until the operator asked. Step 0 already said to read the
+   line, so this was an execution failure. Nothing required the restriction
+   to reach the card before the coordinator routed from it (W413).
 1. Need, then discussion with the candidates, then decision, then route. A
    route carries the intention and the acceptance, not the engineering
    constraints. The assigned worker decides how.
