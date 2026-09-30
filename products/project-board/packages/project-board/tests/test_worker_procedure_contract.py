@@ -2209,24 +2209,28 @@ def test_the_coordinator_keeps_the_project_announcement_current() -> None:
 
 def test_an_unchanged_wake_reuses_loaded_instructions() -> None:
     """W417: an agent reread the whole skill on every wake in one continuous
-    session, reading "which is read every time" as an instruction. A wake asks
-    for receive and handling. The skill is reloaded only on its named triggers."""
+    session, reading "which is read every time" as an instruction. Operator
+    ruling: an existing session fully reloads only when its installed revision
+    actually changed through a regular upgrade."""
 
     skill = _read("SKILL.md")
     words = _words(skill)
     receive = words[words.index("## Receive Addressed Input"):words.index("## Handle And Settle Each Lease")]
     assert "**A wake asks for receive and handling, not for reloading instructions.**" in receive
-    # What causes a reload.
-    assert "Load this skill completely when the session starts" in receive
-    assert "its installed revision changed" in receive
-    assert "`pb procedure verify` naming a revision other than the one you loaded" in receive
-    assert "no longer in your context after compaction" in receive
-    assert "when you repair or update the package" in receive
+    # What causes a full load: a new session, and an actual installed-revision change.
+    assert "A new session loads this skill completely once" in receive
+    assert "only when its installed revision actually changed through a regular upgrade" in receive
+    assert "`pb procedure verify` names a revision other than the one you loaded" in receive
+    # What does not: a notice alone, mail, a turn, or a compaction.
+    assert "A coordinator notice alone, new mail, a new turn and a compaction are not that" in receive
+    assert "After a compaction, keep what you still hold and read only the part" in receive
+    assert "Editing this package reads its source files, which is authoring, not loading" in receive
     assert "A reference is read when its trigger fires or the task needs it" in receive
-    # What does not: an unchanged wake. Task evidence is still read fresh.
-    assert "Instructions still in your context stay valid across unchanged wakes" in receive
-    assert "task evidence does not, and is read fresh as Choose A Relevant Next Action says" in receive
+    assert "Instructions still in your context stay valid across wakes" in receive
+    assert "task evidence does not and is read fresh as Choose A Relevant Next Action says" in receive
     # No statement of the skill's cost reads as a reread instruction.
     for relative in ("SKILL.md", "references/signals.md", "references/coordinator.md", "references/collaboration.md"):
         assert "read every time" not in _read(relative), relative
-    assert "rereading an unchanged skill fills the context it is meant to save" in _words(_read("references/signals.md"))
+    signals = _words(_read("references/signals.md"))
+    assert "again only when `pb procedure verify` shows the installed revision changed by a regular upgrade" in signals
+    assert "compaction lost its text" not in signals
