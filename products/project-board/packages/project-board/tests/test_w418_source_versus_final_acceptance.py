@@ -34,7 +34,8 @@ def test_the_review_page_owns_source_approval_versus_final_acceptance():
     assert "`review.accept` is final acceptance" in review
     assert "Source approval, a verdict that the submitted source and its evidence are right, is not a board decision." in review
     assert "set when the item is created or routed (`plan.item.update`), and kept by every later edit" in review
-    assert "an agent's accept, return or cancel of an operator-final item is refused with `work_review_operator_required`" in review
+    assert "an agent's accept or cancel of operator-final work is refused with `work_review_operator_required`" in review
+    assert "A source defect is returned as usual by the designated reviewer" in review
     assert "the coordinator routes the Review to the final acceptor with `review.assign`" in review
     assert "A worker's `completed` report is never final acceptance." in review
     assert "`Source approved: <repository> <head> [<repository> <head> ...]. Outstanding: <proof>.`" in review

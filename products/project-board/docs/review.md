@@ -198,8 +198,9 @@ their Telegram.
   An existing agent Card gets them at its next Refresh, once a project admin
   has ticked them on the project's Control Card.
 - **Review requirement.** An item's `review_requirement.kind` is `qualified`
-  by default, or `operator`, which requires a person for every review
-  decision (`work_review_operator_required` for an agent). A requirement
+  by default, or `operator`, which requires a person to accept or cancel it
+  (`work_review_operator_required` for an agent); its designated agent
+  reviewer may still return it. A requirement
   carried on the assignment takes precedence over the item's. See
   [Source approval and final acceptance](#source-approval-and-final-acceptance).
 - **Authority is a Card grant.** A reviewer needs `work:review` and the exact
@@ -271,8 +272,11 @@ Its path to Done:
    as an item note in one findable shape, so the coordinator and the person
    find it without reading prose:
    `Source approved: <repository> <head> [<repository> <head> ...]. Outstanding: <proof>.`
-   It does not decide the review; an agent's accept, return or cancel of an
-   operator-final item is refused with `work_review_operator_required`.
+   It does not accept the item: an agent's accept or cancel of operator-final
+   work is refused with `work_review_operator_required`. A source defect is
+   returned as usual by the designated reviewer (`review.return`, with the
+   same reviewer, revision and ownership fences as any return); a return is
+   not acceptance.
 3. After the verified deploy, the coordinator routes the Review to the final
    acceptor with `review.assign` (`operator` or `operator:<user id>`),
    carrying the integration evidence (merged commits and the deploy check),
