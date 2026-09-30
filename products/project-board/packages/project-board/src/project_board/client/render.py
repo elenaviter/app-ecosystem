@@ -23,6 +23,7 @@ Three rules follow, and this module is where they live:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 from typing import Any, Iterable, Mapping, Sequence
@@ -958,7 +959,7 @@ def _render_message(message: Mapping[str, Any], lease: Mapping[str, Any], projec
     payload = message.get("payload")
     if payload:
         lines.append("payload:")
-        lines.extend(_flatten(payload, prefix="  "))
+        lines.extend(_flatten(_payload_without_body_copies(payload, body), prefix="  "))
     lines.extend(
         _commands_for(
             message.get("message_ref"),
@@ -972,6 +973,48 @@ def _render_message(message: Mapping[str, Any], lease: Mapping[str, Any], projec
         )
     )
     return lines
+
+
+def _payload_without_body_copies(payload: Any, body: Any) -> Any:
+    """The payload with each prose copy of the body named instead of repeated (W393).
+
+    A review notice carries its whole task as the body and again as
+    ``payload.command.instructions``, so brief output printed it twice. Only a
+    prose field (one named in ``_PROSE_COPY_KEYS``) whose text equals the body,
+    ignoring only leading and trailing whitespace, is printed as one line that
+    says so, with its size and a hash prefix shared with the body. Every other
+    value stays whole: a ref, id, path or list of paths is copied as printed,
+    even when it equals the body. A near copy stays whole too. The JSON output
+    is untouched.
+    """
+
+    text = str(body or "").strip()
+    if not text:
+        return payload
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    marker = f"(identical to the body above: {len(text.encode('utf-8'))} bytes, sha256 {digest})"
+
+    def replace(value: Any) -> Any:
+        if not isinstance(value, Mapping):
+            return value
+        return {
+            name: (
+                marker
+                if str(name) in _PROSE_COPY_KEYS
+                and isinstance(child, str)
+                and child.strip() == text
+                else replace(child)
+            )
+            for name, child in value.items()
+        }
+
+    return replace(payload)
+
+
+# Payload fields that carry a task's prose. Only these are ever named as a
+# copy of the body: everything else, locators and lists of them included, is
+# printed as it is.
+_PROSE_COPY_KEYS = frozenset({"instructions", "body", "text", "description", "task"})
 
 
 def _render_inspect(result: Mapping[str, Any]) -> list[str]:
