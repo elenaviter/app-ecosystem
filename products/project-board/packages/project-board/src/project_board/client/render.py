@@ -26,9 +26,10 @@ from __future__ import annotations
 import hashlib
 import json
 import shlex
+from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
-from project_board.client.limit_state import limit_state_line, usage_windows_line
+from project_board.client.limit_state import limit_state_line, usage_windows_line, window_length_label
 
 FORMAT_JSON = "json"
 FORMAT_BRIEF = "brief"
@@ -358,35 +359,29 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
         total=coordinator_count,
     )
 
-    team, team_count = _bounded(result.get("team") or [])
-    lines.append(f"team: {team_count}")
-    for index, member in enumerate(team):
-        if not isinstance(member, Mapping):
-            continue
-        alias = str(member.get("worker_alias") or "-")
-        name = str(member.get("worker_name") or "-")
+    # W393: every teammate is accounted for, one compact scheduling row each.
+    # What a coordinator routes by (the info line, a blocked wake, model and
+    # effort, usage) is on the default read; `--member` shows one in full.
+    team = [member for member in result.get("team") or [] if isinstance(member, Mapping)]
+    team_filter = result.get("team_filter")
+    if isinstance(team_filter, Mapping):
         lines.append(
-            "--- team member {}: {} ({}) · role {} · runtime {} · host {} · pool {} · presence {}".format(
-                index + 1,
-                alias,
-                name,
-                member.get("role") or "worker",
-                member.get("runtime_kind") or "-",
-                member.get("host_label") or member.get("host_id") or "-",
-                member.get("pool_status") or "-",
-                member.get("presence") or "-",
+            "team: {} of {} match --member {}".format(
+                team_filter.get("matched", len(team)),
+                team_filter.get("team_total", "?"),
+                team_filter.get("member") or "-",
             )
         )
-        lines[-1] += (
-            f" · {_runtime_model_brief(member)} · {_runtime_account_brief(member)}"
-        )
-        # Stable worker names are addresses; keep them on their own copyable line.
-        lines.append(f"team[{index}].worker_name = {name}")
-        if _present(member.get("info_text")):
-            lines.append(
-                f"team[{index}].info_text = {_preview(member['info_text'])}"
+    else:
+        lines.append(f"team: {len(team)} · shown {len(team)}")
+    full = isinstance(team_filter, Mapping)
+    for index, member in enumerate(team):
+        lines.extend(
+            _team_member_lines(
+                index, len(team), member, full=full,
+                project_ref=str(result.get("project_ref") or "<project-ref>"),
             )
-    _note_omitted(lines, "team members", shown=len(team), total=team_count)
+        )
 
     own = result.get("self")
     if isinstance(own, Mapping):
@@ -1396,13 +1391,88 @@ def _usage_line(state: Any) -> str:
     return f"usage: {windows or 'no windows reported'}"
 
 
-def _team_usage_lines(team: Sequence[Any]) -> list[str]:
+# An info line longer than this is cut on the compact row, and the row says
+# so and names the command that shows it whole.
+_TEAM_INFO_BYTES = 480
+
+
+def _team_member_lines(
+    index: int, total: int, member: Mapping[str, Any], *, full: bool, project_ref: str
+) -> list[str]:
+    """One teammate's scheduling row: who, where, runtime, info, a blocked wake."""
+
+    alias = str(member.get("worker_alias") or "-")
+    name = str(member.get("worker_name") or "-")
+    lines = [
+        "--- team member {} of {}: {} ({}) · role {} · runtime {} · host {} · pool {} · presence {}".format(
+            index + 1,
+            total,
+            alias,
+            name,
+            member.get("role") or "worker",
+            member.get("runtime_kind") or "-",
+            member.get("host_label") or member.get("host_id") or "-",
+            member.get("pool_status") or "-",
+            member.get("presence") or "-",
+        ),
+        "  " + _runtime_model_brief(member),
+    ]
+    lines.append("  " + _runtime_account_brief(member))
+    info = str(member.get("info_text") or "").strip()
+    if info:
+        set_at = str(member.get("info_set_at") or "").strip()
+        suffix = f" · set {set_at}" if set_at else ""
+        size = len(info.encode("utf-8"))
+        if full or size <= _TEAM_INFO_BYTES:
+            lines.append(f"  info: {' '.join(info.split())}{suffix}")
+        else:
+            lines.append(
+                f"  info: {_preview(info, maximum_bytes=_TEAM_INFO_BYTES)}{suffix} · "
+                f"cut from {size} bytes: pb worker context --project-ref {project_ref} --member {name}"
+            )
+    else:
+        lines.append("  info: none")
+    lines.extend(_team_wake_lines(member))
+    if full:
+        capabilities = member.get("capabilities") or []
+        if capabilities:
+            lines.append("  capabilities: " + _joined(capabilities))
+    return lines
+
+
+def _team_wake_lines(member: Mapping[str, Any]) -> list[str]:
+    """A teammate's held or recovered native wake, when the board reports one."""
+
+    lines: list[str] = []
+    hold = member.get("wake_hold")
+    if isinstance(hold, Mapping) and hold.get("since"):
+        lines.append(
+            "  wake held since {} until {} · pending {}".format(
+                hold.get("since"), hold.get("until") or "-", hold.get("pending", "?")
+            )
+        )
+    recovery = member.get("wake_recovery")
+    if isinstance(recovery, Mapping) and recovery.get("wake_id"):
+        lines.append(
+            "  wake recovery {} for {} · since {}".format(
+                recovery.get("state") or "-",
+                recovery.get("wake_id"),
+                recovery.get("recorded_at") or recovery.get("requested_at") or "-",
+            )
+        )
+    return lines
+
+
+def _team_usage_lines(team: Sequence[Any], *, now: datetime | None = None) -> list[str]:
     """One line per teammate with its limit and usage windows (W351).
 
     `pb worker context` is the only cross-host view a worker's CLI has; the
-    coordinator routes by these figures (the operator's per-pool caps).
+    coordinator routes by these figures (the operator's per-pool caps). A
+    window whose reset time has passed is named, so its figure is not read as
+    capacity now (W393).
     """
 
+    moment = now or datetime.now(timezone.utc)
     lines = ["team usage:"]
     for member in team:
         if not isinstance(member, Mapping):
@@ -1426,10 +1496,35 @@ def _team_usage_lines(team: Sequence[Any]) -> list[str]:
             observed = str(state.get("observed_at") or "").strip()
             status += f" · source {source or 'not reported'}"
             status += f" · observed {observed or 'not reported'}"
+            passed = _passed_reset_windows(state, moment)
+            if passed:
+                status += (
+                    f" · reset passed for {', '.join(passed)}: its figure is from before "
+                    "the reset, current use not reported"
+                )
         else:
             status = "not reported"
         lines.append(f"  {label}{where}: {status}")
     return lines
+
+
+def _passed_reset_windows(state: Mapping[str, Any], now: datetime) -> list[str]:
+    labels = []
+    for window in state.get("windows") or []:
+        if not isinstance(window, Mapping) or window.get("used_percent") is None:
+            continue
+        resets = str(window.get("resets_at") or "").strip()
+        if not resets:
+            continue
+        try:
+            moment = datetime.fromisoformat(resets.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        if moment <= now:
+            labels.append(window_length_label(window))
+    return labels
 
 
 _RECEIPT_OUTCOMES = ("applied", "refused")
@@ -1774,6 +1869,38 @@ def _assignment_task_preview(task: Any) -> str:
     )
 
 
+def _assignment_owner_lines(assignment: Mapping[str, Any]) -> list[str]:
+    """Who owns the item now, and who held this implementation assignment (W393).
+
+    The assignment's worker is who the implementation was assigned to. The
+    item's direct assignee is who acts on it now: after a review is routed,
+    that is the reviewer. A board that does not report the item's assignee is
+    said to, never filled in with the implementer.
+    """
+
+    worker = str(assignment.get("worker_name") or "") or "-"
+    lines = []
+    if "item_assignee" in assignment:
+        owner = str(assignment.get("item_assignee") or "")
+        reviewer = str(assignment.get("item_reviewer") or "")
+        lines.append(f"current owner: {owner or 'none'} · reviewer {reviewer or 'none'}")
+    else:
+        lines.append("current owner: not reported by this board")
+        owner = ""
+    lines.append(
+        "implementation: {} · assigned {} · updated {}".format(
+            worker,
+            assignment.get("assigned_at") or "-",
+            assignment.get("updated_at") or "-",
+        )
+    )
+    if owner and worker != "-" and owner != worker:
+        lines.append(
+            f"note: {worker} held the implementation. The item's current owner is {owner}."
+        )
+    return lines
+
+
 def _render_assignment_list(operation: str, page: Mapping[str, Any]) -> list[str]:
     all_items = page.get("items") or []
     items, returned_count = _bounded(all_items)
@@ -1857,13 +1984,7 @@ def _render_assignment_list(operation: str, page: Mapping[str, Any]) -> list[str
         ):
             if _present(assignment.get(key)):
                 lines.append(f"{key}: {assignment[key]}")
-        lines.append(
-            "worker {} · assigned {} · updated {}".format(
-                assignment.get("worker_name") or "-",
-                assignment.get("assigned_at") or "-",
-                assignment.get("updated_at") or "-",
-            )
-        )
+        lines.extend(_assignment_owner_lines(assignment))
         if _present(assignment.get("scope")):
             lines.append(f"scope: {_preview(assignment['scope'])}")
         task_preview = _assignment_task_preview(assignment.get("task"))

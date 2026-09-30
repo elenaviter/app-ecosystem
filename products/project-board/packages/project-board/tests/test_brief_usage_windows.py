@@ -87,7 +87,8 @@ def test_context_prints_one_usage_line_per_teammate_across_hosts():
         {"worker_name": "codex-3333", "worker_alias": "", "host_label": "host-two", "limit_state": {}},
     ]
     assert _context_team_lines(team) == [
-        "  agent-one (claude-code-1111) on host-one: last reported usage ok · week 65% resets 09-29 10:00Z · 5 h 23% resets 09-26 23:00Z · source not reported · observed not reported",
-        "  agent-two (claude-code-2222) on host-two: last reported rate limited (week), resets 10:00Z · week 100% resets 09-29 10:00Z · source not reported · observed not reported",
+        # W393: both resets are in the past, so neither figure reads as capacity now.
+        "  agent-one (claude-code-1111) on host-one: last reported usage ok · week 65% resets 09-29 10:00Z · 5 h 23% resets 09-26 23:00Z · source not reported · observed not reported · reset passed for 5 h, week: its figure is from before the reset, current use not reported",
+        "  agent-two (claude-code-2222) on host-two: last reported rate limited (week), resets 10:00Z · week 100% resets 09-29 10:00Z · source not reported · observed not reported · reset passed for week: its figure is from before the reset, current use not reported",
         "  codex-3333 on host-two: not reported",
     ]
