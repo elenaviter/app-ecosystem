@@ -110,8 +110,10 @@ def test_a_limit_clears_when_its_reset_time_has_passed():
     state = {"kind": "rate_limited", "source": "codex-rollout", "windows": [], "reached": "primary", "resets_at": "2026-09-23T21:00:00Z", "observed_at": "2026-09-23T19:40:00Z"}
     assert limit_state_at(state, now="2026-09-23T20:30:00Z")["kind"] == "rate_limited"
     cleared = limit_state_at(state, now="2026-09-23T21:00:00Z")
-    assert cleared["kind"] == "ok"
+    # W403: the reset ends the limit; nothing measured the usage since.
+    assert cleared["kind"] == "unknown"
     assert cleared["cleared_at"] == "2026-09-23T21:00:00Z"
+    assert cleared["reached"] == "primary" and cleared["observed_at"] == "2026-09-23T19:40:00Z"
     assert limit_state_at(None, now="2026-09-23T21:00:00Z") is None
 
 
@@ -123,9 +125,10 @@ def test_the_listener_row_carries_the_state_for_codex_and_the_recorded_one_for_c
     codex = session_with_limit_state(listener, runtime_kind="codex", runtime_session_id=SESSION, now="2026-09-21T16:00:00Z", sessions_root=tmp_path)
     assert codex["limit_state"]["kind"] == "rate_limited"
     assert codex["session_id"] == SESSION
-    # Past the reset, the same rollout reads ok, so the board clears it.
+    # Past the reset the limit no longer holds, and the same rollout measured
+    # nothing since, so it reads unknown until Codex reports again (W403).
     later = session_with_limit_state(listener, runtime_kind="codex", runtime_session_id=SESSION, now="2026-09-21T17:00:00Z", sessions_root=tmp_path)
-    assert later["limit_state"]["kind"] == "ok"
+    assert later["limit_state"]["kind"] == "unknown"
     # No rollout on this host: the row has no field, which is "not reported".
     absent = session_with_limit_state(listener, runtime_kind="codex", runtime_session_id="other", now="2026-09-21T16:00:00Z", sessions_root=tmp_path)
     assert "limit_state" not in absent
@@ -335,3 +338,118 @@ def test_every_window_is_labelled_by_its_length_nearest_its_limit_first():
         "windows": claude["windows"],
     }
     assert limit_state_line(limited) == "rate limited (5 h), resets 02:50Z"
+
+
+def test_a_codex_snapshot_that_measured_no_window_is_unknown_not_ok():
+    # W403, 2026-09-29: the Card read limit ok for a Codex session whose
+    # provider console showed it out of limit; an empty snapshot is not ok.
+    for empty in ({}, {"primary": None, "secondary": None, "rate_limit_reached_type": None, "plan_type": "pro"},
+                  {"primary": {"window_minutes": 300}, "secondary": {"used_percent": None}}):
+        state = limit_state_from_codex(empty, observed_at="2026-09-29T19:00:00Z")
+        assert state["kind"] == "unknown", empty
+        assert state["observed_at"] == "2026-09-29T19:00:00Z"
+    # A named exhaustion or a spend control still speaks without windows.
+    assert limit_state_from_codex({"rate_limit_reached_type": "primary"})["kind"] == "rate_limited"
+    assert limit_state_from_codex({"spend_control_reached": True})["kind"] == "out_of_tokens"
+    # One measured window below its limit is ok.
+    assert limit_state_from_codex({"primary": {"used_percent": 10.0, "window_minutes": 300}})["kind"] == "ok"
+
+
+def _spark_rollout(tmp_path, *, premium, turns, session="01a0daac-91ae-7730-81dd-9ffc77207b92"):
+    """The shape the Spark session wrote on 2026-09-29 (metadata only, W403)."""
+
+    day = tmp_path / "2026" / "09" / "29"
+    day.mkdir(parents=True, exist_ok=True)
+    path = day / f"rollout-2026-09-29T18-00-00-{session}.jsonl"
+    codex = {
+        "limit_id": "codex", "limit_name": None,
+        "primary": {"used_percent": 100.0, "window_minutes": 300, "resets_at": "2026-09-29T21:18:42Z"},
+        "secondary": {"used_percent": 32.0, "window_minutes": 10080, "resets_at": "2026-10-03T20:27:31Z"},
+        "credits": None, "spend_control_reached": None, "plan_type": "plus", "rate_limit_reached_type": None,
+    }
+    lines = [
+        {"timestamp": "2026-09-29T18:00:00.000Z", "type": "session_meta", "payload": {"id": session}},
+        {"timestamp": "2026-09-29T18:41:42.881Z", "type": "event_msg", "payload": {"type": "token_count", "rate_limits": codex}},
+        {"timestamp": "2026-09-29T20:56:22.077Z", "type": "event_msg", "payload": {"type": "token_count", "rate_limits": {"limit_id": "premium", **premium}}},
+    ]
+    lines.extend(turns)
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+    return session
+
+
+def _turn(at, error=None):
+    payload = {"type": "task_complete", "turn_id": "t", "completed_at": at}
+    if error:
+        payload["error"] = {"message": "…", "codex_error_info": error}
+    return {"timestamp": at, "type": "event_msg", "payload": payload}
+
+
+EMPTY_PREMIUM = {"primary": None, "secondary": None, "rate_limit_reached_type": None, "spend_control_reached": None}
+FINE_PREMIUM = {"primary": {"used_percent": 3.0, "window_minutes": 300}, "secondary": {"used_percent": 1.0, "window_minutes": 10080}, "rate_limit_reached_type": None}
+
+
+def test_the_spark_case_an_empty_bucket_and_a_refused_turn_read_rate_limited(tmp_path):
+    # W403, 2026-09-29: the newest snapshot was an empty premium bucket, and
+    # the relay reported ok while codex was at 100% and the turn was refused.
+    refused = [_turn("2026-09-29T20:56:22.086Z", "usage_limit_exceeded")]
+    for premium in (EMPTY_PREMIUM, FINE_PREMIUM):
+        session = _spark_rollout(tmp_path / str(len(premium)), premium=premium, turns=refused)
+        state = codex_limit_state(session, sessions_root=tmp_path / str(len(premium)), now="2026-09-29T20:58:00Z")
+        assert state["kind"] == "rate_limited", premium
+        assert state["limit_id"] == "codex"
+        assert state["reached"] == "primary"
+        assert state["resets_at"] == "2026-09-29T21:18:42Z"
+        assert state["refusal"] == "usage_limit_exceeded"
+        assert state["observed_at"] == "2026-09-29T20:56:22Z"
+
+
+def test_an_exhausted_bucket_is_not_erased_by_another_bucket(tmp_path):
+    session = _spark_rollout(tmp_path, premium=FINE_PREMIUM, turns=[_turn("2026-09-29T20:56:30.000Z")])
+    state = codex_limit_state(session, sessions_root=tmp_path, now="2026-09-29T20:58:00Z")
+    assert state["kind"] == "rate_limited" and state["limit_id"] == "codex"
+    # Past the codex reset, with nothing measured since, the fine premium bucket is what is known.
+    later = codex_limit_state(session, sessions_root=tmp_path, now="2026-09-29T21:20:00Z")
+    assert later["kind"] == "ok" and later["limit_id"] == "premium"
+
+
+def test_a_refusal_holds_until_a_later_turn_completes_without_one(tmp_path):
+    refused = [_turn("2026-09-29T20:56:22.086Z", "usage_limit_exceeded")]
+    session = _spark_rollout(tmp_path / "held", premium=EMPTY_PREMIUM, turns=refused)
+    # Past the codex reset the bucket no longer says 100%, and the refusal still stands.
+    held = codex_limit_state(session, sessions_root=tmp_path / "held", now="2026-09-29T21:20:00Z")
+    assert held["kind"] == "rate_limited" and held["reached"] == "usage_limit_exceeded" and held["resets_at"] == ""
+
+    served = refused + [_turn("2026-09-29T21:25:00.000Z")]
+    session = _spark_rollout(tmp_path / "served", premium=EMPTY_PREMIUM, turns=served)
+    recovered = codex_limit_state(session, sessions_root=tmp_path / "served", now="2026-09-29T21:26:00Z")
+    assert recovered["kind"] == "unknown", "a served turn ends the refusal; the empty bucket still measured nothing"
+    # Another turn error is not a usage refusal.
+    other = [_turn("2026-09-29T20:56:22.086Z", "server_overloaded")]
+    session = _spark_rollout(tmp_path / "other", premium=FINE_PREMIUM, turns=other)
+    assert codex_limit_state(session, sessions_root=tmp_path / "other", now="2026-09-29T21:20:00Z")["kind"] == "ok"
+
+
+def test_a_measured_bucket_is_reported_when_a_newer_bucket_is_empty(tmp_path):
+    # W403, Spark at 23:01Z on 2026-09-29 (codex-main, metadata only): after
+    # the recovery the rollout held a measured codex bucket (22:52:54.958Z,
+    # 5 h 11%, week 33%) and a served turn 11 ms later, yet pb worker list
+    # said no windows because a newer bucket carried none.
+    session = "01a0daac-91ae-7730-81dd-9ffc77207b92"
+    day = tmp_path / "2026" / "09" / "29"
+    day.mkdir(parents=True)
+    codex = {
+        "limit_id": "codex",
+        "primary": {"used_percent": 11.0, "window_minutes": 300, "resets_at": "2026-09-30T03:47:20Z"},
+        "secondary": {"used_percent": 33.0, "window_minutes": 10080, "resets_at": "2026-10-03T20:27:31Z"},
+        "rate_limit_reached_type": None,
+    }
+    lines = [
+        {"timestamp": "2026-09-29T22:52:54.958Z", "type": "event_msg", "payload": {"type": "token_count", "rate_limits": codex}},
+        {"timestamp": "2026-09-29T22:52:54.969Z", "type": "event_msg", "payload": {"type": "task_complete", "turn_id": "t"}},
+        {"timestamp": "2026-09-29T22:53:10.000Z", "type": "event_msg", "payload": {"type": "token_count", "rate_limits": {"limit_id": "premium", **EMPTY_PREMIUM}}},
+    ]
+    (day / f"rollout-2026-09-29T18-00-00-{session}.jsonl").write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+    state = codex_limit_state(session, sessions_root=tmp_path, now="2026-09-29T23:01:12Z")
+    assert state["kind"] == "ok"
+    assert state["limit_id"] == "codex"
+    assert [(w["name"], w["used_percent"]) for w in state["windows"]] == [("primary", 11.0), ("secondary", 33.0)]

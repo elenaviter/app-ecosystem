@@ -13,7 +13,11 @@ writes about itself:
   whose ``payload.rate_limits`` carries the ``primary`` and ``secondary``
   windows (``used_percent``, ``window_minutes``, ``resets_at`` in epoch
   seconds), ``credits``, ``plan_type`` and ``rate_limit_reached_type``.
-  Verified on codex-cli 0.151 and 0.154 files on 2026-09-23.
+  Verified on codex-cli 0.151 and 0.154 files on 2026-09-23. Each snapshot
+  belongs to one usage bucket (``limit_id``), and a turn that the provider
+  refused for usage ends in ``task_complete`` with
+  ``error.codex_error_info = usage_limit_exceeded`` (a Spark session,
+  2026-09-29). The state reads every bucket and the newest turn outcome.
 - **Claude Code** hands its status line command a JSON whose ``rate_limits``
   has ``five_hour`` and ``seven_day`` (``used_percentage``, ``resets_at`` in
   epoch seconds), and fires the ``StopFailure`` hook with matcher
@@ -22,8 +26,10 @@ writes about itself:
   ``pb worker`` command receives them and records the state in the field.
 
 The state is one small record on the session row, projected in the relay
-heartbeat and shown on the worker's card. It clears when the runtime reports a
-lower value or the reset time passes.
+heartbeat and shown on the worker's card. It reads ok only when the runtime
+measured a window below its limit. A passed reset time ends a limit, and until
+the runtime measures again the state reads unknown: a reset is a time, not a
+measurement (W403).
 """
 
 from __future__ import annotations
@@ -197,6 +203,109 @@ def read_codex_rate_limits(
     return None
 
 
+# A refusal Codex writes into ``task_complete.error.codex_error_info`` when the
+# provider stops serving the session for its usage. On 2026-09-29 a Spark
+# session recorded five of these while its newest usage bucket looked fine.
+CODEX_USAGE_REFUSALS = {"usage_limit_exceeded": KIND_RATE_LIMITED}
+# Snapshots without a ``limit_id`` (older codex-cli) are the main bucket.
+CODEX_DEFAULT_BUCKET = "codex"
+
+
+def read_codex_limit_evidence(
+    path: Path | str,
+    *,
+    tail_bytes: int = CODEX_TAIL_BYTES,
+) -> dict[str, Any] | None:
+    """The newest usage snapshot per bucket and the newest turn outcome.
+
+    Codex writes one ``token_count`` per usage bucket (``limit_id``, such as
+    ``codex`` and ``premium``), so the newest snapshot of one bucket says
+    nothing about another. A turn's outcome is ``task_complete``, with
+    ``error.codex_error_info`` when the turn ended on an error.
+    """
+
+    buckets: dict[str, dict[str, Any]] = {}
+    last_turn: dict[str, str] | None = None
+    try:
+        for line in _tail_lines(Path(path), tail_bytes=tail_bytes):
+            is_usage = '"token_count"' in line and '"rate_limits"' in line
+            is_turn = last_turn is None and '"task_complete"' in line
+            if not (is_usage or is_turn):
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            payload = record.get("payload") if isinstance(record, Mapping) else None
+            if not isinstance(payload, Mapping):
+                continue
+            timestamp = str(record.get("timestamp") or "")
+            if payload.get("type") == "token_count" and isinstance(payload.get("rate_limits"), Mapping):
+                limits = dict(payload["rate_limits"])
+                bucket = str(limits.get("limit_id") or CODEX_DEFAULT_BUCKET)
+                buckets.setdefault(bucket, {"observed_at": timestamp, "rate_limits": limits})
+            elif payload.get("type") == "task_complete" and last_turn is None:
+                error = payload.get("error")
+                info = error.get("codex_error_info") if isinstance(error, Mapping) else ""
+                last_turn = {"completed_at": timestamp, "error": str(info or "")}
+    except OSError:
+        return None
+    if not buckets and last_turn is None:
+        return None
+    return {"buckets": buckets, "last_turn": last_turn}
+
+
+def limit_state_from_codex_evidence(
+    evidence: Mapping[str, Any],
+    *,
+    now: str = "",
+) -> dict[str, Any]:
+    """One limit state from every bucket and the newest turn outcome.
+
+    A provider refusal on the newest turn holds until a later turn completes
+    without one, and names the exhausted bucket's reset when a bucket is
+    exhausted. Otherwise an exhausted bucket wins over a fine one, a measured
+    bucket over an empty one, and an empty bucket never erases a known
+    exhaustion (W403, 2026-09-29).
+    """
+
+    states: list[dict[str, Any]] = []
+    for bucket, snapshot in dict(evidence.get("buckets") or {}).items():
+        state = limit_state_from_codex(
+            snapshot.get("rate_limits"), observed_at=str(snapshot.get("observed_at") or "")
+        )
+        if now:
+            state = limit_state_at(state, now=now) or state
+        state["limit_id"] = bucket
+        states.append(state)
+    limited = sorted(
+        (s for s in states if s["kind"] in (KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS)),
+        key=lambda s: str(s.get("resets_at") or ""),
+        reverse=True,
+    )
+    turn = evidence.get("last_turn") if isinstance(evidence.get("last_turn"), Mapping) else None
+    refusal = CODEX_USAGE_REFUSALS.get(str((turn or {}).get("error") or ""))
+    if refusal:
+        exhausted = limited[0] if limited else None
+        return {
+            "kind": exhausted["kind"] if exhausted else refusal,
+            "source": SOURCE_CODEX_ROLLOUT,
+            "windows": list(exhausted["windows"]) if exhausted else [],
+            "reached": exhausted["reached"] if exhausted else str(turn["error"]),
+            "resets_at": exhausted["resets_at"] if exhausted else "",
+            "observed_at": _utc(turn.get("completed_at")),
+            "refusal": str(turn["error"]),
+            "limit_id": exhausted["limit_id"] if exhausted else "",
+        }
+    if limited:
+        return limited[0]
+    for kind in (KIND_OK, KIND_UNKNOWN):
+        found = [s for s in states if s["kind"] == kind]
+        if found:
+            return max(found, key=lambda s: str(s.get("observed_at") or ""))
+    return unknown_state(SOURCE_CODEX_ROLLOUT)
+
+
 def limit_state_from_codex(
     rate_limits: Mapping[str, Any] | None,
     *,
@@ -226,6 +335,11 @@ def limit_state_from_codex(
             }
         )
     reached = str(rate_limits.get("rate_limit_reached_type") or "").strip()
+    measured = [window for window in windows if window["used_percent"] is not None]
+    if not measured and not reached and not rate_limits.get("spend_control_reached"):
+        # W403, 2026-09-29: a snapshot with no window measured nothing. The
+        # Card showed it as a green ok for a session its provider had stopped.
+        return unknown_state(SOURCE_CODEX_ROLLOUT, observed_at=observed_at)
     exhausted = [
         window for window in windows
         if window["used_percent"] is not None and window["used_percent"] >= 100
@@ -261,17 +375,17 @@ def codex_limit_state(
     session_id: str,
     *,
     sessions_root: Path | str | None = None,
+    now: str = "",
 ) -> dict[str, Any] | None:
     """The limit state of one Codex session on this host, or None without a rollout."""
 
     path = codex_rollout_path(session_id, sessions_root=sessions_root)
     if path is None:
         return None
-    found = read_codex_rate_limits(path)
-    if found is None:
+    evidence = read_codex_limit_evidence(path)
+    if evidence is None:
         return unknown_state(SOURCE_CODEX_ROLLOUT)
-    timestamp, limits = found
-    return limit_state_from_codex(limits, observed_at=timestamp)
+    return limit_state_from_codex_evidence(evidence, now=now)
 
 
 # --------------------------------------------------------------------------- Claude Code
@@ -364,10 +478,12 @@ def limit_state_from_claude_stop_failure(
 
 
 def limit_state_at(state: Mapping[str, Any] | None, *, now: str) -> dict[str, Any] | None:
-    """The state as it stands at ``now``: a limit whose reset has passed reads ok.
+    """The state as it stands at ``now``: a limit whose reset has passed reads unknown.
 
     Kept separate from the readers so a stale rollout (an agent that stopped
-    writing) still clears on the board when its window turns over.
+    writing) no longer holds the limit on the board once its window turns
+    over. The reset ends the limit, but nothing measured the usage since, so
+    the state is unknown until the runtime reports again, never ok (W403).
     """
 
     if not isinstance(state, Mapping):
@@ -376,7 +492,7 @@ def limit_state_at(state: Mapping[str, Any] | None, *, now: str) -> dict[str, An
     resets_at = str(current.get("resets_at") or "")
     if current.get("kind") in (KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS) and resets_at:
         if _utc(now) and resets_at <= _utc(now):
-            current["kind"] = KIND_OK
+            current["kind"] = KIND_UNKNOWN
             current["cleared_at"] = resets_at
     return current
 
@@ -530,7 +646,7 @@ def session_with_limit_state(
     kind = str(runtime_kind or "").strip().lower()
     if kind == "codex":
         try:
-            state = codex_limit_state(runtime_session_id, sessions_root=sessions_root)
+            state = codex_limit_state(runtime_session_id, sessions_root=sessions_root, now=now)
         except Exception:  # noqa: BLE001 - a rollout that cannot be read is no state, not a failed cycle
             state = None
     elif isinstance(recorded, Mapping) and recorded:
@@ -553,6 +669,7 @@ __all__ = [
     "SOURCE_CLAUDE_STATUSLINE",
     "SOURCE_CLAUDE_STOP_FAILURE",
     "SOURCE_CODEX_ROLLOUT",
+    "CODEX_USAGE_REFUSALS",
     "codex_limit_state",
     "codex_rollout_path",
     "limit_state_at",
@@ -560,7 +677,9 @@ __all__ = [
     "limit_state_from_claude_stop_failure",
     "limit_state_from_codex",
     "limit_state_line",
+    "read_codex_limit_evidence",
     "read_codex_rate_limits",
+    "limit_state_from_codex_evidence",
     "session_with_limit_state",
     "unknown_state",
     "usage_windows_line",
