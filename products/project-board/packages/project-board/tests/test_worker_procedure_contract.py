@@ -314,7 +314,7 @@ def test_skill_carries_rules_not_stories() -> None:
     ):
         assert story_marker not in skill, story_marker
     assert "Incidents go to the journal, where search finds them" in words
-    assert "not into this skill, which is read every time" in words
+    assert "not into this skill, which every session carries in its context" in words
     assert "carries the rule with one clause of reason" in words
     # 2026.09.23.2 merged the foundation-claims paragraph into Review Foundations,
     # where the same duty already lived, instead of stating it twice.
@@ -2205,3 +2205,28 @@ def test_the_coordinator_keeps_the_project_announcement_current() -> None:
     assert "publish `delayed` with the new `planned_end` before the old one passes" in coordinator
     assert "Close it with `all_clear` after the verification" in coordinator
     assert "the agent holding the project's coordinator role publishes, with no grant step. Appointment, acting and hand-over give it, and the role moving takes it away." in coordinator
+
+
+def test_an_unchanged_wake_reuses_loaded_instructions() -> None:
+    """W417: an agent reread the whole skill on every wake in one continuous
+    session, reading "which is read every time" as an instruction. A wake asks
+    for receive and handling. The skill is reloaded only on its named triggers."""
+
+    skill = _read("SKILL.md")
+    words = _words(skill)
+    receive = words[words.index("## Receive Addressed Input"):words.index("## Handle And Settle Each Lease")]
+    assert "**A wake asks for receive and handling, not for reloading instructions.**" in receive
+    # What causes a reload.
+    assert "Load this skill completely when the session starts" in receive
+    assert "its installed revision changed" in receive
+    assert "`pb procedure verify` naming a revision other than the one you loaded" in receive
+    assert "no longer in your context after compaction" in receive
+    assert "when you repair or update the package" in receive
+    assert "A reference is read when its trigger fires or the task needs it" in receive
+    # What does not: an unchanged wake. Task evidence is still read fresh.
+    assert "Instructions still in your context stay valid across unchanged wakes" in receive
+    assert "task evidence does not, and is read fresh as Choose A Relevant Next Action says" in receive
+    # No statement of the skill's cost reads as a reread instruction.
+    for relative in ("SKILL.md", "references/signals.md", "references/coordinator.md", "references/collaboration.md"):
+        assert "read every time" not in _read(relative), relative
+    assert "rereading an unchanged skill fills the context it is meant to save" in _words(_read("references/signals.md"))
