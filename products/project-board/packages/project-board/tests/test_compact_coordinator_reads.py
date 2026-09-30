@@ -138,14 +138,20 @@ def test_worker_context_keeps_coordinates_and_bounds_repeated_sections() -> None
     assert f"coordinator.holder.worker_ref = {'work:worker:' + 'h' * 96}" in text
     assert "repositories[0].alias = repo-0" in text
     assert f"repositories[0].repository_ref = {REPOSITORY_REF}0" in text
-    assert "team members: 8 of 14 shown in brief" in text
+    # W393: every teammate is accounted for, never a silent first eight.
+    assert "team: 14 · shown 14" in text
+    for index in range(14):
+        assert f"--- team member {index + 1} of 14: agent-{index} (codex-{index:02d}-" in text
     assert "repositories: 8 of 14 shown in brief" in text
     assert "further project files: 8 of 14 shown in brief" in text
     assert "team usage:" in text
     assert "private_history" not in text
     assert "OMITTED_TAIL" not in text
     assert "--format json for every field" in text
-    _assert_budget(text, lines=160, bytes_=24_000)
+    # Every teammate is shown, so the budget grows per member and stays fixed
+    # for everything else: 14 members with long info lines measure 192 lines
+    # and 26,998 bytes.
+    _assert_budget(text, lines=60 + 10 * 14, bytes_=8_000 + 1_500 * 14)
 
 
 def test_journal_search_keeps_hit_coordinates_with_a_bounded_page() -> None:

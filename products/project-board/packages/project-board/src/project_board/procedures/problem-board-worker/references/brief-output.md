@@ -24,7 +24,9 @@ question or request the correlated `send`) print with the refs and this
 session's runtime flags. Read-heavy `worker context`, `worker journal-search`,
 `source status`, `project.plan.search`, `project.plan.item`, and
 `assignment.list` print bounded decision summaries instead. Every displayed
-ref, id, key, cursor, commit and path is whole. `pb render --file <path>`
+ref, id, key, cursor, commit and path is whole. An `assignment.list` row names
+the item's current owner apart from the worker the implementation was assigned
+to, and says when the board does not report the owner. `pb render --file <path>`
 applies the same brief rendering to saved output.
 
 When one of those summaries omits a field or clips prose that the decision
