@@ -366,7 +366,9 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
             "Refresh worker presence and read its current project attendance. "
             "May carry agent_sessions and, per active assignment and repository, "
             "assignment_files: the tracked paths the relay saw changing in the "
-            "worker's declared worktree since the base commit (W278)."
+            "worker's declared worktree since the base commit (W278), and "
+            "disk_usage: the host's free and total disk bytes and this agent's "
+            "workspace size once measured (W423)."
         ),
     },
     "worker.estimate": {
