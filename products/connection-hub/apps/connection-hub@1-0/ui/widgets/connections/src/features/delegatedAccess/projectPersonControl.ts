@@ -113,36 +113,30 @@ export interface LinkedControlOpenTarget {
   targetSubject?: string;
 }
 
-/** W424: where the "Open <Control Card>" button on a composed Card reads the
- *  linked Control Card from. The binding's control_id is the trusted key, and
- *  the route follows who holds the Card:
+/** W424: where the "Open Control Card" button on a composed Card reads the
+ *  linked Control Card from (claude-main's approved contract, 2026-09-30).
+ *  The binding's control_id is the trusted key.
  *
- *  - a person's My Card (`source` "project-person") bound by the project
- *    (`issuer_kind` "project") is capped by that person's project Control
- *    Card, which the project holds: read it through the project and the
- *    person (`project_person_control_get`), never as the signed-in person's
- *    own Card (`control_card_get` answers control_card_not_found). Without
- *    both coordinates it fails closed (null) rather than guess another route;
- *  - any other project-issued link is the project's Control Card
- *    (`project_control_card_get`);
- *  - otherwise the Card is the signed-in person's own (`control_card_get`).
+ *  - A person's My Card (`source` "project-person") whose binding the project
+ *    holds (`issuer_kind` "project", `issuer_ref` a work:project ref) is read
+ *    through the project and the person (`project_person_control_get`), never
+ *    as the signed-in person's own Card (`control_card_get` answers
+ *    control_card_not_found for it). Without the person it fails closed.
+ *  - Any other binding keeps `control_card_get`.
  *
- *  `issuer_kind` "project" alone does not tell a person's Control Card from
- *  the project's own; the My Card source does. The displayed label or UUID
- *  never selects the Card. */
+ *  The displayed label or UUID never selects the Card. */
 export function linkedControlOpenTarget(
   item: Pick<DelegatedAccessRecord, 'source' | 'issuer_kind' | 'issuer_ref' | 'grantor_subject'>,
   binding: Pick<DelegatedControlCardBinding, 'control_id' | 'issuer_ref' | 'issuer_kind'>,
 ): LinkedControlOpenTarget | null {
   const controlId = clean(binding.control_id);
   if (!controlId) return null;
-  const projectBound = clean(binding.issuer_kind) === 'project';
   const projectRef = clean(binding.issuer_ref);
-  if (isMyCard(item) && projectBound) {
+  const projectHeld = clean(binding.issuer_kind) === 'project' && projectRef.startsWith('work:project:');
+  if (isMyCard(item) && clean(binding.issuer_kind) === 'project') {
     const targetSubject = clean(item.grantor_subject);
-    return projectRef && targetSubject ? { controlId, projectRef, targetSubject } : null;
+    return projectHeld && targetSubject ? { controlId, projectRef, targetSubject } : null;
   }
-  if (projectBound && projectRef) return { controlId, projectRef };
   return { controlId };
 }
 
