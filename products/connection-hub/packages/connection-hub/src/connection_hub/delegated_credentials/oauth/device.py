@@ -42,6 +42,8 @@ DEVICE_TERMINAL_ERRORS = frozenset(
         DEVICE_POLL_ACCESS_DENIED,
         "device_card_mismatch",
         "device_card_revision_conflict",
+        # W414: consent reached an existing Card this request did not prove.
+        "card_continuity_required",
     }
 )
 

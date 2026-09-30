@@ -269,6 +269,22 @@ async def test_device_flow_maps_denial_to_stable_client_error():
 
 
 @pytest.mark.asyncio
+async def test_device_flow_names_an_unproven_existing_card():
+    """W414: consent reached an existing Card this request did not prove."""
+    client = _ScriptedClient([_oauth_failure("card_continuity_required")])
+    clock = _Clock()
+    flow = DeviceAuthorizationFlow(client=client, sleep=clock.sleep, monotonic=clock.monotonic)
+    with pytest.raises(AuthorizationError) as raised:
+        await flow.authorize_discovered(
+            protected_resource_metadata_url="https://runtime.example.test/metadata",
+            discovered=_discovered(),
+            resource="https://runtime.example.test/mcp",
+            presenter=lambda _prompt: None,
+        )
+    assert raised.value.code == "oauth_device_card_continuity_required"
+
+
+@pytest.mark.asyncio
 async def test_device_flow_names_restart_after_consumed_issuance_failure():
     client = _ScriptedClient(
         [_oauth_failure("device_authorization_restart_required")]

@@ -207,6 +207,7 @@ class DeviceAuthorizationFlow:
                     "device_client_mismatch": "oauth_device_client_mismatch",
                     "device_card_mismatch": "oauth_device_card_mismatch",
                     "device_card_revision_conflict": "oauth_device_card_revision_conflict",
+                    "card_continuity_required": "oauth_device_card_continuity_required",
                     "device_authorization_restart_required": (
                         "oauth_device_authorization_restart_required"
                     ),

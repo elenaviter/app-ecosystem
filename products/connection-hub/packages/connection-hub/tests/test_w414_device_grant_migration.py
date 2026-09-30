@@ -286,3 +286,15 @@ async def test_the_live_shape_recovers_with_the_token_the_machine_kept() -> None
         assert not await authority.card_continuity_proven(
             refresh_token=kept, client_id="dcr-browser-first", access_id="con_other_card"
         )
+
+
+def test_the_continuity_refusal_reaches_the_client_as_a_registered_code() -> None:
+    """The client carries only registered OAuth error codes; without this one
+    the named continuity refusals would never be raised against a real server."""
+
+    from connection_hub.caller.authorization.discovery import _token_error_code
+    from connection_hub.delegated_credentials.oauth.device import DEVICE_TERMINAL_ERRORS
+
+    body = json.dumps({"error": "card_continuity_required", "error_description": "echo"}).encode()
+    assert _token_error_code(body) == "card_continuity_required"
+    assert "card_continuity_required" in DEVICE_TERMINAL_ERRORS

@@ -78,6 +78,8 @@ OAUTH_TOKEN_ERROR_CODES = frozenset(
         "device_client_mismatch",
         "device_card_mismatch",
         "device_card_revision_conflict",
+        # W414: an existing Card needs continuity proof from its machine.
+        "card_continuity_required",
         "server_error",
         "temporarily_unavailable",
     }

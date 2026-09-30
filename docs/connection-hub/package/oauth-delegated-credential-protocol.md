@@ -289,8 +289,16 @@ or logged. Only the durable PostgreSQL authority keeps generation records; the
 Redis migration-source store answers "not proven" for every request, so on that
 backend no existing Card is re-authorized by device login.
 
-A request without `access_id` asks for a new Card through the ordinary editor
-and needs no proof. That path still depends on the approver checking the
+The device request records the one Card whose continuity it proved, or none.
+Consent enforces it: when the Card the editor would edit already exists (any
+state), and it is not the proven one, the draft read and the decision both
+refuse with `card_continuity_required` before anything is resolved or saved,
+and the polling client receives the same code. So leaving out `access_id` does
+not skip the proof: a request without proven continuity may create a new Card
+and never reaches an existing one.
+
+A request without `access_id` for a client that has no Card yet creates a new
+Card through the ordinary editor and needs no proof. That path still depends on the approver checking the
 request (the editor shows the requesting client's self-reported machine
 labels, which are not identity proof), so device login is not phishing-proof
 for new Cards. The owner-started one-time code is the planned replacement for
@@ -949,6 +957,7 @@ deployment-specific store is required. The solution-level durability design note
 | Device request has not been approved | Token polling returns `authorization_pending` and no token is minted. |
 | Client does not hold the device grant | Device authorization returns `unauthorized_client` before a device code is created. |
 | Existing Card requested without its continuity proof, or with a token from another Card, family or client | Device authorization returns `card_continuity_required` before a device code is created. |
+| Device request without proven continuity whose consent would reach an existing Card | The draft read and the decision refuse with `card_continuity_required` before anything is resolved or saved; polling returns the same code and no token is minted. |
 | Device client polls before the advertised interval | Token polling returns `slow_down`, increases the interval by five seconds, and no token is minted. |
 | User denies or the device request expires | Polling returns `access_denied` or `expired_token`; the request cannot mint a token. |
 | Device code is consumed by another poller | The atomic winner receives the approved authority; every later poll returns `device_code_replayed`. |
