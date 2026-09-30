@@ -172,5 +172,5 @@ Public client evidence is owned by
 which respectively overwrite the latest session settlement and read a
 bounded local event tail, and by the
 [`pb worker inspect` implementation](../packages/project-board/src/project_board/client/cli.py).
-The [worker command-interface reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/PB-command-interface.md)
+The [worker command-interface reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/pb-command-interface.md)
 owns catalog discovery and the supported path after a refused operation.
