@@ -230,7 +230,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                         'reason': 'optional review note',
                                         'evidence': 'reference URI[]',
                                         'idempotency_key': 'stable retry key'}},
-    'review.return': {   'description': 'Return reviewed work to todo for rework with a durable '
+    'review.return': {   'description': 'Return reviewed work to working for rework with a durable '
                                         'reason. The assignee and the assignment stay as they are.',
                          'object_ref': 'work:project:<project_id>',
                          'payload': {   'work_ref': 'canonical plan-node URI',

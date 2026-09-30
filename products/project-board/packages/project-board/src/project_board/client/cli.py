@@ -1131,7 +1131,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument(
         "--project-ref",
         default="",
-        help="Shared project context. Omit when writing directly to the operator.",
+        help="The project the message belongs to. Mail that names a plan item (--work-ref) always carries it; only direct operator mail that names no item leaves it out.",
     )
     command.add_argument(
         "--recipient",
