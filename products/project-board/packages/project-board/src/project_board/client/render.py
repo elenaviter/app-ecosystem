@@ -1938,7 +1938,9 @@ def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
     if isinstance(obj, Mapping) and operation in {"assignment.assign", "assignment.return", "assignment.report"}:
         return _render_assignment_receipt(operation, obj)
     lines = [f"operation: {operation}"]
-    lines.extend(_recovery_lines(result.get("recovery")))
+    # The relay's record of this request follows the outcome: a receipt's
+    # state stays the first line after the operation (brief-output.md).
+    recovery = _recovery_lines(result.get("recovery"))
     if isinstance(obj, Mapping) and obj.get("state") in _RECEIPT_OUTCOMES:
         # A governed-mutation receipt. The outcome is the first line, and an
         # empty error slot is not printed: a caller that reads `error = {}`
@@ -1951,12 +1953,14 @@ def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
         # vocabulary, not on the key name.
         state = str(obj.get("state") or "")
         lines.append(f"state: {state}{' (replayed)' if obj.get('replayed') else ''}")
+        lines.extend(recovery)
         rest = {
             k: v
             for k, v in obj.items()
             if k not in ("state", "replayed") and not (k == "error" and not v)
         }
         return lines + _mutation_fields(rest)
+    lines.extend(recovery)
     if isinstance(obj, Mapping) and isinstance(obj.get("item"), Mapping):
         # An envelope that nests the item beside its own fields. The item is
         # shown by its coordinates, never by its body.

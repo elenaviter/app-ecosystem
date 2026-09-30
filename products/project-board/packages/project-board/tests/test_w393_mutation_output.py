@@ -269,3 +269,30 @@ def test_pb_render_prints_the_same_bounded_view(tmp_path: Path, capsys, operatio
     assert exit_code == 0
     assert printed == render_envelope(envelope)
     _budget(printed, lines=26, bytes_=3_600)
+
+
+def test_a_replayed_receipt_keeps_its_state_first_and_the_recovery_after_it() -> None:
+    """The local ledger adds its recovery record to a replayed receipt (PR369 review).
+
+    The receipt comes back through the real ``_recover_prior_mutation`` path,
+    which attaches ``recovery`` beside the receipt. The outcome still leads:
+    ``state`` is the line after ``operation``, and the recovery follows it.
+    """
+
+    receipt = {"operation": "work.status.set", "object": _status_receipt(files=5, replayed=True)}
+    prior = {
+        "state": "applied",
+        "receipt": receipt,
+        "idempotency_key": KEY,
+        "request_hash": "h" * 64,
+        "request_ids": ["coordinate_" + "q" * 32],
+        "first_sent_at": "2026-09-30T01:37:58.000000Z",
+    }
+    result = cli._recover_prior_mutation(None, None, prior, worker_name="claude-code-test", key=KEY)
+    assert result is not None and result["recovery"]["source"] == "local_receipt"
+
+    lines = render_envelope({"ok": True, "result": result}).splitlines()
+    assert lines[1] == "operation: work.status.set"
+    assert lines[2] == "state: applied (replayed)", "the outcome is the first line after the operation"
+    assert lines[3] == "recovery: applied · source local_receipt · first sent 2026-09-30T01:37:58.000000Z"
+    assert lines[4] == f"recovery.idempotency_key: {KEY}"
