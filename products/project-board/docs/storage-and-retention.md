@@ -6,6 +6,7 @@ tags: [project-board, storage, timeline, retention, conversation]
 keywords: [artifact uri, mailbox link, conversation turns, postgres, local field, git journal, relay local state, retention, pending folder, hour partition]
 see_also:
   - ./README.md
+  - ./domain-model-and-activity.md
   - ./topology-and-flows.md
   - repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/operator.md
 ---
@@ -19,6 +20,11 @@ This page keeps what an operator of a worker host needs: what is stored where,
 what the relay publishes, and what survives a process ending. The application
 that serves the board owns its table layout and its plan storage contract in
 its own documentation.
+
+[Domain model and activity evidence](domain-model-and-activity.md) maps the
+project, participant, item and delivery relationships, separates mutable
+presence snapshots from historical facts, and states which governed queries
+can investigate one agent's activity.
 
 ## Storage Map
 
