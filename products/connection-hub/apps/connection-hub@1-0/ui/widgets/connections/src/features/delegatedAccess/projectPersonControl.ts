@@ -1,4 +1,5 @@
-import type { DelegatedAccessRecord } from '../../api/types';
+import type { DelegatedAccessRecord, DelegatedControlCardBinding } from '../../api/types';
+import { isMyCard, myCardProjectRef } from './myCardGithub.ts';
 
 export const PROJECT_PERSON_CONTROL_PROPERTY = 'connection_hub.project_person_control';
 export const PROJECT_PERSON_CONTROL_SCHEMA = 'connection_hub.project_person_control.v1';
@@ -104,4 +105,50 @@ export function projectPersonControlCoordinates(
     && invitationRef
     ? { kind: 'invitation', projectRef, invitationRef }
     : null;
+}
+
+export interface LinkedControlOpenTarget {
+  controlId: string;
+  projectRef?: string;
+  targetSubject?: string;
+}
+
+/** W424: where the "Open <Control Card>" button on a composed Card reads the
+ *  linked Control Card from. The binding's control_id is the trusted key, and
+ *  the route follows who holds the Card:
+ *
+ *  - a person's My Card in a project is capped by that person's project
+ *    Control Card, which the project holds: read it through the project and
+ *    the person (`project_person_control_get`), never as the signed-in
+ *    person's own Card (`control_card_get` answers control_card_not_found);
+ *  - any other project-issued link is the project's Control Card
+ *    (`project_control_card_get`);
+ *  - otherwise the Card is the signed-in person's own (`control_card_get`).
+ *
+ *  A backend `control_kind` on the binding, when present, decides first. The
+ *  displayed label or UUID never selects the Card. */
+export function linkedControlOpenTarget(
+  item: Pick<DelegatedAccessRecord, 'source' | 'issuer_kind' | 'issuer_ref' | 'grantor_subject'>,
+  binding: Pick<DelegatedControlCardBinding, 'control_id' | 'issuer_ref' | 'issuer_kind'> & { control_kind?: string },
+): LinkedControlOpenTarget | null {
+  const controlId = clean(binding.control_id);
+  if (!controlId) return null;
+  const kind = clean(binding.control_kind);
+  const projectRef = clean(binding.issuer_ref) || myCardProjectRef(item);
+  const targetSubject = clean(item.grantor_subject);
+  if ((kind === 'project_person' || (!kind && isMyCard(item))) && projectRef && targetSubject) {
+    return { controlId, projectRef, targetSubject };
+  }
+  if ((kind === 'project' || (!kind && clean(binding.issuer_kind) === 'project')) && projectRef) {
+    return { controlId, projectRef };
+  }
+  return { controlId };
+}
+
+/** The Card a linked read returned is the one the binding names, or not at all. */
+export function isLinkedControlCard(
+  loaded: Pick<DelegatedAccessRecord, 'access_id'> | null | undefined,
+  target: LinkedControlOpenTarget,
+): boolean {
+  return Boolean(loaded) && clean(loaded?.access_id) === target.controlId;
 }

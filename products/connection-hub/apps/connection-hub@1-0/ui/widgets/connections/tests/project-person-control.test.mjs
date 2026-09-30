@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
   controlCardGetRequest,
+  isLinkedControlCard,
+  linkedControlOpenTarget,
   projectPersonControlCoordinates,
 } from '../src/features/delegatedAccess/projectPersonControl.ts'
 
@@ -95,4 +98,47 @@ test('W260 scope: only a project-held person Control Card is read only; any othe
   const { projectPersonControlCoordinates } = await import('../src/features/delegatedAccess/projectPersonControl.ts')
   assert.equal(projectPersonControlCoordinates({ properties: {} }), null)
   assert.equal(projectPersonControlCoordinates({ properties: { 'connection_hub.agent_capability_control': {} } }), null)
+})
+
+// W424: "Open <Control Card>" on a person's My Card failed with
+// control_card_not_found while the Team route opened the same Card: the
+// button read the project-held Card as the signed-in person's own.
+test('a My Card link opens the person project Control Card through the project and the person', () => {
+  const myCard = {
+    source: 'project-person', issuer_kind: 'project-person', issuer_ref: 'work:project:quickstart',
+    grantor_subject: 'platform-user-2', access_id: 'my-card-access-id',
+  }
+  const binding = { control_id: 'control-person', issuer_ref: 'work:project:quickstart', issuer_kind: 'project', issuer_label: 'c1a2b3-uuid-label' }
+  const target = linkedControlOpenTarget(myCard, binding)
+  assert.deepEqual(target, { controlId: 'control-person', projectRef: 'work:project:quickstart', targetSubject: 'platform-user-2' })
+  assert.equal(controlCardGetRequest(target).operation, 'project_person_control_get')
+  // The key is the binding's control_id: never the label, never My Card's access_id.
+  assert.equal(isLinkedControlCard({ access_id: 'control-person' }, target), true)
+  assert.equal(isLinkedControlCard({ access_id: 'my-card-access-id' }, target), false)
+  assert.equal(isLinkedControlCard({ access_id: 'c1a2b3-uuid-label' }, target), false)
+  assert.equal(isLinkedControlCard(null, target), false)
+})
+
+test('an agent Card capped by the project Control Card reads it through the project', () => {
+  const agentCard = { source: 'grant', issuer_kind: 'kdcube_agent_descriptor', issuer_ref: 'agent:x', grantor_subject: 'owner-1' }
+  const target = linkedControlOpenTarget(agentCard, { control_id: 'control-project', issuer_ref: 'work:project:quickstart', issuer_kind: 'project' })
+  assert.deepEqual(target, { controlId: 'control-project', projectRef: 'work:project:quickstart' })
+  assert.equal(controlCardGetRequest(target).operation, 'project_control_card_get')
+})
+
+test('the backend control_kind decides first, and a plain link stays the viewer own Card', () => {
+  const agentCard = { source: 'grant', issuer_kind: 'application', issuer_ref: 'app', grantor_subject: 'person-3' }
+  assert.equal(controlCardGetRequest(linkedControlOpenTarget(agentCard, {
+    control_id: 'control-person', issuer_ref: 'work:project:q', issuer_kind: 'project', control_kind: 'project_person',
+  })).operation, 'project_person_control_get')
+  assert.deepEqual(linkedControlOpenTarget(agentCard, { control_id: 'control-own', issuer_ref: 'app', issuer_kind: 'application' }), { controlId: 'control-own' })
+  assert.equal(linkedControlOpenTarget(agentCard, { control_id: '  ', issuer_ref: 'x' }), null)
+})
+
+test('the panel opens the linked Card through the helper and refuses a mismatch', () => {
+  const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /onClick=\{\(\) => void openLinkedControlCard\(item, binding\)\}/)
+  assert.match(panel, /const target = linkedControlOpenTarget\(item, binding\);/)
+  assert.match(panel, /if \(!result\.access \|\| !isLinkedControlCard\(result\.access, target\)\) \{/)
+  assert.doesNotMatch(panel, /loadControlCard\(\{ controlId: cleanControlId \}\)/)
 })

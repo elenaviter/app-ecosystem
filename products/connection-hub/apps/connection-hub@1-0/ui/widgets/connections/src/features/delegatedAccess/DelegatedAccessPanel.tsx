@@ -129,6 +129,7 @@ import type {
   DelegatedAccessStoredNamedServices,
   DelegatedCatalogDrift,
   DelegatedControlCardAuthority,
+  DelegatedControlCardBinding,
   DelegatedInvocationPolicy,
   DelegatedToKdcubeAccount,
 } from '../../api/types';
@@ -160,7 +161,11 @@ import {
   matchesAccessCardFocus,
   unavailableAccessCardMessage,
 } from './accessCardFocus';
-import { projectPersonControlCoordinates } from './projectPersonControl';
+import {
+  isLinkedControlCard,
+  linkedControlOpenTarget,
+  projectPersonControlCoordinates,
+} from './projectPersonControl';
 import { catalogDriftForPersonCard, notOfferedOnPersonCard, resourcesForPersonCard } from './personCardOperations';
 import { cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, readableCardLabel } from './cardLabels';
 import { detailedCardOffersEdit } from './cardActions';
@@ -4678,13 +4683,22 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (!editDirty) { startEdit(item); return; }
     setPendingLeave({ kind: 'switch', item });
   };
-  const openLinkedControlCard = async (controlId: string) => {
-    const cleanControlId = controlId.trim();
-    if (!cleanControlId) return;
+  const openLinkedControlCard = async (
+    item: DelegatedAccessRecord,
+    binding: DelegatedControlCardBinding,
+  ) => {
+    // W424: read the linked Card through whoever holds it (the project, for a
+    // person's project Control Card), and open only the Card the binding names.
+    const target = linkedControlOpenTarget(item, binding);
+    if (!target) return;
     setEditActionError('');
     try {
-      const result = await dispatch(loadControlCard({ controlId: cleanControlId })).unwrap();
-      if (result.access) switchEdit(result.access);
+      const result = await dispatch(loadControlCard(target)).unwrap();
+      if (!result.access || !isLinkedControlCard(result.access, target)) {
+        setEditActionError('The linked Control Card could not be matched to this Card. Nothing was opened.');
+        return;
+      }
+      switchEdit(result.access);
     } catch (error) {
       setEditActionError(
         error instanceof Error ? error.message : String(error || 'Failed to load the Control Card'),
@@ -4845,7 +4859,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               type="button"
               className="btn btn-ghost control-card-composition__open"
               disabled={busy}
-              onClick={() => void openLinkedControlCard(binding.control_id)}
+              onClick={() => void openLinkedControlCard(item, binding)}
             >
               Open {label}
             </button>
