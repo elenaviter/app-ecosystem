@@ -154,7 +154,7 @@ def notify_agent_session(
             "reason": type(exc).__name__,
         }
     if completed.returncode != 0:
-        return {
+        failed = {
             "adapter": adapter,
             "state": "unreachable",
             "event_kind": event_kind,
@@ -162,6 +162,14 @@ def notify_agent_session(
             "reason": "codex_queue_failed",
             "returncode": completed.returncode,
         }
+        # A nonzero exit does not prove the prompt was not admitted. When the
+        # queue printed its admission line for this thread, keep that
+        # identity so the caller can reconcile instead of submitting again.
+        admitted = _QUEUE_SUCCESS.fullmatch(str(getattr(completed, "stdout", "") or "").strip())
+        if admitted and admitted.group("thread_id") == channel.runtime_session_id:
+            failed["queued_submission_id"] = admitted.group("submission_id")
+            failed["admission_seen"] = True
+        return failed
     result = {
         "adapter": adapter,
         "state": "attached",

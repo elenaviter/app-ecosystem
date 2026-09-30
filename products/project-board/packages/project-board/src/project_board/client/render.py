@@ -11,9 +11,9 @@ reply never correlated. Neither failure was in Problem Board.
 Three rules follow, and this module is where they live:
 
 * A worker does not parse. ``--format brief`` on any command, or ``pb render``
-  on saved output, prints what the worker needs. Delivery and mutation output
-  remains complete; read-heavy collection and context operations have explicit
-  compact renderers. ``--format json`` remains the full-detail view.
+  on saved output, prints what the worker needs. Delivery output remains
+  complete; read-heavy operations and oversized item/assignment receipts have
+  explicit compact renderers. ``--format json`` remains the full-detail view.
 * Nothing is ever silent. An error envelope renders as ``ERROR``. Text that is
   not an envelope renders as ``UNREADABLE`` followed by the text itself.
 * A displayed locator is never shortened. Actionable refs print complete on
@@ -222,6 +222,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_journal_search(result)
     if str(result.get("schema") or "") == "project-board.client-source-status.v2":
         return _render_source_status(result)
+    if schema == "problem-board.relay-service.v1":
+        return _render_relay_service_status(result)
     if "session" in result and "worker" in result and isinstance(result.get("session"), Mapping):
         return _render_inspect(result)
     if schema.startswith("problem-board.local-journal-receipt."):
@@ -230,6 +232,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_deliveries(result, flags)
     if isinstance(result.get("workers"), list):
         return _render_worker_list(result)
+    if isinstance(result.get("recovery"), Mapping) and isinstance(result.get("queue_result"), Mapping):
+        return _render_wake_recovery(result)
     if "settlement_summary" in result and "settled_at" in result:
         return _render_settled(result)
     if not result:
@@ -721,6 +725,113 @@ def _render_source_status(result: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _diagnostic_summary(diagnostic: Mapping[str, Any]) -> str:
+    fields = [f"state {diagnostic.get('state') or 'not reported'}"]
+    if _present(diagnostic.get("code")):
+        fields.append(f"code {diagnostic['code']}")
+    if _present(diagnostic.get("started_at")):
+        fields.append(f"since {diagnostic['started_at']}")
+    if _present(diagnostic.get("next_attempt_at")):
+        fields.append(f"next attempt {diagnostic['next_attempt_at']}")
+    if _present(diagnostic.get("message")):
+        fields.append(f"message {_preview(diagnostic['message'])}")
+    if _present(diagnostic.get("last_error")):
+        fields.append(f"last error {_preview(diagnostic['last_error'])}")
+    recent = diagnostic.get("recent")
+    if isinstance(recent, list):
+        fields.append(f"recent {len(recent)}")
+        latest = (
+            next((entry for entry in reversed(recent) if isinstance(entry, Mapping)), None)
+            if str(diagnostic.get("state") or "").lower() not in {"ready", "healthy"}
+            else None
+        )
+        if latest is not None:
+            if _present(latest.get("code")):
+                fields.append(f"latest {latest['code']}")
+            if _present(latest.get("ended_at") or latest.get("started_at")):
+                fields.append(f"at {latest.get('ended_at') or latest['started_at']}")
+            if _present(latest.get("message")):
+                fields.append(f"message {_preview(latest['message'])}")
+    return " · ".join(fields)
+
+
+def _render_relay_service_status(result: Mapping[str, Any]) -> list[str]:
+    lines = ["relay service status:"]
+    for key in ("service_id", "system", "installed", "running", "definition", "config"):
+        if key in result:
+            lines.append(f"{key}: {result[key]}")
+    for key in ("source", "bootstrap_source"):
+        if isinstance(result.get(key), Mapping):
+            lines.append(f"{key}: {_source_identity(result[key])}")
+    startup = result.get("startup_record")
+    if isinstance(startup, Mapping) and startup:
+        lines.append(f"startup: pid {startup.get('pid') or '-'} · at {startup.get('started_at') or '-'}")
+        if isinstance(startup.get("source"), Mapping):
+            lines.append(f"startup source: {_source_identity(startup['source'])}")
+    for key in ("source_selection_error", "manager_error"):
+        if _present(result.get(key)):
+            lines.append(f"{key}: {_preview(result[key], maximum_bytes=_LONG_PREVIEW_BYTES)}")
+    log = result.get("log")
+    if isinstance(log, Mapping):
+        lines.append(
+            "log: {} · size {} bytes · total {} bytes".format(
+                log.get("state") or log.get("status") or "available",
+                log.get("size_bytes", "?"), log.get("total_size_bytes", "?"),
+            )
+        )
+        for key in ("path", "error"):
+            if _present(log.get(key)):
+                value = log[key] if key == "path" else _preview(log[key])
+                lines.append(f"log.{key}: {value}")
+    diagnostics = result.get("relay_diagnostics")
+    if isinstance(diagnostics, Mapping):
+        transport = diagnostics.get("transport")
+        if isinstance(transport, Mapping):
+            lines.append(
+                "transport: degraded {} · code {} · since {} · recent {}".format(
+                    transport.get("degraded"), transport.get("code") or "-",
+                    transport.get("started_at") or "-",
+                    len(transport.get("recent") or []) if isinstance(transport.get("recent"), list) else "?",
+                )
+            )
+            if _present(transport.get("waking_on")):
+                lines.append(f"transport.waking_on: {transport['waking_on']}")
+        channels = diagnostics.get("channels")
+        if isinstance(channels, list):
+            attention = []
+            healthy = []
+            for channel in channels:
+                if not isinstance(channel, Mapping):
+                    continue
+                diagnostic = channel.get("relay_diagnostic")
+                diagnostic = diagnostic if isinstance(diagnostic, Mapping) else {}
+                state = str(diagnostic.get("state") or "not_recorded").lower()
+                channel_state = str(channel.get("channel_state") or "").lower()
+                target = (
+                    healthy
+                    if state in {"ready", "healthy"}
+                    and channel_state not in {"reconnecting", "pending_authorization", "error"}
+                    else attention
+                )
+                target.append(channel)
+            shown = (attention + healthy)[:_BRIEF_SECTION_ITEMS]
+            lines.append(f"channels: {len(channels)} · attention {len(attention)}")
+            for channel in shown:
+                diagnostic = channel.get("relay_diagnostic")
+                diagnostic = diagnostic if isinstance(diagnostic, Mapping) else {}
+                lines.append(
+                    "channel: {} · {} · {} · {}".format(
+                        channel.get("worker_alias") or "-",
+                        channel.get("worker_name") or "-",
+                        channel.get("channel_state") or "-",
+                        _diagnostic_summary(diagnostic),
+                    )
+                )
+            _note_omitted(lines, "channels", shown=len(shown), total=len(channels))
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
 def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
     lines: list[str] = []
     delivery = result.get("delivery") or {}
@@ -889,10 +1000,70 @@ def _render_inspect(result: Mapping[str, Any]) -> list[str]:
     ]
     if session.get("inbox_check_state") == "stale":
         lines.append("NOTE: inbox checks are stale. For a Claude Code worker this means its watch has stopped.")
-    for ref in session.get("last_message_refs") or []:
+    channel_connection = channel.get("connection")
+    for label, connection in (
+        ("channel.connection", channel_connection),
+        ("session.connection", session.get("connection")),
+    ):
+        if not isinstance(connection, Mapping) or not connection:
+            continue
+        if label == "session.connection" and connection == channel_connection:
+            continue
+        lines.append(
+            "{}: state {} · attempts {} · schedule {} · next attempt {}".format(
+                label,
+                connection.get("state") or "not reported",
+                connection.get("attempts", "?"),
+                _preview(connection.get("schedule"), maximum_bytes=100) or "-",
+                connection.get("next_attempt_at") or "not reported",
+            )
+        )
+        for key in ("reason", "last_error", "last_error_code", "last_error_summary"):
+            if _present(connection.get(key)):
+                lines.append(f"{label}.{key}: {_preview(connection[key])}")
+    diagnostic = worker.get("relay_diagnostic")
+    if isinstance(diagnostic, Mapping) and diagnostic:
+        lines.append(f"relay diagnostic: {_diagnostic_summary(diagnostic)}")
+    wake_id = subscription.get("outstanding_wake_id")
+    wake_state = subscription.get("wake_delivery_state")
+    if wake_id or wake_state:
+        lines.append(
+            f"wake: {wake_state or 'not reported'} · attempts {subscription.get('wake_attempts', 0)}"
+        )
+        if wake_id:
+            lines.append(f"outstanding_wake_id: {wake_id}")
+        for key in ("wake_first_attempt_at", "wake_last_attempt_at"):
+            if _present(subscription.get(key)):
+                lines.append(f"{key}: {subscription[key]}")
+    if subscription.get("queue_reconciliation_required"):
+        lines.append("wake attention: queue reconciliation required")
+    if _present(subscription.get("last_error")):
+        lines.append(f"wake last_error: {_preview(subscription['last_error'])}")
+    reachability = worker.get("reachability")
+    if isinstance(reachability, Mapping):
+        if _present(reachability.get("wake_state")):
+            lines.append(f"wake attention state: {reachability['wake_state']}")
+        for key in ("wake_overdue_since", "wake_retry_exhausted_since", "wake_last_error"):
+            if _present(reachability.get(key)):
+                value = reachability[key] if key != "wake_last_error" else _preview(reachability[key])
+                lines.append(f"wake.{key}: {value}")
+    if _present(subscription.get("last_acknowledged_wake_id")):
+        lines.append(f"last_acknowledged_wake_id: {subscription['last_acknowledged_wake_id']}")
+    mail = result.get("mail")
+    if isinstance(mail, Mapping):
+        leases = mail.get("active_leases")
+        if isinstance(leases, Mapping):
+            lines.append(f"active mail leases: {leases.get('total', leases.get('count', '?'))}")
+        if "quarantine_count" in mail:
+            lines.append(f"quarantine: {mail['quarantine_count']}")
+    message_refs, message_count = _bounded(session.get("last_message_refs") or [], maximum=_BRIEF_REFS)
+    for ref in message_refs:
         lines.append(f"last_message_ref: {ref}")
-    for ref in session.get("last_control_refs") or []:
+    _note_omitted(lines, "last message refs", shown=len(message_refs), total=message_count)
+    control_refs, control_count = _bounded(session.get("last_control_refs") or [], maximum=_BRIEF_REFS)
+    for ref in control_refs:
         lines.append(f"last_control_ref: {ref}")
+    _note_omitted(lines, "last control refs", shown=len(control_refs), total=control_count)
     listener = worker.get("listener") or {}
     if listener.get("last_settled_message_ref"):
         lines.append(f"last_settled_message_ref: {listener['last_settled_message_ref']}")
@@ -1071,6 +1242,92 @@ def _render_worker_list(result: Mapping[str, Any]) -> list[str]:
                 f"NOTE: a Claude Code worker overdue by {int(overdue)} s has no running watch. "
                 "Its session cannot be reached through the board until its guard or its operator restarts it."
             )
+        lines.extend(_native_delivery_lines(worker, reach))
+    return lines
+
+
+def _native_delivery_lines(worker: Mapping[str, Any], reach: Mapping[str, Any]) -> list[str]:
+    """What a stranded Codex wake needs from a coordinator, in two lines (W405).
+
+    Transport (relay, Card) says nothing about whether the model received its
+    mail. A wake taken twice without a receive, with mail still pending, is
+    the state no automatic path will change; it is named here with the one
+    supported recovery. An idle Codex with nothing pending prints nothing.
+    """
+
+    if worker.get("runtime_kind") != "codex" or worker.get("pool_status") == "retired":
+        return []
+    lines: list[str] = []
+    wake_id = str(reach.get("outstanding_wake_id") or "")
+    exhausted = str(reach.get("wake_retry_exhausted_since") or "")
+    recovery = reach.get("wake_recovery") if isinstance(reach.get("wake_recovery"), Mapping) else {}
+    last = reach.get("last_wake_recovery") if isinstance(reach.get("last_wake_recovery"), Mapping) else {}
+    try:
+        pending = int(reach.get("pending_messages") or 0)
+    except (TypeError, ValueError):
+        pending = 0
+    current_recovery = bool(recovery) and str(recovery.get("wake_id") or "") == wake_id
+    if wake_id and exhausted and pending <= 0:
+        # An exhausted marker with nothing waiting is not a stall. A recovery
+        # still recorded for that wake stays visible for audit and keeps its
+        # fence, without a stall claim or a new instruction.
+        if current_recovery:
+            return [
+                "recovery: {} for wake {} at {} · no mail pending · unresolved until the worker's receive of this wake; do not submit again".format(
+                    recovery.get("state"),
+                    wake_id,
+                    recovery.get("recorded_at") or recovery.get("requested_at"),
+                )
+            ]
+        wake_id = ""
+    if wake_id and exhausted:
+        lines.append(
+            "NOTE: native delivery stalled: wake {} taken without a receive and its one retry used since {}; "
+            "pending {}; last inbox check {}.".format(
+                wake_id,
+                exhausted,
+                reach.get("pending_messages"),
+                reach.get("last_inbox_check_at") or "-",
+            )
+        )
+        if current_recovery:
+            lines.append(
+                "recovery: {} at {}{} · resolved only by the worker's receive of this wake; do not submit again{}".format(
+                    recovery.get("state"),
+                    recovery.get("recorded_at") or recovery.get("requested_at"),
+                    f" · submission {recovery['submission_id']}" if recovery.get("submission_id") else "",
+                    " (the last call failed before queuing: one more recovery is allowed)"
+                    if recovery.get("state") == "failed"
+                    else "",
+                )
+            )
+        else:
+            lines.append(
+                f"recover once: pb worker wake-recover --worker {worker.get('worker_name')} --wake-id {wake_id}"
+            )
+    elif last.get("resolved_at"):
+        lines.append(
+            "last recovery: wake {} resolved by the worker's receive at {}".format(
+                last.get("wake_id"), last.get("resolved_at")
+            )
+        )
+    return lines
+
+
+def _render_wake_recovery(result: Mapping[str, Any]) -> list[str]:
+    recovery = result.get("recovery") or {}
+    queue = result.get("queue_result") or {}
+    lines = [
+        f"wake recovery: {recovery.get('state')} · worker {result.get('worker_name')} · wake {result.get('wake_id')}",
+        "queue: adapter {} · delivered {} · submission {}{}".format(
+            queue.get("adapter"),
+            queue.get("delivered"),
+            queue.get("queued_submission_id") or "-",
+            f" · reason {queue['reason']}" if queue.get("reason") else "",
+        ),
+    ]
+    if result.get("next"):
+        lines.append(f"next: {result['next']}")
     return lines
 
 
@@ -1417,6 +1674,52 @@ def _render_plan_search(operation: str, page: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _render_plan_notes(operation: str, page: Mapping[str, Any]) -> list[str]:
+    notes = page.get("items")
+    notes = notes if isinstance(notes, list) else []
+    lines = [
+        f"operation: {operation}",
+        f"notes: returned {len(notes)} · total {page.get('total', '?')} · state {page.get('state') or '-'}",
+    ]
+    for key in ("project_ref", "identity_ref", "work_ref", "view_ref", "content_hash", "next_cursor"):
+        if _present(page.get(key)):
+            lines.append(f"{key}: {page[key]}")
+    item = page.get("item")
+    if isinstance(item, Mapping):
+        lines.append(
+            "item: {} · {} · {} · revision {}".format(
+                item.get("item_key") or "-", item.get("status") or "-",
+                _preview(item.get("title"), maximum_bytes=220) or "(untitled)",
+                item.get("revision", "?"),
+            )
+        )
+        for key in ("identity_ref", "item_ref"):
+            if _present(item.get(key)):
+                lines.append(f"item.{key}: {item[key]}")
+    for index, note in enumerate(notes, start=1):
+        if not isinstance(note, Mapping):
+            continue
+        # A page cursor advances past the whole returned page. Every note ref
+        # therefore remains visible even when its body preview is omitted.
+        lines.append(
+            "note {}: {} · ordinal {} · by {} · at {}{}".format(
+                index,
+                note.get("note_ref") or note.get("note_id") or "-",
+                note.get("ordinal", "?"),
+                _preview(note.get("author_label") or note.get("author"), maximum_bytes=100) or "-",
+                note.get("created_at") or "-",
+                " · unavailable" if note.get("available") is False else "",
+            )
+        )
+        if index <= _BRIEF_SECTION_ITEMS and _present(note.get("text")):
+            lines.append(f"  preview: {_preview(note['text'])}")
+    _note_omitted(
+        lines, "note previews", shown=min(len(notes), _BRIEF_SECTION_ITEMS), total=len(notes)
+    )
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
 def _assignment_task_preview(task: Any) -> str:
     if not isinstance(task, Mapping):
         return _preview(task)
@@ -1558,6 +1861,68 @@ def _render_assignment_list(operation: str, page: Mapping[str, Any]) -> list[str
     return lines
 
 
+def _render_assignment_receipt(operation: str, assignment: Mapping[str, Any]) -> list[str]:
+    lines = [f"operation: {operation}"]
+    for key in ("applied", "replayed", "disposition"):
+        if key in assignment:
+            lines.append(f"{key}: {assignment[key]}")
+    lines.append(
+        "assignment: state {} · ownership {} · worker {} · updated {}".format(
+            assignment.get("state") or "-",
+            assignment.get("ownership_version", "?"),
+            assignment.get("worker_name") or "-",
+            assignment.get("updated_at") or "-",
+        )
+    )
+    if _present(assignment.get("title")):
+        lines.append(f"title: {_preview(assignment['title'], maximum_bytes=220)}")
+    for key in (
+        "ref", "assignment_ref", "project_ref", "identity_ref", "work_ref",
+        "versioned_work_ref", "work_version_ref", "control_ref",
+        "current_control_ref", "result_ref", "source_event_ref",
+    ):
+        if _present(assignment.get(key)):
+            lines.append(f"{key}: {assignment[key]}")
+    task_preview = _assignment_task_preview(assignment.get("task"))
+    if task_preview:
+        lines.append(f"task preview: {task_preview}")
+    for key in ("result_summary", "settlement_summary", "assignee_limit_warning"):
+        if _present(assignment.get(key)):
+            lines.append(f"{key}: {_preview(assignment[key], maximum_bytes=_LONG_PREVIEW_BYTES)}")
+    limit = assignment.get("assignee_limit")
+    if isinstance(limit, Mapping):
+        lines.append(f"assignee limit: {limit_state_line(limit)}")
+        usage = usage_windows_line(limit)
+        if usage:
+            lines.append(f"assignee usage: {usage}")
+    sources = assignment.get("sources") or assignment.get("source_repositories") or []
+    if not sources and isinstance(assignment.get("source"), Mapping):
+        sources = [assignment["source"]]
+    if not sources and assignment.get("source_repository_ref"):
+        sources = [{
+            "repository_ref": assignment.get("source_repository_ref"),
+            "base_commit": assignment.get("source_base_commit"),
+            "branch": assignment.get("source_branch"),
+        }]
+    shown_sources, source_count = _bounded(sources, maximum=_BRIEF_REFS)
+    for index, source in enumerate(shown_sources):
+        if not isinstance(source, Mapping):
+            continue
+        for key in ("repository_ref", "base_commit", "branch"):
+            if _present(source.get(key)):
+                lines.append(f"source[{index}].{key}: {source[key]}")
+    _note_omitted(lines, "sources", shown=len(shown_sources), total=source_count)
+    report = assignment.get("report")
+    if isinstance(report, Mapping):
+        for key in ("state", "source_event_ref", "result_ref"):
+            if _present(report.get(key)):
+                lines.append(f"report.{key}: {report[key]}")
+        if _present(report.get("summary")):
+            lines.append(f"report.summary: {_preview(report['summary'])}")
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
 def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
     operation = str(result.get("operation") or "")
     obj = result.get("object")
@@ -1566,8 +1931,12 @@ def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
         return _render_plan_item(operation, item)
     if isinstance(obj, Mapping) and operation == "project.plan.search":
         return _render_plan_search(operation, obj)
+    if isinstance(obj, Mapping) and operation == "plan.notes.list":
+        return _render_plan_notes(operation, obj)
     if isinstance(obj, Mapping) and operation == "assignment.list":
         return _render_assignment_list(operation, obj)
+    if isinstance(obj, Mapping) and operation in {"assignment.assign", "assignment.return", "assignment.report"}:
+        return _render_assignment_receipt(operation, obj)
     lines = [f"operation: {operation}"]
     if isinstance(obj, Mapping) and isinstance(obj.get("item"), Mapping):
         item = obj["item"]

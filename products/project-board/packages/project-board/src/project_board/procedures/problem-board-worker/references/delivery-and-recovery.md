@@ -63,7 +63,9 @@ native queue API. A `pb worker watch` process in a Codex background terminal is
 diagnostic only: its output cannot create a model turn, and it is not a second
 delivery mechanism. After the initial catch-up receive, an idle
 Codex session ends its model turn and waits for this native wake; it does not
-poll, sleep, or start a second listener.
+poll, sleep, or start a second listener. A wake the session took twice
+without a receive stays with the coordinator: [coordinator](coordinator.md),
+Recover a stalled Codex delivery.
 
 **Claude Code.** The selected session owns exactly one background attachment
 running `pb worker watch`. Watch emits availability only and never leases mail.

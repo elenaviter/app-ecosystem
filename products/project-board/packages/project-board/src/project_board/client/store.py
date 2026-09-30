@@ -340,7 +340,13 @@ WAKE_OBSERVATION_FIELDS = (
     "wake_consumed_retries",
     "wake_retry_exhausted_since",
     "wake_queued_confirmed_at",
+    # W405: the explicit recovery of an exhausted consumed wake belongs to
+    # that wake; a matching receive or a new wake clears it.
+    "wake_recovery",
 )
+# W405: recovery states an operator can read. Only a definite failure of the
+# native queue call allows another recovery of the same wake.
+WAKE_RECOVERY_RETRYABLE_STATES = frozenset({"failed"})
 OUTBOX_RETRY_BASE_SECONDS = 5
 OUTBOX_RETRY_MAX_SECONDS = 300
 SESSION_SCHEMA = "problem-board.local-worker-session.v1"
@@ -3561,6 +3567,19 @@ class SharedFieldStore:
                         if outstanding_wake_id
                         else observed_message_refs
                     )
+                    recovery = subscription.get("wake_recovery")
+                    if (
+                        isinstance(recovery, Mapping)
+                        and acknowledged_wake_id
+                        and str(recovery.get("wake_id") or "") == acknowledged_wake_id
+                    ):
+                        # Only this matching worker receive resolves a
+                        # recovery; queue admission never did (W405).
+                        subscription["last_wake_recovery"] = {
+                            **dict(recovery),
+                            "resolved_at": now,
+                            "resolved_by": "worker_receive",
+                        }
                     subscription["last_wake_message_refs"] = []
                     subscription.pop("wake_observed_message_refs", None)
                     subscription.pop("outstanding_wake_id", None)
@@ -3853,7 +3872,149 @@ class SharedFieldStore:
             "wake_queued_confirmed_at": str(subscription.get("wake_queued_confirmed_at") or ""),
             "wake_last_error": str(subscription.get("last_error") or ""),
             "outstanding_wake_id": str(subscription.get("outstanding_wake_id") or ""),
+            "wake_recovery": dict(subscription.get("wake_recovery") or {}),
+            "last_wake_recovery": dict(subscription.get("last_wake_recovery") or {}),
         }
+
+    def reserve_wake_recovery(
+        self,
+        worker_name: str,
+        *,
+        wake_id: str,
+        requested_by: str,
+    ) -> dict[str, Any]:
+        """Hold one explicit recovery of an exhausted consumed wake (W405).
+
+        The automatic path gives a consumed wake one retry and then stops, on
+        purpose (W198): a session that took two wakes without receiving is not
+        helped by a third. When mail is still pending after that, a person or
+        the coordinator may ask for one recovery of that exact wake. It is
+        reserved here, under the worker's lock, before the native queue call,
+        so a crash leaves a record that says the outcome is unknown instead of
+        inviting another submission.
+        """
+
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        clean_wake_id = bounded_text(wake_id, field="wake_id", maximum=128, required=True)
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            listener = listener_without_legacy_fields(row.get("listener"))
+            if not listener or listener.get("state") == "detached":
+                raise DomainError(
+                    "field_worker_not_listening",
+                    "The addressed coding-agent session is not listening.",
+                    status=409,
+                )
+            subscription = dict(listener.get("subscription") or {})
+            outstanding = str(subscription.get("outstanding_wake_id") or "")
+            if outstanding != clean_wake_id:
+                raise DomainError(
+                    "field_worker_wake_recovery_stale",
+                    "That wake is not the session's outstanding wake; read the "
+                    "worker again and name the current one.",
+                    status=409,
+                    details={"wake_id": clean_wake_id, "outstanding_wake_id": outstanding},
+                )
+            exhausted = str(subscription.get("wake_retry_exhausted_since") or "")
+            if not exhausted:
+                raise DomainError(
+                    "field_worker_wake_recovery_not_needed",
+                    "The automatic retry of this wake has not run out; it is "
+                    "still the relay's to deliver.",
+                    status=409,
+                    details={
+                        "wake_id": clean_wake_id,
+                        "wake_delivery_state": str(subscription.get("wake_delivery_state") or ""),
+                    },
+                )
+            pending = self.pending_worker_mail_count_snapshot(clean_name)
+            if pending <= 0:
+                # A stale exhausted marker with nothing waiting is not a
+                # stranded session: a recovery would only spend a turn.
+                raise DomainError(
+                    "field_worker_wake_recovery_not_needed",
+                    "No mail is waiting for this session; nothing needs a wake.",
+                    status=409,
+                    details={"wake_id": clean_wake_id, "pending_messages": pending},
+                )
+            prior = subscription.get("wake_recovery")
+            if (
+                isinstance(prior, Mapping)
+                and str(prior.get("wake_id") or "") == clean_wake_id
+                and str(prior.get("state") or "") not in WAKE_RECOVERY_RETRYABLE_STATES
+            ):
+                raise DomainError(
+                    "field_worker_wake_recovery_exists",
+                    "This wake already has a recovery. Only the worker's own "
+                    "receive resolves it; a second submission could hand the "
+                    "session two turns.",
+                    status=409,
+                    details={"wake_id": clean_wake_id, "recovery": dict(prior)},
+                )
+            now = utc_now()
+            recovery = {
+                "wake_id": clean_wake_id,
+                "requested_at": now,
+                "requested_by": bounded_text(requested_by, field="requested_by", maximum=256),
+                "retry_exhausted_since": exhausted,
+                "pending_messages": pending,
+                "state": "reserved",
+                "submission_id": "",
+                "reason": "",
+            }
+            subscription["wake_recovery"] = recovery
+            subscription["revision"] = int(subscription.get("revision") or 0) + 1
+            listener.update(
+                subscription=subscription,
+                revision=int(listener.get("revision") or 0) + 1,
+            )
+            row.update(listener=listener, updated_at=now)
+            atomic_write_json(path, row)
+            return dict(recovery)
+
+    def record_wake_recovery(
+        self,
+        worker_name: str,
+        *,
+        wake_id: str,
+        state: str,
+        submission_id: str = "",
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """The native queue call's outcome for a reserved recovery (W405).
+
+        A receive that already acknowledged the wake removed the recovery;
+        this late write then changes nothing and returns empty.
+        """
+
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        path = self._worker_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            row = read_json(path)
+            listener = listener_without_legacy_fields(row.get("listener"))
+            subscription = dict((listener or {}).get("subscription") or {})
+            recovery = subscription.get("wake_recovery")
+            if not isinstance(recovery, Mapping) or str(recovery.get("wake_id") or "") != wake_id:
+                return {}
+            updated = {
+                **dict(recovery),
+                "state": bounded_text(state, field="state", maximum=64, required=True),
+                "submission_id": bounded_text(submission_id, field="submission_id", maximum=256),
+                "reason": bounded_text(reason, field="reason", maximum=256),
+                "recorded_at": utc_now(),
+            }
+            subscription["wake_recovery"] = updated
+            subscription["revision"] = int(subscription.get("revision") or 0) + 1
+            listener.update(
+                subscription=subscription,
+                revision=int(listener.get("revision") or 0) + 1,
+            )
+            row.update(listener=listener, updated_at=updated["recorded_at"])
+            atomic_write_json(path, row)
+            return updated
 
     def dead_path_record(self, worker_name: str) -> dict[str, Any]:
         """The durable record of the outage the relay is reporting, or empty.
