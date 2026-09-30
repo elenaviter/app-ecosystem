@@ -390,6 +390,13 @@ async def test_create_is_project_held_target_named_and_audited() -> None:
     assert my_card.account_scope == stored.account_scope
     assert my_card.control_card is not None
     assert my_card.control_card.control_id == identity.control_id
+    assert my_card.control_card.holder_subject == identity.project_subject
+    assert my_card.control_card.issuer_label == "Control Card"
+    assert my_card.issuer_label == "Control Card"
+    assert (
+        CardAuthority.from_mapping(my_card.authority.to_dict()).control_card
+        == my_card.control_card
+    )
     assert my_card.provenance[PROJECT_IDENTITY_EDGE_PROVENANCE]["edge_ref"] == (
         person_identity.edge_ref
     )
@@ -1182,6 +1189,83 @@ class _UpdatingHost(_Host):
             assert current[0].card_revision == expected_revision
             assert record.card_revision == expected_revision + 1
         self.records[key] = (record, CARD_STATE_ACTIVE)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old_holder", ["", "unrelated-subject"])
+async def test_existing_my_card_binding_is_repaired_once_without_changing_selection(
+    old_holder: str,
+) -> None:
+    host = _UpdatingHost()
+    lifecycle = _lifecycle(host, _Port())
+    assert (await _create(lifecycle))["ok"] is True
+    identity = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF, person_subject=TARGET
+    )
+    key = (TARGET, identity.my_card_id)
+    original, state = host.records[key]
+    assert original.control_card is not None
+    old_binding = dataclasses.replace(
+        original.control_card,
+        holder_subject=old_holder,
+        issuer_label=TARGET,
+        control_revision=0,
+    )
+    old_authority = dataclasses.replace(
+        original.authority,
+        control_card=old_binding,
+        issuer_label=TARGET,
+    )
+    host.records[key] = (_Record(old_authority), state)
+
+    repaired = await _create(lifecycle, request_id="repair-existing")
+
+    assert repaired["ok"] is True
+    assert repaired["created"] is False
+    assert repaired["my_card_created"] is False
+    after = host.records[key][0].authority
+    assert after.card_revision == old_authority.card_revision + 1
+    assert after.control_card == original.control_card
+    assert after.issuer_label == "Control Card"
+    assert dataclasses.replace(
+        after,
+        card_revision=old_authority.card_revision,
+        control_card=old_binding,
+        issuer_label=TARGET,
+    ) == old_authority
+    assert CardAuthority.from_mapping(after.to_dict()).control_card == after.control_card
+
+    repeated = await _create(lifecycle, request_id="repair-existing-again")
+    assert repeated["ok"] is True
+    assert host.records[key][0].card_revision == after.card_revision
+    assert len(host.records) == 2
+
+
+@pytest.mark.asyncio
+async def test_existing_my_card_with_another_control_id_is_not_repaired() -> None:
+    host = _UpdatingHost()
+    lifecycle = _lifecycle(host, _Port())
+    assert (await _create(lifecycle))["ok"] is True
+    identity = ProjectPersonCardIdentity.build(
+        project_ref=PROJECT_REF, person_subject=TARGET
+    )
+    key = (TARGET, identity.my_card_id)
+    original, state = host.records[key]
+    wrong_binding = dataclasses.replace(
+        original.control_card,
+        control_id="another-control",
+        holder_subject="",
+    )
+    host.records[key] = (
+        _Record(dataclasses.replace(original.authority, control_card=wrong_binding)),
+        state,
+    )
+
+    refused = await _create(lifecycle, request_id="refuse-wrong-control")
+
+    assert refused["ok"] is False
+    assert refused["error"] == "project_identity_my_card_control_binding_mismatch"
+    assert host.records[key][0].control_card == wrong_binding
 
 
 def _my_card(host: _Host, person: str = TARGET) -> CardAuthority:
