@@ -219,6 +219,15 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:coordinate",),
     },
+    "project.announcement.publish": {
+        "description": (
+            "Publish the project's current announcement: a short status, "
+            "progress, blocker or notice line, or a deployment window's "
+            "opening, delay or all-clear. The newest one replaces the one "
+            "before on the board."
+        ),
+        "grants": ("work:coordinate",),
+    },
     "project.coordinator.make_worker": {
         "description": (
             "Make the acting coordinator a worker again: the role back to the "
@@ -491,6 +500,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.coordinator.make",
         "project.coordinator.make_worker",
         "project.coordinator.note.write",
+        "project.announcement.publish",
         "review.accept",
         "review.return",
         "review.cancel",

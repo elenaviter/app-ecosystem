@@ -83,6 +83,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `project.coordinator.return` | coordinator | `work:admin` | Identity rule `project_admin_by_role` | A signed-in person only; revision-fenced. |
 | `project.coordinator.set_away` | coordinator | `work:admin` | Identity rule `project_admin_by_role` | Away reads as unavailable whatever the session reports. |
 | `project.coordinator.note.write` | coordinator | `work:coordinate` | An agent's channel; not a person's | The coordinator holder only (work_coordinator_note_not_holder); every section is required. |
+| `project.announcement.publish` | coordinator | `work:coordinate` | An agent's channel; not a person's | The coordinator holder only (work_announcement_not_coordinator); the newest announcement replaces the one before and stops showing when it expires. |
 | `project.coordinator.make` | coordinator | `work:admin` | Identity rule `project_admin_by_role` | A signed-in person only. |
 | `project.coordinator.make_worker` | coordinator | `work:admin` | Identity rule `project_admin_by_role` | Refused for the home coordinator's own Card. |
 | `plan.item.update` | plan | `work:coordinate` | Their project Card | Under the item's current revision; new attachment refs must be staged uploads. The owner may always (owner_exempt_from_card). |

@@ -362,6 +362,27 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                                                      'blocked_on, research_owners, '
                                                                      'onboarding_checks, '
                                                                      'integrators'}},
+    'project.announcement.publish': {   'description': 'Publish the project announcement the board '
+                                                       'shows: the newest replaces the one before, '
+                                                       'and it stops showing when it expires.',
+                                        'object_ref': 'work:project:<project_id>',
+                                        'payload': {   'kind': 'status, progress, blocker, notice or '
+                                                               'window',
+                                                       'text': 'one or two plain sentences, at most '
+                                                               '600 characters',
+                                                       'window_state': 'for kind window: opened, '
+                                                                       'delayed or all_clear',
+                                                       'planned_end': 'for an opened or delayed '
+                                                                      'window: ISO-8601 time it is '
+                                                                      'planned to end',
+                                                       'expires_in_minutes': 'optional: how long '
+                                                                             'it shows, 5 to 2880; '
+                                                                             'each kind has a default',
+                                                       'detail_ref': 'optional: a plan item or '
+                                                                     'journal entry ref with the '
+                                                                     'detail',
+                                                       'idempotency_key': 'a stable key for this '
+                                                                          'announcement'}},
     'project.coordinator.make': {   'description': 'Make an attending agent the acting '
                                                    'coordinator: its Card to the coordinator '
                                                    'profile, then the role; both receipts, and the '
@@ -878,6 +899,7 @@ PROBLEM_BOARD_OPERATION_REQUIRED: dict[str, tuple[str, ...]] = {
     "plan.item.delete": ("work_ref", "idempotency_key"),
     "plan.item.update": ("work_ref", "expected_revision", "changes", "idempotency_key"),
     "plan.note.append": ("work_ref", "text", "expected_revision", "idempotency_key"),
+    "project.announcement.publish": ("kind", "text", "idempotency_key"),
     "review.accept": ("work_ref", "expected_revision", "idempotency_key"),
     "review.return": ("work_ref", "expected_revision", "reason", "idempotency_key"),
     "review.cancel": ("work_ref", "expected_revision", "reason", "idempotency_key"),
