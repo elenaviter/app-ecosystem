@@ -96,6 +96,8 @@ def _server() -> AuthorizationServerMetadata:
         revocation_endpoint=f"{ISSUER}/revoke",
         scopes_supported=("mcp",),
         supports_refresh=True,
+        device_authorization_endpoint=f"{ISSUER}/device_authorization",
+        supports_device_authorization=True,
         authorization_response_issuer_required=False,
     )
 
@@ -600,6 +602,97 @@ async def test_device_reconnect_reuses_client_and_preserves_profile_card(
     assert result.profile.access_id == profile.access_id
     assert len(profiles.list()) == 1
     assert credentials.values[profile.credential_ref].access_token == "device-access"
+
+
+@pytest.mark.asyncio
+async def test_existing_browser_client_refused_for_device_can_reconnect_with_same_card(
+    tmp_path,
+) -> None:
+    class RefusedDeviceAuthorization:
+        async def authorize_discovered(self, **kwargs):
+            assert kwargs["provisioned_client_id"] == "native-client"
+            assert kwargs["requested_access_id"] == "access-agent"
+            error = AuthorizationError(
+                "oauth_token_request_failed",
+                "OAuth POST returned HTTP 400: unauthorized_client.",
+            )
+            error.details = {
+                "method": "POST",
+                "url": f"{ISSUER}/device_authorization",
+                "status": 400,
+                "oauth_error": "unauthorized_client",
+            }
+            raise error
+
+    browser = _Authorization(_token("browser-access", "browser-refresh"))
+    service, profiles, credentials = _service(
+        tmp_path,
+        authorization=browser,
+        device_authorization=RefusedDeviceAuthorization(),
+    )
+    profile = _profile()
+    old_token = _token()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, old_token)
+
+    with pytest.raises(AuthorizationError) as raised:
+        await service.reconnect(
+            profile.name,
+            device=True,
+            device_presenter=lambda _prompt: None,
+        )
+    assert raised.value.code == "oauth_reconnect_device_client_unauthorized"
+    assert "existing browser callback" in raised.value.message
+    assert profiles.require(profile.name) == profile
+    assert credentials.values[profile.credential_ref] == old_token
+
+    result = await service.reconnect(profile.name, callback_port=18765)
+    assert browser.calls[0]["provisioned_client_id"] == profile.oauth.client_id
+    assert browser.calls[0]["callback_port"] == 18765
+    assert result.profile.access_id == profile.access_id
+    assert result.profile.credential_ref == profile.credential_ref
+    assert credentials.values[profile.credential_ref].access_token == "browser-access"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("oauth_error", "url"),
+    [
+        ("invalid_client", f"{ISSUER}/device_authorization"),
+        ("unauthorized_client", f"{ISSUER}/token"),
+    ],
+)
+async def test_other_device_refusals_keep_their_original_diagnosis(
+    tmp_path, oauth_error, url
+) -> None:
+    class RefusedDeviceAuthorization:
+        async def authorize_discovered(self, **_kwargs):
+            error = AuthorizationError("oauth_token_request_failed", oauth_error)
+            error.details = {
+                "method": "POST",
+                "url": url,
+                "status": 400,
+                "oauth_error": oauth_error,
+            }
+            raise error
+
+    service, profiles, credentials = _service(
+        tmp_path, device_authorization=RefusedDeviceAuthorization()
+    )
+    profile = _profile()
+    profiles.add(profile)
+    original = _token()
+    credentials.put(profile.credential_ref, original)
+
+    with pytest.raises(AuthorizationError) as raised:
+        await service.reconnect(
+            profile.name,
+            device=True,
+            device_presenter=lambda _prompt: None,
+        )
+    assert raised.value.code == "oauth_token_request_failed"
+    assert profiles.require(profile.name) == profile
+    assert credentials.values[profile.credential_ref] == original
 
 
 @pytest.mark.asyncio

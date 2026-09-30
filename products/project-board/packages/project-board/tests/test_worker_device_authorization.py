@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from connection_hub.caller.errors import AuthorizationError
 from project_board.client import authorization, cli
 from project_board.contract.errors import DomainError
 
@@ -280,6 +281,59 @@ async def test_reconnect_passes_device_mode_and_keeps_the_same_card(monkeypatch,
     assert kwargs["device_presenter"] is authorization._device_authorization_presenter  # noqa: SLF001
     assert response["profile"]["access_id"] == existing.access_id
     assert response["card_preserved"] is True
+
+
+@pytest.mark.asyncio
+async def test_worker_device_refusal_guides_same_profile_callback_reconnect(
+    monkeypatch, tmp_path
+):
+    class LoginRequired(Exception):
+        code = "oauth_profile_login_required"
+
+    refusal = AuthorizationError(
+        "oauth_reconnect_device_client_unauthorized",
+        "The recorded OAuth client was refused for device authorization.",
+    )
+    existing = _profile()
+    oauth = SimpleNamespace(
+        reconnect=AsyncMock(
+            side_effect=[
+                refusal,
+                SimpleNamespace(profile=existing, probe=_probe()),
+            ]
+        )
+    )
+    profile_service = SimpleNamespace(
+        probe_profile=AsyncMock(side_effect=LoginRequired("sign in again")),
+        disconnect=AsyncMock(),
+    )
+    _install_services(
+        monkeypatch,
+        tmp_path,
+        existing=existing,
+        oauth=oauth,
+        profile_service=profile_service,
+    )
+
+    with pytest.raises(DomainError) as raised:
+        await authorization.authorize_worker_profile(
+            "host.json", profile_name=existing.name, device=True
+        )
+    assert raised.value.code == "work_relay_device_client_unauthorized"
+    assert "--no-open --callback-port" in str(raised.value)
+    assert "do not use --replace-card" in str(raised.value)
+
+    recovered = await authorization.authorize_worker_profile(
+        "host.json",
+        profile_name=existing.name,
+        no_open=True,
+        callback_port=18765,
+    )
+    assert oauth.reconnect.await_args.kwargs["callback_port"] == 18765
+    assert "device" not in oauth.reconnect.await_args.kwargs
+    assert recovered["profile"]["access_id"] == existing.access_id
+    assert recovered["card_preserved"] is True
+    profile_service.disconnect.assert_not_awaited()
 
 
 @pytest.mark.asyncio

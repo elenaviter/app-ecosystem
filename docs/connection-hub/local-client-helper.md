@@ -182,6 +182,27 @@ Card-preserving reconnect from a headless host. Device mode is mutually
 exclusive with `--no-open` and `--callback-port` because it has no callback
 listener.
 
+An older profile may have been registered for browser Authorization Code before
+device authorization was available. Reconnect still uses that profile's recorded
+`client_id`; it cannot register a replacement device client without changing the
+Card identity. If the device endpoint returns `unauthorized_client` for this
+recorded client, inspect its non-secret registration metadata. A client that
+exists and allows `authorization_code` but lacks the device grant can reconnect
+through its existing browser callback instead. On a headless host, have the
+approver open an SSH tunnel from their own machine to the host's loopback port,
+then run on the host:
+
+```bash
+connection-hub profile reconnect coding-agent --no-open --callback-port 18765
+```
+
+The approver opens the printed authorization URL in their own browser and
+approves the same Card. The profile and native credential store remain on the
+host. Use the callback port registered for a fixed-port client. An unknown or
+removed client returns `invalid_client` and requires operator diagnosis;
+`invalid_target` and `invalid_scope` identify request binding problems. Do not
+replace the Card or register a different client as a reconnect workaround.
+
 ### Manually Issued Profile
 
 For an existing short-lived delegated caller bearer:

@@ -488,6 +488,20 @@ async def authorize_worker_profile(
                         **options,
                     )
                 except Exception as reconnect_error:
+                    if (
+                        device
+                        and getattr(reconnect_error, "code", "")
+                        == "oauth_reconnect_device_client_unauthorized"
+                    ):
+                        raise DomainError(
+                            "work_relay_device_client_unauthorized",
+                            "The recorded worker OAuth client was refused for device authorization. "
+                            "If its registration still permits browser authorization, reconnect "
+                            "this same profile with --no-open --callback-port and an operator-owned "
+                            "loopback tunnel. Keep the existing Card; do not use --replace-card.",
+                            status=409,
+                            details={"profile": profile_name},
+                        ) from reconnect_error
                     raise _connection_hub_error(reconnect_error) from reconnect_error
                 if result.profile.access_id != existing.access_id:
                     raise DomainError(

@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 from filelock import AsyncFileLock, Timeout
 
@@ -56,6 +57,25 @@ class OAuthProfileCredentialStore(Protocol):
 
 Probe = Callable[..., Awaitable[ProbeResult]]
 _WHOLE_CARD_KINDS = frozenset({CARD_KIND_AGENT, CARD_KIND_AUTOMATION})
+
+
+def _device_reconnect_refusal(
+    error: AuthorizationError, *, endpoint: str | None
+) -> bool:
+    """Recognize a device-endpoint client refusal without guessing its cause."""
+
+    details = getattr(error, "details", {})
+    if not isinstance(details, Mapping) or not endpoint:
+        return False
+    parsed = urlsplit(endpoint)
+    safe_endpoint = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+    return (
+        error.code == "oauth_token_request_failed"
+        and details.get("oauth_error") == "unauthorized_client"
+        and details.get("status") == 400
+        and details.get("method") == "POST"
+        and details.get("url") == safe_endpoint
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,18 +277,32 @@ class OAuthProfileSessionService:
                         "oauth_device_authorization_unavailable",
                         "Device authorization is unavailable in this process.",
                     )
-                grant = await self._device_authorization.authorize_discovered(
-                    protected_resource_metadata_url=(
-                        located.protected_resource_metadata_url
-                    ),
-                    discovered=discovered,
-                    resource=authorization_resource,
-                    scope=metadata.scope,
-                    provisioned_client_id=client_id,
-                    requested_access_id=profile.access_id,
-                    presenter=device_presenter,
-                    timeout_seconds=timeout_seconds,
-                )
+                try:
+                    grant = await self._device_authorization.authorize_discovered(
+                        protected_resource_metadata_url=(
+                            located.protected_resource_metadata_url
+                        ),
+                        discovered=discovered,
+                        resource=authorization_resource,
+                        scope=metadata.scope,
+                        provisioned_client_id=client_id,
+                        requested_access_id=profile.access_id,
+                        presenter=device_presenter,
+                        timeout_seconds=timeout_seconds,
+                    )
+                except AuthorizationError as error:
+                    if not _device_reconnect_refusal(
+                        error,
+                        endpoint=discovered.authorization_server.device_authorization_endpoint,
+                    ):
+                        raise
+                    raise AuthorizationError(
+                        "oauth_reconnect_device_client_unauthorized",
+                        "The recorded OAuth client was refused for device authorization. "
+                        "Reconnect this profile with its existing browser callback "
+                        "or have the server operator inspect that client's registration; "
+                        "using another client would change the Card.",
+                    ) from error
             else:
                 grant = await self._authorization.authorize_discovered(
                     protected_resource_metadata_url=(
