@@ -53,6 +53,11 @@ def _json_array(value: Any) -> list[Any]:
 # 120, 240 and 480 s). The live retry came 105 s after the loss.
 REFRESH_RETRY_WINDOW_SECONDS = 900
 
+# W408 review: how many times one attempt may be retried. Each retry replaces
+# the previous unused successor, so repeated post-send losses (a flaky tunnel)
+# do not end the family. The cap bounds what one attempt id can mint.
+MAX_REFRESH_RETRIES = 5
+
 
 def refresh_request_fingerprint(
     *,
@@ -231,24 +236,27 @@ class PostgresOAuthAuthorityStore:
         family_id: str,
         presented_generation: str,
         fingerprint: str,
-    ) -> str:
-        """The unused successor a retried refresh may replace, or empty (W408).
+    ) -> tuple[str, int]:
+        """The unused successor a retried refresh may replace, and its retry count (W408).
 
         A refresh whose response was lost leaves the client holding the
         generation it sent, now consumed. Presenting it again is a retry of
         that same refresh only when every one of these holds: the request
         carries the fingerprint of the request that minted the family's
         current generation, that generation's parent is the presented one,
-        it was never used and is not itself a retry, the family is live, and
-        the presented generation was consumed within
-        ``REFRESH_RETRY_WINDOW_SECONDS``. Anything else is reuse.
+        it was never used, fewer than ``MAX_REFRESH_RETRIES`` retries minted
+        it, the family is live, and the presented generation was consumed
+        within ``REFRESH_RETRY_WINDOW_SECONDS``. The window runs from that
+        first consumption, so retries never extend it. Anything else is reuse.
+        Returns ``("", 0)`` when it is not a retry.
         """
 
         if not fingerprint:
-            return ""
+            return "", 0
         row = await connection.fetchrow(
             f"""
-            SELECT successor.generation_id
+            SELECT successor.generation_id,
+                   COALESCE((successor.record->>'refresh_retry_count')::int, 0) AS retries
             FROM {self.schema}.{TABLE_FAMILIES} AS family
             JOIN {self.schema}.{TABLE_REFRESH_GENERATIONS} AS successor
               ON successor.generation_id = family.current_generation_id
@@ -262,7 +270,7 @@ class PostgresOAuthAuthorityStore:
               AND successor.expires_at > now()
               AND successor.record->>'parent_generation_id' = $2
               AND successor.record->>'refresh_request_sha256' = $3
-              AND COALESCE(successor.record->>'refresh_retry', '') <> 'true'
+              AND COALESCE((successor.record->>'refresh_retry_count')::int, 0) < $5
               AND presented.state = 'consumed'
               AND presented.consumed_at > now() - ($4 * interval '1 second')
             FOR UPDATE OF successor
@@ -271,8 +279,11 @@ class PostgresOAuthAuthorityStore:
             presented_generation,
             fingerprint,
             REFRESH_RETRY_WINDOW_SECONDS,
+            MAX_REFRESH_RETRIES,
         )
-        return str(row["generation_id"] or "") if row is not None else ""
+        if row is None:
+            return "", 0
+        return str(row["generation_id"] or ""), int(row["retries"] or 0)
 
     async def create_refresh_token(
         self,
@@ -365,7 +376,7 @@ class PostgresOAuthAuthorityStore:
                         and str(value.get("family_state") or "") == "active"
                     ):
                         family_id = str(value.get("family_id") or "")
-                        retry_of = await self._retried_successor(
+                        retry_of, _retries = await self._retried_successor(
                             connection,
                             family_id=family_id,
                             presented_generation=str(value.get("generation_id") or ""),
@@ -442,11 +453,12 @@ class PostgresOAuthAuthorityStore:
                 ).strip()
                 family_id = str(current.get("family_id") or "").strip()
                 retry_of = ""
+                retries = 0
                 if (
                     str(current.get("generation_state") or "") == "consumed"
                     and str(current.get("family_state") or "") == "active"
                 ):
-                    retry_of = await self._retried_successor(
+                    retry_of, retries = await self._retried_successor(
                         connection,
                         family_id=family_id,
                         presented_generation=current_generation,
@@ -517,9 +529,9 @@ class PostgresOAuthAuthorityStore:
                                 # refresh whose response was lost is known.
                                 "parent_generation_id": current_generation,
                                 "refresh_request_sha256": fingerprint,
-                                # One retry per attempt: a successor minted
-                                # by a retry cannot itself be retried.
-                                "refresh_retry": bool(retry_of),
+                                # How many retries of this attempt minted it,
+                                # capped by MAX_REFRESH_RETRIES.
+                                "refresh_retry_count": (retries + 1) if retry_of else 0,
                             },
                             sort_keys=True,
                             separators=(",", ":"),

@@ -99,20 +99,26 @@ async def test_a_definitive_refusal_clears_the_attempt(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_store_that_cannot_take_the_attempt_refreshes_as_before(tmp_path) -> None:
+async def test_a_store_that_cannot_take_the_attempt_sends_nothing(tmp_path) -> None:
+    """W408 review: a refresh sent without a stored id could not be retried if lost."""
+
     service, profile, credentials, oauth = _setup(tmp_path)
+    original = credentials.values[profile.credential_ref]
     original_put = credentials.put
-    calls = {"n": 0}
 
-    def failing_first_put(ref, token):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise OSError("keychain unavailable")
-        return original_put(ref, token)
+    def failing_put(ref, token):
+        raise OSError("keychain unavailable")
 
-    credentials.put = failing_first_put
+    credentials.put = failing_put
+    with pytest.raises(AuthorizationError) as raised:
+        await service.refresh_access_token(profile.name)
+    assert raised.value.code == "oauth_refresh_attempt_unstored"
+    assert oauth.refresh_calls == 0
+    assert credentials.values[profile.credential_ref] == original
+    # Once the store works again, the refresh goes through with an attempt id.
+    credentials.put = original_put
     assert await service.refresh_access_token(profile.name) == "refreshed-access"
-    assert oauth.refresh_kwargs[0]["refresh_attempt"] == ""
+    assert oauth.refresh_kwargs[0]["refresh_attempt"]
 
 
 @pytest.mark.asyncio

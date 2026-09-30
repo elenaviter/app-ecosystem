@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from connection_hub.delegated_credentials.oauth.authority_store import (
+    MAX_REFRESH_RETRIES,
     REFRESH_RETRY_WINDOW_SECONDS,
     PostgresOAuthAuthorityStore,
     refresh_request_fingerprint,
@@ -129,13 +130,29 @@ async def test_a_retry_after_the_successor_was_used_is_reuse():
 
 
 @pytest.mark.asyncio
-async def test_an_attempt_is_retried_once_only():
+async def test_repeated_losses_of_one_attempt_are_retried_up_to_the_cap():
+    """W408 review: a second post-send loss must not end the family."""
+
     async with _authority() as (pool, authority, store, held):
         await _lost(store, held)
-        assert await _refresh(store, held, _fingerprint())
+        for _ in range(MAX_REFRESH_RETRIES):
+            # Each retry's response is lost too; the family stays alive.
+            assert await _refresh(store, held, _fingerprint())
+            assert await _family(pool, authority) == "active"
         with pytest.raises(RefreshTokenReuseDetected):
             await _refresh(store, held, _fingerprint())
         assert await _family(pool, authority) == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_the_last_retry_that_arrives_is_the_live_token():
+    async with _authority() as (pool, authority, store, held):
+        await _lost(store, held)
+        first = await _refresh(store, held, _fingerprint())
+        second = await _refresh(store, held, _fingerprint())
+        assert await store.get_refresh_token_state(first) is None
+        assert await _refresh(store, second, _fingerprint(OTHER_ATTEMPT))
+        assert await _family(pool, authority) == "active"
 
 
 @pytest.mark.asyncio
@@ -164,19 +181,19 @@ async def test_a_revoked_family_has_no_retry():
 
 
 @pytest.mark.asyncio
-async def test_concurrent_retries_of_one_attempt_admit_one_and_refuse_the_other():
+async def test_concurrent_retries_of_one_attempt_keep_the_family_and_one_live_token():
+    """Duplicated delivery of one retry: both are retries, serialised by the row locks."""
+
     async with _authority() as (pool, authority, store, held):
         await _lost(store, held)
         results = await asyncio.gather(
             _refresh(store, held, _fingerprint()),
             _refresh(store, held, _fingerprint()),
-            return_exceptions=True,
         )
-        admitted = [r for r in results if isinstance(r, str)]
-        refused = [r for r in results if isinstance(r, RefreshTokenReuseDetected)]
-        assert len(admitted) == 1 and len(refused) == 1
-        # The duplicate is judged as reuse, as the proposal states.
-        assert await _family(pool, authority) == "revoked"
+        assert all(isinstance(r, str) and r for r in results)
+        assert await _family(pool, authority) == "active"
+        live = [r for r in results if await store.get_refresh_token_state(r) is not None]
+        assert len(live) == 1
 
 
 @pytest.mark.asyncio

@@ -617,8 +617,9 @@ class OAuthProfileSessionService:
         server recognise the retry of that refresh. So the id is written to
         the native store with the token first, and a token that already
         carries one (a refresh whose outcome was never learned) keeps it.
-        When the store cannot take the id, the refresh goes on without one,
-        which is how every refresh worked before.
+        When the store cannot take the id, the refresh is not sent: the token
+        is still live, and a refresh sent without a stored id could not be
+        retried if its response were lost (W408 review).
         """
 
         if valid_refresh_attempt(token.refresh_attempt):
@@ -641,8 +642,13 @@ class OAuthProfileSessionService:
                 )
         except AuthorizationError:
             raise
-        except Exception:  # noqa: BLE001 - no attempt id is today's refresh, never a failure
-            return token
+        except Exception:
+            raise AuthorizationError(
+                "oauth_refresh_attempt_unstored",
+                "The credential store could not record this refresh before it was sent, "
+                "so the refresh was not sent. The stored credential is unchanged and still "
+                "valid. Retry when the credential store is available.",
+            ) from None
         return replace(token, refresh_attempt=attempt)
 
     async def _discover_server(self, profile: CallerProfile):
