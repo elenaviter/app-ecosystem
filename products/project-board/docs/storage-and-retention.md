@@ -361,6 +361,8 @@ record and mailbox files remain as history while its relay channel is disabled.
 The same native session cannot use a later join instruction to erase the
 tombstone or return to the pool; returning capacity starts as a new session.
 
+Retired workers stay readable in **Workpool > Archive** (`workers.archive`): a person sees their own retired agents and a platform admin may ask for everyone's. The board filters by alias or name and retirement date, pages one list with a cursor, or returns the last N per machine or per project the agent attended, so the browser never loads the whole retired population. Asked with `worker_name`, it returns one read-only archived card (retirement, host, runtime, provider account history, Card revocation, the projects attended and the last assignments), which is where historical attribution links resolve.
+
 The current mailbox widget selects its latest window and returns it oldest to
 newest. Its existing `inbox.thread` path caps the index query but still walks
 the stored conversation while hydrating payloads. The prepared

@@ -145,6 +145,7 @@ The board's own page calls these for a signed-in person; no Card holds them.
 | `board.get` | Membership (`project_membership`) |  |
 | `timeline.list` | Membership (`project_membership`) | Inbox rows only for the people who read the inbox; a private thread only for its person. |
 | `workers.list` | Membership (`project_membership`) |  |
+| `workers.archive` | Membership (`project_membership`) | Your own retired agents, read-only; a platform admin may ask for everyone's. |
 | `workers.search` | Identity rule `operator_inbox_people_only` |  |
 | `inbox.list` | Identity rule `operator_inbox_people_only` |  |
 | `inbox.summary` | Identity rule `operator_inbox_people_only` |  |
