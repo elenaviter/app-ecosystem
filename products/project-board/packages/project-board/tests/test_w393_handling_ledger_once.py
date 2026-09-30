@@ -211,3 +211,23 @@ def test_a_prose_copy_under_an_identifier_key_stays_whole():
     text = render_envelope(_lease_read(message))
     assert text.count(f"{TAIL} 9") == 2, "the body, and the identifier-keyed copy kept whole"
     assert text.count("identical to the body above") == 1, "only the prose instructions are named"
+
+
+def test_locator_collections_equal_to_the_body_stay_whole():
+    # PR371 review of 646c78ad: with the body a path with spaces, the plural
+    # paths and source_paths lists became the marker.
+    path = "folder with spaces/result.md"
+    message = _message(10, body=path, instructions=path)
+    message["payload"]["paths"] = [path]
+    message["payload"]["source_paths"] = [path, "other/file.md"]
+    message["payload"]["path"] = path
+    message["payload"]["files"] = [{"path": path}]
+    lines = render_envelope(_lease_read(message)).splitlines()
+    assert f"  paths[0] = {path}" in lines
+    assert f"  source_paths[0] = {path}" in lines
+    assert f"  path = {path}" in lines
+    assert f"  files[0].path = {path}" in lines
+    # The prose copy of the task is still named once.
+    assert [line for line in lines if "identical to the body above" in line] == [
+        _marker(path)
+    ]
