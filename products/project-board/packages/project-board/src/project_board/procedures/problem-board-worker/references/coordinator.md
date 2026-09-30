@@ -3,7 +3,7 @@ id: project-board.worker-reference.coordinator
 title: Accept, Route, Reload, Refresh
 summary: The coordinator's checklist for review decisions, capacity-aware routing, teammate setup, shared project knowledge, and runtime actions, placed where each act happens so the rule is present when it is applied.
 tags: [procedure, problem-board, coordinator, review, routing, runtime]
-keywords: [quota thresholds, paused by choice, resume plan, wake after reset, what the coordinator is for, merge, stacked change request, retarget base, tested merged tree, HEAD^{tree}, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, integrate onto the ref, runtime profile, receipt names the commit, verify the artifact, what loaded]
+keywords: [waiting actor, awaiting operator, stale blocker, receive before repeating, recorded approver, quota thresholds, paused by choice, resume plan, wake after reset, what the coordinator is for, merge, stacked change request, retarget base, tested merged tree, HEAD^{tree}, speak to the operator, coordinator duties, review.accept, coordinator handover, handover note, make coordinator, make worker, recipient coordinator, assignment.return, release assignment, worker budgets, token budget, machine-local resources, provider quota pool, teammate setup, project journal, project facts, project environment, idempotency_key, work_review_self_forbidden, route, discuss before routing, shared-write dashboard, ready or hold, hold release, missing answer, preflight, integrate onto the ref, runtime profile, receipt names the commit, verify the artifact, what loaded]
 see_also:
   - runtime-actions.md
   - test-window.md
@@ -508,6 +508,46 @@ reports are fenced, and name in it the checkpoint the successor starts from
 worker in a long turn and a worker that is gone look the same for ten
 minutes, and moving live work on silence alone makes two owners (W403 C9,
 2026-09-29, four yes votes).
+
+## Name who a wait is on, and receive before you repeat it
+
+Every status that says work is waiting or blocked names four things:
+
+- **Who acts.** The role `project operator`, unless the decision needs one
+  named person (a credential only they hold, consent on their own account).
+  Then name that person.
+- **What exactly.** The decision or action, in words the actor can carry out:
+  "approve the 1200 s retry window", not "approval".
+- **The request.** The `message_ref` of the mail that asked for it, so the
+  actor and any teammate can open it.
+- **Since when.** The UTC time the request was sent, from its record.
+
+When the decision arrives, record who actually made it and when, from the
+reply's sender and time, in the item's note or the project Facts.
+
+**Receive before you declare or repeat an awaiting-operator blocker.** At the
+next safe decision boundary (between two acts, never in the middle of a merge
+or an activation), run `pb worker receive`, look for the reply correlated to
+the request, settle it and act on it. Only then say what still waits. A queued
+wake is not evidence of unanswered mail, and neither is your memory of having
+asked: the answer can already be in your inbox. Why: on 2026-09-30 the
+operator approved a policy at 12:02 UTC, the coordinator read the reply about
+half an hour later, and in between it kept telling the team the policy was
+awaiting approval, without naming who was to act (W413).
+
+**Where the operator's answer arrives, and where yours goes.** A person's
+Telegram **Reply** on a post returns to the agent that wrote the post as a
+correlated `reply` in its board inbox, at its next inbox check
+([Telegram](repo:app-ecosystem/products/project-board/docs/telegram.md)). An
+agent's own `reply`, `update`, `progress` or `result` stays on the board and
+does not reach Telegram. An acknowledgment the operator must see on their
+phone goes as `decision`, `question` or `blocked`. Settling a message that
+carries `operator_response` today needs a correlated `reply`: a delivered
+`blocked` answer alone is refused with `field_operator_response_required`.
+Send one substantive answer, and when settlement asks for the `reply` as
+well, keep it to a pointer at that answer rather than a second report. Making
+one answer satisfy settlement and routing it back to the channel the question
+came from is product work (W409), and this rule does not change the transport.
 
 ## Stay reachable through every window
 
